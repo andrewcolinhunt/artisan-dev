@@ -1,4 +1,4 @@
-# Cadence
+# Artisan
 
 ---
 
@@ -11,12 +11,12 @@
 curl -fsSL https://pixi.sh/install.sh | bash
 
 # Clone and install
-git clone https://github.com/dexterity-systems/cadence.git
-cd cadence
+git clone https://github.com/dexterity-systems/artisan.git
+cd artisan
 pixi install
 
 # Verify
-pixi run python -c "import cadence; print('Installed successfully')"
+pixi run python -c "import artisan; print('Installed successfully')"
 ```
 
 ---
