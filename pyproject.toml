@@ -1,12 +1,12 @@
 [project]
-name = "your-package"
+name = "cadence"
 version = "0.1.0"
-description = "A short description of your project"
+description = "Cadence"
 readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.12"
 maintainers = [
-    { name = "Your Name", email = "you@example.com" },
+    { name = "Andrew Hunt", email = "andrewcolinhunt@gmail.com" },
 ]
 dependencies = []  # All dependencies managed by Pixi
 
@@ -26,7 +26,7 @@ platforms = ["linux-64", "osx-arm64"]
 python = "3.12.*"
 
 [tool.pixi.pypi-dependencies]
-your-package = { path = ".", editable = true }
+cadence = { path = ".", editable = true }
 
 # =============================================================================
 # DEV FEATURE - Development tools (testing, linting)

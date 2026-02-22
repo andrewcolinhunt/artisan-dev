@@ -1,6 +1,4 @@
-# Your Package
-
-A short description of what this project does.
+# Cadence
 
 ---
 
@@ -13,12 +11,12 @@ A short description of what this project does.
 curl -fsSL https://pixi.sh/install.sh | bash
 
 # Clone and install
-git clone https://github.com/your-org/your-repo.git
-cd your-repo
+git clone https://github.com/dexterity-systems/cadence.git
+cd cadence
 pixi install
 
 # Verify
-pixi run python -c "import your_package; print('Installed successfully')"
+pixi run python -c "import cadence; print('Installed successfully')"
 ```
 
 ---
