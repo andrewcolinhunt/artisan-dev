@@ -291,7 +291,7 @@ packages:
 - pypi: ./
   name: dexterity-artisan
   version: 0.1.0
-  sha256: 2ad168687a438edb62b893e66eb4564371dd647731c92c84c4372a13f938c7d8
+  sha256: 04d7a6e7d3e937b0a1462b2cb357bb12fd6b1ddbabcb21e90375f152eef44bb3
   requires_python: '>=3.12'
   editable: true
 - pypi: https://files.pythonhosted.org/packages/02/10/5da547df7a391dcde17f59520a231527b8571e6f46fc8efb02ccb370ab12/docutils-0.22.4-py3-none-any.whl
