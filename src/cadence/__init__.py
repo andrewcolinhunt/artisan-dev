@@ -1,3 +1,3 @@
-"""Your package description."""
+"""Cadence."""
 
 from __future__ import annotations
