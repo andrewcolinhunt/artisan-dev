@@ -1,0 +1,10 @@
+/* Custom styles for Pipelines docs
+   Loaded via site.options.style in myst.yml — overrides theme defaults. */
+
+/* Shrink the search bar so nav links have room to breathe */
+@media (min-width: 640px) {
+  .myst-search-bar {
+    width: 10rem;
+  }
+}
+
