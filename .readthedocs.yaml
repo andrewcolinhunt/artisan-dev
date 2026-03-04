@@ -1,0 +1,26 @@
+# .readthedocs.yaml
+# Jupyter Book 2.x / MyST configuration
+
+# Required
+version: 2
+
+# Set the OS and Python version
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
+    nodejs: "20" # Required for Jupyter Book 2.x / MyST
+  jobs:
+    post_checkout:
+      # Install pixi globally into the build environment
+      - curl -fsSL https://pixi.sh/install.sh | bash
+      # Add the pixi bin directory to the PATH for the current shell
+      - export PATH="$HOME/.pixi/bin:$PATH"
+      # Install documentation-specific dependencies
+      - pixi install --environment docs
+  commands:
+    # Build the documentation using MyST (Jupyter Book 2.x)
+    - cd docs && pixi run -e docs myst build --html
+    # Copy output to ReadTheDocs expected location
+    - mkdir -p _readthedocs/html
+    - cp -r docs/_build/html/* _readthedocs/html/
