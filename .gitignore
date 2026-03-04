@@ -1,0 +1,78 @@
+# Environment and secrets
+.env
+
+# macOS system files
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+
+# NFS temporary files
+**.nfs*
+
+# Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Python packaging
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Virtual environments and package managers
+.venv/
+venv/
+.pixi/*
+!.pixi/config.toml
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+pyrightconfig.json
+
+# Logs and error files
+*.log
+*.err
+
+# Output directories
+outputs/
+out/
+**/output/
+**/outputs/
+scratch/
+*/scratch/
+
+# ML experiment tracking
+wandb/
+*/wandb/
+
+# Model and data files (too large for git)
+*.pt
+*.parquet
+
+# SLURM job logs
+slurm_logs/
+**/slurm_logs/
+
+# Prefect
+.prefect-postgres/
+
+# Documentation build output
+_build/
+docs/_build/
+
+# Cache directories
+.cache/
+
+# Run outputs (pipeline execution artifacts)
+**/runs/
+
+# Personal overrides
+CLAUDE.local.md

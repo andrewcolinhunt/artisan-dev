@@ -1,3 +1,1 @@
-"""Artisan."""
-
-from __future__ import annotations
+"""Artisan: framework for artifact-centric computational pipelines."""

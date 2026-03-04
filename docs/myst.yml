@@ -1,0 +1,143 @@
+# Jupyter Book 2.x configuration (MyST-based)
+# https://mystmd.org/guide/quickstart
+
+version: 1
+
+project:
+  title: Artisan
+  subtitle: Reproducible, provenance-tracked computational pipelines
+  copyright: "2026"
+  license: BSD-3-Clause
+
+  # Repository information
+  github: https://github.com/dexterity-systems/artisan
+
+  # Bibliography
+  bibliography:
+    - references.bib
+
+  # Table of contents
+  toc:
+    - file: index.md
+
+    # ── Getting Started ──
+    - title: Getting Started
+      children:
+        - file: getting-started/index.md
+        - file: getting-started/installation.md
+        - file: getting-started/first-pipeline.md
+        - file: getting-started/orientation.md
+
+    # ── Tutorials ──
+    - title: Tutorials
+      children:
+        - file: tutorials/index.md
+        - title: First Steps
+          children:
+            - file: tutorials/getting-started/01-first-pipeline.ipynb
+            - file: tutorials/getting-started/02-exploring-results.ipynb
+            - file: tutorials/getting-started/03-run-vs-submit.ipynb
+            - file: tutorials/getting-started/04-slurm-execution.ipynb
+            - file: tutorials/getting-started/05-writing-an-operation.ipynb
+        - title: Pipeline Patterns
+          children:
+            - file: tutorials/pipeline-patterns/01-sources-and-chains.ipynb
+            - file: tutorials/pipeline-patterns/02-branching-and-merging.ipynb
+            - file: tutorials/pipeline-patterns/03-metrics-and-filtering.ipynb
+            - file: tutorials/pipeline-patterns/04-multi-input-operations.ipynb
+            - file: tutorials/pipeline-patterns/05-advanced-patterns.ipynb
+            - file: tutorials/pipeline-patterns/06-error-visibility.ipynb
+        - title: Working with Results
+          children:
+            - file: tutorials/working-with-results/01-provenance-graphs.ipynb
+            - file: tutorials/working-with-results/02-resume-and-caching.ipynb
+            - file: tutorials/working-with-results/03-interactive-filter.ipynb
+            - file: tutorials/working-with-results/04-timing-analysis.ipynb
+        - title: Execution and Tuning
+          children:
+            - file: tutorials/execution-and-tuning/01-batching-and-performance.ipynb
+            - file: tutorials/execution-and-tuning/02-step-overrides.ipynb
+
+    # ── Concepts ──
+    - title: Concepts
+      children:
+        - file: concepts/index.md
+        - title: System Architecture
+          children:
+            - file: concepts/architecture-overview.md
+            - file: concepts/operations-model.md
+            - file: concepts/artifacts-and-content-addressing.md
+        - title: Data and Tracking
+          children:
+            - file: concepts/provenance-system.md
+            - file: concepts/execution-flow.md
+            - file: concepts/storage-and-delta-lake.md
+        - title: Design Rationale
+          children:
+            - file: concepts/design-principles.md
+            - file: concepts/error-handling.md
+
+    # ── How-to Guides ──
+    - title: How-to Guides
+      children:
+        - file: how-to-guides/index.md
+        - title: Operations
+          children:
+            - file: how-to-guides/writing-creator-operations.md
+            - file: how-to-guides/writing-curator-operations.md
+            - file: how-to-guides/creating-artifact-types.md
+        - title: Pipelines
+          children:
+            - file: how-to-guides/building-a-pipeline.md
+        - title: Configuration
+          children:
+            - file: how-to-guides/configuring-execution.md
+        - title: Results
+          children:
+            - file: how-to-guides/inspecting-provenance.md
+            - file: how-to-guides/exporting-results.md
+
+    # ── Reference ──
+    - title: Reference
+      children:
+        - file: reference/index.md
+        - file: reference/comparison-to-alternatives.md
+        - file: reference/glossary.md
+
+    # ── Contributing ──
+    - title: Contributing
+      children:
+        - file: contributing/index.md
+        - file: contributing/writing-docs.md
+        - file: contributing/coding-conventions.md
+        - file: contributing/tooling-decisions.md
+
+site:
+  title: Artisan
+
+  # Header navigation
+  nav:
+    - title: Getting Started
+      url: /getting-started
+    - title: Tutorials
+      url: /tutorials
+    - title: Concepts
+      url: /concepts
+    - title: Contributing
+      url: /contributing
+
+  # Header action buttons
+  actions:
+    - title: GitHub
+      url: https://github.com/dexterity-systems/artisan
+
+  # Footer and sidebar branding
+  parts:
+    footer: footer.md
+    primary_sidebar_footer: primary-sidebar-footer.md
+
+  # Build options
+  options:
+    logo_text: Artisan
+    folders: true
+    style: ./custom.css
