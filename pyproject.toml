@@ -1,5 +1,5 @@
 [project]
-name = "artisan"
+name = "dexterity-artisan"
 version = "0.1.0"
 description = "A domain-agnostic pipeline framework with provenance tracking"
 readme = "README.md"
