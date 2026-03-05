@@ -2261,8 +2261,8 @@ packages:
 - pypi: ./
   name: artisan
   version: 0.1.0
-  sha256: f0151d317b82020304390a912c6f01da2fde7b7a417048d12e0870493cb40949
-  requires_python: ==3.12
+  sha256: 589c664b1bf324eeb7f7f2d599fd309484c5701d5274c163edb387298c1cedca
+  requires_python: '>=3.12'
   editable: true
 - pypi: https://files.pythonhosted.org/packages/2f/f5/c36551e93acba41a59939ae6a0fb77ddb3f2e8e8caa716410c65f7341f72/asgi_lifespan-2.1.0-py3-none-any.whl
   name: asgi-lifespan
