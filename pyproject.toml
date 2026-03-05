@@ -66,7 +66,7 @@ matplotlib = "*"
 seaborn = "*"
 
 [tool.pixi.pypi-dependencies]
-artisan = { path = ".", editable = true }
+dexterity-artisan = { path = ".", editable = true }
 
 # Essential packages
 rootutils = ">=1.0"
