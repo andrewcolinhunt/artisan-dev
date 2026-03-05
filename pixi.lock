@@ -2288,12 +2288,6 @@ packages:
   - pkg:pypi/arrow?source=hash-mapping
   size: 113854
   timestamp: 1760831179410
-- pypi: ./
-  name: artisan
-  version: 0.1.0
-  sha256: 8868f0006c5173407774787bdd6361add5462e18708edee7283a939ee28536bb
-  requires_python: '>=3.12'
-  editable: true
 - pypi: https://files.pythonhosted.org/packages/2f/f5/c36551e93acba41a59939ae6a0fb77ddb3f2e8e8caa716410c65f7341f72/asgi_lifespan-2.1.0-py3-none-any.whl
   name: asgi-lifespan
   version: 2.1.0
@@ -3239,6 +3233,12 @@ packages:
   - bump2version<1 ; extra == 'dev'
   - setuptools ; python_full_version >= '3.12' and extra == 'dev'
   requires_python: '>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*'
+- pypi: ./
+  name: dexterity-artisan
+  version: 0.1.1
+  sha256: 55e2f4a8d79b53446b1e05bb00b5c70f4f60a2e4f6085011726077226c23f5cd
+  requires_python: '>=3.12'
+  editable: true
 - conda: https://conda.anaconda.org/conda-forge/noarch/distlib-0.4.0-pyhd8ed1ab_0.conda
   sha256: 6d977f0b2fc24fee21a9554389ab83070db341af6d6f09285360b2e09ef8b26e
   md5: 003b8ba0a94e2f1e117d0bd46aebc901
