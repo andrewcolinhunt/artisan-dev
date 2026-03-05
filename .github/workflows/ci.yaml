@@ -12,12 +12,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.54.0
+          environments: dev
+
+      - name: Lint
+        run: pixi run -e dev fmt
+
+      - name: Check for lint changes
+        run: git diff --exit-code
+
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: prefix-dev/setup-pixi@v0.8.1
         with:
           pixi-version: v0.54.0
+          environments: dev
+
       - name: Run tests
-        run: pixi run -e dev pytest tests/test_hello.py
+        run: pixi run -e dev test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.54.0
+          environments: dev
+
+      - name: Build distribution
+        run: pixi run -e dev build-dist
+
+      - name: Check distribution
+        run: pixi run -e dev check-dist
