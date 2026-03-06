@@ -77,6 +77,12 @@ class ArtifactProvenanceEdge(BaseModel):
         "Edges sharing the same group_id and target_artifact_id were co-inputs "
         "to a single derivation. None for independent (single-input) derivation.",
     )
+    step_boundary: bool = Field(
+        default=True,
+        description="Whether this edge crosses a step boundary. "
+        "True for edges visible at the pipeline level (default, backward compatible). "
+        "False for edges internal to a chain.",
+    )
 
     def __hash__(self) -> int:
         """Make ArtifactProvenanceEdge hashable."""
@@ -90,5 +96,6 @@ class ArtifactProvenanceEdge(BaseModel):
                 self.source_role,
                 self.target_role,
                 self.group_id,
+                self.step_boundary,
             )
         )

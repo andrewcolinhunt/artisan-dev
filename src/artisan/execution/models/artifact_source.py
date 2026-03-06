@@ -85,9 +85,7 @@ class ArtifactSource:
 
         role_inputs = {"_hydrate_role": self._ids}
         role_specs = {"_hydrate_role": spec}
-        result, _ = instantiate_inputs(
-            role_inputs, store, role_specs, default_hydrate
-        )
+        result, _ = instantiate_inputs(role_inputs, store, role_specs, default_hydrate)
         return result.get("_hydrate_role", [])
 
     @property

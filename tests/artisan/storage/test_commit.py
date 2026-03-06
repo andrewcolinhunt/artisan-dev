@@ -533,6 +533,7 @@ class TestArtifactEdgesCommit:
                 "source_role": ["data"],
                 "target_role": ["score"],
                 "group_id": [None],
+                "step_boundary": [True],
             },
             schema=ARTIFACT_EDGES_SCHEMA,
         )
@@ -561,6 +562,7 @@ class TestArtifactEdgesCommit:
                 "source_role": ["data"],
                 "target_role": ["score"],
                 "group_id": [None],
+                "step_boundary": [True],
             },
             schema=ARTIFACT_EDGES_SCHEMA,
         )
@@ -592,6 +594,7 @@ class TestArtifactEdgesCommit:
                 "source_role": ["data"],
                 "target_role": ["score"],
                 "group_id": [None],
+                "step_boundary": [True],
             },
             schema=ARTIFACT_EDGES_SCHEMA,
         )
@@ -620,6 +623,7 @@ class TestArtifactEdgesCommit:
                 "source_role": ["data", "data"],
                 "target_role": ["score", "accuracy"],
                 "group_id": [None, None],
+                "step_boundary": [True, True],
             },
             schema=ARTIFACT_EDGES_SCHEMA,
         )
@@ -661,6 +665,7 @@ class TestArtifactEdgesCommit:
                 "source_role": ["data"],
                 "target_role": ["score"],
                 "group_id": [None],
+                "step_boundary": [True],
             },
             schema=ARTIFACT_EDGES_SCHEMA,
         )

@@ -10,13 +10,12 @@ import logging
 from typing import Any
 
 from artisan.execution.executors.creator import (
-    LifecycleResult,
     _ExecuteFailure,
     _PostprocessFailure,
     run_creator_lifecycle,
 )
 from artisan.execution.models.artifact_source import ArtifactSource
-from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.execution.models.execution_chain import ChainIntermediates
 from artisan.execution.staging.parquet_writer import StagingResult
 from artisan.execution.staging.recorder import record_execution_success
 from artisan.execution.utils import generate_execution_run_id
@@ -61,9 +60,7 @@ def remap_output_roles(
     for out_role, source in prev_outputs.items():
         if out_role in next_input_spec and out_role not in result:
             # Only forward if not already mapped by explicit mapping
-            already_mapped = mapping is not None and out_role in {
-                v for v in mapping.values()
-            }
+            already_mapped = mapping is not None and out_role in set(mapping.values())
             if not already_mapped:
                 result[out_role] = source
 
@@ -92,8 +89,140 @@ def validate_required_roles(
             raise ValueError(msg)
 
 
+def update_ancestor_map(
+    ancestor_map: dict[str, list[str]],
+    edges: list[ArtifactProvenanceEdge],
+    is_first: bool,
+) -> dict[str, list[str]]:
+    """Compose per-operation edges into transitive ancestor tracking.
+
+    Args:
+        ancestor_map: Current ancestor map (artifact_id → initial_input_ids).
+        edges: Provenance edges from the current operation.
+        is_first: Whether this is the first operation in the chain.
+
+    Returns:
+        Updated ancestor map.
+    """
+    updated = dict(ancestor_map)
+    for edge in edges:
+        src = edge.source_artifact_id
+        tgt = edge.target_artifact_id
+        if is_first:
+            # First operation: source IS an initial input
+            updated.setdefault(tgt, []).append(src)
+        elif src in ancestor_map:
+            # Subsequent: target inherits source's ancestors
+            updated.setdefault(tgt, []).extend(ancestor_map[src])
+    return updated
+
+
+def _build_shortcut_edges(
+    ancestor_map: dict[str, list[str]],
+    final_artifacts: dict[str, list[Artifact]],
+    execution_run_id: str,
+) -> list[ArtifactProvenanceEdge]:
+    """Create shortcut edges from initial inputs to final outputs.
+
+    Args:
+        ancestor_map: Transitive ancestor tracking.
+        final_artifacts: Final operation's output artifacts keyed by role.
+        execution_run_id: Chain execution run ID.
+
+    Returns:
+        List of step_boundary=True shortcut edges.
+    """
+    shortcut_edges: list[ArtifactProvenanceEdge] = []
+    for role, artifacts in final_artifacts.items():
+        for artifact in artifacts:
+            aid = artifact.artifact_id
+            if aid is None or aid not in ancestor_map:
+                continue
+            for ancestor_id in ancestor_map[aid]:
+                shortcut_edges.append(
+                    ArtifactProvenanceEdge(
+                        execution_run_id=execution_run_id,
+                        source_artifact_id=ancestor_id,
+                        target_artifact_id=aid,
+                        source_artifact_type="UNKNOWN",
+                        target_artifact_type=getattr(
+                            artifact, "artifact_type", "UNKNOWN"
+                        ),
+                        source_role="chain_input",
+                        target_role=role,
+                        step_boundary=True,
+                    )
+                )
+    return shortcut_edges
+
+
+def _collect_chain_edges(
+    all_edges: list[list[ArtifactProvenanceEdge]],
+    ancestor_map: dict[str, list[str]],
+    final_artifacts: dict[str, list[Artifact]],
+    execution_run_id: str,
+    intermediates: ChainIntermediates,
+) -> list[ArtifactProvenanceEdge]:
+    """Assemble final edge set based on intermediates mode.
+
+    Args:
+        all_edges: Per-operation edge lists.
+        ancestor_map: Transitive ancestor tracking.
+        final_artifacts: Final operation's output artifacts.
+        execution_run_id: Chain execution run ID.
+        intermediates: How to handle intermediate edges.
+
+    Returns:
+        Combined edge list for staging.
+    """
+    shortcut_edges = _build_shortcut_edges(
+        ancestor_map, final_artifacts, execution_run_id
+    )
+
+    if intermediates == ChainIntermediates.DISCARD:
+        # Only shortcut edges — internal edges discarded
+        return shortcut_edges
+
+    # PERSIST or EXPOSE: include internal edges with step_boundary=False
+    internal_edges: list[ArtifactProvenanceEdge] = []
+    for op_edges in all_edges:
+        for edge in op_edges:
+            internal_edges.append(edge.model_copy(update={"step_boundary": False}))
+
+    return internal_edges + shortcut_edges
+
+
+def _collect_chain_artifacts(
+    all_artifacts: list[dict[str, list[Artifact]]],
+    intermediates: ChainIntermediates,
+) -> dict[str, list[Artifact]]:
+    """Collect artifacts to stage based on intermediates mode.
+
+    Args:
+        all_artifacts: Per-operation artifact dicts.
+        intermediates: How to handle intermediate artifacts.
+
+    Returns:
+        Artifacts dict to stage.
+    """
+    if intermediates == ChainIntermediates.DISCARD:
+        return all_artifacts[-1]
+
+    # PERSIST or EXPOSE: merge all operations' artifacts
+    merged: dict[str, list[Artifact]] = {}
+    for i, op_artifacts in enumerate(all_artifacts):
+        for role, arts in op_artifacts.items():
+            # Prefix intermediate roles to avoid collisions
+            if i < len(all_artifacts) - 1:
+                key = f"_chain_op{i}_{role}"
+            else:
+                key = role
+            merged[key] = arts
+    return merged
+
+
 def run_creator_chain(
-    chain: Any,  # ExecutionChain (imported at call time to avoid circular)
+    chain: Any,  # ExecutionChain
     runtime_env: RuntimeEnvironment,
     worker_id: int = 0,
 ) -> StagingResult:
@@ -105,7 +234,7 @@ def run_creator_chain(
         worker_id: Numeric worker identifier.
 
     Returns:
-        StagingResult from the final operation's recording.
+        StagingResult from recording the chain's results.
     """
     from datetime import UTC, datetime
 
@@ -115,11 +244,10 @@ def run_creator_chain(
     all_artifacts: list[dict[str, list[Artifact]]] = []
     all_edges: list[list[ArtifactProvenanceEdge]] = []
     all_timings: list[dict[str, float]] = []
-    initial_input_artifacts: dict[str, list[Artifact]] | None = None
+    ancestor_map: dict[str, list[str]] = {}
 
     timestamp_start = datetime.now(UTC)
 
-    # Use first unit's spec ID for the chain-level execution
     first_unit = chain.operations[0]
     execution_run_id = generate_execution_run_id(
         first_unit.execution_spec_id, timestamp_start, worker_id
@@ -140,7 +268,6 @@ def run_creator_chain(
                 mapping = chain.role_mappings[i - 1]
                 sources = remap_output_roles(current_sources, input_spec, mapping)
 
-                # Merge Delta-backed inputs for roles not satisfied by previous op
                 for role, ids in unit.inputs.items():
                     if role not in sources:
                         sources[role] = ArtifactSource.from_ids(ids)
@@ -150,19 +277,19 @@ def run_creator_chain(
             logger.info("Chain operation %s starting", op_label)
 
             result = run_creator_lifecycle(
-                unit, runtime_env, worker_id,
+                unit,
+                runtime_env,
+                worker_id,
                 execution_run_id=execution_run_id,
                 sources=sources if not is_first else None,
             )
 
-            if is_first:
-                initial_input_artifacts = result.input_artifacts
+            ancestor_map = update_ancestor_map(ancestor_map, result.edges, is_first)
 
             all_artifacts.append(result.artifacts)
             all_edges.append(result.edges)
             all_timings.append(result.timings)
 
-            # Build sources for next operation from this one's outputs
             current_sources = {
                 role: ArtifactSource.from_artifacts(arts)
                 for role, arts in result.artifacts.items()
@@ -170,21 +297,24 @@ def run_creator_chain(
 
             logger.info("Chain operation %s completed", op_label)
 
-        # Record the final operation's results
-        final_unit = chain.operations[-1]
-        final_artifacts = all_artifacts[-1]
-        final_edges = all_edges[-1]
+        # Assemble edges and artifacts based on intermediates mode
+        final_artifacts = _collect_chain_artifacts(all_artifacts, chain.intermediates)
+        final_edges = _collect_chain_edges(
+            all_edges,
+            ancestor_map,
+            all_artifacts[-1],
+            execution_run_id,
+            chain.intermediates,
+        )
 
-        # Collect original inputs from the first unit
-        original_inputs = {
-            role: list(ids) for role, ids in first_unit.inputs.items()
-        }
+        original_inputs = {role: list(ids) for role, ids in first_unit.inputs.items()}
 
         working_root = runtime_env.working_root_path
         if working_root is None:
             msg = "RuntimeEnvironment.working_root_path must be set"
             raise ValueError(msg)
 
+        final_unit = chain.operations[-1]
         execution_context = build_creator_execution_context(
             execution_run_id=execution_run_id,
             execution_spec_id=first_unit.execution_spec_id,

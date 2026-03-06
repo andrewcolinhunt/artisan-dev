@@ -108,6 +108,40 @@ def compute_step_spec_id(
     return xxhash.xxh3_128(hash_input.encode()).hexdigest()
 
 
+def compute_chain_spec_id(
+    operations: list[tuple[str, dict[str, Any] | None]],
+    initial_inputs: dict[str, list[str]],
+) -> str:
+    """Compute deterministic spec ID for a chain of operations.
+
+    Hashes all operation names and params in order, plus the sorted
+    initial input artifact IDs. Any change to any operation's params
+    or the input set invalidates the cache.
+
+    Args:
+        operations: List of (operation_name, params_dict) tuples in order.
+        initial_inputs: Initial input artifact IDs keyed by role.
+
+    Returns:
+        32-character xxh3_128 hex string.
+    """
+    # Hash operations in order
+    op_parts: list[str] = []
+    for name, params in operations:
+        params_json = _canonicalize_dict(params)
+        op_parts.append(f"{name}:{params_json}")
+    ops_str = "|".join(op_parts)
+
+    # Hash sorted initial input IDs
+    all_ids: set[str] = set()
+    for role_ids in initial_inputs.values():
+        all_ids.update(role_ids)
+    sorted_ids = ",".join(sorted(all_ids)) if all_ids else ""
+
+    hash_input = f"chain|{ops_str}|{sorted_ids}"
+    return xxhash.xxh3_128(hash_input.encode()).hexdigest()
+
+
 class _CanonicalEncoder(json.JSONEncoder):
     """JSON encoder that handles sets and Paths for deterministic output."""
 

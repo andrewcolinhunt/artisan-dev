@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.specs.input_spec import InputSpec
