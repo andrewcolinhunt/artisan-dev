@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+from artisan.operations.curator.filter import Filter
+from artisan.operations.examples.data_transformer import DataTransformer
+from artisan.operations.examples.metric_calculator import MetricCalculator
 from artisan.orchestration.chain_builder import (
     ChainBuilder,
     _validate_role_compatibility,
 )
-from artisan.operations.examples.data_transformer import DataTransformer
-from artisan.operations.examples.metric_calculator import MetricCalculator
-from artisan.operations.examples.data_generator import DataGenerator
-from artisan.operations.curator.filter import Filter
-from artisan.execution.models.execution_chain import ChainIntermediates
 
 
 class TestChainBuilderAdd:
@@ -99,9 +97,7 @@ class TestChainBuilderStepName:
         builder = ChainBuilder(pipeline=None)
         builder.add(DataTransformer).add(MetricCalculator)
         # Access the internal name computation (matches submit() logic)
-        name = "_chain_".join(
-            op_cls.name for op_cls, _, _ in builder._operations
-        )
+        name = "_chain_".join(op_cls.name for op_cls, _, _ in builder._operations)
         assert name == "data_transformer_chain_metric_calculator"
 
     def test_custom_name(self) -> None:
