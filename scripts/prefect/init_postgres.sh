@@ -49,12 +49,12 @@ write_custom_config() {
 
     # One-time migration: remove old-format block (pre-sentinel)
     if grep -q "# Custom settings for Prefect" "$conf" 2>/dev/null; then
-        sed -i '/# Custom settings for Prefect/,/logging_collector = off/d' "$conf"
+        sed '/# Custom settings for Prefect/,/logging_collector = off/d' "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
     fi
 
     # Remove existing sentinel-bounded block if present
     if grep -q "$start_marker" "$conf" 2>/dev/null; then
-        sed -i "/$start_marker/,/$end_marker/d" "$conf"
+        sed "/$start_marker/,/$end_marker/d" "$conf" > "$conf.tmp" && mv "$conf.tmp" "$conf"
     fi
 
     cat >> "$conf" << EOF
