@@ -13,8 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 @dataclass(frozen=True)
@@ -89,14 +90,18 @@ class BackendBase(ABC):
     @abstractmethod
     def create_flow(
         self,
-        operation: OperationDefinition,
+        resources: ResourceConfig,
+        execution: ExecutionConfig,
         step_number: int,
+        job_name: str,
     ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
         """Build a configured Prefect flow for this backend.
 
         Args:
-            operation: Fully configured operation instance.
+            resources: Hardware resource allocation.
+            execution: Batching and scheduling configuration.
             step_number: Pipeline step number (for naming).
+            job_name: Human-readable name for logging and scheduler labels.
 
         Returns:
             Callable that takes (units_path, runtime_env) and returns result dicts.
@@ -121,7 +126,7 @@ class BackendBase(ABC):
         """
         ...
 
-    def validate_operation(self, operation: OperationDefinition) -> None:
+    def validate_operation(self, operation: Any) -> None:
         """Validate that operation config is compatible with this backend.
 
         Called before dispatch. Default is a no-op. Override to add checks.
