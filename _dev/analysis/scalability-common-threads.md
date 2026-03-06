@@ -228,6 +228,34 @@ across both old-style and new-style spec IDs.
 
 ---
 
+## Thread 6: Three natural levels of artifact hydration
+
+The current `Artifact` model has two states: hydrated (all fields populated)
+and non-hydrated (ID + type only, everything else None). But the non-hydrated
+object is an antipattern — it's a Python object carrying reference-level data
+that would be better represented as a DataFrame row or a plain string. The
+object can't `finalize()`, can't `materialize_to()`, can't do anything
+meaningful. Its only useful attribute is `.artifact_id`.
+
+There are three natural levels of artifact representation:
+
+| Level | Data | Natural representation | Consumer |
+|-------|------|----------------------|----------|
+| **Reference** | ID + type | Columnar (Arrow/Polars) | Framework: routing, lineage, caching, dispatch |
+| **Metadata** | ID + type + origin_step + columns + row_count + size | Columnar (Arrow/Polars) | Framework: filtering, display, analytics. Operations like Filter |
+| **Content** | Everything + content bytes | Object (`Artifact`) | Operations that process content: preprocess, execute, postprocess |
+
+The non-hydrated `Artifact` object is level 1 data in a level 3 container.
+It exists because the framework uses `Artifact` as a universal type and
+leaves fields None. A cleaner design keeps levels 1 and 2 columnar and only
+inflates to objects at level 3 when an operation needs content.
+
+This reinforces data plane separation: the `Artifact` object is the
+**operation boundary**, not the framework's internal currency. The framework
+should think in DataFrames; operations think in objects.
+
+---
+
 ## Summary: what to think about
 
 The four scalability docs are facets of one idea: **the framework should route
