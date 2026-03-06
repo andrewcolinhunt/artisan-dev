@@ -40,6 +40,8 @@ illustrations.
   diamond DAGs, output lineage, and iterative refinement
 - [Error Visibility](pipeline-patterns/06-error-visibility.ipynb) (~10 min) -- Graceful
   skip on empty filter, skip inspection, and passthrough_failures
+- [Composable Operations](pipeline-patterns/07-composable-operations.ipynb) (~15 min) --
+  Chain operations into a single step with in-memory artifact passing
 
 ## Working with Results
 
