@@ -12,6 +12,7 @@ from pathlib import Path
 
 from prefect import task
 
+from artisan.execution.models.execution_chain import ExecutionChain
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.utils.errors import format_error
@@ -20,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 def _save_units(
-    units: list[ExecutionUnit], staging_root: Path, step_number: int
+    units: list[ExecutionUnit | ExecutionChain],
+    staging_root: Path,
+    step_number: int,
 ) -> Path:
     """Serialize execution units to a pickle file for Prefect dispatch."""
     path = staging_root / "_dispatch" / f"step_{step_number}_units.pkl"
@@ -30,7 +33,7 @@ def _save_units(
     return path
 
 
-def _load_units(path: Path) -> list[ExecutionUnit]:
+def _load_units(path: Path) -> list[ExecutionUnit | ExecutionChain]:
     """Deserialize execution units from a pickle file."""
     with open(path, "rb") as f:
         return pickle.load(f)
@@ -38,13 +41,13 @@ def _load_units(path: Path) -> list[ExecutionUnit]:
 
 @task
 def execute_unit_task(
-    unit: ExecutionUnit,
+    unit: ExecutionUnit | ExecutionChain,
     runtime_env: RuntimeEnvironment,
 ) -> dict:
-    """Execute a single unit, routing to the creator or curator executor.
+    """Execute a single unit or chain, routing to the appropriate executor.
 
     Args:
-        unit: Batch of artifacts to process.
+        unit: Batch of artifacts to process, or a chain of operations.
         runtime_env: Runtime paths and backend configuration.
 
     Returns:
@@ -54,18 +57,30 @@ def execute_unit_task(
     try:
         import os
 
+        # Get worker_id from backend-specific environment variable
+        env_var = runtime_env.worker_id_env_var
+        worker_id = int(os.environ.get(env_var, 0)) if env_var else 0
+
+        # Route chain to chain executor
+        if isinstance(unit, ExecutionChain):
+            from artisan.execution.executors.chain import run_creator_chain
+
+            result = run_creator_chain(unit, runtime_env, worker_id=worker_id)
+            first_unit = unit.operations[0]
+            return {
+                "success": result.success,
+                "error": result.error,
+                "item_count": first_unit.get_batch_size() or 1,
+                "execution_run_ids": [result.execution_run_id],
+            }
+
         from artisan.execution.executors.curator import (
             is_curator_operation,
             run_curator_flow,
         )
 
-        # Get worker_id from backend-specific environment variable
-        env_var = runtime_env.worker_id_env_var
-        worker_id = int(os.environ.get(env_var, 0)) if env_var else 0
-
         # Route to appropriate executor based on operation type
         if is_curator_operation(unit.operation):
-            # Curator ops return StagingResult (same as creator ops)
             result = run_curator_flow(unit, runtime_env, worker_id=worker_id)
 
             return {
@@ -82,7 +97,7 @@ def execute_unit_task(
             "success": result.success,
             "error": result.error,
             "item_count": unit.get_batch_size() or 1,
-            "execution_run_ids": [result.execution_run_id],  # Normalize to list
+            "execution_run_ids": [result.execution_run_id],
         }
     except Exception as exc:
         return {
