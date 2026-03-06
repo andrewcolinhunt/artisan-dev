@@ -3,7 +3,11 @@
 ## TOP PRIORITIES
 
 
-- How to chain together operations on a single worker
+- get set up so pipelines-dev is running off of both public versions of prefect-submitit and artisan
+- prefect server discovery that isn't tied to one specific git dir, where should it be?
+- add integration tests that cover chaining methods
+
+- delete old tests in pipelines (artisan, prefect_submitit)
 
 
 - are curator operations invokable on slurm?
