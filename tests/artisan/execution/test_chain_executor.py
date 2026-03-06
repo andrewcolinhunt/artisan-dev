@@ -21,8 +21,11 @@ from artisan.execution.models.execution_chain import (
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.metric import MetricArtifact
+from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -30,9 +33,6 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.execution.curator_result import ArtifactResult
-from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 def _make_source(role: str) -> ArtifactSource:
@@ -156,9 +156,7 @@ class TestRemapOutputRoles:
     def test_explicit_mapping(self) -> None:
         prev = {"processed": _make_source("processed")}
         next_spec = {"data": InputSpec(artifact_type="metric")}
-        result = remap_output_roles(
-            prev, next_spec, mapping={"processed": "data"}
-        )
+        result = remap_output_roles(prev, next_spec, mapping={"processed": "data"})
         assert "data" in result
         assert "processed" not in result
 
@@ -172,9 +170,7 @@ class TestRemapOutputRoles:
             "data": InputSpec(artifact_type="metric"),
             "config": InputSpec(artifact_type="metric"),
         }
-        result = remap_output_roles(
-            prev, next_spec, mapping={"processed": "data"}
-        )
+        result = remap_output_roles(prev, next_spec, mapping={"processed": "data"})
         assert "data" in result
         assert "config" in result
 

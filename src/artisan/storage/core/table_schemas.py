@@ -96,6 +96,7 @@ ARTIFACT_EDGES_SCHEMA = {
     "source_role": pl.String,  # Role name of source artifact
     "target_role": pl.String,  # Role name of target artifact
     "group_id": pl.String,  # Links jointly-necessary input edges (nullable)
+    "step_boundary": pl.Boolean,  # True = crosses step boundary, False = chain-internal
 }
 
 # =============================================================================

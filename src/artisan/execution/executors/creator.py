@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from artisan.execution.context.builder import build_creator_execution_context
-from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.context.sandbox import create_sandbox, output_snapshot
 from artisan.execution.inputs.instantiation import instantiate_inputs
 from artisan.execution.inputs.materialization import materialize_inputs
@@ -22,6 +21,7 @@ from artisan.execution.lineage.validation import (
     validate_lineage_completeness,
     validate_lineage_integrity,
 )
+from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.staging.parquet_writer import StagingResult
 from artisan.execution.staging.recorder import (
@@ -33,12 +33,12 @@ from artisan.execution.utils import finalize_artifacts, generate_execution_run_i
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
 )
+from artisan.schemas.specs.input_spec import InputSpec
 from artisan.utils.errors import format_error
 from artisan.utils.timing import phase_timer
 
