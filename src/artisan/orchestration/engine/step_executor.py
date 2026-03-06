@@ -734,7 +734,12 @@ def _execute_creator_step(
                     units_path = _save_units(
                         units_to_dispatch, config.staging_root, step_number
                     )
-                    step_flow = backend.create_flow(operation, step_number)
+                    step_flow = backend.create_flow(
+                        operation.resources,
+                        operation.execution,
+                        step_number,
+                        job_name=operation.execution.job_name or operation.name,
+                    )
                     results = step_flow(
                         units_path=str(units_path), runtime_env=runtime_env
                     )
