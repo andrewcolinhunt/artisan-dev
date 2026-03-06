@@ -32,3 +32,77 @@ These exist on `ach/dev` but are removed on `ach/dev-clean` before PRs:
 ## Push Policy
 
 Never push without asking the user first.
+
+## Maintainability
+
+Do not include step numbers or anything else not easily maintainable. If you
+number things and those things change, the numbers are off.
+
+---
+
+## MCP Tools
+
+Use **Context7** proactively (without user prompting) when working with external
+libraries. Resolve the library ID first, then query docs.
+
+---
+
+## Git Workflow
+
+- Always branch from `ach/dev` before making changes (not `main`)
+- Never commit directly to `ach/dev` or `main`
+- Commit regularly (after each logical step), not just at the end
+- Work isn't done until it's committed
+- Never push to origin automatically — always ask the user first
+
+---
+
+## Workflow Sizing
+
+| Size          | Workflow    | Criteria                              |
+| ------------- | ----------- | ------------------------------------- |
+| Trivial/Small | Lightweight | Single file, no API change, confident |
+| Medium        | Standard    | Multi-file, new tests needed          |
+| Large         | Full        | New feature, architectural change     |
+
+### Lightweight
+
+Branch, change, verify, commit, then ask user: merge to `ach/dev` or create PR?
+
+### Standard/Full
+
+**Phase 1 — Plan:**
+
+- Understand the request; ask clarifying questions
+- Survey codebase for patterns and prior art
+- Create design doc at `_dev/design/design_[name].md` (for medium+ features)
+
+**Phase 2 — Implement:**
+
+- Branch from `ach/dev`
+- Implement incrementally with regular commits
+- Write tests (happy path, edge cases, errors)
+- Create demo in `_dev/demos/` if applicable
+- Update docstrings and docs
+
+**Phase 3 — QA:**
+
+- Run all checks (all commands require `~/.pixi/bin/pixi run` prefix, tests
+  require `-e dev`): `-e dev fmt` → `-e dev test` → `-e docs docs-build`
+- Self-review, then ask user: merge to `ach/dev` or create PR?
+
+---
+
+## Design & Analysis Docs
+
+- Design: `_dev/design/design_[name].md`
+- Analysis: `_dev/analysis/analysis_[name].md`
+
+## Demos
+
+Demos live in `_dev/demos/`. Each demo directory contains `demo_*.py`
+(executable script) and `README.md`.
+
+```bash
+~/.pixi/bin/pixi run python _dev/demos/<demo-dir>/demo_<name>.py
+```
