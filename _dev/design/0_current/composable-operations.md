@@ -214,6 +214,13 @@ class LifecycleResult:
     timings: dict[str, float]                     # phase → elapsed seconds
 ```
 
+`edges` contains fully enriched `ArtifactProvenanceEdge` objects. Today,
+`run_creator_flow()` produces these via `build_edges()` (returns
+`SourceTargetPair`) → `build_artifact_edges_from_dict()` (enriches into
+`ArtifactProvenanceEdge`). Both steps move into `run_creator_lifecycle()`
+so the chain executor receives edges it can directly inspect for ancestor
+map tracking and `step_boundary` adjustment.
+
 **Chain executor pseudocode:**
 
 ```python
@@ -603,9 +610,12 @@ operations with moderate data volume — different problems, different tools.
   dispatch routing.
 
 - **Lineage for chains** — add `step_boundary` field to
-  `ArtifactProvenanceEdge`. Implement `update_ancestor_map()` and shortcut
-  edge emission in `record_chain_success()`. Internal edges
-  (`step_boundary=False`) behind `persist_intermediates` flag.
+  `ArtifactProvenanceEdge` and `ARTIFACT_EDGES_SCHEMA`. Existing Delta Lake
+  tables lack this column; reads must default missing values to `True`
+  (backward compatible — all pre-chain edges cross a step boundary).
+  Implement `update_ancestor_map()` and shortcut edge emission in
+  `record_chain_success()`. Internal edges (`step_boundary=False`) behind
+  `persist_intermediates` flag.
 
 - **Chain-level caching** — `compute_chain_spec_id()` and cache lookup.
 
