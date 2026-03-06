@@ -75,7 +75,7 @@ Branch, change, verify, commit, then ask user: merge to `ach/dev` or create PR?
 
 - Understand the request; ask clarifying questions
 - Survey codebase for patterns and prior art
-- Create design doc at `_dev/design/design_[name].md` (for medium+ features)
+- Create design doc at `_dev/design/[name].md` (for medium+ features)
 
 **Phase 2 — Implement:**
 
@@ -95,8 +95,8 @@ Branch, change, verify, commit, then ask user: merge to `ach/dev` or create PR?
 
 ## Design & Analysis Docs
 
-- Design: `_dev/design/design_[name].md`
-- Analysis: `_dev/analysis/analysis_[name].md`
+- Design: `_dev/design/[name].md`
+- Analysis: `_dev/analysis/[name].md`
 
 ## Demos
 
