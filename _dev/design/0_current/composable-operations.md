@@ -502,8 +502,10 @@ result = chain.run()
 
 The `ChainBuilder` validates wiring at `add()` time: checks that the
 previous operation's output roles are compatible with the next operation's
-input roles. `chain.run()` constructs the `ExecutionChain` and dispatches it
-through the normal `execute_step()` path.
+input roles. `chain.run()` and `chain.submit()` construct the
+`ExecutionChain` and dispatch it through the normal `execute_step()` path —
+mirroring `pipeline.run()` (blocking, returns `StepResult`) and
+`pipeline.submit()` (non-blocking, returns `StepFuture`).
 
 Configuration that applies to the chain as a whole (backend, resources) is
 set on the `chain()` call. Per-operation params are set on each `add()` call.
@@ -530,7 +532,7 @@ result = chain.run()
 | `ArtifactSource` | Dataclass | Wraps artifact sources (IDs, in-memory, future InputRef). Provides `hydrate()`. |
 | `ExecutionChain` | Dataclass | Transport model: list of `ExecutionUnit` operations + role mappings + persist flag. |
 | `LifecycleResult` | Dataclass | Return type of `run_creator_lifecycle()`: artifacts, edges, timings, input artifacts. |
-| `ChainBuilder` | Class | Builder returned by `pipeline.chain()`. Methods: `add()`, `run()`. |
+| `ChainBuilder` | Class | Builder returned by `pipeline.chain()`. Methods: `add()`, `run()`, `submit()`. |
 | `step_boundary` | Field | Boolean on `ArtifactProvenanceEdge`. `True` = crosses step boundary. `False` = internal to chain. |
 | `run_creator_lifecycle()` | Function | One operation through setup → preprocess → execute → postprocess → lineage. |
 | `run_creator_chain()` | Function | Chain executor loop: N × `run_creator_lifecycle()` + `record_chain_success()`. |
