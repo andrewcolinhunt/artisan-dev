@@ -163,6 +163,6 @@ docs/
 
 ## Personal Overrides
 
-Create a `CLAUDE.local.md` file (auto-gitignored) for personal workflow
-preferences such as base branch, push behavior, pixi paths, and MCP tool
-configuration. See the project README for a template.
+`CLAUDE.local.md` contains personal workflow overrides (base branch, push
+behavior, repo layout). On `ach/dev` it is tracked in git; it gets stripped
+on `ach/dev-clean` before PRs to `main`.
