@@ -53,7 +53,7 @@ class LocalBackend(BackendBase):
     ) -> None:
         """No-op — local logs are in the orchestrator's stdout."""
 
-    def validate_operation(self, operation: "OperationDefinition") -> None:
+    def validate_operation(self, operation: OperationDefinition) -> None:
         """Warn if SLURM-specific resources are configured on a local backend."""
         r = operation.resources
         if r.gres or r.partition != "cpu" or r.extra_slurm_kwargs:
