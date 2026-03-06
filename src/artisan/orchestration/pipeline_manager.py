@@ -1053,6 +1053,298 @@ class PipelineManager:
         self._active_futures[step_number] = future
         return future
 
+    def chain(
+        self,
+        inputs: dict[str, Any] | None = None,
+        backend: str | BackendBase | None = None,
+        resources: dict[str, Any] | None = None,
+        execution: dict[str, Any] | None = None,
+        intermediates: str = "discard",
+        name: str | None = None,
+    ) -> ChainBuilder:
+        """Start building a chain of creator operations.
+
+        Returns a ChainBuilder for fluent composition. Call ``.add()``
+        to append operations, then ``.run()`` or ``.submit()`` to execute.
+
+        Args:
+            inputs: Initial inputs for the first operation in the chain.
+            backend: Backend override. None uses pipeline default.
+            resources: Chain-level resource overrides.
+            execution: Chain-level execution/scheduling overrides.
+            intermediates: How to handle intermediate artifacts:
+                "discard" (default), "persist", or "expose".
+            name: Custom step name. Defaults to joined operation names.
+
+        Returns:
+            ChainBuilder for fluent API usage.
+
+        Example::
+
+            chain = pipeline.chain(
+                inputs={"data": pipeline.output("gen", "data")},
+            )
+            chain.add(DataTransformer, params={"mode": "normalize"})
+            chain.add(MetricCalculator)
+            result = chain.run()
+        """
+        from artisan.execution.models.execution_chain import ChainIntermediates
+        from artisan.orchestration.chain_builder import ChainBuilder
+
+        return ChainBuilder(
+            pipeline=self,
+            inputs=inputs,
+            backend=backend,
+            resources=resources,
+            execution=execution,
+            intermediates=ChainIntermediates(intermediates),
+            name=name,
+        )
+
+    def _submit_chain(
+        self,
+        operations: list[
+            tuple[
+                type[OperationDefinition], dict[str, Any] | None, dict[str, Any] | None
+            ]
+        ],
+        role_mappings: list[dict[str, str] | None],
+        inputs: Any,
+        backend: Any | None,
+        resources: dict[str, Any] | None,
+        execution: dict[str, Any] | None,
+        intermediates: Any,  # ChainIntermediates
+        failure_policy: Any | None,
+        compact: bool,
+        name: str,
+        final_operation: type[OperationDefinition],
+    ) -> StepFuture:
+        """Internal: submit a chain step for execution.
+
+        Called by ChainBuilder.submit(). Handles step numbering, caching,
+        persistence, and background dispatch — mirroring submit() for
+        single operations.
+
+        Args:
+            operations: List of (op_class, params, command) tuples.
+            role_mappings: Role remappings between adjacent operations.
+            inputs: Initial inputs for the first operation.
+            backend: Backend override.
+            resources: Chain-level resource overrides.
+            execution: Chain-level execution overrides.
+            intermediates: ChainIntermediates enum value.
+            failure_policy: Override pipeline failure policy.
+            compact: Run Delta Lake compaction.
+            name: Step name.
+            final_operation: Last operation class (for output metadata).
+
+        Returns:
+            StepFuture for downstream wiring.
+        """
+        from artisan.orchestration.engine.step_executor import execute_chain_step
+        from artisan.schemas.execution.execution_config import ExecutionConfig
+        from artisan.schemas.operation_config.resource_config import ResourceConfig
+
+        if self._stopped:
+            step_number = self._current_step
+            output_types_map: dict[str, str | None] = {
+                role: spec.artifact_type if spec.artifact_type else None
+                for role, spec in final_operation.outputs.items()
+            }
+            skipped_result = StepResult(
+                step_name=name,
+                step_number=step_number,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                output_roles=frozenset(final_operation.outputs.keys()),
+                output_types=output_types_map,
+                metadata={"skipped": True, "skip_reason": "pipeline_stopped"},
+            )
+            self._step_results.append(skipped_result)
+            self._named_steps.setdefault(name, []).append(skipped_result)
+            self._current_step += 1
+
+            from concurrent.futures import Future
+
+            resolved_stopped: Future[StepResult] = Future()
+            resolved_stopped.set_result(skipped_result)
+            return StepFuture(
+                step_number=step_number,
+                step_name=name,
+                output_roles=frozenset(final_operation.outputs.keys()),
+                output_types=output_types_map,
+                future=resolved_stopped,
+            )
+
+        self._wait_for_predecessors(inputs)
+        step_number = self._current_step
+
+        # Compute chain step_spec_id
+        op_tuples: list[tuple[str, dict[str, Any] | None]] = []
+        for op_class, params, _cmd in operations:
+            temp = instantiate_operation(op_class, params)
+            if "params" in type(temp).model_fields:
+                full_params = temp.params.model_dump(mode="json")
+            else:
+                base_fields = set(OperationDefinition.model_fields)
+                full_params = {
+                    k: v
+                    for k, v in temp.model_dump(mode="json").items()
+                    if k not in base_fields
+                }
+            op_tuples.append((op_class.name, full_params or None))
+
+        input_spec = self._build_input_spec(inputs)
+        from artisan.utils.hashing import compute_chain_spec_id
+
+        # Build a synthetic input_ids dict for chain_spec_id
+        # (uses upstream spec_ids as proxies, same as step_spec_id)
+        chain_input_ids: dict[str, list[str]] = {}
+        for role, (spec_id, upstream_role) in input_spec.items():
+            chain_input_ids[role] = [spec_id]
+
+        step_spec_id = compute_chain_spec_id(op_tuples, chain_input_ids)
+
+        # Check step cache
+        cached = self._step_tracker.check_cache(step_spec_id, self._config.cache_policy)
+        if cached is not None:
+            logger.info("Step %d (%s) CACHED — skipping execution", step_number, name)
+            self._step_spec_ids[step_number] = step_spec_id
+            self._step_results.append(cached)
+            self._named_steps.setdefault(cached.step_name, []).append(cached)
+            self._current_step += 1
+
+            from concurrent.futures import Future
+
+            resolved: Future[StepResult] = Future()
+            resolved.set_result(cached)
+            return StepFuture(
+                step_number=step_number,
+                step_name=cached.step_name,
+                output_roles=cached.output_roles,
+                output_types=cached.output_types,
+                future=resolved,
+            )
+
+        # Cache miss — build and dispatch
+        self._current_step += 1
+        self._step_spec_ids[step_number] = step_spec_id
+
+        output_types_map = {
+            role: spec.artifact_type if spec.artifact_type else None
+            for role, spec in final_operation.outputs.items()
+        }
+
+        # Resolve backend
+        if is_curator_operation(final_operation):
+            resolved_backend = Backend.LOCAL
+        elif backend is not None:
+            resolved_backend = resolve_backend(backend)
+        else:
+            resolved_backend = resolve_backend(self._config.default_backend)
+
+        _failure_policy = failure_policy or self._config.failure_policy
+
+        # Build chain-level resource/execution configs
+        chain_resources = ResourceConfig(**(resources or {}))
+        chain_execution = ExecutionConfig(**(execution or {}))
+
+        def _run() -> StepResult:
+            logger.info(
+                "Step %d (%s) starting chain... [backend=%s]",
+                step_number,
+                name,
+                resolved_backend.name,
+            )
+            start = time.perf_counter()
+            try:
+                result = execute_chain_step(
+                    operations=operations,
+                    role_mappings=role_mappings,
+                    inputs=inputs,
+                    backend=resolved_backend,
+                    chain_resources=chain_resources,
+                    chain_execution=chain_execution,
+                    intermediates=intermediates,
+                    step_number=step_number,
+                    config=self._config,
+                    failure_policy=_failure_policy,
+                    compact=compact,
+                    final_operation=final_operation,
+                )
+                elapsed = time.perf_counter() - start
+                result = result.model_copy(
+                    update={"step_name": name, "duration_seconds": elapsed},
+                )
+                self._step_tracker.record_step_completed(
+                    StepStartRecord(
+                        step_run_id=_generate_step_run_id(step_spec_id),
+                        step_spec_id=step_spec_id,
+                        step_number=step_number,
+                        step_name=name,
+                        operation_class=_qualified_name(final_operation),
+                        params_json="{}",
+                        input_refs_json=_serialize_input_refs(inputs),
+                        compute_backend=resolved_backend.name,
+                        compute_options_json="{}",
+                        output_roles_json=json.dumps(
+                            sorted(final_operation.outputs.keys())
+                        ),
+                        output_types_json=json.dumps(output_types_map),
+                    ),
+                    result,
+                )
+                logger.info(
+                    "Step %d (%s) completed in %.1fs [%d/%d succeeded]",
+                    step_number,
+                    name,
+                    elapsed,
+                    result.succeeded_count,
+                    result.total_count,
+                )
+                self._step_results.append(result)
+                self._named_steps.setdefault(result.step_name, []).append(result)
+                return result
+
+            except Exception as e:
+                elapsed = time.perf_counter() - start
+                error_msg = f"{type(e).__name__}: {e}"
+                logger.error(
+                    "Step %d (%s) failed after %.1fs: %s",
+                    step_number,
+                    name,
+                    elapsed,
+                    error_msg,
+                )
+                failed_result = StepResult(
+                    step_name=name,
+                    step_number=step_number,
+                    success=False,
+                    total_count=0,
+                    succeeded_count=0,
+                    failed_count=0,
+                    duration_seconds=elapsed,
+                    metadata={"error": error_msg},
+                )
+                self._step_results.append(failed_result)
+                self._named_steps.setdefault(name, []).append(failed_result)
+                return failed_result
+
+        ctx = contextvars.copy_context()
+        cf_future = self._executor.submit(ctx.run, _run)
+
+        future = StepFuture(
+            step_number=step_number,
+            step_name=name,
+            output_roles=frozenset(output_types_map.keys()),
+            output_types=output_types_map,
+            future=cf_future,
+        )
+        self._active_futures[step_number] = future
+        return future
+
     # =========================================================================
     # Internal helpers
     # =========================================================================
