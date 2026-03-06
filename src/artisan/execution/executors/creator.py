@@ -320,7 +320,6 @@ def run_creator_flow(
     total_start = time.perf_counter()
     execution_context = None
     params_dict = None
-    sandbox_path = None
     try:
         # Run the lifecycle (setup → lineage)
         lifecycle_result = run_creator_lifecycle(

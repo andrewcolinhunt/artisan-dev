@@ -213,10 +213,7 @@ def _collect_chain_artifacts(
     for i, op_artifacts in enumerate(all_artifacts):
         for role, arts in op_artifacts.items():
             # Prefix intermediate roles to avoid collisions
-            if i < len(all_artifacts) - 1:
-                key = f"_chain_op{i}_{role}"
-            else:
-                key = role
+            key = f"_chain_op{i}_{role}" if i < len(all_artifacts) - 1 else role
             merged[key] = arts
     return merged
 
@@ -346,7 +343,7 @@ def run_creator_chain(
         )
 
     except (_PostprocessFailure, _ExecuteFailure, Exception) as exc:
-        if isinstance(exc, (_PostprocessFailure, _ExecuteFailure)):
+        if isinstance(exc, _PostprocessFailure | _ExecuteFailure):
             error = str(exc)
         else:
             error = format_error(exc)

@@ -934,12 +934,15 @@ def execute_chain_step(
             intermediates=intermediates,
         )
 
+    # The chain executor stages using the final operation's name
+    final_op_instance = units[-1].operation
+    chain_op_name = final_op_instance.name
+
     # --- execute phase ---
     dispatch_error: str | None = None
     dispatch_dir = config.staging_root / "_dispatch"
     try:
         with phase_timer("execute", timings):
-            final_op_instance = units[-1].operation
             runtime_env = _create_runtime_environment(
                 config, final_op_instance, backend
             )
@@ -980,7 +983,7 @@ def execute_chain_step(
                         execution_run_ids=execution_run_ids,
                         timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
                         step_number=step_number,
-                        operation_name="chain",
+                        operation_name=chain_op_name,
                     )
                 except TimeoutError:
                     logger.warning(
@@ -998,7 +1001,7 @@ def execute_chain_step(
                 committer.commit_all_tables(
                     cleanup_staging=not runtime_env.preserve_staging,
                     step_number=step_number,
-                    operation_name="chain",
+                    operation_name=chain_op_name,
                 )
             except Exception as exc:
                 commit_error = f"{type(exc).__name__}: {exc}"
