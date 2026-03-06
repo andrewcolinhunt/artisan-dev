@@ -5,6 +5,9 @@
 
 - How to chain together operations on a single worker
 
+
+- are curator operations invokable on slurm?
+
 - Analyze r1 results (pipelines)
 - Restart design pipeline
 
