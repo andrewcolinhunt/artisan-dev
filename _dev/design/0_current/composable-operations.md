@@ -140,8 +140,10 @@ parameters and conditional logic per invocation. ArtifactStream gives us:
 - **Mixed sources per role** — a stage could receive role "data" from the
   previous stage (in-memory) and role "config" from Delta (by ID). Each role
   is independently sourced; `hydrate()` does the right thing.
-- **Future backing stores** — if we later add `from_parquet()`,
-  `from_cache()`, or `from_shared_memory()`, consumers don't change.
+- **Future backing stores** — designed with awareness that a future
+  `from_query(InputRef)` will handle lazy query descriptors from the Level 3
+  scalability roadmap (see "Relationship to Scalability" below). Consumers
+  won't change when that arrives.
 
 Operations never see this type. It's consumed by the executor when building
 `PreprocessInput`.
@@ -157,6 +159,9 @@ class ArtifactStream:
 
     @staticmethod
     def from_artifacts(artifacts: list[Artifact]) -> ArtifactStream: ...
+
+    # Future: from_query(ref: InputRef) -> ArtifactStream
+    # for Level 3 lazy execution units
 
     def hydrate(self, store: ArtifactStore, spec: InputSpec) -> list[Artifact]:
         if self._artifacts is not None:
@@ -177,6 +182,10 @@ multiple operations, passing output artifacts in-memory between stages.
 
 This is the core of the design. Each stage goes through the full
 preprocess/execute/postprocess lifecycle via an extracted `run_single_stage()`.
+Each stage gets its own sandbox (preprocess_dir, execute_dir, postprocess_dir)
+just as standalone operations do today. All stages run in the same worker
+process — no subprocess per stage. In-memory artifact passing is the whole
+point; subprocess boundaries would reintroduce serialization overhead.
 
 ```python
 def run_creator_chain(
@@ -185,10 +194,13 @@ def run_creator_chain(
     worker_id: int = 0,
 ) -> StagingResult:
     current_streams: dict[str, ArtifactStream] | None = None
+    initial_input_artifacts: dict[str, list[Artifact]] | None = None
+    all_stage_artifacts: list[dict[str, list[Artifact]]] = []
+    all_stage_edges: list[list[ArtifactProvenanceEdge]] = []
+    timings: list[dict[str, float]] = []
 
     for i, unit in enumerate(chain.stages):
         is_first = (i == 0)
-        is_last = (i == len(chain.stages) - 1)
 
         if is_first:
             streams = {
@@ -200,15 +212,26 @@ def run_creator_chain(
             streams = remap_streams(current_streams, mapping)
 
         result = run_single_stage(unit, streams, runtime_env, worker_id)
+
+        if is_first:
+            initial_input_artifacts = result.input_artifacts
+
+        all_stage_artifacts.append(result.artifacts)
+        all_stage_edges.append(result.edges)
+        timings.append(result.timings)
+
         current_streams = {
             role: ArtifactStream.from_artifacts(arts)
             for role, arts in result.artifacts.items()
         }
 
-        if not is_last and chain.persist_intermediates:
-            record_execution_success(...)
-
-    return record_execution_success(...)  # final stage always persists
+    # Stage everything atomically at the end
+    return record_chain_success(
+        all_stage_artifacts=all_stage_artifacts,
+        all_stage_edges=all_stage_edges,
+        initial_input_artifacts=initial_input_artifacts,
+        persist_intermediates=chain.persist_intermediates,
+    )
 ```
 
 **Transport model:**
@@ -262,19 +285,24 @@ its final outputs. Intermediate artifacts are ephemeral and leave no
 provenance trace. Simple, matches the mental model of "this is one logical
 operation."
 
-**Full lineage** (`persist_intermediates=True`): Every stage writes artifacts
-and edges. The provenance graph shows the full chain. Useful for debugging or
-when intermediate artifacts have independent value.
+**Full lineage** (`persist_intermediates=True`): Every stage's artifacts and
+edges are committed. The provenance graph shows the full chain. Useful for
+debugging or when intermediate artifacts have independent value.
 
 For collapsed lineage, the final stage's lineage must reference the *chain's*
-initial inputs, not the previous stage's outputs. The chain executor threads
-the original input artifacts through for this purpose.
+initial inputs, not the previous stage's outputs. The chain executor captures
+`initial_input_artifacts` from the first stage and passes them to
+`record_chain_success()`. The recording function rebuilds lineage edges:
+for each final output artifact, it creates a direct edge from the chain's
+initial inputs, bypassing intermediate stages. This replaces the per-stage
+stem-matching with a chain-level "all inputs → all outputs" mapping. See
+open question on how the execution record schema accommodates this.
 
 ---
 
 ### Caching
 
-**Decision:** Cache at the chain level for v1.
+**Decision:** Cache at the chain level only. No per-stage caching.
 
 ```python
 chain_spec_id = compute_chain_spec_id(
@@ -283,9 +311,26 @@ chain_spec_id = compute_chain_spec_id(
 )
 ```
 
-If any stage's params change, the entire chain re-executes. Per-stage caching
-within a chain is a future optimization (requires `persist_intermediates=True`
-to verify cache hits against intermediate artifacts).
+If any stage's params change, the entire chain re-executes. This is the
+correct granularity — a chain is a single logical unit of work.
+
+---
+
+### Persistence
+
+**Decision:** `persist_intermediates` controls whether intermediate stages'
+artifacts are committed — but all writes happen atomically at the end of the
+chain, not as-you-go.
+
+- `persist_intermediates=False` (default): Only the final stage's artifacts
+  are staged and committed. Intermediate artifacts are discarded after the
+  chain completes.
+- `persist_intermediates=True`: All stages' artifacts are collected during
+  execution and staged together at the end. One atomic commit covers
+  everything.
+
+This keeps the chain atomic in both modes — either the full chain succeeds
+and everything is committed, or it fails and nothing is.
 
 ---
 
@@ -298,6 +343,22 @@ to verify cache hits against intermediate artifacts).
 - In-memory intermediate artifacts are discarded
 - Error message attributes the failure to the specific stage
 - Per-stage timing is still captured for diagnostics
+
+---
+
+### Execution Model
+
+**Decision:** All stages run in the same worker process. No subprocess per
+chain step.
+
+Subprocesses would reintroduce serialization between stages (pickle), which
+defeats the purpose of in-memory artifact passing. Memory bounding via
+subprocess exit is the right tool for a different problem (massive data
+through a single operation, e.g. 22M artifacts through a filter). Chains
+are for tightly coupled operations with moderate data volume.
+
+This generalizes cleanly across CPU and GPU workers — both local and SLURM
+backends run the chain in a single worker process.
 
 ---
 
@@ -337,6 +398,52 @@ result = chain.run()
 
 ---
 
+## Relationship to Scalability
+
+See `_dev/analysis/scalability-common-threads.md` for the full scalability
+roadmap.
+
+### Complementary, not conflicting
+
+Composable operations and the scalability work attack unnecessary
+materialization at **different boundaries**:
+
+- **Lazy execution units (scalability)** eliminate materialization between
+  orchestrator → worker. The dispatch payload becomes a ~200 byte query
+  descriptor instead of materialized artifact IDs.
+- **Composable operations** eliminate materialization between operation →
+  operation. Artifacts stay in-memory instead of round-tripping through
+  Delta Lake.
+
+A chain with lazy entry combines both: the `InputRef` gets the first stage's
+inputs to the worker cheaply, then in-memory passing keeps subsequent stages
+cheap.
+
+### ArtifactStream as convergence point
+
+ArtifactStream is designed with awareness of the scalability roadmap. Today
+it has `from_ids()` and `from_artifacts()`. When Level 3 lazy execution units
+arrive, `from_query(InputRef)` will handle lazy query descriptors — and no
+consumer code changes. This is the single abstraction that unifies all three
+artifact sources.
+
+### Chain-level caching with query-derived spec IDs
+
+The scalability roadmap proposes hashing query descriptors instead of
+materialized artifact IDs for spec-ID computation. Chain-level caching is
+compatible with this — hashing the chain's query descriptor is semantically
+equivalent and avoids the materialization-for-hashing bottleneck.
+
+### Where chains are NOT the right tool
+
+Memory bounding via short-lived subprocesses (scalability thread 4) is for
+massive data through a single operation. Chains keep all stages' artifacts
+live in a single process. For millions of artifacts, separate steps with
+subprocess exit are the right approach. Chains are for tightly coupled
+operations with moderate data volume — different problems, different tools.
+
+---
+
 ## Implementation Order
 
 - **Extract `run_single_stage()`** from `run_creator_flow()`. Pure refactor,
@@ -368,7 +475,7 @@ Steps 1-3 can be developed and tested without changing any public API.
 | `run_creator_flow()` | Monolithic 6-phase function | Thin wrapper around `run_single_stage()` |
 | `instantiate_inputs()` | Always reads from Delta | Accepts `ArtifactStream` (pass through in-memory artifacts) |
 | `materialize_inputs()` | Writes to sandbox disk | Reuse already-materialized paths from previous stage |
-| `record_execution_success()` | Always stages to Parquet | Called only for final stage (or all stages if `persist_intermediates`) |
+| `record_execution_success()` | Always stages to Parquet | Called by `record_chain_success()`, which controls which stages are staged |
 | `compute_execution_spec_id()` | Per single operation | New `compute_chain_spec_id()` hashing the full chain |
 | `execute_unit_task()` | Routes `ExecutionUnit` | Also routes `ChainUnit` |
 | `PipelineManager` | `run()` / `submit()` for single ops | New `chain()` builder method |
@@ -398,6 +505,16 @@ initial inputs.
 `command` overrides. Do we also need per-stage `resources`? Likely not for v1
 since a chain runs on a single worker — resources are shared.
 
-**Chain-level vs per-stage caching.** Chain-level caching is simpler but
-wasteful when only one stage's params change. Per-stage caching requires
-`persist_intermediates=True`. Defer per-stage caching to a future iteration.
+**Collapsed lineage execution records.** Today, one step = one operation = one
+execution record (with `operation_name`, `execution_spec_id`, etc.). Provenance
+edges are keyed by `execution_run_id`. For a chain with collapsed lineage, the
+chain occupies one pipeline step and gets one `execution_run_id` — but the
+execution record needs to represent multiple operations, not one. Options:
+- Store a composite operation name (e.g. `"ToolRunner→Parser→Scorer"`)
+- Add an optional `chain_operations: list[str]` field to the execution record
+- Create a distinct chain execution record type
+
+For `persist_intermediates=True` this is simpler: each stage gets its own
+execution record and edges, just like separate steps today. The question is
+specifically about collapsed mode and how the execution record schema
+accommodates a chain identity.
