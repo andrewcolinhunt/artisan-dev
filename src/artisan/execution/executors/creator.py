@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from artisan.execution.context.builder import build_creator_execution_context
+from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.context.sandbox import create_sandbox, output_snapshot
 from artisan.execution.inputs.instantiation import instantiate_inputs
 from artisan.execution.inputs.materialization import materialize_inputs
@@ -32,6 +33,7 @@ from artisan.execution.utils import finalize_artifacts, generate_execution_run_i
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -77,6 +79,7 @@ def run_creator_lifecycle(
     runtime_env: RuntimeEnvironment,
     worker_id: int = 0,
     execution_run_id: str | None = None,
+    sources: dict[str, ArtifactSource] | None = None,
 ) -> LifecycleResult:
     """Run one operation through setup → preprocess → execute → postprocess → lineage.
 
@@ -89,6 +92,9 @@ def run_creator_lifecycle(
         runtime_env: Paths and backend configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
         execution_run_id: Pre-generated run ID. Generated if None.
+        sources: Optional pre-resolved artifact sources keyed by role.
+            When provided, hydrate from sources instead of unit.inputs.
+            Used by the chain executor for in-memory artifact passing.
 
     Returns:
         LifecycleResult with artifacts, edges, and timings.
@@ -146,12 +152,23 @@ def run_creator_lifecycle(
         input_specs = getattr(operation_class, "inputs", {})
         default_hydrate = getattr(operation_class, "hydrate_inputs", True)
 
-        input_artifacts, associated = instantiate_inputs(
-            original_inputs,
-            artifact_store,
-            input_specs,
-            default_hydrate,
-        )
+        if sources is not None:
+            # Hydrate from pre-resolved sources (chain executor path)
+            input_artifacts: dict[str, list[Artifact]] = {}
+            for role, source in sources.items():
+                spec = input_specs.get(role, InputSpec())
+                input_artifacts[role] = source.hydrate(
+                    artifact_store, spec, default_hydrate
+                )
+            associated: dict[tuple[str, str], list[Artifact]] = {}
+        else:
+            # Standard path: instantiate from Delta-backed IDs
+            input_artifacts, associated = instantiate_inputs(
+                original_inputs,
+                artifact_store,
+                input_specs,
+                default_hydrate,
+            )
         input_artifacts = materialize_inputs(
             input_artifacts,
             input_specs,
