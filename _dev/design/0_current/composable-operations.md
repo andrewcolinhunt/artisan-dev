@@ -187,6 +187,19 @@ just as standalone operations do today. All stages run in the same worker
 process — no subprocess per stage. In-memory artifact passing is the whole
 point; subprocess boundaries would reintroduce serialization overhead.
 
+**`run_single_stage()` return type:**
+
+```python
+@dataclass
+class StageResult:
+    input_artifacts: dict[str, list[Artifact]]   # hydrated inputs (for lineage)
+    artifacts: dict[str, list[Artifact]]          # output artifacts keyed by role
+    edges: list[ArtifactProvenanceEdge]           # provenance edges for this stage
+    timings: dict[str, float]                     # phase → elapsed seconds
+```
+
+**Chain executor pseudocode:**
+
 ```python
 def run_creator_chain(
     chain: ChainUnit,
@@ -208,8 +221,8 @@ def run_creator_chain(
                 for role, ids in unit.inputs.items()
             }
         else:
-            mapping = chain.role_mappings[i - 1] or {}
-            streams = remap_streams(current_streams, mapping)
+            mapping = chain.role_mappings[i - 1]
+            streams = remap_streams(current_streams, unit.input_spec, mapping)
 
         result = run_single_stage(unit, streams, runtime_env, worker_id)
 
@@ -249,9 +262,9 @@ units carry empty inputs (filled at execution time from the previous stage's
 output).
 
 **Extracting `run_single_stage()`:** The inner body of `run_creator_flow()`
-(lines 82-260 of `execution/executors/creator.py`) becomes
-`run_single_stage()`, which accepts pre-resolved artifacts via
-`ArtifactStream` instead of always loading from Delta.
+in `execution/executors/creator.py` becomes `run_single_stage()`, which
+accepts pre-resolved artifacts via `ArtifactStream` instead of always
+loading from Delta.
 `run_creator_flow()` becomes a thin wrapper that creates a single-stage
 chain. This is a pure refactor with no behavior change.
 
@@ -273,6 +286,29 @@ role_mappings = [None, None]
 # Explicit: stage N output "processed_data" → stage N+1 input "data"
 role_mappings = [{"processed_data": "data"}, None]
 ```
+
+**`remap_streams()` semantics:**
+
+```python
+def remap_streams(
+    prev_outputs: dict[str, ArtifactStream],
+    next_input_spec: InputSpec,
+    mapping: dict[str, str] | None,
+) -> dict[str, ArtifactStream]:
+```
+
+When `mapping` is `None`, role names are matched by identity — each output
+role name that matches an input role name is forwarded directly. When
+`mapping` is provided, its entries take precedence: keys are previous-stage
+output role names, values are next-stage input role names. Unmapped output
+roles whose names match an input role are still forwarded (the mapping is
+additive, not exclusive).
+
+After remapping, the function validates that all *required* input roles
+(per `next_input_spec`) are satisfied. Missing required roles raise
+`ValueError` with a message naming the missing roles and available output
+roles. Extra output roles that don't map to any input role are silently
+dropped — they're simply not needed by the next stage.
 
 ---
 
@@ -342,7 +378,13 @@ and everything is committed, or it fails and nothing is.
   referencing the initial inputs
 - In-memory intermediate artifacts are discarded
 - Error message attributes the failure to the specific stage
+  (e.g. `"Chain stage 2/3 (Parser) failed: ..."`)
 - Per-stage timing is still captured for diagnostics
+
+**Logging:** Each stage logs with a `[chain stage N/M: OpName]` prefix so
+that chain execution is distinguishable from standalone execution in log
+output. Phase-level logs (setup, preprocess, execute, postprocess, lineage,
+record) nest under the stage prefix.
 
 ---
 
