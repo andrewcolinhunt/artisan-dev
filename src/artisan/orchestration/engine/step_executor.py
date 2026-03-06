@@ -840,6 +840,199 @@ def _execute_creator_step(
     )
 
 
+def execute_chain_step(
+    operations: list[tuple[type, dict[str, Any] | None, dict[str, Any] | None]],
+    role_mappings: list[dict[str, str] | None],
+    inputs: Any,
+    backend: BackendBase,
+    chain_resources: Any,  # ResourceConfig
+    chain_execution: Any,  # ExecutionConfig
+    intermediates: Any,  # ChainIntermediates
+    step_number: int = 0,
+    config: PipelineConfig | None = None,
+    failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
+    compact: bool = True,
+    final_operation: type | None = None,
+) -> StepResult:
+    """Execute a chain of creator operations as a single pipeline step.
+
+    Builds an ExecutionChain, dispatches it through the backend, and handles
+    commit and compaction — mirroring _execute_creator_step for single ops.
+
+    Args:
+        operations: List of (op_class, params, command) tuples.
+        role_mappings: Role remappings between adjacent operations.
+        inputs: Initial inputs (same formats as execute_step).
+        backend: Backend for worker dispatch.
+        chain_resources: Chain-level ResourceConfig.
+        chain_execution: Chain-level ExecutionConfig.
+        intermediates: ChainIntermediates enum value.
+        step_number: Pipeline step number.
+        config: Pipeline configuration.
+        failure_policy: Continue or fail-fast on errors.
+        compact: Whether to run Delta Lake compaction.
+        final_operation: Last operation class (for output metadata).
+
+    Returns:
+        StepResult with output references and execution metadata.
+    """
+    from artisan.execution.models.execution_chain import ExecutionChain
+    from artisan.execution.models.execution_unit import ExecutionUnit
+    from artisan.orchestration.engine.inputs import resolve_inputs
+    from artisan.utils.hashing import compute_execution_spec_id
+
+    timings: dict[str, Any] = {}
+    total_start = time.perf_counter()
+
+    # --- resolve_inputs phase ---
+    with phase_timer("resolve_inputs", timings):
+        resolved_inputs = resolve_inputs(inputs, config.delta_root)
+
+        if _all_inputs_empty(resolved_inputs):
+            logger.info(
+                "Step %d (chain): all input roles are empty — skipping.",
+                step_number,
+            )
+            final_op = final_operation or operations[-1][0]
+            return build_step_result(
+                operation=instantiate_operation(final_op, None),
+                step_number=step_number,
+                succeeded_count=0,
+                failed_count=0,
+                failure_policy=failure_policy,
+                metadata={"skipped": True, "skip_reason": "empty_inputs"},
+            )
+
+    # --- build_chain phase ---
+    with phase_timer("build_chain", timings):
+        units: list[ExecutionUnit] = []
+        for i, (op_class, params, command) in enumerate(operations):
+            operation = instantiate_operation(op_class, params, command=command)
+            merged_params = (
+                operation.params.model_dump(mode="json")
+                if hasattr(operation, "params")
+                else {}
+            )
+            spec_id = compute_execution_spec_id(
+                operation_name=operation.name,
+                inputs=resolved_inputs if i == 0 else {},
+                params=merged_params,
+            )
+            unit = ExecutionUnit(
+                operation=operation,
+                inputs=resolved_inputs if i == 0 else {},
+                execution_spec_id=spec_id,
+                step_number=step_number,
+            )
+            units.append(unit)
+
+        chain = ExecutionChain(
+            operations=units,
+            role_mappings=role_mappings,
+            resources=chain_resources,
+            execution=chain_execution,
+            intermediates=intermediates,
+        )
+
+    # --- execute phase ---
+    dispatch_error: str | None = None
+    dispatch_dir = config.staging_root / "_dispatch"
+    try:
+        with phase_timer("execute", timings):
+            final_op_instance = units[-1].operation
+            runtime_env = _create_runtime_environment(
+                config, final_op_instance, backend
+            )
+
+            succeeded = 0
+            failed = 0
+
+            try:
+                backend.validate_operation(final_op_instance)
+                units_path = _save_units([chain], config.staging_root, step_number)
+                step_flow = backend.create_flow(
+                    chain_resources,
+                    chain_execution,
+                    step_number,
+                    job_name=chain_execution.job_name or "chain",
+                )
+                results = step_flow(units_path=str(units_path), runtime_env=runtime_env)
+                succeeded, failed = aggregate_results(results, failure_policy)
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                dispatch_error = f"{type(exc).__name__}: {exc}"
+                logger.error(
+                    "Chain dispatch failed for step %d: %s",
+                    step_number,
+                    dispatch_error,
+                )
+                results = []
+                succeeded, failed = 0, 1
+
+        # --- verify_staging phase ---
+        with phase_timer("verify_staging", timings):
+            if backend.orchestrator_traits.needs_staging_verification:
+                execution_run_ids = extract_execution_run_ids(results)
+                try:
+                    await_staging_files(
+                        staging_root=config.staging_root,
+                        execution_run_ids=execution_run_ids,
+                        timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
+                        step_number=step_number,
+                        operation_name="chain",
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "Staging verification timed out for chain step %d.",
+                        step_number,
+                    )
+
+        # --- commit phase ---
+        commit_error = None
+        with phase_timer("commit", timings):
+            try:
+                from artisan.storage.io.commit import DeltaCommitter
+
+                committer = DeltaCommitter(config.delta_root, config.staging_root)
+                committer.commit_all_tables(
+                    cleanup_staging=not runtime_env.preserve_staging,
+                    step_number=step_number,
+                    operation_name="chain",
+                )
+            except Exception as exc:
+                commit_error = f"{type(exc).__name__}: {exc}"
+                logger.error(
+                    "Commit failed for chain step %d: %s", step_number, commit_error
+                )
+
+        # --- compact phase ---
+        with phase_timer("compact", timings):
+            if compact:
+                _compact_step_tables(config.delta_root, config.staging_root)
+    finally:
+        if dispatch_dir.exists():
+            shutil.rmtree(dispatch_dir, ignore_errors=True)
+
+    timings["total"] = round(time.perf_counter() - total_start, 4)
+
+    metadata: dict[str, Any] = {"timings": timings}
+    if commit_error:
+        metadata["commit_error"] = commit_error
+    if dispatch_error:
+        metadata["dispatch_error"] = dispatch_error
+
+    final_op_instance = units[-1].operation
+    return build_step_result(
+        operation=final_op_instance,
+        step_number=step_number,
+        succeeded_count=succeeded,
+        failed_count=failed,
+        failure_policy=failure_policy,
+        metadata=metadata,
+    )
+
+
 def _compact_step_tables(
     delta_root: Path,
     staging_root: Path,
