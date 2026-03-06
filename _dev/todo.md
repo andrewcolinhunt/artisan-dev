@@ -2,14 +2,20 @@
 
 ## TOP PRIORITIES
 
-- Analyze r1 results (pipelines)
-- Things on the head node that shouldn't be on the head node
+
 - How to chain together operations on a single worker
-- How do other frameworks handle command, container, etc storage and construction?
+
+- Analyze r1 results (pipelines)
 - Restart design pipeline
 
 ---
 ---
+
+## TO ORGANIZE
+
+- How do other frameworks handle command, container, etc storage and construction?
+- Get set up for cloud, evaluate abstractions, do a test of example ops with a docker container, S3 etc.
+
 
 # Artisan
 
