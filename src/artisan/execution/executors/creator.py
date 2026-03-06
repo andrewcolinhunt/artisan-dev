@@ -313,8 +313,12 @@ def run_creator_flow(
 
         # Build execution context for the record phase
         execution_context = _build_execution_context(
-            execution_run_id, unit, timestamp_start, worker_id,
-            runtime_env, operation,
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
         )
         params_dict = _get_params_dict(operation)
 
@@ -339,8 +343,12 @@ def run_creator_flow(
             error = str(exc)
             tool_output = None
         execution_context = _build_execution_context(
-            execution_run_id, unit, timestamp_start, worker_id,
-            runtime_env, operation,
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
         )
         params_dict = _get_params_dict(operation)
         staging_result = record_execution_failure(
@@ -356,8 +364,12 @@ def run_creator_flow(
     except Exception as exc:
         error = format_error(exc)
         execution_context = _try_build_execution_context(
-            execution_run_id, unit, timestamp_start, worker_id,
-            runtime_env, operation,
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
         )
         if execution_context is None:
             logger.error("Creator setup failed: %s", error)
@@ -430,8 +442,12 @@ def _try_build_execution_context(
     """Try to build an execution context, returning None on failure."""
     try:
         return _build_execution_context(
-            execution_run_id, unit, timestamp_start, worker_id,
-            runtime_env, operation,
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
         )
     except (ValueError, Exception):
         return None

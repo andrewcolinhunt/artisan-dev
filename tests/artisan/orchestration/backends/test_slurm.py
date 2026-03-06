@@ -73,9 +73,7 @@ class TestSlurmBackendCreateFlow:
         resources = ResourceConfig(partition="cpu")
         execution = ExecutionConfig(units_per_worker=1)
 
-        backend.create_flow(
-            resources, execution, step_number=5, job_name="custom_name"
-        )
+        backend.create_flow(resources, execution, step_number=5, job_name="custom_name")
 
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["slurm_job_name"] == "s5_custom_name"
