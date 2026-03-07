@@ -3,17 +3,28 @@
 ## TOP PRIORITIES
 
 
-- get set up so pipelines-dev is running off of both public versions of prefect-submitit and artisan
 - prefect server discovery that isn't tied to one specific git dir, where should it be?
 - add integration tests that cover chaining methods
 
+- ctrl c during subrpocess causes things to hang sometimes
+- bug in the metrics export, converts all metrics to float.
+
+
+- add implicit inputs behavior??
+
+- metrics passthrough is needed for structures? how should this work.
+
+- step name required throughout?
+
 - delete old tests in pipelines (artisan, prefect_submitit)
+
+- How do other frameworks handle command, container, etc storage and construction?
+
 
 
 - are curator operations invokable on slurm?
 
-- Analyze r1 results (pipelines)
-- Restart design pipeline
+
 
 ---
 ---
