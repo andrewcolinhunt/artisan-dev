@@ -11,7 +11,9 @@ Key exports: :class:`ArgStyle`, :func:`format_args`,
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import signal
 import subprocess
 import time
 from dataclasses import dataclass
@@ -301,6 +303,33 @@ def _build_local_from_spec(command: LocalCommandSpec, args: list[str]) -> list[s
 
 
 # =============================================================================
+# PROCESS CLEANUP
+# =============================================================================
+
+
+def _kill_process_group(process: subprocess.Popen, timeout: float = 3.0) -> None:
+    """Kill a subprocess and its entire process group.
+
+    Sends SIGTERM first for graceful shutdown, then escalates to SIGKILL
+    if the process doesn't exit within the timeout.
+
+    Args:
+        process: Subprocess to kill (must have been started with process_group=0).
+        timeout: Seconds to wait after SIGTERM before escalating to SIGKILL.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+        os.killpg(pgid, signal.SIGTERM)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(pgid, signal.SIGKILL)
+            process.wait()
+    except ProcessLookupError:
+        pass
+
+
+# =============================================================================
 # COMMAND EXECUTION
 # =============================================================================
 
@@ -353,15 +382,7 @@ def run_external_command(
         if stream_output:
             result = _run_with_streaming(cmd, cwd, timeout, log_path, env)
         else:
-            result = subprocess.run(
-                cmd.parts,
-                capture_output=True,
-                text=True,
-                cwd=cwd,
-                timeout=timeout,
-                check=False,
-                env=env,
-            )
+            result = _run_captured(cmd, cwd, timeout, env)
     except subprocess.TimeoutExpired as e:
         raise ExternalToolError(
             message=f"Command timed out after {timeout}s",
@@ -417,26 +438,30 @@ def _run_with_streaming(
             text=True,
             bufsize=1,
             env=env,
+            process_group=0,
         )
 
         stdout_lines: list[str] = []
         start_time = time.monotonic()
 
-        for line in process.stdout:
-            if timeout and (time.monotonic() - start_time) > timeout:
-                process.kill()
-                process.wait()
-                raise subprocess.TimeoutExpired(cmd.parts, timeout)
+        try:
+            for line in process.stdout:
+                if timeout and (time.monotonic() - start_time) > timeout:
+                    _kill_process_group(process)
+                    raise subprocess.TimeoutExpired(cmd.parts, timeout)
 
-            if log_file:
-                log_file.write(line)
-                log_file.flush()
+                if log_file:
+                    log_file.write(line)
+                    log_file.flush()
 
-            print(line.rstrip("\n"))  # noqa: T201
+                print(line.rstrip("\n"))  # noqa: T201
 
-            stdout_lines.append(line)
+                stdout_lines.append(line)
 
-        returncode = process.wait()
+            returncode = process.wait()
+        except BaseException:
+            _kill_process_group(process)
+            raise
 
         return subprocess.CompletedProcess(
             args=cmd.parts,
@@ -444,3 +469,42 @@ def _run_with_streaming(
             stdout="".join(stdout_lines),
             stderr="",
         )
+
+
+def _run_captured(
+    cmd: Command,
+    cwd: Path | None,
+    timeout: float | None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run command with captured output and process group cleanup.
+
+    Args:
+        cmd: Command to execute.
+        cwd: Working directory.
+        timeout: Timeout in seconds.
+        env: Environment variables.
+
+    Returns:
+        CompletedProcess with captured stdout and stderr.
+    """
+    process = subprocess.Popen(
+        cmd.parts,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        process_group=0,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException:
+        _kill_process_group(process)
+        raise
+    return subprocess.CompletedProcess(
+        args=cmd.parts,
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
