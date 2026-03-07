@@ -1,4 +1,7 @@
-1. lets make this decision. how do we add configured options for this?
-propose what this should look like
+Nice, I like 1-3
 
-once we do this, please fix the rest.
+our current command spec is highly deconstructed and strongly typed. is this typical? is this beneficial? overly rigid?
+
+Per-Step Command/Resource Overrides
+this seems wrong, look at pipeline manager. what can be overidden?
+

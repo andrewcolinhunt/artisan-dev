@@ -13,6 +13,7 @@
 - bug in the metrics export, converts all metrics to float
 - step name required throughout? weirdness with chaining and the step name. should require a step name there.
 
+.prefect-postgres should go in ~/.artisan?
 
 ---
 ---
