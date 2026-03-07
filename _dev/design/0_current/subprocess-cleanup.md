@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-03-06
-**Scope:** `artisan-fork` — `src/artisan/utils/external_tools.py`
+**Scope:** `src/artisan/utils/external_tools.py`
 
 ---
 
@@ -167,6 +167,7 @@ Replace `subprocess.run(...)` with `_run_captured(cmd, cwd, timeout, env)`.
 | `test_kill_process_group_already_dead` | `ProcessLookupError` swallowed |
 | `test_streaming_popen_uses_process_group` | `process_group=0` passed to Popen |
 | `test_streaming_interrupt_kills_group` | KeyboardInterrupt triggers cleanup |
+| `test_streaming_timeout_kills_group` | Timeout triggers `_kill_process_group` instead of `process.kill` |
 | `test_captured_interrupt_kills_group` | Same for non-streaming path |
 
 ---
@@ -188,5 +189,5 @@ ps aux | grep apptainer
 
 | File | Change |
 |------|--------|
-| `artisan-fork/src/artisan/utils/external_tools.py` | Add `_kill_process_group`, `_run_captured`; modify `_run_with_streaming` and `run_external_command` |
-| `artisan-fork/tests/artisan/utils/test_external_tools.py` | Add `TestProcessCleanup` (6 tests) |
+| `src/artisan/utils/external_tools.py` | Add `_kill_process_group`, `_run_captured`; modify `_run_with_streaming` and `run_external_command` |
+| `tests/artisan/utils/test_external_tools.py` | Add `TestProcessCleanup` (7 tests) |
