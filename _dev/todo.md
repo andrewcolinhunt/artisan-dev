@@ -5,33 +5,21 @@
 
 - prefect server discovery that isn't tied to one specific git dir, where should it be?
 - add integration tests that cover chaining methods
-
 - ctrl c during subrpocess causes things to hang sometimes
-- bug in the metrics export, converts all metrics to float.
+- bug in the metrics export, converts all metrics to float
 
-
-- add implicit inputs behavior??
-
-- metrics passthrough is needed for structures? how should this work.
-
-- step name required throughout?
-
-- delete old tests in pipelines (artisan, prefect_submitit)
+- step name required throughout? weirdness with chaining and the step name. should require a step name there.
 
 - How do other frameworks handle command, container, etc storage and construction?
-
-
-
-- are curator operations invokable on slurm?
-
-
 
 ---
 ---
 
 ## TO ORGANIZE
+- add implicit inputs behavior??
+- are curator operations invokable on slurm?
+- metrics passthrough is needed for structures? how should this work. for example, ligandize? what is the case where it matters?
 
-- How do other frameworks handle command, container, etc storage and construction?
 - Get set up for cloud, evaluate abstractions, do a test of example ops with a docker container, S3 etc.
 
 
@@ -60,13 +48,22 @@
 
 - Delta table partition names have unnecessary quotes (e.g. `'origin=1'`) — strip them
 
+### Visualization
+
+- Provenance stepper is broken — slider bar breaks things
+
+### Export
+
+- Bug in export for nested metrics and metric name collisions
+
 ### Logging
 
 - External tool (script) stdout/stderr leaks to console in streaming mode — non-streaming captures correctly, but streaming (e.g. AF3) still prints to console. Design doc exists.
 
 ## Features
 
-## Environment
+### Environment
+
 - Environment management strategy (for operation dependencies)
 - Faster pixi env startup in notebooks (design doc exists)
 
@@ -96,8 +93,10 @@
 - Primary vs secondary lineage key
 - Name-based grouping for lineage across different trajectories? New group_by mode?
 
-### Analysis & Timings
+### Visualization & Export
 
+- Expand export utilities (currently only `export_structures_with_metrics`)
+- Export: write files to sharded directories
 - Interactive filter plot: wrap histograms after three columns wide
 
 ## Refactoring
@@ -114,6 +113,7 @@
 - `load_provenance_map` -> make forward/reverse naming symmetric
 - `rename tool_output` to something like `execution_log` or `stdout_error`
 - Merged and passthrough naming is weird — output roles could be confusing
+- `display_provenance_stepper` -> `interactive_micro_graph` or similar
 
 ### Code Organization
 
@@ -121,121 +121,26 @@
 - Should each package have its own `ArtifactTypes` enum, or is the shared extensible registry sufficient?
 - Partition delta lake tables by step
 - Code quality pass
+- Remove hardcoded comment numbers (unmaintainable)
+- Reorganize test and demo files — demos that need input files should be self-contained in their demo dir
 
 ## Logging
 
 - Slurm logs should go to project root, not git repo root
 - Make step separation more visible in logs (e.g. spacing between steps)
 - Better log handling — external tool pollution, default logging too verbose
-
-## Open Questions
-
-- Metrics access with multiple operations — store operation name? Access via `metrics.op.metric_name`?
-- Step override/deletion: how to handle re-running or replacing previous steps cleanly
-
-## Documentation
-
-- Comprehensive artisan docs update — double check everything is up to date
-- Update tutorials — split them more cleanly, make sure they work ok
-
----
----
-
-# Pipelines
-
-## Bugs
-
-### Visualization
-
-- Viewer: Toggle Controls Panel and Toggle Selection Mode broken
-- Viewer: lazy loading still slow for 1k structures — likely metric loading/sorting at scale
-- Viewer: coloring edge cases with ligands/heavy atoms (polymer entity filtering done for mmCIF, may still have edge cases). Coloring should ONLY apply to cartoon. Sticks should be viewer defaults.
-- Provenance stepper is broken — slider bar breaks things
-
-### Export
-
-- Bug in pipelines export for nested metrics and metric name collisions
-
-## Features
-
-### Operations
-
-- Structure viewer approve/reject ("tinder") mode: key bindings + buttons to classify designs, save selections and return
-- Add Rosetta Relax operation
-
-### Visualization & Export
-
-- Expand export utilities (currently only `export_structures_with_metrics`)
-- Export: write files to sharded directories
-- Structure viewer: tune lazy load prefetch buffer (e.g. 10 on each side)
-
-## Refactoring
-
-### API Consistency
-
-- Unify API patterns across InteractiveFilter and StructureViewer (currently inconsistent)
-
-### Naming
-
-- `display_provenance_stepper` -> `interactive_micro_graph` or similar
-
-### Code Organization
-
-- Remove hardcoded comment numbers (unmaintainable)
-- Reorganize test and demo files — demos that need input files should be self-contained in their demo dir
-
-## Logging
-
 - Better logging setup — should PipelineManager configure it?
 - AtomWorks log pollution
 
 ## Open Questions
 
+- Metrics access with multiple operations — store operation name? Access via `metrics.op.metric_name`?
+- Step override/deletion: how to handle re-running or replacing previous steps cleanly
 - AF3 config: preprocess vs config generator — where's the boundary?
 
 ## Documentation
 
-- Comprehensive pipelines docs update — double check everything is up to date
-- Tutorials: review and verify all domain notebooks
-- Docs: compute-backends, external-tool-integration
-- Motif scaffolding demo with public enzyme (not internal)
+- Comprehensive artisan docs update — double check everything is up to date
+- Update tutorials — split them more cleanly, make sure they work ok
 - Create a script that precomputes all delta tables for tutorials — tutorials should output to their own runs dir, not create a shared precomputed dir
 - Fix the docs site header (too big) — smaller icons, relocate search bar
-
----
----
-
-# Prefect-Submitit
-
-## Bugs
-
-- Prefect logging weird since switching to process pool task runner — not being suppressed, seeing task outputs
-
-## Features
-
-- Thundering herd update for many concurrent slurm jobs
-- Propagation of keyboard interrupt to Slurm jobs
-- Improve Slurm polling efficiency
-
-## Refactoring
-
-- Is the prefect server configured globally for the machine or locally for the directory? Maybe should be global?
-- Incorporate pixi into prefect server start message
-
-## Logging
-
-- Prefect server link should be accessible from SSH
-- Resolve Prefect dir so UI link points through the correct SSH port
-- Prefect logs and postgres logs should be more accessible — put all logs in runs
-
-## Open Questions
-
-- What happened to the slurm submission logging?
-
-## Documentation
-
-- Docs: deploying-with-prefect
-
----
----
-
