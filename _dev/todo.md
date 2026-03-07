@@ -2,7 +2,6 @@
 
 ## TOP PRIORITIES
 
-- ctrl c during subrpocess causes things to hang sometimes
 - How do other frameworks handle command, container, etc storage and construction?
 - fix the logging to be better. put it inside pipeline manager? different levels of verbosity. processpoolexecutor.
 - prefect-submitit sometimes hangs on slurm job cancellation
