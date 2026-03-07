@@ -2,15 +2,16 @@
 
 ## TOP PRIORITIES
 
-
-- prefect server discovery that isn't tied to one specific git dir, where should it be?
-- add integration tests that cover chaining methods
 - ctrl c during subrpocess causes things to hang sometimes
-- bug in the metrics export, converts all metrics to float
-
-- step name required throughout? weirdness with chaining and the step name. should require a step name there.
-
 - How do other frameworks handle command, container, etc storage and construction?
+
+- fix the logging to be better. put it inside pipeline manager? different levels of verbosity. processpoolexecutor.
+
+
+- add integration tests that cover chaining methods
+- bug in the metrics export, converts all metrics to float
+- step name required throughout? weirdness with chaining and the step name. should require a step name there.
+- prefect-submitit sometimes hangs on slurm job cancellation
 
 ---
 ---
@@ -65,7 +66,6 @@
 ### Environment
 
 - Environment management strategy (for operation dependencies)
-- Faster pixi env startup in notebooks (design doc exists)
 
 ### Operations & Filtering
 
