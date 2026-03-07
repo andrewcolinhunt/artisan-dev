@@ -1426,6 +1426,10 @@ class TestFilterStepLogging:
 
         import logging
 
+        # Ensure caplog can capture via propagation
+        artisan_logger = logging.getLogger("artisan")
+        artisan_logger.propagate = True
+
         with caplog.at_level(logging.INFO):
             result = _execute_curator_step(
                 operation=MockFilterOp(),
@@ -1490,6 +1494,10 @@ class TestFilterStepLogging:
         )
 
         import logging
+
+        # Ensure caplog can capture via propagation
+        artisan_logger = logging.getLogger("artisan")
+        artisan_logger.propagate = True
 
         with caplog.at_level(logging.INFO):
             result = _execute_curator_step(

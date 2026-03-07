@@ -11,6 +11,7 @@ Key exports: :class:`ArgStyle`, :func:`format_args`,
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import signal
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+_tool_logger = logging.getLogger("artisan.tools")
 
 if TYPE_CHECKING:
     from artisan.schemas.operation_config.command_spec import (
@@ -454,7 +457,7 @@ def _run_with_streaming(
                     log_file.write(line)
                     log_file.flush()
 
-                print(line.rstrip("\n"))  # noqa: T201
+                _tool_logger.debug("%s", line.rstrip("\n"))
 
                 stdout_lines.append(line)
 

@@ -230,7 +230,7 @@ def _promote_file_paths_to_store(
     artifact_ids = [a.artifact_id for a in file_ref_artifacts]
     resolved_inputs = {"file": sorted(artifact_ids)}
 
-    logger.info(
+    logger.debug(
         "Step %d (%s): promoted %d file paths to Delta Lake",
         step_number,
         operation_name,
@@ -368,14 +368,26 @@ class PipelineManager:
         result = pipeline.finalize()
     """
 
-    def __init__(self, config: PipelineConfig):
+    def __init__(
+        self,
+        config: PipelineConfig,
+        configure_logging: bool = True,
+    ):
         """Initialize from a PipelineConfig.
 
         Prefer ``PipelineManager.create()`` over direct instantiation.
 
         Args:
             config: Full pipeline configuration.
+            configure_logging: If True (default), call
+                :func:`~artisan.utils.logging.configure_logging` so
+                users don't need to set up logging manually.
         """
+        if configure_logging:
+            from artisan.utils.logging import configure_logging as _configure
+
+            _configure(logs_root=config.delta_root.parent / "logs")
+
         self._config = config
 
         if config.recover_staging:

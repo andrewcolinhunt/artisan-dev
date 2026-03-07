@@ -7,7 +7,10 @@ via regex highlighting while keeping output clean (no Rich chrome).
 from __future__ import annotations
 
 import logging
+import logging.handlers
+import os
 import sys
+from pathlib import Path
 from typing import ClassVar
 
 from rich.console import Console
@@ -85,6 +88,7 @@ def configure_logging(
     level: str = "INFO",
     suppress_noise: bool = True,
     loggers: tuple[str, ...] = ("artisan",),
+    logs_root: Path | None = None,
 ) -> None:
     """Configure logging for artisan execution.
 
@@ -95,11 +99,12 @@ def configure_logging(
     Args:
         level: Log level for the configured loggers. Defaults to ``"INFO"``.
         suppress_noise: If True, suppress noisy third-party loggers
-            (Prefect lifecycle, HTTP client chatter).
-            Suppressed logs are NOT lost — Prefect's API handler still
-            persists all flow/task logs to the Prefect server database,
-            queryable via UI, CLI, or Python client.
+            (Prefect lifecycle, HTTP client chatter) and set the
+            ``PREFECT_LOGGING_LEVEL`` env var to ``"CRITICAL"`` so
+            child processes (workers) inherit the suppression.
         loggers: Root logger names to configure. Defaults to ``("artisan",)``.
+        logs_root: When provided with ``level="DEBUG"``, a rotating file
+            handler is added that writes to ``logs_root / "pipeline.log"``.
     """
     for logger_name in loggers:
         logger = logging.getLogger(logger_name)
@@ -110,8 +115,30 @@ def configure_logging(
             handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
             logger.addHandler(handler)
 
+        # Add file handler when DEBUG + logs_root (idempotent check)
+        if (
+            logs_root is not None
+            and level.upper() == "DEBUG"
+            and not any(
+                isinstance(h, logging.handlers.RotatingFileHandler)
+                for h in logger.handlers
+            )
+        ):
+            logs_root.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.handlers.RotatingFileHandler(
+                logs_root / "pipeline.log",
+                maxBytes=50 * 1024 * 1024,
+                backupCount=3,
+            )
+            file_handler.setFormatter(
+                logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT)
+            )
+            file_handler.setLevel(logging.DEBUG)
+            logger.addHandler(file_handler)
+
         logger.propagate = False
 
     if suppress_noise:
+        os.environ.setdefault("PREFECT_LOGGING_LEVEL", "CRITICAL")
         for name in _NOISY_LOGGERS:
             logging.getLogger(name).setLevel(logging.CRITICAL)

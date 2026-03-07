@@ -187,7 +187,7 @@ def _create_runtime_environment(
         delta_root_path=config.delta_root,
         staging_root_path=config.staging_root,
         working_root_path=None if is_curator else config.working_root,
-        failure_logs_root=config.delta_root.parent / "failure_logs",
+        failure_logs_root=config.delta_root.parent / "logs" / "failures",
         preserve_staging=config.preserve_staging,
         preserve_working=config.preserve_working,
         worker_id_env_var=backend.worker_traits.worker_id_env_var if backend else None,
@@ -309,7 +309,7 @@ def _execute_curator_step(
         resolved_inputs = resolve_inputs(inputs, config.delta_root)
         total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
         if total_artifacts > 0:
-            logger.info(
+            logger.debug(
                 "Step %d (%s): resolved %d input artifacts",
                 step_number,
                 operation.name,
@@ -318,7 +318,7 @@ def _execute_curator_step(
 
         # Skip downstream execution when upstream produced no artifacts
         if _all_inputs_empty(resolved_inputs):
-            logger.info(
+            logger.debug(
                 "Step %d (%s): all input roles are empty — skipping execution.",
                 step_number,
                 operation.name,
@@ -606,7 +606,7 @@ def _execute_creator_step(
 
         # Skip downstream execution when upstream produced no artifacts
         if _all_inputs_empty(resolved_inputs):
-            logger.info(
+            logger.debug(
                 "Step %d (%s): all input roles are empty — skipping execution.",
                 step_number,
                 operation.name,
@@ -621,7 +621,7 @@ def _execute_creator_step(
             )
 
         total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
-        logger.info(
+        logger.debug(
             "Step %d (%s): resolved %d input artifacts",
             step_number,
             operation.name,
@@ -697,7 +697,7 @@ def _execute_creator_step(
             units_to_dispatch.append(unit)
 
     total_units = len(units_to_dispatch) + cached_units
-    logger.info(
+    logger.debug(
         "Step %d (%s): %d artifacts -> %d execution units",
         step_number,
         operation.name,
@@ -705,7 +705,7 @@ def _execute_creator_step(
         total_units,
     )
     if cached_units > 0:
-        logger.info(
+        logger.debug(
             "Step %d (%s): %d units cached, %d to dispatch",
             step_number,
             operation.name,
@@ -889,7 +889,7 @@ def execute_chain_step(
         resolved_inputs = resolve_inputs(inputs, config.delta_root)
 
         if _all_inputs_empty(resolved_inputs):
-            logger.info(
+            logger.debug(
                 "Step %d (chain): all input roles are empty — skipping.",
                 step_number,
             )
