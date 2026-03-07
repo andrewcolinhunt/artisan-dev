@@ -23,11 +23,14 @@ from artisan.orchestration.pipeline_manager import (
     _validate_command,
     _validate_execution,
     _validate_input_roles,
+    _validate_input_types,
     _validate_params,
+    _validate_required_inputs,
     _validate_resources,
 )
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.operation_config.command_spec import ApptainerCommandSpec
+from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -149,6 +152,60 @@ class MockRuntimeInputsOp(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.merged: OutputSpec(
+            artifact_type=ArtifactTypes.DATA, is_memory_output=True
+        ),
+    }
+
+    def execute_curator(self, execute_input: Any) -> Any:
+        from artisan.schemas.execution.curator_result import ArtifactResult
+
+        return ArtifactResult(success=True)
+
+
+class MockOpWithOptionalInput(OperationDefinition):
+    """Operation with both required and optional inputs."""
+
+    class InputRole(StrEnum):
+        dataset = auto()
+        reference = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "mock_with_optional"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.dataset: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        InputRole.reference: InputSpec(
+            artifact_type=ArtifactTypes.DATA, required=False
+        ),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.DATA, is_memory_output=True
+        ),
+    }
+
+    def execute_curator(self, execute_input: Any) -> Any:
+        from artisan.schemas.execution.curator_result import ArtifactResult
+
+        return ArtifactResult(success=True)
+
+
+class MockOpWithAnyInput(OperationDefinition):
+    """Operation that accepts ANY artifact type."""
+
+    class InputRole(StrEnum):
+        data = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "mock_any_input"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.ANY, required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.DATA, is_memory_output=True
         ),
     }
@@ -305,3 +362,94 @@ class TestNoOverrides:
         assert instance.params.count == 1
         assert instance.resources.partition == "cpu"
         assert instance.execution.artifacts_per_unit == 1
+
+
+# =============================================================================
+# Tests for _validate_required_inputs
+# =============================================================================
+
+
+class TestValidateRequiredInputs:
+    """Tests for required input validation."""
+
+    def test_missing_required_role_raises(self):
+        """Missing a required role should raise ValueError."""
+        with pytest.raises(ValueError, match="Missing required input.*data"):
+            _validate_required_inputs(MockCuratorOp, {})
+
+    def test_all_required_provided(self):
+        """All required roles provided should not raise."""
+        ref = MagicMock()
+        _validate_required_inputs(MockCuratorOp, {"data": ref})
+
+    def test_optional_missing_no_error(self):
+        """Missing optional role should not raise."""
+        ref = MagicMock()
+        _validate_required_inputs(MockOpWithOptionalInput, {"dataset": ref})
+
+    def test_runtime_defined_inputs_skips(self):
+        """runtime_defined_inputs=True should skip validation."""
+        _validate_required_inputs(MockRuntimeInputsOp, {})
+
+    def test_generative_op_no_error(self):
+        """Generative op (empty inputs ClassVar) should not raise."""
+        _validate_required_inputs(MockOpWithParams, None)
+
+    def test_non_dict_inputs_skips(self):
+        """Non-dict inputs (list, None) should skip validation."""
+        _validate_required_inputs(MockCuratorOp, None)
+        _validate_required_inputs(MockCuratorOp, [MagicMock()])
+
+
+# =============================================================================
+# Tests for _validate_input_types
+# =============================================================================
+
+
+class TestValidateInputTypes:
+    """Tests for input type validation."""
+
+    def test_type_mismatch_raises(self):
+        """Wiring metric output into data input should raise ValueError."""
+        ref = OutputReference(
+            source_step=0, role="metrics", artifact_type=ArtifactTypes.METRIC
+        )
+        with pytest.raises(ValueError, match="Type mismatch.*data"):
+            _validate_input_types(MockCuratorOp, {"data": ref})
+
+    def test_type_match_no_error(self):
+        """Matching types should not raise."""
+        ref = OutputReference(
+            source_step=0, role="output", artifact_type=ArtifactTypes.DATA
+        )
+        _validate_input_types(MockCuratorOp, {"data": ref})
+
+    def test_any_downstream_spec_no_error(self):
+        """ANY downstream spec should accept any upstream type."""
+        ref = OutputReference(
+            source_step=0, role="output", artifact_type=ArtifactTypes.DATA
+        )
+        _validate_input_types(MockOpWithAnyInput, {"data": ref})
+
+    def test_any_upstream_ref_skips(self):
+        """ANY upstream ref should skip type check."""
+        ref = OutputReference(
+            source_step=0, role="output", artifact_type=ArtifactTypes.ANY
+        )
+        _validate_input_types(MockCuratorOp, {"data": ref})
+
+    def test_non_output_reference_skips(self):
+        """Non-OutputReference values (raw lists) should skip type check."""
+        _validate_input_types(MockCuratorOp, {"data": ["artifact-id-1"]})
+
+    def test_non_dict_inputs_skips(self):
+        """Non-dict inputs should skip type check."""
+        _validate_input_types(MockCuratorOp, None)
+        _validate_input_types(MockCuratorOp, [MagicMock()])
+
+    def test_runtime_defined_role_skips(self):
+        """Role not in operation.inputs (runtime-defined) should skip."""
+        ref = OutputReference(
+            source_step=0, role="output", artifact_type=ArtifactTypes.METRIC
+        )
+        _validate_input_types(MockRuntimeInputsOp, {"custom_role": ref})

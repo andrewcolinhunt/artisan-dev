@@ -28,6 +28,7 @@ from artisan.orchestration.engine.step_executor import (
 )
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.step_future import StepFuture
+from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -335,6 +336,57 @@ def _validate_input_roles(
             f"Valid roles: {sorted(valid_roles)}"
         )
         raise ValueError(msg)
+
+
+def _validate_required_inputs(
+    operation: type[OperationDefinition],
+    inputs: Any,
+) -> None:
+    """Raise ValueError if any required input roles are missing."""
+    if operation.runtime_defined_inputs:
+        return
+    if not operation.inputs:
+        return
+    if not isinstance(inputs, dict):
+        return
+
+    provided_roles = set(inputs.keys())
+
+    missing = [
+        role
+        for role, spec in operation.inputs.items()
+        if spec.required and role not in provided_roles
+    ]
+    if missing:
+        msg = (
+            f"Missing required input(s) for {operation.name}: {sorted(missing)}. "
+            f"Declared inputs: {sorted(operation.inputs.keys())}"
+        )
+        raise ValueError(msg)
+
+
+def _validate_input_types(
+    operation: type[OperationDefinition],
+    inputs: Any,
+) -> None:
+    """Raise ValueError if upstream output types don't match input specs."""
+    if not isinstance(inputs, dict):
+        return
+    for role, ref in inputs.items():
+        if not isinstance(ref, OutputReference):
+            continue
+        input_spec = operation.inputs.get(role)
+        if input_spec is None:
+            continue
+        if ref.artifact_type == ArtifactTypes.ANY:
+            continue
+        if not input_spec.accepts_type(ref.artifact_type):
+            msg = (
+                f"Type mismatch on input '{role}' for {operation.name}: "
+                f"upstream step {ref.source_step} produces '{ref.artifact_type}', "
+                f"but '{role}' expects '{input_spec.artifact_type}'"
+            )
+            raise ValueError(msg)
 
 
 # =============================================================================
@@ -780,6 +832,8 @@ class PipelineManager:
         if command:
             _validate_command(operation, command)
         _validate_input_roles(operation, inputs)
+        _validate_required_inputs(operation, inputs)
+        _validate_input_types(operation, inputs)
 
         step_name = name or operation.name
 
