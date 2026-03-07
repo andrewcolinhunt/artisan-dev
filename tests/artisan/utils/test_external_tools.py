@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import signal
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,6 +18,7 @@ from artisan.schemas.operation_config.command_spec import (
 from artisan.utils.external_tools import (
     ArgStyle,
     ExternalToolError,
+    _kill_process_group,
     build_command_from_spec,
     format_args,
     run_external_command,
@@ -210,14 +212,13 @@ class TestBuildCommandFromSpec:
 class TestRunExternalCommand:
     """Tests for run_external_command with CommandSpec types."""
 
-    @patch("artisan.utils.external_tools.subprocess.run")
-    def test_success(self, mock_run):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["test"],
-            returncode=0,
-            stdout="output",
-            stderr="",
-        )
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_success(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("output", "")
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
         spec = LocalCommandSpec(
             script=Path("./run.py"),
             arg_style=ArgStyle.ARGPARSE,
@@ -227,14 +228,13 @@ class TestRunExternalCommand:
         assert result.returncode == 0
         assert result.stdout == "output"
 
-    @patch("artisan.utils.external_tools.subprocess.run")
-    def test_failure_raises_error(self, mock_run):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=["test"],
-            returncode=1,
-            stdout="",
-            stderr="error",
-        )
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_failure_raises_error(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("", "error")
+        mock_proc.returncode = 1
+        mock_popen.return_value = mock_proc
+
         spec = LocalCommandSpec(
             script=Path("./run.py"),
             arg_style=ArgStyle.ARGPARSE,
@@ -244,9 +244,15 @@ class TestRunExternalCommand:
             run_external_command(spec, [])
         assert exc_info.value.return_code == 1
 
-    @patch("artisan.utils.external_tools.subprocess.run")
-    def test_timeout_raises_error(self, mock_run):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd=["test"], timeout=5)
+    @patch("artisan.utils.external_tools._kill_process_group")
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_timeout_raises_error(self, mock_popen, mock_kill):
+        mock_proc = MagicMock()
+        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd=["test"], timeout=5
+        )
+        mock_popen.return_value = mock_proc
+
         spec = LocalCommandSpec(
             script=Path("./run.py"),
             arg_style=ArgStyle.ARGPARSE,
@@ -255,6 +261,7 @@ class TestRunExternalCommand:
         with pytest.raises(ExternalToolError) as exc_info:
             run_external_command(spec, [], timeout=5)
         assert exc_info.value.return_code == -1
+        mock_kill.assert_called_once_with(mock_proc)
 
 
 class TestExternalToolError:
@@ -344,3 +351,124 @@ class TestExternalToolError:
         assert "line 80" in result
         assert "line 99" in result
         assert "line 0\n" not in result
+
+
+class TestProcessCleanup:
+    """Tests for subprocess process group cleanup."""
+
+    def test_kill_process_group_sigterm_sufficient(self):
+        """Process exits after SIGTERM — no SIGKILL needed."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.wait.return_value = 0
+
+        with patch("artisan.utils.external_tools.os.getpgid", return_value=12345):
+            with patch("artisan.utils.external_tools.os.killpg") as mock_killpg:
+                _kill_process_group(mock_proc)
+
+        mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
+
+    def test_kill_process_group_escalates_to_sigkill(self):
+        """SIGKILL sent when process doesn't exit after SIGTERM."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd=[], timeout=3),
+            0,
+        ]
+
+        with patch("artisan.utils.external_tools.os.getpgid", return_value=12345):
+            with patch("artisan.utils.external_tools.os.killpg") as mock_killpg:
+                _kill_process_group(mock_proc)
+
+        assert mock_killpg.call_count == 2
+        mock_killpg.assert_any_call(12345, signal.SIGTERM)
+        mock_killpg.assert_any_call(12345, signal.SIGKILL)
+
+    def test_kill_process_group_already_dead(self):
+        """ProcessLookupError is swallowed when process already exited."""
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+
+        with patch(
+            "artisan.utils.external_tools.os.getpgid",
+            side_effect=ProcessLookupError,
+        ):
+            _kill_process_group(mock_proc)  # should not raise
+
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_streaming_popen_uses_process_group(self, mock_popen):
+        """Popen is called with process_group=0 in streaming mode."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([])
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        spec = LocalCommandSpec(
+            script=Path("./run.py"),
+            arg_style=ArgStyle.ARGPARSE,
+            interpreter="python",
+        )
+        run_external_command(spec, [], stream_output=True)
+
+        _, kwargs = mock_popen.call_args
+        assert kwargs["process_group"] == 0
+
+    @patch("artisan.utils.external_tools._kill_process_group")
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_streaming_interrupt_kills_group(self, mock_popen, mock_kill):
+        """KeyboardInterrupt during streaming triggers process group cleanup."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = MagicMock()
+        mock_proc.stdout.__iter__ = MagicMock(side_effect=KeyboardInterrupt)
+        mock_popen.return_value = mock_proc
+
+        spec = LocalCommandSpec(
+            script=Path("./run.py"),
+            arg_style=ArgStyle.ARGPARSE,
+            interpreter="python",
+        )
+        with pytest.raises(KeyboardInterrupt):
+            run_external_command(spec, [], stream_output=True)
+
+        mock_kill.assert_called_with(mock_proc)
+
+    @patch("artisan.utils.external_tools._kill_process_group")
+    @patch("artisan.utils.external_tools.time.monotonic")
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_streaming_timeout_kills_group(self, mock_popen, mock_monotonic, mock_kill):
+        """Timeout during streaming triggers _kill_process_group."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(["line\n"])
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+        # First call is start_time (0), second call during loop (100) exceeds timeout
+        mock_monotonic.side_effect = [0.0, 100.0]
+
+        spec = LocalCommandSpec(
+            script=Path("./run.py"),
+            arg_style=ArgStyle.ARGPARSE,
+            interpreter="python",
+        )
+        with pytest.raises(ExternalToolError):
+            run_external_command(spec, [], stream_output=True, timeout=5)
+
+        mock_kill.assert_called()
+
+    @patch("artisan.utils.external_tools._kill_process_group")
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_captured_interrupt_kills_group(self, mock_popen, mock_kill):
+        """KeyboardInterrupt during captured run triggers process group cleanup."""
+        mock_proc = MagicMock()
+        mock_proc.communicate.side_effect = KeyboardInterrupt
+        mock_popen.return_value = mock_proc
+
+        spec = LocalCommandSpec(
+            script=Path("./run.py"),
+            arg_style=ArgStyle.ARGPARSE,
+            interpreter="python",
+        )
+        with pytest.raises(KeyboardInterrupt):
+            run_external_command(spec, [])
+
+        mock_kill.assert_called_once_with(mock_proc)
