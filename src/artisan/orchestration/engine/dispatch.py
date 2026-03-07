@@ -129,6 +129,8 @@ def _collect_results(futures: list) -> list[dict]:
                 }
             )
 
+    logger.info("Collected results from %d futures", len(results))
+
     # Best-effort SLURM log capture
     for future, result in zip(futures, results, strict=False):
         _capture_slurm_logs(future, result)
@@ -160,6 +162,11 @@ def _capture_slurm_logs(future: object, result: dict) -> None:
             parts.append(f"--- stderr ---\n{stderr[-100_000:]}")
         if parts:
             result["worker_log"] = "\n".join(parts)
+            logger.debug(
+                "SLURM job log: stdout=%d bytes, stderr=%d bytes",
+                len(stdout or ""),
+                len(stderr or ""),
+            )
         if hasattr(log_future, "slurm_job_id"):
             result["slurm_job_id"] = log_future.slurm_job_id
     except Exception:
