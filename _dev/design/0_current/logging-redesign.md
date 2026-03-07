@@ -57,12 +57,12 @@ def configure_logging(level="INFO", suppress_noise=True, loggers=("artisan",)):
 
 ### Logger usage (src/artisan/)
 
-| Level | Count | What |
-|-------|-------|------|
-| INFO | 34 | Step lifecycle, cache hits, input resolution, commits |
-| DEBUG | 8 | Timings, NFS verification, failure log diagnostics |
-| WARNING | 12 | Missing inputs, timeouts, filter diagnostics |
-| ERROR | 13 | Dispatch/commit/setup failures |
+| Level | ~Count | What |
+|-------|--------|------|
+| INFO | ~32 | Step lifecycle, cache hits, input resolution, commits |
+| DEBUG | ~9 | Timings, NFS verification, failure log diagnostics |
+| WARNING | ~15 | Missing inputs, timeouts, filter diagnostics |
+| ERROR | ~16 | Dispatch/commit/setup failures |
 
 ### External tool output
 
@@ -216,13 +216,28 @@ configure_logging(loggers=("artisan",))              # default: no tool output
 configure_logging(loggers=("artisan", "artisan.tools"))  # opt-in to tool output
 ```
 
-Since `artisan.tools` is a child of `artisan`, it inherits the handler when
-`propagate=True` (its default). But `configure_logging()` only sets the level
-on loggers in the `loggers` tuple, so `artisan.tools` stays at WARNING unless
-explicitly included. This gives fine-grained control without a new parameter.
+Since `artisan.tools` is a child of `artisan`, it inherits the handler via
+`propagate=True` (its default). Its level starts at `NOTSET`, which means it
+defers to its parent's effective level. When `artisan` is set to INFO,
+`artisan.tools` DEBUG calls are filtered out by the parent. When `artisan` is
+set to DEBUG, `artisan.tools` DEBUG calls pass through — tool output appears
+automatically at DEBUG without explicitly including `artisan.tools` in the
+loggers tuple.
 
-**Alternative:** Add a `tool_output_level` parameter to `configure_logging()`.
-Simpler API but less flexible.
+For users who want tool output at INFO (without all other DEBUG messages),
+explicitly including `artisan.tools` in the loggers tuple sets its level to
+INFO, overriding the NOTSET inheritance:
+
+```python
+configure_logging(level="INFO", loggers=("artisan", "artisan.tools"))
+```
+
+**`stream_output` parameter:** `stream_output=True` still controls whether
+output is streamed line-by-line (vs. captured and returned). The change is
+the output channel: `print()` → `_tool_logger.debug()`. At DEBUG level, users
+see tool output inline as before. At INFO, streaming still happens (for the
+`log_path` file and `tool_output` capture) but console output is suppressed
+by the logger level.
 
 **Tool file logging is unchanged** — `_run_with_streaming()`'s `log_path`
 parameter still writes raw tool output to disk regardless of console level.
@@ -239,7 +254,7 @@ The `executions` table already captures logs per execution record:
 | Column | Content | Granularity | Truncation |
 |--------|---------|-------------|------------|
 | `tool_output` | External command stdout+stderr | Per execution unit | 500K chars |
-| `worker_log` | SLURM job stdout+stderr | Per SLURM job, duplicated onto each execution unit in that batch | 100K chars |
+| `worker_log` | SLURM job stdout+stderr | Per SLURM job, duplicated onto each execution unit in that batch | 100K chars per stream (stdout/stderr truncated independently) |
 | `error` | Python traceback on failure | Per execution unit | None |
 
 This is unchanged. Logs belong with the execution record — that's where users
