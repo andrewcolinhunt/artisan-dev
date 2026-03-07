@@ -191,7 +191,8 @@ Step 2 (MyOp): SLURM job 12345 stdout: 2.3KB, stderr: 0B
 ```
 
 Implementation: log job IDs in `_collect_results()` after futures resolve, and
-in `_capture_slurm_logs()` when extracting logs.
+in `_capture_slurm_logs()` when extracting logs. Both methods live in
+`orchestration/engine/dispatch.py`.
 
 ### External tool output: route through logger
 
@@ -223,8 +224,87 @@ explicitly included. This gives fine-grained control without a new parameter.
 **Alternative:** Add a `tool_output_level` parameter to `configure_logging()`.
 Simpler API but less flexible.
 
-**File logging is unchanged** — `log_path` still captures everything to disk
-regardless of console level.
+**Tool file logging is unchanged** — `_run_with_streaming()`'s `log_path`
+parameter still writes raw tool output to disk regardless of console level.
+
+### Log storage strategy
+
+Logs are stored in two tiers: Delta Lake (always) and files on disk
+(selectively).
+
+#### Delta Lake: primary log store
+
+The `executions` table already captures logs per execution record:
+
+| Column | Content | Granularity | Truncation |
+|--------|---------|-------------|------------|
+| `tool_output` | External command stdout+stderr | Per execution unit | 500K chars |
+| `worker_log` | SLURM job stdout+stderr | Per SLURM job, duplicated onto each execution unit in that batch | 100K chars |
+| `error` | Python traceback on failure | Per execution unit | None |
+
+This is unchanged. Logs belong with the execution record — that's where users
+access them. There is no worker-level or step-level table, so `worker_log`
+duplication across execution units in a batch is the cost of keeping everything
+queryable from one place.
+
+#### Disk: `logs/` directory
+
+File-based logs live under `{delta_root.parent}/logs/`. This path is derived,
+not user-configurable.
+
+```
+{pipeline_root}/
+├── delta/
+├── staging/
+└── logs/
+    ├── failures/                             ← moved from failure_logs/
+    │   └── step_2_MyOp/
+    │       └── {run_id}.log
+    └── pipeline.log                          ← only when level="DEBUG"
+```
+
+**What gets written to disk:**
+
+- **`logs/failures/`** — Human-readable failure logs, one per failed execution.
+  Written unconditionally (current behavior, moved from `failure_logs/`).
+- **`logs/pipeline.log`** — Full console logger output at DEBUG level. Only
+  created when `configure_logging(level="DEBUG")` is called. Adds a file
+  handler to the `artisan` logger that captures all levels to disk.
+- **No `logs/slurm/` or `logs/tools/`** — SLURM worker logs and tool output
+  are already persisted in the Delta Lake `executions` table. Writing them to
+  disk as well would be duplication.
+
+**Implementation:**
+
+`configure_logging()` gains awareness of `logs_root` when called from
+`PipelineManager` (which knows `delta_root`). When `level="DEBUG"`:
+
+```python
+def configure_logging(
+    level: str = "INFO",
+    suppress_noise: bool = True,
+    loggers: tuple[str, ...] = ("artisan",),
+    logs_root: Path | None = None,
+) -> None:
+    ...
+    if logs_root and level.upper() == "DEBUG":
+        logs_root.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(logs_root / "pipeline.log")
+        file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        file_handler.setLevel(logging.DEBUG)
+        logger.addHandler(file_handler)
+```
+
+`PipelineManager.__init__()` passes `logs_root`:
+
+```python
+_configure(logs_root=config.delta_root.parent / "logs")
+```
+
+**`failure_logs_root` migration:** Changes from `delta_root.parent /
+"failure_logs"` to `delta_root.parent / "logs" / "failures"`
+(`step_executor.py:190`). Existing failure logs in the old location are left
+in place — failure logs are ephemeral debugging aids, not precious data.
 
 ## Migration
 
@@ -236,12 +316,19 @@ All changes are backwards-compatible:
 - External tool output moves from `print()` to DEBUG logger — visible with
   `configure_logging(level="DEBUG")` or by including `artisan.tools` in loggers
 - SLURM logs are additive
+- `failure_logs/` moves to `logs/failures/` — old logs left in place
+- `pipeline.log` only appears when DEBUG level is explicitly set
 
 ## Implementation Plan
 
 - Add `os.environ.setdefault("PREFECT_LOGGING_LEVEL", "CRITICAL")` to
   `configure_logging()` when `suppress_noise=True`
-- Add `configure_logging()` call in `PipelineManager.__init__()`
+- Add `logs_root` parameter to `configure_logging()`; add file handler when
+  `level="DEBUG"`
+- Add `configure_logging()` call in `PipelineManager.__init__()`, passing
+  `logs_root=config.delta_root.parent / "logs"`
+- Change `failure_logs_root` from `delta_root.parent / "failure_logs"` to
+  `delta_root.parent / "logs" / "failures"` in `step_executor.py`
 - Demote verbose INFO calls to DEBUG (list above)
 - Add SLURM dispatch/completion logging
 - Route external tool streaming through `artisan.tools` logger
