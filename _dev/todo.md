@@ -4,19 +4,21 @@
 
 - ctrl c during subrpocess causes things to hang sometimes
 - How do other frameworks handle command, container, etc storage and construction?
-
 - fix the logging to be better. put it inside pipeline manager? different levels of verbosity. processpoolexecutor.
+- prefect-submitit sometimes hangs on slurm job cancellation
 
 
-- add integration tests that cover chaining methods
+- up front pipeline validation, operation inputs and outputs, binary validation, other things?
+
 - bug in the metrics export, converts all metrics to float
 - step name required throughout? weirdness with chaining and the step name. should require a step name there.
-- prefect-submitit sometimes hangs on slurm job cancellation
+
 
 ---
 ---
 
 ## TO ORGANIZE
+- add integration tests that cover chaining methods
 - add implicit inputs behavior??
 - are curator operations invokable on slurm?
 - metrics passthrough is needed for structures? how should this work. for example, ligandize? what is the case where it matters?
@@ -38,10 +40,8 @@
 
 - CROSS_PRODUCT pairing broken — needs unique name per paired set; `original_name` can't disambiguate when same structure appears in multiple groups
 - Compute backend hardcoded to Slurm in creator context builder — should reflect actual backend
-- Caching on failed runs is broken
 - Caching based on staging is absent (incomplete steps not yet in delta lake aren't cache-checked)
 - Filter fails at 10M artifacts input (works at 1M) — memory bottleneck related to execution units and artifact resolution
-- OOM error on orchestrator silently lost
 - Execution unit gets serialized with too many references — should be fully lazy
 - Check step caching and pipeline stopping on no returned outputs for expected inputs
 
