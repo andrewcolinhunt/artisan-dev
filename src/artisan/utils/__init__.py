@@ -12,6 +12,7 @@ from artisan.utils.external_tools import (
     ExternalToolError,
     build_command_from_spec,
     format_args,
+    run_command,
     run_external_command,
     to_cli_value,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "ExternalToolError",
     "build_command_from_spec",
     "format_args",
+    "run_command",
     "run_external_command",
     "to_cli_value",
     # Filename utilities
