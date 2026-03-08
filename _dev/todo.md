@@ -4,12 +4,6 @@
 
 - How do other frameworks handle command, container, etc storage and construction?
 
-
-- prefect-submitit sometimes hangs on slurm job cancellation
-
-
-- up front pipeline validation, operation inputs and outputs, binary validation, other things?
-
 - bug in the metrics export, converts all metrics to float
 - step name required throughout? weirdness with chaining and the step name. should require a step name there.
 

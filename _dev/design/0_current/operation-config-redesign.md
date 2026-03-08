@@ -13,6 +13,8 @@ Dagster, Prefect, and Airflow (full analysis: `_dev/analysis/command-binary-comp
 - Per-step overrides already work via `model_copy()` in `instantiate_operation()`
 - Portable resources are the industry norm (Nextflow's model is the gold standard)
 - No framework validates binaries upfront — opportunity to differentiate
+- No framework has a clean multi-environment declaration — operations should
+  declare their own environment configs for each runtime type
 
 **What the original CommandSpec got wrong:**
 
@@ -22,7 +24,9 @@ Dagster, Prefect, and Airflow (full analysis: `_dev/analysis/command-binary-comp
 
 - The **tool** is a property of the operation — the author knows what binary
   they're invoking
-- The **environment** is a deployment concern — Docker in prod, local in dev
+- The **environment** is a deployment concern — Docker in prod, local in dev,
+  Apptainer on HPC — but the operation author knows the right image, binds,
+  and GPU flags for each
 - **Argument formatting** is the operation's business — it belongs in
   `execute()`, not on a spec
 
@@ -39,16 +43,18 @@ and overridable per-step:
 | Field | Type | Answers |
 |---|---|---|
 | `tool` | `ToolSpec` | **What** binary/script to invoke |
-| `environment` | `EnvironmentSpec` | **Where** to run it (Docker, local, Apptainer, Pixi) |
+| `environments` | `Environments` | **Where** to run it (declares configs for each runtime type) |
 | `resources` | `ResourceConfig` | **With what** hardware (CPUs, memory, GPUs) |
 | `execution` | `ExecutionConfig` | **How** to batch and schedule |
 
-These read as a sentence: run this **tool** in this **environment** with these
-**resources** using this **execution** strategy.
+The operation author declares environment configs for every runtime they
+support. The pipeline operator selects which one is active. This is a genuine
+differentiator — no other framework supports structured, per-operation,
+multi-environment declarations.
 
 All four are instance fields (not ClassVars, not params). All four are
 overridable per-step via the existing `model_copy()` system. Pure-Python
-operations set `tool` to `None` and leave `environment` at its default.
+operations leave `tool` as `None` and `environments` at its default.
 
 ---
 
@@ -96,7 +102,7 @@ ToolSpec(executable="/opt/tools/gatk-4.4/gatk", subcommand="HaplotypeCaller")
 
 ---
 
-## EnvironmentSpec
+## EnvironmentSpec Hierarchy
 
 Renamed from `CommandSpec`. Purely about the execution environment that wraps a
 command. Each subclass implements `wrap_command()`, `prepare_env()`, and
@@ -231,6 +237,75 @@ class PixiEnvironmentSpec(EnvironmentSpec):
 
 ---
 
+## Environments Model
+
+A Pydantic model that holds all environment configs for an operation and
+selects which one is active. Typed fields for each environment type ensure
+validation, autocomplete, and inspectability. `None` for unconfigured types.
+
+```python
+class Environments(BaseModel):
+    """Multi-environment configuration for an operation.
+
+    Each field holds the config for one environment type. The active field
+    selects which one is used at runtime. Unconfigured types are None.
+    """
+
+    active: str = "local"
+    local: LocalEnvironmentSpec = Field(default_factory=LocalEnvironmentSpec)
+    docker: DockerEnvironmentSpec | None = None
+    apptainer: ApptainerEnvironmentSpec | None = None
+    pixi: PixiEnvironmentSpec | None = None
+
+    def current(self) -> EnvironmentSpec:
+        """Return the active environment spec."""
+        env = getattr(self, self.active, None)
+        if env is None:
+            raise ValueError(
+                f"Environment '{self.active}' is not configured. "
+                f"Available: {self.available()}"
+            )
+        return env
+
+    def available(self) -> list[str]:
+        """Return names of configured environments."""
+        return [
+            name for name in ("local", "docker", "apptainer", "pixi")
+            if getattr(self, name) is not None
+        ]
+```
+
+Operations declare their environments with configs for each runtime they
+support:
+
+```python
+class AlignReads(OperationDefinition):
+    tool: ToolSpec = ToolSpec(executable="samtools", subcommand="sort")
+
+    environments: Environments = Environments(
+        local=LocalEnvironmentSpec(),
+        docker=DockerEnvironmentSpec(
+            image="biocontainers/samtools:1.17",
+        ),
+        apptainer=ApptainerEnvironmentSpec(
+            image=Path("/images/samtools_1.17.sif"),
+        ),
+    )
+
+    resources: ResourceConfig = ResourceConfig(cpus=4, memory_gb=16)
+```
+
+Pure-Python operations use the default (local only, no external tool):
+
+```python
+class DataTransformer(OperationDefinition):
+    # tool is None (default) — no external binary
+    # environments is Environments() (default) — local only
+    resources: ResourceConfig = ResourceConfig(cpus=1, memory_gb=4)
+```
+
+---
+
 ## Portable ResourceConfig
 
 ```python
@@ -268,21 +343,21 @@ class OperationDefinition(BaseModel):
     # ... existing ClassVars (name, description, inputs, outputs, etc.) ...
 
     tool: ToolSpec | None = None
-    environment: EnvironmentSpec = LocalEnvironmentSpec()
+    environments: Environments = Environments()
     resources: ResourceConfig = ResourceConfig()
     execution: ExecutionConfig = ExecutionConfig()
 ```
 
 - `tool` is `None` for pure-Python operations. Only set when the operation
   invokes an external binary.
-- `environment` defaults to `LocalEnvironmentSpec()`. Existing pure-Python
-  operations need no changes.
+- `environments` defaults to `Environments()` (local only). Operations that
+  support multiple runtimes declare configs for each.
 
 ---
 
 ## run_command
 
-Replaces `run_external_command()`. Takes the environment spec and a pre-built
+Replaces `run_external_command()`. Takes an environment spec and a pre-built
 command list. The operation builds the command; the environment wraps it.
 
 ```python
@@ -322,47 +397,73 @@ def run_command(
     return result
 ```
 
+Operations get the active environment via `self.environments.current()`:
+
+```python
+def execute(self, inputs: ExecuteInput) -> Any:
+    env = self.environments.current()
+    cmd = [*self.tool.parts(), "-@", "4", "-o", "out.bam", "in.bam"]
+    run_command(env, cmd, cwd=inputs.execute_dir)
+```
+
 ---
 
 ## format_args
 
-Stays as an importable utility. Not part of any spec. `ArgStyle` is removed
-from all models.
-
-Operations that want structured argument formatting import and use it:
+`ArgStyle` is removed entirely (no backwards compatibility). `format_args()`
+stays as an importable utility that formats `dict[str, Any]` into CLI argument
+lists. It takes no style parameter — it produces `--key value` format
+(the most common convention).
 
 ```python
-from artisan.utils.external_tools import format_args, ArgStyle
+def format_args(params: dict[str, Any]) -> list[str]:
+    result = []
+    for key, value in params.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            if value:
+                result.append(f"--{key}")
+            continue
+        result.extend([f"--{key}", to_cli_value(value)])
+    return result
+```
 
-args = format_args({"batch-size": 16, "lr": 0.001}, ArgStyle.ARGPARSE)
+Usage:
+
+```python
+from artisan.utils.external_tools import format_args
+
+args = format_args({"batch-size": 16, "lr": 0.001, "verbose": True})
+# ["--batch-size", "16", "--lr", "0.001", "--verbose"]
+
 cmd = [*self.tool.parts(), *args]
 ```
 
-Operations with complex argument patterns build `list[str]` directly:
+Operations with non-standard argument patterns build `list[str]` directly:
 
 ```python
+# Hydra-style
+cmd = [*self.tool.parts(), "batch_size=16", "sampler.steps=200"]
+
+# Mixed positional and flags
 cmd = [*self.tool.parts(), "-@", "4", "--write-index", "-o", "out.bam", "in.bam"]
-```
-
-One fix: boolean handling. `True` emits the flag without a value, `False` skips:
-
-```python
-format_args({"verbose": True}, ArgStyle.ARGPARSE)   # ["--verbose"]
-format_args({"verbose": False}, ArgStyle.ARGPARSE)  # []
 ```
 
 ---
 
 ## Pipeline Validation
 
-The pipeline manager validates all operations before any execution begins:
+The pipeline manager validates all operations before any execution begins.
+Validation checks the active environment (as selected by the pipeline default
+or per-step override):
 
 ```python
 for step in steps:
     op = step.operation
     if op.tool:
         op.tool.validate()
-    op.environment.validate_environment()
+    op.environments.current().validate_environment()
 ```
 
 Errors are collected and reported at startup:
@@ -375,7 +476,134 @@ ValidationError: Pipeline cannot start:
 
 ---
 
-## End-to-End Example
+## Pipeline API and Per-Step Overrides
+
+### pipeline.run() / submit() signature
+
+```python
+def run(
+    self,
+    operation: type[OperationDefinition],
+    inputs=None,
+    params: dict[str, Any] | None = None,
+    backend: str | BackendBase | None = None,
+    environment: str | dict[str, Any] | None = None,  # replaces command=
+    tool: dict[str, Any] | None = None,                # new
+    resources: dict[str, Any] | None = None,
+    execution: dict[str, Any] | None = None,
+    failure_policy: FailurePolicy | None = None,
+    compact: bool = True,
+    name: str | None = None,
+) -> StepResult:
+```
+
+The `environment=` parameter accepts two forms:
+
+**String** — select which environment to activate:
+
+```python
+pipeline.run(AlignReads, environment="docker")
+# → sets environments.active = "docker"
+```
+
+**Dict** — override fields on the Environments model (can include selection):
+
+```python
+# Select and override
+pipeline.run(AlignReads, environment={"active": "docker", "docker": {"image": "v2"}})
+
+# Override the active environment's fields
+pipeline.run(AlignReads, environment={"docker": {"gpu": True}})
+```
+
+### Pipeline-level default environment
+
+The pipeline sets a default environment for all steps:
+
+```python
+pipeline = Pipeline(store=store, backend="slurm", environment="apptainer")
+
+pipeline.run(AlignReads)                           # → apptainer
+pipeline.run(TrainModel, environment="docker")     # → docker (overridden)
+pipeline.run(PureOp)                               # → local (no tool, default)
+```
+
+### instantiate_operation changes
+
+```python
+def instantiate_operation(
+    operation_class, params,
+    tool=None, environment=None, resources=None, execution=None,
+):
+    # ... existing param handling ...
+    instance = operation_class(**init_kwargs)
+
+    updates = {}
+
+    if tool and instance.tool:
+        updates["tool"] = instance.tool.model_copy(update=tool)
+
+    if environment is not None:
+        if isinstance(environment, str):
+            updates["environments"] = instance.environments.model_copy(
+                update={"active": environment}
+            )
+        else:
+            updates["environments"] = instance.environments.model_copy(
+                update=environment
+            )
+
+    if resources:
+        updates["resources"] = instance.resources.model_copy(update=resources)
+    if execution:
+        updates["execution"] = instance.execution.model_copy(update=execution)
+
+    if updates:
+        instance = instance.model_copy(update=updates)
+    return instance
+```
+
+### Validation
+
+```python
+def _validate_environment(operation, environment):
+    """Validate environment override before execution."""
+    if isinstance(environment, str):
+        envs = operation.environments if hasattr(operation, 'environments') else Environments()
+        if environment not in envs.available():
+            raise ValueError(
+                f"Environment '{environment}' not configured on {operation.name}. "
+                f"Available: {envs.available()}"
+            )
+    else:
+        valid_keys = set(Environments.model_fields)
+        unknown = set(environment) - valid_keys
+        if unknown:
+            raise ValueError(
+                f"Unknown environment keys: {sorted(unknown)}. "
+                f"Valid keys: {sorted(valid_keys)}"
+            )
+
+def _validate_tool(operation, tool):
+    """Validate tool override keys."""
+    if not hasattr(operation, 'tool') or operation.tool is None:
+        raise ValueError(
+            f"Operation '{operation.name}' has no tool to override"
+        )
+    valid_keys = set(ToolSpec.model_fields)
+    unknown = set(tool) - valid_keys
+    if unknown:
+        raise ValueError(
+            f"Unknown tool keys: {sorted(unknown)}. "
+            f"Valid keys: {sorted(valid_keys)}"
+        )
+```
+
+---
+
+## End-to-End Examples
+
+### External tool with multiple environments
 
 ```python
 SCRIPT_PATH = Path(__file__).parent / "scripts" / "transform_data.py"
@@ -387,7 +615,10 @@ class DataTransformerScript(OperationDefinition):
     # ... inputs, outputs, group_by (unchanged) ...
 
     tool: ToolSpec = ToolSpec(executable=SCRIPT_PATH, interpreter="python")
-    environment: LocalEnvironmentSpec = LocalEnvironmentSpec()
+    environments: Environments = Environments(
+        local=LocalEnvironmentSpec(),
+        docker=DockerEnvironmentSpec(image="my-registry/transformer:latest"),
+    )
     resources: ResourceConfig = ResourceConfig(cpus=1, memory_gb=4)
     execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_script")
 
@@ -395,70 +626,75 @@ class DataTransformerScript(OperationDefinition):
         # ... unchanged ...
 
     def execute(self, inputs: ExecuteInput) -> Any:
+        env = self.environments.current()
         for item in inputs.inputs["items"]:
             cmd = [*self.tool.parts(),
                    "--config", item["config_path"],
                    "--output-dir", str(inputs.execute_dir),
                    "--output-basename", item["design_name"]]
-            run_command(self.environment, cmd, cwd=inputs.execute_dir)
+            run_command(env, cmd, cwd=inputs.execute_dir)
         return None
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         # ... unchanged ...
 ```
 
-Same operation, run in Docker at the pipeline level:
+### Pipeline usage across deployment contexts
 
 ```python
-pipeline.run(
-    DataTransformerScript,
-    environment=DockerEnvironmentSpec(image="my-registry/transformer:latest"),
-    resources={"cpus": 4, "memory_gb": 16},
-)
+# Local development
+pipeline = Pipeline(store=store)
+pipeline.run(DataTransformerScript)  # runs locally
+
+# HPC with Apptainer
+pipeline = Pipeline(store=store, backend="slurm", environment="apptainer")
+pipeline.run(AlignReads)                             # apptainer
+pipeline.run(AlignReads, resources={"cpus": 16})     # apptainer + more CPUs
+pipeline.run(TrainModel, environment="docker")       # docker override for this step
+
+# Per-step tweaks
+pipeline.run(AlignReads, environment="docker")
+pipeline.run(AlignReads, environment={"active": "docker", "docker": {"image": "samtools:1.18"}})
+pipeline.run(AlignReads, tool={"executable": "/opt/samtools-dev/bin/samtools"})
+```
+
+### Pure-Python operation (no tool, no environment config needed)
+
+```python
+class DataTransformer(OperationDefinition):
+    name: ClassVar[str] = "data_transformer"
+    # tool is None (default)
+    # environments is Environments() (default — local only)
+    resources: ResourceConfig = ResourceConfig(cpus=1, memory_gb=4)
+
+    def execute(self, inputs: ExecuteInput) -> Any:
+        # Pure Python — no run_command(), no self.tool, no self.environments
+        for input_path in input_files:
+            # ... process in Python ...
 ```
 
 ---
 
-## Per-Step Overrides
+## Backends vs Environments
 
-The existing override system in `instantiate_operation()` extends to cover
-`tool` and `environment`:
+These are different layers that compose independently:
 
-```python
-def instantiate_operation(operation_class, params, tool=None,
-                          environment=None, resources=None, execution=None):
-    # ... existing param handling ...
+- **Backend** = how to dispatch and schedule work across workers (local
+  ProcessPool, SLURM job arrays). Per-pipeline or per-step. Controls Prefect
+  flow/task runner.
+- **Environment** = how to wrap a single command (Docker, Apptainer, local,
+  Pixi). Per-operation. Controls what goes around `subprocess.run()`.
 
-    instance = operation_class(**init_kwargs)
+| Backend | Environment | What happens |
+|---|---|---|
+| Local | local | Process pool on this machine, commands run directly |
+| Local | docker | Process pool on this machine, commands wrapped in `docker run` |
+| SLURM | local | Dispatch to cluster nodes, commands run directly on node |
+| SLURM | apptainer | Dispatch to cluster nodes, commands wrapped in `apptainer exec` |
 
-    updates = {}
-    if tool and instance.tool:
-        updates["tool"] = instance.tool.model_copy(update=tool)
-    if environment:
-        updates["environment"] = instance.environment.model_copy(update=environment)
-    if resources:
-        updates["resources"] = instance.resources.model_copy(update=resources)
-    if execution:
-        updates["execution"] = instance.execution.model_copy(update=execution)
-    if updates:
-        instance = instance.model_copy(update=updates)
-
-    return instance
-```
-
-The `pipeline.run()` / `submit()` signatures gain a `tool=` parameter and
-rename `command=` to `environment=`:
-
-```python
-def run(self, operation, inputs=None, params=None, backend=None,
-        tool=None, environment=None, resources=None, execution=None,
-        failure_policy=None, compact=True, name=None):
-```
-
-Validation functions update similarly:
-
-- `_validate_command()` -> `_validate_environment()`
-- New `_validate_tool()` for tool override keys
+The backend reads `ResourceConfig` to configure the scheduler. It does not
+know about `EnvironmentSpec`. The environment wrapping happens inside the
+worker when `execute()` calls `run_command()`.
 
 ---
 
@@ -468,14 +704,14 @@ Validation functions update similarly:
 
 | Before | After |
 |---|---|
-| `command: LocalCommandSpec = LocalCommandSpec(script=..., arg_style=..., interpreter=...)` | `tool: ToolSpec = ToolSpec(executable=..., interpreter=...)` + `environment: LocalEnvironmentSpec = LocalEnvironmentSpec()` |
+| `command: LocalCommandSpec = LocalCommandSpec(script=..., arg_style=..., interpreter=...)` | `tool: ToolSpec = ToolSpec(executable=..., interpreter=...)` + `environments: Environments = Environments(...)` |
 | `resources: ResourceConfig(cpus_per_task=4, partition="gpu", gres="gpu:1")` | `resources: ResourceConfig(cpus=4, gpus=1, extra={"partition": "gpu"})` |
 
 ### Override API
 
 | Before | After |
 |---|---|
-| `pipeline.run(Op, command={"image": ...})` | `pipeline.run(Op, environment={"image": ...})` |
+| `pipeline.run(Op, command={"image": ...})` | `pipeline.run(Op, environment="docker")` or `pipeline.run(Op, environment={"active": "docker", "docker": {"image": ...}})` |
 | `pipeline.run(Op, resources={"cpus_per_task": 4})` | `pipeline.run(Op, resources={"cpus": 4})` |
 | N/A | `pipeline.run(Op, tool={"executable": ...})` |
 
@@ -485,20 +721,25 @@ Validation functions update similarly:
 - `build_command_from_spec()` and all `_build_*_from_spec()` functions
 - The `match` statement in `external_tools.py`
 - `run_external_command()` (replaced by `run_command()`)
+- `ArgStyle` enum entirely
 - `script`, `interpreter`, `subcommand`, `arg_style` from environment config
 
 ### What gets added
 
 - `ToolSpec` model (`tool_spec.py`)
 - `EnvironmentSpec` hierarchy (`environment_spec.py`)
+- `Environments` model (`environments.py`)
 - `run_command()` function
 - `tool` field on `OperationDefinition`
-- `environment` field on `OperationDefinition` (replaces `command`)
+- `environments` field on `OperationDefinition` (replaces `command`)
+- `environment=` parameter on `Pipeline` constructor
+- `environment=` and `tool=` parameters on `pipeline.run()` / `submit()`
 - Startup validation in pipeline manager
 
 ### What stays unchanged
 
-- `format_args()`, `ArgStyle`, `to_cli_value()` as utilities
+- `format_args()`, `to_cli_value()` as utilities (ArgStyle removed, format_args
+  simplified to `--key value` only)
 - `Command` dataclass, `ExternalToolError`
 - `_run_with_streaming()`, `_run_captured()`, `_kill_process_group()`
 - `ExecutionConfig`
@@ -508,26 +749,29 @@ Validation functions update similarly:
 
 ## Implementation Order
 
-- **New model files.** Create `tool_spec.py` and `environment_spec.py`. Define
-  `ToolSpec`, `EnvironmentSpec` hierarchy. Unit tests for `parts()`,
-  `wrap_command()`, `prepare_env()`, `validate()`, `validate_environment()`.
+- **New model files.** Create `tool_spec.py`, `environment_spec.py`, and
+  `environments.py`. Define `ToolSpec`, `EnvironmentSpec` hierarchy, and
+  `Environments` model. Unit tests for `parts()`, `wrap_command()`,
+  `prepare_env()`, `validate()`, `validate_environment()`, `current()`,
+  `available()`.
 
 - **run_command.** New function in `external_tools.py`. Keep
-  `run_external_command` temporarily as a deprecated wrapper.
+  `run_external_command` temporarily as a deprecated wrapper. Simplify
+  `format_args` (remove `ArgStyle`, produce `--key value` only, fix booleans).
 
-- **OperationDefinition.** Add `tool` and `environment` fields. Update example
+- **OperationDefinition.** Add `tool` and `environments` fields. Update example
   operations.
 
-- **Pipeline manager / step executor.** Wire `tool` and `environment` into
-  overrides. Add startup validation. Rename `command` -> `environment`.
+- **Pipeline manager / step executor.** Add `environment=` and `tool=` to
+  `run()`/`submit()`. Wire into `instantiate_operation()`. Add pipeline-level
+  default environment. Add startup validation. Rename `command=` ->
+  `environment=`.
 
 - **Portable ResourceConfig.** Rename fields. Update SLURM backend. Update
   local backend.
 
 - **Remove old code.** Delete `command_spec.py`, `build_command_from_spec`,
-  `_build_*_from_spec`, `run_external_command`.
-
-- **format_args boolean fix.** Standalone change.
+  `_build_*_from_spec`, `run_external_command`, `ArgStyle`.
 
 ---
 
@@ -536,18 +780,19 @@ Validation functions update similarly:
 | File | Changes |
 |---|---|
 | `schemas/operation_config/tool_spec.py` | **New** |
-| `schemas/operation_config/environment_spec.py` | **New** |
+| `schemas/operation_config/environment_spec.py` | **New** — EnvironmentSpec hierarchy |
+| `schemas/operation_config/environments.py` | **New** — Environments model |
 | `schemas/operation_config/command_spec.py` | **Delete** after migration |
 | `schemas/operation_config/resource_config.py` | Rename fields |
-| `utils/external_tools.py` | Add `run_command()`, remove build/match code, fix boolean in `format_args` |
-| `operations/base/operation_definition.py` | Add `tool`, rename `command` -> `environment` |
-| `orchestration/pipeline_manager.py` | Rename overrides, add startup validation |
+| `utils/external_tools.py` | Add `run_command()`, simplify `format_args`, remove build/match code and `ArgStyle` |
+| `operations/base/operation_definition.py` | Add `tool`, replace `command` with `environments` |
+| `orchestration/pipeline_manager.py` | Add `environment=`/`tool=` to run/submit, add pipeline default, rename overrides, add startup validation |
 | `orchestration/engine/step_executor.py` | Update override handling |
 | `orchestration/backends/slurm.py` | Translate portable ResourceConfig |
 | `orchestration/backends/local.py` | Drop SLURM warning, use new field names |
 | `orchestration/backends/base.py` | Update references |
-| `orchestration/chain_builder.py` | Rename `command` -> `environment` in API |
-| `operations/examples/data_transformer_script.py` | Use ToolSpec + EnvironmentSpec |
+| `orchestration/chain_builder.py` | Rename `command=` -> `environment=` in API |
+| `operations/examples/data_transformer_script.py` | Use ToolSpec + Environments |
 | `operations/examples/*.py` | Update ResourceConfig field names |
 | `operations/curator/*` | Update if referencing ResourceConfig |
 | Tests | Update all CommandSpec/ResourceConfig usage |
