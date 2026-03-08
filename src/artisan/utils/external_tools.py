@@ -156,38 +156,46 @@ def to_cli_value(value: Any) -> str:
     return str(value)
 
 
-def format_args(params: dict[str, Any], style: ArgStyle) -> list[str]:
-    """Format parameters according to argument style.
+def format_args(params: dict[str, Any], style: ArgStyle | None = None) -> list[str]:
+    """Format parameters as CLI arguments.
+
+    When ``style`` is None (default), produces ``--key value`` format with
+    booleans as flags (``--verbose`` for True, omitted for False).
+
+    When ``style`` is an ``ArgStyle`` enum, uses the legacy behavior:
+    HYDRA produces ``key=value``, ARGPARSE produces ``--key value``
+    (booleans as "true"/"false" strings).
 
     Args:
-        params: Key-value pairs to format. For HYDRA style, keys are used
-            as-is (include '++' prefix for Hydra overrides). For ARGPARSE
-            style, keys are used as-is (include hyphens if the target CLI
-            expects them).
-        style: The argument formatting style to use.
+        params: Key-value pairs to format.
+        style: Argument formatting style. None for new default behavior.
 
     Returns:
         List of formatted argument strings.
 
     Examples:
+        >>> format_args({"batch-size": 16, "verbose": True})
+        ['--batch-size', '16', '--verbose']
         >>> format_args({"batch_size": 16}, ArgStyle.HYDRA)
         ['batch_size=16']
-        >>> format_args({"++sampler.steps": 200}, ArgStyle.HYDRA)
-        ['++sampler.steps=200']
         >>> format_args({"batch-size": 16}, ArgStyle.ARGPARSE)
         ['--batch-size', '16']
-        >>> format_args({"verbose": None}, ArgStyle.ARGPARSE)
-        []
     """
     result: list[str] = []
     for key, value in params.items():
         if value is None:
             continue
-        cli_value = to_cli_value(value)
-        if style == ArgStyle.HYDRA:
-            result.append(f"{key}={cli_value}")
+        if style is None:
+            # New default: bools as flags, --key value
+            if isinstance(value, bool):
+                if value:
+                    result.append(f"--{key}")
+                continue
+            result.extend([f"--{key}", to_cli_value(value)])
+        elif style == ArgStyle.HYDRA:
+            result.append(f"{key}={to_cli_value(value)}")
         else:  # ARGPARSE
-            result.extend([f"--{key}", cli_value])
+            result.extend([f"--{key}", to_cli_value(value)])
     return result
 
 
@@ -406,6 +414,65 @@ def run_external_command(
             runtime=command,
         )
 
+    return result
+
+
+def run_command(
+    environment: Any,
+    cmd: list[str],
+    cwd: Path | None = None,
+    timeout: float | None = None,
+    stream_output: bool = False,
+    log_path: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Execute a command in the given environment.
+
+    The operation builds the command; the environment wraps it. This is the
+    replacement for ``run_external_command`` that works with the new
+    EnvironmentSpec hierarchy.
+
+    Args:
+        environment: An EnvironmentSpec instance that wraps the command.
+        cmd: Pre-built command list (e.g. from ToolSpec.parts() + args).
+        cwd: Working directory for subprocess.
+        timeout: Timeout in seconds.
+        stream_output: If True, print output lines in real-time.
+        log_path: If provided, write output to this file.
+
+    Returns:
+        CompletedProcess with captured stdout/stderr.
+
+    Raises:
+        ExternalToolError: On non-zero exit or timeout.
+    """
+    wrapped = environment.wrap_command(cmd, cwd)
+    full_cmd = Command(parts=wrapped, string=shlex.join(wrapped))
+    env = environment.prepare_env()
+
+    try:
+        if stream_output:
+            result = _run_with_streaming(full_cmd, cwd, timeout, log_path, env)
+        else:
+            result = _run_captured(full_cmd, cwd, timeout, env)
+    except subprocess.TimeoutExpired as e:
+        raise ExternalToolError(
+            message=f"Command timed out after {timeout}s",
+            command=full_cmd.parts,
+            return_code=-1,
+            stdout=e.stdout or "",
+            stderr=e.stderr or "",
+            runtime=environment,
+        ) from e
+
+    if result.returncode != 0:
+        raise ExternalToolError(
+            message=f"Command failed with exit code {result.returncode}",
+            command=full_cmd.parts,
+            return_code=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            runtime=environment,
+        )
     return result
 
 

@@ -15,12 +15,18 @@ from artisan.schemas.operation_config.command_spec import (
     LocalCommandSpec,
     PixiCommandSpec,
 )
+from artisan.schemas.operation_config.environment_spec import (
+    DockerEnvironmentSpec,
+    EnvironmentSpec,
+    LocalEnvironmentSpec,
+)
 from artisan.utils.external_tools import (
     ArgStyle,
     ExternalToolError,
     _kill_process_group,
     build_command_from_spec,
     format_args,
+    run_command,
     run_external_command,
     to_cli_value,
 )
@@ -81,6 +87,24 @@ class TestFormatArgs:
     def test_argparse_with_path(self):
         result = format_args({"output": Path("/tmp/out")}, ArgStyle.ARGPARSE)
         assert result == ["--output", "/tmp/out"]
+
+    def test_no_style_default_flags(self):
+        """Default style: booleans become flags."""
+        result = format_args({"verbose": True, "quiet": False})
+        assert result == ["--verbose"]
+
+    def test_no_style_default_values(self):
+        """Default style: --key value pairs."""
+        result = format_args({"batch-size": 16, "lr": 0.001})
+        assert result == ["--batch-size", "16", "--lr", "0.001"]
+
+    def test_no_style_skips_none(self):
+        result = format_args({"a": 1, "b": None})
+        assert result == ["--a", "1"]
+
+    def test_no_style_mixed(self):
+        result = format_args({"batch-size": 16, "verbose": True, "seed": 42})
+        assert result == ["--batch-size", "16", "--verbose", "--seed", "42"]
 
 
 class TestBuildCommandFromSpec:
@@ -472,3 +496,73 @@ class TestProcessCleanup:
             run_external_command(spec, [])
 
         mock_kill.assert_called_once_with(mock_proc)
+
+
+class TestRunCommand:
+    """Tests for run_command with EnvironmentSpec types."""
+
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_success_local(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("output", "")
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        env = LocalEnvironmentSpec()
+        result = run_command(env, ["python", "run.py"])
+        assert result.returncode == 0
+        assert result.stdout == "output"
+
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_failure_raises_error(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("", "error")
+        mock_proc.returncode = 1
+        mock_popen.return_value = mock_proc
+
+        env = LocalEnvironmentSpec()
+        with pytest.raises(ExternalToolError) as exc_info:
+            run_command(env, ["python", "run.py"])
+        assert exc_info.value.return_code == 1
+
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_docker_wrapping(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("ok", "")
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        env = DockerEnvironmentSpec(image="img:latest")
+        run_command(env, ["samtools", "sort"])
+
+        call_args = mock_popen.call_args[0][0]
+        assert call_args[:3] == ["docker", "run", "--rm"]
+        assert "img:latest" in call_args
+
+    @patch("artisan.utils.external_tools._kill_process_group")
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_timeout_raises_error(self, mock_popen, mock_kill):
+        mock_proc = MagicMock()
+        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd=["test"], timeout=5
+        )
+        mock_popen.return_value = mock_proc
+
+        env = EnvironmentSpec()
+        with pytest.raises(ExternalToolError) as exc_info:
+            run_command(env, ["cmd"], timeout=5)
+        assert exc_info.value.return_code == -1
+        mock_kill.assert_called_once_with(mock_proc)
+
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_env_vars_passed(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("", "")
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        env = EnvironmentSpec(env={"FOO": "bar"})
+        run_command(env, ["cmd"])
+
+        _, kwargs = mock_popen.call_args
+        assert kwargs["env"]["FOO"] == "bar"
