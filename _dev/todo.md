@@ -8,6 +8,9 @@
 - step name required throughout? weirdness with chaining and the step name. should require a step name there.
 
 .prefect-postgres should go in ~/.artisan?
+we need to stop the postgres server when we stop the prefect server?
+we need to migrate the prefect starting scripts to prefect-submitit
+
 
 ---
 ---

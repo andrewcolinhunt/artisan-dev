@@ -164,5 +164,4 @@ docs/
 ## Personal Overrides
 
 `CLAUDE.local.md` contains personal workflow overrides (base branch, push
-behavior, repo layout). On `ach/dev` it is tracked in git; it gets stripped
-on `ach/dev-clean` before PRs to `main`.
+behavior, repo layout).
