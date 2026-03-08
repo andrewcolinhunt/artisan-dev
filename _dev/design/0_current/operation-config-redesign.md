@@ -353,6 +353,11 @@ class OperationDefinition(BaseModel):
 - `environments` defaults to `Environments()` (local only). Operations that
   support multiple runtimes declare configs for each.
 
+Note: `command` was never a base class field — individual operations (e.g.
+`DataTransformerScript`) defined their own `command: LocalCommandSpec` ad-hoc.
+This design formalizes that pattern into base class fields (`tool` +
+`environments`), giving all operations a consistent, typed contract.
+
 ---
 
 ## run_command
@@ -549,8 +554,17 @@ def instantiate_operation(
                 update={"active": environment}
             )
         else:
+            # Deep-merge nested environment specs so partial overrides
+            # (e.g. {"docker": {"image": "v2"}}) don't discard other fields.
+            env_updates = {}
+            for key, value in environment.items():
+                current = getattr(instance.environments, key, None)
+                if isinstance(current, EnvironmentSpec) and isinstance(value, dict):
+                    env_updates[key] = current.model_copy(update=value)
+                else:
+                    env_updates[key] = value
             updates["environments"] = instance.environments.model_copy(
-                update=environment
+                update=env_updates
             )
 
     if resources:
@@ -569,11 +583,10 @@ def instantiate_operation(
 def _validate_environment(operation, environment):
     """Validate environment override before execution."""
     if isinstance(environment, str):
-        envs = operation.environments if hasattr(operation, 'environments') else Environments()
-        if environment not in envs.available():
+        if environment not in operation.environments.available():
             raise ValueError(
                 f"Environment '{environment}' not configured on {operation.name}. "
-                f"Available: {envs.available()}"
+                f"Available: {operation.environments.available()}"
             )
     else:
         valid_keys = set(Environments.model_fields)
@@ -583,6 +596,25 @@ def _validate_environment(operation, environment):
                 f"Unknown environment keys: {sorted(unknown)}. "
                 f"Valid keys: {sorted(valid_keys)}"
             )
+        # Validate nested dicts against their EnvironmentSpec subclass
+        env_field_types = {
+            "local": LocalEnvironmentSpec,
+            "docker": DockerEnvironmentSpec,
+            "apptainer": ApptainerEnvironmentSpec,
+            "pixi": PixiEnvironmentSpec,
+        }
+        for key, value in environment.items():
+            if key == "active" or not isinstance(value, dict):
+                continue
+            spec_cls = env_field_types.get(key)
+            if spec_cls:
+                valid_spec_keys = set(spec_cls.model_fields)
+                bad = set(value) - valid_spec_keys
+                if bad:
+                    raise ValueError(
+                        f"Unknown keys for {key} environment: {sorted(bad)}. "
+                        f"Valid: {sorted(valid_spec_keys)}"
+                    )
 
 def _validate_tool(operation, tool):
     """Validate tool override keys."""
@@ -702,10 +734,18 @@ worker when `execute()` calls `run_command()`.
 
 ### Field renames
 
+The `command` field was never on the base class — operations defined it ad-hoc
+(e.g. `command: LocalCommandSpec`). This design formalizes it into base class
+fields.
+
 | Before | After |
 |---|---|
-| `command: LocalCommandSpec = LocalCommandSpec(script=..., arg_style=..., interpreter=...)` | `tool: ToolSpec = ToolSpec(executable=..., interpreter=...)` + `environments: Environments = Environments(...)` |
-| `resources: ResourceConfig(cpus_per_task=4, partition="gpu", gres="gpu:1")` | `resources: ResourceConfig(cpus=4, gpus=1, extra={"partition": "gpu"})` |
+| `command: LocalCommandSpec = LocalCommandSpec(script=..., arg_style=..., interpreter=...)` (ad-hoc on subclass) | `tool: ToolSpec = ToolSpec(executable=..., interpreter=...)` + `environments: Environments = Environments(...)` (on base class) |
+| `resources.cpus_per_task` | `resources.cpus` |
+| `resources.mem_gb` | `resources.memory_gb` |
+| `resources.partition` | `resources.extra["partition"]` |
+| `resources.gres` (e.g. `"gpu:1"`) | `resources.gpus` (e.g. `1`) |
+| `resources.extra_slurm_kwargs` | `resources.extra` |
 
 ### Override API
 
@@ -731,7 +771,7 @@ worker when `execute()` calls `run_command()`.
 - `Environments` model (`environments.py`)
 - `run_command()` function
 - `tool` field on `OperationDefinition`
-- `environments` field on `OperationDefinition` (replaces `command`)
+- `environments` field on `OperationDefinition` (formalizes ad-hoc `command` pattern)
 - `environment=` parameter on `Pipeline` constructor
 - `environment=` and `tool=` parameters on `pipeline.run()` / `submit()`
 - Startup validation in pipeline manager
@@ -785,8 +825,8 @@ worker when `execute()` calls `run_command()`.
 | `schemas/operation_config/command_spec.py` | **Delete** after migration |
 | `schemas/operation_config/resource_config.py` | Rename fields |
 | `utils/external_tools.py` | Add `run_command()`, simplify `format_args`, remove build/match code and `ArgStyle` |
-| `operations/base/operation_definition.py` | Add `tool`, replace `command` with `environments` |
-| `orchestration/pipeline_manager.py` | Add `environment=`/`tool=` to run/submit, add pipeline default, rename overrides, add startup validation |
+| `operations/base/operation_definition.py` | Add `tool` and `environments` fields to base class |
+| `orchestration/pipeline_manager.py` | Add `environment=`/`tool=` to run/submit, add pipeline default, replace `command=` with `environment=`, add startup validation |
 | `orchestration/engine/step_executor.py` | Update override handling |
 | `orchestration/backends/slurm.py` | Translate portable ResourceConfig |
 | `orchestration/backends/local.py` | Drop SLURM warning, use new field names |
