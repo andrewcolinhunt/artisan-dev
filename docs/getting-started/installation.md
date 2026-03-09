@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Platforms:** Linux (x86_64) or macOS (Apple Silicon)
-- Python 3.12+
+- Python 3.12 (pinned by Pixi)
 - [Pixi](https://pixi.sh) package manager
 
 ## Quick Install
