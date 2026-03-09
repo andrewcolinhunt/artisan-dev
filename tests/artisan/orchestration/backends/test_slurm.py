@@ -41,11 +41,11 @@ class TestSlurmBackendCreateFlow:
         backend = SlurmBackend()
 
         resources = ResourceConfig(
-            partition="gpu",
+            cpus=4,
+            memory_gb=8,
+            gpus=1,
             time_limit="02:00:00",
-            mem_gb=8,
-            cpus_per_task=4,
-            gres="gpu:1",
+            extra={"partition": "gpu"},
         )
         execution = ExecutionConfig(units_per_worker=1)
 
@@ -70,7 +70,7 @@ class TestSlurmBackendCreateFlow:
         mock_flow.return_value = lambda fn: fn
         backend = SlurmBackend()
 
-        resources = ResourceConfig(partition="cpu")
+        resources = ResourceConfig()
         execution = ExecutionConfig(units_per_worker=1)
 
         backend.create_flow(resources, execution, step_number=5, job_name="custom_name")

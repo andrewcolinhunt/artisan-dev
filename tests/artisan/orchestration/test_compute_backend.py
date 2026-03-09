@@ -42,11 +42,11 @@ class TestBackendRouting:
     ):
         mock_flow.return_value = lambda fn: fn
         resources = ResourceConfig(
-            partition="gpu",
+            cpus=4,
+            memory_gb=8,
+            gpus=1,
             time_limit="02:00:00",
-            mem_gb=8,
-            cpus_per_task=4,
-            gres="gpu:1",
+            extra={"partition": "gpu"},
         )
         execution = ExecutionConfig(units_per_worker=1)
 

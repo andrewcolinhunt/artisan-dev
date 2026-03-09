@@ -19,13 +19,12 @@ def local_backend() -> LocalBackend:
 
 @pytest.fixture
 def mock_operation() -> MagicMock:
-    """Mock operation for validate_operation tests (still takes full op)."""
+    """Mock operation for validate_operation tests."""
     op = MagicMock()
     op.name = "test_op"
     op.execution.max_workers = None
-    op.resources.gres = None
-    op.resources.partition = "cpu"
-    op.resources.extra_slurm_kwargs = {}
+    op.resources.gpus = 0
+    op.resources.extra = {}
     return op
 
 
@@ -106,17 +105,17 @@ class TestLocalBackendValidateOperation:
             warnings.simplefilter("error")
             local_backend.validate_operation(mock_operation)
 
-    def test_warns_on_slurm_gres(
+    def test_warns_on_gpus(
         self, local_backend: LocalBackend, mock_operation: MagicMock
     ) -> None:
-        mock_operation.resources.gres = "gpu:1"
+        mock_operation.resources.gpus = 1
         with pytest.warns(UserWarning, match="SLURM-specific resources"):
             local_backend.validate_operation(mock_operation)
 
-    def test_warns_on_non_cpu_partition(
+    def test_warns_on_extra_kwargs(
         self, local_backend: LocalBackend, mock_operation: MagicMock
     ) -> None:
-        mock_operation.resources.partition = "gpu"
+        mock_operation.resources.extra = {"partition": "gpu"}
         with pytest.warns(UserWarning, match="SLURM-specific resources"):
             local_backend.validate_operation(mock_operation)
 

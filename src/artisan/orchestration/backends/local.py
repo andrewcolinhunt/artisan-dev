@@ -56,10 +56,10 @@ class LocalBackend(BackendBase):
     def validate_operation(self, operation: OperationDefinition) -> None:
         """Warn if SLURM-specific resources are configured on a local backend."""
         r = operation.resources
-        if r.gres or r.partition != "cpu" or r.extra_slurm_kwargs:
+        if r.gpus > 0 or r.extra:
             warnings.warn(
                 f"Operation {operation.name!r} has SLURM-specific resources "
-                f"(gres={r.gres!r}, partition={r.partition!r}) but backend is "
+                f"(gpus={r.gpus!r}, extra={r.extra!r}) but backend is "
                 f"'local'. These will be ignored.",
                 stacklevel=2,
             )

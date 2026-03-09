@@ -86,8 +86,8 @@ class DataTransformerScript(OperationDefinition):
 
     # ---------- Resources ----------
     resources: ResourceConfig = ResourceConfig(
-        cpus_per_task=1,
-        mem_gb=4,
+        cpus=1,
+        memory_gb=4,
         time_limit="00:30:00",
     )
 
