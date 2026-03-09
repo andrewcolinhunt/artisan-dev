@@ -45,8 +45,20 @@ class TestNormalizeUrl:
 @pytest.fixture(autouse=True)
 def _no_health_check():
     """Disable health check for all discover_server tests in this module."""
-    with patch("prefect_submitit.server.discovery.health_check", return_value=True):
+    with patch("artisan.orchestration.prefect_server.health_check", return_value=True):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_discovery(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Prevent real env vars and discovery files from leaking into tests."""
+    monkeypatch.delenv("PREFECT_SUBMITIT_SERVER", raising=False)
+    monkeypatch.delenv("PREFECT_API_URL", raising=False)
+    monkeypatch.delenv("ARTISAN_PREFECT_SERVER", raising=False)
+    monkeypatch.setattr(
+        "prefect_submitit.server.discovery.DEFAULT_DATA_DIR",
+        tmp_path / "no-discovery",
+    )
 
 
 class TestDiscoverServerExplicit:
@@ -88,7 +100,7 @@ class TestDiscoverServerFile:
         discovery = discovery_dir / "server.json"
         discovery.write_text('{"url": "http://filehost:4217/api"}')
         monkeypatch.setattr(
-            "prefect_submitit.server.config.DEFAULT_DATA_DIR", discovery_dir
+            "prefect_submitit.server.discovery.DEFAULT_DATA_DIR", discovery_dir
         )
 
         info = discover_server()
@@ -101,7 +113,7 @@ class TestDiscoverServerNotFound:
         monkeypatch.delenv("PREFECT_SUBMITIT_SERVER", raising=False)
         monkeypatch.delenv("PREFECT_API_URL", raising=False)
         monkeypatch.setattr(
-            "prefect_submitit.server.config.DEFAULT_DATA_DIR",
+            "prefect_submitit.server.discovery.DEFAULT_DATA_DIR",
             tmp_path / "nonexistent",
         )
         with pytest.raises(PrefectServerNotFound):
@@ -133,7 +145,7 @@ class TestDeprecationWarning:
         # raise PrefectServerNotFound (nothing else to resolve from).
         # Patch DEFAULT_DATA_DIR to ensure no discovery file is found.
         monkeypatch.setattr(
-            "prefect_submitit.server.config.DEFAULT_DATA_DIR",
+            "prefect_submitit.server.discovery.DEFAULT_DATA_DIR",
             Path("/nonexistent"),
         )
         with pytest.warns(DeprecationWarning, match="ARTISAN_PREFECT_SERVER"):
@@ -163,7 +175,7 @@ class TestValidateHealth:
     def _allow_real_health_check(self):
         """Override module-level mock to allow real health check in this class."""
         with patch(
-            "prefect_submitit.server.discovery.health_check",
+            "artisan.orchestration.prefect_server.health_check",
             return_value=False,
         ):
             yield
