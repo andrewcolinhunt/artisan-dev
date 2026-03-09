@@ -74,7 +74,8 @@ class ChainBuilder:
         self,
         operation: type[OperationDefinition],
         params: dict[str, Any] | None = None,
-        command: dict[str, Any] | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
         role_mapping: dict[str, str] | None = None,
     ) -> ChainBuilder:
         """Add an operation to the chain.
@@ -82,7 +83,8 @@ class ChainBuilder:
         Args:
             operation: OperationDefinition subclass to add.
             params: Parameter overrides for this operation.
-            command: Command config overrides for this operation.
+            environment: Environment override for this operation.
+            tool: Tool overrides for this operation.
             role_mapping: Explicit role remapping from previous output
                 roles to this operation's input roles. None means
                 identity mapping (match by name).
@@ -109,7 +111,11 @@ class ChainBuilder:
                 prev_op_class.outputs, operation.inputs, role_mapping
             )
 
-        self._operations.append((operation, params, command))
+        # Store config as merged dict for the chain executor
+        from artisan.orchestration.engine.step_executor import _merge_config_overrides
+
+        config = _merge_config_overrides(environment, tool)
+        self._operations.append((operation, params, config))
         if len(self._operations) > 1:
             self._role_mappings.append(role_mapping)
 

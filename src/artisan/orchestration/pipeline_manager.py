@@ -294,23 +294,74 @@ def _validate_execution(execution: dict[str, Any]) -> None:
         raise ValueError(msg)
 
 
-def _validate_command(
+def _validate_environment(
     operation: type[OperationDefinition],
-    command: dict[str, Any],
+    environment: str | dict[str, Any],
 ) -> None:
-    """Raise ValueError if command overrides are invalid for this operation."""
-    if "command" not in operation.model_fields:
-        msg = (
-            f"Operation '{operation.name}' does not support command overrides "
-            "(curator operations have no command field)"
+    """Raise ValueError if environment override is invalid for this operation."""
+    if isinstance(environment, str):
+        temp = operation()
+        if environment not in temp.environments.available():
+            msg = (
+                f"Environment '{environment}' not configured on {operation.name}. "
+                f"Available: {temp.environments.available()}"
+            )
+            raise ValueError(msg)
+    else:
+        from artisan.schemas.operation_config.environments import Environments
+        from artisan.schemas.operation_config.environment_spec import (
+            ApptainerEnvironmentSpec,
+            DockerEnvironmentSpec,
+            LocalEnvironmentSpec,
+            PixiEnvironmentSpec,
         )
+
+        valid_keys = set(Environments.model_fields)
+        unknown = set(environment) - valid_keys
+        if unknown:
+            msg = (
+                f"Unknown environment keys: {sorted(unknown)}. "
+                f"Valid keys: {sorted(valid_keys)}"
+            )
+            raise ValueError(msg)
+        # Validate nested dicts against their EnvironmentSpec subclass
+        env_field_types = {
+            "local": LocalEnvironmentSpec,
+            "docker": DockerEnvironmentSpec,
+            "apptainer": ApptainerEnvironmentSpec,
+            "pixi": PixiEnvironmentSpec,
+        }
+        for key, value in environment.items():
+            if key == "active" or not isinstance(value, dict):
+                continue
+            spec_cls = env_field_types.get(key)
+            if spec_cls:
+                valid_spec_keys = set(spec_cls.model_fields)
+                bad = set(value) - valid_spec_keys
+                if bad:
+                    msg = (
+                        f"Unknown keys for {key} environment: {sorted(bad)}. "
+                        f"Valid: {sorted(valid_spec_keys)}"
+                    )
+                    raise ValueError(msg)
+
+
+def _validate_tool(
+    operation: type[OperationDefinition],
+    tool: dict[str, Any],
+) -> None:
+    """Raise ValueError if tool overrides are invalid for this operation."""
+    from artisan.schemas.operation_config.tool_spec import ToolSpec
+
+    temp = operation()
+    if temp.tool is None:
+        msg = f"Operation '{operation.name}' has no tool to override"
         raise ValueError(msg)
-    command_cls = operation.model_fields["command"].annotation
-    valid_keys = set(command_cls.model_fields)
-    unknown = set(command) - valid_keys
+    valid_keys = set(ToolSpec.model_fields)
+    unknown = set(tool) - valid_keys
     if unknown:
         msg = (
-            f"Unknown command keys for {operation.name}: {sorted(unknown)}. "
+            f"Unknown tool keys: {sorted(unknown)}. "
             f"Valid keys: {sorted(valid_keys)}"
         )
         raise ValueError(msg)
@@ -737,7 +788,8 @@ class PipelineManager:
         backend: str | BackendBase | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        command: dict[str, Any] | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -753,9 +805,11 @@ class PipelineManager:
             params: Parameter overrides.
             backend: Backend for execution. None uses pipeline default.
                 Accepts a BackendBase instance or string name.
-            resources: SLURM resource overrides (partition, mem_gb, etc.).
+            resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-            command: Command config overrides (image, binds, etc.).
+            environment: Environment override. String selects the active
+                environment; dict overrides fields on the Environments model.
+            tool: Tool overrides (executable, interpreter, etc.).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
@@ -770,7 +824,8 @@ class PipelineManager:
             backend=backend,
             resources=resources,
             execution=execution,
-            command=command,
+            environment=environment,
+            tool=tool,
             failure_policy=failure_policy,
             compact=compact,
             name=name,
@@ -789,7 +844,8 @@ class PipelineManager:
         backend: str | BackendBase | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        command: dict[str, Any] | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -809,9 +865,11 @@ class PipelineManager:
             params: Parameter overrides.
             backend: Backend for execution. None uses pipeline default.
                 Accepts a BackendBase instance or string name.
-            resources: SLURM resource overrides (partition, mem_gb, etc.).
+            resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-            command: Command config overrides (image, binds, etc.).
+            environment: Environment override. String selects the active
+                environment; dict overrides fields on the Environments model.
+            tool: Tool overrides (executable, interpreter, etc.).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
@@ -829,8 +887,10 @@ class PipelineManager:
             _validate_resources(resources)
         if execution:
             _validate_execution(execution)
-        if command:
-            _validate_command(operation, command)
+        if environment is not None:
+            _validate_environment(operation, environment)
+        if tool:
+            _validate_tool(operation, tool)
         _validate_input_roles(operation, inputs)
         _validate_required_inputs(operation, inputs)
         _validate_input_types(operation, inputs)
@@ -887,7 +947,7 @@ class PipelineManager:
         # Instantiate operation to get full params (defaults + overrides)
         # for deterministic step_spec_id computation
         temp_instance = instantiate_operation(
-            operation, params, resources, execution, command
+            operation, params, resources, execution, environment, tool
         )
         if "params" in type(temp_instance).model_fields:
             full_params = temp_instance.params.model_dump(mode="json")
@@ -901,14 +961,19 @@ class PipelineManager:
                 if k not in base_fields
             }
 
-        # Compute step_spec_id for caching (includes command overrides)
+        # Merge environment + tool overrides for hashing
+        from artisan.orchestration.engine.step_executor import _merge_config_overrides
+
+        config_overrides = _merge_config_overrides(environment, tool)
+
+        # Compute step_spec_id for caching
         input_spec = self._build_input_spec(inputs)
         step_spec_id = compute_step_spec_id(
             operation_name=operation.name,
             step_number=step_number,
             params=full_params if full_params else None,
             input_spec=input_spec,
-            command_overrides=command,
+            config_overrides=config_overrides,
         )
 
         # Check step cache
@@ -1006,7 +1071,8 @@ class PipelineManager:
         compute_options_data = {
             "resources": resources or {},
             "execution": execution or {},
-            "command": command or {},
+            "environment": (environment if environment is not None else {}),
+            "tool": tool or {},
         }
         start_record = StepStartRecord(
             step_run_id=step_run_id,
@@ -1042,7 +1108,8 @@ class PipelineManager:
                     backend=resolved_backend,
                     resources=resources,
                     execution=execution,
-                    command=command,
+                    environment=environment,
+                    tool=tool,
                     step_number=step_number,
                     config=self._config,
                     failure_policy=_failure_policy,
