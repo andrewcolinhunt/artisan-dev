@@ -250,14 +250,13 @@ No new storage tables, provenance utilities, or framework methods required.
 |---|---|
 | `_partition_criteria()` | No explicit/implicit split |
 | `_build_criteria_lists()` | No dual namespace (explicit vs `_implicit.` prefix) |
-| `_match_explicit()` | Replaced by step-targeted backward walk |
+| `_match_explicit()` | Replaced by `_discover_descendant_metrics()` (forward) and `_discover_step_metrics()` (backward) |
 | `_hydrate_as_wide_df()` | Replaced by `_build_metric_namespace()` |
 | `_validate_criteria()` | No role validation (no roles) |
 | `_implicit` synthetic role key | No dual namespaces |
 | `runtime_defined_inputs = True` | No dynamic metric input roles |
 | `independent_input_streams = True` | Only one input stream |
 | Inline implicit resolution in `execute_curator` (`get_descendant_ids_df` call) | Replaced by unified forward walk |
-| Role-prefixed column logic in `_hydrate_as_wide_df` | Criteria are just field names |
 
 ### Added
 
@@ -276,17 +275,16 @@ No new storage tables, provenance utilities, or framework methods required.
 |---|---|
 | `execute_curator()` | Simplified top-level flow using new helpers, no partition/dual-path logic |
 | `_DiagnosticsAccumulator.finalize()` | Report step name/number instead of role names |
-| `_criterion_to_expr()` | No change needed (already field-based) |
 
 ---
 
 ## Diagnostics
 
-The diagnostics dict (version 3) reports step-based provenance instead of roles:
+The diagnostics dict (version 4) reports step-based provenance instead of roles:
 
 ```python
 {
-    "version": 3,
+    "version": 4,
     "total_input": 100,
     "total_metrics_discovered": 95,
     "total_passed": 42,
