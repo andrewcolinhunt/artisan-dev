@@ -56,7 +56,8 @@ def instantiate_operation(
     params: dict[str, Any] | None,
     resources: dict[str, Any] | None = None,
     execution: dict[str, Any] | None = None,
-    command: dict[str, Any] | None = None,
+    environment: str | dict[str, Any] | None = None,
+    tool: dict[str, Any] | None = None,
 ) -> OperationDefinition:
     """Construct an operation instance from class, params, and overrides.
 
@@ -65,11 +66,14 @@ def instantiate_operation(
         params: User-provided parameters (merged into params sub-model or flat fields).
         resources: Optional resource overrides (applied via model_copy).
         execution: Optional execution overrides (applied via model_copy).
-        command: Optional command config overrides (applied via model_copy).
+        environment: Optional environment override. String selects the active
+            environment; dict deep-merges nested EnvironmentSpec fields.
+        tool: Optional tool overrides (applied via model_copy on instance.tool).
 
     Returns:
         Fully configured operation instance.
     """
+    from artisan.schemas.operation_config.environment_spec import EnvironmentSpec
 
     init_kwargs: dict[str, Any] = {}
 
@@ -84,14 +88,32 @@ def instantiate_operation(
 
     instance = operation_class(**init_kwargs)
 
-    # Apply resource/execution/command overrides via model_copy
+    # Apply overrides via model_copy
     updates: dict[str, Any] = {}
     if resources:
         updates["resources"] = instance.resources.model_copy(update=resources)
     if execution:
         updates["execution"] = instance.execution.model_copy(update=execution)
-    if command and hasattr(instance, "command"):
-        updates["command"] = instance.command.model_copy(update=command)
+    if tool and instance.tool is not None:
+        updates["tool"] = instance.tool.model_copy(update=tool)
+    if environment is not None:
+        if isinstance(environment, str):
+            updates["environments"] = instance.environments.model_copy(
+                update={"active": environment}
+            )
+        else:
+            # Deep-merge nested environment specs so partial overrides
+            # (e.g. {"docker": {"image": "v2"}}) don't discard other fields.
+            env_updates: dict[str, Any] = {}
+            for key, value in environment.items():
+                current = getattr(instance.environments, key, None)
+                if isinstance(current, EnvironmentSpec) and isinstance(value, dict):
+                    env_updates[key] = current.model_copy(update=value)
+                else:
+                    env_updates[key] = value
+            updates["environments"] = instance.environments.model_copy(
+                update=env_updates
+            )
     if updates:
         instance = instance.model_copy(update=updates)
 
@@ -203,7 +225,8 @@ def execute_step(
     backend: BackendBase,
     resources: dict[str, Any] | None = None,
     execution: dict[str, Any] | None = None,
-    command: dict[str, Any] | None = None,
+    environment: str | dict[str, Any] | None = None,
+    tool: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -223,9 +246,10 @@ def execute_step(
         inputs: Input specification (see PipelineManager.run() for formats).
         params: Parameter overrides.
         backend: Backend to use for execution.
-        resources: SLURM resource overrides (partition, mem_gb, etc.).
+        resources: Resource overrides (cpus, memory_gb, etc.).
         execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-        command: Command config overrides (image, binds, etc.).
+        environment: Environment override (string or dict).
+        tool: Tool overrides (executable, interpreter, etc.).
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: "continue" or "fail_fast".
@@ -238,16 +262,19 @@ def execute_step(
         StepResult with output references and execution metadata.
     """
     operation = instantiate_operation(
-        operation_class, params, resources, execution, command
+        operation_class, params, resources, execution, environment, tool
     )
     user_overrides = params or {}
+
+    # Merge environment + tool into config_overrides for hashing
+    config_overrides = _merge_config_overrides(environment, tool)
 
     # Check if this is a curator operation
     if is_curator_operation(operation):
         return _execute_curator_step(
             operation=operation,
             inputs=inputs,
-            command_overrides=command,
+            config_overrides=config_overrides,
             step_number=step_number,
             config=config,
             failure_policy=failure_policy,
@@ -261,7 +288,7 @@ def execute_step(
         operation=operation,
         inputs=inputs,
         backend=backend,
-        command_overrides=command,
+        config_overrides=config_overrides,
         step_number=step_number,
         config=config,
         failure_policy=failure_policy,
@@ -270,10 +297,26 @@ def execute_step(
     )
 
 
+def _merge_config_overrides(
+    environment: str | dict[str, Any] | None,
+    tool: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Merge environment and tool overrides into a single dict for hashing."""
+    merged: dict[str, Any] = {}
+    if environment is not None:
+        if isinstance(environment, str):
+            merged["environment"] = environment
+        else:
+            merged["environment"] = environment
+    if tool:
+        merged["tool"] = tool
+    return merged or None
+
+
 def _execute_curator_step(
     operation: OperationDefinition,
     inputs: Any,
-    command_overrides: dict[str, Any] | None = None,
+    config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -289,7 +332,7 @@ def _execute_curator_step(
     Args:
         operation: Fully configured curator operation instance.
         inputs: Input specification.
-        command_overrides: Raw command overrides dict (for hashing only).
+        config_overrides: Merged environment + tool overrides (for hashing only).
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
@@ -364,7 +407,7 @@ def _execute_curator_step(
                 operation_name=operation.name,
                 inputs=paired_inputs,
                 params=merged_params,
-                command_overrides=command_overrides,
+                config_overrides=config_overrides,
             )
             cache_result = check_cache_for_batch(spec_id, config.delta_root)
             if cache_result is not None:
@@ -569,7 +612,7 @@ def _execute_creator_step(
     operation: OperationDefinition,
     inputs: Any,
     backend: BackendBase,
-    command_overrides: dict[str, Any] | None = None,
+    config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -582,7 +625,7 @@ def _execute_creator_step(
         operation: Fully configured creator operation instance.
         inputs: Input specification.
         backend: Backend for worker dispatch.
-        command_overrides: Raw command overrides dict (for hashing only).
+        config_overrides: Merged environment + tool overrides (for hashing only).
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
@@ -671,7 +714,7 @@ def _execute_creator_step(
                 operation_name=operation.name,
                 inputs=execution_unit_inputs,
                 params=merged_params,
-                command_overrides=command_overrides,
+                config_overrides=config_overrides,
             )
 
             # Cache lookup
@@ -860,7 +903,7 @@ def execute_chain_step(
     commit and compaction — mirroring _execute_creator_step for single ops.
 
     Args:
-        operations: List of (op_class, params, command) tuples.
+        operations: List of (op_class, params, config) tuples.
         role_mappings: Role remappings between adjacent operations.
         inputs: Initial inputs (same formats as execute_step).
         backend: Backend for worker dispatch.

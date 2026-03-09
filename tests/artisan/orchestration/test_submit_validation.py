@@ -20,16 +20,22 @@ from pydantic import BaseModel
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import (
-    _validate_command,
+    _validate_environment,
     _validate_execution,
     _validate_input_roles,
     _validate_input_types,
     _validate_params,
     _validate_required_inputs,
     _validate_resources,
+    _validate_tool,
 )
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.operation_config.command_spec import ApptainerCommandSpec
+from artisan.schemas.operation_config.environment_spec import (
+    ApptainerEnvironmentSpec,
+    DockerEnvironmentSpec,
+)
+from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -84,7 +90,7 @@ class MockFlatFieldsOp(OperationDefinition):
 
 
 class MockCreatorOp(OperationDefinition):
-    """Creator op with a command field (for command override tests)."""
+    """Creator op with tool and environments (for override tests)."""
 
     class InputRole(StrEnum):
         data = auto()
@@ -103,10 +109,10 @@ class MockCreatorOp(OperationDefinition):
         ),
     }
 
-    command: ApptainerCommandSpec = ApptainerCommandSpec(
-        script="/opt/run.sh",
-        arg_style="hydra",
-        image="/opt/image.sif",
+    tool: ToolSpec = ToolSpec(executable="/opt/run.sh")
+    environments: Environments = Environments(
+        apptainer=ApptainerEnvironmentSpec(image="/opt/image.sif"),
+        docker=DockerEnvironmentSpec(image="img:latest"),
     )
 
     def preprocess(self, inputs: Any) -> dict:
@@ -285,30 +291,66 @@ class TestValidateExecution:
 
 
 # =============================================================================
-# Tests for _validate_command
+# Tests for _validate_environment
 # =============================================================================
 
 
-class TestValidateCommand:
-    """Tests for command validation."""
+class TestValidateEnvironment:
+    """Tests for environment validation."""
 
-    def test_valid_command_override(self):
-        """Valid command keys should not raise."""
-        _validate_command(MockCreatorOp, {"gpu": True})
+    def test_valid_string_environment(self):
+        """Valid environment string should not raise."""
+        _validate_environment(MockCreatorOp, "local")
 
-    def test_unknown_command_key_raises(self):
-        """Unknown command key should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown command keys.*bogus"):
-            _validate_command(MockCreatorOp, {"bogus": True})
+    def test_unknown_string_environment_raises(self):
+        """Unknown environment string should raise ValueError."""
+        with pytest.raises(ValueError, match="not configured"):
+            _validate_environment(MockCreatorOp, "pixi")
 
-    def test_curator_op_raises_on_command(self):
-        """Curator ops without command field should raise on any command overrides."""
-        with pytest.raises(ValueError, match="does not support command overrides"):
-            _validate_command(MockCuratorOp, {"gpu": True})
+    def test_valid_dict_environment(self):
+        """Valid environment dict should not raise."""
+        _validate_environment(MockCreatorOp, {"active": "docker"})
 
-    def test_empty_command_accepted(self):
-        """Empty command dict should not raise (treated as no overrides)."""
-        _validate_command(MockCreatorOp, {})
+    def test_unknown_environment_key_raises(self):
+        """Unknown environment key should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown environment keys.*bogus"):
+            _validate_environment(MockCreatorOp, {"bogus": True})
+
+    def test_unknown_nested_key_raises(self):
+        """Unknown key in nested environment spec should raise."""
+        with pytest.raises(ValueError, match="Unknown keys for docker.*bogus"):
+            _validate_environment(MockCreatorOp, {"docker": {"bogus": True}})
+
+    def test_empty_dict_accepted(self):
+        """Empty dict should not raise."""
+        _validate_environment(MockCreatorOp, {})
+
+
+# =============================================================================
+# Tests for _validate_tool
+# =============================================================================
+
+
+class TestValidateTool:
+    """Tests for tool validation."""
+
+    def test_valid_tool_override(self):
+        """Valid tool keys should not raise."""
+        _validate_tool(MockCreatorOp, {"executable": "/new/path"})
+
+    def test_unknown_tool_key_raises(self):
+        """Unknown tool key should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown tool keys.*bogus"):
+            _validate_tool(MockCreatorOp, {"bogus": True})
+
+    def test_no_tool_raises(self):
+        """Operation without tool should raise on tool override."""
+        with pytest.raises(ValueError, match="has no tool to override"):
+            _validate_tool(MockCuratorOp, {"executable": "/new"})
+
+    def test_empty_tool_accepted(self):
+        """Empty tool dict should not raise."""
+        _validate_tool(MockCreatorOp, {})
 
 
 # =============================================================================
@@ -357,7 +399,12 @@ class TestNoOverrides:
         )
 
         instance = instantiate_operation(
-            MockOpWithParams, params=None, resources=None, execution=None, command=None
+            MockOpWithParams,
+            params=None,
+            resources=None,
+            execution=None,
+            environment=None,
+            tool=None,
         )
         assert instance.params.count == 1
         assert instance.resources.partition == "cpu"

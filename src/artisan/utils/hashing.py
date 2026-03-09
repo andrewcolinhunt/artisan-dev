@@ -29,7 +29,7 @@ def compute_execution_spec_id(
     operation_name: str,
     inputs: dict[str, list[str]],
     params: dict[str, Any] | None = None,
-    command_overrides: dict[str, Any] | None = None,
+    config_overrides: dict[str, Any] | None = None,
 ) -> str:
     """Compute deterministic execution_spec_id with canonicalization.
 
@@ -37,15 +37,15 @@ def compute_execution_spec_id(
     - operation_name: The operation's name attribute
     - inputs: All artifact IDs being processed
     - params: Merged parameters (defaults + overrides)
-    - command_overrides: Runtime command config overrides (image, binds, etc.)
+    - config_overrides: Runtime config overrides (environment, tool, etc.)
 
     Args:
         operation_name: The operation's name attribute.
         inputs: Dict mapping role to list of artifact IDs (the batch).
         params: Merged parameters dict (defaults + runtime overrides).
             Will be JSON-canonicalized for deterministic hashing.
-        command_overrides: Optional command config overrides that affect
-            execution behavior (e.g., container image, bind mounts).
+        config_overrides: Optional config overrides that affect execution
+            behavior (merged environment + tool overrides).
 
     Returns:
         32-character xxh3_128 hex string.
@@ -59,11 +59,11 @@ def compute_execution_spec_id(
     # Canonicalize params dict
     params_json = _canonicalize_dict(params)
 
-    # Canonicalize command overrides
-    command_json = _canonicalize_dict(command_overrides)
+    # Canonicalize config overrides
+    config_json = _canonicalize_dict(config_overrides)
 
-    # Hash: operation_name | sorted_artifact_ids | params_json | command_json
-    hash_input = f"{operation_name}|{sorted_ids}|{params_json}|{command_json}"
+    # Hash: operation_name | sorted_artifact_ids | params_json | config_json
+    hash_input = f"{operation_name}|{sorted_ids}|{params_json}|{config_json}"
 
     return xxhash.xxh3_128(hash_input.encode()).hexdigest()
 
@@ -73,7 +73,7 @@ def compute_step_spec_id(
     step_number: int,
     params: dict[str, Any] | None,
     input_spec: dict[str, tuple[str, str]],
-    command_overrides: dict[str, Any] | None = None,
+    config_overrides: dict[str, Any] | None = None,
 ) -> str:
     """Compute deterministic step_spec_id for step-level caching.
 
@@ -87,8 +87,8 @@ def compute_step_spec_id(
         params: Merged parameters dict.
         input_spec: Maps each input role to a (upstream_step_spec_id,
             upstream_role) tuple.
-        command_overrides: Optional command config overrides that affect
-            execution behavior (e.g., container image, bind mounts).
+        config_overrides: Optional config overrides that affect execution
+            behavior (merged environment + tool overrides).
 
     Returns:
         32-character xxh3_128 hex string.
@@ -100,10 +100,10 @@ def compute_step_spec_id(
     input_str = ",".join(input_parts)
 
     params_json = _canonicalize_dict(params)
-    command_json = _canonicalize_dict(command_overrides)
+    config_json = _canonicalize_dict(config_overrides)
 
     hash_input = (
-        f"{operation_name}|{step_number}|{input_str}|{params_json}|{command_json}"
+        f"{operation_name}|{step_number}|{input_str}|{params_json}|{config_json}"
     )
     return xxhash.xxh3_128(hash_input.encode()).hexdigest()
 
