@@ -5,7 +5,8 @@ How to create a pipeline, wire steps together, and run it to completion.
 **Prerequisites:** Familiarity with [Operations Model](../concepts/operations-model.md)
 and at least one [operation type](writing-creator-operations.md).
 
-**Key types:** `PipelineManager`, `StepResult`, `StepFuture`, `OutputReference`
+**Key types:** `PipelineManager`, `StepResult`, `StepFuture`, `OutputReference`,
+`FailurePolicy`, `CachePolicy`
 
 ---
 
@@ -42,7 +43,7 @@ The rest of this guide breaks down each piece.
 
 ---
 
-## Step 1: Create a pipeline
+## Create a pipeline
 
 ```python
 pipeline = PipelineManager.create(
@@ -58,10 +59,12 @@ pipeline = PipelineManager.create(
 | `delta_root` | `Path \| str` | — | Where Delta Lake tables are written |
 | `staging_root` | `Path \| str` | — | Where workers write intermediate files before commit |
 | `working_root` | `Path \| str \| None` | `tempfile.gettempdir()` | Worker sandbox directory. Defaults to `$TMPDIR` |
-| `failure_policy` | `"continue" \| "fail_fast"` | `"continue"` | How to handle step failures |
-| `max_workers_local` | `int` | `4` | Thread pool size for local execution |
+| `failure_policy` | `FailurePolicy` | `CONTINUE` | How to handle step failures (`CONTINUE` or `FAIL_FAST`) |
+| `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When completed steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
+| `backend` | `str \| BackendBase` | `"local"` | Default execution backend. Accepts an instance or string name (`"local"`, `"slurm"`) |
 | `preserve_staging` | `bool` | `False` | Keep staging files after commit (debugging) |
 | `preserve_working` | `bool` | `False` | Keep worker sandboxes after execution (debugging) |
+| `recover_staging` | `bool` | `True` | Commit leftover staging files from prior crashed runs at init |
 
 Both `delta_root` and `staging_root` are created automatically if they do not
 exist. For production SLURM runs, omit `working_root` — the default uses
@@ -69,7 +72,7 @@ node-local scratch, which avoids shared filesystem contention.
 
 ---
 
-## Step 2: Add steps
+## Add steps
 
 Every step calls `pipeline.run()` with an operation class. There are three
 patterns depending on whether the step has inputs.
@@ -116,7 +119,7 @@ Lake before the operation runs.
 
 ---
 
-## Step 3: Name your steps
+## Name your steps
 
 By default, steps are named after the operation. Pass `name=` to give a step a
 custom name, then use `output()` to reference it later:
@@ -153,7 +156,7 @@ pipeline.run(operation=DataTransformer, inputs={"dataset": step0.output("dataset
 
 ---
 
-## Step 4: Finalize
+## Finalize
 
 `finalize()` waits for all pending futures, shuts down the executor, and returns
 a summary dict:
@@ -292,9 +295,9 @@ specific run; omit it to resume the most recent.
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| `ValueError: unknown output role 'X'` | Mismatched role name in `.output()` | Check the operation's `OutputRole` enum |
+| `Output role 'X' not available` | Mismatched role name in `.output()` | Check the operation's output role names |
 | Downstream step receives 0 artifacts | Upstream step failed or filtered everything out | Check `step.success` and `step.succeeded_count` |
-| `ValueError: raw file paths not supported for creator operations` | Passed a file path list to a non-curator operation | Use `IngestData` first, then wire its output |
+| `Raw file paths are not allowed for creator operations` | Passed a file path list to a non-curator operation | Use `IngestData` first, then wire its output |
 | Pipeline hangs on exit | Forgot `finalize()` after using `submit()` | Call `pipeline.finalize()` |
 | Stale results after code change | Content-addressed cache hit from a previous run | Use a fresh `delta_root` or change `name` |
 
