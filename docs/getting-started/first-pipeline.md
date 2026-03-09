@@ -9,7 +9,7 @@ only example operations — no GPU or external tools needed.
 By the end you will have generated datasets, computed metrics,
 filtered results, and inspected provenance.
 
-**Time:** ~15 minutes
+**Estimated time:** 15 minutes
 **Prerequisites:** Artisan installed (`pixi install`), Prefect server running (`pixi run prefect-start`)
 
 **Key types:** `PipelineManager`, `StepResult`, `OutputReference`
