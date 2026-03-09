@@ -2,7 +2,7 @@
 
 ## TOP PRIORITIES
 
-- evaluate new command building
+- update artisan to use prefect-submitit server starting
 - update artisan documentation
 - get skills set up
 
