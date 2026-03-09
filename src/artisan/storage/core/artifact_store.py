@@ -612,7 +612,13 @@ class ArtifactStore:
 
         return {}
 
-    def load_provenance_edges_df(self, step_min: int, step_max: int) -> pl.DataFrame:
+    def load_provenance_edges_df(
+        self,
+        step_min: int,
+        step_max: int,
+        *,
+        include_target_type: bool = False,
+    ) -> pl.DataFrame:
         """Load provenance edges where both endpoints fall within a step range.
 
         Join artifact_edges with artifact_index to resolve step numbers,
@@ -622,15 +628,19 @@ class ArtifactStore:
         Args:
             step_min: Minimum step number (inclusive).
             step_max: Maximum step number (inclusive).
+            include_target_type: When True, include ``target_artifact_type``
+                column from the edges table in the output.
 
         Returns:
             DataFrame with columns ``[source_artifact_id,
-            target_artifact_id]``. Empty with correct schema when no
-            edges match.
+            target_artifact_id]`` (plus ``target_artifact_type`` when
+            requested). Empty with correct schema when no edges match.
         """
-        empty = pl.DataFrame(
-            schema={"source_artifact_id": pl.String, "target_artifact_id": pl.String}
+        base_cols = ["source_artifact_id", "target_artifact_id"]
+        output_cols = (
+            [*base_cols, "target_artifact_type"] if include_target_type else base_cols
         )
+        empty = pl.DataFrame(schema={c: pl.String for c in output_cols})
 
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)
@@ -638,9 +648,10 @@ class ArtifactStore:
         if not prov_path.exists() or not index_path.exists():
             return empty
 
-        edges = pl.scan_delta(str(prov_path)).select(
-            ["source_artifact_id", "target_artifact_id"]
+        edge_select = (
+            [*base_cols, "target_artifact_type"] if include_target_type else base_cols
         )
+        edges = pl.scan_delta(str(prov_path)).select(edge_select)
         index = pl.scan_delta(str(index_path)).select(
             ["artifact_id", "origin_step_number"]
         )
@@ -656,7 +667,7 @@ class ArtifactStore:
                 & (pl.col("target_step") >= step_min)
                 & (pl.col("target_step") <= step_max)
             )
-            .select(["source_artifact_id", "target_artifact_id"])
+            .select(output_cols)
             .collect()
         )
 

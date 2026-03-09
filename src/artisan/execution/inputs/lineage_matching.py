@@ -1,7 +1,7 @@
-"""Backward-walk ancestry matching for artifact provenance graphs.
+"""Provenance graph walking for artifact lineage matching.
 
-Match candidate artifacts to target artifacts by walking provenance
-edges backward.  Used by Filter and multi-input pairing operations.
+Forward and backward walks through provenance edges for metric
+discovery and multi-input pairing.
 
 Complexity: O((T + M) x A) where T = targets, M = candidates,
 A = average ancestry depth.
@@ -138,6 +138,109 @@ def walk_provenance_to_targets(
         return empty
 
     return pl.concat(all_matched)
+
+
+def walk_forward_to_targets(
+    sources: pl.DataFrame,
+    edges: pl.DataFrame,
+    target_type: str | None = None,
+) -> pl.DataFrame:
+    """Walk forward from sources through provenance edges to find targets.
+
+    Iterative forward walk: frontier starts as sources, each iteration
+    joins on edges to step forward one hop, checks for target matches,
+    continues with all sources (all-match semantics — one source can
+    match multiple targets).
+
+    Args:
+        sources: DataFrame with at least an ``artifact_id`` column.
+        edges: DataFrame with ``source_artifact_id``, ``target_artifact_id``,
+            and optionally ``target_artifact_type`` (required when
+            ``target_type`` is specified).
+        target_type: When set, only nodes whose ``target_artifact_type``
+            matches count as targets.
+
+    Returns:
+        DataFrame with columns [source_id, target_id] for matched pairs.
+        Sources without a matching target are omitted.
+    """
+    empty = pl.DataFrame(schema={"source_id": pl.String, "target_id": pl.String})
+
+    if sources.is_empty() or edges.is_empty():
+        return empty
+
+    # frontier: (source_id, current_node) — tracks the walk state
+    frontier = pl.DataFrame(
+        {
+            "source_id": sources["artifact_id"],
+            "current_node": sources["artifact_id"],
+        }
+    )
+
+    # visited: (source_id, node) — all nodes visited per source
+    visited = frontier.select("source_id", pl.col("current_node").alias("node"))
+
+    all_matched: list[pl.DataFrame] = []
+
+    while not frontier.is_empty():
+        # Walk forward one hop: current_node is a source_artifact_id in edges
+        stepped = frontier.join(
+            edges,
+            left_on="current_node",
+            right_on="source_artifact_id",
+            how="inner",
+        ).select(
+            pl.col("source_id"),
+            pl.col("target_artifact_id").alias("current_node"),
+            *([pl.col("target_artifact_type")] if "target_artifact_type" in edges.columns else []),
+        )
+
+        if stepped.is_empty():
+            break
+
+        # Anti-join with visited to skip already-seen nodes
+        stepped = stepped.join(
+            visited,
+            left_on=["source_id", "current_node"],
+            right_on=["source_id", "node"],
+            how="anti",
+        )
+
+        if stepped.is_empty():
+            break
+
+        # Add to visited
+        visited = pl.concat(
+            [
+                visited,
+                stepped.select("source_id", pl.col("current_node").alias("node")),
+            ]
+        )
+
+        # Check for target matches
+        if target_type is not None and "target_artifact_type" in stepped.columns:
+            new_matches = stepped.filter(
+                pl.col("target_artifact_type") == target_type
+            ).select(
+                pl.col("source_id"),
+                pl.col("current_node").alias("target_id"),
+            )
+        else:
+            new_matches = stepped.select(
+                pl.col("source_id"),
+                pl.col("current_node").alias("target_id"),
+            )
+
+        if not new_matches.is_empty():
+            all_matched.append(new_matches)
+
+        # All-match semantics: keep all sources in frontier (not just unmatched)
+        frontier = stepped.select("source_id", "current_node")
+
+    if not all_matched:
+        return empty
+
+    return pl.concat(all_matched).unique()
 
 
 def match_by_ancestry(
