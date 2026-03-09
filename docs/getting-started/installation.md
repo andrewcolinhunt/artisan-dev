@@ -45,7 +45,7 @@ pixi run prefect-stop
 You can also point to an existing Prefect server instead of starting a local one:
 
 ```bash
-export ARTISAN_PREFECT_SERVER=http://<host>:<port>/api
+export PREFECT_SUBMITIT_SERVER=http://<host>:<port>/api
 ```
 
 ## IDE Setup (VSCode)
