@@ -68,6 +68,7 @@ class TestLoadProvenanceEdgesDf:
                     "source_role": "data",
                     "target_role": "metric",
                     "group_id": None,
+                    "step_boundary": True,
                 }
             ],
         )
@@ -110,6 +111,7 @@ class TestLoadProvenanceEdgesDf:
                     "source_role": "data",
                     "target_role": "metric",
                     "group_id": None,
+                    "step_boundary": True,
                 }
             ],
         )

@@ -47,6 +47,7 @@ project:
             - file: tutorials/pipeline-patterns/04-multi-input-operations.ipynb
             - file: tutorials/pipeline-patterns/05-advanced-patterns.ipynb
             - file: tutorials/pipeline-patterns/06-error-visibility.ipynb
+            - file: tutorials/pipeline-patterns/07-composable-operations.ipynb
         - title: Working with Results
           children:
             - file: tutorials/working-with-results/01-provenance-graphs.ipynb

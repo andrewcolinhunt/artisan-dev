@@ -28,7 +28,7 @@ The rest of this guide covers each inspection technique in detail.
 
 ---
 
-## Step 1: Get a pipeline overview
+## Get a pipeline overview
 
 Start with `inspect_pipeline` to see what happened at each step:
 
@@ -56,7 +56,7 @@ inspect_pipeline(delta_root, pipeline_run_id="run_abc123...")
 
 ---
 
-## Step 2: Inspect artifacts at a step
+## Inspect artifacts at a step
 
 Drill into a step to see individual artifacts:
 
@@ -73,11 +73,11 @@ Returns one row per artifact with type-specific details:
 | `data` | `"N rows, M cols"` |
 | `metric` | Up to 4 metric key names |
 | `config` | `"N params"` |
-| `file_ref`, `structure` | Human-readable file size |
+| `file_ref` | Human-readable file size |
 
 ---
 
-## Step 3: Read metric values
+## Read metric values
 
 `inspect_metrics` parses metric JSON into a flat table with one column per
 metric key:
@@ -97,7 +97,7 @@ becomes a column).
 
 ---
 
-## Step 4: Read data artifact contents
+## Read data artifact contents
 
 `inspect_data` parses the actual CSV content of `DataArtifact` entries:
 
@@ -113,7 +113,7 @@ df = inspect_data(delta_root, step_number=1)
 
 ---
 
-## Step 5: Visualize the pipeline graph
+## Visualize the pipeline graph
 
 ### Macro graph (step-level)
 
@@ -175,7 +175,7 @@ display_provenance_stepper(delta_root)
 
 ---
 
-## Step 6: Trace lineage programmatically
+## Trace lineage programmatically
 
 Use `ArtifactStore` when you need lineage data in code rather than as a
 visualization.
@@ -246,7 +246,7 @@ metrics = store.get_associated({"abc123..."}, associated_type="metric")
 
 ---
 
-## Step 7: Look up artifact metadata
+## Look up artifact metadata
 
 ```python
 store = ArtifactStore(delta_root)
@@ -266,7 +266,7 @@ ids = store.load_artifact_ids_by_type("metric", step_numbers=[2, 3])
 
 ---
 
-## Step 8: Profile execution timing
+## Profile execution timing
 
 `PipelineTimings` provides step-level and execution-level timing breakdowns:
 

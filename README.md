@@ -79,6 +79,18 @@ pixi run install-kernel
 
 In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**.
 
+### VS Code Jupyter Kernel Slowness (Pixi Environments)
+
+If your pixi Jupyter kernel takes 30+ seconds to start in VS Code, the
+`Python Environments` extension (`ms-python.vscode-python-envs`) is likely the
+cause. It doesn't recognize pixi as a known environment type and spends 30
+seconds trying to activate it before timing out.
+
+**Fix:** Uninstall the `Python Environments` extension (`ms-python.vscode-python-envs`)
+in VS Code. The core Python extension works fine without it.
+
+Tracked upstream: [microsoft/vscode-python#25804](https://github.com/microsoft/vscode-python/issues/25804)
+
 ---
 
 ## Quick Example
@@ -94,27 +106,31 @@ pipeline = PipelineManager.create(
     staging_root="runs/staging",
     working_root="runs/working",
 )
+output = pipeline.output
 
 # Generate datasets -> transform -> compute metrics -> filter by score
-step0 = pipeline.run(DataGenerator, params={"count": 5, "seed": 42})
-step1 = pipeline.run(
-    DataTransformer,
-    inputs={"dataset": step0.output("datasets")},
+pipeline.run(operation=DataGenerator, name="generate", params={"count": 5, "seed": 42})
+pipeline.run(
+    operation=DataTransformer,
+    name="transform",
+    inputs={"dataset": output("generate", "datasets")},
     params={"scale_factor": 2.0},
 )
-step2 = pipeline.run(
-    MetricCalculator,
-    inputs={"dataset": step1.output("dataset")},
+pipeline.run(
+    operation=MetricCalculator,
+    name="score",
+    inputs={"dataset": output("transform", "dataset")},
 )
-step3 = pipeline.run(
-    Filter,
+pipeline.run(
+    operation=Filter,
+    name="filter",
     inputs={
-        "passthrough": step1.output("dataset"),
-        "metrics": step2.output("metrics"),
+        "passthrough": output("transform", "dataset"),
+        "scores": output("score", "metrics"),
     },
     params={
         "criteria": [
-            {"metric": "metrics.mean_score", "operator": "gt", "value": 0.5},
+            {"metric": "scores.distribution.median", "operator": "gt", "value": 0.5},
         ]
     },
 )

@@ -56,7 +56,8 @@ def instantiate_operation(
     params: dict[str, Any] | None,
     resources: dict[str, Any] | None = None,
     execution: dict[str, Any] | None = None,
-    command: dict[str, Any] | None = None,
+    environment: str | dict[str, Any] | None = None,
+    tool: dict[str, Any] | None = None,
 ) -> OperationDefinition:
     """Construct an operation instance from class, params, and overrides.
 
@@ -65,11 +66,14 @@ def instantiate_operation(
         params: User-provided parameters (merged into params sub-model or flat fields).
         resources: Optional resource overrides (applied via model_copy).
         execution: Optional execution overrides (applied via model_copy).
-        command: Optional command config overrides (applied via model_copy).
+        environment: Optional environment override. String selects the active
+            environment; dict deep-merges nested EnvironmentSpec fields.
+        tool: Optional tool overrides (applied via model_copy on instance.tool).
 
     Returns:
         Fully configured operation instance.
     """
+    from artisan.schemas.operation_config.environment_spec import EnvironmentSpec
 
     init_kwargs: dict[str, Any] = {}
 
@@ -84,14 +88,32 @@ def instantiate_operation(
 
     instance = operation_class(**init_kwargs)
 
-    # Apply resource/execution/command overrides via model_copy
+    # Apply overrides via model_copy
     updates: dict[str, Any] = {}
     if resources:
         updates["resources"] = instance.resources.model_copy(update=resources)
     if execution:
         updates["execution"] = instance.execution.model_copy(update=execution)
-    if command and hasattr(instance, "command"):
-        updates["command"] = instance.command.model_copy(update=command)
+    if tool and instance.tool is not None:
+        updates["tool"] = instance.tool.model_copy(update=tool)
+    if environment is not None:
+        if isinstance(environment, str):
+            updates["environments"] = instance.environments.model_copy(
+                update={"active": environment}
+            )
+        else:
+            # Deep-merge nested environment specs so partial overrides
+            # (e.g. {"docker": {"image": "v2"}}) don't discard other fields.
+            env_updates: dict[str, Any] = {}
+            for key, value in environment.items():
+                current = getattr(instance.environments, key, None)
+                if isinstance(current, EnvironmentSpec) and isinstance(value, dict):
+                    env_updates[key] = current.model_copy(update=value)
+                else:
+                    env_updates[key] = value
+            updates["environments"] = instance.environments.model_copy(
+                update=env_updates
+            )
     if updates:
         instance = instance.model_copy(update=updates)
 
@@ -187,7 +209,7 @@ def _create_runtime_environment(
         delta_root_path=config.delta_root,
         staging_root_path=config.staging_root,
         working_root_path=None if is_curator else config.working_root,
-        failure_logs_root=config.delta_root.parent / "failure_logs",
+        failure_logs_root=config.delta_root.parent / "logs" / "failures",
         preserve_staging=config.preserve_staging,
         preserve_working=config.preserve_working,
         worker_id_env_var=backend.worker_traits.worker_id_env_var if backend else None,
@@ -203,7 +225,8 @@ def execute_step(
     backend: BackendBase,
     resources: dict[str, Any] | None = None,
     execution: dict[str, Any] | None = None,
-    command: dict[str, Any] | None = None,
+    environment: str | dict[str, Any] | None = None,
+    tool: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -223,9 +246,10 @@ def execute_step(
         inputs: Input specification (see PipelineManager.run() for formats).
         params: Parameter overrides.
         backend: Backend to use for execution.
-        resources: SLURM resource overrides (partition, mem_gb, etc.).
+        resources: Resource overrides (cpus, memory_gb, etc.).
         execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-        command: Command config overrides (image, binds, etc.).
+        environment: Environment override (string or dict).
+        tool: Tool overrides (executable, interpreter, etc.).
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: "continue" or "fail_fast".
@@ -238,16 +262,19 @@ def execute_step(
         StepResult with output references and execution metadata.
     """
     operation = instantiate_operation(
-        operation_class, params, resources, execution, command
+        operation_class, params, resources, execution, environment, tool
     )
     user_overrides = params or {}
+
+    # Merge environment + tool into config_overrides for hashing
+    config_overrides = _merge_config_overrides(environment, tool)
 
     # Check if this is a curator operation
     if is_curator_operation(operation):
         return _execute_curator_step(
             operation=operation,
             inputs=inputs,
-            command_overrides=command,
+            config_overrides=config_overrides,
             step_number=step_number,
             config=config,
             failure_policy=failure_policy,
@@ -261,7 +288,7 @@ def execute_step(
         operation=operation,
         inputs=inputs,
         backend=backend,
-        command_overrides=command,
+        config_overrides=config_overrides,
         step_number=step_number,
         config=config,
         failure_policy=failure_policy,
@@ -270,10 +297,26 @@ def execute_step(
     )
 
 
+def _merge_config_overrides(
+    environment: str | dict[str, Any] | None,
+    tool: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Merge environment and tool overrides into a single dict for hashing."""
+    merged: dict[str, Any] = {}
+    if environment is not None:
+        if isinstance(environment, str):
+            merged["environment"] = environment
+        else:
+            merged["environment"] = environment
+    if tool:
+        merged["tool"] = tool
+    return merged or None
+
+
 def _execute_curator_step(
     operation: OperationDefinition,
     inputs: Any,
-    command_overrides: dict[str, Any] | None = None,
+    config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -289,7 +332,7 @@ def _execute_curator_step(
     Args:
         operation: Fully configured curator operation instance.
         inputs: Input specification.
-        command_overrides: Raw command overrides dict (for hashing only).
+        config_overrides: Merged environment + tool overrides (for hashing only).
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
@@ -309,7 +352,7 @@ def _execute_curator_step(
         resolved_inputs = resolve_inputs(inputs, config.delta_root)
         total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
         if total_artifacts > 0:
-            logger.info(
+            logger.debug(
                 "Step %d (%s): resolved %d input artifacts",
                 step_number,
                 operation.name,
@@ -318,7 +361,7 @@ def _execute_curator_step(
 
         # Skip downstream execution when upstream produced no artifacts
         if _all_inputs_empty(resolved_inputs):
-            logger.info(
+            logger.debug(
                 "Step %d (%s): all input roles are empty — skipping execution.",
                 step_number,
                 operation.name,
@@ -364,7 +407,7 @@ def _execute_curator_step(
                 operation_name=operation.name,
                 inputs=paired_inputs,
                 params=merged_params,
-                command_overrides=command_overrides,
+                config_overrides=config_overrides,
             )
             cache_result = check_cache_for_batch(spec_id, config.delta_root)
             if cache_result is not None:
@@ -569,7 +612,7 @@ def _execute_creator_step(
     operation: OperationDefinition,
     inputs: Any,
     backend: BackendBase,
-    command_overrides: dict[str, Any] | None = None,
+    config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -582,7 +625,7 @@ def _execute_creator_step(
         operation: Fully configured creator operation instance.
         inputs: Input specification.
         backend: Backend for worker dispatch.
-        command_overrides: Raw command overrides dict (for hashing only).
+        config_overrides: Merged environment + tool overrides (for hashing only).
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
@@ -606,7 +649,7 @@ def _execute_creator_step(
 
         # Skip downstream execution when upstream produced no artifacts
         if _all_inputs_empty(resolved_inputs):
-            logger.info(
+            logger.debug(
                 "Step %d (%s): all input roles are empty — skipping execution.",
                 step_number,
                 operation.name,
@@ -621,7 +664,7 @@ def _execute_creator_step(
             )
 
         total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
-        logger.info(
+        logger.debug(
             "Step %d (%s): resolved %d input artifacts",
             step_number,
             operation.name,
@@ -671,7 +714,7 @@ def _execute_creator_step(
                 operation_name=operation.name,
                 inputs=execution_unit_inputs,
                 params=merged_params,
-                command_overrides=command_overrides,
+                config_overrides=config_overrides,
             )
 
             # Cache lookup
@@ -697,7 +740,7 @@ def _execute_creator_step(
             units_to_dispatch.append(unit)
 
     total_units = len(units_to_dispatch) + cached_units
-    logger.info(
+    logger.debug(
         "Step %d (%s): %d artifacts -> %d execution units",
         step_number,
         operation.name,
@@ -705,7 +748,7 @@ def _execute_creator_step(
         total_units,
     )
     if cached_units > 0:
-        logger.info(
+        logger.debug(
             "Step %d (%s): %d units cached, %d to dispatch",
             step_number,
             operation.name,
@@ -734,7 +777,12 @@ def _execute_creator_step(
                     units_path = _save_units(
                         units_to_dispatch, config.staging_root, step_number
                     )
-                    step_flow = backend.create_flow(operation, step_number)
+                    step_flow = backend.create_flow(
+                        operation.resources,
+                        operation.execution,
+                        step_number,
+                        job_name=operation.execution.job_name or operation.name,
+                    )
                     results = step_flow(
                         units_path=str(units_path), runtime_env=runtime_env
                     )
@@ -829,6 +877,206 @@ def _execute_creator_step(
         operation=operation,
         step_number=step_number,
         succeeded_count=succeeded + cached_count,
+        failed_count=failed,
+        failure_policy=failure_policy,
+        metadata=metadata,
+    )
+
+
+def execute_chain_step(
+    operations: list[tuple[type, dict[str, Any] | None, dict[str, Any] | None]],
+    role_mappings: list[dict[str, str] | None],
+    inputs: Any,
+    backend: BackendBase,
+    chain_resources: Any,  # ResourceConfig
+    chain_execution: Any,  # ExecutionConfig
+    intermediates: Any,  # ChainIntermediates
+    step_number: int = 0,
+    config: PipelineConfig | None = None,
+    failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
+    compact: bool = True,
+    final_operation: type | None = None,
+) -> StepResult:
+    """Execute a chain of creator operations as a single pipeline step.
+
+    Builds an ExecutionChain, dispatches it through the backend, and handles
+    commit and compaction — mirroring _execute_creator_step for single ops.
+
+    Args:
+        operations: List of (op_class, params, config) tuples.
+        role_mappings: Role remappings between adjacent operations.
+        inputs: Initial inputs (same formats as execute_step).
+        backend: Backend for worker dispatch.
+        chain_resources: Chain-level ResourceConfig.
+        chain_execution: Chain-level ExecutionConfig.
+        intermediates: ChainIntermediates enum value.
+        step_number: Pipeline step number.
+        config: Pipeline configuration.
+        failure_policy: Continue or fail-fast on errors.
+        compact: Whether to run Delta Lake compaction.
+        final_operation: Last operation class (for output metadata).
+
+    Returns:
+        StepResult with output references and execution metadata.
+    """
+    from artisan.execution.models.execution_chain import ExecutionChain
+    from artisan.execution.models.execution_unit import ExecutionUnit
+    from artisan.orchestration.engine.inputs import resolve_inputs
+    from artisan.utils.hashing import compute_execution_spec_id
+
+    timings: dict[str, Any] = {}
+    total_start = time.perf_counter()
+
+    # --- resolve_inputs phase ---
+    with phase_timer("resolve_inputs", timings):
+        resolved_inputs = resolve_inputs(inputs, config.delta_root)
+
+        if _all_inputs_empty(resolved_inputs):
+            logger.debug(
+                "Step %d (chain): all input roles are empty — skipping.",
+                step_number,
+            )
+            final_op = final_operation or operations[-1][0]
+            return build_step_result(
+                operation=instantiate_operation(final_op, None),
+                step_number=step_number,
+                succeeded_count=0,
+                failed_count=0,
+                failure_policy=failure_policy,
+                metadata={"skipped": True, "skip_reason": "empty_inputs"},
+            )
+
+    # --- build_chain phase ---
+    with phase_timer("build_chain", timings):
+        units: list[ExecutionUnit] = []
+        for i, (op_class, params, config) in enumerate(operations):
+            env_override = config.get("environment") if config else None
+            tool_override = config.get("tool") if config else None
+            operation = instantiate_operation(
+                op_class, params, environment=env_override, tool=tool_override
+            )
+            merged_params = (
+                operation.params.model_dump(mode="json")
+                if hasattr(operation, "params")
+                else {}
+            )
+            spec_id = compute_execution_spec_id(
+                operation_name=operation.name,
+                inputs=resolved_inputs if i == 0 else {},
+                params=merged_params,
+            )
+            unit = ExecutionUnit(
+                operation=operation,
+                inputs=resolved_inputs if i == 0 else {},
+                execution_spec_id=spec_id,
+                step_number=step_number,
+            )
+            units.append(unit)
+
+        chain = ExecutionChain(
+            operations=units,
+            role_mappings=role_mappings,
+            resources=chain_resources,
+            execution=chain_execution,
+            intermediates=intermediates,
+        )
+
+    # The chain executor stages using the final operation's name
+    final_op_instance = units[-1].operation
+    chain_op_name = final_op_instance.name
+
+    # --- execute phase ---
+    dispatch_error: str | None = None
+    dispatch_dir = config.staging_root / "_dispatch"
+    try:
+        with phase_timer("execute", timings):
+            runtime_env = _create_runtime_environment(
+                config, final_op_instance, backend
+            )
+
+            succeeded = 0
+            failed = 0
+
+            try:
+                backend.validate_operation(final_op_instance)
+                units_path = _save_units([chain], config.staging_root, step_number)
+                step_flow = backend.create_flow(
+                    chain_resources,
+                    chain_execution,
+                    step_number,
+                    job_name=chain_execution.job_name or "chain",
+                )
+                results = step_flow(units_path=str(units_path), runtime_env=runtime_env)
+                succeeded, failed = aggregate_results(results, failure_policy)
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                dispatch_error = f"{type(exc).__name__}: {exc}"
+                logger.error(
+                    "Chain dispatch failed for step %d: %s",
+                    step_number,
+                    dispatch_error,
+                )
+                results = []
+                succeeded, failed = 0, 1
+
+        # --- verify_staging phase ---
+        with phase_timer("verify_staging", timings):
+            if backend.orchestrator_traits.needs_staging_verification:
+                execution_run_ids = extract_execution_run_ids(results)
+                try:
+                    await_staging_files(
+                        staging_root=config.staging_root,
+                        execution_run_ids=execution_run_ids,
+                        timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
+                        step_number=step_number,
+                        operation_name=chain_op_name,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "Staging verification timed out for chain step %d.",
+                        step_number,
+                    )
+
+        # --- commit phase ---
+        commit_error = None
+        with phase_timer("commit", timings):
+            try:
+                from artisan.storage.io.commit import DeltaCommitter
+
+                committer = DeltaCommitter(config.delta_root, config.staging_root)
+                committer.commit_all_tables(
+                    cleanup_staging=not runtime_env.preserve_staging,
+                    step_number=step_number,
+                    operation_name=chain_op_name,
+                )
+            except Exception as exc:
+                commit_error = f"{type(exc).__name__}: {exc}"
+                logger.error(
+                    "Commit failed for chain step %d: %s", step_number, commit_error
+                )
+
+        # --- compact phase ---
+        with phase_timer("compact", timings):
+            if compact:
+                _compact_step_tables(config.delta_root, config.staging_root)
+    finally:
+        if dispatch_dir.exists():
+            shutil.rmtree(dispatch_dir, ignore_errors=True)
+
+    timings["total"] = round(time.perf_counter() - total_start, 4)
+
+    metadata: dict[str, Any] = {"timings": timings}
+    if commit_error:
+        metadata["commit_error"] = commit_error
+    if dispatch_error:
+        metadata["dispatch_error"] = dispatch_error
+
+    final_op_instance = units[-1].operation
+    return build_step_result(
+        operation=final_op_instance,
+        step_number=step_number,
+        succeeded_count=succeeded,
         failed_count=failed,
         failure_policy=failure_policy,
         metadata=metadata,

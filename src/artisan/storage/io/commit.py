@@ -232,7 +232,7 @@ class DeltaCommitter:
                 if not name.startswith("_")
             ]
             if parts:
-                logger.info("Step %d commit: %s", step_number or 0, ", ".join(parts))
+                logger.debug("Step %d commit: %s", step_number or 0, ", ".join(parts))
 
         if cleanup_staging:
             if step_number is not None:
@@ -265,7 +265,7 @@ class DeltaCommitter:
         if not probe:
             return {}
 
-        logger.info(
+        logger.debug(
             "Staged recovery: found %d leftover execution file(s), committing...",
             len(probe),
         )
@@ -278,9 +278,9 @@ class DeltaCommitter:
         committed = {k: v for k, v in results.items() if not k.startswith("_")}
         if committed:
             parts = [f"{name}={count}" for name, count in committed.items()]
-            logger.info("Staged recovery committed: %s", ", ".join(parts))
+            logger.debug("Staged recovery committed: %s", ", ".join(parts))
         else:
-            logger.info("Staged recovery: no new rows to commit")
+            logger.debug("Staged recovery: no new rows to commit")
 
         return results
 

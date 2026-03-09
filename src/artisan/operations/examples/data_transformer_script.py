@@ -12,8 +12,13 @@ from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.command_spec import LocalCommandSpec
+from artisan.schemas.operation_config.environment_spec import (
+    DockerEnvironmentSpec,
+    LocalEnvironmentSpec,
+)
+from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -21,11 +26,7 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.external_tools import (
-    ArgStyle,
-    format_args,
-    run_external_command,
-)
+from artisan.utils.external_tools import format_args, run_command
 
 SCRIPT_PATH = Path(__file__).parent / "scripts" / "transform_data.py"
 
@@ -34,7 +35,7 @@ class DataTransformerScript(OperationDefinition):
     """Run an external Python script to transform CSV data.
 
     Pairs each dataset with a config artifact, resolves artifact references,
-    and invokes the script via ``run_external_command()``.
+    and invokes the script via ``run_command()``.
     """
 
     # ---------- Metadata ----------
@@ -74,18 +75,19 @@ class DataTransformerScript(OperationDefinition):
     # ---------- Behavior ----------
     group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
 
-    # ---------- Command ----------
-    command: LocalCommandSpec = LocalCommandSpec(
-        script=SCRIPT_PATH,
-        arg_style=ArgStyle.ARGPARSE,
-        interpreter="python",
+    # ---------- Tool ----------
+    tool: ToolSpec = ToolSpec(executable=SCRIPT_PATH, interpreter="python")
+
+    # ---------- Environments ----------
+    environments: Environments = Environments(
+        local=LocalEnvironmentSpec(),
+        docker=DockerEnvironmentSpec(image="my-registry/transformer:latest"),
     )
 
     # ---------- Resources ----------
     resources: ResourceConfig = ResourceConfig(
-        partition="cpu",
-        cpus_per_task=1,
-        mem_gb=4,
+        cpus=1,
+        memory_gb=4,
         time_limit="00:30:00",
     )
 
@@ -108,22 +110,20 @@ class DataTransformerScript(OperationDefinition):
     def execute(self, inputs: ExecuteInput) -> Any:
         """Invoke transform_data.py for each config in the batch."""
         execute_dir = inputs.execute_dir
+        env = self.environments.current()
 
         for item in inputs.inputs["items"]:
             config_path = item["config_path"]
             design_name = item["design_name"]
 
-            args = format_args(
-                {
-                    "config": config_path,
-                    "output-dir": str(execute_dir),
-                    "output-basename": design_name,
-                },
-                self.command.arg_style,
-            )
-            run_external_command(
-                self.command,
-                args,
+            args = format_args({
+                "config": config_path,
+                "output-dir": str(execute_dir),
+                "output-basename": design_name,
+            })
+            run_command(
+                env,
+                [*self.tool.parts(), *args],
                 cwd=execute_dir,
             )
 

@@ -167,7 +167,7 @@ to Delta Lake.
 
 ```
                               staging_root/
-                              ├── step_1_ToolB/
+                              ├── 1_ToolB/
 Worker A ──writes──>          │   ├── a1/b2/{run_abc}/
 Worker B ──writes──>          │   │   ├── custom_type.parquet
 Worker C ──writes──>          │   │   ├── metrics.parquet
@@ -208,7 +208,7 @@ transaction conflicts and need to retry. With staging, there are zero write
 conflicts — each worker writes to its own directory.
 
 **Partial failure isolation.** If a worker crashes, its staging directory is
-simply ignored during commit. The orchestrator has a complete view of which
+ignored during commit. The orchestrator has a complete view of which
 workers succeeded and which failed before committing anything. There is no need
 to roll back partially-written data.
 
@@ -226,18 +226,22 @@ shared NFS filesystem, a write-then-read race condition exists: a worker writes
 a file, but the orchestrator (running on a different node) may not see it
 immediately due to NFS caching.
 
-The framework handles this with a two-part strategy:
+The framework handles this with a three-part strategy:
 
 **Writer-side fsync.** After writing all staging files, SLURM workers call
 `fsync()` on each file and its containing directory. This forces the NFS client
 to flush data to the server.
 
-**Reader-side verification.** Before committing, the orchestrator
-deterministically computes where each worker's staging files should be and
-polls for the sentinel file (`executions.parquet`) with exponential backoff.
-The polling uses `open()` + `read(1)` rather than `os.path.exists()`, because
-the open-read pattern triggers NFS close-to-open consistency guarantees that
-stat-based checks do not.
+**Reader-side directory cache invalidation.** Before checking for a staging
+file, the orchestrator walks the ancestor directories of the expected path and
+calls `listdir()` on each one. This forces READDIR RPCs that flush stale NFS
+directory entry caches, ensuring newly created directories become visible.
+
+**Reader-side file verification.** The orchestrator deterministically computes
+where each worker's staging files should be and polls for the sentinel file
+(`executions.parquet`) with exponential backoff. The polling uses `open()` +
+`read(1)` rather than `os.path.exists()`, because the open-read pattern
+triggers NFS close-to-open consistency guarantees that stat-based checks do not.
 
 This is not an optimization — it is a correctness requirement. Without these
 measures, the orchestrator could miss worker results that were successfully

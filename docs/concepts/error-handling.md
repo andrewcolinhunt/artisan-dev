@@ -134,8 +134,10 @@ StagingResult
 
 ### Result dict (dispatch boundary)
 
-A plain dict that the dispatch layer produces from `StagingResult`. This is
-what `aggregate_results()` consumes.
+A plain dict that the dispatch layer produces from `StagingResult`. The step
+executor feeds these dicts to `aggregate_results()` (which reads `success`,
+`item_count`, and `error`) and `extract_execution_run_ids()` (which collects
+the run IDs for commit).
 
 ```
 {"success": bool, "error": str | None, "item_count": int, "execution_run_ids": [...]}
@@ -254,5 +256,5 @@ to make that decision.
 - [Design Principles](design-principles.md) -- Foundational design decisions
 - [Architecture Overview](architecture-overview.md) -- Layer boundaries and
   the orchestrator-worker split
-- [Coding Conventions: Error Handling](../../contributing/coding-conventions.md#error-handling) --
+- [Coding Conventions: Error Handling](../contributing/coding-conventions.md#error-handling) --
   Implementation patterns and code examples

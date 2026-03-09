@@ -210,9 +210,9 @@ class TestResourcesAndExecutionDefaults:
         """Operations get default ResourceConfig from base class."""
         op = SimpleOperation()
         assert isinstance(op.resources, ResourceConfig)
-        assert op.resources.partition == "cpu"
-        assert op.resources.cpus_per_task == 1
-        assert op.resources.mem_gb == 4
+        assert op.resources.cpus == 1
+        assert op.resources.memory_gb == 4
+        assert op.resources.gpus == 0
 
     def test_default_execution(self):
         """Operations get default ExecutionConfig from base class."""
@@ -231,15 +231,17 @@ class TestResourcesAndExecutionDefaults:
         assert "execution" in dump
 
     def test_data_transformer_script_has_instance_first_fields(self):
-        """DataTransformerScript uses instance-first command/resources/execution."""
+        """DataTransformerScript uses instance-first tool/environments/resources/execution."""
         from artisan.operations.examples.data_transformer_script import (
             DataTransformerScript,
         )
-        from artisan.schemas.operation_config.command_spec import LocalCommandSpec
+        from artisan.schemas.operation_config.tool_spec import ToolSpec
 
         op = DataTransformerScript()
-        assert isinstance(op.command, LocalCommandSpec)
-        assert op.resources.partition == "cpu"
+        assert isinstance(op.tool, ToolSpec)
+        assert op.tool.interpreter == "python"
+        assert op.environments.available() == ["local", "docker"]
+        assert op.resources.cpus == 1
         assert op.execution.job_name == "data_transformer_script"
 
 

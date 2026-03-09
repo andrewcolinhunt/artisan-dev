@@ -24,7 +24,9 @@ from pydantic import BaseModel, ConfigDict
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, CuratorResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -187,6 +189,14 @@ class OperationDefinition(BaseModel):
     None for single-input operations. ZIP, LINEAGE, or CROSS_PRODUCT for
     multi-input operations.
     """
+
+    # ---------- Tool ----------
+    tool: ToolSpec | None = None
+    """External binary/script this operation invokes. None for pure-Python ops."""
+
+    # ---------- Environments ----------
+    environments: Environments = Environments()
+    """Multi-environment configuration. Selects which runtime wraps commands."""
 
     # ---------- Resources ----------
     resources: ResourceConfig = ResourceConfig()

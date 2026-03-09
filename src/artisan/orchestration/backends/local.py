@@ -8,13 +8,14 @@ from pathlib import Path
 
 from prefect.task_runners import ProcessPoolTaskRunner
 
-from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.backends.base import (
     BackendBase,
     OrchestratorTraits,
     WorkerTraits,
 )
+from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 class LocalBackend(BackendBase):
@@ -34,11 +35,13 @@ class LocalBackend(BackendBase):
 
     def create_flow(
         self,
-        operation: OperationDefinition,
+        resources: ResourceConfig,
+        execution: ExecutionConfig,
         step_number: int,
+        job_name: str,
     ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
         """Build a local ProcessPool flow."""
-        max_workers = operation.execution.max_workers or self._default_max_workers
+        max_workers = execution.max_workers or self._default_max_workers
         return self._build_prefect_flow(ProcessPoolTaskRunner(max_workers=max_workers))
 
     def capture_logs(
@@ -53,10 +56,10 @@ class LocalBackend(BackendBase):
     def validate_operation(self, operation: OperationDefinition) -> None:
         """Warn if SLURM-specific resources are configured on a local backend."""
         r = operation.resources
-        if r.gres or r.partition != "cpu" or r.extra_slurm_kwargs:
+        if r.gpus > 0 or r.extra:
             warnings.warn(
                 f"Operation {operation.name!r} has SLURM-specific resources "
-                f"(gres={r.gres!r}, partition={r.partition!r}) but backend is "
+                f"(gpus={r.gpus!r}, extra={r.extra!r}) but backend is "
                 f"'local'. These will be ignored.",
                 stacklevel=2,
             )

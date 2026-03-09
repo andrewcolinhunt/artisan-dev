@@ -32,19 +32,21 @@ you'll find a link to the right place.
 
 ## Five Key Abstractions
 
-### 1. Artifacts
+### Artifacts
 
-An **artifact** is an immutable, content-addressed data node. The framework
-computes a unique ID from the artifact's content (`xxh3_128` hash), so identical
-content always produces the same ID. This enables automatic deduplication and
-deterministic caching.
+An **artifact** is a content-addressed data node. The framework computes a
+unique ID from the artifact's content (`xxh3_128` hash), so identical content
+always produces the same ID. This enables automatic deduplication and
+deterministic caching. Artifacts follow a draft/finalize pattern: drafts are
+mutable while being assembled, and once finalized the content hash makes any
+tampering detectable.
 
 Artisan provides four built-in types: `DATA`, `METRIC`, `CONFIG`, and
 `FILE_REF`. Custom artifact types can be registered by domain layers.
 
 > **Deep dive:** [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md)
 
-### 2. Operations
+### Operations
 
 An **operation** is a Python class that consumes artifacts and produces
 artifacts. Operations declare typed input and output specifications and know
@@ -53,13 +55,15 @@ nothing about orchestration or infrastructure.
 There are two kinds:
 
 - **Creator operations** run heavy computation (external tools, GPU work) in a
-  sandboxed three-phase lifecycle: preprocess, execute, postprocess.
+  three-phase lifecycle — preprocess, execute, postprocess — each running in its
+  own filesystem-isolated working directory.
 - **Curator operations** perform lightweight metadata work (filtering, merging,
-  ingesting) in a single method call.
+  ingesting) in a single `execute_curator` method call, skipping sandboxing
+  entirely.
 
 > **Deep dive:** [Operations Model](../concepts/operations-model.md)
 
-### 3. Pipelines
+### Pipelines
 
 A **pipeline** is a directed acyclic graph (DAG) of steps. You build one by
 calling `pipeline.run(Operation, ...)` to add steps, wiring outputs from
@@ -68,16 +72,15 @@ caching, and atomic commits.
 
 ```python
 pipeline = PipelineManager.create(name="example", delta_root=..., staging_root=...)
-output = pipeline.output
 
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 4})
-pipeline.run(operation=DataTransformer, name="transform", inputs={"dataset": output("generate", "datasets")})
+step0 = pipeline.run(DataGenerator, params={"count": 4})
+step1 = pipeline.run(DataTransformer, inputs={"dataset": step0.output("datasets")})
 result = pipeline.finalize()
 ```
 
 > **Deep dive:** [Execution Flow](../concepts/execution-flow.md)
 
-### 4. Provenance
+### Provenance
 
 The framework captures **dual provenance** automatically:
 
@@ -91,12 +94,14 @@ filename stem matching during execution.
 
 > **Deep dive:** [Provenance System](../concepts/provenance-system.md)
 
-### 5. Storage
+### Storage
 
 All pipeline data lives in **Delta Lake** tables, giving you ACID transactions,
-time travel, and efficient queries via Polars. The content-addressed file store
-sits alongside the tables. Files are staged by workers during execution and
-committed atomically by the orchestrator.
+time travel, and efficient queries via Polars. Artifact content is stored
+directly in Delta table columns (binary data, JSON, or tabular rows depending on
+the type), while `FILE_REF` artifacts store references to files at their original
+paths. Workers stage results as Parquet files during execution, and the
+orchestrator commits them atomically to the Delta tables.
 
 ```python
 import polars as pl

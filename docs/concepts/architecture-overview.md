@@ -111,9 +111,10 @@ artifact IDs, parameters, and cache key. `RuntimeEnvironment` specifies
 - **Fault isolation.** Workers write to isolated staging directories. If a
   worker crashes, its partial results are ignored. Shared state is never
   corrupted.
-- **Scale transparency.** The same code runs locally (ThreadPool) or on a
-  cluster (SLURM). Only the dispatch backend changes — operations, execution
-  logic, and storage remain identical.
+- **Scale transparency.** The same code runs locally (process pool) or on a
+  cluster (SLURM). Both backends use Prefect as the dispatch layer — only
+  the task runner changes. Operations, execution logic, and storage remain
+  identical.
 - **No shared mutable state.** Workers never write to Delta Lake directly.
   Thousands of concurrent workers would cause write conflicts. Instead, they
   stage Parquet files, and the orchestrator commits them atomically.
@@ -216,6 +217,57 @@ any Delta-compatible tool).
 For table layout, partitioning, and the staging-commit pattern, see
 [Storage and Delta Lake](storage-and-delta-lake.md).
 
+### Chains: composing operations within a single worker
+
+Sometimes multiple creator operations should run back-to-back in the same
+worker process — for example, when one operation produces large intermediate
+files that the next operation consumes. Shipping those files back to the
+orchestrator only to dispatch them again wastes time and bandwidth.
+
+A **chain** solves this. You compose multiple creator operations into a
+sequence that executes within a single worker. Artifacts flow in-memory
+between operations in the chain, and only the final outputs are staged back
+to the orchestrator for commit.
+
+```
+pipeline.chain(inputs={"dataset": output("generate", "datasets")})
+    .add(OperationA, name="step_a")
+    .add(OperationB, name="step_b")
+    .run()
+```
+
+Chains share the same three-phase lifecycle (dispatch, execute, commit) as
+regular steps — the difference is that the execute phase runs multiple
+operations in sequence rather than one.
+
+---
+
+## Synchronous and asynchronous execution
+
+`pipeline.run()` blocks until the step completes. For pipelines with
+independent steps that can execute concurrently, `pipeline.submit()` returns
+a `StepFuture` immediately. You wire subsequent steps using
+`future.output(role)`, which produces a lazy `OutputReference` that resolves
+at dispatch time.
+
+When all steps have been submitted, `pipeline.finalize()` waits for any
+in-flight futures and shuts down the executor.
+
+---
+
+## Support packages
+
+Beyond the five architectural layers, the framework includes two support
+packages:
+
+- **`utils`** — shared utilities: content hashing, subprocess wrappers, path
+  helpers, error types, logging.
+- **`visualization`** — provenance graph rendering (macro and micro views),
+  pipeline inspection, and execution timing analysis.
+
+These packages do not participate in the layered dependency hierarchy. They
+are consumed by whichever layer needs them.
+
 ---
 
 ## Putting it together
@@ -277,4 +329,4 @@ skipped automatically.
 - [Storage and Delta Lake](storage-and-delta-lake.md) — Persistence and the staging pattern
 - [Design Principles](design-principles.md) — Rationale for key decisions
 - [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) — Build and run your first pipeline
-- [Coding Conventions](../../contributing/coding-conventions.md) — Package boundaries and standards
+- [Coding Conventions](../contributing/coding-conventions.md) — Package boundaries and standards

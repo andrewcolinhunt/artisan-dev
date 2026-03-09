@@ -56,7 +56,7 @@ class IngestMockOp(OperationDefinition):
     name: ClassVar[str] = "Ingest"
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.FILE_REF),
+        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     seed: int = 42
