@@ -143,6 +143,7 @@ class TestBulkLoadMethods:
             "source_role": ["data", "data", "data"],
             "target_role": ["data", "metric", "metric"],
             "group_id": [None, None, None],
+            "step_boundary": [True, True, True],
         }
         pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
 
@@ -316,6 +317,7 @@ class TestArtifactStoreProvenanceQueries:
             "source_role": ["data", "data"],
             "target_role": ["data", "metric"],
             "group_id": [None, None],
+            "step_boundary": [True, True],
         }
         pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
 
@@ -524,6 +526,7 @@ class TestGetDescendantArtifactIds:
             "source_role": ["data", "data", "data"],
             "target_role": ["data", "metric", "metric"],
             "group_id": [None, None, None],
+            "step_boundary": [True, True, True],
         }
         pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
 
@@ -687,6 +690,7 @@ class TestLoadForwardProvenanceMap:
                 "source_role": ["data", "data", "data"],
                 "target_role": ["data", "metric", "metric"],
                 "group_id": [None, None, None],
+                "step_boundary": [True, True, True],
             },
         ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
         return store
@@ -820,6 +824,7 @@ class TestGetAssociated:
                 "source_role": ["config", "config", "config"],
                 "target_role": ["metric", "metric", "metric"],
                 "group_id": [None, None, None],
+                "step_boundary": [True, True, True],
             },
         ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
 

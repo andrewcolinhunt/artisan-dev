@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -20,6 +21,7 @@ from artisan.execution.lineage.validation import (
     validate_lineage_completeness,
     validate_lineage_integrity,
 )
+from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.staging.parquet_writer import StagingResult
 from artisan.execution.staging.recorder import (
@@ -29,16 +31,260 @@ from artisan.execution.staging.recorder import (
 )
 from artisan.execution.utils import finalize_artifacts, generate_execution_run_id
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
 )
+from artisan.schemas.specs.input_spec import InputSpec
 from artisan.utils.errors import format_error
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
+
+
+class _PostprocessFailure(Exception):
+    """Raised when postprocess returns success=False with a clean error message."""
+
+
+class _ExecuteFailure(Exception):
+    """Raised when execute() throws, carrying the formatted error and tool output."""
+
+    def __init__(self, error: str, tool_output: str | None = None) -> None:
+        super().__init__(error)
+        self.tool_output = tool_output
+
+
+@dataclass
+class LifecycleResult:
+    """Return type of run_creator_lifecycle().
+
+    Attributes:
+        input_artifacts: Hydrated input artifacts keyed by role.
+        artifacts: Finalized output artifacts keyed by role.
+        edges: Provenance edges linking inputs to outputs.
+        timings: Phase name to elapsed seconds.
+    """
+
+    input_artifacts: dict[str, list[Artifact]]
+    artifacts: dict[str, list[Artifact]]
+    edges: list[ArtifactProvenanceEdge]
+    timings: dict[str, float] = field(default_factory=dict)
+
+
+def run_creator_lifecycle(
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+    worker_id: int = 0,
+    execution_run_id: str | None = None,
+    sources: dict[str, ArtifactSource] | None = None,
+) -> LifecycleResult:
+    """Run one operation through setup → preprocess → execute → postprocess → lineage.
+
+    This is the inner lifecycle extracted from run_creator_flow(). It raises
+    on any failure — the caller is responsible for error recording and sandbox
+    cleanup.
+
+    Args:
+        unit: Execution unit specifying the operation and its inputs.
+        runtime_env: Paths and backend configuration for this run.
+        worker_id: Numeric worker identifier for concurrency tracking.
+        execution_run_id: Pre-generated run ID. Generated if None.
+        sources: Optional pre-resolved artifact sources keyed by role.
+            When provided, hydrate from sources instead of unit.inputs.
+            Used by the chain executor for in-memory artifact passing.
+
+    Returns:
+        LifecycleResult with artifacts, edges, and timings.
+
+    Raises:
+        ValueError: If working_root_path is not set.
+        Exception: Any failure from preprocess/execute/postprocess/lineage.
+    """
+    timings: dict[str, Any] = {}
+    operation = unit.operation
+    operation_class = type(operation)
+    original_inputs = _extract_inputs(unit)
+    _validate_operation_outputs(operation_class)
+
+    if execution_run_id is None:
+        timestamp_start = datetime.now(UTC)
+        execution_run_id = generate_execution_run_id(
+            unit.execution_spec_id, timestamp_start, worker_id
+        )
+    else:
+        timestamp_start = datetime.now(UTC)
+
+    # --- setup phase ---
+    with phase_timer("setup", timings):
+        working_root = runtime_env.working_root_path
+        if working_root is None:
+            msg = "RuntimeEnvironment.working_root_path must be set to create a sandbox"
+            raise ValueError(msg)
+        sandbox_path, preprocess_dir, execute_dir, postprocess_dir = create_sandbox(
+            working_root,
+            execution_run_id,
+            unit.step_number,
+            operation_name=operation.name,
+        )
+
+        log_path = sandbox_path / "tool_output.log"
+        materialized_dir = sandbox_path / "materialized_inputs"
+        materialized_dir.mkdir(parents=True, exist_ok=True)
+
+        execution_context = build_creator_execution_context(
+            execution_run_id=execution_run_id,
+            execution_spec_id=unit.execution_spec_id,
+            step_number=unit.step_number,
+            timestamp_start=timestamp_start,
+            worker_id=worker_id,
+            delta_root_path=runtime_env.delta_root_path,
+            staging_root_path=runtime_env.staging_root_path,
+            operation=operation,
+            sandbox_path=sandbox_path,
+            compute_backend_name=runtime_env.compute_backend_name,
+            shared_filesystem=runtime_env.shared_filesystem,
+        )
+        artifact_store = execution_context.artifact_store
+
+        input_specs = getattr(operation_class, "inputs", {})
+        default_hydrate = getattr(operation_class, "hydrate_inputs", True)
+
+        if sources is not None:
+            # Hydrate from pre-resolved sources (chain executor path)
+            input_artifacts: dict[str, list[Artifact]] = {}
+            for role, source in sources.items():
+                spec = input_specs.get(role, InputSpec())
+                input_artifacts[role] = source.hydrate(
+                    artifact_store, spec, default_hydrate
+                )
+            associated: dict[tuple[str, str], list[Artifact]] = {}
+        else:
+            # Standard path: instantiate from Delta-backed IDs
+            input_artifacts, associated = instantiate_inputs(
+                original_inputs,
+                artifact_store,
+                input_specs,
+                default_hydrate,
+            )
+        input_artifacts = materialize_inputs(
+            input_artifacts,
+            input_specs,
+            materialized_dir,
+            artifact_store,
+        )
+
+    # --- preprocess phase ---
+    with phase_timer("preprocess", timings):
+        preprocess_input = PreprocessInput(
+            preprocess_dir=preprocess_dir,
+            input_artifacts=input_artifacts,
+            _associated=associated,
+        )
+        prepared_inputs = operation.preprocess(preprocess_input)
+        execute_input = ExecuteInput(
+            inputs=prepared_inputs,
+            execute_dir=execute_dir,
+            log_path=log_path,
+        )
+
+    # --- execute phase ---
+    with phase_timer("execute", timings):
+        try:
+            raw_result = operation.execute(execute_input)
+        except Exception as exc:
+            error = format_error(exc)
+            if hasattr(exc, "stdout") and exc.stdout:
+                tail = "\n".join(exc.stdout.splitlines()[-30:])
+                error += f"\n--- tool stdout (last 30 lines) ---\n{tail}"
+            tool_output = _read_tool_output(log_path)
+            raise _ExecuteFailure(error, tool_output=tool_output) from exc
+
+    # Capture tool output after execute phase
+    tool_output = _read_tool_output(log_path)
+
+    # --- postprocess phase ---
+    with phase_timer("postprocess", timings):
+        file_outputs = output_snapshot(execute_dir)
+        postprocess_input = PostprocessInput(
+            file_outputs=file_outputs,
+            memory_outputs=raw_result,
+            input_artifacts=_extract_artifacts_from_input(input_artifacts),
+            step_number=unit.step_number,
+            postprocess_dir=postprocess_dir,
+            _associated=associated,
+        )
+        op_result = operation.postprocess(postprocess_input)
+
+        if not op_result.success:
+            raise _PostprocessFailure(op_result.error or "Postprocess failed")
+
+        finalized_artifacts = finalize_artifacts(op_result.artifacts)
+        validate_artifacts_match_specs(finalized_artifacts, operation_class.outputs)
+
+    # --- lineage phase ---
+    with phase_timer("lineage", timings):
+        flat_input_artifacts = _extract_artifacts_from_input(input_artifacts)
+        if op_result.lineage is None:
+            lineage = capture_lineage_metadata(
+                output_artifacts=finalized_artifacts,
+                input_artifacts=flat_input_artifacts,
+                output_specs=operation_class.outputs,
+                group_by=getattr(operation_class, "group_by", None),
+                group_ids=unit.group_ids,
+            )
+        else:
+            validate_lineage_integrity(
+                op_result.lineage,
+                flat_input_artifacts,
+                finalized_artifacts,
+            )
+            lineage = op_result.lineage
+
+        edge_pairs = build_edges(
+            lineage=lineage,
+            finalized_artifacts=finalized_artifacts,
+            input_artifacts=flat_input_artifacts,
+            output_specs=operation_class.outputs,
+        )
+
+        validate_lineage_completeness(
+            finalized_artifacts,
+            operation_class.outputs,
+            lineage,
+        )
+        built_artifacts: dict[str, Artifact] = {}
+        for artifact_list in finalized_artifacts.values():
+            for artifact in artifact_list:
+                if artifact.artifact_id is not None:
+                    built_artifacts[artifact.artifact_id] = artifact
+        for artifact_list in flat_input_artifacts.values():
+            for artifact in artifact_list:
+                if artifact.artifact_id is not None:
+                    built_artifacts[artifact.artifact_id] = artifact
+
+        artifact_edges = build_artifact_edges_from_dict(
+            edge_pairs,
+            execution_run_id,
+            built_artifacts,
+        )
+
+    # Clean up sandbox
+    if (
+        sandbox_path is not None
+        and not runtime_env.preserve_working
+        and sandbox_path.exists()
+    ):
+        shutil.rmtree(sandbox_path, ignore_errors=True)
+
+    return LifecycleResult(
+        input_artifacts=flat_input_artifacts,
+        artifacts=finalized_artifacts,
+        edges=artifact_edges,
+        timings=timings,
+    )
 
 
 def run_creator_flow(
@@ -62,10 +308,8 @@ def run_creator_flow(
     timings: dict[str, Any] = {}
     timestamp_start = datetime.now(UTC)
     operation = unit.operation
-    operation_class = type(operation)
     original_inputs = _extract_inputs(unit)
     user_overrides = unit.user_overrides
-    _validate_operation_outputs(operation_class)
 
     execution_run_id = generate_execution_run_id(
         unit.execution_spec_id,
@@ -74,193 +318,75 @@ def run_creator_flow(
     )
 
     total_start = time.perf_counter()
-    sandbox_path = None
-    log_path = None
     execution_context = None
     params_dict = None
     try:
-        # --- setup phase ---
-        with phase_timer("setup", timings):
-            working_root = runtime_env.working_root_path
-            if working_root is None:
-                msg = "RuntimeEnvironment.working_root_path must be set to create a sandbox"
-                raise ValueError(msg)
-            sandbox_path, preprocess_dir, execute_dir, postprocess_dir = create_sandbox(
-                working_root,
-                execution_run_id,
-                unit.step_number,
-                operation_name=operation.name,
-            )
+        # Run the lifecycle (setup → lineage)
+        lifecycle_result = run_creator_lifecycle(
+            unit, runtime_env, worker_id, execution_run_id
+        )
+        timings.update(lifecycle_result.timings)
 
-            log_path = sandbox_path / "tool_output.log"
-            materialized_dir = sandbox_path / "materialized_inputs"
-            materialized_dir.mkdir(parents=True, exist_ok=True)
-
-            execution_context = build_creator_execution_context(
-                execution_run_id=execution_run_id,
-                execution_spec_id=unit.execution_spec_id,
-                step_number=unit.step_number,
-                timestamp_start=timestamp_start,
-                worker_id=worker_id,
-                delta_root_path=runtime_env.delta_root_path,
-                staging_root_path=runtime_env.staging_root_path,
-                operation=operation,
-                sandbox_path=sandbox_path,
-                compute_backend_name=runtime_env.compute_backend_name,
-                shared_filesystem=runtime_env.shared_filesystem,
-            )
-            artifact_store = execution_context.artifact_store
-
-            params_dict = (
-                operation.params.model_dump(mode="json")
-                if hasattr(operation, "params")
-                else {}
-            )
-
-            input_specs = getattr(operation_class, "inputs", {})
-            default_hydrate = getattr(operation_class, "hydrate_inputs", True)
-
-            input_artifacts, associated = instantiate_inputs(
-                original_inputs,
-                artifact_store,
-                input_specs,
-                default_hydrate,
-            )
-            input_artifacts = materialize_inputs(
-                input_artifacts,
-                input_specs,
-                materialized_dir,
-                artifact_store,
-            )
-
-        # --- preprocess phase ---
-        with phase_timer("preprocess", timings):
-            preprocess_input = PreprocessInput(
-                preprocess_dir=preprocess_dir,
-                input_artifacts=input_artifacts,
-                _associated=associated,
-            )
-            prepared_inputs = operation.preprocess(preprocess_input)
-            execute_input = ExecuteInput(
-                inputs=prepared_inputs,
-                execute_dir=execute_dir,
-                log_path=log_path,
-            )
-
-        # --- execute phase ---
-        with phase_timer("execute", timings):
-            try:
-                raw_result = operation.execute(execute_input)
-            except Exception as exc:
-                error = format_error(exc)
-                if hasattr(exc, "stdout") and exc.stdout:
-                    tail = "\n".join(exc.stdout.splitlines()[-30:])
-                    error += f"\n--- tool stdout (last 30 lines) ---\n{tail}"
-                return record_execution_failure(
-                    execution_context=execution_context,
-                    error=error,
-                    inputs=original_inputs,
-                    timestamp_end=datetime.now(UTC),
-                    params=params_dict,
-                    user_overrides=user_overrides,
-                    tool_output=_read_tool_output(log_path),
-                    failure_logs_root=runtime_env.failure_logs_root,
-                )
-
-        # Capture tool output after execute phase
-        tool_output = _read_tool_output(log_path)
-
-        # --- postprocess phase ---
-        with phase_timer("postprocess", timings):
-            file_outputs = output_snapshot(execute_dir)
-            postprocess_input = PostprocessInput(
-                file_outputs=file_outputs,
-                memory_outputs=raw_result,
-                input_artifacts=_extract_artifacts_from_input(input_artifacts),
-                step_number=unit.step_number,
-                postprocess_dir=postprocess_dir,
-                _associated=associated,
-            )
-            op_result = operation.postprocess(postprocess_input)
-
-            if not op_result.success:
-                return record_execution_failure(
-                    execution_context=execution_context,
-                    error=op_result.error or "Postprocess failed",
-                    inputs=original_inputs,
-                    timestamp_end=datetime.now(UTC),
-                    params=params_dict,
-                    user_overrides=user_overrides,
-                    tool_output=tool_output,
-                    failure_logs_root=runtime_env.failure_logs_root,
-                )
-
-            finalized_artifacts = finalize_artifacts(op_result.artifacts)
-            validate_artifacts_match_specs(finalized_artifacts, operation_class.outputs)
-
-        # --- lineage phase ---
-        with phase_timer("lineage", timings):
-            flat_input_artifacts = _extract_artifacts_from_input(input_artifacts)
-            if op_result.lineage is None:
-                lineage = capture_lineage_metadata(
-                    output_artifacts=finalized_artifacts,
-                    input_artifacts=flat_input_artifacts,
-                    output_specs=operation_class.outputs,
-                    group_by=getattr(operation_class, "group_by", None),
-                    group_ids=unit.group_ids,
-                )
-            else:
-                validate_lineage_integrity(
-                    op_result.lineage,
-                    flat_input_artifacts,
-                    finalized_artifacts,
-                )
-                lineage = op_result.lineage
-
-            edges = build_edges(
-                lineage=lineage,
-                finalized_artifacts=finalized_artifacts,
-                input_artifacts=flat_input_artifacts,
-                output_specs=operation_class.outputs,
-            )
-
-            validate_lineage_completeness(
-                finalized_artifacts,
-                operation_class.outputs,
-                lineage,
-            )
-            built_artifacts: dict[str, Artifact] = {}
-            for artifact_list in finalized_artifacts.values():
-                for artifact in artifact_list:
-                    if artifact.artifact_id is not None:
-                        built_artifacts[artifact.artifact_id] = artifact
-            for artifact_list in flat_input_artifacts.values():
-                for artifact in artifact_list:
-                    if artifact.artifact_id is not None:
-                        built_artifacts[artifact.artifact_id] = artifact
-
-            artifact_edges = build_artifact_edges_from_dict(
-                edges,
-                execution_run_id,
-                built_artifacts,
-            )
+        # Build execution context for the record phase
+        execution_context = _build_execution_context(
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
+        )
+        params_dict = _get_params_dict(operation)
 
         # --- record phase ---
         with phase_timer("record", timings):
             staging_result = record_execution_success(
                 execution_context=execution_context,
-                artifacts=finalized_artifacts,
-                lineage_edges=artifact_edges,
+                artifacts=lifecycle_result.artifacts,
+                lineage_edges=lifecycle_result.edges,
                 inputs=original_inputs,
                 timestamp_end=datetime.now(UTC),
                 params=params_dict,
                 result_metadata={"timings": timings},
                 user_overrides=user_overrides,
-                tool_output=tool_output,
             )
+    except (_PostprocessFailure, _ExecuteFailure) as exc:
+        # Lifecycle failures with clean error messages
+        if isinstance(exc, _ExecuteFailure):
+            error = str(exc)
+            tool_output = exc.tool_output
+        else:
+            error = str(exc)
+            tool_output = None
+        execution_context = _build_execution_context(
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
+        )
+        params_dict = _get_params_dict(operation)
+        staging_result = record_execution_failure(
+            execution_context=execution_context,
+            error=error,
+            inputs=original_inputs,
+            timestamp_end=datetime.now(UTC),
+            params=params_dict,
+            user_overrides=user_overrides,
+            tool_output=tool_output,
+            failure_logs_root=runtime_env.failure_logs_root,
+        )
     except Exception as exc:
         error = format_error(exc)
-        outer_tool_output = _read_tool_output(log_path) if log_path else None
+        execution_context = _try_build_execution_context(
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
+        )
         if execution_context is None:
             logger.error("Creator setup failed: %s", error)
             staging_result = StagingResult(
@@ -270,6 +396,7 @@ def run_creator_flow(
                 artifact_ids=[],
             )
         else:
+            params_dict = _get_params_dict(operation)
             staging_result = record_execution_failure(
                 execution_context=execution_context,
                 error=error,
@@ -277,20 +404,69 @@ def run_creator_flow(
                 timestamp_end=datetime.now(UTC),
                 params=params_dict,
                 user_overrides=user_overrides,
-                tool_output=outer_tool_output,
                 failure_logs_root=runtime_env.failure_logs_root,
             )
-    finally:
-        if (
-            sandbox_path is not None
-            and not runtime_env.preserve_working
-            and sandbox_path.exists()
-        ):
-            shutil.rmtree(sandbox_path, ignore_errors=True)
 
     timings["total"] = round(time.perf_counter() - total_start, 4)
     logger.debug("Execution %s timings: %s", execution_run_id, timings)
     return staging_result
+
+
+def _get_params_dict(operation: Any) -> dict[str, Any]:
+    """Extract serialized params from an operation."""
+    if hasattr(operation, "params"):
+        return operation.params.model_dump(mode="json")
+    return {}
+
+
+def _build_execution_context(
+    execution_run_id: str,
+    unit: ExecutionUnit,
+    timestamp_start: datetime,
+    worker_id: int,
+    runtime_env: RuntimeEnvironment,
+    operation: Any,
+) -> Any:
+    """Build an execution context, raising if working_root_path is missing."""
+    working_root = runtime_env.working_root_path
+    if working_root is None:
+        msg = "RuntimeEnvironment.working_root_path must be set"
+        raise ValueError(msg)
+    return build_creator_execution_context(
+        execution_run_id=execution_run_id,
+        execution_spec_id=unit.execution_spec_id,
+        step_number=unit.step_number,
+        timestamp_start=timestamp_start,
+        worker_id=worker_id,
+        delta_root_path=runtime_env.delta_root_path,
+        staging_root_path=runtime_env.staging_root_path,
+        operation=operation,
+        sandbox_path=working_root / "dummy",
+        compute_backend_name=runtime_env.compute_backend_name,
+        shared_filesystem=runtime_env.shared_filesystem,
+    )
+
+
+def _try_build_execution_context(
+    execution_run_id: str,
+    unit: ExecutionUnit,
+    timestamp_start: datetime,
+    worker_id: int,
+    runtime_env: RuntimeEnvironment,
+    operation: Any,
+) -> Any | None:
+    """Try to build an execution context, returning None on failure."""
+    try:
+        return _build_execution_context(
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
+        )
+    except (ValueError, Exception):
+        return None
 
 
 def _extract_inputs(unit: ExecutionUnit) -> dict[str, list[str]]:

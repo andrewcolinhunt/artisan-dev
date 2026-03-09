@@ -1,24 +1,25 @@
 """Prefect server discovery and connection management.
 
-Discover a running Prefect server via environment variables or a
-discovery file. Server lifecycle (start/stop) is managed by shell
-scripts; this module only discovers and validates connectivity.
+Thin adapter over ``prefect_submitit.server``. Server lifecycle
+(start/stop) is managed by the ``prefect-server`` CLI; this module
+discovers and validates connectivity.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from dataclasses import dataclass
-from pathlib import Path
+
+from prefect_submitit.server.discovery import (
+    health_check,
+    resolve_api_url,
+)
 
 logger = logging.getLogger(__name__)
 
-DISCOVERY_FILE = Path.home() / ".artisan" / "prefect" / "server.json"
-ENV_VAR_ARTISAN = "ARTISAN_PREFECT_SERVER"
-ENV_VAR_PREFECT = "PREFECT_API_URL"
-HEALTH_TIMEOUT_SECONDS = 5
+ENV_VAR = "PREFECT_SUBMITIT_SERVER"
+_OLD_ENV_VAR = "ARTISAN_PREFECT_SERVER"
 
 
 @dataclass(frozen=True)
@@ -26,18 +27,14 @@ class PrefectServerInfo:
     """Resolved Prefect server connection info."""
 
     url: str
-    source: str  # "argument", "env:ARTISAN_PREFECT_SERVER", "env:PREFECT_API_URL", "discovery_file"
+    source: str
 
 
 def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
-    """Discover the Prefect server URL.
+    """Discover and validate a Prefect server URL.
 
-    Resolution order:
-        1. Explicit argument
-        2. ARTISAN_PREFECT_SERVER env var
-        3. PREFECT_API_URL env var
-        4. Discovery file (~/.artisan/prefect/server.json)
-        5. Raise with instructions
+    Delegates URL resolution to
+    ``prefect_submitit.server.discovery.resolve_api_url()``.
 
     Args:
         prefect_server: Explicit server URL. If provided, used directly.
@@ -49,52 +46,24 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
         PrefectServerNotFound: If no server can be discovered.
         PrefectServerUnreachable: If a server URL is found but health check fails.
     """
-    # 1. Explicit argument
-    if prefect_server is not None:
-        url = _normalize_url(prefect_server)
-        info = PrefectServerInfo(url=url, source="argument")
-        _health_check(info)
-        return info
+    _warn_old_env_var()
 
-    # 2. ARTISAN_PREFECT_SERVER env var
-    env_artisan = os.environ.get(ENV_VAR_ARTISAN)
-    if env_artisan:
-        url = _normalize_url(env_artisan)
-        info = PrefectServerInfo(url=url, source=f"env:{ENV_VAR_ARTISAN}")
-        _health_check(info)
-        return info
+    try:
+        url = _normalize_url(resolve_api_url(prefect_server))
+    except RuntimeError as exc:
+        raise PrefectServerNotFound(
+            "No Prefect server detected.\n"
+            "\n"
+            "Start a server:\n"
+            "  pixi run prefect-start\n"
+            "\n"
+            "Or point to an existing server:\n"
+            f"  export {ENV_VAR}=http://<host>:<port>/api\n"
+        ) from exc
 
-    # 3. PREFECT_API_URL env var
-    env_prefect = os.environ.get(ENV_VAR_PREFECT)
-    if env_prefect:
-        url = _normalize_url(env_prefect)
-        info = PrefectServerInfo(url=url, source=f"env:{ENV_VAR_PREFECT}")
-        _health_check(info)
-        return info
-
-    # 4. Discovery file
-    if DISCOVERY_FILE.exists():
-        data = json.loads(DISCOVERY_FILE.read_text())
-        url = data["url"]
-        info = PrefectServerInfo(url=url, source="discovery_file")
-        _health_check(info)
-        return info
-
-    # 5. Nothing found
-    msg = (
-        "No Prefect server detected.\n"
-        "\n"
-        "Start a server:\n"
-        "  pixi run prefect-start\n"
-        "\n"
-        "  OR\n"
-        "\n"
-        "  ./scripts/prefect/start_prefect_server.sh --bg\n"
-        "\n"
-        "Or point to an existing server:\n"
-        f"  export {ENV_VAR_ARTISAN}=http://<host>:<port>/api\n"
-    )
-    raise PrefectServerNotFound(msg)
+    info = PrefectServerInfo(url=url, source=_source_label(url, prefect_server))
+    _validate_health(info)
+    return info
 
 
 def _normalize_url(url: str) -> str:
@@ -105,34 +74,50 @@ def _normalize_url(url: str) -> str:
     return url
 
 
-def _health_check(info: PrefectServerInfo) -> None:
-    """Verify the server is reachable.
+def _validate_health(info: PrefectServerInfo) -> None:
+    """Check server health; raise PrefectServerUnreachable on failure.
 
-    Args:
-        info: Server info to check.
-
-    Raises:
-        PrefectServerUnreachable: If the health check fails.
+    ``health_check()`` from prefect_submitit returns ``bool`` (never raises),
+    so this wrapper checks the return value and raises with a rich error
+    message including remediation instructions.
     """
-    import urllib.error
-    import urllib.request
-
-    health_url = info.url.replace("/api", "/api/health")
-    try:
-        req = urllib.request.Request(health_url, method="GET")
-        with urllib.request.urlopen(req, timeout=HEALTH_TIMEOUT_SECONDS):
-            pass
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        msg = (
+    if not health_check(info.url):
+        raise PrefectServerUnreachable(
             f"Prefect server at {info.url} is not reachable "
             f"(source: {info.source}).\n"
-            f"\n"
-            f"Health check failed: {exc}\n"
-            f"\n"
-            f"If the server is not running, start it:\n"
-            f"  ./scripts/prefect/start_prefect_server.sh --bg\n"
+            "\n"
+            "If the server is not running, start it:\n"
+            "  pixi run prefect-start\n"
         )
-        raise PrefectServerUnreachable(msg) from exc
+
+
+def _source_label(resolved_url: str, explicit: str | None) -> str:
+    """Derive which source resolve_api_url() used (best-effort, for logging).
+
+    resolve_api_url() returns only a URL string with no provenance metadata,
+    so this re-checks the same sources in priority order.  This is a
+    display-only annotation — correctness of discovery is guaranteed by
+    resolve_api_url() itself.
+    """
+    if explicit is not None:
+        return "argument"
+    if os.environ.get(ENV_VAR):
+        return f"env:{ENV_VAR}"
+    if os.environ.get("PREFECT_API_URL"):
+        return "env:PREFECT_API_URL"
+    return "discovery_file"
+
+
+def _warn_old_env_var() -> None:
+    """Emit a warning if the deprecated ARTISAN_PREFECT_SERVER is set."""
+    if os.environ.get(_OLD_ENV_VAR) and not os.environ.get(ENV_VAR):
+        import warnings
+
+        warnings.warn(
+            f"{_OLD_ENV_VAR} is no longer recognized. " f"Use {ENV_VAR} instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
 
 def activate_server(info: PrefectServerInfo) -> None:
@@ -141,12 +126,8 @@ def activate_server(info: PrefectServerInfo) -> None:
     Args:
         info: Validated server info to activate.
     """
-    os.environ[ENV_VAR_PREFECT] = info.url
+    os.environ["PREFECT_API_URL"] = info.url
 
-    # Update Prefect's cached settings if already initialized.
-    # Prefect profiles are loaded once at first use and cached in a
-    # SettingsContext.  Changing os.environ after that has no effect on
-    # the cached settings, so we must update the context directly.
     try:
         from prefect.context import SettingsContext
         from prefect.settings import PREFECT_API_URL

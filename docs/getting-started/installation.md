@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Platforms:** Linux (x86_64) or macOS (Apple Silicon)
-- Python 3.12+
+- Python 3.12 (pinned by Pixi)
 - [Pixi](https://pixi.sh) package manager
 
 ## Quick Install
@@ -45,7 +45,7 @@ pixi run prefect-stop
 You can also point to an existing Prefect server instead of starting a local one:
 
 ```bash
-export ARTISAN_PREFECT_SERVER=http://<host>:<port>/api
+export PREFECT_SUBMITIT_SERVER=http://<host>:<port>/api
 ```
 
 ## IDE Setup (VSCode)

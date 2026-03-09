@@ -97,9 +97,9 @@ its purpose.
 
 | Type | What it stores | Content format | Why a separate type |
 |------|---------------|----------------|---------------------|
-| **Metric** | Computed properties (scores, RMSD, counts) | JSON-encoded bytes | Queryable structured data, often aggregated across runs |
+| **Metric** | Computed properties (scores, statistics, counts) | JSON-encoded bytes | Queryable structured data, often aggregated across runs |
 | **Config** | Computation specifications (model params, tool configs) | JSON-encoded bytes | Can reference other artifacts via `$artifact` patterns |
-| **Data** | Generic tabular data (CSV, TSV) | Raw bytes | Captures schema metadata (columns, row count) at creation |
+| **Data** | Generic tabular data (CSV) | Raw CSV bytes | Captures schema metadata (columns, row count) at creation |
 | **File ref** | Pointers to external files | Metadata only (no embedded content) | Lightweight reference without copying large files into storage |
 
 Each type maps to its own Delta Lake table (e.g., `artifacts/metrics`,
@@ -170,9 +170,9 @@ same operation can use different modes. The framework also skips materialization
 to write.
 
 **Why this matters for performance:** a Filter operation processing 10,000
-artifacts does not need to load 10,000 structure files from Delta Lake. It loads
+artifacts does not need to load 10,000 data files from Delta Lake. It loads
 only the metric artifacts it needs to evaluate filter conditions, and passes
-structure IDs through unchanged. The difference can be orders of magnitude in
+artifact IDs through unchanged. The difference can be orders of magnitude in
 I/O.
 
 ---
@@ -180,10 +180,10 @@ I/O.
 ## How content addressing enables caching
 
 Content addressing makes caching deterministic. Cache keys are computed from
-content-hashed artifact IDs plus operation parameters, so the chain is fully
-deterministic: same data + same computation = same cache key. No false hits
-(any input change invalidates the key), no false misses (identical computation
-always matches regardless of when or where it runs), and no manual
+content-hashed artifact IDs plus operation parameters and config overrides, so
+the chain is fully deterministic: same data + same computation = same cache key.
+No false hits (any input change invalidates the key), no false misses (identical
+computation always matches regardless of when or where it runs), and no manual
 invalidation.
 
 For the full two-level caching mechanism, see

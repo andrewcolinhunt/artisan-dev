@@ -28,6 +28,7 @@ from artisan.orchestration.engine.step_executor import (
 )
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.step_future import StepFuture
+from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -230,7 +231,7 @@ def _promote_file_paths_to_store(
     artifact_ids = [a.artifact_id for a in file_ref_artifacts]
     resolved_inputs = {"file": sorted(artifact_ids)}
 
-    logger.info(
+    logger.debug(
         "Step %d (%s): promoted %d file paths to Delta Lake",
         step_number,
         operation_name,
@@ -293,23 +294,74 @@ def _validate_execution(execution: dict[str, Any]) -> None:
         raise ValueError(msg)
 
 
-def _validate_command(
+def _validate_environment(
     operation: type[OperationDefinition],
-    command: dict[str, Any],
+    environment: str | dict[str, Any],
 ) -> None:
-    """Raise ValueError if command overrides are invalid for this operation."""
-    if "command" not in operation.model_fields:
-        msg = (
-            f"Operation '{operation.name}' does not support command overrides "
-            "(curator operations have no command field)"
+    """Raise ValueError if environment override is invalid for this operation."""
+    if isinstance(environment, str):
+        temp = operation()
+        if environment not in temp.environments.available():
+            msg = (
+                f"Environment '{environment}' not configured on {operation.name}. "
+                f"Available: {temp.environments.available()}"
+            )
+            raise ValueError(msg)
+    else:
+        from artisan.schemas.operation_config.environment_spec import (
+            ApptainerEnvironmentSpec,
+            DockerEnvironmentSpec,
+            LocalEnvironmentSpec,
+            PixiEnvironmentSpec,
         )
+        from artisan.schemas.operation_config.environments import Environments
+
+        valid_keys = set(Environments.model_fields)
+        unknown = set(environment) - valid_keys
+        if unknown:
+            msg = (
+                f"Unknown environment keys: {sorted(unknown)}. "
+                f"Valid keys: {sorted(valid_keys)}"
+            )
+            raise ValueError(msg)
+        # Validate nested dicts against their EnvironmentSpec subclass
+        env_field_types = {
+            "local": LocalEnvironmentSpec,
+            "docker": DockerEnvironmentSpec,
+            "apptainer": ApptainerEnvironmentSpec,
+            "pixi": PixiEnvironmentSpec,
+        }
+        for key, value in environment.items():
+            if key == "active" or not isinstance(value, dict):
+                continue
+            spec_cls = env_field_types.get(key)
+            if spec_cls:
+                valid_spec_keys = set(spec_cls.model_fields)
+                bad = set(value) - valid_spec_keys
+                if bad:
+                    msg = (
+                        f"Unknown keys for {key} environment: {sorted(bad)}. "
+                        f"Valid: {sorted(valid_spec_keys)}"
+                    )
+                    raise ValueError(msg)
+
+
+def _validate_tool(
+    operation: type[OperationDefinition],
+    tool: dict[str, Any],
+) -> None:
+    """Raise ValueError if tool overrides are invalid for this operation."""
+    from artisan.schemas.operation_config.tool_spec import ToolSpec
+
+    temp = operation()
+    if temp.tool is None:
+        msg = f"Operation '{operation.name}' has no tool to override"
         raise ValueError(msg)
-    command_cls = operation.model_fields["command"].annotation
-    valid_keys = set(command_cls.model_fields)
-    unknown = set(command) - valid_keys
+    valid_keys = set(ToolSpec.model_fields)
+    unknown = set(tool) - valid_keys
     if unknown:
         msg = (
-            f"Unknown command keys for {operation.name}: {sorted(unknown)}. "
+            f"Unknown tool keys: {sorted(unknown)}. "
             f"Valid keys: {sorted(valid_keys)}"
         )
         raise ValueError(msg)
@@ -335,6 +387,57 @@ def _validate_input_roles(
             f"Valid roles: {sorted(valid_roles)}"
         )
         raise ValueError(msg)
+
+
+def _validate_required_inputs(
+    operation: type[OperationDefinition],
+    inputs: Any,
+) -> None:
+    """Raise ValueError if any required input roles are missing."""
+    if operation.runtime_defined_inputs:
+        return
+    if not operation.inputs:
+        return
+    if not isinstance(inputs, dict):
+        return
+
+    provided_roles = set(inputs.keys())
+
+    missing = [
+        role
+        for role, spec in operation.inputs.items()
+        if spec.required and role not in provided_roles
+    ]
+    if missing:
+        msg = (
+            f"Missing required input(s) for {operation.name}: {sorted(missing)}. "
+            f"Declared inputs: {sorted(operation.inputs.keys())}"
+        )
+        raise ValueError(msg)
+
+
+def _validate_input_types(
+    operation: type[OperationDefinition],
+    inputs: Any,
+) -> None:
+    """Raise ValueError if upstream output types don't match input specs."""
+    if not isinstance(inputs, dict):
+        return
+    for role, ref in inputs.items():
+        if not isinstance(ref, OutputReference):
+            continue
+        input_spec = operation.inputs.get(role)
+        if input_spec is None:
+            continue
+        if ref.artifact_type == ArtifactTypes.ANY:
+            continue
+        if not input_spec.accepts_type(ref.artifact_type):
+            msg = (
+                f"Type mismatch on input '{role}' for {operation.name}: "
+                f"upstream step {ref.source_step} produces '{ref.artifact_type}', "
+                f"but '{role}' expects '{input_spec.artifact_type}'"
+            )
+            raise ValueError(msg)
 
 
 # =============================================================================
@@ -368,14 +471,26 @@ class PipelineManager:
         result = pipeline.finalize()
     """
 
-    def __init__(self, config: PipelineConfig):
+    def __init__(
+        self,
+        config: PipelineConfig,
+        configure_logging: bool = True,
+    ):
         """Initialize from a PipelineConfig.
 
         Prefer ``PipelineManager.create()`` over direct instantiation.
 
         Args:
             config: Full pipeline configuration.
+            configure_logging: If True (default), call
+                :func:`~artisan.utils.logging.configure_logging` so
+                users don't need to set up logging manually.
         """
+        if configure_logging:
+            from artisan.utils.logging import configure_logging as _configure
+
+            _configure(logs_root=config.delta_root.parent / "logs")
+
         self._config = config
 
         if config.recover_staging:
@@ -517,7 +632,7 @@ class PipelineManager:
         """Factory method to create a PipelineManager.
 
         Automatically discovers and connects to a running Prefect server.
-        Resolution order: explicit argument > ARTISAN_PREFECT_SERVER env var
+        Resolution order: explicit argument > PREFECT_SUBMITIT_SERVER env var
         > PREFECT_API_URL env var > discovery file > error with instructions.
 
         Args:
@@ -673,7 +788,8 @@ class PipelineManager:
         backend: str | BackendBase | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        command: dict[str, Any] | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -689,9 +805,11 @@ class PipelineManager:
             params: Parameter overrides.
             backend: Backend for execution. None uses pipeline default.
                 Accepts a BackendBase instance or string name.
-            resources: SLURM resource overrides (partition, mem_gb, etc.).
+            resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-            command: Command config overrides (image, binds, etc.).
+            environment: Environment override. String selects the active
+                environment; dict overrides fields on the Environments model.
+            tool: Tool overrides (executable, interpreter, etc.).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
@@ -706,7 +824,8 @@ class PipelineManager:
             backend=backend,
             resources=resources,
             execution=execution,
-            command=command,
+            environment=environment,
+            tool=tool,
             failure_policy=failure_policy,
             compact=compact,
             name=name,
@@ -725,7 +844,8 @@ class PipelineManager:
         backend: str | BackendBase | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        command: dict[str, Any] | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -745,9 +865,11 @@ class PipelineManager:
             params: Parameter overrides.
             backend: Backend for execution. None uses pipeline default.
                 Accepts a BackendBase instance or string name.
-            resources: SLURM resource overrides (partition, mem_gb, etc.).
+            resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-            command: Command config overrides (image, binds, etc.).
+            environment: Environment override. String selects the active
+                environment; dict overrides fields on the Environments model.
+            tool: Tool overrides (executable, interpreter, etc.).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
@@ -765,9 +887,13 @@ class PipelineManager:
             _validate_resources(resources)
         if execution:
             _validate_execution(execution)
-        if command:
-            _validate_command(operation, command)
+        if environment is not None:
+            _validate_environment(operation, environment)
+        if tool:
+            _validate_tool(operation, tool)
         _validate_input_roles(operation, inputs)
+        _validate_required_inputs(operation, inputs)
+        _validate_input_types(operation, inputs)
 
         step_name = name or operation.name
 
@@ -821,7 +947,7 @@ class PipelineManager:
         # Instantiate operation to get full params (defaults + overrides)
         # for deterministic step_spec_id computation
         temp_instance = instantiate_operation(
-            operation, params, resources, execution, command
+            operation, params, resources, execution, environment, tool
         )
         if "params" in type(temp_instance).model_fields:
             full_params = temp_instance.params.model_dump(mode="json")
@@ -835,14 +961,19 @@ class PipelineManager:
                 if k not in base_fields
             }
 
-        # Compute step_spec_id for caching (includes command overrides)
+        # Merge environment + tool overrides for hashing
+        from artisan.orchestration.engine.step_executor import _merge_config_overrides
+
+        config_overrides = _merge_config_overrides(environment, tool)
+
+        # Compute step_spec_id for caching
         input_spec = self._build_input_spec(inputs)
         step_spec_id = compute_step_spec_id(
             operation_name=operation.name,
             step_number=step_number,
             params=full_params if full_params else None,
             input_spec=input_spec,
-            command_overrides=command,
+            config_overrides=config_overrides,
         )
 
         # Check step cache
@@ -940,7 +1071,8 @@ class PipelineManager:
         compute_options_data = {
             "resources": resources or {},
             "execution": execution or {},
-            "command": command or {},
+            "environment": (environment if environment is not None else {}),
+            "tool": tool or {},
         }
         start_record = StepStartRecord(
             step_run_id=step_run_id,
@@ -976,7 +1108,8 @@ class PipelineManager:
                     backend=resolved_backend,
                     resources=resources,
                     execution=execution,
-                    command=command,
+                    environment=environment,
+                    tool=tool,
                     step_number=step_number,
                     config=self._config,
                     failure_policy=_failure_policy,
@@ -1046,6 +1179,298 @@ class PipelineManager:
         future = StepFuture(
             step_number=step_number,
             step_name=step_name,
+            output_roles=frozenset(output_types_map.keys()),
+            output_types=output_types_map,
+            future=cf_future,
+        )
+        self._active_futures[step_number] = future
+        return future
+
+    def chain(
+        self,
+        inputs: dict[str, Any] | None = None,
+        backend: str | BackendBase | None = None,
+        resources: dict[str, Any] | None = None,
+        execution: dict[str, Any] | None = None,
+        intermediates: str = "discard",
+        name: str | None = None,
+    ) -> ChainBuilder:
+        """Start building a chain of creator operations.
+
+        Returns a ChainBuilder for fluent composition. Call ``.add()``
+        to append operations, then ``.run()`` or ``.submit()`` to execute.
+
+        Args:
+            inputs: Initial inputs for the first operation in the chain.
+            backend: Backend override. None uses pipeline default.
+            resources: Chain-level resource overrides.
+            execution: Chain-level execution/scheduling overrides.
+            intermediates: How to handle intermediate artifacts:
+                "discard" (default), "persist", or "expose".
+            name: Custom step name. Defaults to joined operation names.
+
+        Returns:
+            ChainBuilder for fluent API usage.
+
+        Example::
+
+            chain = pipeline.chain(
+                inputs={"data": pipeline.output("gen", "data")},
+            )
+            chain.add(DataTransformer, params={"mode": "normalize"})
+            chain.add(MetricCalculator)
+            result = chain.run()
+        """
+        from artisan.execution.models.execution_chain import ChainIntermediates
+        from artisan.orchestration.chain_builder import ChainBuilder
+
+        return ChainBuilder(
+            pipeline=self,
+            inputs=inputs,
+            backend=backend,
+            resources=resources,
+            execution=execution,
+            intermediates=ChainIntermediates(intermediates),
+            name=name,
+        )
+
+    def _submit_chain(
+        self,
+        operations: list[
+            tuple[
+                type[OperationDefinition], dict[str, Any] | None, dict[str, Any] | None
+            ]
+        ],
+        role_mappings: list[dict[str, str] | None],
+        inputs: Any,
+        backend: Any | None,
+        resources: dict[str, Any] | None,
+        execution: dict[str, Any] | None,
+        intermediates: Any,  # ChainIntermediates
+        failure_policy: Any | None,
+        compact: bool,
+        name: str,
+        final_operation: type[OperationDefinition],
+    ) -> StepFuture:
+        """Internal: submit a chain step for execution.
+
+        Called by ChainBuilder.submit(). Handles step numbering, caching,
+        persistence, and background dispatch — mirroring submit() for
+        single operations.
+
+        Args:
+            operations: List of (op_class, params, config) tuples.
+            role_mappings: Role remappings between adjacent operations.
+            inputs: Initial inputs for the first operation.
+            backend: Backend override.
+            resources: Chain-level resource overrides.
+            execution: Chain-level execution overrides.
+            intermediates: ChainIntermediates enum value.
+            failure_policy: Override pipeline failure policy.
+            compact: Run Delta Lake compaction.
+            name: Step name.
+            final_operation: Last operation class (for output metadata).
+
+        Returns:
+            StepFuture for downstream wiring.
+        """
+        from artisan.orchestration.engine.step_executor import execute_chain_step
+        from artisan.schemas.execution.execution_config import ExecutionConfig
+        from artisan.schemas.operation_config.resource_config import ResourceConfig
+
+        if self._stopped:
+            step_number = self._current_step
+            output_types_map: dict[str, str | None] = {
+                role: spec.artifact_type if spec.artifact_type else None
+                for role, spec in final_operation.outputs.items()
+            }
+            skipped_result = StepResult(
+                step_name=name,
+                step_number=step_number,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                output_roles=frozenset(final_operation.outputs.keys()),
+                output_types=output_types_map,
+                metadata={"skipped": True, "skip_reason": "pipeline_stopped"},
+            )
+            self._step_results.append(skipped_result)
+            self._named_steps.setdefault(name, []).append(skipped_result)
+            self._current_step += 1
+
+            from concurrent.futures import Future
+
+            resolved_stopped: Future[StepResult] = Future()
+            resolved_stopped.set_result(skipped_result)
+            return StepFuture(
+                step_number=step_number,
+                step_name=name,
+                output_roles=frozenset(final_operation.outputs.keys()),
+                output_types=output_types_map,
+                future=resolved_stopped,
+            )
+
+        self._wait_for_predecessors(inputs)
+        step_number = self._current_step
+
+        # Compute chain step_spec_id
+        op_tuples: list[tuple[str, dict[str, Any] | None]] = []
+        for op_class, params, _config in operations:
+            temp = instantiate_operation(op_class, params)
+            if "params" in type(temp).model_fields:
+                full_params = temp.params.model_dump(mode="json")
+            else:
+                base_fields = set(OperationDefinition.model_fields)
+                full_params = {
+                    k: v
+                    for k, v in temp.model_dump(mode="json").items()
+                    if k not in base_fields
+                }
+            op_tuples.append((op_class.name, full_params or None))
+
+        input_spec = self._build_input_spec(inputs)
+        from artisan.utils.hashing import compute_chain_spec_id
+
+        # Build a synthetic input_ids dict for chain_spec_id
+        # (uses upstream spec_ids as proxies, same as step_spec_id)
+        chain_input_ids: dict[str, list[str]] = {}
+        for role, (spec_id, upstream_role) in input_spec.items():
+            chain_input_ids[role] = [spec_id]
+
+        step_spec_id = compute_chain_spec_id(op_tuples, chain_input_ids)
+
+        # Check step cache
+        cached = self._step_tracker.check_cache(step_spec_id, self._config.cache_policy)
+        if cached is not None:
+            logger.info("Step %d (%s) CACHED — skipping execution", step_number, name)
+            self._step_spec_ids[step_number] = step_spec_id
+            self._step_results.append(cached)
+            self._named_steps.setdefault(cached.step_name, []).append(cached)
+            self._current_step += 1
+
+            from concurrent.futures import Future
+
+            resolved: Future[StepResult] = Future()
+            resolved.set_result(cached)
+            return StepFuture(
+                step_number=step_number,
+                step_name=cached.step_name,
+                output_roles=cached.output_roles,
+                output_types=cached.output_types,
+                future=resolved,
+            )
+
+        # Cache miss — build and dispatch
+        self._current_step += 1
+        self._step_spec_ids[step_number] = step_spec_id
+
+        output_types_map = {
+            role: spec.artifact_type if spec.artifact_type else None
+            for role, spec in final_operation.outputs.items()
+        }
+
+        # Resolve backend
+        if is_curator_operation(final_operation):
+            resolved_backend = Backend.LOCAL
+        elif backend is not None:
+            resolved_backend = resolve_backend(backend)
+        else:
+            resolved_backend = resolve_backend(self._config.default_backend)
+
+        _failure_policy = failure_policy or self._config.failure_policy
+
+        # Build chain-level resource/execution configs
+        chain_resources = ResourceConfig(**(resources or {}))
+        chain_execution = ExecutionConfig(**(execution or {}))
+
+        def _run() -> StepResult:
+            logger.info(
+                "Step %d (%s) starting chain... [backend=%s]",
+                step_number,
+                name,
+                resolved_backend.name,
+            )
+            start = time.perf_counter()
+            try:
+                result = execute_chain_step(
+                    operations=operations,
+                    role_mappings=role_mappings,
+                    inputs=inputs,
+                    backend=resolved_backend,
+                    chain_resources=chain_resources,
+                    chain_execution=chain_execution,
+                    intermediates=intermediates,
+                    step_number=step_number,
+                    config=self._config,
+                    failure_policy=_failure_policy,
+                    compact=compact,
+                    final_operation=final_operation,
+                )
+                elapsed = time.perf_counter() - start
+                result = result.model_copy(
+                    update={"step_name": name, "duration_seconds": elapsed},
+                )
+                self._step_tracker.record_step_completed(
+                    StepStartRecord(
+                        step_run_id=_generate_step_run_id(step_spec_id),
+                        step_spec_id=step_spec_id,
+                        step_number=step_number,
+                        step_name=name,
+                        operation_class=_qualified_name(final_operation),
+                        params_json="{}",
+                        input_refs_json=_serialize_input_refs(inputs),
+                        compute_backend=resolved_backend.name,
+                        compute_options_json="{}",
+                        output_roles_json=json.dumps(
+                            sorted(final_operation.outputs.keys())
+                        ),
+                        output_types_json=json.dumps(output_types_map),
+                    ),
+                    result,
+                )
+                logger.info(
+                    "Step %d (%s) completed in %.1fs [%d/%d succeeded]",
+                    step_number,
+                    name,
+                    elapsed,
+                    result.succeeded_count,
+                    result.total_count,
+                )
+                self._step_results.append(result)
+                self._named_steps.setdefault(result.step_name, []).append(result)
+                return result
+
+            except Exception as e:
+                elapsed = time.perf_counter() - start
+                error_msg = f"{type(e).__name__}: {e}"
+                logger.error(
+                    "Step %d (%s) failed after %.1fs: %s",
+                    step_number,
+                    name,
+                    elapsed,
+                    error_msg,
+                )
+                failed_result = StepResult(
+                    step_name=name,
+                    step_number=step_number,
+                    success=False,
+                    total_count=0,
+                    succeeded_count=0,
+                    failed_count=0,
+                    duration_seconds=elapsed,
+                    metadata={"error": error_msg},
+                )
+                self._step_results.append(failed_result)
+                self._named_steps.setdefault(name, []).append(failed_result)
+                return failed_result
+
+        ctx = contextvars.copy_context()
+        cf_future = self._executor.submit(ctx.run, _run)
+
+        future = StepFuture(
+            step_number=step_number,
+            step_name=name,
             output_roles=frozenset(output_types_map.keys()),
             output_types=output_types_map,
             future=cf_future,

@@ -209,6 +209,7 @@ def _stage_artifact_edges(
                 "source_role": edge.source_role,
                 "target_role": edge.target_role,
                 "group_id": edge.group_id,
+                "step_boundary": edge.step_boundary,
             }
             for edge in artifact_edges
         ],

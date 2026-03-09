@@ -26,14 +26,16 @@ from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.execution_record import ExecutionRecord
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.operation_config.command_spec import (
-    ApptainerCommandSpec,
-    CommandSpec,
-    DockerCommandSpec,
-    LocalCommandSpec,
-    PixiCommandSpec,
+from artisan.schemas.operation_config.environment_spec import (
+    ApptainerEnvironmentSpec,
+    DockerEnvironmentSpec,
+    EnvironmentSpec,
+    LocalEnvironmentSpec,
+    PixiEnvironmentSpec,
 )
+from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.batch_config import BatchConfig
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -87,11 +89,13 @@ __all__ = [
     # Config types
     "ResourceConfig",
     "ExecutionConfig",
-    "CommandSpec",
-    "ApptainerCommandSpec",
-    "DockerCommandSpec",
-    "LocalCommandSpec",
-    "PixiCommandSpec",
+    "ToolSpec",
+    "EnvironmentSpec",
+    "LocalEnvironmentSpec",
+    "DockerEnvironmentSpec",
+    "ApptainerEnvironmentSpec",
+    "PixiEnvironmentSpec",
+    "Environments",
     "OutputReference",
     "PipelineConfig",
     "BatchConfig",

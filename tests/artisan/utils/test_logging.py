@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
+import os
 import sys
 
 import pytest
@@ -16,12 +18,16 @@ def _reset_loggers():
     yield
 
     artisan_logger = logging.getLogger("artisan")
+    for handler in artisan_logger.handlers:
+        handler.close()
     artisan_logger.handlers.clear()
     artisan_logger.setLevel(logging.WARNING)
     artisan_logger.propagate = True
 
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    os.environ.pop("PREFECT_LOGGING_LEVEL", None)
 
 
 def test_configure_logging_sets_level():
@@ -92,3 +98,63 @@ def test_configure_logging_custom_loggers():
     myapp_logger.handlers.clear()
     myapp_logger.setLevel(logging.WARNING)
     myapp_logger.propagate = True
+
+
+def test_suppress_noise_sets_prefect_env_var():
+    """suppress_noise=True should set PREFECT_LOGGING_LEVEL env var."""
+    os.environ.pop("PREFECT_LOGGING_LEVEL", None)
+    configure_logging(suppress_noise=True)
+    assert os.environ["PREFECT_LOGGING_LEVEL"] == "CRITICAL"
+
+
+def test_suppress_noise_does_not_overwrite_existing_env_var():
+    """setdefault should not overwrite a user-provided env var."""
+    os.environ["PREFECT_LOGGING_LEVEL"] = "WARNING"
+    configure_logging(suppress_noise=True)
+    assert os.environ["PREFECT_LOGGING_LEVEL"] == "WARNING"
+
+
+def test_no_suppress_noise_leaves_env_var_unset():
+    """suppress_noise=False should not touch the env var."""
+    os.environ.pop("PREFECT_LOGGING_LEVEL", None)
+    configure_logging(suppress_noise=False)
+    assert "PREFECT_LOGGING_LEVEL" not in os.environ
+
+
+def test_file_handler_with_debug_and_logs_root(tmp_path):
+    """DEBUG + logs_root should add a RotatingFileHandler."""
+    configure_logging(level="DEBUG", suppress_noise=False, logs_root=tmp_path)
+    handlers = logging.getLogger("artisan").handlers
+    file_handlers = [
+        h for h in handlers if isinstance(h, logging.handlers.RotatingFileHandler)
+    ]
+    assert len(file_handlers) == 1
+    assert file_handlers[0].baseFilename == str(tmp_path / "pipeline.log")
+
+
+def test_no_file_handler_at_info_level(tmp_path):
+    """INFO + logs_root should NOT add a file handler."""
+    configure_logging(level="INFO", suppress_noise=False, logs_root=tmp_path)
+    handlers = logging.getLogger("artisan").handlers
+    file_handlers = [
+        h for h in handlers if isinstance(h, logging.handlers.RotatingFileHandler)
+    ]
+    assert len(file_handlers) == 0
+
+
+def test_file_handler_idempotent(tmp_path):
+    """Calling twice with DEBUG + logs_root should not duplicate the file handler."""
+    configure_logging(level="DEBUG", suppress_noise=False, logs_root=tmp_path)
+    configure_logging(level="DEBUG", suppress_noise=False, logs_root=tmp_path)
+    handlers = logging.getLogger("artisan").handlers
+    file_handlers = [
+        h for h in handlers if isinstance(h, logging.handlers.RotatingFileHandler)
+    ]
+    assert len(file_handlers) == 1
+
+
+def test_tools_logger_inherits_from_artisan():
+    """artisan.tools logger should inherit from artisan parent."""
+    configure_logging(suppress_noise=False)
+    tools_logger = logging.getLogger("artisan.tools")
+    assert tools_logger.parent is logging.getLogger("artisan")

@@ -63,16 +63,15 @@ ExecutionRecord                   A ──→ D
 ```
 
 **Why you cannot derive artifact provenance later.** The information needed to
-match outputs to inputs — filename stems, pairing order, position within a
-batch — is available only during the operation's postprocess phase. Once
-execution finishes, this context is gone. Attempting to reconstruct lineage
-after the fact by scanning filenames or guessing relationships is brittle and
-unreliable.
+match outputs to inputs — filename stems and grouping indices — is available
+only during the operation's lineage phase. Once execution finishes, this context
+is gone. Attempting to reconstruct lineage after the fact by scanning filenames
+or guessing relationships is brittle and unreliable.
 
-**The framework's solution:** Lineage inference runs during the postprocess
-phase, while context is still available. The resulting edges are staged
-alongside artifacts and committed atomically. There is no separate "lineage
-reconstruction" step.
+**The framework's solution:** Lineage inference runs during a dedicated lineage
+phase (after postprocess), while context is still available. The resulting edges
+are staged alongside artifacts and committed atomically. There is no separate
+"lineage reconstruction" step.
 
 ---
 
@@ -83,7 +82,7 @@ conflicting requirements.
 
 | Identity | Purpose | Computed from |
 |----------|---------|---------------|
-| `execution_spec_id` | Cache key (deterministic) | operation name + sorted input IDs + merged params + command overrides |
+| `execution_spec_id` | Cache key (deterministic) | operation name + sorted input IDs + merged params + config overrides |
 | `execution_run_id` | Provenance tracking (unique per attempt) | spec_id + timestamp + worker_id |
 
 Same `spec_id` means "same request" — a cache hit. Different `run_id` means
@@ -103,28 +102,34 @@ connects them.
 
 ### The algorithm
 
-1. Strip all extensions from both output and input filenames
-   (`sample_001_transformed.csv` → `sample_001_transformed`)
-2. Check if the output stem starts with a candidate input stem
-3. Apply digit boundary protection: `design_1` does **not** match `design_10`
-   (the character after the match must not be a digit)
-4. Require exactly one match — zero or multiple matches produce an orphan
-   artifact (no parent edges)
+- Strip all extensions from both output and input filenames
+  (`sample_001_transformed.csv` → `sample_001_transformed`)
+- Try exact match first — if the output stem equals an input stem and there is
+  exactly one candidate, that is the match
+- If no exact match, try prefix matches longest-first: progressively shorten
+  the output stem, checking whether any input stem matches the prefix
+- Apply digit boundary protection at each prefix cut: the character at the cut
+  point must not be a digit (`design_1` does **not** match `design_10`)
+- At every level, require exactly one candidate — if multiple candidates share
+  the same stem or prefix, skip that level and keep shortening
+- If no level yields a unique match, the output has no lineage mapping and the
+  framework raises a `LineageCompletenessError`
 
-**Why the uniqueness requirement?** Better to have no lineage than incorrect
+**Why the uniqueness requirement?** Better to fail loudly than record incorrect
 lineage. If two candidates match a single output, the framework cannot determine
-which is the true parent, so it records neither. This conservative behavior
+which is the true parent, so it rejects the result rather than guessing. This
 ensures that every edge in the provenance graph is trustworthy.
 
 ### Digit boundary protection
 
 This rule prevents a common class of false matches when filenames contain
-numeric suffixes:
+numeric suffixes. When the algorithm shortens the output stem to test a prefix,
+it only considers a cut point if the character being dropped is not a digit:
 
-| Output stem | Candidate stem | Next character | Result |
-|-------------|----------------|----------------|--------|
+| Output stem | Candidate stem | Character at cut | Result |
+|-------------|----------------|------------------|--------|
 | `design_001_relaxed` | `design_001` | `_` (not a digit) | Match |
-| `design_10_relaxed` | `design_1` | `0` (a digit) | No match |
+| `design_10_relaxed` | `design_1` | `0` (a digit) | Skipped |
 | `report_cleaned` | `report` | `_` (not a digit) | Match |
 
 Without this protection, `design_1` would falsely match `design_10`,
@@ -234,7 +239,7 @@ derivation edge.
 |----------|-----------|
 | Dual provenance (execution + artifact) | Different questions require different data structures |
 | Lineage captured at execution time | Context needed for inference is lost after execution finishes |
-| Conservative stem matching (unique match or nothing) | Incorrect lineage is worse than missing lineage |
+| Conservative stem matching (unique match or error) | Incorrect lineage is worse than missing lineage |
 | Digit boundary protection | Prevents false matches across numeric suffixes (`design_1` vs `design_10`) |
 | Distinct terminology (inputs/outputs vs source/target) | Avoids confusion between execution and artifact provenance contexts |
 | Denormalized artifact types on edges | Query performance on large provenance tables without joins |

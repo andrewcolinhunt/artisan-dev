@@ -22,16 +22,17 @@ thread pools). The framework provides a three-phase lifecycle that separates
 input preparation from computation from output construction.
 
 **Curators** perform lightweight coordination — filtering artifacts, merging
-streams, ingesting external files. They operate in memory, return immediately,
-and never leave the orchestrator process. A single method replaces the
-three-phase lifecycle because the overhead would add complexity with no benefit.
+streams, ingesting external files. They receive DataFrames of artifact metadata,
+return immediately, and never leave the orchestrator process. A single method
+replaces the three-phase lifecycle because the overhead would add complexity
+with no benefit.
 
 | Aspect | Creator | Curator |
 |--------|---------|---------|
 | Purpose | Heavy computation, file I/O | Metadata coordination |
 | Lifecycle | `preprocess` → `execute` → `postprocess` | `execute_curator` |
 | Sandboxing | Isolated directories per phase | None (in-memory) |
-| Input delivery | Files written to disk | Artifacts in memory |
+| Input delivery | Files written to disk | DataFrames of artifact metadata |
 | Worker dispatch | SLURM, ThreadPool | Local only |
 | Return type | `ArtifactResult` (from postprocess) | `ArtifactResult` or `PassthroughResult` |
 
@@ -52,8 +53,8 @@ Creator operations follow three phases, each with a single responsibility:
 └─────────────────┘     └─────────────────┘     └─────────────────┘
       ▲                                                │
       │                                                ▼
-  Framework types                              Draft artifacts
-  → plain dicts                                → ArtifactResult
+  Artifacts in                                 Files + return value
+  → plain dict out                             → ArtifactResult
 ```
 
 ### Preprocess: adapt
@@ -113,7 +114,8 @@ Three properties fall directly out of the phase separation:
 ## The curator lifecycle
 
 Curators skip the three-phase lifecycle entirely. A single `execute_curator`
-method receives artifacts in memory and returns either new artifacts
+method receives DataFrames of artifact metadata (each with at least an
+`artifact_id` column, keyed by role name) and returns either new artifacts
 (`ArtifactResult`) or routed artifact IDs (`PassthroughResult`).
 
 Curators have no sandbox directories, no input materialization to disk, and no
@@ -201,16 +203,18 @@ string.
 
 ## Validation at class definition time
 
-When you define an `OperationDefinition` subclass, the framework validates six
-rules before any instance is created:
+When you define an `OperationDefinition` subclass, the framework validates
+several rules before any instance is created. Classes with an empty `name` are
+treated as abstract and skip validation entirely — this is how you create
+intermediate base classes.
 
-1. `name` must be a non-empty string
-2. Either `execute()` or `execute_curator()` must be overridden (not neither,
-   not both)
-3. Creator outputs must have explicit `infer_lineage_from` (not `None`)
-4. Creator operations with inputs must implement `preprocess()`
-5. `OutputRole` enum values must match `outputs` keys
-6. `InputRole` enum values must match `inputs` keys (when inputs exist)
+For concrete classes (non-empty `name`):
+
+- Either `execute()` or `execute_curator()` must be overridden (not neither)
+- Creator outputs must have explicit `infer_lineage_from` (not `None`)
+- Creator operations with inputs must implement `preprocess()`
+- `OutputRole` enum values must match `outputs` keys
+- `InputRole` enum values must match `inputs` keys (when inputs exist)
 
 Violations raise `TypeError` at import time. A misconfigured operation cannot
 be instantiated, cannot be added to a pipeline, and cannot fail silently at
@@ -224,15 +228,20 @@ Operations declare configuration as Pydantic fields on the class. These fields
 are validated at instantiation and accessible via `self` in all lifecycle
 methods.
 
-Two built-in fields control infrastructure behavior:
+Built-in fields control infrastructure behavior:
 
-- **`resources`** — hardware allocation for SLURM jobs: partition, time limit,
-  memory, GPU count
+- **`resources`** — portable hardware requirements: CPU count, memory, GPUs,
+  time limit, plus an `extra` dict for backend-specific settings like SLURM
+  partition
 - **`execution`** — batching and scheduling: artifacts per unit, units per
-  worker, max workers, estimated seconds
+  worker, max workers, estimated seconds per unit
+- **`tool`** — external executable specification: path, interpreter, subcommand
+- **`environments`** — execution environment selection: local, Docker,
+  Apptainer, or Pixi
 
-Both can be overridden at the pipeline step level. The operation provides
-sensible defaults; the pipeline adapts them to specific cluster configurations.
+Both `resources` and `execution` can be overridden at the pipeline step level.
+The operation provides sensible defaults; the pipeline adapts them to specific
+cluster configurations.
 
 ---
 

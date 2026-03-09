@@ -111,6 +111,7 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "source_role": ["input_file", "intermediate"],
         "target_role": ["parsed", "energy"],
         "group_id": [None, None],
+        "step_boundary": [True, True],
     }
     art_prov_df = pl.DataFrame(art_prov_data, schema=ARTIFACT_EDGES_SCHEMA)
     art_prov_df.write_delta(

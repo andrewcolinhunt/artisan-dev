@@ -129,53 +129,53 @@ class TestComputeExecutionSpecId:
         )
         assert spec1 == spec2
 
-    def test_command_overrides_none_same_as_empty(self):
-        """command_overrides=None produces same spec_id as empty dict."""
+    def test_config_overrides_none_same_as_empty(self):
+        """config_overrides=None produces same spec_id as empty dict."""
         spec_none = compute_execution_spec_id(
             operation_name="relax",
             inputs={},
-            command_overrides=None,
+            config_overrides=None,
         )
         spec_empty = compute_execution_spec_id(
             operation_name="relax",
             inputs={},
-            command_overrides={},
+            config_overrides={},
         )
         assert spec_none == spec_empty
 
-    def test_command_overrides_changes_hash(self):
-        """Different command_overrides produce different spec_id."""
+    def test_config_overrides_changes_hash(self):
+        """Different config_overrides produce different spec_id."""
         spec1 = compute_execution_spec_id(
             operation_name="relax",
             inputs={"data": ["a" * 32]},
-            command_overrides=None,
+            config_overrides=None,
         )
         spec2 = compute_execution_spec_id(
             operation_name="relax",
             inputs={"data": ["a" * 32]},
-            command_overrides={"image": "/path/to/image.sif"},
+            config_overrides={"image": "/path/to/image.sif"},
         )
         assert spec1 != spec2
 
-    def test_command_overrides_deterministic(self):
-        """Same command_overrides produce same spec_id."""
+    def test_config_overrides_deterministic(self):
+        """Same config_overrides produce same spec_id."""
         kwargs = {
             "operation_name": "relax",
             "inputs": {"data": ["a" * 32]},
-            "command_overrides": {"image": "/opt/image.sif", "gpu": True},
+            "config_overrides": {"image": "/opt/image.sif", "gpu": True},
         }
         assert compute_execution_spec_id(**kwargs) == compute_execution_spec_id(
             **kwargs
         )
 
-    def test_command_overrides_with_path_objects(self):
-        """Path objects in command_overrides serialize correctly."""
+    def test_config_overrides_with_path_objects(self):
+        """Path objects in config_overrides serialize correctly."""
         from pathlib import Path
 
         spec = compute_execution_spec_id(
             operation_name="relax",
             inputs={},
-            command_overrides={"image": Path("/opt/containers/relax.sif")},
+            config_overrides={"image": Path("/opt/containers/relax.sif")},
         )
         assert len(spec) == 32
 

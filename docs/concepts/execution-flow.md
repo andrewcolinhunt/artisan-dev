@@ -44,9 +44,9 @@ to run at all.
 ### Input resolution
 
 When a step receives an `OutputReference` (the lazy pointer returned by
-`output("step_name", "role")`), the orchestrator resolves it to concrete artifact IDs
-by querying execution edges in Delta Lake. The result is a sorted, deduplicated
-list of artifact IDs per role.
+`step.output("role")` on a `StepResult` or `StepFuture`), the orchestrator
+resolves it to concrete artifact IDs by querying execution edges in Delta Lake.
+The result is a sorted, deduplicated list of artifact IDs per role.
 
 **Why sort?** Determinism. Cache keys derive from artifact IDs, so the same set
 of inputs must always produce the same key regardless of the order workers
@@ -65,25 +65,26 @@ The framework checks two caches before any computation runs. Each level exists
 because it skips different amounts of work.
 
 **Step-level cache** checks first. The `step_spec_id` hashes the operation
-name, step number, upstream step spec IDs, parameters, and command overrides.
+name, step number, upstream step spec IDs, parameters, and config overrides.
 A hit here skips the entire step -- no input resolution, no batching, no worker
 dispatch. The orchestrator returns a pre-resolved `StepResult` immediately.
 
 **Execution-level cache** checks per batch. The `execution_spec_id` hashes the
-operation name, sorted input artifact IDs, parameters, and command overrides.
+operation name, sorted input artifact IDs, parameters, and config overrides.
 A hit skips that batch while other batches in the same step may still execute.
 
 ```
-pipeline.run(operation=MyOp, inputs={"data": output("prev_step", "data")})
+prev = pipeline.run(operation=PrevOp, ...)
+pipeline.run(operation=MyOp, inputs={"data": prev.output("data")})
     │
     ▼
-step_spec_id = hash(op_name | step_number | upstream_spec_ids | params)
+step_spec_id = hash(op_name | step_number | upstream_spec_ids | params | config)
     │
     ├── HIT:  return cached StepResult (skip everything)
     │
     └── MISS: resolve inputs → batch → per-batch:
                   │
-                  execution_spec_id = hash(op_name | sorted_artifact_ids | params)
+                  execution_spec_id = hash(op_name | sorted_artifact_ids | params | config)
                       │
                       ├── HIT:  skip this batch
                       └── MISS: dispatch to worker
@@ -159,10 +160,11 @@ artifacts have their permanent identity.
 ### Curator operations: the lightweight path
 
 [Curators](operations-model.md#the-curator-lifecycle) skip the sandbox entirely
-— no materialization, no three-phase lifecycle, no worker dispatch. A single
-`execute_curator` call runs on the orchestrator with artifacts in memory. This
-eliminates overhead that would add latency with no benefit for metadata-only
-operations like Filter and Merge.
+— no materialization, no three-phase lifecycle, no remote worker dispatch. The
+orchestrator spawns a local subprocess for memory isolation and runs
+`run_curator_flow` with input DataFrames rather than on-disk artifacts. This
+eliminates the overhead of sandboxing and remote dispatch that would add latency
+with no benefit for metadata-only operations like Filter and Merge.
 
 ---
 
