@@ -28,9 +28,7 @@ from pydantic import Field
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.common import get_compound_extension
 from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.filename import strip_extensions
-from artisan.utils.hashing import compute_artifact_id
 
 
 class DataRecordArtifact(Artifact):
@@ -55,13 +53,11 @@ class DataRecordArtifact(Artifact):
     size_bytes: int | None = Field(default=None, ge=0)
     record_count: int | None = Field(default=None, ge=0)
 
-    _default_hydrate: ClassVar[bool] = True
-
-    def materialize_to(self, directory: Path, *, format: str | None = None) -> Path:
-        if format is not None:
-            raise ValueError(f"DataRecordArtifact does not support format conversion (got {format!r})")
+    def _materialize_content(self, directory: Path) -> Path:
         if self.content is None:
             raise ValueError("Cannot materialize: artifact not hydrated")
+        if self.original_name is None:
+            raise ValueError("Cannot materialize: original_name not set")
         filename = f"{self.original_name}{self.extension or '.csv'}"
         path = directory / filename
         path.write_bytes(self.content)
@@ -87,14 +83,6 @@ class DataRecordArtifact(Artifact):
             record_count=record_count,
             metadata=metadata or {},
         )
-
-    def finalize(self) -> DataRecordArtifact:
-        if self.artifact_id is not None:
-            return self
-        if self.content is None:
-            raise ValueError("Cannot finalize: artifact not hydrated")
-        self.artifact_id = compute_artifact_id(self.content)
-        return self
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -135,20 +123,23 @@ That is the complete implementation. The rest of this guide breaks it down.
 
 ---
 
-## Step 1: Create the artifact model
+## Create the artifact model
 
 Create a new file in `src/artisan/schemas/artifact/` (or your domain layer's
-`schemas/artifact/` directory). The model must subclass `Artifact` and implement
-six members:
+`schemas/artifact/` directory). The model must subclass `Artifact` and provide
+these members:
 
 | Member | Kind | Purpose |
 |--------|------|---------|
 | `POLARS_SCHEMA` | `ClassVar` | Column names and Polars types for the Delta Lake table |
 | `draft()` | classmethod | Create a mutable artifact with `artifact_id=None` |
-| `finalize()` | method | Compute the content hash and set `artifact_id` |
-| `materialize_to()` | method | Write content to disk, return the `Path` |
+| `_materialize_content()` | method | Write content to disk, return the `Path` |
 | `to_row()` | method | Serialize to a dict matching `POLARS_SCHEMA` |
 | `from_row()` | classmethod | Deserialize from a dict back to the model |
+
+The base class provides `finalize()` and `materialize_to()` — you do not
+override these directly. See [Metadata-only types](#metadata-only-types-no-embedded-content)
+for the one exception.
 
 ### Set the artifact type
 
@@ -179,10 +170,9 @@ Parquet column order. All artifact types share the first two columns
 (`artifact_id`, `origin_step_number`) and typically end with `metadata` and
 `external_path`.
 
-### Implement draft and finalize
+### Implement draft
 
-`draft()` builds a mutable artifact with `artifact_id=None`. `finalize()`
-computes the content hash:
+`draft()` builds a mutable artifact with `artifact_id=None`:
 
 ```python
 @classmethod
@@ -196,20 +186,22 @@ def draft(cls, content: bytes, original_name: str, step_number: int, ...) -> Dat
         size_bytes=len(content),
         ...
     )
-
-def finalize(self) -> DataRecordArtifact:
-    if self.artifact_id is not None:
-        return self  # idempotent
-    if self.content is None:
-        raise ValueError("Cannot finalize: artifact not hydrated")
-    self.artifact_id = compute_artifact_id(self.content)
-    return self
 ```
 
-Use `compute_artifact_id` from `artisan.utils.hashing`. It takes `bytes` and
-returns a 32-character hex string (xxh3_128). For JSON-based content, use
-`json.dumps(data, sort_keys=True).encode("utf-8")` to ensure deterministic
-hashing.
+### Understand finalize (base class)
+
+You do not need to implement `finalize()`. The base `Artifact.finalize()`
+method:
+
+- Returns `self` if `artifact_id` is already set (idempotent)
+- Calls `_finalize_content()` to get the bytes to hash
+- Passes those bytes to `compute_artifact_id` (xxh3_128, returns a 32-character hex string)
+- Sets `artifact_id` on the instance
+
+The default `_finalize_content()` returns `self.content`. If your artifact has
+a `content: bytes | None` field, finalization works out of the box. For
+metadata-only types without a `content` field, override `_finalize_content()`
+instead — see [Metadata-only types](#metadata-only-types-no-embedded-content).
 
 ### Implement serialization
 
@@ -233,16 +225,18 @@ def from_row(cls, row: dict[str, Any]) -> Self:
     )
 ```
 
-### Implement materialize_to
+### Implement _materialize_content
 
-Write the artifact content to a file in the given directory:
+Write the artifact content to a file in the given directory. The base class
+`materialize_to()` handles format-rejection logic and calls your
+`_materialize_content()`:
 
 ```python
-def materialize_to(self, directory: Path, *, format: str | None = None) -> Path:
-    if format is not None:
-        raise ValueError(f"... does not support format conversion (got {format!r})")
+def _materialize_content(self, directory: Path) -> Path:
     if self.content is None:
         raise ValueError("Cannot materialize: artifact not hydrated")
+    if self.original_name is None:
+        raise ValueError("Cannot materialize: original_name not set")
     filename = f"{self.original_name}{self.extension or '.csv'}"
     path = directory / filename
     path.write_bytes(self.content)
@@ -251,11 +245,11 @@ def materialize_to(self, directory: Path, *, format: str | None = None) -> Path:
 ```
 
 If your artifact type supports format conversion (e.g., `.json` to `.csv`),
-handle the `format` parameter instead of rejecting it.
+override `materialize_to()` entirely to handle the `format` parameter.
 
 ---
 
-## Step 2: Register the type definition
+## Register the type definition
 
 Add a three-line `ArtifactTypeDef` subclass. You can place it at the bottom of
 your model file (as `DataArtifact` does) or in `registry.py` alongside the
@@ -270,16 +264,16 @@ class DataRecordTypeDef(ArtifactTypeDef):
 
 When Python loads this class, `__init_subclass__` fires and:
 
-1. Validates that `key`, `table_path`, and `model` are set
-2. Validates that the model has `POLARS_SCHEMA`, `to_row`, and `from_row`
-3. Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.DATA_RECORD` works)
-4. Registers the type def in `ArtifactTypeDef._registry`
+- Validates that `key`, `table_path`, and `model` are set
+- Validates that the model has `POLARS_SCHEMA`, `to_row`, and `from_row`
+- Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.DATA_RECORD` works)
+- Registers the type def in `ArtifactTypeDef._registry`
 
 If any validation fails, you get an immediate `TypeError` at import time.
 
 ---
 
-## Step 3: Update exports
+## Update exports
 
 Add the new model to the package `__init__.py`:
 
@@ -298,7 +292,7 @@ For domain-layer types (outside `artisan`), update your domain package's
 
 ---
 
-## Step 4: Write tests
+## Write tests
 
 Cover these scenarios:
 
@@ -399,20 +393,22 @@ metadata={"record_count": 42}
 ### Metadata-only types (no embedded content)
 
 Some artifact types reference external data rather than storing content inline.
-`FileRefArtifact` is the built-in example. For metadata-only types, hash a
-metadata record instead of raw content:
+`FileRefArtifact` is the built-in example. These types have no `content` field,
+so the default `_finalize_content()` (which returns `self.content`) returns
+`None`. Override `_finalize_content()` to hash a metadata record instead:
 
 ```python
-def finalize(self) -> MyRefArtifact:
-    if self.artifact_id is not None:
-        return self
-    metadata_json = json.dumps(
-        {"path": self.path, "size_bytes": self.size_bytes},
+def _finalize_content(self) -> bytes | None:
+    if self.content_hash is None:
+        return None
+    return json.dumps(
+        {"content_hash": self.content_hash, "path": self.path, "size_bytes": self.size_bytes},
         sort_keys=True,
     ).encode("utf-8")
-    self.artifact_id = compute_artifact_id(metadata_json)
-    return self
 ```
+
+The base class `finalize()` calls your `_finalize_content()` and hashes the
+result. You do not override `finalize()` itself.
 
 ### Domain-layer types
 
