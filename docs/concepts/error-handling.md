@@ -256,5 +256,5 @@ to make that decision.
 - [Design Principles](design-principles.md) -- Foundational design decisions
 - [Architecture Overview](architecture-overview.md) -- Layer boundaries and
   the orchestrator-worker split
-- [Coding Conventions: Error Handling](../../contributing/coding-conventions.md#error-handling) --
+- [Coding Conventions: Error Handling](../contributing/coding-conventions.md#error-handling) --
   Implementation patterns and code examples

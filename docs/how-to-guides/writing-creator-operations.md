@@ -4,7 +4,7 @@ How to build operations that run computation and produce artifacts using the
 three-phase lifecycle.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
-[Core Concepts](../../getting-started/core-concepts.md)
+[Orientation](../getting-started/orientation.md)
 
 **Key types:** `OperationDefinition`, `PreprocessInput`, `ExecuteInput`,
 `PostprocessInput`, `ArtifactResult`

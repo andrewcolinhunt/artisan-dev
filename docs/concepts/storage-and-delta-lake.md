@@ -208,7 +208,7 @@ transaction conflicts and need to retry. With staging, there are zero write
 conflicts — each worker writes to its own directory.
 
 **Partial failure isolation.** If a worker crashes, its staging directory is
-simply ignored during commit. The orchestrator has a complete view of which
+ignored during commit. The orchestrator has a complete view of which
 workers succeeded and which failed before committing anything. There is no need
 to roll back partially-written data.
 

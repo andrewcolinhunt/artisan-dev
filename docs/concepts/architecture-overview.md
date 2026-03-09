@@ -329,4 +329,4 @@ skipped automatically.
 - [Storage and Delta Lake](storage-and-delta-lake.md) — Persistence and the staging pattern
 - [Design Principles](design-principles.md) — Rationale for key decisions
 - [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) — Build and run your first pipeline
-- [Coding Conventions](../../contributing/coding-conventions.md) — Package boundaries and standards
+- [Coding Conventions](../contributing/coding-conventions.md) — Package boundaries and standards
