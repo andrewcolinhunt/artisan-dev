@@ -220,8 +220,11 @@ class Filter(OperationDefinition):
     )
 
     # ---------- Inputs ----------
+    class InputRole(StrEnum):
+        passthrough = auto()
+
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "passthrough": InputSpec(
+        InputRole.passthrough: InputSpec(
             artifact_type=ArtifactTypes.ANY,
             required=True,
             description="Artifacts to filter (any type)",
