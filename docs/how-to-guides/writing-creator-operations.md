@@ -145,7 +145,7 @@ class ScaleData(OperationDefinition):
 ## How data flows through the three phases
 
 For how data flows between the three phases, see
-[Operations Model](../concepts/operations-model.md#the-three-phase-creator-lifecycle).
+[Operations Model](../concepts/operations-model.md#the-creator-lifecycle).
 The summary: `preprocess` adapts inputs (receives `PreprocessInput`, returns a
 plain dict), `execute` runs computation (receives `ExecuteInput`, writes files
 to `execute_dir`), `postprocess` constructs artifacts from results (receives
