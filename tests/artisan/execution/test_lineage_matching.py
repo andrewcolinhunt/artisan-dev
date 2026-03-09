@@ -325,9 +325,7 @@ def _edges_df(
         "target_artifact_id": [e[1] for e in edges],
     }
     if type_map is not None:
-        data["target_artifact_type"] = [
-            type_map.get(e[1], "data") for e in edges
-        ]
+        data["target_artifact_type"] = [type_map.get(e[1], "data") for e in edges]
     return pl.DataFrame(data)
 
 
@@ -450,5 +448,5 @@ class TestWalkForwardToTargets:
         result = walk_forward_to_targets(sources, edges, target_type="metric")
 
         assert result.height == 2
-        pairs = set(zip(result["source_id"].to_list(), result["target_id"].to_list()))
+        pairs = set(zip(result["source_id"].to_list(), result["target_id"].to_list(), strict=False))
         assert pairs == {("S1", "M1"), ("S2", "M2")}

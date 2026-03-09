@@ -341,10 +341,7 @@ class Filter(OperationDefinition):
             schema={"passthrough_id": pl.String, "metric_id": pl.String}
         )
         if step_targeted_criteria:
-            unique_targets = {
-                (c.step, c.step_number)
-                for c in step_targeted_criteria
-            }
+            unique_targets = {(c.step, c.step_number) for c in step_targeted_criteria}
             parts: list[pl.DataFrame] = []
             for step_name, step_num in unique_targets:
                 part = self._discover_step_metrics(
@@ -378,7 +375,9 @@ class Filter(OperationDefinition):
 
         # ── Phase 2: Chunked hydration + evaluation ──
 
-        bool_exprs = [_criterion_to_expr(c).fill_null(False) for c in self.params.criteria]
+        bool_exprs = [
+            _criterion_to_expr(c).fill_null(False) for c in self.params.criteria
+        ]
         accumulator = _DiagnosticsAccumulator(self.params.criteria)
         all_passed_ids: list[str] = []
         resolved_steps: list[int | None] = [None] * len(self.params.criteria)
@@ -425,7 +424,9 @@ class Filter(OperationDefinition):
                         if sn not in metric_sources_map:
                             metric_sources_map[sn] = {
                                 "step_number": sn,
-                                "step_name": step_info.get("_step_names", {}).get(sn, ""),
+                                "step_name": step_info.get("_step_names", {}).get(
+                                    sn, ""
+                                ),
                                 "metric_count": 0,
                             }
 
@@ -660,9 +661,7 @@ class Filter(OperationDefinition):
         value_columns = [c for c in decoded.columns if c != "artifact_id"]
 
         # Enrich with step info
-        step_number_map = artifact_store.load_step_number_map(
-            set(unique_metric_ids)
-        )
+        step_number_map = artifact_store.load_step_number_map(set(unique_metric_ids))
         step_name_map = artifact_store.load_step_name_map()
 
         # Build step_info: {field_name: {step_numbers}}
@@ -723,7 +722,5 @@ class Filter(OperationDefinition):
             name = step_names.get(sn, "unknown")
             lines.append(f'  - step {sn} ("{name}")')
         lines.append("Add 'step' or 'step_number' to disambiguate:")
-        lines.append(
-            f'  {{"metric": "{field}", "step_number": {min(step_nums)}, ...}}'
-        )
+        lines.append(f'  {{"metric": "{field}", "step_number": {min(step_nums)}, ...}}')
         raise ValueError("\n".join(lines))

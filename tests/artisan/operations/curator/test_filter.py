@@ -64,9 +64,7 @@ def _build_edges_df(
     }
     if include_target_type:
         type_map = type_map or {}
-        data["target_artifact_type"] = [
-            type_map.get(e[1], "data") for e in edges
-        ]
+        data["target_artifact_type"] = [type_map.get(e[1], "data") for e in edges]
     return pl.DataFrame(data)
 
 
@@ -201,7 +199,9 @@ def lineage_store():
     }
 
     store = _build_forward_walk_store(
-        step_map, edges, metric_values,
+        step_map,
+        edges,
+        metric_values,
         step_name_map={0: "generator", 1: "passthrough_step", 2: "metric_calc"},
     )
     store._ids = ids
@@ -341,9 +341,7 @@ class TestFilterAllOperators:
     def test_operator(self, simple_store, op_name, threshold, expected_pass):
         op = Filter(
             params=Filter.Params(
-                criteria=[
-                    Criterion(metric="val", operator=op_name, value=threshold)
-                ]
+                criteria=[Criterion(metric="val", operator=op_name, value=threshold)]
             )
         )
         result = op.execute_curator(
@@ -379,9 +377,7 @@ class TestFilterEdgeCases:
         """Criterion references nonexistent field -> artifact fails."""
         op = Filter(
             params=Filter.Params(
-                criteria=[
-                    Criterion(metric="nonexistent", operator="gt", value=0.5)
-                ]
+                criteria=[Criterion(metric="nonexistent", operator="gt", value=0.5)]
             )
         )
 
@@ -608,9 +604,7 @@ class TestFilterDiagnosticsMetadata:
         """Nonexistent field -> pass_count=0."""
         op = Filter(
             params=Filter.Params(
-                criteria=[
-                    Criterion(metric="nonexistent", operator="gt", value=0)
-                ]
+                criteria=[Criterion(metric="nonexistent", operator="gt", value=0)]
             )
         )
         result = op.execute_curator(
@@ -823,7 +817,11 @@ class TestStepDisambiguation:
         )
         # Add load_artifact_ids_by_type mock
         store.load_artifact_ids_by_type.side_effect = lambda atype, step_numbers=None: (
-            {m1_id} if step_numbers == [1] else {m2_id} if step_numbers == [2] else set()
+            {m1_id}
+            if step_numbers == [1]
+            else {m2_id}
+            if step_numbers == [2]
+            else set()
         )
 
         op = Filter(
@@ -860,13 +858,19 @@ class TestStepDisambiguation:
             step_name_map={0: "generator", 1: "calc_quality", 2: "calc_ligand"},
         )
         store.load_artifact_ids_by_type.side_effect = lambda atype, step_numbers=None: (
-            {m1_id} if step_numbers == [1] else {m2_id} if step_numbers == [2] else set()
+            {m1_id}
+            if step_numbers == [1]
+            else {m2_id}
+            if step_numbers == [2]
+            else set()
         )
 
         op = Filter(
             params=Filter.Params(
                 criteria=[
-                    Criterion(metric="score", operator="gt", value=0.5, step="calc_quality"),
+                    Criterion(
+                        metric="score", operator="gt", value=0.5, step="calc_quality"
+                    ),
                 ]
             )
         )
@@ -896,7 +900,9 @@ class TestStepDisambiguation:
         op = Filter(
             params=Filter.Params(
                 criteria=[
-                    Criterion(metric="score", operator="gt", value=0.5, step="nonexistent"),
+                    Criterion(
+                        metric="score", operator="gt", value=0.5, step="nonexistent"
+                    ),
                 ]
             )
         )
@@ -1068,9 +1074,7 @@ class TestFilterNestedMetricValues:
         op = Filter(
             params=Filter.Params(
                 criteria=[
-                    Criterion(
-                        metric="scores.confidence", operator="gt", value=0.5
-                    ),
+                    Criterion(metric="scores.confidence", operator="gt", value=0.5),
                 ]
             )
         )

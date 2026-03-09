@@ -192,7 +192,11 @@ def walk_forward_to_targets(
         ).select(
             pl.col("source_id"),
             pl.col("target_artifact_id").alias("current_node"),
-            *([pl.col("target_artifact_type")] if "target_artifact_type" in edges.columns else []),
+            *(
+                [pl.col("target_artifact_type")]
+                if "target_artifact_type" in edges.columns
+                else []
+            ),
         )
 
         if stepped.is_empty():
