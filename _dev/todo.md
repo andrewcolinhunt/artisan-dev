@@ -2,12 +2,12 @@
 
 ## TOP PRIORITIES
 
-- How do other frameworks handle command, container, etc storage and construction?
+- evaluate prefect server in prefect-submitit
+- evaluate new command building
+
 
 - bug in the metrics export, converts all metrics to float
-- step name required throughout? weirdness with chaining and the step name. should require a step name there.
 
-.prefect-postgres should go in ~/.artisan?
 we need to stop the postgres server when we stop the prefect server?
 we need to migrate the prefect starting scripts to prefect-submitit
 
@@ -16,6 +16,8 @@ we need to migrate the prefect starting scripts to prefect-submitit
 ---
 
 ## TO ORGANIZE
+- step name required throughout? weirdness with chaining and the step name. should require a step name there.
+
 - add integration tests that cover chaining methods
 - add implicit inputs behavior??
 - are curator operations invokable on slurm?
