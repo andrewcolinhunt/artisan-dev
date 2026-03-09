@@ -632,7 +632,7 @@ class PipelineManager:
         """Factory method to create a PipelineManager.
 
         Automatically discovers and connects to a running Prefect server.
-        Resolution order: explicit argument > ARTISAN_PREFECT_SERVER env var
+        Resolution order: explicit argument > PREFECT_SUBMITIT_SERVER env var
         > PREFECT_API_URL env var > discovery file > error with instructions.
 
         Args:
