@@ -1259,7 +1259,7 @@ class PipelineManager:
         single operations.
 
         Args:
-            operations: List of (op_class, params, command) tuples.
+            operations: List of (op_class, params, config) tuples.
             role_mappings: Role remappings between adjacent operations.
             inputs: Initial inputs for the first operation.
             backend: Backend override.
@@ -1316,7 +1316,7 @@ class PipelineManager:
 
         # Compute chain step_spec_id
         op_tuples: list[tuple[str, dict[str, Any] | None]] = []
-        for op_class, params, _cmd in operations:
+        for op_class, params, _config in operations:
             temp = instantiate_operation(op_class, params)
             if "params" in type(temp).model_fields:
                 full_params = temp.params.model_dump(mode="json")
