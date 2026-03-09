@@ -402,25 +402,37 @@ def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
 
 ### External tool operations
 
-Set `uses_external_tool = True` and declare a `command` ClassVar to run
-containerized tools:
+Set `tool` to a `ToolSpec` declaring the binary or script to invoke, and
+configure the execution environment with `environments`:
 
 ```python
-from artisan.schemas.operation_config import ApptainerCommandSpec, ArgStyle
+from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.operation_config.environment_spec import (
+    ApptainerEnvironmentSpec,
+    LocalEnvironmentSpec,
+)
+from artisan.schemas.operation_config.environments import Environments
 
 class MyToolOp(OperationDefinition):
     name = "my_tool"
-    uses_external_tool: ClassVar[bool] = True
-    command: ClassVar[ApptainerCommandSpec] = ApptainerCommandSpec(
-        image=Path("/tools/my_tool.sif"),
-        script=Path("run.sh"),
-        arg_style=ArgStyle.POSITIONAL,
+
+    tool: ToolSpec = ToolSpec(
+        executable="/tools/run.sh",
+        interpreter="bash",
+    )
+    environments: Environments = Environments(
+        local=LocalEnvironmentSpec(),
+        apptainer=ApptainerEnvironmentSpec(
+            image=Path("/tools/my_tool.sif"),
+        ),
     )
     ...
 ```
 
-The framework handles container invocation. Your `execute` receives the same
-`ExecuteInput` — prepare command arguments and read outputs as usual.
+`ToolSpec` declares the binary (`executable`) and optional `interpreter` or
+`subcommand`. The environment spec wraps the command for container execution.
+In `execute`, use `self.tool.parts()` to build the command prefix and
+`self.environments.current().wrap_command(...)` to apply the environment.
 
 ### Multi-input operations
 
@@ -462,7 +474,8 @@ Set defaults on the class. Override per-step at the pipeline level:
 class HeavyOp(OperationDefinition):
     name = "heavy_op"
     resources: ResourceConfig = ResourceConfig(
-        partition="gpu", gres="gpu:1", mem_gb=32,
+        cpus=4, memory_gb=32, gpus=1,
+        extra={"partition": "gpu"},
     )
     execution: ExecutionConfig = ExecutionConfig(
         artifacts_per_unit=5, estimated_seconds=3600.0,
