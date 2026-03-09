@@ -236,22 +236,20 @@ from artisan.operations.curator import Filter
 pipeline.run(
     operation=Filter,
     name="filter",
-    inputs={
-        "passthrough": output("transform", "dataset"),
-        "quality": output("metrics", "metrics"),
-    },
+    inputs={"passthrough": output("transform", "dataset")},
     params={
         "criteria": [
-            {"metric": "quality.distribution.median", "operator": "gt", "value": 0.5},
+            {"metric": "distribution.median", "operator": "gt", "value": 0.5},
         ],
     },
 )
 ```
 
-- `"passthrough"` is the stream being filtered. `"quality"` is a named metric
-  stream.
-- Criteria reference metrics as `"role.field"` (explicit) or bare `"field"`
-  (implicit, auto-resolved via provenance).
+- `"passthrough"` is the stream being filtered. Filter auto-discovers
+  associated metrics via forward provenance walk.
+- Criteria use bare field names (e.g., `"distribution.median"`).
+- When field names collide across metric sources, add `step` or `step_number`
+  to the criterion to disambiguate.
 - All criteria are AND'd.
 
 ### SLURM execution
