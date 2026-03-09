@@ -308,13 +308,13 @@ def _validate_environment(
             )
             raise ValueError(msg)
     else:
-        from artisan.schemas.operation_config.environments import Environments
         from artisan.schemas.operation_config.environment_spec import (
             ApptainerEnvironmentSpec,
             DockerEnvironmentSpec,
             LocalEnvironmentSpec,
             PixiEnvironmentSpec,
         )
+        from artisan.schemas.operation_config.environments import Environments
 
         valid_keys = set(Environments.model_fields)
         unknown = set(environment) - valid_keys
