@@ -259,7 +259,7 @@ class TestValidateResources:
 
     def test_valid_resources(self):
         """Valid resource keys should not raise."""
-        _validate_resources({"partition": "gpu", "mem_gb": 32})
+        _validate_resources({"memory_gb": 32, "gpus": 1})
 
     def test_unknown_resource_raises(self):
         """Unknown resource key should raise with valid keys listed."""
@@ -268,7 +268,7 @@ class TestValidateResources:
 
     def test_error_lists_valid_keys(self):
         """Error message should list valid keys."""
-        with pytest.raises(ValueError, match="Valid keys:.*partition"):
+        with pytest.raises(ValueError, match="Valid keys:.*memory_gb"):
             _validate_resources({"bogus": True})
 
 
@@ -407,7 +407,7 @@ class TestNoOverrides:
             tool=None,
         )
         assert instance.params.count == 1
-        assert instance.resources.partition == "cpu"
+        assert instance.resources.cpus == 1
         assert instance.execution.artifacts_per_unit == 1
 
 

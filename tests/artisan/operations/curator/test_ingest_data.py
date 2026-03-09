@@ -210,7 +210,7 @@ class TestIngestDataClassAttributes:
     def test_should_have_resource_config(self):
         """Test IngestData has resource configuration."""
         op = IngestData()
-        assert op.resources.partition == "cpu"
+        assert op.resources.cpus == 1
         assert op.resources.time_limit == "00:10:00"
         assert op.execution.job_name == "ingest"
 

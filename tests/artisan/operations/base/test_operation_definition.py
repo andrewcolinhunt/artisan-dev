@@ -210,9 +210,9 @@ class TestResourcesAndExecutionDefaults:
         """Operations get default ResourceConfig from base class."""
         op = SimpleOperation()
         assert isinstance(op.resources, ResourceConfig)
-        assert op.resources.partition == "cpu"
-        assert op.resources.cpus_per_task == 1
-        assert op.resources.mem_gb == 4
+        assert op.resources.cpus == 1
+        assert op.resources.memory_gb == 4
+        assert op.resources.gpus == 0
 
     def test_default_execution(self):
         """Operations get default ExecutionConfig from base class."""
@@ -241,7 +241,7 @@ class TestResourcesAndExecutionDefaults:
         assert isinstance(op.tool, ToolSpec)
         assert op.tool.interpreter == "python"
         assert op.environments.available() == ["local", "docker"]
-        assert op.resources.cpus_per_task == 1
+        assert op.resources.cpus == 1
         assert op.execution.job_name == "data_transformer_script"
 
 

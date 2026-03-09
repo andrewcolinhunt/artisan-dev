@@ -39,15 +39,15 @@ class SlurmBackend(BackendBase):
         """Build a Prefect flow that dispatches units via SLURM job arrays."""
         from prefect_submitit import SlurmTaskRunner
 
-        slurm_kwargs: dict[str, Any] = dict(resources.extra_slurm_kwargs)
-        if resources.gres:
-            slurm_kwargs["slurm_gres"] = resources.gres
+        slurm_kwargs: dict[str, Any] = dict(resources.extra)
+        if resources.gpus > 0:
+            slurm_kwargs["slurm_gres"] = f"gpu:{resources.gpus}"
 
         task_runner = SlurmTaskRunner(
-            partition=resources.partition,
+            partition=slurm_kwargs.pop("partition", "cpu"),
             time_limit=resources.time_limit,
-            mem_gb=resources.mem_gb,
-            cpus_per_task=resources.cpus_per_task,
+            mem_gb=resources.memory_gb,
+            cpus_per_task=resources.cpus,
             gpus_per_node=slurm_kwargs.pop("gpus_per_node", 0),
             units_per_worker=execution.units_per_worker,
             slurm_job_name=f"s{step_number}_{job_name}",
