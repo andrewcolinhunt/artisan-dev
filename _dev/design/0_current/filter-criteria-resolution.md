@@ -34,7 +34,7 @@ Beyond the bug, the dual-path design creates several problems:
    wire inputs — `"quality.distribution.min"` vs `"distribution.min"`.
 2. **Role names are arbitrary** — chosen at wiring time, not intrinsic to the
    data. Renaming a role silently breaks criteria.
-3. **Implicit is 1-hop only** — `get_descendant_artifact_ids` misses metrics
+3. **Implicit is 1-hop only** — `get_descendant_ids_df` misses metrics
    that are 2+ hops away in the provenance graph.
 4. **~200 lines of complexity** — partition logic, dual resolution, synthetic
    `_implicit` role, unification layer, collision detection, hybrid mode.
@@ -249,15 +249,15 @@ No new storage tables, provenance utilities, or framework methods required.
 | Item | Reason |
 |---|---|
 | `_partition_criteria()` | No explicit/implicit split |
-| `_resolve_implicit_metrics()` | Replaced by unified forward walk |
-| `_match_and_hydrate_explicit()` | Replaced by step-targeted backward walk |
+| `_build_criteria_lists()` | No dual namespace (explicit vs `_implicit.` prefix) |
+| `_match_explicit()` | Replaced by step-targeted backward walk |
+| `_hydrate_as_wide_df()` | Replaced by `_build_metric_namespace()` |
 | `_validate_criteria()` | No role validation (no roles) |
 | `_implicit` synthetic role key | No dual namespaces |
 | `runtime_defined_inputs = True` | No dynamic metric input roles |
-| Metric entries in `InputRole` / `inputs` | Only `passthrough` remains |
 | `independent_input_streams = True` | Only one input stream |
-| Role-prefix parsing in `_evaluate_criteria_detailed` | Criteria are just field names |
-| Unification block in `execute_curator` | Single namespace |
+| Inline implicit resolution in `execute_curator` (`get_descendant_ids_df` call) | Replaced by unified forward walk |
+| Role-prefixed column logic in `_hydrate_as_wide_df` | Criteria are just field names |
 
 ### Added
 
@@ -274,9 +274,9 @@ No new storage tables, provenance utilities, or framework methods required.
 
 | Item | Change |
 |---|---|
-| `_evaluate_criteria_detailed()` | Simplify — field lookup in flat namespace, no role parsing |
-| `_build_diagnostics()` | Report step name/number instead of role names |
-| `execute_curator()` | Simplified top-level flow using new helpers |
+| `execute_curator()` | Simplified top-level flow using new helpers, no partition/dual-path logic |
+| `_DiagnosticsAccumulator.finalize()` | Report step name/number instead of role names |
+| `_criterion_to_expr()` | No change needed (already field-based) |
 
 ---
 
@@ -393,4 +393,5 @@ add `step`/`step_number` where needed for disambiguation.
    to use new criteria format.
 
 3. **Delete** — `TestFilterImplicitMetrics`, `TestFilterHybridMode`,
-   `TestFilterExplicitMetrics` role-prefix tests. Replace with unified tests above.
+   `TestFilterMultiRoleMultiCriteria`, `TestFilterValidationErrors` role-based
+   tests. Replace with unified tests above.
