@@ -282,11 +282,12 @@ Update existing tests:
 
 ## Prerequisites
 
-- **`prefect_submitit.server` must be released.** The `server` subpackage
-  exists in `prefect-submitit-dev` but must be included in the published
-  `prefect-submitit` package before this migration can proceed. Verify with
-  `python -c "from prefect_submitit.server import resolve_api_url"` in
-  Artisan's pixi environment.
+- **`prefect_submitit.server` must be available.** The `server` subpackage
+  exists in `prefect-submitit-dev` but hasn't been published to PyPI yet.
+  For now, `artisan-dev` uses a local editable install
+  (`prefect-submitit = { path = "/Users/andrewhunt/git/prefect-submitit-dev", editable = true }`
+  in `pyproject.toml`). Before merging to `main`, the `server` subpackage
+  must be released to PyPI and the dependency reverted to a version pin.
 
 ## Risks
 
