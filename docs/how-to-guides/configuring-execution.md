@@ -30,7 +30,7 @@ pipeline.run(
     name="inference",
     inputs={"dataset": output("preprocess", "dataset")},
     backend=Backend.SLURM,
-    resources={"partition": "gpu", "gres": "gpu:1", "mem_gb": 32},
+    resources={"gpus": 1, "memory_gb": 32, "extra": {"partition": "gpu"}},
     execution={"artifacts_per_unit": 1},
 )
 ```
@@ -54,20 +54,17 @@ pipeline.run(operation=MyOp, inputs=..., backend=Backend.SLURM)
 | `Backend.LOCAL` (default) | Thread pool on your machine | Development, testing, lightweight ops |
 | `Backend.SLURM` | SLURM job array on cluster | Production, GPU work, HPC |
 
-For `LOCAL`, the maximum number of concurrent workers defaults to 4. Override it
-at pipeline creation:
+For `LOCAL`, you can cap the number of concurrent workers per step:
 
 ```python
-pipeline = PipelineManager.create(..., max_workers_local=8)
+pipeline.run(operation=MyOp, inputs=..., execution={"max_workers": 8})
 ```
-
-Or per-operation via `execution={"max_workers": 8}` at the step level.
 
 ---
 
-## Step 2: Configure SLURM resources
+## Step 2: Configure resources
 
-Pass a `resources` dict to override SLURM resource allocation for a step:
+Pass a `resources` dict to override resource allocation for a step:
 
 ```python
 pipeline.run(
@@ -75,11 +72,11 @@ pipeline.run(
     inputs=...,
     backend=Backend.SLURM,
     resources={
-        "partition": "gpu",
-        "gres": "gpu:1",
-        "mem_gb": 32,
+        "gpus": 1,
+        "memory_gb": 32,
         "time_limit": "04:00:00",
-        "cpus_per_task": 4,
+        "cpus": 4,
+        "extra": {"partition": "gpu"},
     },
 )
 ```
@@ -88,12 +85,15 @@ pipeline.run(
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `partition` | `str` | `"cpu"` | SLURM partition |
-| `gres` | `str \| None` | `None` | GPU/resource spec (e.g., `"gpu:1"`, `"gpu:a100:2"`) |
-| `cpus_per_task` | `int` | `1` | CPU cores per task |
-| `mem_gb` | `int` | `4` | Memory in GB |
+| `cpus` | `int` | `1` | CPU cores per task |
+| `memory_gb` | `int` | `4` | Memory in GB |
+| `gpus` | `int` | `0` | Number of GPUs requested |
 | `time_limit` | `str` | `"01:00:00"` | Wall-clock time limit (HH:MM:SS) |
-| `extra_slurm_kwargs` | `dict` | `{}` | Arbitrary SLURM parameters not covered above |
+| `extra` | `dict` | `{}` | Backend-specific settings (e.g., `{"partition": "gpu"}`) |
+
+`ResourceConfig` is portable across backends — each backend translates these
+fields to its native format. Use `extra` for backend-specific settings like
+SLURM partition or account.
 
 Step-level `resources` merge with operation defaults — you only need to specify
 the fields you want to override.
@@ -167,10 +167,10 @@ class GpuInference(OperationDefinition):
     name = "gpu_inference"
 
     resources: ResourceConfig = ResourceConfig(
-        partition="gpu",
-        gres="gpu:1",
-        mem_gb=32,
+        gpus=1,
+        memory_gb=32,
         time_limit="02:00:00",
+        extra={"partition": "gpu"},
     )
 
     execution: ExecutionConfig = ExecutionConfig(
@@ -182,11 +182,11 @@ class GpuInference(OperationDefinition):
 ```
 
 Step-level overrides merge on top of these defaults. For example, to give a
-specific step more memory without changing the partition:
+specific step more memory without changing other settings:
 
 ```python
-pipeline.run(operation=GpuInference, inputs=..., resources={"mem_gb": 64})
-# partition, gres, time_limit keep their operation defaults
+pipeline.run(operation=GpuInference, inputs=..., resources={"memory_gb": 64})
+# gpus, time_limit, extra keep their operation defaults
 ```
 
 ### Override precedence
@@ -199,59 +199,68 @@ Pipeline defaults (PipelineManager.create)
 
 ---
 
-## Step 5: Configure containers (external tools)
+## Step 5: Configure external tools and environments
 
-Operations that wrap external tools (e.g., ToolA, ToolC) declare a
-container configuration as a `ClassVar`:
+Operations that wrap external tools declare two things: a `ToolSpec` (the
+binary/script to invoke) and an `Environments` configuration (the runtime
+that wraps the command):
 
 ```python
-from typing import ClassVar
 from pathlib import Path
 from artisan.operations.base import OperationDefinition
-from artisan.schemas.operation_config.command_spec import ApptainerCommandSpec
-from artisan.utils.external_tools import ArgStyle
+from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.environment_spec import ApptainerEnvironmentSpec
 
 class ToolAOp(OperationDefinition):
-    uses_external_tool: ClassVar[bool] = True
-    command: ClassVar[ApptainerCommandSpec] = ApptainerCommandSpec(
-        image=Path("/tools/tool_a.sif"),
-        script=Path("run_tool_a.sh"),
-        arg_style=ArgStyle.ARGPARSE,
-        gpu=True,
-        binds=[
-            (Path("/data/weights"), Path("/weights")),
-            (Path("/scratch"), Path("/scratch")),
-        ],
+    name = "tool_a"
+
+    tool: ToolSpec = ToolSpec(
+        executable=Path("run_tool_a.sh"),
+        interpreter="bash",
     )
+
+    environments: Environments = Environments(
+        active="apptainer",
+        apptainer=ApptainerEnvironmentSpec(
+            image=Path("/tools/tool_a.sif"),
+            gpu=True,
+            binds=[
+                (Path("/data/weights"), Path("/weights")),
+                (Path("/scratch"), Path("/scratch")),
+            ],
+        ),
+    )
+
+    # ... lifecycle methods ...
 ```
 
-Override container settings at the step level:
+Override tool or environment settings at the step level:
 
 ```python
 pipeline.run(
     operation=ToolAOp,
     inputs=...,
-    command={
-        "image": "/tools/tool_a_v2.sif",
-        "binds": [("/data/new_weights", "/weights"), ("/scratch", "/scratch")],
-    },
+    tool={"executable": "run_tool_a_v2.sh"},
+    environment={"apptainer": {"image": "/tools/tool_a_v2.sif"}},
 )
 ```
 
 The `binds` field takes a list of `(host_path, container_path)` tuples — not
 colon-delimited strings.
 
-### Container spec types
+### Environment spec types
 
 | Spec | Use case |
 |------|----------|
-| `ApptainerCommandSpec` | Apptainer/Singularity containers (HPC) |
-| `DockerCommandSpec` | Docker containers |
-| `LocalCommandSpec` | Local scripts, optional virtualenv |
-| `PixiCommandSpec` | Pixi-managed environments |
+| `ApptainerEnvironmentSpec` | Apptainer/Singularity containers (HPC) |
+| `DockerEnvironmentSpec` | Docker containers |
+| `LocalEnvironmentSpec` | Local execution, optional virtualenv |
+| `PixiEnvironmentSpec` | Pixi-managed environments |
 
-All specs share a base: `script` (path to entrypoint), `arg_style` (`HYDRA` or
-`ARGPARSE`), and optional `subcommand` / `interpreter` fields.
+All specs share a base `EnvironmentSpec` with an `env` dict for extra
+environment variables. `ToolSpec` declares the `executable`, optional
+`interpreter`, and optional `subcommand`.
 
 ---
 
@@ -260,19 +269,21 @@ All specs share a base: `script` (path to entrypoint), `arg_style` (`HYDRA` or
 Control what happens when some artifacts fail within a step:
 
 ```python
+from artisan.schemas.enums import FailurePolicy
+
 # Pipeline-wide default
-pipeline = PipelineManager.create(..., failure_policy="continue")
+pipeline = PipelineManager.create(..., failure_policy=FailurePolicy.CONTINUE)
 
 # Step-level override
-pipeline.run(operation=MyOp, inputs=..., failure_policy="fail_fast")
+pipeline.run(operation=MyOp, inputs=..., failure_policy=FailurePolicy.FAIL_FAST)
 ```
 
 | Policy | Behavior |
 |--------|----------|
-| `"continue"` (default) | Commit successful artifacts, record failures, continue pipeline |
-| `"fail_fast"` | Stop the step immediately on any failure |
+| `FailurePolicy.CONTINUE` (default) | Commit successful artifacts, record failures, continue pipeline |
+| `FailurePolicy.FAIL_FAST` | Stop the step immediately on any failure |
 
-`"continue"` is the default because in large runs (thousands of artifacts), a
+`CONTINUE` is the default because in large runs (thousands of artifacts), a
 single malformed input should not discard thousands of successful results.
 Failures are always recorded for diagnosis.
 
@@ -327,14 +338,15 @@ parallelism via job arrays.
 
 ### Custom SLURM parameters
 
-Use `extra_slurm_kwargs` for parameters not covered by `ResourceConfig`:
+Use `extra` for backend-specific parameters not covered by `ResourceConfig`:
 
 ```python
 pipeline.run(
     operation=MyOp,
     inputs=...,
     resources={
-        "extra_slurm_kwargs": {
+        "extra": {
+            "partition": "gpu",
             "constraint": "a100",
             "account": "my_allocation",
             "exclude": "node[001-003]",
@@ -349,7 +361,7 @@ pipeline.run(
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| SLURM jobs OOM-killed | Default `mem_gb=4` too low | Set `resources={"mem_gb": 32}` or add to operation defaults |
+| SLURM jobs OOM-killed | Default `memory_gb=4` too low | Set `resources={"memory_gb": 32}` or add to operation defaults |
 | Thousands of tiny SLURM jobs | `artifacts_per_unit=1` on a fast operation | Increase `artifacts_per_unit` to batch work |
 | `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` |
 | Step ignores `resources` | Forgot `backend=Backend.SLURM` | Resources only apply to SLURM steps |
