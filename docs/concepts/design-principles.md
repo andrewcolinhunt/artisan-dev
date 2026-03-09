@@ -33,7 +33,7 @@ unlikely. Each principle below targets one or more of these failure modes.
 
 ---
 
-## 1. Content is identity
+## Content is identity
 
 Every artifact is identified by the hash of its content
 (`artifact_id = xxh3_128(content)`). The ID *is* the data. There is no
@@ -61,12 +61,12 @@ for how hashing, draft/finalize, and artifact types work in practice.
 
 ---
 
-## 2. Provenance is always captured, never reconstructed
+## Provenance is always captured, never reconstructed
 
 The framework records two complementary provenance graphs at execution time:
-one for activities (what computation ran), one for derivations (which input
-produced which output). Neither can be derived from the other, and neither is
-optional.
+one for execution edges (which computation consumed and produced which
+artifacts), one for artifact edges (which input artifact produced which output
+artifact). Neither can be derived from the other, and neither is optional.
 
 **Why capture at execution time?** Because the context needed to establish
 derivation edges — filename stems, pairing order, explicit declarations — is
@@ -83,26 +83,34 @@ matching algorithm, and lineage declaration.
 
 ---
 
-## 3. Operations are pure computation
+## Creator operations are pure computation
 
-Operations know nothing about orchestration, scheduling, storage, or
-infrastructure. They receive data in, produce data out. All coordination —
-dispatching to workers, managing sandboxes, staging results, committing to
-storage — is handled by the layers above.
+Creator operations — the primary operation type — know nothing about
+orchestration, scheduling, storage, or infrastructure. They receive data in,
+produce data out. All coordination — dispatching to workers, managing sandboxes,
+staging results, committing to storage — is handled by the layers above.
 
 **Why this matters:**
 
-- **Testable in isolation.** You can unit test an operation by constructing
-  inputs directly, without running a pipeline or connecting to storage.
-- **Portable.** The same operation runs unchanged on a laptop with a thread
+- **Testable in isolation.** You can unit test a creator by constructing inputs
+  directly, without running a pipeline or connecting to storage.
+- **Portable.** The same operation runs unchanged on a laptop with a process
   pool or on a cluster with SLURM.
 - **Composable.** Operations can be combined freely because they have no hidden
   dependencies on each other or on global state.
 
-**What this means concretely:** An operation cannot read from or write to Delta
-Lake. It cannot check the cache. It cannot dispatch sub-tasks. It cannot access
-the pipeline definition. It declares its inputs and outputs through specs, and
-the framework provides everything it needs through its lifecycle methods.
+**What this means concretely:** A creator operation cannot read from or write to
+Delta Lake. It cannot check the cache. It cannot dispatch sub-tasks. It cannot
+access the pipeline definition. It declares its inputs and outputs through
+specs, and the framework provides everything it needs through its lifecycle
+methods.
+
+**The exception — curator operations:** Curators are a second operation type
+that intentionally breaks this boundary. They receive an `ArtifactStore` and
+can query or filter across the full artifact collection. This is a deliberate
+trade-off: curators need storage access to perform collection-level operations
+like filtering, merging, and ingestion. The purity guarantee applies to
+creators, which make up the majority of pipeline operations.
 
 **The trade-off:** Operations cannot make infrastructure decisions. An
 operation that wants to "run this part on GPU and that part on CPU" cannot
@@ -115,27 +123,26 @@ three-phase lifecycle, and spec system.
 
 ---
 
-## 4. Scale is transparent
+## Scale is transparent
 
-The same code path runs for one artifact on a laptop, ten thousand artifacts
-on an HPC cluster, or a fleet of cloud instances. Only the compute backend
-changes — from `LOCAL` (thread pool) to `SLURM` (cluster job submission) to
-a cloud backend. Operations, execution logic, provenance capture, and storage
-commits are identical in all cases.
+The same code path runs for one artifact on a laptop or ten thousand artifacts
+on an HPC cluster. Only the compute backend changes — from `LOCAL` (process
+pool) to `SLURM` (cluster job submission). The backend interface is extensible,
+so additional backends (cloud, Kubernetes) can be added without changing
+operations, execution logic, provenance capture, or storage commits.
 
 **Why this principle exists:** Research pipelines start as local prototypes
-and grow to cluster or cloud-scale production. If different execution
-environments use different code paths, bugs hide in the gap. "Works on my
-machine" becomes "fails on the cluster" and vice versa. The same risk
-applies when moving between HPC and cloud — a pipeline that behaves
-differently depending on where it runs is a pipeline you cannot trust.
+and grow to cluster-scale production. If different execution environments use
+different code paths, bugs hide in the gap. "Works on my machine" becomes
+"fails on the cluster" and vice versa. A pipeline that behaves differently
+depending on where it runs is a pipeline you cannot trust.
 
 **How the framework enforces it:** The orchestrator-worker split defines a
 clean boundary. The orchestrator dispatches `ExecutionUnit` objects — sealed
 packages containing everything a worker needs. Workers execute them identically
-regardless of whether they are threads in the same process, SLURM jobs on
-remote nodes, or containers on cloud instances. The staging-commit pattern
-ensures that results are collected the same way in all cases.
+regardless of whether they are processes in a local pool or SLURM jobs on
+remote nodes. The staging-commit pattern ensures that results are collected the
+same way in all cases.
 
 **The trade-off:** Uniformity means the local execution path carries some
 overhead (sandbox directories, staged Parquet files) that a simple local-only
@@ -149,18 +156,20 @@ orchestrator-worker split.
 
 ---
 
-## 5. Shared state is never mutated concurrently
+## Shared state is never mutated concurrently
 
 Workers never write to Delta Lake directly. Instead, each worker writes
 results to an isolated staging directory, and the orchestrator commits them
-atomically after all workers complete. No optimistic concurrency, no write
-conflicts, no partial commits.
+after all workers complete. Each Delta table is committed independently in a
+fixed order (content tables first, then index, then provenance edges, then
+executions) to minimize referential integrity issues on partial failure. No
+optimistic concurrency, no write conflicts.
 
 **Why this principle exists:** Pipelines run thousands of concurrent workers.
 If each worker wrote directly to shared tables, write conflicts would be
 frequent and data corruption would be a matter of time.
 
-**The trade-off:** Atomic commit means all results for a step must be
+**The trade-off:** Serialized commits mean all results for a step must be
 collected before any are committed. You cannot query intermediate results
 while a step is still running. This is the cost of consistency: you always
 see a complete, correct snapshot or nothing at all.
@@ -170,7 +179,7 @@ for the full staging-commit pattern.
 
 ---
 
-## 6. Layers depend downward only
+## Layers depend downward only
 
 The framework is organized into five layers — schemas, operations, storage,
 execution, orchestration — with strict downward-only dependencies. Each layer
@@ -204,7 +213,7 @@ diagram and dependency table.
 
 ---
 
-## 7. Fail fast, fail loud
+## Fail fast, fail loud
 
 The framework validates as much as possible before execution begins: input
 types, spec compatibility, parameter schemas, step wiring. When an error does
@@ -220,8 +229,9 @@ immediate, actionable errors.
 
 - Input type mismatches caught at pipeline construction time
 - Empty `infer_lineage_from = {}` rejected (ambiguous intent)
-- Operations that override both `execute` and `execute_curator` raise an error
-- Resource configuration validated before dispatch to SLURM
+- Operations that implement neither `execute` nor `execute_curator` raise an
+  error at class definition time
+- Unrecognized resource configuration keys rejected before dispatch
 
 **The trade-off:** Strict validation can be frustrating during exploration,
 when you want to sketch a pipeline before all the pieces are ready. The
@@ -237,16 +247,16 @@ and the fail-fast philosophy in detail.
 These principles occasionally pull in different directions. When they do,
 the framework resolves the tension by prioritizing in this order:
 
-1. **Correctness** (provenance, content addressing, atomic commits)
-2. **Reproducibility** (deterministic caching, immutable artifacts)
-3. **Simplicity** (pure operations, layered architecture)
-4. **Performance** (batching, caching, scale transparency)
+- **Correctness** (provenance, content addressing, serialized commits)
+- **Reproducibility** (deterministic caching, immutable artifacts)
+- **Simplicity** (pure operations, layered architecture)
+- **Performance** (batching, caching, scale transparency)
 
-An example: content-addressed storage (principle 1) means the framework hashes
-every artifact, which has a cost. But this cost is paid to guarantee that cache
-keys are correct (correctness) and that identical results are never recomputed
-(reproducibility). Performance is optimized within the constraints of
-correctness, not at its expense.
+An example: content-addressed storage means the framework hashes every artifact,
+which has a cost. But this cost is paid to guarantee that cache keys are correct
+(correctness) and that identical results are never recomputed (reproducibility).
+Performance is optimized within the constraints of correctness, not at its
+expense.
 
 ---
 
