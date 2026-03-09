@@ -1,11 +1,9 @@
 """External tool execution utilities.
 
 Runtime-agnostic helpers for building and running CLI commands from within
-pipeline operations. Supports Apptainer, Docker, Pixi, and local execution
-environments via the CommandSpec hierarchy.
+pipeline operations.
 
-Key exports: :class:`ArgStyle`, :func:`format_args`,
-:func:`build_command_from_spec`, :func:`run_external_command`.
+Key exports: :func:`format_args`, :func:`run_command`.
 """
 
 from __future__ import annotations
@@ -18,41 +16,10 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 _tool_logger = logging.getLogger("artisan.tools")
-
-if TYPE_CHECKING:
-    from artisan.schemas.operation_config.command_spec import (
-        ApptainerCommandSpec,
-        CommandSpec,
-        DockerCommandSpec,
-        LocalCommandSpec,
-        PixiCommandSpec,
-    )
-
-
-# =============================================================================
-# ARGUMENT STYLE
-# =============================================================================
-
-
-class ArgStyle(Enum):
-    """Argument formatting styles for external tools.
-
-    Different tools expect different CLI argument formats:
-    - HYDRA: key=value format (example_tool, etc.)
-    - ARGPARSE: --key value format (standard Python argparse)
-
-    Examples:
-        HYDRA:    batch_size=16 ++sampler.steps=200
-        ARGPARSE: --batch-size 16 --temperature 0.1 (keys used as-is)
-    """
-
-    HYDRA = "hydra"
-    ARGPARSE = "argparse"
 
 
 # =============================================================================
@@ -94,7 +61,7 @@ class ExternalToolError(Exception):
         return_code: Exit code (-1 for timeout).
         stdout: Captured standard output.
         stderr: Captured standard error.
-        runtime: The CommandSpec that was executed.
+        runtime: The EnvironmentSpec or context that was executed.
     """
 
     message: str
@@ -156,19 +123,14 @@ def to_cli_value(value: Any) -> str:
     return str(value)
 
 
-def format_args(params: dict[str, Any], style: ArgStyle | None = None) -> list[str]:
+def format_args(params: dict[str, Any]) -> list[str]:
     """Format parameters as CLI arguments.
 
-    When ``style`` is None (default), produces ``--key value`` format with
-    booleans as flags (``--verbose`` for True, omitted for False).
-
-    When ``style`` is an ``ArgStyle`` enum, uses the legacy behavior:
-    HYDRA produces ``key=value``, ARGPARSE produces ``--key value``
-    (booleans as "true"/"false" strings).
+    Produces ``--key value`` format with booleans as flags
+    (``--verbose`` for True, omitted for False).
 
     Args:
         params: Key-value pairs to format.
-        style: Argument formatting style. None for new default behavior.
 
     Returns:
         List of formatted argument strings.
@@ -176,141 +138,17 @@ def format_args(params: dict[str, Any], style: ArgStyle | None = None) -> list[s
     Examples:
         >>> format_args({"batch-size": 16, "verbose": True})
         ['--batch-size', '16', '--verbose']
-        >>> format_args({"batch_size": 16}, ArgStyle.HYDRA)
-        ['batch_size=16']
-        >>> format_args({"batch-size": 16}, ArgStyle.ARGPARSE)
-        ['--batch-size', '16']
     """
     result: list[str] = []
     for key, value in params.items():
         if value is None:
             continue
-        if style is None:
-            # New default: bools as flags, --key value
-            if isinstance(value, bool):
-                if value:
-                    result.append(f"--{key}")
-                continue
-            result.extend([f"--{key}", to_cli_value(value)])
-        elif style == ArgStyle.HYDRA:
-            result.append(f"{key}={to_cli_value(value)}")
-        else:  # ARGPARSE
-            result.extend([f"--{key}", to_cli_value(value)])
+        if isinstance(value, bool):
+            if value:
+                result.append(f"--{key}")
+            continue
+        result.extend([f"--{key}", to_cli_value(value)])
     return result
-
-
-# =============================================================================
-# COMMAND BUILDING
-# =============================================================================
-
-
-def build_command_from_spec(
-    command: CommandSpec,
-    args: list[str],
-    cwd: Path | None = None,
-) -> Command:
-    """Build command for subprocess execution from a CommandSpec.
-
-    Args:
-        command: CommandSpec instance (ApptainerCommandSpec, DockerCommandSpec, etc.)
-        args: Pre-formatted CLI arguments from format_args().
-        cwd: Working directory. For container runtimes, the parent directory
-            is automatically bind-mounted so sibling directories (e.g.
-            materialized_inputs/) are accessible inside the container.
-
-    Returns:
-        Command with parts list and shell-quoted string.
-    """
-    from artisan.schemas.operation_config.command_spec import (
-        ApptainerCommandSpec,
-        DockerCommandSpec,
-        LocalCommandSpec,
-        PixiCommandSpec,
-    )
-
-    match command:
-        case ApptainerCommandSpec():
-            parts = _build_apptainer_from_spec(command, args, cwd)
-        case DockerCommandSpec():
-            parts = _build_docker_from_spec(command, args, cwd)
-        case PixiCommandSpec():
-            parts = _build_pixi_from_spec(command, args)
-        case LocalCommandSpec():
-            parts = _build_local_from_spec(command, args)
-        case _:
-            msg = f"Unknown CommandSpec type: {type(command).__name__}"
-            raise TypeError(msg)
-
-    return Command(parts=parts, string=shlex.join(parts))
-
-
-def _build_apptainer_from_spec(
-    command: ApptainerCommandSpec,
-    args: list[str],
-    cwd: Path | None = None,
-) -> list[str]:
-    """Build an Apptainer ``exec`` invocation with binds, env, and GPU flags."""
-    parts: list[str] = ["apptainer", "exec"]
-    if command.gpu:
-        parts.append("--nv")
-    # Auto-bind sandbox root so sibling dirs (materialized_inputs/) are accessible
-    if cwd is not None:
-        parts.extend(["--bind", f"{cwd.parent}:{cwd.parent}"])
-    for host_path, container_path in command.binds:
-        parts.extend(["--bind", f"{host_path}:{container_path}"])
-    for key, value in command.env.items():
-        parts.extend(["--env", f"{key}={value}"])
-    parts.append(str(command.image))
-    parts.extend(command.script_parts())
-    if command.subcommand:
-        parts.append(command.subcommand)
-    parts.extend(args)
-    return parts
-
-
-def _build_docker_from_spec(
-    command: DockerCommandSpec,
-    args: list[str],
-    cwd: Path | None = None,
-) -> list[str]:
-    """Build a Docker ``run --rm`` invocation with volumes, env, and GPU flags."""
-    parts: list[str] = ["docker", "run", "--rm"]
-    if command.gpu:
-        parts.extend(["--gpus", "all"])
-    # Auto-bind sandbox root so sibling dirs (materialized_inputs/) are accessible
-    if cwd is not None:
-        parts.extend(["--volume", f"{cwd.parent}:{cwd.parent}"])
-    for host_path, container_path in command.binds:
-        parts.extend(["--volume", f"{host_path}:{container_path}"])
-    for key, value in command.env.items():
-        parts.extend(["--env", f"{key}={value}"])
-    parts.append(str(command.image))
-    parts.extend(command.script_parts())
-    if command.subcommand:
-        parts.append(command.subcommand)
-    parts.extend(args)
-    return parts
-
-
-def _build_pixi_from_spec(command: PixiCommandSpec, args: list[str]) -> list[str]:
-    """Build a Pixi ``run -e`` invocation with optional manifest path."""
-    parts: list[str] = ["pixi", "run", "-e", command.environment]
-    if command.manifest_path:
-        parts.extend(["--manifest-path", str(command.manifest_path)])
-    parts.extend(command.script_parts())
-    if command.subcommand:
-        parts.append(command.subcommand)
-    parts.extend(args)
-    return parts
-
-
-def _build_local_from_spec(command: LocalCommandSpec, args: list[str]) -> list[str]:
-    """Build a bare local command with optional subcommand."""
-    parts = command.script_parts()
-    if command.subcommand:
-        parts.append(command.subcommand)
-    parts.extend(args)
-    return parts
 
 
 # =============================================================================
@@ -345,78 +183,6 @@ def _kill_process_group(process: subprocess.Popen, timeout: float = 3.0) -> None
 # =============================================================================
 
 
-def run_external_command(
-    command: CommandSpec,
-    args: list[str],
-    cwd: Path | None = None,
-    timeout: float | None = None,
-    stream_output: bool = False,
-    log_path: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Execute external command from CommandSpec, raising ExternalToolError on failure.
-
-    Args:
-        command: CommandSpec instance describing the command.
-        args: Formatted CLI arguments (from format_args()).
-        cwd: Working directory for subprocess.
-        timeout: Timeout in seconds.
-        stream_output: If True, print output lines in real-time.
-        log_path: If provided, write output to this file.
-
-    Returns:
-        CompletedProcess with captured stdout/stderr.
-
-    Raises:
-        ExternalToolError: On non-zero exit or timeout.
-    """
-    from artisan.schemas.operation_config.command_spec import LocalCommandSpec
-
-    cmd = build_command_from_spec(command, args, cwd=cwd)
-
-    # Prepare environment
-    env = None
-    if isinstance(command, LocalCommandSpec) and command.venv_path:
-        import os
-
-        env = os.environ.copy()
-        venv_bin = command.venv_path / "bin"
-        env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
-        env["VIRTUAL_ENV"] = str(command.venv_path)
-        env.update(command.env)
-    elif hasattr(command, "env") and command.env:
-        import os
-
-        env = os.environ.copy()
-        env.update(command.env)
-
-    try:
-        if stream_output:
-            result = _run_with_streaming(cmd, cwd, timeout, log_path, env)
-        else:
-            result = _run_captured(cmd, cwd, timeout, env)
-    except subprocess.TimeoutExpired as e:
-        raise ExternalToolError(
-            message=f"Command timed out after {timeout}s",
-            command=cmd.parts,
-            return_code=-1,
-            stdout=e.stdout or "",
-            stderr=e.stderr or "",
-            runtime=command,
-        ) from e
-
-    if result.returncode != 0:
-        raise ExternalToolError(
-            message=f"Command failed with exit code {result.returncode}",
-            command=cmd.parts,
-            return_code=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            runtime=command,
-        )
-
-    return result
-
-
 def run_command(
     environment: Any,
     cmd: list[str],
@@ -427,9 +193,8 @@ def run_command(
 ) -> subprocess.CompletedProcess[str]:
     """Execute a command in the given environment.
 
-    The operation builds the command; the environment wraps it. This is the
-    replacement for ``run_external_command`` that works with the new
-    EnvironmentSpec hierarchy.
+    The operation builds the command; the environment wraps it. Works with
+    the EnvironmentSpec hierarchy.
 
     Args:
         environment: An EnvironmentSpec instance that wraps the command.

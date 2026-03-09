@@ -1,6 +1,6 @@
 """Demo: Subprocess cleanup on Ctrl+C.
 
-Shows that child processes spawned by run_external_command are properly
+Shows that child processes spawned by run_command are properly
 cleaned up when interrupted, compared to raw subprocess.Popen which
 leaves orphans.
 
@@ -73,32 +73,24 @@ def scenario_raw_popen() -> None:
 
 
 def scenario_artisan_timeout() -> None:
-    """Scenario 2: Artisan run_external_command — cleanup via timeout."""
-    from artisan.schemas.operation_config.command_spec import LocalCommandSpec
-    from artisan.utils.external_tools import (
-        ArgStyle,
-        ExternalToolError,
-        run_external_command,
-    )
+    """Scenario 2: Artisan run_command — cleanup via timeout."""
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.schemas.operation_config.tool_spec import ToolSpec
+    from artisan.utils.external_tools import ExternalToolError, run_command
 
     print("=" * 60)
-    print("SCENARIO 2: Artisan run_external_command (with cleanup)")
+    print("SCENARIO 2: Artisan run_command (with cleanup)")
     print("=" * 60)
     print()
 
-    spec = LocalCommandSpec(
-        script=Path("/bin/sleep"),
-        arg_style=ArgStyle.ARGPARSE,
-        interpreter=None,
-    )
+    env = LocalEnvironmentSpec()
+    tool = ToolSpec(executable=Path("/bin/sleep"))
 
-    # We'll capture the child PID by inspecting /proc or ps.
-    # Strategy: record PIDs of `sleep 300` before and after.
     pids_before = _find_sleep_pids()
 
-    print("  Running `sleep 300` via run_external_command (timeout=1s)...")
+    print("  Running `sleep 300` via run_command (timeout=1s)...")
     try:
-        run_external_command(spec, ["300"], timeout=1)
+        run_command(env, [*tool.parts(), "300"], timeout=1)
     except ExternalToolError as e:
         print(f"  Caught ExternalToolError: {e.message}")
 
@@ -113,67 +105,6 @@ def scenario_artisan_timeout() -> None:
     else:
         print(f"  WARNING: orphan PIDs found: {new_pids}")
         for pid in new_pids:
-            _cleanup_pid(pid)
-    print()
-
-
-def scenario_artisan_interrupt() -> None:
-    """Scenario 3: Artisan streaming mode — cleanup via KeyboardInterrupt."""
-    import threading
-
-    from artisan.schemas.operation_config.command_spec import LocalCommandSpec
-    from artisan.utils.external_tools import ArgStyle, run_external_command
-
-    print("=" * 60)
-    print("SCENARIO 3: Artisan streaming + KeyboardInterrupt")
-    print("=" * 60)
-    print()
-
-    spec = LocalCommandSpec(
-        # Use bash -c to echo then sleep, so streaming has output to read
-        script=Path("bash"),
-        arg_style=ArgStyle.ARGPARSE,
-        interpreter=None,
-    )
-
-    pids_before = _find_sleep_pids()
-    caught: list[BaseException] = []
-
-    def _run() -> None:
-        try:
-            run_external_command(
-                spec,
-                ["-c", "echo 'started'; sleep 300"],
-                stream_output=True,
-            )
-        except KeyboardInterrupt:
-            caught.append(KeyboardInterrupt())
-        except Exception as e:
-            caught.append(e)
-
-    thread = threading.Thread(target=_run)
-    thread.start()
-
-    # Wait for the child to start
-    time.sleep(0.5)
-    pids_during = _find_sleep_pids() - pids_before
-    print(f"  Child `sleep` PIDs during run: {pids_during or 'none found'}")
-
-    # Send SIGINT to our own process — this triggers KeyboardInterrupt
-    # in the main thread, which propagates to the streaming loop.
-    print("  Sending KeyboardInterrupt...")
-    os.kill(os.getpid(), signal.SIGINT)
-
-    thread.join(timeout=5)
-    time.sleep(0.2)
-
-    pids_after = _find_sleep_pids() - pids_before
-    print()
-    if not pids_after:
-        print("  No orphan `sleep` processes found. Cleanup worked!")
-    else:
-        print(f"  Remaining PIDs: {pids_after}")
-        for pid in pids_after:
             _cleanup_pid(pid)
     print()
 
@@ -199,16 +130,12 @@ def main() -> None:
     print("Subprocess Cleanup Demo")
     print("~~~~~~~~~~~~~~~~~~~~~~~")
     print()
-    print("This demo shows that artisan's run_external_command properly")
+    print("This demo shows that artisan's run_command properly")
     print("cleans up child processes on interruption, unlike raw Popen.")
     print()
 
     scenario_raw_popen()
     scenario_artisan_timeout()
-
-    # Scenario 3 uses SIGINT which makes the demo harder to run
-    # non-interactively. Uncomment to test manually:
-    # scenario_artisan_interrupt()
 
     print("=" * 60)
     print("SUMMARY")
