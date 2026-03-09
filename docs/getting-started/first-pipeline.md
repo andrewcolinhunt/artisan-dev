@@ -18,7 +18,7 @@ filtered results, and inspected provenance.
 
 ---
 
-## 1. Set Up Paths
+## Set up paths
 
 Every pipeline needs three directories:
 
@@ -33,7 +33,7 @@ We set `working_root` explicitly here so you can inspect sandbox files during
 the tutorial. In production SLURM runs, you should omit it — the default uses
 `$TMPDIR`, which on most clusters points to fast node-local scratch. This keeps
 transient I/O off the shared filesystem, which matters at scale. See
-[Configuring Execution](../how-to-guides/configuring-execution.md#working-root-and-hpc-filesystems)
+[Configuring Execution](../how-to-guides/configuring-execution.md)
 for details.
 :::
 
@@ -54,7 +54,7 @@ for d in [delta_root, staging_root, working_root]:
     d.mkdir(parents=True)
 ```
 
-## 2. Create the Pipeline
+## Create the pipeline
 
 `PipelineManager.create()` initializes a pipeline with a name and the three
 directory paths.
@@ -71,7 +71,7 @@ pipeline = PipelineManager.create(
 output = pipeline.output
 ```
 
-## 3. Generate Datasets
+## Generate datasets
 
 `DataGenerator` is a generative operation — it takes no inputs and produces
 CSV dataset files. The `count` parameter controls how many datasets to
@@ -95,7 +95,7 @@ downstream steps can consume:
 output("generate", "datasets")
 ```
 
-## 4. Transform Datasets
+## Transform datasets
 
 `DataTransformer` takes datasets as input and applies scaling and noise to
 numeric columns.
@@ -114,10 +114,11 @@ pipeline.run(
 Notice the input wiring: `output("generate", "datasets")` connects the
 DataGenerator outputs to DataTransformer's `"dataset"` input role.
 
-## 5. Compute Metrics
+## Compute metrics
 
-`MetricCalculator` computes distribution statistics (min, max, median, range, CV)
-for each dataset and produces METRIC artifacts.
+`MetricCalculator` computes statistics for each dataset — distribution metrics
+(min, max, median, range) and summary metrics (CV, row count) — and produces
+METRIC artifacts.
 
 ```python
 from artisan.operations.examples import MetricCalculator
@@ -129,7 +130,7 @@ pipeline.run(
 )
 ```
 
-## 6. Filter by Score
+## Filter by score
 
 `Filter` is a curator operation that selects datasets based on metric values.
 It takes a `passthrough` input and auto-discovers associated metrics via
@@ -154,7 +155,7 @@ Only datasets whose associated `distribution.median` exceeds 0.5 will pass throu
 For multi-source filtering or disambiguation, you can still use explicit
 `"role.field"` syntax — see [Metrics and Filtering](../tutorials/pipeline-patterns/03-metrics-and-filtering.ipynb).
 
-## 7. Finalize
+## Finalize
 
 `finalize()` waits for any pending steps and returns a summary.
 
@@ -168,9 +169,9 @@ Output:
 {'pipeline_name': 'first_pipeline', 'total_steps': 4, 'overall_success': True, ...}
 ```
 
-## 8. Inspect Results
+## Inspect results
 
-### Read Delta Tables
+### Read Delta tables
 
 All pipeline data is stored in Delta Lake tables. Read them with Polars:
 
@@ -194,7 +195,7 @@ df_execution = pl.read_delta(str(delta_root / "orchestration" / "executions"))
 print(df_execution.select("operation_name", "success", "origin_step_number"))
 ```
 
-### Visualize Provenance
+### Visualize provenance
 
 The macro graph shows the pipeline structure at the step level:
 
@@ -215,7 +216,7 @@ stepper  # Interactive widget in Jupyter
 
 ---
 
-## What Just Happened
+## What just happened
 
 1. **Artifacts are content-addressed.** Each dataset and metric has an ID
    derived from its content hash (`xxh3_128`). Same content always produces
@@ -240,7 +241,7 @@ stepper  # Interactive widget in Jupyter
 
 ---
 
-## Next Steps
+## Next steps
 
 - [Orientation](orientation.md) — Understand the mental model behind
   artifacts, operations, provenance, and storage
