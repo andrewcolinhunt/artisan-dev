@@ -114,8 +114,7 @@ def _warn_old_env_var() -> None:
         import warnings
 
         warnings.warn(
-            f"{_OLD_ENV_VAR} is no longer recognized. "
-            f"Use {ENV_VAR} instead.",
+            f"{_OLD_ENV_VAR} is no longer recognized. " f"Use {ENV_VAR} instead.",
             DeprecationWarning,
             stacklevel=3,
         )
