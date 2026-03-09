@@ -235,6 +235,7 @@ transforms, preserve the input filename stem in the output name.
 | `artifact_type` | `str` | `"any"` | Type constraint on accepted artifacts |
 | `required` | `bool` | `True` | Pipeline fails if input is missing |
 | `materialize` | `bool` | `True` | `True`: write to disk (file path). `False`: in-memory access only |
+| `materialize_as` | `str \| None` | `None` | Target format for materialization (e.g. `".pdb"`). Requires `materialize=True` |
 | `hydrate` | `bool` | `True` | `True`: load content. `False`: ID-only mode |
 | `with_associated` | `tuple[str, ...]` | `()` | Auto-resolve related artifacts via provenance |
 
@@ -246,6 +247,35 @@ transforms, preserve the input filename stem in the output name.
 | `description` | `str` | Human-readable description |
 | `required` | `bool` | Whether the output must be non-empty |
 | `infer_lineage_from` | `dict \| None` | Lineage declaration (see patterns above) |
+
+**`infer_lineage_from` constraints:** Empty dict `{}` is **invalid** (raises
+`ValidationError`). Combined `{"inputs": [...], "outputs": [...]}` is **not
+supported** — use separate output roles instead.
+
+## ExecuteInput Fields
+
+| Field | Type | Default | Effect |
+|---|---|---|---|
+| `execute_dir` | `Path` | — | Directory for writing output files |
+| `inputs` | `dict[str, Any]` | `{}` | Prepared inputs from `preprocess()` |
+| `log_path` | `Path \| None` | `None` | Path for external tool stdout/stderr capture |
+| `metadata` | `dict[str, Any]` | `{}` | Extensibility escape hatch from the engine |
+
+## PostprocessInput Fields
+
+| Field | Type | Default | Effect |
+|---|---|---|---|
+| `step_number` | `int` | — | Current pipeline step number (required for `draft()`) |
+| `postprocess_dir` | `Path` | — | Directory for postprocess artifacts (rarely needed) |
+| `file_outputs` | `list[Path]` | `[]` | All files in `execute_dir` after execute completes |
+| `memory_outputs` | `Any` | `None` | Whatever `execute()` returned |
+| `input_artifacts` | `dict[str, list[Artifact]]` | `{}` | Full input context with metadata for output naming and lineage |
+| `metadata` | `dict[str, Any]` | `{}` | Extensibility escape hatch from the engine |
+
+`PostprocessInput` also provides `associated_artifacts(artifact, type_str)`
+and `grouped()` — the same methods available on `PreprocessInput`. Operations
+that need input context in postprocess (e.g., propagating annotations) use
+`inputs.input_artifacts` and `inputs.associated_artifacts()` directly.
 
 ---
 
