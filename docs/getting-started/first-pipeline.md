@@ -12,10 +12,6 @@ filtered results, and inspected provenance.
 **Estimated time:** 15 minutes
 **Prerequisites:** Artisan installed (`pixi install`), Prefect server running (`pixi run prefect-start`)
 
-**Key types:** `PipelineManager`, `StepResult`, `OutputReference`
-**Key files:** `src/artisan/orchestration/pipeline_manager.py`,
-`src/artisan/operations/examples/`
-
 ---
 
 ## Set up paths
@@ -216,28 +212,13 @@ stepper  # Interactive widget in Jupyter
 
 ---
 
-## What just happened
+## What you've seen
 
-1. **Artifacts are content-addressed.** Each dataset and metric has an ID
-   derived from its content hash (`xxh3_128`). Same content always produces
-   the same ID.
-
-2. **Provenance is automatic.** The framework tracked which inputs produced
-   which outputs at every step — both execution provenance (what computation
-   ran) and artifact provenance (which specific artifacts derived from which).
-
-3. **Results are persistent.** Everything is stored in Delta Lake tables with
-   ACID transactions. You can query, export, or resume from these tables at
-   any time.
-
-4. **Caching is deterministic.** If you run the same pipeline again with the
-   same inputs and parameters, the framework will detect cache hits and skip
-   re-execution. Caching operates at the step level — same operation + same
-   input artifact IDs + same parameters = cache hit. File-level caching within
-   an operation (e.g., skipping a computation if the output file already exists)
-   is the operation author's responsibility. Note that operations writing to
-   node-local storage rather than the shared filesystem may not be cacheable
-   across runs.
+You built a pipeline that generates, transforms, scores, and filters data —
+with automatic content addressing, provenance tracking, and deterministic
+caching. To understand how these mechanisms work, see
+[Architecture Overview](../concepts/architecture-overview.md) and
+[Execution Flow](../concepts/execution-flow.md).
 
 ---
 

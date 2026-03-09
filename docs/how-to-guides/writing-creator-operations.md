@@ -144,35 +144,12 @@ class ScaleData(OperationDefinition):
 
 ## How data flows through the three phases
 
-```
-PreprocessInput                  ExecuteInput                   PostprocessInput
-┌──────────────────┐             ┌──────────────────┐           ┌──────────────────┐
-│ .input_artifacts │             │ .inputs          │           │ .file_outputs    │
-│   role → [Artifact]            │   (dict from     │           │   (files in      │
-│                  │  preprocess  │    preprocess)   │  execute   │    execute_dir)  │
-│ .preprocess_dir  │ ──────────▶ │                  │ ────────▶ │                  │
-│                  │  returns     │ .execute_dir     │  writes    │ .memory_outputs  │
-└──────────────────┘  dict       └──────────────────┘  files     │   (execute       │
-                                                                 │    return value) │
-                                                                 │                  │
-                                                                 │ .step_number     │
-                                                                 └────────┬─────────┘
-                                                                          │
-                                                                     postprocess
-                                                                          │
-                                                                          ▼
-                                                                   ArtifactResult
-                                                                   .artifacts =
-                                                                     role → [drafts]
-```
-
-Each phase has one job:
-
-| Phase | Receives | Returns | Job |
-|-------|----------|---------|-----|
-| **preprocess** | Framework artifacts (`PreprocessInput`) | Plain `dict[str, Any]` | Translate artifacts into whatever `execute` needs |
-| **execute** | Prepared dict + working directory (`ExecuteInput`) | Anything (or `None`) | Run the computation, write output files |
-| **postprocess** | Files written + execute return value (`PostprocessInput`) | `ArtifactResult` with draft artifacts | Construct typed artifacts from raw outputs |
+For how data flows between the three phases, see
+[Operations Model](../concepts/operations-model.md#the-three-phase-creator-lifecycle).
+The summary: `preprocess` adapts inputs (receives `PreprocessInput`, returns a
+plain dict), `execute` runs computation (receives `ExecuteInput`, writes files
+to `execute_dir`), `postprocess` constructs artifacts from results (receives
+`PostprocessInput`, returns `ArtifactResult`).
 
 The framework passes each phase's output to the next. You never call one
 phase from another.
