@@ -2,8 +2,11 @@
 
 ## TOP PRIORITIES
 
-- evaluate prefect server in prefect-submitit
 - evaluate new command building
+- update artisan documentation
+
+- figure out why some of the af3 jobs were cancelled. did they run out of time?
+
 
 
 - bug in the metrics export, converts all metrics to float
