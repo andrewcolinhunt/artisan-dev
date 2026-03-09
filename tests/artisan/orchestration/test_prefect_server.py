@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -12,8 +12,8 @@ from artisan.orchestration.prefect_server import (
     PrefectServerInfo,
     PrefectServerNotFound,
     PrefectServerUnreachable,
-    _health_check,
     _normalize_url,
+    _validate_health,
     activate_server,
     discover_server,
 )
@@ -45,7 +45,7 @@ class TestNormalizeUrl:
 @pytest.fixture(autouse=True)
 def _no_health_check():
     """Disable health check for all discover_server tests in this module."""
-    with patch("artisan.orchestration.prefect_server._health_check"):
+    with patch("prefect_submitit.server.discovery.health_check", return_value=True):
         yield
 
 
@@ -61,15 +61,15 @@ class TestDiscoverServerExplicit:
 
 
 class TestDiscoverServerEnv:
-    def test_artisan_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ARTISAN_PREFECT_SERVER", "http://envhost:4200/api")
+    def test_submitit_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PREFECT_SUBMITIT_SERVER", "http://envhost:4200/api")
         monkeypatch.delenv("PREFECT_API_URL", raising=False)
         info = discover_server()
         assert info.url == "http://envhost:4200/api"
-        assert info.source == "env:ARTISAN_PREFECT_SERVER"
+        assert info.source == "env:PREFECT_SUBMITIT_SERVER"
 
     def test_prefect_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("ARTISAN_PREFECT_SERVER", raising=False)
+        monkeypatch.delenv("PREFECT_SUBMITIT_SERVER", raising=False)
         monkeypatch.setenv("PREFECT_API_URL", "http://prefecthost:4200/api")
         info = discover_server()
         assert info.url == "http://prefecthost:4200/api"
@@ -78,15 +78,17 @@ class TestDiscoverServerEnv:
 
 class TestDiscoverServerFile:
     def test_discovery_file(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.delenv("ARTISAN_PREFECT_SERVER", raising=False)
+        monkeypatch.delenv("PREFECT_SUBMITIT_SERVER", raising=False)
         monkeypatch.delenv("PREFECT_API_URL", raising=False)
 
-        discovery = tmp_path / "server.json"  # type: ignore[operator]
-        discovery.write_text(json.dumps({"url": "http://filehost:4217/api"}))
+        discovery_dir = tmp_path / "data"
+        discovery_dir.mkdir()
+        discovery = discovery_dir / "server.json"
+        discovery.write_text('{"url": "http://filehost:4217/api"}')
         monkeypatch.setattr(
-            "artisan.orchestration.prefect_server.DISCOVERY_FILE", discovery
+            "prefect_submitit.server.config.DEFAULT_DATA_DIR", discovery_dir
         )
 
         info = discover_server()
@@ -95,12 +97,12 @@ class TestDiscoverServerFile:
 
 
 class TestDiscoverServerNotFound:
-    def test_not_found(self, monkeypatch: pytest.MonkeyPatch, tmp_path: object) -> None:
-        monkeypatch.delenv("ARTISAN_PREFECT_SERVER", raising=False)
+    def test_not_found(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("PREFECT_SUBMITIT_SERVER", raising=False)
         monkeypatch.delenv("PREFECT_API_URL", raising=False)
         monkeypatch.setattr(
-            "artisan.orchestration.prefect_server.DISCOVERY_FILE",
-            tmp_path / "nonexistent.json",  # type: ignore[operator]
+            "prefect_submitit.server.config.DEFAULT_DATA_DIR",
+            tmp_path / "nonexistent",
         )
         with pytest.raises(PrefectServerNotFound):
             discover_server()
@@ -108,32 +110,61 @@ class TestDiscoverServerNotFound:
 
 class TestDiscoverServerPriority:
     def test_explicit_over_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ARTISAN_PREFECT_SERVER", "http://envhost:4200/api")
+        monkeypatch.setenv("PREFECT_SUBMITIT_SERVER", "http://envhost:4200/api")
         monkeypatch.setenv("PREFECT_API_URL", "http://prefecthost:4200/api")
         info = discover_server(prefect_server="http://explicit:4200/api")
         assert info.source == "argument"
 
-    def test_artisan_env_over_prefect_env(
+    def test_submitit_env_over_prefect_env(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("ARTISAN_PREFECT_SERVER", "http://artisan:4200/api")
+        monkeypatch.setenv("PREFECT_SUBMITIT_SERVER", "http://submitit:4200/api")
         monkeypatch.setenv("PREFECT_API_URL", "http://prefect:4200/api")
         info = discover_server()
-        assert info.source == "env:ARTISAN_PREFECT_SERVER"
+        assert info.source == "env:PREFECT_SUBMITIT_SERVER"
+
+
+class TestDeprecationWarning:
+    def test_old_env_var_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ARTISAN_PREFECT_SERVER", "http://old:4200/api")
+        monkeypatch.delenv("PREFECT_SUBMITIT_SERVER", raising=False)
+        monkeypatch.delenv("PREFECT_API_URL", raising=False)
+        # Old var is not recognized for resolution, so this should warn AND
+        # raise PrefectServerNotFound (nothing else to resolve from).
+        # Patch DEFAULT_DATA_DIR to ensure no discovery file is found.
+        monkeypatch.setattr(
+            "prefect_submitit.server.config.DEFAULT_DATA_DIR",
+            Path("/nonexistent"),
+        )
+        with pytest.warns(DeprecationWarning, match="ARTISAN_PREFECT_SERVER"):
+            with pytest.raises(PrefectServerNotFound):
+                discover_server()
+
+    def test_old_env_var_no_warn_if_new_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ARTISAN_PREFECT_SERVER", "http://old:4200/api")
+        monkeypatch.setenv("PREFECT_SUBMITIT_SERVER", "http://new:4200/api")
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            info = discover_server()
+        assert info.url == "http://new:4200/api"
 
 
 # =============================================================================
-# _health_check
+# _validate_health
 # =============================================================================
 
 
-class TestHealthCheck:
+class TestValidateHealth:
     @pytest.fixture(autouse=True)
     def _allow_real_health_check(self):
         """Override module-level mock to allow real health check in this class."""
         with patch(
-            "artisan.orchestration.prefect_server._health_check",
-            wraps=_health_check,
+            "prefect_submitit.server.discovery.health_check",
+            return_value=False,
         ):
             yield
 
@@ -142,7 +173,7 @@ class TestHealthCheck:
             url="http://unreachable-host-12345:4200/api", source="argument"
         )
         with pytest.raises(PrefectServerUnreachable, match="not reachable"):
-            _health_check(info)
+            _validate_health(info)
 
 
 # =============================================================================
