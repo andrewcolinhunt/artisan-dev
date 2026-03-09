@@ -47,8 +47,8 @@ Creators produce new artifacts from inputs. See
 ## Curator operation
 
 A lightweight operation subclass that routes, filters, or merges artifacts
-without heavy computation. Curators implement a single `curate()` method and
-run in-process on the orchestrator, with no worker dispatch or sandboxing. See
+without heavy computation. Curators implement a single `execute_curator()` method
+and run in-process on the orchestrator, with no worker dispatch or sandboxing. See
 [Operations Model](../concepts/operations-model.md).
 
 ---
