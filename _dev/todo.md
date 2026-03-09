@@ -4,8 +4,9 @@
 
 - evaluate new command building
 - update artisan documentation
+- get skills set up
 
-- figure out why some of the af3 jobs were cancelled. did they run out of time?
+- relaunch af3 jobs
 
 
 
