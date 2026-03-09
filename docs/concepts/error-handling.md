@@ -134,8 +134,10 @@ StagingResult
 
 ### Result dict (dispatch boundary)
 
-A plain dict that the dispatch layer produces from `StagingResult`. This is
-what `aggregate_results()` consumes.
+A plain dict that the dispatch layer produces from `StagingResult`. The step
+executor feeds these dicts to `aggregate_results()` (which reads `success`,
+`item_count`, and `error`) and `extract_execution_run_ids()` (which collects
+the run IDs for commit).
 
 ```
 {"success": bool, "error": str | None, "item_count": int, "execution_run_ids": [...]}
