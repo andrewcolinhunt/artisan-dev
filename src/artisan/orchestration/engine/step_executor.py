@@ -949,8 +949,12 @@ def execute_chain_step(
     # --- build_chain phase ---
     with phase_timer("build_chain", timings):
         units: list[ExecutionUnit] = []
-        for i, (op_class, params, command) in enumerate(operations):
-            operation = instantiate_operation(op_class, params, command=command)
+        for i, (op_class, params, config) in enumerate(operations):
+            env_override = config.get("environment") if config else None
+            tool_override = config.get("tool") if config else None
+            operation = instantiate_operation(
+                op_class, params, environment=env_override, tool=tool_override
+            )
             merged_params = (
                 operation.params.model_dump(mode="json")
                 if hasattr(operation, "params")
