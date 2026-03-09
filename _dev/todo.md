@@ -2,16 +2,6 @@
 
 ## TOP PRIORITIES
 
-- postgres server config
-The problem is the same as before — a leftover PostgreSQL process from a previous session was still holding port 5433. The startup script's stale-process detection only checks postmaster.pid, which was already gone, so it missed the orphan. You might want to consider adding a port check to start_postgres()  
-  in the script to catch this case.
-
-  
-- update artisan documentation holistically, look for issues across files
-- get skills set up
-
-- relaunch af3 jobs
-
 - refactor pipelines with the latest api changes
 
 
