@@ -106,27 +106,31 @@ pipeline = PipelineManager.create(
     staging_root="runs/staging",
     working_root="runs/working",
 )
+output = pipeline.output
 
 # Generate datasets -> transform -> compute metrics -> filter by score
-step0 = pipeline.run(DataGenerator, params={"count": 5, "seed": 42})
-step1 = pipeline.run(
-    DataTransformer,
-    inputs={"dataset": step0.output("datasets")},
+pipeline.run(operation=DataGenerator, name="generate", params={"count": 5, "seed": 42})
+pipeline.run(
+    operation=DataTransformer,
+    name="transform",
+    inputs={"dataset": output("generate", "datasets")},
     params={"scale_factor": 2.0},
 )
-step2 = pipeline.run(
-    MetricCalculator,
-    inputs={"dataset": step1.output("dataset")},
+pipeline.run(
+    operation=MetricCalculator,
+    name="score",
+    inputs={"dataset": output("transform", "dataset")},
 )
-step3 = pipeline.run(
-    Filter,
+pipeline.run(
+    operation=Filter,
+    name="filter",
     inputs={
-        "passthrough": step1.output("dataset"),
-        "metrics": step2.output("metrics"),
+        "passthrough": output("transform", "dataset"),
+        "scores": output("score", "metrics"),
     },
     params={
         "criteria": [
-            {"metric": "metrics.mean_score", "operator": "gt", "value": 0.5},
+            {"metric": "scores.distribution.median", "operator": "gt", "value": 0.5},
         ]
     },
 )
