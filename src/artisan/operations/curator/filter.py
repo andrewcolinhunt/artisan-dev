@@ -1,8 +1,7 @@
 """Curator operation that filters artifacts by structured metric criteria.
 
-Accepts a ``passthrough`` stream plus named metric streams, pairs them via
-provenance walk, and evaluates AND'd criteria. Returns the IDs of artifacts
-that pass all criteria.
+Discovers descendant metrics via forward provenance walk, evaluates AND'd
+criteria, and returns the IDs of passthrough artifacts that pass all criteria.
 """
 
 from __future__ import annotations
@@ -91,6 +90,8 @@ class Criterion(BaseModel):
     metric: str
     operator: Literal["gt", "ge", "lt", "le", "eq", "ne"]
     value: float | int | str | bool
+    step: str | None = None
+    step_number: int | None = None
 
 
 class _DiagnosticsAccumulator:
@@ -147,19 +148,16 @@ class _DiagnosticsAccumulator:
 
     def finalize(
         self,
-        display_criteria: list[Criterion],
-        all_criteria: list[Criterion],
-        resolution_list: list[str],
+        criteria: list[Criterion],
+        resolved_steps: list[int | None],
+        metric_sources: list[dict[str, Any]],
         total_input: int,
         total_passed: int,
-        total_explicit_matched: int,
-        total_implicit_resolved: int,
+        total_metrics_discovered: int,
     ) -> dict:
-        """Produce the final v3 diagnostics dict from accumulated statistics."""
+        """Produce the final v4 diagnostics dict from accumulated statistics."""
         criteria_diagnostics = []
-        for i, (display_crit, lookup_crit) in enumerate(
-            zip(display_criteria, all_criteria, strict=True)
-        ):
+        for i, crit in enumerate(criteria):
             stats: dict[str, Any] = {}
             if self._non_null_counts[i] > 0:
                 mean_val = self._sums[i] / self._non_null_counts[i]
@@ -171,11 +169,11 @@ class _DiagnosticsAccumulator:
 
             criteria_diagnostics.append(
                 {
-                    "metric": display_crit.metric,
-                    "operator": display_crit.operator,
-                    "value": display_crit.value,
+                    "metric": crit.metric,
+                    "operator": crit.operator,
+                    "value": crit.value,
                     "pass_count": self._pass_counts[i],
-                    "resolution": resolution_list[i],
+                    "resolved_from_step": resolved_steps[i],
                     "stats": stats,
                 }
             )
@@ -184,24 +182,24 @@ class _DiagnosticsAccumulator:
         funnel: list[dict[str, Any]] = [
             {"label": "All evaluated", "count": self._funnel_counts[0]}
         ]
-        for i, display_crit in enumerate(display_criteria):
+        for i, crit in enumerate(criteria):
             count = self._funnel_counts[i + 1]
             prev_count = funnel[-1]["count"]
             funnel.append(
                 {
-                    "label": f"+ {display_crit.metric} {display_crit.operator} {display_crit.value}",
+                    "label": f"+ {crit.metric} {crit.operator} {crit.value}",
                     "count": count,
                     "eliminated": prev_count - count,
                 }
             )
 
         return {
-            "version": 3,
+            "version": 4,
             "total_input": total_input,
             "total_evaluated": self.total_evaluated,
-            "total_explicit_matched": total_explicit_matched,
-            "total_implicit_resolved": total_implicit_resolved,
+            "total_metrics_discovered": total_metrics_discovered,
             "total_passed": total_passed,
+            "metric_sources": metric_sources,
             "criteria": criteria_diagnostics,
             "funnel": funnel,
         }
@@ -210,10 +208,9 @@ class _DiagnosticsAccumulator:
 class Filter(OperationDefinition):
     """Filter artifacts by evaluating structured criteria against matched metrics.
 
-    Accepts a ``passthrough`` stream plus any number of named metric streams.
-    Each passthrough artifact is paired with its metrics via provenance walk,
-    then evaluated against AND'd criteria. Only artifacts passing every
-    criterion appear in the output.
+    Discovers descendant metrics via forward provenance walk from passthrough
+    artifacts. Criteria are always metric field names — step name/number on
+    Criterion disambiguates when field names collide across metric sources.
     """
 
     # ---------- Metadata ----------
@@ -223,15 +220,11 @@ class Filter(OperationDefinition):
     )
 
     # ---------- Inputs ----------
-    class InputRole(StrEnum):
-        passthrough = auto()  # additional metric roles are user-defined
-
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.passthrough: InputSpec(
+        "passthrough": InputSpec(
             artifact_type=ArtifactTypes.ANY,
             required=True,
             description="Artifacts to filter (any type)",
-            with_associated=(ArtifactTypes.METRIC,),
         ),
     }
 
@@ -248,9 +241,7 @@ class Filter(OperationDefinition):
     }
 
     # ---------- Behavior ----------
-    runtime_defined_inputs: ClassVar[bool] = True
     hydrate_inputs: ClassVar[bool] = False
-    independent_input_streams: ClassVar[bool] = True
 
     # ---------- Parameters ----------
     class Params(BaseModel):
@@ -279,9 +270,6 @@ class Filter(OperationDefinition):
     ) -> PassthroughResult:
         """Evaluate filter criteria and return passing artifact IDs.
 
-        Phase 1 matches metrics to passthrough artifacts via provenance walk.
-        Phase 2 hydrates and evaluates criteria in bounded chunks.
-
         Args:
             inputs: Role names to DataFrames with ``artifact_id``.
             step_number: Current pipeline step number (unused).
@@ -291,22 +279,15 @@ class Filter(OperationDefinition):
             PassthroughResult with artifact IDs that passed all criteria.
 
         Raises:
-            ValueError: If ``passthrough`` role is missing, no metric roles
-                exist and no implicit criteria are set, or criteria reference
-                unknown roles.
+            ValueError: If ``passthrough`` role is missing, or a criterion's
+                metric field collides across multiple steps without
+                disambiguation.
         """
         if "passthrough" not in inputs:
             msg = f"Filter requires a 'passthrough' input role. Got: {list(inputs.keys())}"
             raise ValueError(msg)
 
         passthrough_df = inputs["passthrough"]
-        metric_role_dfs = {r: df for r, df in inputs.items() if r != "passthrough"}
-
-        implicit_criteria, explicit_criteria = self._partition_criteria()
-
-        if not metric_role_dfs and not implicit_criteria:
-            msg = "Filter requires at least one metric input role or implicit criteria"
-            raise ValueError(msg)
 
         if passthrough_df.is_empty():
             return PassthroughResult(success=True, passthrough={"passthrough": []})
@@ -315,12 +296,12 @@ class Filter(OperationDefinition):
         if not self.params.criteria:
             passthrough_ids = passthrough_df["artifact_id"].to_list()
             diag: dict = {
-                "version": 3,
+                "version": 4,
                 "total_input": len(passthrough_ids),
                 "total_evaluated": len(passthrough_ids),
-                "total_explicit_matched": 0,
-                "total_implicit_resolved": 0,
+                "total_metrics_discovered": 0,
                 "total_passed": len(passthrough_ids),
+                "metric_sources": [],
                 "criteria": [],
                 "funnel": [{"label": "All evaluated", "count": len(passthrough_ids)}],
             }
@@ -332,81 +313,121 @@ class Filter(OperationDefinition):
                 metadata={"diagnostics": diag},
             )
 
-        # Guard: "_implicit" is reserved as a synthetic role key
-        if "_implicit" in metric_role_dfs:
-            msg = (
-                "Metric role name '_implicit' is reserved for implicit metric "
-                "resolution. Please rename the input role."
-            )
-            raise ValueError(msg)
+        # ── Phase 1: Discover metrics ──
 
-        # Validate explicit criteria against provided metric roles
-        if explicit_criteria:
-            self._validate_criteria(metric_role_dfs, explicit_criteria)
+        default_criteria = [
+            c for c in self.params.criteria if c.step is None and c.step_number is None
+        ]
+        step_targeted_criteria = [
+            c
+            for c in self.params.criteria
+            if c.step is not None or c.step_number is not None
+        ]
 
-        # ── Phase 1: Full matching (DataFrame-native, memory efficient) ──
-
-        matched_df = self._match_explicit(
-            passthrough_df, metric_role_dfs, artifact_store
+        # Forward walk for default criteria
+        metric_pairs = pl.DataFrame(
+            schema={"passthrough_id": pl.String, "metric_id": pl.String}
         )
-        total_explicit_matched = (
-            matched_df["passthrough_id"].n_unique() if not matched_df.is_empty() else 0
-        )
-
-        implicit_df = (
-            artifact_store.get_descendant_ids_df(
-                passthrough_df["artifact_id"],
-                target_artifact_type=ArtifactTypes.METRIC,
+        if default_criteria:
+            metric_pairs = self._discover_descendant_metrics(
+                passthrough_df, artifact_store
             )
-            if implicit_criteria
+
+        # Backward walk for step-targeted criteria
+        step_metric_pairs = pl.DataFrame(
+            schema={"passthrough_id": pl.String, "metric_id": pl.String}
+        )
+        if step_targeted_criteria:
+            unique_targets = {
+                (c.step, c.step_number)
+                for c in step_targeted_criteria
+            }
+            parts: list[pl.DataFrame] = []
+            for step_name, step_num in unique_targets:
+                part = self._discover_step_metrics(
+                    passthrough_df, artifact_store, step_name, step_num
+                )
+                if not part.is_empty():
+                    parts.append(part)
+            if parts:
+                step_metric_pairs = pl.concat(parts).unique()
+
+        # Combine all metric pairs
+        all_pairs_parts: list[pl.DataFrame] = []
+        if not metric_pairs.is_empty():
+            all_pairs_parts.append(metric_pairs)
+        if not step_metric_pairs.is_empty():
+            all_pairs_parts.append(step_metric_pairs)
+
+        all_metric_pairs = (
+            pl.concat(all_pairs_parts).unique()
+            if all_pairs_parts
             else pl.DataFrame(
-                schema={
-                    "source_artifact_id": pl.String,
-                    "target_artifact_id": pl.String,
-                }
+                schema={"passthrough_id": pl.String, "metric_id": pl.String}
             )
         )
-        total_implicit_resolved = (
-            implicit_df["source_artifact_id"].n_unique()
-            if not implicit_df.is_empty()
+
+        total_metrics_discovered = (
+            all_metric_pairs["metric_id"].n_unique()
+            if not all_metric_pairs.is_empty()
             else 0
         )
 
-        # Build criteria lists
-        all_criteria, display_criteria, resolution_list = self._build_criteria_lists(
-            explicit_criteria, implicit_criteria
-        )
-        exprs = [_criterion_to_expr(c) for c in all_criteria]
-        bool_exprs = [e.fill_null(False) for e in exprs]
-
         # ── Phase 2: Chunked hydration + evaluation ──
 
-        accumulator = _DiagnosticsAccumulator(all_criteria)
+        bool_exprs = [_criterion_to_expr(c).fill_null(False) for c in self.params.criteria]
+        accumulator = _DiagnosticsAccumulator(self.params.criteria)
         all_passed_ids: list[str] = []
+        resolved_steps: list[int | None] = [None] * len(self.params.criteria)
+        metric_sources_map: dict[int, dict[str, Any]] = {}
 
         for chunk_start in range(0, passthrough_df.height, self.params.chunk_size):
             chunk_pt = passthrough_df.slice(chunk_start, self.params.chunk_size)
             chunk_ids = chunk_pt["artifact_id"]
 
-            # Filter pre-computed matches to this chunk
-            chunk_matched = (
-                matched_df.filter(pl.col("passthrough_id").is_in(chunk_ids))
-                if not matched_df.is_empty()
-                else matched_df
-            )
-            chunk_implicit = (
-                implicit_df.filter(pl.col("source_artifact_id").is_in(chunk_ids))
-                if not implicit_df.is_empty()
-                else implicit_df
+            # Filter metric pairs to this chunk
+            chunk_pairs = (
+                all_metric_pairs.filter(pl.col("passthrough_id").is_in(chunk_ids))
+                if not all_metric_pairs.is_empty()
+                else all_metric_pairs
             )
 
-            # Hydrate chunk -> wide DataFrame
-            wide_chunk = self._hydrate_as_wide_df(
-                chunk_pt, chunk_matched, chunk_implicit, artifact_store
+            # Build metric namespace
+            wide_chunk, step_info = self._build_metric_namespace(
+                chunk_pt, chunk_pairs, artifact_store
             )
+
+            # Collision detection for default criteria
+            if default_criteria and step_info is not None:
+                for i, crit in enumerate(self.params.criteria):
+                    if crit.step is not None or crit.step_number is not None:
+                        continue
+                    self._check_collision(crit.metric, step_info)
+                    # Resolve step for diagnostics
+                    if crit.metric in step_info:
+                        steps_for_field = step_info[crit.metric]
+                        if len(steps_for_field) == 1:
+                            resolved_steps[i] = next(iter(steps_for_field))
+
+            # Resolve steps for step-targeted criteria
+            for i, crit in enumerate(self.params.criteria):
+                if crit.step is None and crit.step_number is None:
+                    continue
+                resolved_steps[i] = crit.step_number
+
+            # Collect metric source info from step_info
+            if step_info is not None:
+                for field, step_nums in step_info.items():
+                    for sn in step_nums:
+                        if sn not in metric_sources_map:
+                            metric_sources_map[sn] = {
+                                "step_number": sn,
+                                "step_name": step_info.get("_step_names", {}).get(sn, ""),
+                                "metric_count": 0,
+                            }
 
             # Add null columns for missing criteria references
-            for c in all_criteria:
+            for c in self.params.criteria:
                 if c.metric not in wide_chunk.columns:
                     wide_chunk = wide_chunk.with_columns(pl.lit(None).alias(c.metric))
 
@@ -424,23 +445,25 @@ class Filter(OperationDefinition):
                 )
                 all_passed_ids.extend(passed_ordered["artifact_id"].to_list())
 
-            # Accumulate diagnostics from this chunk
             accumulator.update(wide_chunk, bool_exprs)
 
         # ── Build final result ──
 
+        metric_sources = sorted(
+            metric_sources_map.values(), key=lambda x: x["step_number"]
+        )
+
         diagnostics = accumulator.finalize(
-            display_criteria=display_criteria,
-            all_criteria=all_criteria,
-            resolution_list=resolution_list,
+            criteria=self.params.criteria,
+            resolved_steps=resolved_steps,
+            metric_sources=metric_sources,
             total_input=passthrough_df.height,
             total_passed=(
                 len(all_passed_ids)
                 if not self.params.passthrough_failures
                 else accumulator.total_normally_passed
             ),
-            total_explicit_matched=total_explicit_matched,
-            total_implicit_resolved=total_implicit_resolved,
+            total_metrics_discovered=total_metrics_discovered,
         )
 
         if self.params.passthrough_failures:
@@ -463,91 +486,115 @@ class Filter(OperationDefinition):
             metadata={"diagnostics": diagnostics},
         )
 
-    def _partition_criteria(self) -> tuple[list[Criterion], list[Criterion]]:
-        """Split criteria into implicit (bare field) and explicit (role.field).
-
-        Returns:
-            Tuple of (implicit_criteria, explicit_criteria).
-        """
-        implicit, explicit = [], []
-        for c in self.params.criteria:
-            if "." in c.metric:
-                explicit.append(c)
-            else:
-                implicit.append(c)
-        return implicit, explicit
-
-    def _build_criteria_lists(
-        self,
-        explicit_criteria: list[Criterion],
-        implicit_criteria: list[Criterion],
-    ) -> tuple[list[Criterion], list[Criterion], list[str]]:
-        """Build unified criteria with column name mapping.
-
-        Args:
-            explicit_criteria: Criteria with role.field format.
-            implicit_criteria: Criteria with bare field names.
-
-        Returns:
-            Tuple of (all_criteria, display_criteria, resolution_list).
-        """
-        all_criteria: list[Criterion] = []
-        display_criteria: list[Criterion] = []
-        resolution_list: list[str] = []
-
-        for c in explicit_criteria:
-            all_criteria.append(c)
-            display_criteria.append(c)
-            resolution_list.append("explicit")
-        for c in implicit_criteria:
-            all_criteria.append(
-                Criterion(
-                    metric=f"_implicit.{c.metric}",
-                    operator=c.operator,
-                    value=c.value,
-                )
-            )
-            display_criteria.append(c)
-            resolution_list.append("implicit")
-
-        return all_criteria, display_criteria, resolution_list
-
-    def _match_explicit(
+    def _discover_descendant_metrics(
         self,
         passthrough_df: pl.DataFrame,
-        metric_role_dfs: dict[str, pl.DataFrame],
         artifact_store: ArtifactStore,
     ) -> pl.DataFrame:
-        """Match metric roles to passthrough via provenance walk.
+        """Forward walk from passthrough to find descendant metrics.
 
         Args:
             passthrough_df: DataFrame with passthrough artifact_id column.
-            metric_role_dfs: Dict of role name to metric DataFrames.
-            artifact_store: Store for provenance edge loading.
+            artifact_store: Store for edge/step loading.
 
         Returns:
-            DataFrame with columns [passthrough_id, role, metric_id].
+            DataFrame with columns [passthrough_id, metric_id].
         """
         empty = pl.DataFrame(
-            schema={
-                "passthrough_id": pl.String,
-                "role": pl.String,
-                "metric_id": pl.String,
-            }
+            schema={"passthrough_id": pl.String, "metric_id": pl.String}
         )
 
-        if not metric_role_dfs:
+        from artisan.execution.inputs.lineage_matching import (
+            walk_forward_to_targets,
+        )
+
+        step_range = artifact_store.get_step_range(passthrough_df["artifact_id"])
+        if step_range is None:
             return empty
+
+        step_min, step_max = step_range
+        edges = artifact_store.load_provenance_edges_df(
+            step_min, step_max, include_target_type=True
+        )
+
+        if edges.is_empty():
+            return empty
+
+        walk_result = walk_forward_to_targets(
+            sources=passthrough_df,
+            edges=edges,
+            target_type="metric",
+        )
+
+        if walk_result.is_empty():
+            return empty
+
+        return walk_result.select(
+            pl.col("source_id").alias("passthrough_id"),
+            pl.col("target_id").alias("metric_id"),
+        )
+
+    def _discover_step_metrics(
+        self,
+        passthrough_df: pl.DataFrame,
+        artifact_store: ArtifactStore,
+        step: str | None,
+        step_number: int | None,
+    ) -> pl.DataFrame:
+        """Backward walk to find metrics from a specific step.
+
+        Args:
+            passthrough_df: DataFrame with passthrough artifact_id column.
+            artifact_store: Store for edge/step loading.
+            step: Step name for targeting.
+            step_number: Step number for targeting.
+
+        Returns:
+            DataFrame with columns [passthrough_id, metric_id].
+        """
+        empty = pl.DataFrame(
+            schema={"passthrough_id": pl.String, "metric_id": pl.String}
+        )
 
         from artisan.execution.inputs.lineage_matching import (
             walk_provenance_to_targets,
         )
 
-        # Determine step range for scoped edge loading
-        all_ids = passthrough_df["artifact_id"]
-        for df in metric_role_dfs.values():
-            all_ids = pl.concat([all_ids, df["artifact_id"]])
+        # Resolve step identity
+        step_name_map = artifact_store.load_step_name_map()
+        target_step_number = step_number
 
+        if step is not None and step_number is None:
+            matching = [sn for sn, name in step_name_map.items() if name == step]
+            if not matching:
+                return empty
+            if len(matching) > 1:
+                msg = (
+                    f"Step name '{step}' matches multiple step numbers: "
+                    f"{sorted(matching)}. Use step_number to disambiguate."
+                )
+                raise ValueError(msg)
+            target_step_number = matching[0]
+        elif step is not None and step_number is not None:
+            actual_name = step_name_map.get(step_number)
+            if actual_name != step:
+                return empty
+
+        if target_step_number is None:
+            return empty
+
+        # Load metric IDs from the target step
+        metric_ids = artifact_store.load_artifact_ids_by_type(
+            "metric", step_numbers=[target_step_number]
+        )
+
+        if not metric_ids:
+            return empty
+
+        metrics_df = pl.DataFrame({"artifact_id": sorted(metric_ids)})
+
+        # Get step range covering both passthrough and metrics
+        all_ids = pl.concat([passthrough_df["artifact_id"], metrics_df["artifact_id"]])
         step_range = artifact_store.get_step_range(all_ids)
         if step_range is None:
             return empty
@@ -555,71 +602,48 @@ class Filter(OperationDefinition):
         step_min, step_max = step_range
         edges = artifact_store.load_provenance_edges_df(step_min, step_max)
 
-        role_dfs: list[pl.DataFrame] = []
-        for role, metric_df in metric_role_dfs.items():
-            walk_result = walk_provenance_to_targets(
-                candidates=metric_df,
-                targets=passthrough_df,
-                edges=edges,
-            )
-            if not walk_result.is_empty():
-                role_df = walk_result.select(
-                    pl.col("target_id").alias("passthrough_id"),
-                    pl.lit(role).alias("role"),
-                    pl.col("candidate_id").alias("metric_id"),
-                )
-                role_dfs.append(role_df)
+        walk_result = walk_provenance_to_targets(
+            candidates=metrics_df,
+            targets=passthrough_df,
+            edges=edges,
+        )
 
-        if not role_dfs:
+        if walk_result.is_empty():
             return empty
 
-        return pl.concat(role_dfs)
+        return walk_result.select(
+            pl.col("target_id").alias("passthrough_id"),
+            pl.col("candidate_id").alias("metric_id"),
+        )
 
-    def _hydrate_as_wide_df(
+    def _build_metric_namespace(
         self,
         passthrough_df: pl.DataFrame,
-        matched_df: pl.DataFrame,
-        implicit_df: pl.DataFrame,
+        metric_pairs: pl.DataFrame,
         artifact_store: ArtifactStore,
-    ) -> pl.DataFrame:
-        """Build a wide DataFrame with metric values joined per role.
-
-        Loads metric content via ``artifact_store.load_metrics_df``, decodes
-        JSON in Polars, flattens nested structs, and joins per role with
-        column prefixes.
+    ) -> tuple[pl.DataFrame, dict[str, set[int]] | None]:
+        """Hydrate metrics and build wide DataFrame for evaluation.
 
         Args:
             passthrough_df: DataFrame with passthrough artifact_id column.
-            matched_df: DataFrame with [passthrough_id, role, metric_id].
-            implicit_df: DataFrame with [source_artifact_id, target_artifact_id].
+            metric_pairs: DataFrame with [passthrough_id, metric_id].
             artifact_store: Store for metric loading.
 
         Returns:
-            Wide DataFrame with ``passthrough_id`` and prefixed metric columns.
-
-        Raises:
-            ValueError: On implicit field name collisions.
+            Tuple of (wide DataFrame with passthrough_id + metric columns,
+            step_info mapping field names to sets of step numbers that
+            produce them — None if no metrics found).
         """
         base_df = passthrough_df.select(pl.col("artifact_id").alias("passthrough_id"))
 
-        # Collect all metric IDs across both paths
-        all_metric_ids: list[pl.Series] = []
-        if not matched_df.is_empty():
-            all_metric_ids.append(matched_df["metric_id"])
-        if not implicit_df.is_empty():
-            all_metric_ids.append(implicit_df["target_artifact_id"])
+        if metric_pairs.is_empty():
+            return base_df, None
 
-        if not all_metric_ids:
-            return base_df
+        unique_metric_ids = metric_pairs["metric_id"].unique().to_list()
+        metrics_df = artifact_store.load_metrics_df(unique_metric_ids)
 
-        combined_ids = pl.concat(all_metric_ids).unique().to_list()
-        if not combined_ids:
-            return base_df
-
-        # Bulk-load all metrics at once
-        metrics_df = artifact_store.load_metrics_df(combined_ids)
         if metrics_df.is_empty():
-            return base_df
+            return base_df, None
 
         # Decode JSON content: Binary -> Utf8 -> struct -> unnest -> flatten
         parsed_series = metrics_df["content"].cast(pl.Utf8).str.json_decode()
@@ -632,95 +656,71 @@ class Filter(OperationDefinition):
 
         value_columns = [c for c in decoded.columns if c != "artifact_id"]
 
-        # --- Explicit roles ---
-        if not matched_df.is_empty():
-            roles = matched_df["role"].unique().to_list()
-            for role in roles:
-                role_mapping = matched_df.filter(pl.col("role") == role).select(
-                    pl.col("passthrough_id"),
-                    pl.col("metric_id").alias("artifact_id"),
-                )
-                role_values = role_mapping.join(decoded, on="artifact_id", how="left")
-                role_values = role_values.drop("artifact_id")
-                rename_map = {
-                    c: f"{role}.{c}" for c in value_columns if c in role_values.columns
-                }
-                role_values = role_values.rename(rename_map)
-                base_df = base_df.join(role_values, on="passthrough_id", how="left")
+        # Enrich with step info
+        step_number_map = artifact_store.load_step_number_map(
+            set(unique_metric_ids)
+        )
+        step_name_map = artifact_store.load_step_name_map()
 
-        # --- Implicit path ---
-        if not implicit_df.is_empty():
-            impl_mapping = implicit_df.select(
-                pl.col("source_artifact_id").alias("passthrough_id"),
-                pl.col("target_artifact_id").alias("artifact_id"),
-            )
-            impl_values = impl_mapping.join(decoded, on="artifact_id", how="left")
-            impl_values = impl_values.drop("artifact_id")
+        # Build step_info: {field_name: {step_numbers}}
+        step_info: dict[str, Any] = {"_step_names": {}}
+        for mid, sn in step_number_map.items():
+            step_info["_step_names"][sn] = step_name_map.get(sn, "")
 
-            # Detect field collisions
-            dup_check = impl_mapping.join(decoded, on="artifact_id", how="left")
-            for col in value_columns:
-                if col not in dup_check.columns:
-                    continue
-                non_null = dup_check.filter(pl.col(col).is_not_null())
-                dupes = (
-                    non_null.group_by("passthrough_id")
-                    .agg(pl.col(col).count().alias("_cnt"))
-                    .filter(pl.col("_cnt") > 1)
-                )
-                if dupes.height > 0:
-                    first_pt = dupes["passthrough_id"][0]
-                    msg = (
-                        f"Implicit metric field collision for passthrough "
-                        f"artifact '{first_pt}': field '{col}' "
-                        f"found in multiple associated metrics. Use explicit "
-                        f"metric roles to disambiguate: "
-                        f'{{"metric": "role.{col}", ...}}'
-                    )
-                    raise ValueError(msg)
+        for col in value_columns:
+            step_info[col] = set()
+            for mid in unique_metric_ids:
+                if mid in step_number_map:
+                    row = decoded.filter(pl.col("artifact_id") == mid)
+                    if not row.is_empty() and col in row.columns:
+                        val = row[col][0]
+                        if val is not None:
+                            step_info[col].add(step_number_map[mid])
 
-            # Aggregate: take first non-null per passthrough_id
-            agg_exprs = [
-                pl.col(c).drop_nulls().first().alias(c)
-                for c in value_columns
-                if c in impl_values.columns
-            ]
-            if agg_exprs:
-                impl_agg = impl_values.group_by("passthrough_id").agg(agg_exprs)
-                rename_map = {
-                    c: f"_implicit.{c}"
-                    for c in impl_agg.columns
-                    if c != "passthrough_id"
-                }
-                impl_agg = impl_agg.rename(rename_map)
-                base_df = base_df.join(impl_agg, on="passthrough_id", how="left")
+        # Join metrics to passthrough via metric_pairs
+        mapping = metric_pairs.select(
+            pl.col("passthrough_id"),
+            pl.col("metric_id").alias("artifact_id"),
+        )
+        values = mapping.join(decoded, on="artifact_id", how="left").drop("artifact_id")
 
-        return base_df
+        # Aggregate: take first non-null per passthrough_id
+        agg_exprs = [
+            pl.col(c).drop_nulls().first().alias(c)
+            for c in value_columns
+            if c in values.columns
+        ]
+        if agg_exprs:
+            agg = values.group_by("passthrough_id").agg(agg_exprs)
+            base_df = base_df.join(agg, on="passthrough_id", how="left")
 
-    def _validate_criteria(
-        self,
-        metric_roles: dict[str, pl.DataFrame | list],
-        criteria: list[Criterion] | None = None,
-    ) -> None:
-        """Validate that all criteria reference known input roles.
+        return base_df, step_info
+
+    @staticmethod
+    def _check_collision(field: str, step_info: dict[str, Any]) -> None:
+        """Raise ValueError if a field comes from multiple steps.
 
         Args:
-            metric_roles: Dict of metric role names to their DataFrames or lists.
-            criteria: Criteria to validate. Defaults to self.params.criteria.
+            field: Metric field name to check.
+            step_info: Mapping from field names to sets of step numbers.
 
         Raises:
-            ValueError: If a criterion has invalid metric format or unknown role.
+            ValueError: When the field appears in metrics from multiple steps.
         """
-        criteria = criteria if criteria is not None else self.params.criteria
-        known_roles = set(metric_roles.keys())
-        for criterion in criteria:
-            role, _, field = criterion.metric.partition(".")
-            if not field:
-                msg = f"Criterion metric must be 'role.field' format, got: '{criterion.metric}'"
-                raise ValueError(msg)
-            if role not in known_roles:
-                msg = (
-                    f"Criterion references unknown role '{role}'. "
-                    f"Known metric roles: {sorted(known_roles)}"
-                )
-                raise ValueError(msg)
+        if field not in step_info or field.startswith("_"):
+            return
+
+        step_nums = step_info[field]
+        if len(step_nums) <= 1:
+            return
+
+        step_names = step_info.get("_step_names", {})
+        lines = [f"Field '{field}' found in metrics from multiple steps:"]
+        for sn in sorted(step_nums):
+            name = step_names.get(sn, "unknown")
+            lines.append(f'  - step {sn} ("{name}")')
+        lines.append("Add 'step' or 'step_number' to disambiguate:")
+        lines.append(
+            f'  {{"metric": "{field}", "step_number": {min(step_nums)}, ...}}'
+        )
+        raise ValueError("\n".join(lines))
