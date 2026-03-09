@@ -54,12 +54,16 @@ Beyond the bug, the dual-path design creates several problems:
    `Criterion` scope to a specific step's metrics. Only required when there
    are actual collisions.
 
-4. **Multi-hop by default.** Forward provenance walk uses `trace_derived_artifacts`
-   (BFS) to find all descendant metrics regardless of hop distance.
+4. **Multi-hop by default.** Forward provenance walk uses `walk_forward_to_targets`
+   (iterative DataFrame join) to find all descendant metrics regardless of hop distance.
 
 5. **Step-targeted lookup for non-descendants.** When `step`/`step_number` is
    specified and the metrics aren't found via forward walk, backward provenance
    walk finds metrics from sibling/ancestor branches.
+
+### This is a breaking change. 
+
+This is a breaking change to Filter's input wiring and criteria format.
 
 ---
 
@@ -92,10 +96,15 @@ Resolution priority when both are specified:
 
 **Default path (no `step`/`step_number` on criterion):**
 
-1. Load forward provenance map via `artifact_store.load_forward_provenance_map()`
-2. Load all metric artifact IDs via `artifact_store.load_artifact_ids_by_type("metric")`
-3. For each passthrough artifact, run `trace_derived_artifacts(pt_id, forward_map, metric_ids)` — multi-hop forward BFS
-4. Result: `{passthrough_id: [metric_artifact_ids]}`
+1. Get passthrough step range via `artifact_store.get_step_range(passthrough_ids)`
+2. Load scoped edges via `artifact_store.load_provenance_edges_df(step_min, step_max)`
+   — only edges within the relevant step window
+3. Run `walk_forward_to_targets(passthrough_df, edges, target_type="metric")` —
+   iterative forward join (frontier joins on `source_artifact_id`, takes
+   `target_artifact_id`; loop until frontier is empty). Filters targets by
+   `artifact_type` column on the edge/index data. All-match semantics: every
+   passthrough artifact's descendant metrics are discovered in a single batch
+4. Result: DataFrame of `(passthrough_id, metric_artifact_id)` pairs
 
 **Step-targeted path (criterion has `step`/`step_number`):**
 
@@ -108,21 +117,29 @@ Resolution priority when both are specified:
    `origin_step_number` and `artifact_type="metric"`
 3. Match metrics to passthrough via `walk_provenance_to_targets` (backward walk)
    using scoped provenance edges
-4. Result: `{passthrough_id: [metric_artifact_ids]}`
+4. Result: DataFrame of `(passthrough_id, metric_artifact_id)` pairs
 
 ### Phase 2: Hydrate and merge
 
-1. Bulk-load all discovered metric artifacts via `artifact_store.get_artifacts_by_type()`
-2. For each metric, `flatten_dict(metric.values)` → `{field: value}`
-3. Track provenance: `{passthrough_id: {field: [(value, step_number, step_name)]}}`
+1. Collect unique metric IDs from Phase 1 result
+2. Chunked hydration via `artifact_store.load_metrics_df(metric_ids)` →
+   two-column DataFrame of `(artifact_id, json_blob)`
+3. Polars JSON decode → `pl.col("json_blob").str.json_decode()` → struct column
+4. `unnest` → flatten to wide columns (one column per metric field)
+5. Join back to Phase 1 mapping to associate each metric row with its
+   passthrough artifact
+6. Enrich with step provenance via `artifact_index` join on metric artifact ID
+   → adds `origin_step_number` and `step_name` columns
 
 ### Phase 3: Collision detection
 
 For criteria without `step`/`step_number`:
 
-1. Check if the criterion's `metric` field appears in metrics from multiple steps
-2. If unique → resolve directly
-3. If collision → raise `ValueError` with actionable message:
+1. Group the wide metric DataFrame by `step_number` to find which steps
+   produce each field name
+2. If a criterion's `metric` field appears from a single step → resolve directly
+3. If collision (field from multiple steps) → raise `ValueError` with actionable
+   message:
 
 ```
 Field 'score' found in metrics from multiple steps:
@@ -134,14 +151,16 @@ Add 'step' or 'step_number' to disambiguate:
 
 For criteria with `step`/`step_number`:
 
-1. Scope to metrics from the specified step only
+1. Filter the wide metric DataFrame to rows from the specified step only
 2. Resolve field within that scope (no collision possible)
 
 ### Phase 4: Evaluate
 
-For each passthrough artifact, evaluate all criteria against its resolved
-metric values. All criteria are AND'd. Return `PassthroughResult` with
-artifact IDs that passed.
+Chunked evaluation: for each passthrough artifact's metric row, build
+`pl.all_horizontal(bool_exprs)` where each `bool_expr` is the Polars
+expression for one criterion (e.g., `pl.col("distribution.min") > 0.8`).
+All criteria are AND'd. Return `PassthroughResult` with artifact IDs
+that passed.
 
 ---
 
@@ -225,20 +244,23 @@ pipeline.run(
 
 ## Infrastructure
 
-All required infrastructure already exists:
+Most required infrastructure already exists. One new function is needed:
 
-| Need | Method | Location |
-|---|---|---|
-| Multi-hop forward walk | `trace_derived_artifacts()` | `artisan/storage/provenance_utils.py` |
-| Forward provenance map | `load_forward_provenance_map()` | `ArtifactStore` |
-| Multi-hop backward walk | `walk_provenance_to_targets()` | `artisan/execution/inputs/lineage_matching.py` |
-| Scoped edge loading | `load_provenance_edges_df()` | `ArtifactStore` |
-| Artifact → step number | `load_step_number_map()` | `ArtifactStore` |
-| Step number → step name | `load_step_name_map()` | `ArtifactStore` (reads `steps` Delta table) |
-| Metric artifact loading | `get_artifacts_by_type()` | `ArtifactStore` |
-| Metric IDs by type | `load_artifact_ids_by_type()` | `ArtifactStore` |
+| Need | Method | Location | Status |
+|---|---|---|---|
+| Multi-hop forward walk | `walk_forward_to_targets()` | `artisan/execution/inputs/lineage_matching.py` | **New** |
+| Multi-hop backward walk | `walk_provenance_to_targets()` | `artisan/execution/inputs/lineage_matching.py` | Exists |
+| Scoped edge loading | `load_provenance_edges_df()` | `ArtifactStore` | Exists (minor extension: optional `target_artifact_type` column) |
+| Step range for scoping | `get_step_range()` | `ArtifactStore` | Exists |
+| Artifact → step number | `load_step_number_map()` | `ArtifactStore` | Exists |
+| Step number → step name | `load_step_name_map()` | `ArtifactStore` (reads `steps` Delta table) | Exists |
+| Metric hydration | `load_metrics_df()` | `ArtifactStore` | Exists |
 
-No new storage tables, provenance utilities, or framework methods required.
+`walk_forward_to_targets()` is structurally identical to `walk_provenance_to_targets()`
+with the join direction reversed: frontier joins on `source_artifact_id` and takes
+`target_artifact_id` (forward) instead of joining on `target_artifact_id` and taking
+`source_artifact_id` (backward). `trace_derived_artifacts` (dict-based BFS) remains
+for `InteractiveFilter` single-artifact exploration.
 
 ---
 
@@ -264,9 +286,10 @@ No new storage tables, provenance utilities, or framework methods required.
 |---|---|
 | `Criterion.step` field | Step name disambiguation |
 | `Criterion.step_number` field | Step number disambiguation |
-| `_discover_descendant_metrics()` | Forward BFS via `trace_derived_artifacts` |
+| `_discover_descendant_metrics()` | Forward walk via `walk_forward_to_targets` with scoped edges |
 | `_discover_step_metrics()` | Step-targeted backward walk |
 | `_build_metric_namespace()` | Unified hydrate + flatten + merge with collision tracking |
+| `walk_forward_to_targets()` | New infrastructure in `lineage_matching.py` — batch forward provenance walk |
 | Collision detection with actionable errors | Guide user to add `step`/`step_number` |
 
 ### Modified
@@ -274,6 +297,7 @@ No new storage tables, provenance utilities, or framework methods required.
 | Item | Change |
 |---|---|
 | `execute_curator()` | Simplified top-level flow using new helpers, no partition/dual-path logic |
+| `load_provenance_edges_df()` | Optional `target_artifact_type` column in output |
 | `_DiagnosticsAccumulator.finalize()` | Report step name/number instead of role names |
 
 ---
@@ -360,14 +384,14 @@ add `step`/`step_number` where needed for disambiguation.
 
 ## Performance Considerations
 
-- `load_forward_provenance_map()` does a full scan of `artifact_edges` (2
-  columns). Already used by InteractiveFilter, export, and structure viewer
-  without performance issues.
-- `trace_derived_artifacts` BFS per passthrough artifact is O(reachable nodes),
-  typically bounded by the pipeline's step range.
-- For large pipelines, a scoped forward map (analogous to `load_provenance_edges_df`
-  step range filtering) could be added as an optimization. Not needed initially —
-  existing consumers work at production scale without scoping.
+- Scoped edge loading via `load_provenance_edges_df(step_min, step_max)` avoids
+  full table reads — only edges within the passthrough's step window are loaded.
+- `walk_forward_to_targets` uses iterative DataFrame joins (not per-artifact
+  Python loops), processing the entire passthrough batch in each iteration.
+- `load_metrics_df` → Polars `str.json_decode()` performs JSON parsing in Polars'
+  native layer, avoiding Python-level iteration over metric values.
+- Chunked evaluation via `pl.all_horizontal(bool_exprs)` bounds peak memory by
+  evaluating criteria in Polars expressions rather than materializing Python dicts.
 - Step name/number maps are small (one entry per step) and cached per call.
 
 ---
@@ -375,6 +399,7 @@ add `step`/`step_number` where needed for disambiguation.
 ## Test Plan
 
 1. **Unit tests** — new tests for:
+   - `walk_forward_to_targets()`: single-hop, multi-hop, no targets reachable, type filtering
    - Single metric source, flat fields (forward walk)
    - Single metric source, nested fields (`distribution.min`)
    - Multiple metric sources, no collision
