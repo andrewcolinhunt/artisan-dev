@@ -2,12 +2,6 @@
 
 ## TOP PRIORITIES
 
-- refactor pipelines with the latest api changes
-
-
-- bug in the metrics export, converts all metrics to float
-
-
 
 ---
 ---
@@ -18,7 +12,7 @@
 - add integration tests that cover chaining methods
 - add implicit inputs behavior??
 - are curator operations invokable on slurm?
-- metrics passthrough is needed for structures? how should this work. for example, ligandize? what is the case where it matters?
+- metrics passthrough is needed for structures? how should this work. for example, ligandize? what is the case where it matters? I think this was fixed with the new filter.
 
 - Get set up for cloud, evaluate abstractions, do a test of example ops with a docker container, S3 etc.
 
