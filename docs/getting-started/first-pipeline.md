@@ -148,8 +148,8 @@ pipeline.run(
 ```
 
 Only datasets whose associated `distribution.median` exceeds 0.5 will pass through.
-For multi-source filtering or disambiguation, you can still use explicit
-`"role.field"` syntax — see [Metrics and Filtering](../tutorials/pipeline-patterns/03-metrics-and-filtering.ipynb).
+When metrics come from multiple sources and field names collide, use `step` or
+`step_number` on criteria to disambiguate — see [Metrics and Filtering](../tutorials/pipeline-patterns/03-metrics-and-filtering.ipynb).
 
 ## Finalize
 

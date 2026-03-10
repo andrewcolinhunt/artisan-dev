@@ -404,16 +404,15 @@ def passthrough_pipeline(
         backend=Backend.LOCAL,
     )
 
-    # Step 2: Filter (direct-input, always pass with min_score >= 0)
+    # Step 2: Filter (forward-walk metric discovery, always pass with min >= 0)
     step2 = pipeline.run(
         operation=Filter,
         inputs={
             "passthrough": step0.output("datasets"),
-            "quality": step1.output("metrics"),
         },
         params={
             "criteria": [
-                {"metric": "quality.distribution.min", "operator": "ge", "value": 0},
+                {"metric": "distribution.min", "operator": "ge", "value": 0},
             ],
         },
         backend=Backend.LOCAL,
@@ -660,17 +659,16 @@ def comprehensive_pipeline(
         backend=Backend.LOCAL,
     )
 
-    # Step 7: Filter based on median_score (direct-input)
+    # Step 7: Filter based on median_score (forward-walk metric discovery)
     step7 = pipeline.run(
         operation=Filter,
         inputs={
             "passthrough": step5.output("merged"),
-            "quality": step6.output("metrics"),
         },
         params={
             "criteria": [
                 {
-                    "metric": "quality.distribution.median",
+                    "metric": "distribution.median",
                     "operator": "gt",
                     "value": 0.3,
                 },

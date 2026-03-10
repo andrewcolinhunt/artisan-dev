@@ -124,13 +124,10 @@ pipeline.run(
 pipeline.run(
     operation=Filter,
     name="filter",
-    inputs={
-        "passthrough": output("transform", "dataset"),
-        "scores": output("score", "metrics"),
-    },
+    inputs={"passthrough": output("transform", "dataset")},
     params={
         "criteria": [
-            {"metric": "scores.distribution.median", "operator": "gt", "value": 0.5},
+            {"metric": "distribution.median", "operator": "gt", "value": 0.5},
         ]
     },
 )

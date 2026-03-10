@@ -365,11 +365,11 @@ class TestRoleEnumValidation:
         # Merge only has OutputRole, no InputRole — should not raise
         assert hasattr(Merge, "OutputRole")
 
-    def test_runtime_defined_inputs_with_input_role_ok(self):
-        """runtime_defined_inputs=True + InputRole is valid (Filter pattern)."""
+    def test_fixed_inputs_with_input_role_ok(self):
+        """Fixed inputs + InputRole is valid (Filter pattern)."""
         from artisan.operations.curator.filter import Filter
 
-        assert Filter.runtime_defined_inputs is True
+        assert Filter.runtime_defined_inputs is False
         assert hasattr(Filter, "InputRole")
         assert hasattr(Filter, "OutputRole")
         assert set(Filter.InputRole) == set(Filter.inputs)

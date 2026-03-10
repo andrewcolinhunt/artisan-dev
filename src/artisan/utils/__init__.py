@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from artisan.schemas.enums import FailurePolicy
-from artisan.utils.dataframes import pivot_metrics_wide, to_float
+from artisan.utils.dataframes import (
+    encode_metric_value,
+    is_scalar_metric,
+    pivot_metrics_wide,
+)
 from artisan.utils.dicts import flatten_dict
 from artisan.utils.errors import format_error
 from artisan.utils.external_tools import (
@@ -21,8 +25,9 @@ from artisan.utils.tutorial import TutorialEnv, tutorial_setup
 
 __all__ = [
     # DataFrame utilities
+    "encode_metric_value",
+    "is_scalar_metric",
     "pivot_metrics_wide",
-    "to_float",
     # Dict utilities
     "flatten_dict",
     # Error formatting
