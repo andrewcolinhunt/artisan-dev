@@ -29,7 +29,7 @@ from artisan.storage.core.table_schemas import (
     EXECUTIONS_SCHEMA,
 )
 from artisan.storage.provenance_utils import trace_derived_artifacts
-from artisan.utils.dataframes import pivot_metrics_wide, to_float
+from artisan.utils.dataframes import encode_metric_value, pivot_metrics_wide
 from artisan.utils.dicts import flatten_dict
 from artisan.utils.hashing import compute_artifact_id
 
@@ -228,13 +228,15 @@ class InteractiveFilter:
                 )
 
                 for metric_name, raw_value in flatten_dict(values).items():
+                    scalar, compound = encode_metric_value(raw_value)
                     rows.append(
                         {
                             "artifact_id": pid,
                             "step_number": step_num,
                             "step_name": step_name,
                             "metric_name": metric_name,
-                            "metric_value": to_float(raw_value),
+                            "metric_value": scalar,
+                            "metric_compound": compound,
                         }
                     )
 
@@ -247,7 +249,8 @@ class InteractiveFilter:
             "step_number": pl.Int32,
             "step_name": pl.String,
             "metric_name": pl.String,
-            "metric_value": pl.Float64,
+            "metric_value": pl.String,
+            "metric_compound": pl.String,
         }
         self._tidy_df = pl.DataFrame(rows, schema=tidy_schema)
 
