@@ -448,5 +448,11 @@ class TestWalkForwardToTargets:
         result = walk_forward_to_targets(sources, edges, target_type="metric")
 
         assert result.height == 2
-        pairs = set(zip(result["source_id"].to_list(), result["target_id"].to_list(), strict=False))
+        pairs = set(
+            zip(
+                result["source_id"].to_list(),
+                result["target_id"].to_list(),
+                strict=False,
+            )
+        )
         assert pairs == {("S1", "M1"), ("S2", "M2")}
