@@ -112,7 +112,7 @@ def delta_root(tmp_path: Path) -> Path:
     _write_delta(root, "artifacts/index", index_rows, ARTIFACT_INDEX_SCHEMA)
 
     # -- metrics table --
-    confidence_vals = [90.0, 70.0, 50.0, 30.0]
+    confidence_vals = [90, 70, 50, 30]
     accuracy_vals = [1.0, 2.0, 3.0, 4.0]
     score_vals = [0.9, 0.7, 0.5, 0.3]
 
@@ -670,3 +670,231 @@ class TestWideColumnDisambiguation:
         assert (
             "2.repeat.val" in metric_cols
         ), f"Expected '2.repeat.val', got: {metric_cols}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: metric type preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mixed_type_delta_root(tmp_path: Path) -> Path:
+    """Delta store with mixed-type metrics: int, float, bool, str, list."""
+    root = tmp_path / "delta_mixed"
+    root.mkdir()
+
+    s_ids = [_pad(f"mt{i}") for i in range(2)]
+    m_ids = [_pad(f"mm{i}") for i in range(2)]
+
+    _write_delta(
+        root,
+        "artifacts/index",
+        [
+            *[
+                {
+                    "artifact_id": sid,
+                    "artifact_type": "data",
+                    "origin_step_number": 0,
+                    "metadata": "{}",
+                }
+                for sid in s_ids
+            ],
+            *[
+                {
+                    "artifact_id": mid,
+                    "artifact_type": "metric",
+                    "origin_step_number": 1,
+                    "metadata": "{}",
+                }
+                for mid in m_ids
+            ],
+        ],
+        ARTIFACT_INDEX_SCHEMA,
+    )
+
+    _write_delta(
+        root,
+        "artifacts/metrics",
+        [
+            {
+                "artifact_id": m_ids[0],
+                "origin_step_number": 1,
+                "content": _metric_content(
+                    {
+                        "count": 10,
+                        "score": 0.95,
+                        "passed": True,
+                        "label": "good",
+                        "bins": [1, 2, 3],
+                    }
+                ),
+                "original_name": "mm0",
+                "extension": ".json",
+                "metadata": "{}",
+                "external_path": None,
+            },
+            {
+                "artifact_id": m_ids[1],
+                "origin_step_number": 1,
+                "content": _metric_content(
+                    {
+                        "count": 20,
+                        "score": 0.85,
+                        "passed": False,
+                        "label": "fair",
+                        "bins": [4, 5, 6],
+                    }
+                ),
+                "original_name": "mm1",
+                "extension": ".json",
+                "metadata": "{}",
+                "external_path": None,
+            },
+        ],
+        MetricArtifact.POLARS_SCHEMA,
+    )
+
+    _write_delta(
+        root,
+        "provenance/artifact_edges",
+        [
+            {
+                "execution_run_id": _pad("emix"),
+                "source_artifact_id": s_ids[i],
+                "target_artifact_id": m_ids[i],
+                "source_artifact_type": "data",
+                "target_artifact_type": "metric",
+                "source_role": "samples",
+                "target_role": "metrics",
+                "group_id": None,
+            }
+            for i in range(2)
+        ],
+        ARTIFACT_EDGES_SCHEMA,
+    )
+
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    _write_delta(
+        root,
+        "orchestration/steps",
+        [
+            {
+                "step_run_id": _pad("rmix0"),
+                "step_spec_id": _pad("pmix0"),
+                "pipeline_run_id": "run-mix",
+                "step_number": 0,
+                "step_name": "ingest",
+                "status": "completed",
+                "operation_class": "IngestFiles",
+                "params_json": "{}",
+                "input_refs_json": "{}",
+                "compute_backend": "local",
+                "compute_options_json": "{}",
+                "output_roles_json": '["samples"]',
+                "output_types_json": '{"samples": "data"}',
+                "total_count": 2,
+                "succeeded_count": 2,
+                "failed_count": 0,
+                "timestamp": now,
+                "duration_seconds": 0.1,
+                "error": None,
+                "dispatch_error": None,
+                "commit_error": None,
+                "metadata": None,
+            },
+            {
+                "step_run_id": _pad("rmix1"),
+                "step_spec_id": _pad("pmix1"),
+                "pipeline_run_id": "run-mix",
+                "step_number": 1,
+                "step_name": "eval",
+                "status": "completed",
+                "operation_class": "MetricCalc",
+                "params_json": "{}",
+                "input_refs_json": "{}",
+                "compute_backend": "local",
+                "compute_options_json": "{}",
+                "output_roles_json": '["metrics"]',
+                "output_types_json": '{"metrics": "metric"}',
+                "total_count": 2,
+                "succeeded_count": 2,
+                "failed_count": 0,
+                "timestamp": now,
+                "duration_seconds": 0.1,
+                "error": None,
+                "dispatch_error": None,
+                "commit_error": None,
+                "metadata": None,
+            },
+        ],
+        STEPS_SCHEMA,
+    )
+
+    return root
+
+
+class TestTypePreservation:
+    def test_wide_df_preserves_types(self, mixed_type_delta_root: Path) -> None:
+        filt = InteractiveFilter(mixed_type_delta_root)
+        filt.load()
+
+        wide = filt.wide_df
+        assert wide["eval.count"].dtype == pl.Int64
+        assert wide["eval.score"].dtype == pl.Float64
+        assert wide["eval.passed"].dtype == pl.Boolean
+        assert wide["eval.label"].dtype == pl.String
+
+    def test_compound_metrics_excluded_from_wide(
+        self, mixed_type_delta_root: Path
+    ) -> None:
+        filt = InteractiveFilter(mixed_type_delta_root)
+        filt.load()
+
+        wide_cols = filt.wide_df.columns
+        assert "eval.bins" not in wide_cols
+
+        # But compound values are in the tidy DataFrame
+        tidy = filt.tidy_df
+        bins_rows = tidy.filter(pl.col("metric_name") == "bins")
+        assert bins_rows.height == 2
+        assert bins_rows["metric_compound"][0] is not None
+
+    def test_wide_df_values_correct(self, mixed_type_delta_root: Path) -> None:
+        filt = InteractiveFilter(mixed_type_delta_root)
+        filt.load()
+
+        wide = filt.wide_df.sort("artifact_id")
+        counts = wide["eval.count"].to_list()
+        assert counts == [10, 20]
+        passed = wide["eval.passed"].to_list()
+        assert passed == [True, False]
+        labels = wide["eval.label"].to_list()
+        assert set(labels) == {"good", "fair"}
+
+
+class TestExistingFloatMetricsStillWork:
+    """Verify the original fixture (float-only metrics) still works."""
+
+    def test_load_builds_tidy_and_wide(self, delta_root: Path) -> None:
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+
+        assert filt.wide_df.height == 4
+        # confidence is int in fixture -> Int64 column
+        assert filt.wide_df["calc_metrics.confidence"].dtype == pl.Int64
+        # accuracy and score are float -> Float64 columns
+        assert filt.wide_df["calc_metrics.accuracy"].dtype == pl.Float64
+        assert filt.wide_df["extra_metrics.score"].dtype == pl.Float64
+
+    def test_filtering_still_works(self, delta_root: Path) -> None:
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+        filt.set_criteria(
+            [
+                {"metric": "calc_metrics.confidence", "operator": "gt", "value": 60},
+                {"metric": "extra_metrics.score", "operator": "gt", "value": 0.5},
+            ]
+        )
+        assert len(filt.filtered_ids) == 2

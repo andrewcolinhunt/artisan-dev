@@ -334,23 +334,20 @@ pipeline.run(
 )
 ```
 
-Criteria use bare field names by default — Filter auto-discovers associated
-metrics via provenance. For multi-source filtering, prefix the field name with
-the role:
+Criteria use bare field names — Filter auto-discovers associated metrics via
+forward provenance walk from the passthrough artifacts. When metrics come from
+multiple sources with non-colliding field names, no extra wiring is needed.
+When field names collide, add `step` or `step_number` to disambiguate:
 
 ```python
 pipeline.run(
     operation=Filter,
     name="multi_filter",
-    inputs={
-        "passthrough": output("generate", "results"),
-        "original": output("generate", "metrics"),
-        "quality": output("score", "metrics"),
-    },
+    inputs={"passthrough": output("generate", "results")},
     params={
         "criteria": [
-            {"metric": "original.mean_score", "operator": "gt", "value": 0.3},
-            {"metric": "quality.distribution.range", "operator": "lt", "value": 0.8},
+            {"metric": "mean_score", "operator": "gt", "value": 0.3},
+            {"metric": "score", "operator": "gt", "value": 0.8, "step": "calc_quality"},
         ],
     },
 )
