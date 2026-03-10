@@ -5,12 +5,8 @@
 - refactor pipelines with the latest api changes
 
 
-
-
 - bug in the metrics export, converts all metrics to float
 
-we need to stop the postgres server when we stop the prefect server?
-we need to migrate the prefect starting scripts to prefect-submitit
 
 
 ---
