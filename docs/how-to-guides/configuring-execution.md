@@ -6,6 +6,9 @@ is batched — from local development through production SLURM.
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Building a Pipeline](building-a-pipeline.md)
 
+**Key types:** `Backend`, `ResourceConfig`, `ExecutionConfig`, `ToolSpec`,
+`Environments`, `CachePolicy`, `FailurePolicy`
+
 ---
 
 ## Minimal working example
@@ -21,37 +24,41 @@ pipeline = PipelineManager.create(
     delta_root="runs/delta",
     staging_root="runs/staging",
 )
-output = pipeline.output
 
 pipeline.run(operation=PreprocessOp, name="preprocess", params={"count": 100})
 
 pipeline.run(
     operation=InferenceOp,
     name="inference",
-    inputs={"dataset": output("preprocess", "dataset")},
+    inputs={"dataset": pipeline.output("preprocess", "dataset")},
     backend=Backend.SLURM,
     resources={"gpus": 1, "memory_gb": 32, "extra": {"partition": "gpu"}},
     execution={"artifacts_per_unit": 1},
 )
 ```
 
-The rest of this guide breaks down each knob.
+The rest of this guide breaks down each option.
 
 ---
 
-## Step 1: Choose a compute backend
+## Choose a compute backend
 
-Every step runs on a compute backend. Set it at the step level:
+Every step runs on a compute backend. Set it per step or as a pipeline-wide
+default:
 
 ```python
 from artisan.orchestration import Backend
 
-pipeline.run(operation=MyOp, inputs=..., backend=Backend.SLURM)
+# Pipeline-wide default
+pipeline = PipelineManager.create(..., backend=Backend.SLURM)
+
+# Step-level override
+pipeline.run(operation=MyOp, inputs=..., backend=Backend.LOCAL)
 ```
 
 | Backend | How it runs | When to use |
 |---------|-------------|-------------|
-| `Backend.LOCAL` (default) | Thread pool on your machine | Development, testing, lightweight ops |
+| `Backend.LOCAL` (default) | Process pool on your machine | Development, testing, lightweight ops |
 | `Backend.SLURM` | SLURM job array on cluster | Production, GPU work, HPC |
 
 For `LOCAL`, you can cap the number of concurrent workers per step:
@@ -60,9 +67,11 @@ For `LOCAL`, you can cap the number of concurrent workers per step:
 pipeline.run(operation=MyOp, inputs=..., execution={"max_workers": 8})
 ```
 
+The default process pool size is 4.
+
 ---
 
-## Step 2: Configure resources
+## Configure resources
 
 Pass a `resources` dict to override resource allocation for a step:
 
@@ -100,7 +109,7 @@ the fields you want to override.
 
 ---
 
-## Step 3: Control batching
+## Control batching
 
 Batching determines how many artifacts each worker processes. This is the main
 lever for tuning throughput.
@@ -134,7 +143,7 @@ Batching happens at two levels:
 
 **Level 1 — `artifacts_per_unit`**: How many artifacts each execution unit
 processes. Set this based on your operation's workload: 1 for GPU inference
-(one structure per job), 50–100 for fast metrics calculations.
+(one artifact per job), 50–100 for fast metrics calculations.
 
 **Level 2 — `units_per_worker`**: How many execution units a single SLURM job
 runs sequentially. Use this to amortize job startup overhead without changing
@@ -147,13 +156,13 @@ your operation's batch logic.
 | `artifacts_per_unit` | `int` | `1` | Artifacts per execution unit |
 | `units_per_worker` | `int` | `1` | Execution units per SLURM job |
 | `max_workers` | `int \| None` | `None` | Cap on concurrent workers |
-| `max_artifacts_per_unit` | `int \| None` | `None` | Cap on step-level `artifacts_per_unit` overrides |
-| `estimated_seconds` | `float \| None` | `None` | Runtime hint (informational) |
+| `max_artifacts_per_unit` | `int \| None` | `None` | Upper bound on artifacts per unit when using adaptive batching |
+| `estimated_seconds` | `float \| None` | `None` | Expected wall-clock time per unit, used for scheduler hints |
 | `job_name` | `str \| None` | `None` | Custom SLURM job name (defaults to operation name) |
 
 ---
 
-## Step 4: Set operation-level defaults
+## Set operation-level defaults
 
 Operations can declare their own default resources and execution config so you
 don't repeat the same overrides at every step:
@@ -199,7 +208,7 @@ Pipeline defaults (PipelineManager.create)
 
 ---
 
-## Step 5: Configure external tools and environments
+## Configure external tools and environments
 
 Operations that wrap external tools declare two things: a `ToolSpec` (the
 binary/script to invoke) and an `Environments` configuration (the runtime
@@ -246,25 +255,41 @@ pipeline.run(
 )
 ```
 
+When you pass a dict for `environment`, fields are deep-merged with the
+operation's existing environment config. This means partial overrides work
+without discarding other fields. To switch the active environment without
+changing any spec fields, pass a string instead:
+
+```python
+pipeline.run(operation=ToolAOp, inputs=..., environment="local")
+```
+
 The `binds` field takes a list of `(host_path, container_path)` tuples — not
 colon-delimited strings.
 
+### ToolSpec fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `executable` | `str \| Path` | (required) | Path or name of the binary/script. Resolved via PATH if not absolute. |
+| `interpreter` | `str \| None` | `None` | Interpreter prefix (e.g., `"bash"`, `"python -u"`) |
+| `subcommand` | `str \| None` | `None` | Subcommand inserted after the executable |
+
 ### Environment spec types
 
-| Spec | Use case |
-|------|----------|
-| `ApptainerEnvironmentSpec` | Apptainer/Singularity containers (HPC) |
-| `DockerEnvironmentSpec` | Docker containers |
-| `LocalEnvironmentSpec` | Local execution, optional virtualenv |
-| `PixiEnvironmentSpec` | Pixi-managed environments |
+| Spec | Use case | Key fields |
+|------|----------|------------|
+| `ApptainerEnvironmentSpec` | Apptainer/Singularity containers (HPC) | `image` (Path), `gpu`, `binds` |
+| `DockerEnvironmentSpec` | Docker containers | `image` (str), `gpu`, `binds` |
+| `LocalEnvironmentSpec` | Local execution, optional virtualenv | `venv_path` |
+| `PixiEnvironmentSpec` | Pixi-managed environments | `pixi_environment`, `manifest_path` |
 
 All specs share a base `EnvironmentSpec` with an `env` dict for extra
-environment variables. `ToolSpec` declares the `executable`, optional
-`interpreter`, and optional `subcommand`.
+environment variables.
 
 ---
 
-## Step 6: Set failure policy
+## Set failure policy
 
 Control what happens when some artifacts fail within a step:
 
@@ -286,6 +311,64 @@ pipeline.run(operation=MyOp, inputs=..., failure_policy=FailurePolicy.FAIL_FAST)
 `CONTINUE` is the default because in large runs (thousands of artifacts), a
 single malformed input should not discard thousands of successful results.
 Failures are always recorded for diagnosis.
+
+---
+
+## Set cache policy
+
+Cache policy controls when a previously completed step qualifies as a cache
+hit on re-run (e.g., when resuming a pipeline):
+
+```python
+from artisan.schemas.enums import CachePolicy
+
+pipeline = PipelineManager.create(..., cache_policy=CachePolicy.STEP_COMPLETED)
+```
+
+| Policy | Behavior |
+|--------|----------|
+| `CachePolicy.ALL_SUCCEEDED` (default) | Cache hit only when the step had zero execution failures |
+| `CachePolicy.STEP_COMPLETED` | Cache hit for any completed step, regardless of execution failure count |
+
+Both policies block caching when infrastructure errors (dispatch or commit
+failures) occurred. The difference is whether partial-failure steps count as
+hits.
+
+Use `STEP_COMPLETED` when you want to skip re-running a step that mostly
+succeeded, even if a few artifacts failed.
+
+---
+
+## Use non-blocking execution
+
+`pipeline.run()` blocks until the step completes. For steps that can overlap
+(e.g., independent branches), use `pipeline.submit()` to dispatch without
+waiting:
+
+```python
+future = pipeline.submit(
+    operation=BranchAOp,
+    inputs={"data": pipeline.output("preprocess", "data")},
+    backend=Backend.SLURM,
+)
+
+# Submit another step concurrently
+pipeline.submit(
+    operation=BranchBOp,
+    inputs={"data": pipeline.output("preprocess", "data")},
+    backend=Backend.SLURM,
+)
+
+# Downstream steps that depend on a submitted step automatically wait
+pipeline.run(
+    operation=MergeOp,
+    inputs={"a": pipeline.output("branch_a", "result"),
+            "b": pipeline.output("branch_b", "result")},
+)
+```
+
+`submit()` returns a `StepFuture`. The orchestrator tracks dependencies and
+blocks downstream steps until their inputs are ready.
 
 ---
 
@@ -318,6 +401,29 @@ pipeline = PipelineManager.create(..., preserve_staging=True)
 
 Keeps the raw Parquet files workers produce before commit. Useful for diagnosing
 staging or commit issues.
+
+### Recovering from crashes
+
+By default, `PipelineManager.create` commits leftover staging files from prior
+crashed runs at pipeline initialization (`recover_staging=True`). To disable
+this:
+
+```python
+pipeline = PipelineManager.create(..., recover_staging=False)
+```
+
+### Naming steps
+
+By default, each step is named after the operation. Provide a custom `name` to
+disambiguate when the same operation appears multiple times:
+
+```python
+pipeline.run(operation=ScoreOp, name="score_round1", inputs=...)
+pipeline.run(operation=ScoreOp, name="score_round2", inputs=...)
+
+# Reference by name
+pipeline.output("score_round1", "scores")
+```
 
 ### Tuning SLURM throughput
 
@@ -355,6 +461,15 @@ pipeline.run(
 )
 ```
 
+### Disabling Delta Lake compaction
+
+Each `run()` call compacts Delta Lake tables after commit. To skip compaction
+(useful when running many small steps in sequence):
+
+```python
+pipeline.run(operation=MyOp, inputs=..., compact=False)
+```
+
 ---
 
 ## Common pitfalls
@@ -366,6 +481,7 @@ pipeline.run(
 | `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` |
 | Step ignores `resources` | Forgot `backend=Backend.SLURM` | Resources only apply to SLURM steps |
 | Workers contend on shared filesystem | Default `working_root` on NFS | Omit `working_root` — default uses `$TMPDIR` (node-local) |
+| GPU/extra resource warning on local | SLURM-specific resources on `Backend.LOCAL` | These are ignored locally — switch to `Backend.SLURM` or remove them |
 
 ---
 
@@ -386,6 +502,6 @@ failures occur — the job name format is `s{step_number}_{operation_name}`.
 
 ## Cross-references
 
-- [Execution Flow](../concepts/execution-flow.md) — Dispatch, execute, commit lifecycle
-- [SLURM Execution Tutorial](../tutorials/getting-started/04-slurm-execution.ipynb) — Interactive SLURM walkthrough
-- [Writing Creator Operations](writing-creator-operations.md) — Declaring operation-level defaults
+- [Execution Flow](../concepts/execution-flow.md) — dispatch, execute, commit lifecycle
+- [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) — interactive SLURM walkthrough
+- [Writing Creator Operations](writing-creator-operations.md) — declaring operation-level defaults

@@ -11,6 +11,7 @@ import logging
 import multiprocessing
 import resource
 import shutil
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -186,6 +187,22 @@ def build_step_result(
     return builder.build(success_override=success_override, metadata=metadata)
 
 
+def _cancelled_result(
+    operation: type[OperationDefinition] | OperationDefinition,
+    step_number: int,
+    failure_policy: FailurePolicy,
+) -> StepResult:
+    """Build a StepResult indicating the step was cancelled before completion."""
+    return build_step_result(
+        operation=operation,
+        step_number=step_number,
+        succeeded_count=0,
+        failed_count=0,
+        failure_policy=failure_policy,
+        metadata={"cancelled": True},
+    )
+
+
 def _all_inputs_empty(resolved_inputs: dict[str, list[str]]) -> bool:
     """Return True when every input role resolved to zero artifact IDs.
 
@@ -232,6 +249,7 @@ def execute_step(
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
     compact: bool = True,
     step_spec_id: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> StepResult:
     """Execute a single pipeline step.
 
@@ -281,6 +299,7 @@ def execute_step(
             compact=compact,
             user_overrides=user_overrides,
             step_spec_id=step_spec_id,
+            cancel_event=cancel_event,
         )
 
     # Standard creator operation execution
@@ -294,6 +313,7 @@ def execute_step(
         failure_policy=failure_policy,
         compact=compact,
         user_overrides=user_overrides,
+        cancel_event=cancel_event,
     )
 
 
@@ -323,6 +343,7 @@ def _execute_curator_step(
     compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
     step_spec_id: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> StepResult:
     """Execute a curator operation locally without Prefect dispatch.
 
@@ -425,6 +446,10 @@ def _execute_curator_step(
                     failure_policy=failure_policy,
                 )
 
+    # --- cancel check: before execute ---
+    if cancel_event is not None and cancel_event.is_set():
+        return _cancelled_result(operation, step_number, failure_policy)
+
     # Create single ExecutionUnit with all inputs
     unit = ExecutionUnit(
         operation=operation,
@@ -447,7 +472,7 @@ def _execute_curator_step(
 
         # Execute in subprocess for memory isolation
         try:
-            staging_result = _run_curator_in_subprocess(unit, runtime_env)
+            staging_result = _run_curator_in_subprocess(unit, runtime_env, cancel_event)
             results = [
                 {
                     "success": staging_result.success,
@@ -474,7 +499,10 @@ def _execute_curator_step(
                     total_input - succeeded,
                 )
         except BrokenProcessPool:
-            error_msg = _format_subprocess_kill_error(unit)
+            if cancel_event is not None and cancel_event.is_set():
+                error_msg = "Curator subprocess killed during cancellation"
+            else:
+                error_msg = _format_subprocess_kill_error(unit)
             logger.error("Step %d (%s): %s", step_number, operation.name, error_msg)
 
             synthetic_run_id = f"killed-{unit.execution_spec_id[:24]}"
@@ -524,6 +552,10 @@ def _execute_curator_step(
     with phase_timer("verify_staging", timings):
         pass
 
+    # --- cancel check: before commit ---
+    if cancel_event is not None and cancel_event.is_set():
+        return _cancelled_result(operation, step_number, failure_policy)
+
     # --- commit phase ---
     commit_error = None
     with phase_timer("commit", timings):
@@ -568,12 +600,19 @@ def _execute_curator_step(
 def _run_curator_in_subprocess(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
+    cancel_event: threading.Event | None = None,
 ) -> StagingResult:
     """Run curator flow in a spawned subprocess for memory isolation."""
     ctx = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool:
         future = pool.submit(run_curator_flow, unit, runtime_env, 0)
-        return future.result()
+        while True:
+            try:
+                return future.result(timeout=0.5)
+            except TimeoutError:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("Curator interrupted by cancellation")
+                continue
 
 
 def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
@@ -618,6 +657,7 @@ def _execute_creator_step(
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
     compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> StepResult:
     """Execute a creator operation step by dispatching to workers via Prefect.
 
@@ -760,6 +800,10 @@ def _execute_creator_step(
     # PHASE 2: EXECUTE (via Prefect)
     # =========================================================================
 
+    # --- cancel check: before execute ---
+    if cancel_event is not None and cancel_event.is_set():
+        return _cancelled_result(operation, step_number, failure_policy)
+
     dispatch_dir = config.staging_root / "_dispatch"
     try:
         # --- execute phase ---
@@ -787,6 +831,16 @@ def _execute_creator_step(
                         units_path=str(units_path), runtime_env=runtime_env
                     )
                     succeeded, failed = aggregate_results(results, failure_policy)
+                except BrokenProcessPool:
+                    dispatch_error = "Worker process killed (signal or OOM)"
+                    logger.warning(
+                        "Step %d (%s): %s",
+                        step_number,
+                        operation.name,
+                        dispatch_error,
+                    )
+                    results = []
+                    succeeded, failed = 0, len(units_to_dispatch)
                 except RuntimeError:
                     raise  # fail_fast — intentional abort
                 except Exception as exc:
@@ -836,6 +890,10 @@ def _execute_creator_step(
         # PHASE 3: COMMIT
         # =====================================================================
 
+        # --- cancel check: before commit ---
+        if cancel_event is not None and cancel_event.is_set():
+            return _cancelled_result(operation, step_number, failure_policy)
+
         # --- commit phase ---
         commit_error = None
         with phase_timer("commit", timings):
@@ -883,45 +941,41 @@ def _execute_creator_step(
     )
 
 
-def execute_chain_step(
-    operations: list[tuple[type, dict[str, Any] | None, dict[str, Any] | None]],
-    role_mappings: list[dict[str, str] | None],
+def execute_composite_step(
+    composite_class: type,
     inputs: Any,
+    params: dict[str, Any] | None,
     backend: BackendBase,
-    chain_resources: Any,  # ResourceConfig
-    chain_execution: Any,  # ExecutionConfig
-    intermediates: Any,  # ChainIntermediates
+    composite_resources: Any,  # ResourceConfig
+    composite_execution: Any,  # ExecutionConfig
+    intermediates: Any,  # CompositeIntermediates
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
     compact: bool = True,
-    final_operation: type | None = None,
 ) -> StepResult:
-    """Execute a chain of creator operations as a single pipeline step.
+    """Execute a composite operation as a single pipeline step.
 
-    Builds an ExecutionChain, dispatches it through the backend, and handles
-    commit and compaction — mirroring _execute_creator_step for single ops.
+    Builds an ExecutionComposite, dispatches it through the backend, and
+    handles commit and compaction.
 
     Args:
-        operations: List of (op_class, params, config) tuples.
-        role_mappings: Role remappings between adjacent operations.
+        composite_class: CompositeDefinition subclass.
         inputs: Initial inputs (same formats as execute_step).
+        params: Parameter overrides.
         backend: Backend for worker dispatch.
-        chain_resources: Chain-level ResourceConfig.
-        chain_execution: Chain-level ExecutionConfig.
-        intermediates: ChainIntermediates enum value.
+        composite_resources: Composite-level ResourceConfig.
+        composite_execution: Composite-level ExecutionConfig.
+        intermediates: CompositeIntermediates enum value.
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
         compact: Whether to run Delta Lake compaction.
-        final_operation: Last operation class (for output metadata).
 
     Returns:
         StepResult with output references and execution metadata.
     """
-    from artisan.execution.models.execution_chain import ExecutionChain
-    from artisan.execution.models.execution_unit import ExecutionUnit
-    from artisan.orchestration.engine.inputs import resolve_inputs
+    from artisan.execution.models.execution_composite import ExecutionComposite
     from artisan.utils.hashing import compute_execution_spec_id
 
     timings: dict[str, Any] = {}
@@ -933,12 +987,12 @@ def execute_chain_step(
 
         if _all_inputs_empty(resolved_inputs):
             logger.debug(
-                "Step %d (chain): all input roles are empty — skipping.",
+                "Step %d (composite): all input roles are empty — skipping.",
                 step_number,
             )
-            final_op = final_operation or operations[-1][0]
+            instance = instantiate_operation(composite_class, params)
             return build_step_result(
-                operation=instantiate_operation(final_op, None),
+                operation=instance,
                 step_number=step_number,
                 succeeded_count=0,
                 failed_count=0,
@@ -946,65 +1000,48 @@ def execute_chain_step(
                 metadata={"skipped": True, "skip_reason": "empty_inputs"},
             )
 
-    # --- build_chain phase ---
-    with phase_timer("build_chain", timings):
-        units: list[ExecutionUnit] = []
-        for i, (op_class, params, config) in enumerate(operations):
-            env_override = config.get("environment") if config else None
-            tool_override = config.get("tool") if config else None
-            operation = instantiate_operation(
-                op_class, params, environment=env_override, tool=tool_override
-            )
-            merged_params = (
-                operation.params.model_dump(mode="json")
-                if hasattr(operation, "params")
-                else {}
-            )
-            spec_id = compute_execution_spec_id(
-                operation_name=operation.name,
-                inputs=resolved_inputs if i == 0 else {},
-                params=merged_params,
-            )
-            unit = ExecutionUnit(
-                operation=operation,
-                inputs=resolved_inputs if i == 0 else {},
-                execution_spec_id=spec_id,
-                step_number=step_number,
-            )
-            units.append(unit)
+    # --- build_composite phase ---
+    with phase_timer("build_composite", timings):
+        instance = instantiate_operation(composite_class, params)
+        merged_params: dict[str, Any] = {}
+        if hasattr(instance, "params"):
+            merged_params = instance.params.model_dump(mode="json")
 
-        chain = ExecutionChain(
-            operations=units,
-            role_mappings=role_mappings,
-            resources=chain_resources,
-            execution=chain_execution,
-            intermediates=intermediates,
+        spec_id = compute_execution_spec_id(
+            operation_name=instance.name,
+            inputs=resolved_inputs,
+            params=merged_params,
         )
 
-    # The chain executor stages using the final operation's name
-    final_op_instance = units[-1].operation
-    chain_op_name = final_op_instance.name
+        composite_transport = ExecutionComposite(
+            composite=instance,
+            inputs=resolved_inputs,
+            step_number=step_number,
+            execution_spec_id=spec_id,
+            resources=composite_resources,
+            execution=composite_execution,
+            intermediates=intermediates,
+        )
 
     # --- execute phase ---
     dispatch_error: str | None = None
     dispatch_dir = config.staging_root / "_dispatch"
     try:
         with phase_timer("execute", timings):
-            runtime_env = _create_runtime_environment(
-                config, final_op_instance, backend
-            )
+            runtime_env = _create_runtime_environment(config, instance, backend)
 
             succeeded = 0
             failed = 0
 
             try:
-                backend.validate_operation(final_op_instance)
-                units_path = _save_units([chain], config.staging_root, step_number)
+                units_path = _save_units(
+                    [composite_transport], config.staging_root, step_number
+                )
                 step_flow = backend.create_flow(
-                    chain_resources,
-                    chain_execution,
+                    composite_resources,
+                    composite_execution,
                     step_number,
-                    job_name=chain_execution.job_name or "chain",
+                    job_name=composite_execution.job_name or "composite",
                 )
                 results = step_flow(units_path=str(units_path), runtime_env=runtime_env)
                 succeeded, failed = aggregate_results(results, failure_policy)
@@ -1013,7 +1050,7 @@ def execute_chain_step(
             except Exception as exc:
                 dispatch_error = f"{type(exc).__name__}: {exc}"
                 logger.error(
-                    "Chain dispatch failed for step %d: %s",
+                    "Composite dispatch failed for step %d: %s",
                     step_number,
                     dispatch_error,
                 )
@@ -1030,11 +1067,11 @@ def execute_chain_step(
                         execution_run_ids=execution_run_ids,
                         timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
                         step_number=step_number,
-                        operation_name=chain_op_name,
+                        operation_name=instance.name,
                     )
                 except TimeoutError:
                     logger.warning(
-                        "Staging verification timed out for chain step %d.",
+                        "Staging verification timed out for composite step %d.",
                         step_number,
                     )
 
@@ -1048,12 +1085,14 @@ def execute_chain_step(
                 committer.commit_all_tables(
                     cleanup_staging=not runtime_env.preserve_staging,
                     step_number=step_number,
-                    operation_name=chain_op_name,
+                    operation_name=instance.name,
                 )
             except Exception as exc:
                 commit_error = f"{type(exc).__name__}: {exc}"
                 logger.error(
-                    "Commit failed for chain step %d: %s", step_number, commit_error
+                    "Commit failed for composite step %d: %s",
+                    step_number,
+                    commit_error,
                 )
 
         # --- compact phase ---
@@ -1072,9 +1111,8 @@ def execute_chain_step(
     if dispatch_error:
         metadata["dispatch_error"] = dispatch_error
 
-    final_op_instance = units[-1].operation
     return build_step_result(
-        operation=final_op_instance,
+        operation=instance,
         step_number=step_number,
         succeeded_count=succeeded,
         failed_count=failed,

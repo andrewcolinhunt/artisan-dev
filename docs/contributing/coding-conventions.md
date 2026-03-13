@@ -32,14 +32,14 @@ When classes form a logical unit (variants, a type hierarchy, or a union),
 they go in one file:
 
 ```
-operations/tool_a/tool_a.py
-  → ToolA (Params nested inside the class)
-
-schemas/operation_config/command_spec.py
-  → CommandSpec, ApptainerCommandSpec, DockerCommandSpec, LocalCommandSpec
+schemas/operation_config/environment_spec.py
+  → EnvironmentSpec, LocalEnvironmentSpec, DockerEnvironmentSpec, ApptainerEnvironmentSpec, PixiEnvironmentSpec
 
 schemas/execution/curator_result.py
   → ArtifactResult, PassthroughResult, CuratorResult
+
+operations/examples/data_generator.py
+  → DataGenerator (with nested Params, InputRole/OutputRole enums)
 ```
 
 The rule: **if the classes only make sense together, keep them together.**
@@ -49,9 +49,8 @@ The rule: **if the classes only make sense together, keep them together.**
 | Name | Purpose | Example |
 |------|---------|---------|
 | `base.py` | Base class for the package | `schemas/artifact/base.py` → `Artifact` |
-| `utils.py` | Helper functions for the package | `operations/tool_a/utils.py` |
-| `shared.py` | Code shared between variant operations | `operations/tool_c/shared.py` |
-| `config.py` | Config generation operation | `operations/tool_b/config.py` → `ToolBConfig` |
+| `utils.py` | Helper functions for the package | `execution/utils.py` |
+| `shared.py` | Code shared between variant operations | (variant operations sharing logic) |
 | `constants.py` | Package-level constants | `orchestration/engine/constants.py` |
 | `exceptions.py` | Package-level exception classes | `execution/exceptions.py` |
 | `enums.py` | Enum definitions (one file for all enums) | `schemas/enums.py` |
@@ -113,29 +112,32 @@ Every package's `__init__.py` must contain three things:
 3. **`__all__`** — explicit list of public symbols
 
 ```python
-"""Curator operations for pipeline execution.
+"""Artisan curator operations: Filter, Merge, Ingest, InteractiveFilter."""
 
-This package contains curator operations that support pipeline construction:
-    - Filter: Conditional artifact routing with structured criteria
-    - Merge: Union multiple datastreams into a single stream
-    - IngestFiles: Abstract base for file ingestion operations
-    - IngestPipelineStep: Import artifacts from another pipeline's Delta Lake store
-"""
 from __future__ import annotations
 
 from artisan.operations.curator.filter import Filter
+from artisan.operations.curator.ingest_data import IngestData
 from artisan.operations.curator.ingest_files import IngestFiles
 from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
+from artisan.operations.curator.interactive_filter import InteractiveFilter
 from artisan.operations.curator.merge import Merge
 
-__all__ = ["Filter", "IngestFiles", "IngestPipelineStep", "Merge"]
+__all__ = [
+    "Filter",
+    "IngestData",
+    "IngestFiles",
+    "IngestPipelineStep",
+    "InteractiveFilter",
+    "Merge",
+]
 ```
 
 ### Re-export depth
 
 | Package level | Re-exports | Example |
 |---------------|------------|---------|
-| Leaf | Own public classes | `operations/tool_a/` re-exports `ToolA` |
+| Leaf | Own public classes | `operations/curator/` re-exports `Filter`, `Merge`, etc. |
 | Mid-level hub | Everything from all children | `schemas/` re-exports all artifacts, specs, configs |
 | Root (`artisan/`) | Top-level public API | Users import from sub-packages or root |
 
@@ -151,18 +153,18 @@ structure scales with complexity:
 
 | Scenario | Structure |
 |----------|-----------|
-| 1 operation, no heavy utils | Main file only (operation + params in one file) |
+| 1 operation, no heavy utils | Main file only (operation + nested Params in one file) |
 | 1 operation, heavy utils (100+ lines) | Main file + `utils.py` |
-| 2+ operations sharing logic | One file per operation + `shared.py` + optional `util.py` |
-| Operation + config generator | Separate files: `my_op.py` + `config.py` |
+| 2+ operations sharing logic | One file per operation + `shared.py` + optional `utils.py` |
+| Operation + config generator | Separate files: `my_op.py` + `my_op_config.py` |
 
-Naming pattern for variants:
-- `tool_c.py` — the simple/base variant uses the tool name
-- `conditional.py`, `unconditional.py` — named by what makes them different
-- `conditional_config.py` — config generators get `_config` suffix
+Naming patterns:
+- `my_tool.py` — the simple/base variant uses the tool name
+- `conditional.py`, `unconditional.py` — variants named by what differentiates them
+- `my_tool_config.py` — config generators get a `_config` suffix
 
-See [Writing Creator Operations](../how-to-guides/writing-creator-operations.md#real-world-package-examples)
-for concrete examples (ToolA, ToolC, ToolB).
+See [Writing Creator Operations](../how-to-guides/writing-creator-operations.md)
+for concrete examples.
 
 ## Schema Sub-packages
 
@@ -172,9 +174,10 @@ consumed:
 | Sub-package | Question it answers | Content |
 |-------------|-------------------|---------|
 | `artifact/` | "What is the data?" | Artifact type definitions |
+| `composites/` | "What's the composite?" | CompositeRef and related models |
 | `execution/` | "How did it run?" | Runtime state, records, results |
 | `operation_config/` | "How should it run?" | Command specs, resource specs |
-| `orchestration/` | "What's the plan?" | Pipeline config, step results |
+| `orchestration/` | "What's the plan?" | Pipeline config, step results, step state |
 | `provenance/` | "Where did it come from?" | Lineage mappings, edges |
 | `specs/` | "What's the contract?" | Input/output specs, phase models |
 
@@ -188,11 +191,15 @@ sub-package owns a distinct phase of the worker-side execution flow:
 
 | Sub-package | Responsibility | Key modules |
 |-------------|---------------|-------------|
-| `executors/` | Orchestrate creator and curator flows end-to-end | `creator.py`, `curator.py` |
+| `executors/` | Orchestrate creator, curator, and composite flows end-to-end | `creator.py`, `curator.py`, `composite.py` |
 | `context/` | Build execution context, run identity, sandbox environment | `builder.py`, `sandbox.py` |
-| `inputs/` | Instantiate and materialize artifacts for execution | `instantiation.py`, `materialization.py` |
+| `inputs/` | Instantiate, materialize, and group artifacts for execution | `instantiation.py`, `materialization.py`, `grouping.py`, `lineage_matching.py` |
 | `lineage/` | Capture lineage, build provenance edges, validate completeness | `builder.py`, `capture.py`, `enrich.py`, `validation.py` |
+| `models/` | Transport containers carrying work from orchestrator to executor | `execution_unit.py`, `execution_composite.py`, `artifact_source.py` |
 | `staging/` | Stage artifacts and metadata, record outcomes | `parquet_writer.py`, `recorder.py` |
+
+The package also has root-level cross-cutting files: `exceptions.py` and
+`utils.py`.
 
 ## Dependency Direction
 
@@ -208,42 +215,43 @@ Dependencies flow strictly downward:
 | `storage/` | `schemas/`, `utils/` |
 | `orchestration/` | All lower layers |
 
-See [Architecture Overview](../concepts/architecture-overview.md#dependency-direction)
+See [Architecture Overview](../concepts/architecture-overview.md#five-layers)
 for the full diagram.
 
 ### Import boundaries
 
-Import from a package's re-exports (`__init__.py`), not from internal modules.
-Each package's `__all__` defines its public API — if a symbol isn't re-exported,
-treat it as internal.
+When importing across packages, prefer importing from the package's
+re-exports (`__init__.py`). Each package's `__all__` defines its public API.
 
 ```python
-# Good — import from the package boundary
-from artisan.schemas import DataArtifact
+# Cross-package imports — use re-exports
+from artisan.schemas import DataArtifact, ArtifactResult, InputSpec, OutputSpec
 from artisan.operations.curator import Filter
 from artisan.execution.executors import run_creator_flow
 
-# Bad — reaching past the boundary into internal modules
-from artisan.schemas.artifact.data import DataArtifact
-from artisan.operations.curator.filter import Filter
-from artisan.execution.lineage.capture import _build_edges
+# Avoid reaching past the boundary for cross-package imports
+from artisan.schemas.artifact.data import DataArtifact          # internal path
+from artisan.execution.lineage.capture import _match_outputs_to_candidates  # private
 ```
 
-For nested packages, import from the sub-package that owns the responsibility
-rather than from deeper internal paths. Within a package, sibling imports are
-fine.
+**Within a package**, direct imports from sibling modules are expected. For
+example, `execution/executors/creator.py` imports directly from
+`execution/lineage/capture.py` and `execution/staging/recorder.py`. This is
+normal — the `__init__.py` boundary matters for external consumers, not for
+internal wiring.
 
 ## Where Does New Code Go?
 
 | I'm adding... | Put it in | Structure |
 |----------------|-----------|-----------|
-| A new ML tool operation | `operations/<tool_name>/` | Package with `__init__.py`, main file, optional `utils.py` |
-| A new metric computation | `operations/metrics/<name>.py` | Single file, flat alongside siblings |
+| A new domain operation | `operations/<tool_name>/` | Package with `__init__.py`, main file, optional `utils.py` |
 | A new curator operation | `operations/curator/<name>.py` | Single file, flat alongside siblings |
+| A new example operation | `operations/examples/<name>.py` | Single file + re-export in `examples/__init__.py` |
 | A new artifact type | `schemas/artifact/<name>.py` | Single file + re-exports in `artifact/__init__.py` and `schemas/__init__.py` |
 | A new enum value | `schemas/enums.py` | Add to existing enum class |
 | A new enum type | `schemas/enums.py` | New class in same file |
 | A new execution concern | `execution/<existing_subpackage>/` | File in the sub-package that owns the responsibility |
+| A new orchestration backend | `orchestration/backends/<name>.py` | Subclass of `BackendBase` + register in `backends/__init__.py` |
 | A shared utility function | `utils/<topic>.py` | New file or add to existing file by topic, add re-export |
 | A helper used by one operation only | `operations/<tool>/utils.py` | Inside the operation's own package |
 
@@ -267,11 +275,58 @@ def compute_artifact_id(content: bytes, artifact_type: str) -> str:
 
 - Operations declare `inputs` and `outputs` as `ClassVar` with explicit
   `InputSpec` / `OutputSpec`
-- Parameters are validated via Pydantic fields with type annotations
-- The `name` class variable must match the class name in snake_case
+- The `name` class variable identifies the operation for registry lookup
 - Creator operations implement the three-phase lifecycle:
   `preprocess` → `execute` → `postprocess`
 - Curator operations implement `execute_curator`
+- Creator operations with inputs must implement `preprocess`
+- Creator operations must set `infer_lineage_from` on every `OutputSpec`
+
+### Role enums
+
+Operations with inputs must define an `InputRole(StrEnum)` whose values match
+the `inputs` dict keys. Operations with outputs must define an
+`OutputRole(StrEnum)` matching the `outputs` dict keys. Subclass validation
+enforces this at class definition time.
+
+```python
+class InputRole(StrEnum):
+    DATASET = "dataset"
+
+inputs: ClassVar[dict[str, InputSpec]] = {
+    InputRole.DATASET: InputSpec(artifact_type="data", required=True),
+}
+
+class OutputRole(StrEnum):
+    DATASET = "dataset"
+
+outputs: ClassVar[dict[str, OutputSpec]] = {
+    OutputRole.DATASET: OutputSpec(
+        artifact_type="data",
+        infer_lineage_from={"inputs": ["dataset"]},
+    ),
+}
+```
+
+Generative operations (no inputs) skip `InputRole`.
+
+### Parameters
+
+Algorithm-specific configuration uses a nested `Params(BaseModel)` class with
+Pydantic `Field` annotations for validation and documentation:
+
+```python
+class Params(BaseModel):
+    """Algorithm parameters for MyOperation."""
+
+    scale_factor: float = Field(default=1.0, ge=0.0, description="...")
+    seed: int | None = Field(default=None, description="...")
+
+params: Params = Params()
+```
+
+Users override parameters at pipeline construction time. The framework
+serializes `params` for caching and provenance recording.
 
 ## Error Handling
 
@@ -287,50 +342,58 @@ For the design rationale behind these patterns, see
 ### The worker catch pattern
 
 Every worker entry point (`run_creator_flow`, `run_curator_flow`) follows
-the same structure: minimal setup outside the try/except (just enough to create
-the `execution_context`), then everything else inside it:
+the same structure: run the lifecycle inside a try/except, then record success
+or failure:
 
 ```python
 def run_creator_flow(unit, runtime_env, worker_id=0) -> StagingResult:
-    execution_context = build_execution_context(...)
-
+    execution_run_id = generate_execution_run_id(...)
     try:
-        # Everything that can fail:
-        # - input instantiation and materialization
-        # - operation execution (preprocess -> execute -> postprocess)
-        # - output validation and lineage
-        # - staging results to parquet
-        ...
+        # Lifecycle: setup → preprocess → execute → postprocess → lineage
+        lifecycle_result = run_creator_lifecycle(unit, runtime_env, worker_id, ...)
+
+        # Record phase: stage results to parquet
         return record_execution_success(...)
 
-    except Exception as exc:
-        logger.exception("Creator flow failed: %s", execution_context.execution_run_id)
+    except (_PostprocessFailure, _ExecuteFailure) as exc:
+        # Lifecycle failures with clean error messages
         return record_execution_failure(
-            execution_context=execution_context,
-            hydrated_inputs=inputs,
-            error=f"{type(exc).__name__}: {exc}",
+            execution_context=...,
+            error=str(exc),
+            inputs=...,
         )
-    finally:
-        # Cleanup (sandbox deletion, etc.)
-        ...
+    except Exception as exc:
+        # Unexpected failures — attempt to build context and record
+        error = format_error(exc)
+        execution_context = _try_build_execution_context(...)
+        if execution_context is None:
+            # Setup itself failed — return a bare StagingResult
+            return StagingResult(success=False, error=error, ...)
+        return record_execution_failure(...)
 ```
 
-If even the setup fails, the dispatch layer (Layer 2) catches it.
+The pattern has two catch layers: typed exceptions for expected lifecycle
+failures, and a general catch for unexpected errors. If even building the
+execution context fails, a bare `StagingResult` is returned.
 
 ### The dispatch catch pattern
 
-The dispatch layer wraps each worker call so the task never fails:
+The dispatch layer wraps each worker call so the Prefect task never raises.
+It also routes between creator, curator, and composite executors:
 
 ```python
 @task
-def execute_unit_task(unit, runtime_env, worker_id=None):
+def execute_unit_task(unit, runtime_env):
     try:
-        result = run_creator_flow(unit, runtime_env, worker_id=worker_id)
+        if isinstance(unit, ExecutionComposite):
+            result = run_composite(unit, runtime_env, worker_id=...)
+        elif is_curator_operation(unit.operation):
+            result = run_curator_flow(unit, runtime_env, worker_id=...)
+        else:
+            result = run_creator_flow(unit, runtime_env, worker_id=...)
         return {"success": result.success, "error": result.error, ...}
     except Exception as exc:
-        # Layer 1 leaked -- catch it here
-        logger.exception("execute_unit_task failed: %s", unit.execution_spec_id)
-        return {"success": False, "error": f"{type(exc).__name__}: {exc}", ...}
+        return {"success": False, "error": format_error(exc), ...}
 ```
 
 ### The futures collection pattern
@@ -348,40 +411,28 @@ for f in futures:
     try:
         results.append(f.result())
     except Exception as exc:
-        logger.exception("Future failed")
-        results.append({"success": False, "error": f"{type(exc).__name__}: {exc}", ...})
+        logger.error("Future raised during result collection: %s: %s", type(exc).__name__, exc)
+        results.append({"success": False, "error": format_error(exc), ...})
 return results
 ```
 
-### The double-fault pattern
+### The double-fault principle
 
 When the failure-recording mechanism itself fails, preserve the original
-error:
+error. The priority order:
 
-```python
-def record_execution_failure(error, ...) -> StagingResult:
-    try:
-        # Normal path: write failure to parquet
-        _stage_execution(success=False, error=error, ...)
-        return StagingResult(success=False, error=error, ...)
-    except Exception as staging_exc:
-        # Staging broke -- return a structured result with the original error
-        logger.exception("Failed to stage failure record (original: %s)", error)
-        return StagingResult(
-            success=False,
-            error=f"[staging failed: {staging_exc}] Original: {error}",
-            staging_path=None,
-            ...
-        )
-```
+1. **Return a structured result** — the caller always gets a `StagingResult`
+2. **Preserve the original error message** — never lose why the operation failed
+3. **Persist to disk** — write the failure record to Parquet
 
-The priority order: (1) return a structured result, (2) preserve the original
-error message, (3) persist to disk. If (3) fails, (1) and (2) still succeed.
+If (3) fails, (1) and (2) still succeed. This shows up in the worker catch
+pattern above: when `_try_build_execution_context` returns `None`, a bare
+`StagingResult(success=False, error=error, ...)` is returned without staging.
 
 ### The batch continuation pattern
 
-In batched execution (SLURM `units_per_worker > 1`), one item failure must
-not kill the batch:
+In batched execution (`units_per_worker > 1`), one item failure must not kill
+the batch:
 
 ```python
 results = []
@@ -391,7 +442,7 @@ for i, item in enumerate(batch_items):
         results.append(result)
     except Exception as e:
         logger.error("Item %s/%s failed: %s", i + 1, len(batch_items), e)
-        results.append({"success": False, "error": f"{type(e).__name__}: {e}", ...})
+        results.append({"success": False, "error": format_error(e), ...})
 # All items processed, all results collected
 return results
 ```
@@ -403,10 +454,10 @@ need to implement any of the patterns above. The framework handles all error
 conversion and recording. Operations should:
 
 - **Raise exceptions normally** when something goes wrong. The framework
-  catches them.
-- **Return `ArtifactResult(success=False, error="...")`** for expected,
-  recoverable failures (e.g., "no valid output produced"). This avoids the
-  overhead of exception handling for anticipated outcomes.
+  catches them via `format_error()` and records a structured failure.
+- **Return `ArtifactResult(success=False, error="...")`** from `postprocess`
+  or `execute_curator` for expected, recoverable failures (e.g., "no valid
+  output produced"). This avoids exception overhead for anticipated outcomes.
 - **Not catch-and-swallow exceptions.** If an operation catches an exception,
   it should either handle it meaningfully or re-raise. Silently ignoring
   errors defeats the recording system.

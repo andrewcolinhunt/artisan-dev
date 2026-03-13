@@ -267,6 +267,39 @@ def test_inspect_pipeline_skipped_steps(tmp_path: Path) -> None:
     assert result["duration"][1] == "-"
 
 
+def test_inspect_pipeline_cancelled_steps(tmp_path: Path) -> None:
+    delta_root = tmp_path / "delta"
+    cancelled_row = _step_row(step_number=1, step_name="data_transformer")
+    cancelled_row["status"] = "cancelled"
+    cancelled_row["succeeded_count"] = None
+    cancelled_row["duration_seconds"] = None
+    _write_steps(
+        delta_root,
+        [
+            _step_row(step_number=0, step_name="data_generator"),
+            cancelled_row,
+        ],
+    )
+    _write_index(
+        delta_root,
+        [
+            {
+                "artifact_id": "a1",
+                "artifact_type": "data",
+                "origin_step_number": 0,
+                "metadata": "{}",
+            },
+        ],
+    )
+
+    result = inspect_pipeline(delta_root)
+    assert result.shape[0] == 2
+    assert result["status"][0] == "ok"
+    assert result["status"][1] == "cancelled"
+    assert result["produced"][1] == "-"
+    assert result["duration"][1] == "-"
+
+
 def test_inspect_pipeline_no_steps_raises(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
     with pytest.raises(FileNotFoundError):

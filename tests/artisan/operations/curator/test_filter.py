@@ -115,16 +115,16 @@ def _build_forward_walk_store(
     # get_step_range returns (min, max) of step numbers for given IDs
     steps = list(step_map.values())
     if steps:
-        store.get_step_range.return_value = (min(steps), max(steps))
+        store.provenance.get_step_range.return_value = (min(steps), max(steps))
     else:
-        store.get_step_range.return_value = None
+        store.provenance.get_step_range.return_value = None
 
     def _load_edges(step_min, step_max, *, include_target_type=False):
         if include_target_type:
             return edges_df
         return plain_edges_df
 
-    store.load_provenance_edges_df.side_effect = _load_edges
+    store.provenance.load_edges_df.side_effect = _load_edges
 
     metrics_df = _make_metrics_df(metric_values)
     store.load_metrics_df.side_effect = lambda ids: (
@@ -134,12 +134,12 @@ def _build_forward_walk_store(
     )
 
     # Build step_number_map: {artifact_id: step_number}
-    store.load_step_number_map.side_effect = lambda ids=None: (
+    store.provenance.load_step_map.side_effect = lambda ids=None: (
         {aid: sn for aid, sn in step_map.items() if ids is None or aid in ids}
     )
 
     # Step name map
-    store.load_step_name_map.return_value = step_name_map or {}
+    store.provenance.load_step_name_map.return_value = step_name_map or {}
 
     return store
 
@@ -492,6 +492,24 @@ class TestFlattenStructColumns:
         assert set(result.columns) == {"a.x", "a.y"}
         assert result["a.x"][0] == 1
 
+    def test_flatten_struct_field_name_collision(self):
+        """Struct field with same name as top-level column doesn't crash."""
+        df = pl.DataFrame(
+            {
+                "artifact_id": ["a", "b"],
+                "row_count": [10, None],
+                "summary": [None, {"cv": 0.5, "row_count": 10}],
+            }
+        )
+        result = _flatten_struct_columns(df)
+
+        assert "row_count" in result.columns
+        assert "summary.row_count" in result.columns
+        assert "summary.cv" in result.columns
+
+        assert result["row_count"][0] == 10
+        assert result["summary.row_count"][1] == 10
+
 
 class TestFilterDiagnosticsMetadata:
     """Tests for diagnostics populated in PassthroughResult.metadata."""
@@ -816,12 +834,14 @@ class TestStepDisambiguation:
             step_name_map={0: "generator", 1: "calc_a", 2: "calc_b"},
         )
         # Add load_artifact_ids_by_type mock
-        store.load_artifact_ids_by_type.side_effect = lambda atype, step_numbers=None: (
-            {m1_id}
-            if step_numbers == [1]
-            else {m2_id}
-            if step_numbers == [2]
-            else set()
+        store.provenance.load_artifact_ids_by_type.side_effect = (
+            lambda atype, step_numbers=None: (
+                {m1_id}
+                if step_numbers == [1]
+                else {m2_id}
+                if step_numbers == [2]
+                else set()
+            )
         )
 
         op = Filter(
@@ -857,12 +877,14 @@ class TestStepDisambiguation:
             },
             step_name_map={0: "generator", 1: "calc_quality", 2: "calc_ligand"},
         )
-        store.load_artifact_ids_by_type.side_effect = lambda atype, step_numbers=None: (
-            {m1_id}
-            if step_numbers == [1]
-            else {m2_id}
-            if step_numbers == [2]
-            else set()
+        store.provenance.load_artifact_ids_by_type.side_effect = (
+            lambda atype, step_numbers=None: (
+                {m1_id}
+                if step_numbers == [1]
+                else {m2_id}
+                if step_numbers == [2]
+                else set()
+            )
         )
 
         op = Filter(
@@ -895,7 +917,7 @@ class TestStepDisambiguation:
             metric_values={m_id: {"score": 0.9}},
             step_name_map={0: "generator", 1: "calc"},
         )
-        store.load_artifact_ids_by_type.return_value = set()
+        store.provenance.load_artifact_ids_by_type.return_value = set()
 
         op = Filter(
             params=Filter.Params(

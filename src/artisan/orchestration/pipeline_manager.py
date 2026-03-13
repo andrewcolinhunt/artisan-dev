@@ -8,9 +8,12 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import signal
+import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, overload
@@ -246,7 +249,7 @@ def _promote_file_paths_to_store(
 
 
 def _validate_params(
-    operation: type[OperationDefinition],
+    operation: type,
     params: dict[str, Any],
 ) -> None:
     """Raise ValueError if any param keys are unrecognized by the operation."""
@@ -368,7 +371,7 @@ def _validate_tool(
 
 
 def _validate_input_roles(
-    operation: type[OperationDefinition],
+    operation: type,
     inputs: Any,
 ) -> None:
     """Raise ValueError if dict input roles are not declared by the operation.
@@ -377,7 +380,7 @@ def _validate_input_roles(
     """
     if not isinstance(inputs, dict):
         return
-    if operation.runtime_defined_inputs:
+    if getattr(operation, "runtime_defined_inputs", False):
         return
     valid_roles = set(operation.inputs)
     unknown = set(inputs) - valid_roles
@@ -390,11 +393,11 @@ def _validate_input_roles(
 
 
 def _validate_required_inputs(
-    operation: type[OperationDefinition],
+    operation: type,
     inputs: Any,
 ) -> None:
     """Raise ValueError if any required input roles are missing."""
-    if operation.runtime_defined_inputs:
+    if getattr(operation, "runtime_defined_inputs", False):
         return
     if not operation.inputs:
         return
@@ -417,7 +420,7 @@ def _validate_required_inputs(
 
 
 def _validate_input_types(
-    operation: type[OperationDefinition],
+    operation: type,
     inputs: Any,
 ) -> None:
     """Raise ValueError if upstream output types don't match input specs."""
@@ -438,6 +441,20 @@ def _validate_input_types(
                 f"but '{role}' expects '{input_spec.artifact_type}'"
             )
             raise ValueError(msg)
+
+
+# =============================================================================
+# Step registry entry (populated at declaration time)
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class _StepEntry:
+    """Metadata about a declared step, available before execution completes."""
+
+    step_number: int
+    output_roles: frozenset[str]
+    output_types: dict[str, str | None]
 
 
 # =============================================================================
@@ -503,9 +520,13 @@ class PipelineManager:
         self._current_step: int = 0
         self._step_results: list[StepResult] = []
         self._named_steps: dict[str, list[StepResult]] = {}
+        self._step_registry: dict[str, list[_StepEntry]] = {}
         self._step_spec_ids: dict[int, str] = {}
         self._step_tracker = StepTracker(config.delta_root, config.pipeline_run_id)
         self._stopped: bool = False
+        self._cancel_event = threading.Event()
+        self._prev_sigint: signal.Handlers | None = None
+        self._prev_sigterm: signal.Handlers | None = None
         self._active_futures: dict[int, StepFuture] = {}
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="pipeline-step"
@@ -568,6 +589,82 @@ class PipelineManager:
         """Return True if a step with the given name has been recorded."""
         return any(r.step_name == step_name for r in self._step_results)
 
+    def _register_step(
+        self,
+        name: str,
+        step_number: int,
+        operation_outputs: dict,
+    ) -> None:
+        """Record step metadata at declaration time for ``output()`` lookups."""
+        entry = _StepEntry(
+            step_number=step_number,
+            output_roles=frozenset(operation_outputs.keys()),
+            output_types={
+                r: s.artifact_type if s.artifact_type else None
+                for r, s in operation_outputs.items()
+            },
+        )
+        self._step_registry.setdefault(name, []).append(entry)
+
+    # =========================================================================
+    # Cancellation
+    # =========================================================================
+
+    def cancel(self) -> None:
+        """Request cancellation of the running pipeline.
+
+        Idempotent and thread-safe. Sets an event that step executors
+        check between phases, causing them to return early with
+        ``metadata={"cancelled": True}``.
+        """
+        if not self._cancel_event.is_set():
+            logger.warning("Pipeline '%s': cancellation requested.", self._config.name)
+        self._cancel_event.set()
+
+    def _install_signal_handlers(self) -> None:
+        """Install SIGINT/SIGTERM handlers that call cancel().
+
+        No-op when called from a non-main thread (e.g. Jupyter workers).
+        """
+        try:
+            self._prev_sigint = signal.getsignal(signal.SIGINT)
+            self._prev_sigterm = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGINT, self._handle_signal)
+            signal.signal(signal.SIGTERM, self._handle_signal)
+        except ValueError:
+            pass  # Not on main thread (e.g. Jupyter)
+
+    def _handle_signal(self, signum: int, frame: Any) -> None:
+        """Signal handler: escalating cancel → restore → force-kill."""
+        sig_name = signal.Signals(signum).name
+        if self._cancel_event.is_set():
+            logger.warning(
+                "Pipeline '%s': received second %s — restoring default handlers. "
+                "Press Ctrl+C again to force exit.",
+                self._config.name,
+                sig_name,
+            )
+            self._restore_signal_handlers()
+            return
+        logger.warning(
+            "Pipeline '%s': received %s — cancelling.",
+            self._config.name,
+            sig_name,
+        )
+        self.cancel()
+
+    def _restore_signal_handlers(self) -> None:
+        """Restore previous signal handlers."""
+        try:
+            if self._prev_sigint is not None:
+                signal.signal(signal.SIGINT, self._prev_sigint)
+                self._prev_sigint = None
+            if self._prev_sigterm is not None:
+                signal.signal(signal.SIGTERM, self._prev_sigterm)
+                self._prev_sigterm = None
+        except ValueError:
+            pass  # Not on main thread
+
     def output(
         self,
         name: str,
@@ -590,25 +687,40 @@ class PipelineManager:
             ValueError: If no step with that name exists, role is invalid,
                 or step_number doesn't match any step with the given name.
         """
-        steps = self._named_steps.get(name)
-        if not steps:
-            available = sorted(self._named_steps.keys()) or ["(none)"]
-            msg = f"No completed step named '{name}'. Available: {', '.join(available)}"
+        entries = self._step_registry.get(name)
+        if not entries:
+            available = sorted(self._step_registry.keys()) or ["(none)"]
+            msg = f"No step named '{name}'. Available: {', '.join(available)}"
             raise ValueError(msg)
 
         if step_number is None:
-            return steps[-1].output(role)
+            entry = entries[-1]
+        else:
+            for e in entries:
+                if e.step_number == step_number:
+                    entry = e
+                    break
+            else:
+                step_numbers = [e.step_number for e in entries]
+                msg = (
+                    f"Step '{name}' has no entry with step_number={step_number}. "
+                    f"Available step numbers: {step_numbers}"
+                )
+                raise ValueError(msg)
 
-        for step in steps:
-            if step.step_number == step_number:
-                return step.output(role)
+        if role not in entry.output_roles:
+            available_roles = ", ".join(sorted(entry.output_roles)) or "(none)"
+            msg = (
+                f"Output role '{role}' not available for step '{name}'. "
+                f"Available roles: {available_roles}"
+            )
+            raise ValueError(msg)
 
-        step_numbers = [s.step_number for s in steps]
-        msg = (
-            f"Step '{name}' has no entry with step_number={step_number}. "
-            f"Available step numbers: {step_numbers}"
+        return OutputReference(
+            source_step=entry.step_number,
+            role=role,
+            artifact_type=entry.output_types.get(role),
         )
-        raise ValueError(msg)
 
     # =========================================================================
     # Factory / classmethods
@@ -755,6 +867,13 @@ class PipelineManager:
             result = step_state.to_step_result()
             instance._step_results.append(result)
             instance._named_steps.setdefault(result.step_name, []).append(result)
+            instance._step_registry.setdefault(result.step_name, []).append(
+                _StepEntry(
+                    step_number=result.step_number,
+                    output_roles=result.output_roles,
+                    output_types=result.output_types,
+                )
+            )
             instance._step_spec_ids[step_state.step_number] = step_state.step_spec_id
         instance._current_step = max(s.step_number for s in completed_steps) + 1
 
@@ -777,7 +896,7 @@ class PipelineManager:
 
     def run(
         self,
-        operation: type[OperationDefinition],
+        operation: type[OperationDefinition] | type,
         inputs: (
             dict[str, OutputReference | list[str]]
             | list[OutputReference]
@@ -793,26 +912,27 @@ class PipelineManager:
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
+        intermediates: str = "discard",
     ) -> StepResult:
         """Execute a pipeline step (blocking).
 
-        Equivalent to submit(...).result(). All caching, persistence,
-        and execution logic lives in submit().
+        Accepts both OperationDefinition and CompositeDefinition subclasses.
+        Equivalent to submit(...).result().
 
         Args:
-            operation: OperationDefinition subclass to execute.
+            operation: OperationDefinition or CompositeDefinition subclass.
             inputs: Input specification (dict, list, or None).
             params: Parameter overrides.
             backend: Backend for execution. None uses pipeline default.
-                Accepts a BackendBase instance or string name.
             resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-            environment: Environment override. String selects the active
-                environment; dict overrides fields on the Environments model.
-            tool: Tool overrides (executable, interpreter, etc.).
+            environment: Environment override (operations only).
+            tool: Tool overrides (operations only).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
+            intermediates: How to handle intermediate artifacts in composites:
+                "discard" (default), "persist", or "expose".
 
         Returns:
             StepResult with output references and execution metadata.
@@ -829,11 +949,12 @@ class PipelineManager:
             failure_policy=failure_policy,
             compact=compact,
             name=name,
+            intermediates=intermediates,
         ).result()
 
     def submit(
         self,
-        operation: type[OperationDefinition],
+        operation: type[OperationDefinition] | type,
         inputs: (
             dict[str, OutputReference | list[str]]
             | list[OutputReference]
@@ -849,30 +970,25 @@ class PipelineManager:
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
+        intermediates: str = "discard",
     ) -> StepFuture:
         """Submit a pipeline step (non-blocking).
 
-        Core implementation for both run() and submit(). Handles:
-        - Immediate validation of all overrides (fail-fast)
-        - Predecessor waits (blocks until upstream futures complete)
-        - Step cache lookup (returns pre-resolved future on hit)
-        - Step persistence (writes running/completed/failed to delta)
-        - Background dispatch via ThreadPoolExecutor
+        Accepts both OperationDefinition and CompositeDefinition subclasses.
 
         Args:
-            operation: OperationDefinition subclass to execute.
+            operation: OperationDefinition or CompositeDefinition subclass.
             inputs: Input specification (dict, list, or None).
             params: Parameter overrides.
             backend: Backend for execution. None uses pipeline default.
-                Accepts a BackendBase instance or string name.
             resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-            environment: Environment override. String selects the active
-                environment; dict overrides fields on the Environments model.
-            tool: Tool overrides (executable, interpreter, etc.).
+            environment: Environment override (operations only).
+            tool: Tool overrides (operations only).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
+            intermediates: How to handle intermediate artifacts in composites.
 
         Returns:
             StepFuture with output() for wiring to downstream steps.
@@ -880,6 +996,23 @@ class PipelineManager:
         Raises:
             ValueError: If any override keys are unrecognized.
         """
+        from artisan.composites.base.composite_definition import CompositeDefinition
+
+        # Detect composite and route accordingly
+        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):
+            return self._submit_composite(
+                composite_class=operation,
+                inputs=inputs,
+                params=params,
+                backend=backend,
+                resources=resources,
+                execution=execution,
+                intermediates=intermediates,
+                failure_policy=failure_policy,
+                compact=compact,
+                name=name or operation.name,
+            )
+
         # Validate overrides immediately (fail-fast, before waiting for predecessors)
         if params:
             _validate_params(operation, params)
@@ -925,6 +1058,7 @@ class PipelineManager:
                 },
             )
             self._step_results.append(skipped_result)
+            self._register_step(step_name, step_number, operation.outputs)
             self._named_steps.setdefault(skipped_result.step_name, []).append(
                 skipped_result
             )
@@ -940,7 +1074,84 @@ class PipelineManager:
                 future=resolved_stopped,
             )
 
+        # If pipeline has been cancelled, skip remaining steps
+        if self._cancel_event.is_set():
+            step_number = self._current_step
+            logger.info(
+                "Step %d (%s): pipeline cancelled — skipping.",
+                step_number,
+                step_name,
+            )
+            output_types_map = {
+                role: spec.artifact_type if spec.artifact_type else None
+                for role, spec in operation.outputs.items()
+            }
+            skipped_result = StepResult(
+                step_name=step_name,
+                step_number=step_number,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                output_roles=frozenset(operation.outputs.keys()),
+                output_types=output_types_map,
+                metadata={
+                    "skipped": True,
+                    "skip_reason": "cancelled",
+                },
+            )
+            self._step_results.append(skipped_result)
+            self._register_step(step_name, step_number, operation.outputs)
+            self._named_steps.setdefault(skipped_result.step_name, []).append(
+                skipped_result
+            )
+            self._current_step += 1
+
+            resolved_cancelled: Future[StepResult] = Future()
+            resolved_cancelled.set_result(skipped_result)
+            return StepFuture(
+                step_number=step_number,
+                step_name=step_name,
+                output_roles=frozenset(operation.outputs.keys()),
+                output_types=output_types_map,
+                future=resolved_cancelled,
+            )
+
         self._wait_for_predecessors(inputs)
+
+        # Re-check cancel after waiting — may have been set while blocked
+        if self._cancel_event.is_set():
+            step_number = self._current_step
+            output_types_map = {
+                role: spec.artifact_type if spec.artifact_type else None
+                for role, spec in operation.outputs.items()
+            }
+            skipped_result = StepResult(
+                step_name=step_name,
+                step_number=step_number,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                output_roles=frozenset(operation.outputs.keys()),
+                output_types=output_types_map,
+                metadata={"skipped": True, "skip_reason": "cancelled"},
+            )
+            self._step_results.append(skipped_result)
+            self._register_step(step_name, step_number, operation.outputs)
+            self._named_steps.setdefault(skipped_result.step_name, []).append(
+                skipped_result
+            )
+            self._current_step += 1
+            resolved_post_wait: Future[StepResult] = Future()
+            resolved_post_wait.set_result(skipped_result)
+            return StepFuture(
+                step_number=step_number,
+                step_name=step_name,
+                output_roles=frozenset(operation.outputs.keys()),
+                output_types=output_types_map,
+                future=resolved_post_wait,
+            )
 
         step_number = self._current_step
 
@@ -986,6 +1197,7 @@ class PipelineManager:
             )
             self._step_spec_ids[step_number] = step_spec_id
             self._step_results.append(cached)
+            self._register_step(step_name, step_number, operation.outputs)
             self._named_steps.setdefault(cached.step_name, []).append(cached)
             self._current_step += 1
 
@@ -1024,6 +1236,7 @@ class PipelineManager:
                     )
                     self._step_spec_ids[step_number] = step_spec_id
                     self._step_results.append(failed_result)
+                    self._register_step(step_name, step_number, operation.outputs)
                     self._named_steps.setdefault(failed_result.step_name, []).append(
                         failed_result
                     )
@@ -1048,6 +1261,10 @@ class PipelineManager:
                 )
 
         # Cache miss — dispatch in background
+        # Install signal handlers on the first dispatched step
+        if self._current_step == 0:
+            self._install_signal_handlers()
+        self._register_step(step_name, step_number, operation.outputs)
         self._current_step += 1
         self._step_spec_ids[step_number] = step_spec_id
         step_run_id = _generate_step_run_id(step_spec_id)
@@ -1093,6 +1310,25 @@ class PipelineManager:
         _failure_policy = failure_policy or self._config.failure_policy
 
         def _run() -> StepResult:
+            # Bail out immediately if cancelled while queued in the executor
+            if self._cancel_event.is_set():
+                cancelled_result = StepResult(
+                    step_name=step_name,
+                    step_number=step_number,
+                    success=True,
+                    total_count=0,
+                    succeeded_count=0,
+                    failed_count=0,
+                    output_roles=frozenset(output_types_map.keys()),
+                    output_types=output_types_map,
+                    metadata={"cancelled": True},
+                )
+                self._step_results.append(cancelled_result)
+                self._named_steps.setdefault(cancelled_result.step_name, []).append(
+                    cancelled_result
+                )
+                return cancelled_result
+
             logger.info(
                 "Step %d (%s) starting... [backend=%s]",
                 step_number,
@@ -1115,11 +1351,23 @@ class PipelineManager:
                     failure_policy=_failure_policy,
                     compact=compact,
                     step_spec_id=step_spec_id,
+                    cancel_event=self._cancel_event,
                 )
                 elapsed = time.perf_counter() - start
                 result = result.model_copy(
                     update={"step_name": step_name, "duration_seconds": elapsed}
                 )
+
+                if result.metadata.get("cancelled"):
+                    self._step_tracker.record_step_cancelled(start_record)
+                    logger.info(
+                        "Step %d (%s): cancelled.",
+                        step_number,
+                        step_name,
+                    )
+                    self._step_results.append(result)
+                    self._named_steps.setdefault(result.step_name, []).append(result)
+                    return result
 
                 if result.metadata.get("skipped"):
                     self._step_tracker.record_step_skipped(start_record, result)
@@ -1186,103 +1434,143 @@ class PipelineManager:
         self._active_futures[step_number] = future
         return future
 
-    def chain(
+    def expand(
         self,
-        inputs: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
+        composite: type,
+        inputs: (dict[str, OutputReference | list[str]] | None) = None,
+        params: dict[str, Any] | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        intermediates: str = "discard",
+        backend: str | BackendBase | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
         name: str | None = None,
-    ) -> ChainBuilder:
-        """Start building a chain of creator operations.
+    ) -> Any:
+        """Expand a composite into individual pipeline steps.
 
-        Returns a ChainBuilder for fluent composition. Call ``.add()``
-        to append operations, then ``.run()`` or ``.submit()`` to execute.
+        Each internal operation becomes its own pipeline step with
+        independent worker dispatch, batching, and caching.
 
         Args:
-            inputs: Initial inputs for the first operation in the chain.
-            backend: Backend override. None uses pipeline default.
-            resources: Chain-level resource overrides.
-            execution: Chain-level execution/scheduling overrides.
-            intermediates: How to handle intermediate artifacts:
-                "discard" (default), "persist", or "expose".
-            name: Custom step name. Defaults to joined operation names.
+            composite: CompositeDefinition subclass to expand.
+            inputs: Input specification for the composite.
+            params: Parameter overrides for the composite.
+            resources: Per-operation overrides forwarded from compose().
+            execution: Per-operation overrides forwarded from compose().
+            backend: Backend override.
+            environment: Environment override.
+            tool: Tool overrides.
+            name: Step name prefix. Defaults to composite.name.
 
         Returns:
-            ChainBuilder for fluent API usage.
-
-        Example::
-
-            chain = pipeline.chain(
-                inputs={"data": pipeline.output("gen", "data")},
-            )
-            chain.add(DataTransformer, params={"mode": "normalize"})
-            chain.add(MetricCalculator)
-            result = chain.run()
+            ExpandedCompositeResult with .output(role) for downstream wiring.
         """
-        from artisan.execution.models.execution_chain import ChainIntermediates
-        from artisan.orchestration.chain_builder import ChainBuilder
+        from artisan.composites.base.composite_context import ExpandedCompositeContext
+        from artisan.composites.base.composite_definition import CompositeDefinition
+        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
 
-        return ChainBuilder(
+        if not (
+            isinstance(composite, type) and issubclass(composite, CompositeDefinition)
+        ):
+            raise TypeError(
+                f"expand() requires a CompositeDefinition subclass, got {composite}"
+            )
+
+        # Validate inputs
+        _validate_input_roles(composite, inputs)
+        _validate_required_inputs(composite, inputs)
+        _validate_input_types(composite, inputs)
+
+        if params:
+            _validate_params(composite, params)
+
+        # Wait for predecessors
+        self._wait_for_predecessors(inputs)
+
+        # Instantiate the composite
+        init_kwargs: dict[str, Any] = {}
+        if params:
+            init_kwargs["params"] = params
+        instance = composite(**init_kwargs)
+
+        # Build input OutputReferences
+        input_refs: dict[str, OutputReference] = {}
+        if isinstance(inputs, dict):
+            for role, ref in inputs.items():
+                if isinstance(ref, OutputReference):
+                    input_refs[role] = ref
+
+        step_name_prefix = name or composite.name
+
+        # Create expanded context
+        ctx = ExpandedCompositeContext(
             pipeline=self,
-            inputs=inputs,
-            backend=backend,
-            resources=resources,
-            execution=execution,
-            intermediates=ChainIntermediates(intermediates),
-            name=name,
+            input_refs=input_refs,
+            composite=instance,
+            step_name_prefix=step_name_prefix,
         )
 
-    def _submit_chain(
+        # Execute compose() — each ctx.run() creates real pipeline steps
+        instance.compose(ctx)
+
+        # Build result from output mappings
+        return ExpandedCompositeResult(
+            output_map=ctx.get_output_map(),
+            output_types=ctx.get_output_types(),
+        )
+
+    def _submit_composite(
         self,
-        operations: list[
-            tuple[
-                type[OperationDefinition], dict[str, Any] | None, dict[str, Any] | None
-            ]
-        ],
-        role_mappings: list[dict[str, str] | None],
+        composite_class: type,
         inputs: Any,
+        params: dict[str, Any] | None,
         backend: Any | None,
         resources: dict[str, Any] | None,
         execution: dict[str, Any] | None,
-        intermediates: Any,  # ChainIntermediates
+        intermediates: str,
         failure_policy: Any | None,
         compact: bool,
         name: str,
-        final_operation: type[OperationDefinition],
     ) -> StepFuture:
-        """Internal: submit a chain step for execution.
-
-        Called by ChainBuilder.submit(). Handles step numbering, caching,
-        persistence, and background dispatch — mirroring submit() for
-        single operations.
+        """Internal: submit a composite step for collapsed execution.
 
         Args:
-            operations: List of (op_class, params, config) tuples.
-            role_mappings: Role remappings between adjacent operations.
-            inputs: Initial inputs for the first operation.
+            composite_class: CompositeDefinition subclass.
+            inputs: Initial inputs.
             backend: Backend override.
-            resources: Chain-level resource overrides.
-            execution: Chain-level execution overrides.
-            intermediates: ChainIntermediates enum value.
+            resources: Composite-level resource overrides.
+            execution: Composite-level execution overrides.
+            intermediates: "discard", "persist", or "expose".
+            params: Parameter overrides.
             failure_policy: Override pipeline failure policy.
             compact: Run Delta Lake compaction.
             name: Step name.
-            final_operation: Last operation class (for output metadata).
 
         Returns:
             StepFuture for downstream wiring.
         """
-        from artisan.orchestration.engine.step_executor import execute_chain_step
+        from artisan.execution.models.execution_composite import CompositeIntermediates
+        from artisan.orchestration.engine.step_executor import execute_composite_step
         from artisan.schemas.execution.execution_config import ExecutionConfig
         from artisan.schemas.operation_config.resource_config import ResourceConfig
+
+        # Validate inputs against composite declarations
+        _validate_input_roles(composite_class, inputs)
+        _validate_required_inputs(composite_class, inputs)
+        _validate_input_types(composite_class, inputs)
+
+        if params:
+            _validate_params(composite_class, params)
+        if resources:
+            _validate_resources(resources)
+        if execution:
+            _validate_execution(execution)
 
         if self._stopped:
             step_number = self._current_step
             output_types_map: dict[str, str | None] = {
                 role: spec.artifact_type if spec.artifact_type else None
-                for role, spec in final_operation.outputs.items()
+                for role, spec in composite_class.outputs.items()
             }
             skipped_result = StepResult(
                 step_name=name,
@@ -1291,54 +1579,108 @@ class PipelineManager:
                 total_count=0,
                 succeeded_count=0,
                 failed_count=0,
-                output_roles=frozenset(final_operation.outputs.keys()),
+                output_roles=frozenset(composite_class.outputs.keys()),
                 output_types=output_types_map,
                 metadata={"skipped": True, "skip_reason": "pipeline_stopped"},
             )
             self._step_results.append(skipped_result)
+            self._register_step(name, step_number, composite_class.outputs)
             self._named_steps.setdefault(name, []).append(skipped_result)
             self._current_step += 1
-
-            from concurrent.futures import Future
 
             resolved_stopped: Future[StepResult] = Future()
             resolved_stopped.set_result(skipped_result)
             return StepFuture(
                 step_number=step_number,
                 step_name=name,
-                output_roles=frozenset(final_operation.outputs.keys()),
+                output_roles=frozenset(composite_class.outputs.keys()),
                 output_types=output_types_map,
                 future=resolved_stopped,
             )
 
+        # If pipeline has been cancelled, skip remaining steps
+        if self._cancel_event.is_set():
+            step_number = self._current_step
+            output_types_map: dict[str, str | None] = {
+                role: spec.artifact_type if spec.artifact_type else None
+                for role, spec in composite_class.outputs.items()
+            }
+            skipped_result = StepResult(
+                step_name=name,
+                step_number=step_number,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                output_roles=frozenset(composite_class.outputs.keys()),
+                output_types=output_types_map,
+                metadata={"skipped": True, "skip_reason": "cancelled"},
+            )
+            self._step_results.append(skipped_result)
+            self._register_step(name, step_number, composite_class.outputs)
+            self._named_steps.setdefault(name, []).append(skipped_result)
+            self._current_step += 1
+            resolved_cancelled: Future[StepResult] = Future()
+            resolved_cancelled.set_result(skipped_result)
+            return StepFuture(
+                step_number=step_number,
+                step_name=name,
+                output_roles=frozenset(composite_class.outputs.keys()),
+                output_types=output_types_map,
+                future=resolved_cancelled,
+            )
+
         self._wait_for_predecessors(inputs)
+
+        # Re-check cancel after waiting — may have been set while blocked
+        if self._cancel_event.is_set():
+            step_number = self._current_step
+            output_types_map = {
+                role: spec.artifact_type if spec.artifact_type else None
+                for role, spec in composite_class.outputs.items()
+            }
+            skipped_result = StepResult(
+                step_name=name,
+                step_number=step_number,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                output_roles=frozenset(composite_class.outputs.keys()),
+                output_types=output_types_map,
+                metadata={"skipped": True, "skip_reason": "cancelled"},
+            )
+            self._step_results.append(skipped_result)
+            self._register_step(name, step_number, composite_class.outputs)
+            self._named_steps.setdefault(name, []).append(skipped_result)
+            self._current_step += 1
+            resolved_post_wait: Future[StepResult] = Future()
+            resolved_post_wait.set_result(skipped_result)
+            return StepFuture(
+                step_number=step_number,
+                step_name=name,
+                output_roles=frozenset(composite_class.outputs.keys()),
+                output_types=output_types_map,
+                future=resolved_post_wait,
+            )
+
         step_number = self._current_step
 
-        # Compute chain step_spec_id
-        op_tuples: list[tuple[str, dict[str, Any] | None]] = []
-        for op_class, params, _config in operations:
-            temp = instantiate_operation(op_class, params)
-            if "params" in type(temp).model_fields:
-                full_params = temp.params.model_dump(mode="json")
-            else:
-                base_fields = set(OperationDefinition.model_fields)
-                full_params = {
-                    k: v
-                    for k, v in temp.model_dump(mode="json").items()
-                    if k not in base_fields
-                }
-            op_tuples.append((op_class.name, full_params or None))
+        # Compute composite step_spec_id
+        temp = instantiate_operation(composite_class, params)
+        if hasattr(temp, "params"):
+            full_params = temp.params.model_dump(mode="json")
+        else:
+            full_params = {}
 
         input_spec = self._build_input_spec(inputs)
-        from artisan.utils.hashing import compute_chain_spec_id
+        from artisan.utils.hashing import compute_composite_spec_id
 
-        # Build a synthetic input_ids dict for chain_spec_id
-        # (uses upstream spec_ids as proxies, same as step_spec_id)
-        chain_input_ids: dict[str, list[str]] = {}
-        for role, (spec_id, upstream_role) in input_spec.items():
-            chain_input_ids[role] = [spec_id]
-
-        step_spec_id = compute_chain_spec_id(op_tuples, chain_input_ids)
+        step_spec_id = compute_composite_spec_id(
+            composite_name=composite_class.name,
+            params=full_params or None,
+            input_spec=input_spec,
+        )
 
         # Check step cache
         cached = self._step_tracker.check_cache(step_spec_id, self._config.cache_policy)
@@ -1346,10 +1688,9 @@ class PipelineManager:
             logger.info("Step %d (%s) CACHED — skipping execution", step_number, name)
             self._step_spec_ids[step_number] = step_spec_id
             self._step_results.append(cached)
+            self._register_step(name, step_number, composite_class.outputs)
             self._named_steps.setdefault(cached.step_name, []).append(cached)
             self._current_step += 1
-
-            from concurrent.futures import Future
 
             resolved: Future[StepResult] = Future()
             resolved.set_result(cached)
@@ -1362,50 +1703,64 @@ class PipelineManager:
             )
 
         # Cache miss — build and dispatch
+        self._register_step(name, step_number, composite_class.outputs)
         self._current_step += 1
         self._step_spec_ids[step_number] = step_spec_id
 
         output_types_map = {
             role: spec.artifact_type if spec.artifact_type else None
-            for role, spec in final_operation.outputs.items()
+            for role, spec in composite_class.outputs.items()
         }
 
         # Resolve backend
-        if is_curator_operation(final_operation):
-            resolved_backend = Backend.LOCAL
-        elif backend is not None:
+        if backend is not None:
             resolved_backend = resolve_backend(backend)
         else:
             resolved_backend = resolve_backend(self._config.default_backend)
 
         _failure_policy = failure_policy or self._config.failure_policy
-
-        # Build chain-level resource/execution configs
-        chain_resources = ResourceConfig(**(resources or {}))
-        chain_execution = ExecutionConfig(**(execution or {}))
+        composite_intermediates = CompositeIntermediates(intermediates)
+        composite_resources = ResourceConfig(**(resources or {}))
+        composite_execution = ExecutionConfig(**(execution or {}))
 
         def _run() -> StepResult:
+            # Bail out immediately if cancelled while queued in the executor
+            if self._cancel_event.is_set():
+                cancelled_result = StepResult(
+                    step_name=name,
+                    step_number=step_number,
+                    success=True,
+                    total_count=0,
+                    succeeded_count=0,
+                    failed_count=0,
+                    output_roles=frozenset(output_types_map.keys()),
+                    output_types=output_types_map,
+                    metadata={"cancelled": True},
+                )
+                self._step_results.append(cancelled_result)
+                self._named_steps.setdefault(name, []).append(cancelled_result)
+                return cancelled_result
+
             logger.info(
-                "Step %d (%s) starting chain... [backend=%s]",
+                "Step %d (%s) starting composite... [backend=%s]",
                 step_number,
                 name,
                 resolved_backend.name,
             )
             start = time.perf_counter()
             try:
-                result = execute_chain_step(
-                    operations=operations,
-                    role_mappings=role_mappings,
+                result = execute_composite_step(
+                    composite_class=composite_class,
                     inputs=inputs,
+                    params=params,
                     backend=resolved_backend,
-                    chain_resources=chain_resources,
-                    chain_execution=chain_execution,
-                    intermediates=intermediates,
+                    composite_resources=composite_resources,
+                    composite_execution=composite_execution,
+                    intermediates=composite_intermediates,
                     step_number=step_number,
                     config=self._config,
                     failure_policy=_failure_policy,
                     compact=compact,
-                    final_operation=final_operation,
                 )
                 elapsed = time.perf_counter() - start
                 result = result.model_copy(
@@ -1417,13 +1772,13 @@ class PipelineManager:
                         step_spec_id=step_spec_id,
                         step_number=step_number,
                         step_name=name,
-                        operation_class=_qualified_name(final_operation),
-                        params_json="{}",
+                        operation_class=f"{composite_class.__module__}.{composite_class.__qualname__}",
+                        params_json=json.dumps(full_params or {}),
                         input_refs_json=_serialize_input_refs(inputs),
                         compute_backend=resolved_backend.name,
                         compute_options_json="{}",
                         output_roles_json=json.dumps(
-                            sorted(final_operation.outputs.keys())
+                            sorted(composite_class.outputs.keys())
                         ),
                         output_types_json=json.dumps(output_types_map),
                     ),
@@ -1513,17 +1868,28 @@ class PipelineManager:
         return {}
 
     def _wait_for_predecessors(self, inputs: Any) -> None:
-        """Block until all upstream step futures have completed."""
+        """Block until all upstream step futures have completed.
+
+        Polls with a timeout so that cancellation is detected promptly
+        instead of blocking indefinitely on ``future.result()``.
+        """
         source_steps = _extract_source_steps(inputs)
         for step_num in source_steps:
             if step_num in self._active_futures:
-                try:
-                    self._active_futures[step_num].result()
-                except Exception:
-                    logger.warning(
-                        "Predecessor step %d failed — downstream will see empty inputs.",
-                        step_num,
-                    )
+                future = self._active_futures[step_num]
+                while not self._cancel_event.is_set():
+                    try:
+                        future.result(timeout=0.5)
+                        break
+                    except TimeoutError:
+                        continue
+                    except Exception:
+                        logger.warning(
+                            "Predecessor step %d failed"
+                            " — downstream will see empty inputs.",
+                            step_num,
+                        )
+                        break
 
     # =========================================================================
     # Finalize
@@ -1533,6 +1899,8 @@ class PipelineManager:
         """Finalize pipeline execution and return summary.
 
         Waits for any active futures and shuts down the executor.
+        When cancellation has been requested, uses a short timeout
+        on futures to avoid blocking indefinitely.
 
         Returns:
             Summary dict with step results and statistics.
@@ -1545,7 +1913,18 @@ class PipelineManager:
         """
         for step_num, future in self._active_futures.items():
             try:
-                future.result()
+                while not self._cancel_event.is_set():
+                    try:
+                        future.result(timeout=0.5)
+                        break
+                    except TimeoutError:
+                        continue
+                else:
+                    # Cancel detected — short wait for cleanup
+                    try:
+                        future.result(timeout=5.0)
+                    except (TimeoutError, Exception):
+                        pass
             except Exception as exc:
                 logger.error(
                     "Step %d future failed during finalize: %s: %s",
@@ -1553,7 +1932,13 @@ class PipelineManager:
                     type(exc).__name__,
                     exc,
                 )
-        self._executor.shutdown(wait=True)
+
+        cancelled = self._cancel_event.is_set()
+        self._executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
+        self._restore_signal_handlers()
+
+        # Results may arrive out of order (sync skips before async completions)
+        self._step_results.sort(key=lambda r: r.step_number)
 
         total_elapsed = time.time() - self._start_time
         all_ok = all(r.success for r in self._step_results)

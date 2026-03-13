@@ -715,7 +715,7 @@ class TestBuildArtifactEdgesFromStore:
     def test_enriches_source_target_pairs(self):
         """Test that SourceTargetPairs are enriched to ArtifactProvenance."""
         mock_store = MagicMock()
-        mock_store.load_artifact_type_map.return_value = {
+        mock_store.provenance.load_type_map.return_value = {
             "s" * 32: ArtifactTypes.METRIC,
             "t" * 32: ArtifactTypes.METRIC,
         }
@@ -748,7 +748,7 @@ class TestBuildArtifactEdgesFromStore:
     def test_enriches_multiple_pairs(self):
         """Test that multiple SourceTargetPairs are enriched."""
         mock_store = MagicMock()
-        mock_store.load_artifact_type_map.return_value = {
+        mock_store.provenance.load_type_map.return_value = {
             "a" * 32: ArtifactTypes.METRIC,
             "b" * 32: ArtifactTypes.METRIC,
             "c" * 32: ArtifactTypes.METRIC,
@@ -790,7 +790,7 @@ class TestBuildArtifactEdgesFromStore:
         )
 
         assert result == []
-        mock_store.load_artifact_type_map.assert_not_called()
+        mock_store.provenance.load_type_map.assert_not_called()
 
 
 class TestRunCreatorLifecycle:

@@ -16,6 +16,7 @@ BSD-3-Clause License
 - [How-to Guides](/how-to-guides/index)
 - [Concepts](/concepts/index)
 - [Reference](/reference/index)
+- [Contributing](/contributing/index)
 :::
 
 :::{grid-item}

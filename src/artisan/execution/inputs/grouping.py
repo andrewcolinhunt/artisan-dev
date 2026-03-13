@@ -16,6 +16,7 @@ import logging
 from itertools import product
 from typing import TYPE_CHECKING
 
+import polars as pl
 import xxhash
 
 from artisan.execution.inputs.lineage_matching import match_by_ancestry
@@ -238,11 +239,9 @@ def _match_by_ancestry(
     if not inputs[role_a] or not inputs[role_b]:
         return []
 
-    provenance_map = artifact_store.load_provenance_map()
-
     # Determine target role via step numbers
     sample_ids = {inputs[role_a][0], inputs[role_b][0]}
-    step_map = artifact_store.load_step_number_map(sample_ids)
+    step_map = artifact_store.provenance.load_step_map(sample_ids)
     step_a = step_map.get(inputs[role_a][0])
     step_b = step_map.get(inputs[role_b][0])
 
@@ -265,7 +264,14 @@ def _match_by_ancestry(
     target_ids = set(inputs[target_role])
     candidate_ids_by_role = {candidate_role: inputs[candidate_role]}
 
-    result = match_by_ancestry(target_ids, candidate_ids_by_role, provenance_map)
+    # Load edges scoped to the step range of the involved artifacts
+    all_ids = pl.Series(list(inputs[role_a]) + list(inputs[role_b]))
+    step_range = artifact_store.provenance.get_step_range(all_ids)
+    if step_range is None:
+        return []
+    edges = artifact_store.provenance.load_edges_df(*step_range)
+
+    result = match_by_ancestry(target_ids, candidate_ids_by_role, edges)
 
     matched_sets = []
     for target_id, role_matches in result.items():
@@ -289,12 +295,19 @@ def _match_primary_by_ancestry(
         msg = "LINEAGE matching requires artifact_store for provenance access."
         raise RuntimeError(msg)
 
-    provenance_map = artifact_store.load_provenance_map()
-
     target_ids = set(inputs[primary_role])
     candidate_ids_by_role = {role: inputs[role] for role in other_roles}
 
-    result = match_by_ancestry(target_ids, candidate_ids_by_role, provenance_map)
+    # Load edges scoped to the step range of all involved artifacts
+    all_id_list = list(inputs[primary_role])
+    for role in other_roles:
+        all_id_list.extend(inputs[role])
+    step_range = artifact_store.provenance.get_step_range(pl.Series(all_id_list))
+    if step_range is None:
+        return {role: [] for role in inputs}
+    edges = artifact_store.provenance.load_edges_df(*step_range)
+
+    result = match_by_ancestry(target_ids, candidate_ids_by_role, edges)
 
     # Reshape to aligned dict, preserving primary artifact order.
     # Each primary may have multiple candidates per role; expand with
