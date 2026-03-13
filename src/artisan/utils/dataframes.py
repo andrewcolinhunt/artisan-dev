@@ -60,12 +60,13 @@ def pivot_metrics_wide(
     tidy: pl.DataFrame,
     *,
     index_cols: list[str] | None = None,
+    separator: str = ".",
 ) -> pl.DataFrame:
     """Pivot a tidy metrics DataFrame to wide format.
 
-    Column names use ``{step_name}.{metric_name}``. When the same step_name
-    appears at multiple step_numbers, disambiguates with
-    ``{step_number}.{step_name}.{metric_name}``.
+    Column names use ``{step_name}{sep}{metric_name}``. When the same
+    step_name appears at multiple step_numbers, disambiguates with
+    ``{step_number}{sep}{step_name}{sep}{metric_name}``.
 
     After pivoting, each column is cast to its natural type (Bool, Int64,
     Float64, or String) based on the JSON-encoded values.
@@ -75,6 +76,8 @@ def pivot_metrics_wide(
             step_name, metric_name, metric_value, metric_compound.
         index_cols: Columns to keep as row identifiers in the wide output.
             Defaults to ``["artifact_id"]``.
+        separator: Delimiter between step name and metric name in wide
+            column names. Defaults to ``"."``.
 
     Returns:
         Wide-format DataFrame with one row per unique combination of
@@ -112,22 +115,23 @@ def pivot_metrics_wide(
         step_mapping.filter(pl.col("n_steps") > 1)["step_name"].to_list()
     )
 
+    sep = pl.lit(separator)
     if ambiguous_names:
         qualified = tidy.with_columns(
             pl.when(pl.col("step_name").is_in(list(ambiguous_names)))
             .then(
                 pl.col("step_number").cast(pl.String)
-                + "."
+                + sep
                 + pl.col("step_name")
-                + "."
+                + sep
                 + pl.col("metric_name")
             )
-            .otherwise(pl.col("step_name") + "." + pl.col("metric_name"))
+            .otherwise(pl.col("step_name") + sep + pl.col("metric_name"))
             .alias("_qualified_name")
         )
     else:
         qualified = tidy.with_columns(
-            (pl.col("step_name") + "." + pl.col("metric_name")).alias("_qualified_name")
+            (pl.col("step_name") + sep + pl.col("metric_name")).alias("_qualified_name")
         )
 
     result = qualified.pivot(

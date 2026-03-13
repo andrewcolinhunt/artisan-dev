@@ -145,8 +145,8 @@ class OperationDefinition(BaseModel):
     """If True, input roles are provided by the user at pipeline construction time,
     not declared in inputs. Accepts both list and dict input formats.
 
-    - List format: Role names auto-generated (_stream_0, _stream_1, ...), useful
-      when names don't matter (e.g., MergeOp)
+    - List format: All artifacts flattened into a single _merged_streams role,
+      useful when names don't matter (e.g., MergeOp)
     - Dict format: Role names from user-provided keys, useful when names are
       meaningful (e.g., roles that map to specific artifact types)
 

@@ -52,9 +52,9 @@ def inspect_pipeline(
         msg = f"Steps table not found at {steps_path}"
         raise FileNotFoundError(msg)
 
-    # Load completed and skipped steps
+    # Load completed, skipped, and cancelled steps
     scanner = pl.scan_delta(str(steps_path)).filter(
-        pl.col("status").is_in(["completed", "skipped"])
+        pl.col("status").is_in(["completed", "skipped", "cancelled"])
     )
     if pipeline_run_id is not None:
         scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
@@ -120,6 +120,18 @@ def inspect_pipeline(
                     "step": step_num,
                     "operation": row["step_name"],
                     "status": "skipped",
+                    "produced": "-",
+                    "duration": "-",
+                }
+            )
+            continue
+
+        if row["status"] == "cancelled":
+            rows.append(
+                {
+                    "step": step_num,
+                    "operation": row["step_name"],
+                    "status": "cancelled",
                     "produced": "-",
                     "duration": "-",
                 }

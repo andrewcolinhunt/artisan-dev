@@ -13,11 +13,12 @@ heavy computation. Companion to
 
 ## Minimal working example
 
-A curator operation that tags artifacts above a threshold as "passed":
+A curator operation that merges two artifact streams into one:
 
 ```python
 from __future__ import annotations
 
+from enum import StrEnum, auto
 from typing import ClassVar
 
 import polars as pl
@@ -32,19 +33,25 @@ from artisan.schemas import (
 from artisan.storage import ArtifactStore
 
 
-class ScoreGate(OperationDefinition):
-    """Pass through artifacts with score above a threshold."""
+class SimpleMerge(OperationDefinition):
+    """Merge multiple artifact streams into a single output."""
 
-    name = "score_gate"
+    name = "simple_merge"
 
     runtime_defined_inputs: ClassVar[bool] = True
+    independent_input_streams: ClassVar[bool] = True
+    hydrate_inputs: ClassVar[bool] = False
 
     inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        "passthrough": OutputSpec(artifact_type=ArtifactTypes.ANY, required=False),
-    }
 
-    threshold: float = 0.5
+    class OutputRole(StrEnum):
+        merged = auto()
+
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.merged: OutputSpec(
+            artifact_type=ArtifactTypes.ANY, required=False
+        ),
+    }
 
     def execute_curator(
         self,
@@ -52,16 +59,14 @@ class ScoreGate(OperationDefinition):
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
-        pt_df = inputs.get("passthrough", pl.DataFrame({"artifact_id": []}))
-        ids = pt_df["artifact_id"].to_list()
-
-        # Load metrics from the store and filter by threshold
-        metrics_df = artifact_store.load_metrics_df(ids)
-        # ... apply threshold logic ...
-
+        merged = (
+            pl.concat(inputs.values()).select("artifact_id")
+            if inputs
+            else pl.DataFrame({"artifact_id": []})
+        )
         return PassthroughResult(
             success=True,
-            passthrough={"passthrough": passed_ids},
+            passthrough={"merged": merged["artifact_id"].to_list()},
         )
 ```
 
@@ -69,10 +74,9 @@ Use it in a pipeline like any other operation:
 
 ```python
 pipeline.run(
-    operation=ScoreGate,
-    name="gate",
-    inputs={"passthrough": output("prev_step", "results")},
-    params={"threshold": 0.7},
+    operation=SimpleMerge,
+    name="merge",
+    inputs=[output("branch_a", "results"), output("branch_b", "results")],
 )
 ```
 
@@ -88,7 +92,7 @@ before you start writing code.
 | **Purpose** | Heavy computation, file I/O | Route, filter, merge, or ingest artifacts |
 | **Execution** | Three phases (preprocess / execute / postprocess) | Single `execute_curator` method |
 | **Sandboxing** | Full sandbox with file materialization | None — in-memory only |
-| **Dispatch** | Workers (local ThreadPool or SLURM) | Direct in-process call |
+| **Dispatch** | Workers (local ProcessPool or SLURM) | Direct in-process call |
 | **Returns** | `ArtifactResult` (always creates new artifacts) | `ArtifactResult` or `PassthroughResult` |
 
 **Choose curator when** the operation routes, filters, merges, or annotates
@@ -126,8 +130,7 @@ New draft artifacts are created and returned. Used by ingest operations that
 bring external data into the pipeline.
 
 ```python
-from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact import DataArtifact
+from artisan.schemas import ArtifactResult, DataArtifact
 
 drafts = [
     DataArtifact.draft(
@@ -158,16 +161,23 @@ No explicit flag or registration needed.
 |----------|------|---------|----------------|
 | `runtime_defined_inputs` | `bool` | `False` | Set `True` when input role names are defined by the caller, not the operation |
 | `independent_input_streams` | `bool` | `False` | Set `True` when input roles have different cardinalities (e.g., a merge with streams of different lengths) |
+| `hydrate_inputs` | `bool` | `True` | Set `False` when the operation only needs artifact IDs, not full content (e.g., passthrough operations) |
 
 ### Input and output specs
+
+When `runtime_defined_inputs=True`, set `inputs` to an empty dict `{}` — input
+role names are provided by the caller at pipeline construction time. You do not
+need an `InputRole` enum in this case.
+
+When `outputs` is non-empty, you must define an `OutputRole(StrEnum)` inner
+class whose values match the `outputs` dict keys. The framework validates this
+match at class definition time.
 
 Curator operations skip several validations that apply to creators:
 
 - `infer_lineage_from` can be `None` on `OutputSpec` (creators must set it
   explicitly)
 - `preprocess()` is not required, even when inputs are declared
-- `InputRole` / `OutputRole` enums are not required when
-  `runtime_defined_inputs=True`
 
 ### Method signature
 
@@ -197,21 +207,34 @@ Here are the three common curator patterns with complete implementations.
 
 ### Pattern A: Filter (passthrough)
 
-Accept a stream, evaluate each artifact, return the IDs that pass:
+Accept a stream, evaluate each artifact, return the IDs that pass. This
+example loads artifact content from the store and keeps only those whose
+`original_name` matches a pattern:
 
 ```python
-class MetadataFilter(OperationDefinition):
-    name = "metadata_filter"
+from enum import StrEnum, auto
+
+from artisan.schemas.artifact.types import ArtifactTypes
+
+
+class NameFilter(OperationDefinition):
+    name = "name_filter"
 
     runtime_defined_inputs: ClassVar[bool] = True
+    hydrate_inputs: ClassVar[bool] = False
 
     inputs: ClassVar[dict[str, InputSpec]] = {}
+
+    class OutputRole(StrEnum):
+        passthrough = auto()
+
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "passthrough": OutputSpec(artifact_type=ArtifactTypes.ANY, required=False),
+        OutputRole.passthrough: OutputSpec(
+            artifact_type=ArtifactTypes.ANY, required=False
+        ),
     }
 
-    required_key: str = "status"
-    required_value: str = "active"
+    contains: str = ""
 
     def execute_curator(
         self,
@@ -222,18 +245,22 @@ class MetadataFilter(OperationDefinition):
         pt_df = inputs.get("passthrough", pl.DataFrame({"artifact_id": []}))
         ids = pt_df["artifact_id"].to_list()
 
-        # Load metrics and filter
-        metrics = artifact_store.load_metrics_df(ids)
-        passed = (
-            metrics.filter(pl.col(self.required_key) == self.required_value)
-            ["artifact_id"].to_list()
-        )
+        # Load artifacts from the store and filter by name
+        artifacts = artifact_store.get_artifacts_by_type(ids, ArtifactTypes.DATA)
+        passed = [
+            aid for aid, art in artifacts.items()
+            if art.original_name and self.contains in art.original_name
+        ]
 
         return PassthroughResult(
             success=True,
             passthrough={"passthrough": passed},
         )
 ```
+
+For metric-based filtering, use the built-in [Filter](#filter) operation instead
+of writing a custom one. Filter handles the forward provenance walk needed to
+discover descendant metrics.
 
 ### Pattern B: Merge (passthrough, multi-stream)
 
@@ -245,10 +272,17 @@ class TaggedMerge(OperationDefinition):
 
     runtime_defined_inputs: ClassVar[bool] = True
     independent_input_streams: ClassVar[bool] = True
+    hydrate_inputs: ClassVar[bool] = False
 
     inputs: ClassVar[dict[str, InputSpec]] = {}
+
+    class OutputRole(StrEnum):
+        merged = auto()
+
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "merged": OutputSpec(artifact_type=ArtifactTypes.ANY, required=False),
+        OutputRole.merged: OutputSpec(
+            artifact_type=ArtifactTypes.ANY, required=False
+        ),
     }
 
     def execute_curator(
@@ -278,8 +312,11 @@ from artisan.schemas.artifact.file_ref import FileRefArtifact
 class IngestCSV(IngestFiles):
     name = "ingest_csv"
 
+    class OutputRole(StrEnum):
+        data = auto()
+
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "data": OutputSpec(
+        OutputRole.data: OutputSpec(
             artifact_type="data",
             infer_lineage_from={"inputs": ["file"]},
         ),
@@ -355,6 +392,29 @@ pipeline.run(
 
 All criteria are AND'd. Supported operators: `gt`, `ge`, `lt`, `le`, `eq`, `ne`.
 
+#### Filter parameters
+
+| Parameter | Type | Default | Effect |
+|-----------|------|---------|--------|
+| `criteria` | `list[Criterion]` | `[]` | AND'd filter criteria to evaluate |
+| `passthrough_failures` | `bool` | `False` | Pass all artifacts through regardless of criteria (diagnostics still computed) |
+| `chunk_size` | `int` | `100_000` | Number of passthrough artifacts per hydration/evaluation chunk |
+
+Set `passthrough_failures=True` to preview what a filter *would* remove without
+actually removing anything — useful for debugging filter thresholds:
+
+```python
+pipeline.run(
+    operation=Filter,
+    name="dry_run_filter",
+    inputs={"passthrough": output("generate", "results")},
+    params={
+        "criteria": [{"metric": "score", "operator": "gt", "value": 0.9}],
+        "passthrough_failures": True,
+    },
+)
+```
+
 ### Merge
 
 Union multiple artifact streams into one. No content is loaded — pure
@@ -401,6 +461,42 @@ pipeline.run(
 )
 ```
 
+### InteractiveFilter
+
+Explore metric distributions in a notebook, set thresholds interactively, and
+commit the result as a pipeline step. Unlike `Filter` (which requires upfront
+criteria), `InteractiveFilter` lets you inspect data before committing to
+thresholds.
+
+```python
+from artisan.operations.curator import InteractiveFilter
+
+filt = InteractiveFilter(delta_root="/runs/my_pipeline/delta")
+filt.load(step_numbers=[1], artifact_type="data")
+
+# Explore metrics
+filt.wide_df   # one row per artifact, metrics as columns
+filt.tidy_df   # long format: one row per (artifact, metric_name)
+
+# Set criteria and preview
+filt.set_criteria([
+    {"metric": "score", "operator": "gt", "value": 0.5},
+])
+filt.summary()           # per-criterion statistics and cumulative funnel
+filt.plot()              # histograms with threshold lines (requires matplotlib)
+filt.filtered_ids        # artifact IDs that pass
+filt.filtered_wide_df    # wide DataFrame filtered to passing rows
+
+# Commit as a pipeline step
+result = filt.commit(step_name="interactive_filter")
+# result.output("passthrough") is available for downstream steps
+```
+
+The `load()` method discovers descendant metrics via forward provenance walk.
+`set_criteria()` validates metric names against loaded data and checks for
+ambiguous field names across steps. `commit()` writes step and execution records
+to the Delta store, making the filtered result available for downstream wiring.
+
 ---
 
 ## Testing
@@ -442,6 +538,7 @@ etc.).
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
+| `TypeError: must define OutputRole` | Missing `OutputRole(StrEnum)` inner class | Add enum with values matching `outputs` keys |
 | `NotImplementedError` from `execute_curator` | Forgot to override the method | Implement `execute_curator` on your subclass |
 | Empty `inputs` dict | Input role name mismatch | Check that `pipeline.run(inputs={...})` keys match what the operation expects |
 | `ArtifactResult` with unfinalizable drafts | Missing `step_number` on `draft()` | Use the `step_number` parameter |
@@ -455,18 +552,21 @@ etc.).
 Confirm your operation works end-to-end in a minimal pipeline:
 
 ```python
+from artisan.operations.examples import DataGenerator
+from artisan.orchestration import PipelineManager
+
 pipeline = PipelineManager.create(
     name="test", delta_root="test/delta", staging_root="test/staging",
 )
 output = pipeline.output
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 5})
-step1 = pipeline.run(
-    operation=ScoreGate,
-    name="gate",
-    inputs={"passthrough": output("generate", "datasets")},
-    params={"threshold": 0.5},
+pipeline.run(operation=DataGenerator, name="gen_a", params={"count": 3})
+pipeline.run(operation=DataGenerator, name="gen_b", params={"count": 2})
+step = pipeline.run(
+    operation=SimpleMerge,
+    name="merge",
+    inputs=[output("gen_a", "datasets"), output("gen_b", "datasets")],
 )
-assert step1.success
+assert step.success
 ```
 
 ---

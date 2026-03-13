@@ -12,13 +12,11 @@ Note: IngestData returns ArtifactResult with draft DataArtifacts.
 
 from __future__ import annotations
 
-import csv
-import io
-import random
 from unittest.mock import Mock
 
 import polars as pl
 import pytest
+from fixtures.csv import make_csv
 
 from artisan.operations.curator import IngestData
 from artisan.schemas.artifact import FileRefArtifact
@@ -59,31 +57,12 @@ def _mock_store_with_refs(file_refs: list[FileRefArtifact]) -> Mock:
     return store
 
 
-def _make_csv(rows: int = 5, seed: int = 42) -> bytes:
-    """Generate test CSV content."""
-    rng = random.Random(seed)
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(["id", "x", "y", "z", "score"])
-    for i in range(rows):
-        writer.writerow(
-            [
-                i,
-                round(rng.uniform(0.0, 10.0), 4),
-                round(rng.uniform(0.0, 10.0), 4),
-                round(rng.uniform(0.0, 10.0), 4),
-                round(rng.uniform(0.0, 1.0), 4),
-            ]
-        )
-    return buf.getvalue().encode("utf-8")
-
-
 class TestIngestDataBasicExecution:
     """Tests for basic IngestData execute_curator() execution."""
 
     def test_should_ingest_single_csv_file(self, tmp_path):
         """Test should successfully ingest a single CSV file."""
-        content = _make_csv(rows=3, seed=42)
+        content = make_csv(rows=3, seed=42)
         path = tmp_path / "data.csv"
         path.write_bytes(content)
 
@@ -113,7 +92,7 @@ class TestIngestDataBasicExecution:
         """Test should successfully ingest multiple CSV files."""
         files = []
         for i in range(3):
-            content = _make_csv(rows=5, seed=100 + i)
+            content = make_csv(rows=5, seed=100 + i)
             path = tmp_path / f"data_{i}.csv"
             path.write_bytes(content)
             files.append(make_file_ref(str(path), content_hash=f"{chr(97 + i)}" * 32))
@@ -167,7 +146,7 @@ class TestIngestDataExternalPath:
 
     def test_should_set_external_path_from_file_ref(self, tmp_path):
         """Test output artifact should have external_path from FileRefArtifact.path."""
-        content = _make_csv(rows=2, seed=42)
+        content = make_csv(rows=2, seed=42)
         path = tmp_path / "data.csv"
         path.write_bytes(content)
 
@@ -220,7 +199,7 @@ class TestIngestDataOutputFormat:
 
     def test_output_should_contain_all_required_fields(self, tmp_path):
         """Test output artifact should contain all required fields."""
-        content = _make_csv(rows=2, seed=42)
+        content = make_csv(rows=2, seed=42)
         path = tmp_path / "data.csv"
         path.write_bytes(content)
 
@@ -245,7 +224,7 @@ class TestIngestDataOutputFormat:
 
     def test_output_artifacts_preserve_filenames(self, tmp_path):
         """Test artifacts preserve original filenames."""
-        content = _make_csv(rows=2, seed=42)
+        content = make_csv(rows=2, seed=42)
         path = tmp_path / "my_dataset.csv"
         path.write_bytes(content)
 

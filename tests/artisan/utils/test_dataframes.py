@@ -291,6 +291,50 @@ class TestPivotMetricsWide:
         assert wide.height == 0
         assert "artifact_id" in wide.columns
 
+    def test_custom_separator(self):
+        """Custom separator is used in column names."""
+        tidy = _tidy(
+            [
+                {
+                    "artifact_id": "a1",
+                    "step_number": 1,
+                    "step_name": "calc",
+                    "metric_name": "score",
+                    "metric_value": "0.9",
+                    "metric_compound": None,
+                },
+            ]
+        )
+        wide = pivot_metrics_wide(tidy, separator="::")
+        assert "calc::score" in wide.columns
+        assert wide.row(0, named=True)["calc::score"] == pytest.approx(0.9)
+
+    def test_custom_separator_disambiguation(self):
+        """Custom separator is used in disambiguated column names."""
+        tidy = _tidy(
+            [
+                {
+                    "artifact_id": "a1",
+                    "step_number": 1,
+                    "step_name": "repeat",
+                    "metric_name": "val",
+                    "metric_value": "1",
+                    "metric_compound": None,
+                },
+                {
+                    "artifact_id": "a1",
+                    "step_number": 2,
+                    "step_name": "repeat",
+                    "metric_name": "val",
+                    "metric_value": "2",
+                    "metric_compound": None,
+                },
+            ]
+        )
+        wide = pivot_metrics_wide(tidy, separator="::")
+        assert "1::repeat::val" in wide.columns
+        assert "2::repeat::val" in wide.columns
+
 
 # ---------------------------------------------------------------------------
 # Type inference

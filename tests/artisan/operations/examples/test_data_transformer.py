@@ -5,7 +5,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from conftest import make_csv, run_operation_lifecycle
+from conftest import run_operation_lifecycle
+from fixtures.csv import make_csv
 
 from artisan.operations.examples import DataTransformer
 

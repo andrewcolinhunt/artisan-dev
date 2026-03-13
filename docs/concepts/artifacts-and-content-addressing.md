@@ -23,14 +23,14 @@ This single decision produces three consequences that underpin the rest of the
 framework:
 
 **Deduplication.** If two operations produce identical output, only one copy is
-stored. The commit logic checks incoming artifact IDs against the store and
-silently drops duplicates. No configuration needed -- it is a structural
-guarantee.
+stored. The commit logic performs an anti-join on incoming artifact IDs against
+the existing Delta Lake table and silently drops duplicates. No configuration
+needed -- it is a structural guarantee.
 
 **Deterministic caching.** Cache keys are computed from the operation name,
-input artifact IDs, and parameters. Since artifact IDs are content hashes,
-identical computation always produces the same cache key. No manual cache
-invalidation, no cache drift, no stale entries.
+input artifact IDs, parameters, and any config overrides. Since artifact IDs are
+content hashes, identical computation always produces the same cache key. No
+manual cache invalidation, no cache drift, no stale entries.
 
 **Immutable provenance.** The artifact ID *is* the content. Modifying the content
 would change the hash, producing a different artifact. This means provenance
@@ -82,10 +82,11 @@ no-op. The framework finalizes all draft artifacts in bulk after an operation's
 postprocess phase completes.
 
 **Why not freeze the model?** Artifact objects are Pydantic models, but they are
-intentionally *not* frozen. Drafts need mutation (setting content, metadata,
-original name). After finalization, immutability is semantic rather than
-enforced -- the content hash guarantees that any mutation would produce a
-different identity, making accidental mutation detectable.
+intentionally *not* frozen (the model uses `extra="forbid"` without `frozen=True`).
+Drafts need mutation (setting content, metadata, original name). After
+finalization, immutability is semantic rather than enforced -- the content hash
+guarantees that any mutation would produce a different identity, making
+accidental mutation detectable.
 
 ---
 
@@ -98,13 +99,35 @@ its purpose.
 | Type | What it stores | Content format | Why a separate type |
 |------|---------------|----------------|---------------------|
 | **Metric** | Computed properties (scores, statistics, counts) | JSON-encoded bytes | Queryable structured data, often aggregated across runs |
-| **Config** | Computation specifications (model params, tool configs) | JSON-encoded bytes | Can reference other artifacts via `$artifact` patterns |
+| **Config** | Execution parameters and tool configurations | JSON-encoded bytes | Can reference other artifacts via `$artifact` patterns |
 | **Data** | Generic tabular data (CSV) | Raw CSV bytes | Captures schema metadata (columns, row count) at creation |
 | **File ref** | Pointers to external files | Metadata only (no embedded content) | Lightweight reference without copying large files into storage |
 
 Each type maps to its own Delta Lake table (e.g., `artifacts/metrics`,
-`artifacts/configs`). This means you can query all metrics across a pipeline
-with a single table scan, without filtering through unrelated artifact types.
+`artifacts/configs`, `artifacts/data`, `artifacts/file_refs`). This means you
+can query all metrics across a pipeline with a single table scan, without
+filtering through unrelated artifact types.
+
+In addition to the per-type content tables, the framework maintains an
+**artifact index** -- a global table mapping every `artifact_id` to its type
+and origin step number. This index enables fast type lookups without scanning
+each content table, which matters when resolving provenance graphs or loading
+artifacts by ID without knowing their type in advance.
+
+### Shared fields
+
+All artifact types inherit a common set of fields from the base artifact model:
+
+- **artifact_id** -- the content hash (None for drafts, 32-char hex when finalized)
+- **artifact_type** -- a string discriminator identifying the type
+- **origin_step_number** -- the pipeline step that produced this artifact
+- **metadata** -- a JSON-serializable dict for extensibility
+- **external_path** -- an optional path to external content on disk
+
+These shared fields appear in every content table. The artifact index stores
+a subset (`artifact_id`, `artifact_type`, `origin_step_number`, `metadata`).
+Type-specific fields (like `content`, `columns`, `row_count`, `content_hash`)
+are added by each concrete type.
 
 ### Config artifacts and cross-references
 
@@ -114,15 +137,15 @@ to other artifacts by ID. During materialization, the framework resolves these
 references to file paths, so the consuming operation receives a config file with
 real paths where it expects them.
 
-This matters for tools like ToolA, where the config JSON references
-data files that need to exist on disk. The framework handles the resolution
-transparently -- the operation writes `$artifact` references in postprocess,
-and the next step's preprocess receives resolved paths.
+This matters for operations that use configuration files referencing data files
+that need to exist on disk. The framework handles the resolution transparently:
+non-config artifacts are materialized first (so their paths are known), then
+config artifacts resolve their `$artifact` references against those paths.
 
 ### File refs and the two-step hash
 
 File ref artifacts hash differently from other types. Instead of hashing the
-file content directly, they hash a metadata record containing the content hash,
+file content directly, they hash a JSON record containing the content hash,
 the original path, and the file size. This means two identical files at
 different paths produce different artifact IDs.
 
@@ -140,9 +163,10 @@ modifying the framework.
 
 Registration requires two things: an artifact model class (the data shape) and
 a type definition (the registry entry binding a key, table path, and model
-class together). Registration is automatic -- defining the type definition
-subclass triggers `__init_subclass__`, which validates the model and registers
-the type in both the type namespace and the type definition registry.
+class together). Registration is automatic -- defining a type definition
+subclass triggers `__init_subclass__`, which validates that the model has the
+required serialization interface (`POLARS_SCHEMA`, `to_row`, `from_row`) and
+registers the type in both the type namespace and the type definition registry.
 
 **Why this matters:** the framework has zero knowledge of domain-specific data.
 A domain layer can add a custom artifact type, and the framework automatically
@@ -160,9 +184,10 @@ When the framework loads artifacts from storage, it can operate in two modes:
 **Full hydration** loads the complete artifact including content bytes. This is
 what operations need when they read or transform data.
 
-**ID-only mode** loads just the artifact ID and type, skipping the Delta Lake
-scan entirely. This is what passthrough operations need -- operations like
-Filter and Merge that route artifacts without reading their content.
+**ID-only mode** loads only the artifact ID and type, skipping the Delta Lake
+content table scan entirely. This is what passthrough operations need --
+operations like Filter and Merge that route artifacts without reading their
+content.
 
 Hydration is controlled at the input spec level, so different input roles on the
 same operation can use different modes. The framework also skips materialization
@@ -179,12 +204,23 @@ I/O.
 
 ## How content addressing enables caching
 
-Content addressing makes caching deterministic. Cache keys are computed from
-content-hashed artifact IDs plus operation parameters and config overrides, so
-the chain is fully deterministic: same data + same computation = same cache key.
-No false hits (any input change invalidates the key), no false misses (identical
-computation always matches regardless of when or where it runs), and no manual
-invalidation.
+Content addressing makes caching deterministic. The framework computes cache
+keys at two levels:
+
+**Execution-level cache keys** are computed from the operation name, input
+artifact IDs (sorted and deduplicated across all roles), merged parameters,
+and any config overrides. Same data + same computation = same cache key, so
+identical work is never repeated regardless of when or where it runs.
+
+**Step-level cache keys** operate on step references rather than resolved
+artifact IDs. They incorporate the operation name, step number (position in
+the pipeline), parameters, upstream step spec IDs, and config overrides. This
+enables the framework to determine that a step can be skipped before resolving
+its inputs, which avoids unnecessary upstream computation.
+
+Both levels share the same guarantee: no false hits (any input change
+invalidates the key), no false misses (identical computation always matches),
+and no manual invalidation.
 
 For the full two-level caching mechanism, see
 [Execution Flow](execution-flow.md#two-level-caching).
@@ -196,9 +232,11 @@ For the full two-level caching mechanism, see
 Artifacts sit at the intersection of every other subsystem:
 
 - **Provenance** records edges between artifact IDs. Because IDs are immutable,
-  edges are permanent.
-- **Storage** persists artifacts in Delta Lake tables, one table per type.
-  Deduplication is an anti-join on artifact IDs during commit.
+  edges are permanent. Each edge captures source and target artifact IDs, their
+  types, their roles, and the execution that established the relationship.
+- **Storage** persists artifacts in Delta Lake tables, one table per type, plus
+  a global artifact index for type resolution. Deduplication is an anti-join on
+  artifact IDs during commit.
 - **Execution** materializes input artifacts to disk, runs operations, and
   finalizes output drafts. The draft/finalize lifecycle ensures content is
   complete before IDs are assigned.
@@ -210,7 +248,7 @@ Change the identity model, and every subsystem would need to change with it.
 
 ---
 
-## Cross-References
+## Cross-references
 
 - [Design Principles](design-principles.md) -- Rationale for content addressing
   and other foundational decisions

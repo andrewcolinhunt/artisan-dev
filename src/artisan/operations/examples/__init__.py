@@ -1,4 +1,5 @@
 """Artisan example operations for testing and demonstration."""
+from __future__ import annotations
 
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.operations.examples.data_generator_with_metrics import (
@@ -12,6 +13,7 @@ from artisan.operations.examples.data_transformer_config import (
 )
 from artisan.operations.examples.data_transformer_script import DataTransformerScript
 from artisan.operations.examples.metric_calculator import MetricCalculator
+from artisan.operations.examples.wait import Wait
 
 __all__ = [
     "DataGenerator",
@@ -20,4 +22,5 @@ __all__ = [
     "DataTransformerConfig",
     "DataTransformerScript",
     "MetricCalculator",
+    "Wait",
 ]

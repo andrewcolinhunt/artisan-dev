@@ -39,7 +39,7 @@ def instantiate_inputs(
     """
     # Bulk-resolve artifact types (1 delta scan instead of N)
     all_ids = [aid for ids in inputs.values() for aid in ids]
-    type_map = artifact_store.load_artifact_type_map(all_ids) if all_ids else {}
+    type_map = artifact_store.provenance.load_type_map(all_ids) if all_ids else {}
 
     # Pre-load hydrated artifacts in bulk by type
     hydrated_ids_by_type: dict[str, list[str]] = {}
