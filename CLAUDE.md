@@ -106,6 +106,8 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`
 
 ```
 src/artisan/               # Framework (domain-agnostic)
+├── composites/            # Composite operations (reusable op compositions)
+│   └── base/              # CompositeDefinition base class, context, provenance
 ├── execution/             # Worker execution (context, executors, inputs, lineage, models, staging)
 ├── operations/            # Base class + framework ops
 │   ├── base/              # OperationDefinition base class
@@ -115,6 +117,7 @@ src/artisan/               # Framework (domain-agnostic)
 │   └── engine/            # Batching, dispatch, step executor
 ├── schemas/               # All data models
 │   ├── artifact/          # Artifact base, registry, types, metric, file_ref, data, execution_config
+│   ├── composites/        # CompositeRef, CompositeStepHandle, ExpandedCompositeResult
 │   ├── execution/         # Execution context, record, curator result
 │   ├── operation_config/  # Command/resource configuration schemas
 │   ├── orchestration/     # Pipeline/step result schemas
@@ -138,10 +141,11 @@ src/artisan/               # Framework (domain-agnostic)
 docs/
 ├── getting-started/         # Installation, first pipeline, core concepts
 ├── tutorials/               # Interactive notebooks (Diataxis)
-│   ├── getting-started/     # First pipeline, exploring results, run vs submit
-│   ├── pipeline-patterns/   # Sources, branching, filtering, multi-input, advanced
-│   ├── execution-and-tuning/ # Batching, step overrides
-│   └── working-with-results/ # Provenance graphs, resume, filtering, timing
+│   ├── getting-started/     # First pipeline, exploring results
+│   ├── pipeline-design/     # Sources, branching, filtering, multi-input, diamonds, composites
+│   ├── execution/           # Run vs submit, caching, batching, errors, overrides, SLURM
+│   ├── analysis/            # Provenance graphs, interactive filter, timing
+│   └── writing-operations/  # Writing operations and composites
 ├── concepts/                # Architecture, design principles, provenance, execution flow
 ├── how-to-guides/           # Writing operations, configuring execution, provenance
 ├── reference/               # Glossary, comparison to alternatives

@@ -36,9 +36,17 @@ unlikely. Each principle below targets one or more of these failure modes.
 ## Content is identity
 
 Every artifact is identified by the hash of its content
-(`artifact_id = xxh3_128(content)`). The ID *is* the data. There is no
-separate registry mapping names to values, no auto-incrementing counter, no
-UUID that could accidentally refer to different content on two machines.
+(`artifact_id = xxh3_128(content)`), producing a 32-character hexadecimal
+string. The ID *is* the data. There is no separate registry mapping names to
+values, no auto-incrementing counter, no UUID that could accidentally refer to
+different content on two machines.
+
+Content addressing extends beyond artifact storage. Execution cache keys use
+the same hashing approach: `compute_execution_spec_id` hashes the operation
+name, deduplicated and sorted input artifact IDs, canonicalized parameters, and
+config overrides into a single deterministic key. Step-level cache keys (`compute_step_spec_id`)
+work the same way but reference upstream step spec IDs instead of resolved
+artifact IDs, enabling cache lookups before individual artifacts are known.
 
 **What this buys you:**
 
@@ -50,6 +58,12 @@ UUID that could accidentally refer to different content on two machines.
 - **Immutability by construction.** Changing an artifact's content changes its
   ID, which means the original artifact still exists. You cannot silently
   overwrite prior results.
+
+Artifacts follow a draft/finalize lifecycle: drafts have `artifact_id=None`
+and are mutable; calling `finalize()` hashes the content, sets the ID, and
+makes the artifact semantically immutable. This two-phase design lets operations
+build outputs incrementally without computing hashes until the content is
+complete.
 
 **The trade-off:** Content-addressed storage makes updates expensive. You don't
 "edit" an artifact — you create a new one. This is intentional. In research
@@ -63,20 +77,38 @@ for how hashing, draft/finalize, and artifact types work in practice.
 
 ## Provenance is always captured, never reconstructed
 
-The framework records two complementary provenance graphs at execution time:
-one for execution edges (which computation consumed and produced which
-artifacts), one for artifact edges (which input artifact produced which output
-artifact). Neither can be derived from the other, and neither is optional.
+The framework records two complementary provenance graphs at execution time,
+stored in separate Delta Lake tables. Neither can be derived from the other,
+and neither is optional.
+
+**Execution provenance** (the `execution_edges` table) records which computation
+consumed and produced which artifacts. Each edge links an `execution_run_id` to
+an `artifact_id` with a direction (input or output) and a role name. This is an
+activity log — it answers "what happened?"
+
+**Artifact provenance** (the `artifact_edges` table) records which input
+artifact produced which output artifact. Each edge carries source and target
+artifact IDs, their types and roles, the execution that established the edge,
+and an optional `group_id` for multi-input operations. This is a derivation
+graph — it answers "where did this come from?"
+
+For multi-input operations, edges sharing the same `group_id` and target
+artifact were co-inputs to a single derivation. This lets you reconstruct
+which specific combination of inputs produced a given output, not
+only that they were all present in the same batch.
 
 **Why capture at execution time?** Because the context needed to establish
 derivation edges — filename stems, pairing order, explicit declarations — is
-available only during execution. Attempting to reconstruct lineage after the
-fact is brittle and unreliable.
+available only during execution. The framework captures lineage automatically
+via filename stem matching: it strips file extensions from output names and
+matches them against input stems using longest-prefix lookup. Operations with
+non-standard naming provide explicit lineage declarations through
+`infer_lineage_from` on their output specs.
 
 **The trade-off:** Capturing provenance adds work to every operation. The
-framework handles most of it automatically via filename stem matching, but
-operations with non-standard naming need explicit declarations. The cost of
-annotating lineage is far lower than the cost of not having it.
+framework handles most of it automatically via stem matching, but operations
+with non-standard naming need explicit declarations. The cost of annotating
+lineage is far lower than the cost of not having it.
 
 **See:** [Provenance System](provenance-system.md) for the dual system, stem
 matching algorithm, and lineage declaration.
@@ -90,6 +122,18 @@ orchestration, scheduling, storage, or infrastructure. They receive data in,
 produce data out. All coordination — dispatching to workers, managing sandboxes,
 staging results, committing to storage — is handled by the layers above.
 
+The framework enforces this through the three-phase creator lifecycle:
+
+- **Preprocess** receives artifacts and produces a plain dict of prepared inputs.
+- **Execute** receives that dict plus a working directory and returns a result.
+- **Postprocess** receives file outputs and the return value and constructs
+  draft artifacts.
+
+At no point does the operation touch the artifact store, the cache, or the
+pipeline definition. The `ExecuteInput` provided to `execute()` contains the
+prepared inputs dict, an `execute_dir` path for file I/O, a `log_path`
+for tool output, and a `metadata` dict for engine-provided context.
+
 **Why this matters:**
 
 - **Testable in isolation.** You can unit test a creator by constructing inputs
@@ -97,13 +141,9 @@ staging results, committing to storage — is handled by the layers above.
 - **Portable.** The same operation runs unchanged on a laptop with a process
   pool or on a cluster with SLURM.
 - **Composable.** Operations can be combined freely because they have no hidden
-  dependencies on each other or on global state.
-
-**What this means concretely:** A creator operation cannot read from or write to
-Delta Lake. It cannot check the cache. It cannot dispatch sub-tasks. It cannot
-access the pipeline definition. It declares its inputs and outputs through
-specs, and the framework provides everything it needs through its lifecycle
-methods.
+  dependencies on each other or on global state. The composite executor passes
+  artifacts between operations in memory without Delta Lake round-trips, which
+  is only possible because operations have no side channels.
 
 **The exception — curator operations:** Curators are a second operation type
 that intentionally breaks this boundary. They receive an `ArtifactStore` and
@@ -127,9 +167,11 @@ three-phase lifecycle, and spec system.
 
 The same code path runs for one artifact on a laptop or ten thousand artifacts
 on an HPC cluster. Only the compute backend changes — from `LOCAL` (process
-pool) to `SLURM` (cluster job submission). The backend interface is extensible,
-so additional backends (cloud, Kubernetes) can be added without changing
-operations, execution logic, provenance capture, or storage commits.
+pool) to `SLURM` (cluster job submission). Both backends build a Prefect flow
+with a backend-specific task runner, then dispatch the same `ExecutionUnit`
+objects through it. The backend interface is extensible, so additional backends
+(cloud, Kubernetes) can be added without changing operations, execution logic,
+provenance capture, or storage commits.
 
 **Why this principle exists:** Research pipelines start as local prototypes
 and grow to cluster-scale production. If different execution environments use
@@ -139,16 +181,28 @@ depending on where it runs is a pipeline you cannot trust.
 
 **How the framework enforces it:** The orchestrator-worker split defines a
 clean boundary. The orchestrator dispatches `ExecutionUnit` objects — sealed
-packages containing everything a worker needs. Workers execute them identically
-regardless of whether they are processes in a local pool or SLURM jobs on
-remote nodes. The staging-commit pattern ensures that results are collected the
-same way in all cases.
+packages containing everything a worker needs: the operation instance, input
+artifact IDs, execution spec ID, and step number. Workers execute them
+identically regardless of whether they are processes in a local pool or SLURM
+jobs on remote nodes. The staging-commit pattern ensures that results are
+collected the same way in all cases.
+
+Each backend declares two trait objects that capture the behavioral
+differences:
+
+- **Worker traits** control I/O behavior on the worker (e.g., whether to fsync
+  staged files for NFS visibility).
+- **Orchestrator traits** control post-dispatch behavior (e.g., whether to poll
+  for staging file visibility on shared filesystems).
+
+These traits are the only places where backend-specific logic lives. Everything
+else is shared.
 
 **The trade-off:** Uniformity means the local execution path carries some
-overhead (sandbox directories, staged Parquet files) that a simple local-only
-system would skip. This overhead is negligible in practice because operations
-dominate runtime, but it means "run this one thing quickly" still goes through
-the full lifecycle.
+overhead (sandbox directories, staged Parquet files) that a local-only system
+would skip. This overhead is negligible in practice because operations dominate
+runtime, but it means "run this one thing quickly" still goes through the full
+lifecycle.
 
 **See:** [Execution Flow](execution-flow.md) for the dispatch-execute-commit
 phases and [Architecture Overview](architecture-overview.md) for the
@@ -161,9 +215,17 @@ orchestrator-worker split.
 Workers never write to Delta Lake directly. Instead, each worker writes
 results to an isolated staging directory, and the orchestrator commits them
 after all workers complete. Each Delta table is committed independently in a
-fixed order (content tables first, then index, then provenance edges, then
-executions) to minimize referential integrity issues on partial failure. No
-optimistic concurrency, no write conflicts.
+fixed order — content tables first, then the artifact index, then artifact
+edges, then execution edges, then executions — to minimize referential
+integrity issues on partial failure. No optimistic concurrency, no write
+conflicts.
+
+Content-addressed deduplication runs at commit time: before appending rows,
+the committer filters out any `artifact_id` values that already exist in the
+target table. This makes commits idempotent — if a crash interrupts a commit
+and the orchestrator retries, duplicate rows are silently dropped. The
+`recover_staged` method exploits this property to commit leftover staging files
+from a prior crashed run.
 
 **Why this principle exists:** Pipelines run thousands of concurrent workers.
 If each worker wrote directly to shared tables, write conflicts would be
@@ -227,18 +289,32 @@ immediate, actionable errors.
 
 **Examples of fail-fast behavior:**
 
-- Input type mismatches caught at pipeline construction time
-- Empty `infer_lineage_from = {}` rejected (ambiguous intent)
-- Operations that implement neither `execute` nor `execute_curator` raise an
-  error at class definition time
-- Unrecognized resource configuration keys rejected before dispatch
+- Operations that implement neither `execute` nor `execute_curator` raise
+  `TypeError` at class definition time.
+- Creator operations must declare `infer_lineage_from` on every output spec.
+  Missing declarations are rejected at class definition, not at pipeline
+  runtime.
+- Creator operations with inputs must implement `preprocess`. Omitting it
+  raises `TypeError` at class definition.
+- `OutputRole` and `InputRole` enums must match the `outputs` and `inputs`
+  dicts exactly. Mismatches are caught at class definition.
+- Empty `infer_lineage_from = {}` is rejected as ambiguous intent — you must
+  choose `{"inputs": [...]}` for declared lineage or `{"inputs": []}` for
+  generative operations.
+- Combined `{"inputs": [...], "outputs": [...]}` lineage patterns are rejected;
+  use separate output roles instead.
+- `ExecutionUnit` validates that all artifact IDs are 32-character hex strings
+  and that all input roles have consistent batch sizes (unless the operation
+  declares `independent_input_streams`).
+- `ArtifactTypes.ANY` on a concrete artifact raises `ValueError` — `ANY` is
+  a spec-only sentinel, not a valid artifact type.
 
 **The trade-off:** Strict validation can be frustrating during exploration,
 when you want to sketch a pipeline before all the pieces are ready. The
 framework prioritizes correctness over flexibility in this regard.
 
 **See:** [Error Handling](error-handling.md) for the error propagation model
-and the fail-fast philosophy in detail.
+and how the framework handles runtime failures after validation passes.
 
 ---
 
@@ -268,5 +344,5 @@ expense.
 - [Provenance System](provenance-system.md) — Dual provenance tracking and lineage declaration
 - [Execution Flow](execution-flow.md) — Dispatch, execute, commit in detail
 - [Storage and Delta Lake](storage-and-delta-lake.md) — Persistence and the staging-commit pattern
-- [Error Handling](error-handling.md) — Fail-fast philosophy and error propagation
+- [Error Handling](error-handling.md) — Error containment and the fail-fast philosophy
 - [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) — See these principles in action

@@ -6,7 +6,8 @@ everything around it — sandboxing, input delivery, provenance capture, worker
 dispatch, and result staging.
 
 This page explains the two operation types, the three-phase creator lifecycle,
-and the spec system that connects operations to the rest of the framework.
+the spec system that connects operations to the rest of the framework, and the
+configuration patterns that control how operations behave.
 
 ---
 
@@ -18,7 +19,7 @@ the framework treats them differently.
 **Creators** wrap heavy computation — running external tools, performing ML
 inference, transforming files. They need isolated working directories, input
 files written to disk, and the ability to run on remote workers (SLURM nodes,
-thread pools). The framework provides a three-phase lifecycle that separates
+process pools). The framework provides a three-phase lifecycle that separates
 input preparation from computation from output construction.
 
 **Curators** perform lightweight coordination — filtering artifacts, merging
@@ -33,7 +34,7 @@ with no benefit.
 | Lifecycle | `preprocess` → `execute` → `postprocess` | `execute_curator` |
 | Sandboxing | Isolated directories per phase | None (in-memory) |
 | Input delivery | Files written to disk | DataFrames of artifact metadata |
-| Worker dispatch | SLURM, ThreadPool | Local only |
+| Worker dispatch | SLURM, ProcessPool | Local only |
 | Return type | `ArtifactResult` (from postprocess) | `ArtifactResult` or `PassthroughResult` |
 
 **The framework detects the type automatically.** If your class overrides
@@ -67,7 +68,7 @@ No framework types, no artifact objects. The return value becomes the input to
 
 **Why a separate phase?** Because the framework delivers artifacts in its own
 format (materialized paths, content bytes, metadata). The computation has its
-own expectations (a list of PDB paths, a JSON config, a batch file). Preprocess
+own expectations (a list of file paths, a JSON config, a batch file). Preprocess
 bridges the gap, and you can test it independently of the actual computation.
 
 ### Execute: compute
@@ -94,6 +95,14 @@ returned. This is where you create typed artifact drafts and assign
 requires framework knowledge (draft types, role names, step numbers) that does
 not belong inside a black-box computation. Separating construction from
 computation keeps `execute` testable without framework dependencies.
+
+### Generative creators
+
+Creators with no inputs (empty `inputs` dict) skip preprocess entirely. They
+only implement `execute` and `postprocess`. The framework does not require a
+`preprocess` override when there are no input artifacts to adapt. Their outputs
+declare `infer_lineage_from={"inputs": []}` to signal that the produced
+artifacts have no parents.
 
 ### Why this design matters
 
@@ -123,10 +132,38 @@ worker dispatch. They run locally and immediately. This makes them fast and
 simple, but limits them to work that does not require heavy computation or
 file I/O.
 
-**PassthroughResult** is unique to curators. It forwards existing artifact IDs
-through the pipeline without creating new artifacts — the curator is routing,
-not transforming. Filter and Merge use this pattern: they decide which artifacts
-continue, not what new artifacts to create.
+### Two result shapes
+
+**`ArtifactResult`** creates new draft artifacts. The curator hydrates input
+data from storage, constructs new artifacts, and returns them keyed by output
+role. Ingestion curators use this pattern — they read file references from
+storage, convert them to domain artifacts, and return the drafts for the
+framework to finalize.
+
+**`PassthroughResult`** forwards existing artifact IDs through the pipeline
+without creating new artifacts — the curator is routing, not transforming.
+Filter and Merge use this pattern: they decide which artifacts continue, not
+what new artifacts to create.
+
+### Explicit lineage in ArtifactResult
+
+When a curator (or a creator's postprocess) returns an `ArtifactResult`, it can
+optionally include a `lineage` dict mapping output roles to lists of
+`LineageMapping` objects. Each mapping declares an explicit parent-child
+relationship between a draft artifact's `original_name` and a source artifact
+ID. When `lineage` is provided, the framework uses it directly instead of
+inferring lineage from filename matching. This is useful when the default
+filename-matching algorithm cannot determine the correct parent — for example,
+when input and output filenames share no common stem.
+
+### Abstract curator bases
+
+Curators can define abstract base classes by leaving `name` empty. The abstract
+base implements `execute_curator` with shared logic, and concrete subclasses
+set `name`, `outputs`, `OutputRole`, and a conversion method. The IngestFiles
+base class uses this pattern: it handles hydration and iteration over file
+references, while subclasses like IngestData implement only the
+`convert_file()` method that produces the target artifact type.
 
 ---
 
@@ -139,38 +176,24 @@ of lineage tracking.
 
 ### Input specs
 
-Each entry in `inputs` maps a role name to an `InputSpec`:
+Each entry in `inputs` maps a role name to an `InputSpec` that controls what
+type of artifact the role accepts, whether the artifact is materialized to disk
+or delivered in memory, and how much data is loaded from storage.
 
-| Field | What it controls |
-|-------|-----------------|
-| `artifact_type` | What type of artifact the role accepts (`ArtifactTypes.ANY` for generic operations) |
-| `required` | Whether the pipeline fails if this input is missing |
-| `materialize` | Whether to write the artifact to disk (`True`, default) or deliver it in memory (`False`) |
-| `hydrate` | Whether to load full content (`True`) or just the artifact ID (`False`, for passthrough) |
-| `with_associated` | Artifact types to auto-resolve via provenance (e.g., annotations for a structure) |
+Two choices stand out. **Materialization** determines whether the framework
+writes artifact content to a file in the sandbox (for external tools that read
+from disk) or delivers content bytes directly (faster for in-memory Python
+processing). **Hydration** controls whether the full artifact is loaded or only
+the artifact ID — passthrough operations like Filter that route artifacts
+without reading content benefit from ID-only hydration.
 
-**Materialization** is the most consequential choice. When `materialize=True`
-(the default), the framework writes the artifact's content to a file in the
-sandbox, and the operation receives a file path. When `materialize=False`, the
-operation receives the content bytes directly. Materialization is necessary for
-external tools that read files from disk; in-memory delivery is faster for
-operations that parse data in Python.
-
-**Hydration** controls how much data is loaded from storage. Full hydration
-loads the complete artifact including content. ID-only mode (`hydrate=False`)
-loads just the artifact ID and type, skipping the Delta Lake scan entirely.
-This matters for passthrough operations like Filter that route artifacts without
-reading their content — processing 10,000 artifacts without loading 10,000
-files is orders of magnitude faster.
+For the full field reference, see [Writing Creator Operations — Input specs](../how-to-guides/writing-creator-operations.md).
 
 ### Output specs
 
-Each entry in `outputs` maps a role name to an `OutputSpec`:
-
-| Field | What it controls |
-|-------|-----------------|
-| `artifact_type` | What type of artifact the role produces |
-| `infer_lineage_from` | Which artifacts this output derives from (for provenance) |
+Each entry in `outputs` maps a role name to an `OutputSpec` that declares the
+artifact type produced, whether the output is required, and — for creator
+operations — which inputs the output derives from for provenance tracking.
 
 The `infer_lineage_from` field is the core of per-output lineage control.
 It tells the framework which artifacts to consider when matching output
@@ -185,7 +208,9 @@ filenames to establish parent-child provenance edges. Three patterns:
 Creator operations must set `infer_lineage_from` on every output. Curator
 operations leave it as `None` (lineage for passthrough results is handled
 differently). An empty dict `{}` is always invalid — it is ambiguous whether
-you meant "no lineage" or "default matching."
+you meant "no lineage" or "default matching." Combining both `"inputs"` and
+`"outputs"` keys in the same dict is also invalid; use separate output roles
+instead.
 
 ### Role enums
 
@@ -196,7 +221,7 @@ match the `inputs` dict keys. Operations with outputs define an
 The framework validates this match at class definition time. If the enum values
 diverge from the dict keys, a `TypeError` is raised immediately. This
 constraint ensures role names are type-safe and discoverable via IDE
-autocomplete — you reference `MyOp.InputRole.STRUCTURE` rather than a raw
+autocomplete — you reference `MyOp.InputRole.DATASET` rather than a raw
 string.
 
 ---
@@ -220,15 +245,26 @@ Violations raise `TypeError` at import time. A misconfigured operation cannot
 be instantiated, cannot be added to a pipeline, and cannot fail silently at
 runtime hours into a cluster job.
 
+### The operation registry
+
+Every concrete operation (non-empty `name`) is automatically registered in a
+global registry at class definition time. The registry maps operation names to
+their classes, enabling lookup by name via `OperationDefinition.get("name")`.
+This is an implementation detail used by the orchestration layer — you rarely
+interact with it directly, but it means operation names must be unique across
+the entire process.
+
 ---
 
 ## Configuration
 
-Operations declare configuration as Pydantic fields on the class. These fields
-are validated at instantiation and accessible via `self` in all lifecycle
-methods.
+Operations use two distinct configuration patterns: infrastructure
+configuration through built-in fields, and algorithm configuration through a
+nested `Params` class.
 
-Built-in fields control infrastructure behavior:
+### Infrastructure fields
+
+Built-in fields control how the framework runs the operation:
 
 - **`resources`** — portable hardware requirements: CPU count, memory, GPUs,
   time limit, plus an `extra` dict for backend-specific settings like SLURM
@@ -242,6 +278,19 @@ Built-in fields control infrastructure behavior:
 Both `resources` and `execution` can be overridden at the pipeline step level.
 The operation provides sensible defaults; the pipeline adapts them to specific
 cluster configurations.
+
+### Algorithm parameters
+
+Operations that need algorithm-specific configuration define a nested
+`Params(BaseModel)` class as a Pydantic model, then declare a `params` instance
+field with a default. This pattern separates domain parameters (scale factor,
+noise amplitude, random seed) from infrastructure concerns (CPUs, time limit,
+batch size), and gives each parameter its own type, default, validation, and
+documentation.
+
+The `Params` class is a convention, not a framework requirement — the framework
+does not inspect it. But the pattern is consistent across all built-in
+operations and provides a clean namespace for algorithm tuning.
 
 ---
 
@@ -272,7 +321,9 @@ Three ClassVar flags handle edge cases in input delivery:
 
 **`runtime_defined_inputs`** — when `True`, input roles are provided by the
 user at pipeline construction time instead of being declared in `inputs`. This
-enables operations like Merge that accept a variable number of streams.
+enables operations like Merge that accept a variable number of streams. Inputs
+can be provided as a list (all artifacts flattened into a single
+`_merged_streams` role) or as a dict with explicit role names.
 
 **`hydrate_inputs`** — the default hydration mode for runtime-defined inputs
 when no `InputSpec` exists for the role. Set to `False` for passthrough
@@ -306,13 +357,17 @@ dependencies on each other or on global state.
 
 ## Cross-references
 
+- [Writing Creator Operations](../how-to-guides/writing-creator-operations.md)
+  — Step-by-step guide to implementing a creator operation
+- [Writing Curator Operations](../how-to-guides/writing-curator-operations.md)
+  — Step-by-step guide to implementing a curator operation
+- [Writing an Operation Tutorial](../tutorials/writing-operations/01-writing-an-operation.ipynb)
+  — Hands-on walkthrough of building an operation from scratch
+- [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb)
+  — See operations in action in a complete pipeline
 - [Execution Flow](execution-flow.md) — How operations execute within the
   dispatch-execute-commit pipeline
 - [Provenance System](provenance-system.md) — How `infer_lineage_from` drives
   lineage tracking
 - [Design Principles](design-principles.md) — Rationale for pure operations
   and the layered architecture
-- [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb)
-  — See operations in action in a complete pipeline
-- [Pipeline Patterns Tutorials](../tutorials/pipeline-patterns/01-sources-and-chains.ipynb)
-  — Reusable patterns for composing operations

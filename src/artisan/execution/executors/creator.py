@@ -94,7 +94,7 @@ def run_creator_lifecycle(
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources keyed by role.
             When provided, hydrate from sources instead of unit.inputs.
-            Used by the chain executor for in-memory artifact passing.
+            Used by the composite executor for in-memory artifact passing.
 
     Returns:
         LifecycleResult with artifacts, edges, and timings.
@@ -153,7 +153,7 @@ def run_creator_lifecycle(
         default_hydrate = getattr(operation_class, "hydrate_inputs", True)
 
         if sources is not None:
-            # Hydrate from pre-resolved sources (chain executor path)
+            # Hydrate from pre-resolved sources (composite executor path)
             input_artifacts: dict[str, list[Artifact]] = {}
             for role, source in sources.items():
                 spec = input_specs.get(role, InputSpec())

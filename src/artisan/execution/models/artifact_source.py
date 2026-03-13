@@ -1,6 +1,6 @@
 """Unified artifact source for Delta-backed and in-memory artifacts.
 
-ArtifactSource wraps artifact inputs so the chain executor and lifecycle
+ArtifactSource wraps artifact inputs so the composite executor and lifecycle
 can handle both Delta-backed (by ID) and in-memory (from previous operation)
 artifacts through a single interface.
 """

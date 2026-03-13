@@ -1592,7 +1592,7 @@ class TestGroupIdFlowThroughEnrichment:
         from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 
         mock_store = Mock()
-        mock_store.load_artifact_type_map.return_value = {
+        mock_store.provenance.load_type_map.return_value = {
             "a" * 32: ArtifactTypes.METRIC,
             "b" * 32: ArtifactTypes.METRIC,
             "c" * 32: ArtifactTypes.METRIC,

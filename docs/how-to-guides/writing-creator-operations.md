@@ -156,7 +156,7 @@ phase from another.
 
 ---
 
-## Step 1: Define metadata and role enums
+## Define metadata and role enums
 
 Every operation needs a `name`. Operations with inputs define
 `InputRole(StrEnum)` whose values match the `inputs` dict keys. Operations
@@ -166,6 +166,7 @@ dict keys. The framework validates this match at class definition time.
 ```python
 class MyOp(OperationDefinition):
     name = "my_op"
+    description = "Short human-readable summary"
 
     class InputRole(StrEnum):
         DATA = "data"
@@ -179,7 +180,7 @@ Generative operations (no inputs) omit `InputRole`.
 
 ---
 
-## Step 2: Declare inputs and outputs
+## Declare inputs and outputs
 
 ### Inputs
 
@@ -191,18 +192,21 @@ inputs: ClassVar[dict[str, InputSpec]] = {
 }
 ```
 
-Key `InputSpec` fields:
+`InputSpec` fields:
 
-| Field | Default | Effect |
-|-------|---------|--------|
-| `artifact_type` | `"any"` | Type constraint on accepted artifacts |
-| `required` | `True` | Pipeline fails if this input is missing |
-| `materialize` | `True` | Write artifact to disk (file path in preprocess) vs. pass content in memory |
-| `hydrate` | `True` | Load full content vs. ID-only (for passthrough-style ops) |
-| `with_associated` | `()` | Auto-resolve related artifacts via provenance (e.g., annotations) |
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `artifact_type` | `str` | `"any"` | Type constraint on accepted artifacts |
+| `required` | `bool` | `True` | Pipeline fails if this input is missing |
+| `materialize` | `bool` | `True` | Write artifact to disk (file path in preprocess) vs. pass content in memory |
+| `hydrate` | `bool` | `True` | Load full content vs. ID-only (for passthrough-style ops) |
+| `materialize_as` | `str \| None` | `None` | Target file format for materialization (e.g. `".dat"`). Requires `materialize=True` |
+| `with_associated` | `tuple[str, ...]` | `()` | Auto-resolve related artifacts via provenance (e.g., annotations) |
+| `description` | `str` | `""` | Human-readable documentation for this input |
 
-Set `materialize=False` for inputs you'll process in Python without needing a
-file on disk (metrics, configs).
+Set `materialize=False` for inputs you process in Python without needing a
+file on disk (metrics, configs). When `materialize=False`, access content
+directly via `artifact.content` instead of `artifact.materialized_path`.
 
 ### Outputs
 
@@ -222,6 +226,15 @@ outputs: ClassVar[dict[str, OutputSpec]] = {
 }
 ```
 
+`OutputSpec` fields:
+
+| Field | Type | Default | Effect |
+|-------|------|---------|--------|
+| `artifact_type` | `str` | `"any"` | Type of artifact this output produces |
+| `infer_lineage_from` | `dict \| None` | `None` | Declares provenance parents (required for creators) |
+| `required` | `bool` | `True` | Warns if output is missing (does not fail) |
+| `description` | `str` | `""` | Human-readable documentation for this output |
+
 ### Lineage patterns
 
 | Pattern | Syntax | Use when |
@@ -231,11 +244,12 @@ outputs: ClassVar[dict[str, OutputSpec]] = {
 | Generative | `{"inputs": []}` | Output has no parents |
 
 `None` is only valid for curator operations. `{}` (empty dict) always raises
-`ValidationError`.
+`ValidationError`. Combined `{"inputs": [...], "outputs": [...]}` is not
+supported — use separate output roles instead.
 
 ---
 
-## Step 3: Add parameters
+## Add parameters
 
 Group algorithm-specific configuration into a nested `Params` model. Use
 Pydantic `Field` for defaults and validation:
@@ -263,11 +277,11 @@ pipeline.run(operation=MyOp, inputs=..., params={"scale_factor": 2.0})
 ```
 
 Parameters are optional. If your operation has no configurable behavior, skip
-this step (see `MetricCalculator` in `artisan.operations.examples`).
+this (see `MetricCalculator` in `artisan.operations.examples`).
 
 ---
 
-## Step 4: Implement preprocess
+## Implement preprocess
 
 **Required** for operations with inputs. The framework raises `TypeError` at
 class definition time if missing. Generative operations skip this (the
@@ -288,8 +302,10 @@ def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
 Each artifact's `materialized_path` points to the file the framework wrote to
 the sandbox. Inputs are always lists, even when `artifacts_per_unit=1`.
 
-For non-materialized inputs (`materialize=False` in the `InputSpec`), access
-content directly:
+### Non-materialized inputs
+
+For inputs with `materialize=False` in the `InputSpec`, access content
+directly instead of using file paths:
 
 ```python
 def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
@@ -297,9 +313,33 @@ def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
     return {"config": configs[0].content}
 ```
 
+### Associated artifacts
+
+When an `InputSpec` declares `with_associated`, retrieve the associated
+artifacts via `inputs.associated_artifacts()`:
+
+```python
+def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+    result = {}
+    for artifact in inputs.input_artifacts["data"]:
+        annotations = inputs.associated_artifacts(artifact, "data_annotation")
+        result[str(artifact.materialized_path)] = [
+            str(a.materialized_path) for a in annotations
+        ]
+    return {"data_with_annotations": result}
+```
+
+### PreprocessInput fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `preprocess_dir` | `Path` | Directory for writing intermediate files (configs, conversions) |
+| `input_artifacts` | `dict[str, list[Artifact]]` | Artifacts keyed by input role name |
+| `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
+
 ---
 
-## Step 5: Implement execute
+## Implement execute
 
 **Required** for all creator operations. Receives `ExecuteInput` with the dict
 from preprocess and a working directory.
@@ -311,22 +351,28 @@ rather than file-based.
 
 ```python
 def execute(self, inputs: ExecuteInput) -> Any:
-    output_dir = inputs.execute_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     for path_str in inputs.inputs["dataset"]:
         data = Path(path_str).read_text()
         transformed = do_something(data)
-        (output_dir / Path(path_str).name).write_text(transformed)
+        (inputs.execute_dir / Path(path_str).name).write_text(transformed)
 
     return None  # or return computed data for memory_outputs
 ```
+
+### ExecuteInput fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `execute_dir` | `Path` | Directory for writing output files. All files here are captured by postprocess |
+| `inputs` | `dict[str, Any]` | Prepared inputs from preprocess |
+| `log_path` | `Path \| None` | Path where external tool output should be written (provided by the framework) |
+| `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
 
 `ExecuteInput` is frozen — you cannot modify its fields.
 
 ---
 
-## Step 6: Implement postprocess
+## Implement postprocess
 
 **Optional.** The default returns `ArtifactResult(success=True)` with no
 artifacts. Override when your operation produces output artifacts.
@@ -353,7 +399,28 @@ def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
 
 `original_name` matters: the lineage matching algorithm uses it to pair
 output artifacts with their parent inputs. Use the input filename as the
-stem when there's a 1:1 relationship.
+stem when there is a 1:1 relationship.
+
+### PostprocessInput fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `step_number` | `int` | Current pipeline step number (required for `draft()` calls) |
+| `postprocess_dir` | `Path` | Directory for any postprocess intermediates (rarely needed) |
+| `file_outputs` | `list[Path]` | All files in `execute_dir` after execute completes |
+| `memory_outputs` | `Any` | Whatever `execute` returned (`None`, dict, etc.) |
+| `input_artifacts` | `dict[str, list[Artifact]]` | Full input context with metadata for output naming and lineage |
+| `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
+
+### ArtifactResult fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `success` | `bool` | `True` | Whether execution completed successfully |
+| `error` | `str \| None` | `None` | Error message if `success` is `False` |
+| `artifacts` | `dict[str, list[Artifact]]` | `{}` | Output role -> draft artifact list |
+| `lineage` | `dict[str, list[LineageMapping]] \| None` | `None` | Explicit lineage declarations (framework infers if `None`) |
+| `metadata` | `dict[str, Any]` | `{}` | Additional metadata (logged, not stored as artifacts) |
 
 ---
 
@@ -377,6 +444,66 @@ def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
     return ArtifactResult(success=True, artifacts={"metrics": [metric]})
 ```
 
+`MetricArtifact.draft()` accepts a `dict[str, Any]` for `content` (not bytes)
+and JSON-encodes it internally.
+
+### Multiple output roles
+
+An operation can produce artifacts of different types in a single step. Declare
+each as a separate output role with its own lineage:
+
+```python
+class OutputRole(StrEnum):
+    DATASETS = "datasets"
+    METRICS = "metrics"
+
+outputs: ClassVar[dict[str, OutputSpec]] = {
+    OutputRole.DATASETS: OutputSpec(
+        artifact_type="data",
+        infer_lineage_from={"inputs": []},
+    ),
+    OutputRole.METRICS: OutputSpec(
+        artifact_type="metric",
+        infer_lineage_from={"outputs": ["datasets"]},
+    ),
+}
+```
+
+The `{"outputs": ["datasets"]}` pattern links metrics to the co-produced
+datasets, creating output-to-output provenance edges. In postprocess, return
+both roles:
+
+```python
+def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+    dataset_drafts = [
+        DataArtifact.draft(
+            content=f.read_bytes(),
+            original_name=f.name,
+            step_number=inputs.step_number,
+        )
+        for f in inputs.file_outputs
+        if f.suffix == ".csv"
+    ]
+    metric_drafts = [
+        MetricArtifact.draft(
+            content=metric_data,
+            original_name=metric_key,
+            step_number=inputs.step_number,
+        )
+        for metric_key, metric_data in inputs.memory_outputs.items()
+    ]
+    return ArtifactResult(
+        success=True,
+        artifacts={
+            "datasets": dataset_drafts,
+            "metrics": metric_drafts,
+        },
+    )
+```
+
+See `DataGeneratorWithMetrics` in `artisan.operations.examples` for a complete
+implementation.
+
 ### External tool operations
 
 Set `tool` to a `ToolSpec` declaring the binary or script to invoke, and
@@ -385,7 +512,7 @@ configure the execution environment with `environments`:
 ```python
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.operation_config.environment_spec import (
-    ApptainerEnvironmentSpec,
+    DockerEnvironmentSpec,
     LocalEnvironmentSpec,
 )
 from artisan.schemas.operation_config.environments import Environments
@@ -399,17 +526,35 @@ class MyToolOp(OperationDefinition):
     )
     environments: Environments = Environments(
         local=LocalEnvironmentSpec(),
-        apptainer=ApptainerEnvironmentSpec(
-            image=Path("/tools/my_tool.sif"),
-        ),
+        docker=DockerEnvironmentSpec(image="my-registry/tool:latest"),
     )
     ...
 ```
 
-`ToolSpec` declares the binary (`executable`) and optional `interpreter` or
-`subcommand`. The environment spec wraps the command for container execution.
+`ToolSpec` fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `executable` | `str \| Path` | (required) | Path or name of the binary/script |
+| `interpreter` | `str \| None` | `None` | Interpreter prefix (e.g. `"python"`, `"bash"`) |
+| `subcommand` | `str \| None` | `None` | Subcommand inserted after the executable |
+
 In `execute`, use `self.tool.parts()` to build the command prefix and
-`self.environments.current().wrap_command(...)` to apply the environment.
+`self.environments.current()` to get the active environment spec. Use
+`run_command()` from `artisan.utils.external_tools` to invoke the tool:
+
+```python
+from artisan.utils.external_tools import format_args, run_command
+
+def execute(self, inputs: ExecuteInput) -> Any:
+    env = self.environments.current()
+    args = format_args({"input": inputs.inputs["data_path"], "output-dir": str(inputs.execute_dir)})
+    run_command(env, [*self.tool.parts(), *args], cwd=inputs.execute_dir)
+    return None
+```
+
+See `DataTransformerScript` in `artisan.operations.examples` for a complete
+implementation with multi-input pairing and config artifacts.
 
 ### Multi-input operations
 
@@ -474,8 +619,10 @@ resource and batching options.
 | `TypeError: must implement preprocess()` | Creator with non-empty `inputs` but no preprocess | Override `preprocess()` |
 | `TypeError: must set infer_lineage_from` | Creator output with `infer_lineage_from=None` | Set to `{"inputs": [...]}` or `{"inputs": []}` |
 | `ValidationError` on `OutputSpec` | Used `{}` for lineage | Use `{"inputs": []}` for generative outputs |
+| `ValidationError` on `OutputSpec` | Combined `{"inputs": [...], "outputs": [...]}` | Use separate output roles instead |
 | Empty artifacts after postprocess | Wrong file extension filter or missing files | Check `file_outputs` contents in the execute directory |
 | Wrong lineage connections | `original_name` doesn't match input filenames | Use input filename as the stem for 1:1 transforms |
+| `ValueError: materialize_as requires materialize=True` | Set `materialize_as` on a non-materialized input | Remove `materialize_as` or set `materialize=True` |
 
 ---
 
@@ -519,7 +666,7 @@ with TemporaryDirectory() as tmp:
     assert len(artifact_result.artifacts["dataset"]) > 0
 ```
 
-For a full integration test, run in a pipeline with `Backend.LOCAL`:
+For a full integration test, run in a pipeline (defaults to local backend):
 
 ```python
 from artisan.orchestration import PipelineManager

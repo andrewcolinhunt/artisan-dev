@@ -1,10 +1,10 @@
-"""Tests for walk_provenance_to_targets DataFrame provenance walk."""
+"""Tests for backward provenance walk (artisan.provenance.traversal)."""
 
 from __future__ import annotations
 
 import polars as pl
 
-from artisan.execution.inputs.lineage_matching import walk_provenance_to_targets
+from artisan.provenance.traversal import walk_backward
 
 
 def _df(ids: list[str]) -> pl.DataFrame:
@@ -29,7 +29,7 @@ class TestWalkProvenanceBasic:
         targets = _df(["A"])
         edges = _edges([("A", "B")])
 
-        result = walk_provenance_to_targets(candidates, targets, edges)
+        result = walk_backward(candidates, targets, edges)
 
         assert len(result) == 1
         assert result["candidate_id"][0] == "B"
@@ -41,7 +41,7 @@ class TestWalkProvenanceBasic:
         targets = _df(["A"])
         edges = _edges([("A", "B"), ("B", "C"), ("C", "D")])
 
-        result = walk_provenance_to_targets(candidates, targets, edges)
+        result = walk_backward(candidates, targets, edges)
 
         assert len(result) == 1
         assert result["candidate_id"][0] == "D"
@@ -53,7 +53,7 @@ class TestWalkProvenanceBasic:
         targets = _df(["A"])
         edges = _edges([("X", "Y")])
 
-        result = walk_provenance_to_targets(candidates, targets, edges)
+        result = walk_backward(candidates, targets, edges)
 
         assert len(result) == 1
         assert result["candidate_id"][0] == "A"
@@ -65,7 +65,7 @@ class TestWalkProvenanceBasic:
         targets = _df(["A"])
         edges = _edges([("A", "B")])
 
-        result = walk_provenance_to_targets(candidates, targets, edges)
+        result = walk_backward(candidates, targets, edges)
 
         assert result.is_empty()
         assert result.columns == ["candidate_id", "target_id"]
@@ -84,7 +84,7 @@ class TestWalkProvenanceBranching:
         targets = _df(["T1", "T2"])
         edges = _edges([("T1", "B"), ("T2", "B"), ("B", "C1"), ("B", "C2")])
 
-        result = walk_provenance_to_targets(candidates, targets, edges)
+        result = walk_backward(candidates, targets, edges)
 
         # Both candidates should find a target through B
         assert len(result) == 2
@@ -109,7 +109,7 @@ class TestWalkProvenanceBranching:
         targets = _df(["T1"])
         edges = _edges([("T1", "B"), ("B", "C1")])
 
-        result = walk_provenance_to_targets(candidates, targets, edges)
+        result = walk_backward(candidates, targets, edges)
 
         assert len(result) == 1
         assert result["candidate_id"][0] == "C1"
@@ -121,17 +121,17 @@ class TestWalkProvenanceEdgeCases:
 
     def test_empty_candidates(self):
         """Empty candidates returns empty result."""
-        result = walk_provenance_to_targets(_df([]), _df(["A"]), _edges([("A", "B")]))
+        result = walk_backward(_df([]), _df(["A"]), _edges([("A", "B")]))
         assert result.is_empty()
 
     def test_empty_targets(self):
         """Empty targets returns empty result."""
-        result = walk_provenance_to_targets(_df(["B"]), _df([]), _edges([("A", "B")]))
+        result = walk_backward(_df(["B"]), _df([]), _edges([("A", "B")]))
         assert result.is_empty()
 
     def test_empty_edges(self):
         """Empty edges returns empty result (unless candidate is target)."""
-        result = walk_provenance_to_targets(_df(["B"]), _df(["A"]), _edges([]))
+        result = walk_backward(_df(["B"]), _df(["A"]), _edges([]))
         assert result.is_empty()
 
     def test_cycle_in_edges_terminates(self):
@@ -143,7 +143,7 @@ class TestWalkProvenanceEdgeCases:
         targets = _df(["T"])
         edges = _edges([("A", "B"), ("B", "A")])
 
-        result = walk_provenance_to_targets(candidates, targets, edges)
+        result = walk_backward(candidates, targets, edges)
         # No path to T, should terminate without infinite loop
         assert result.is_empty()
 
@@ -157,7 +157,7 @@ class TestWalkProvenanceEdgeCases:
         targets = _df(["T1", "T2"])
         edges = _edges([("T1", "M"), ("T2", "M"), ("M", "C")])
 
-        result = walk_provenance_to_targets(candidates, targets, edges)
+        result = walk_backward(candidates, targets, edges)
 
         assert len(result) == 1
         assert result["candidate_id"][0] == "C"

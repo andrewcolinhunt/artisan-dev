@@ -6,7 +6,7 @@ docs consistent, well-organized, and domain-agnostic.
 
 ---
 
-## Documentation Structure (Diataxis)
+## Documentation structure (Diataxis)
 
 Artisan docs follow the [Diataxis](https://diataxis.fr/) framework, which
 organizes documentation into four quadrants based on two axes: the reader's
@@ -42,7 +42,7 @@ theoretical).
 
 ---
 
-## Diataxis Boundary Rules
+## Diataxis boundary rules
 
 | Quadrant       | Purpose                 | Format                                                    | Constraints                                                           | Reader mindset              |
 | -------------- | ----------------------- | --------------------------------------------------------- | --------------------------------------------------------------------- | --------------------------- |
@@ -53,7 +53,7 @@ theoretical).
 
 ---
 
-## Cross-Quadrant Linking Pattern
+## Cross-quadrant linking pattern
 
 Every page must link to related pages in other quadrants.
 
@@ -68,10 +68,255 @@ When adding a new page, check that the linked pages also link back.
 
 ---
 
-## Domain Decontamination
+## Writing tone
 
-Artisan is a domain-agnostic framework. All Artisan docs must use generic
-examples.
+Respect the reader's time and intelligence. Write as a knowledgeable colleague
+explaining something at a whiteboard -- not a legal contract, not a blog post.
+
+**Be direct.** Use active voice. Address the reader as "you." Get to the point.
+
+- Good: "Run the command"
+- Avoid: "The command should be run"
+
+**Be confident but honest.** State things plainly. When something is a
+limitation or rough edge, say so.
+
+- Good: "This method returns a string"
+- Avoid: "This method should return a string"
+
+**Be warm without being chatty.** A brief orienting sentence is welcoming.
+Excessive enthusiasm wastes the reader's time.
+
+- Good: "This guide walks you through setting up authentication for your API"
+- Avoid: "Awesome! You're going to LOVE this feature!"
+
+**Be task-oriented.** Structure around what the reader is trying to do, not
+what the software can do.
+
+**Be consistent in terminology.** Pick a term and stick with it. If you call
+it a "workspace" in one paragraph, do not call it a "project" in the next.
+Use the terms defined in the [Glossary](../reference/glossary.md).
+
+**Layer detail progressively.** Lead with the most common case, then explain
+options, then cover edge cases. A reader who needs the quick answer gets it in
+10 seconds; someone with a complex scenario keeps reading.
+
+**Be economical.** Short sentences. Use "use" not "utilize," "start" not
+"initialize" (unless "initialize" is the actual API term). Cut filler: "in
+order to," "it should be noted that," "as a matter of fact."
+
+**Be neutral about skill level.** Never write "simply," "just," or "easily."
+Give clear instructions and let the reader judge difficulty.
+
+---
+
+## File and format conventions
+
+### Markup
+
+All docs use **MyST Markdown** (Jupyter Book 2). Use MyST directives, not RST.
+
+### File formats
+
+| Quadrant       | Format             | Extension |
+| -------------- | ------------------ | --------- |
+| Tutorials      | Jupyter notebooks  | `.ipynb`  |
+| How-to Guides  | Markdown           | `.md`     |
+| Concepts       | Markdown           | `.md`     |
+| Reference      | Markdown           | `.md`     |
+| Contributing   | Markdown           | `.md`     |
+| Getting Started | Markdown          | `.md`     |
+
+### Directory layout
+
+New pages go in the directory that matches their Diataxis quadrant:
+
+```
+docs/
+├── getting-started/         # Installation and orientation
+├── tutorials/               # Jupyter notebooks (.ipynb)
+│   ├── getting-started/     # First steps
+│   ├── pipeline-design/     # Topology patterns
+│   ├── execution/           # Caching, batching, error handling, overrides
+│   ├── analysis/            # Provenance, filtering, timing
+│   └── writing-operations/  # Building custom operations and composites
+├── concepts/                # Explanations of design and architecture
+├── how-to-guides/           # Task-oriented recipes
+├── reference/               # API signatures, glossary, comparisons
+└── contributing/            # Project conventions (this page)
+```
+
+### File naming
+
+- Use **lowercase kebab-case**: `writing-creator-operations.md`
+- Tutorials are numbered with a two-digit prefix: `01-first-pipeline.ipynb`,
+  `02-exploring-results.ipynb`
+- Every directory has an `index.md` landing page
+
+### Headings
+
+- **Page title**: title case (e.g., "Documentation Contributor Guide")
+- **All subheadings**: sentence case (e.g., "Cross-quadrant linking pattern")
+
+### Section separators
+
+Use `---` horizontal rules between major sections. This matches the convention
+across all existing pages.
+
+---
+
+## Registering new pages
+
+Every new page must be added to the table of contents in `docs/myst.yml`.
+
+Find the appropriate section under `project.toc` and add a `file:` entry. For
+example, to add a new concepts page:
+
+```yaml
+# In docs/myst.yml, under project.toc
+- title: Concepts
+  children:
+    - file: concepts/index.md
+    - title: System Architecture
+      children:
+        - file: concepts/architecture-overview.md
+        - file: concepts/operations-model.md
+        - file: concepts/my-new-concept.md  # <-- add here
+```
+
+Tutorials within a sub-section are ordered by their numeric prefix. Place the
+new entry in the position that matches its prefix number.
+
+A page that exists on disk but is not listed in `myst.yml` will not appear in
+the built site.
+
+---
+
+## MyST Markdown conventions
+
+### Links between pages
+
+Use standard Markdown links with relative paths:
+
+```markdown
+[Operations Model](../concepts/operations-model.md)
+[First Pipeline tutorial](../tutorials/getting-started/01-first-pipeline.ipynb)
+```
+
+Link to a specific heading by appending `#anchor`:
+
+```markdown
+[Five layers](../concepts/architecture-overview.md#five-layers)
+```
+
+### Label targets
+
+Use MyST label targets for anchors that other pages reference (especially in
+the glossary):
+
+```markdown
+(glossary-artifact)=
+## Artifact
+
+An immutable, content-addressed data node...
+```
+
+### Directives
+
+Use colon-fence syntax for MyST directives:
+
+```markdown
+::::{note}
+This is important context the reader should know.
+::::
+
+::::{tip} Optional title
+Helpful but non-essential information.
+::::
+```
+
+For grid layouts (used on landing pages):
+
+```markdown
+::::{grid} 2
+:::{grid-item-card} Card Title
+:link: path/to/page.md
+
+Card description.
+:::
+::::
+```
+
+### Include directives
+
+Pull in external content with the `include` directive:
+
+````markdown
+```{include} ../README.md
+```
+````
+
+---
+
+## Code examples in documentation
+
+Code blocks in docs must be **syntactically correct** and use the **current
+API**. Import from the correct package (`artisan` for the framework).
+
+- Show the minimum code needed to illustrate the point
+- Include imports so the reader can copy-paste
+- Use the example operations (`DataGenerator`, `DataTransformer`,
+  `MetricCalculator`) for generic demonstrations -- these live in
+  `src/artisan/operations/examples/`
+- In how-to guides, provide a **minimal working example** before breaking
+  the code into explained steps
+
+When referencing source files, use the path from the project root:
+
+```markdown
+**Source:** `src/artisan/schemas/artifact/base.py`
+```
+
+---
+
+## Domain decontamination
+
+Artisan is a domain-agnostic framework. All documentation must use generic
+examples that do not reference any specific scientific domain, tool, or dataset.
+
+**What to avoid:**
+
+- Domain-specific tool names, file formats, or workflows
+- References to specific research fields or application areas
+- Hardcoded paths, usernames, or environment-specific values
+
+**What to use instead:**
+
+- The built-in example operations (`DataGenerator`, `DataTransformer`,
+  `MetricCalculator`) for demonstrations
+- Generic terms like "input data," "output artifacts," "computed metrics"
+- Placeholder paths like `~/projects/my-pipeline/`
+
+If a concept requires a concrete example to be understandable, use a
+self-contained scenario that any reader can follow regardless of their domain.
+
+---
+
+## Building and previewing docs
+
+Build the documentation site locally to verify your changes render correctly:
+
+```bash
+pixi run -e docs docs-build     # Build HTML site
+pixi run -e docs docs-serve     # Serve at http://localhost:8000
+pixi run -e docs docs-clean     # Remove build artifacts
+```
+
+The build output goes to `docs/_build/html/`. Check for:
+
+- Broken links (the build warns about these)
+- Correct rendering of tables, code blocks, and directives
+- New pages appearing in the sidebar navigation
 
 ---
 
@@ -96,7 +341,7 @@ All tutorials are Jupyter notebooks. Follow this cell structure:
 ```
 
 ```python
-# Cell 2+ (alternating markdown → code)
+# Cell 2+ (alternating markdown -> code)
 # Narrative explains *what* and *why* before each code cell.
 # Code cells are short, focused, and produce visible output.
 ```
@@ -172,7 +417,7 @@ How to confirm success (expected output, a test to run, a state to check).
 
 ---
 
-## Cross-References
+## Cross-references
 
 - [Reference page](link) -- full API
 - [Concepts page](link) -- design rationale
@@ -224,9 +469,9 @@ Use comparison tables for contrasting two approaches:
 
 Use ASCII diagrams for flows or relationships:
 
-    ┌───────────┐     ┌───────────┐
-    │  Phase 1  │ --> │  Phase 2  │
-    └───────────┘     └───────────┘
+    +-----------+     +-----------+
+    |  Phase 1  | --> |  Phase 2  |
+    +-----------+     +-----------+
 
 ---
 
@@ -241,7 +486,7 @@ the page covers multiple related choices.
 
 ---
 
-## Cross-References
+## Cross-references
 
 - [Reference page](link) -- field tables and API signatures
 - [Tutorial](link) -- see this concept in action
@@ -332,3 +577,30 @@ Guidelines:
   complement the field tables but do not replace them.
 - **"See also" footer** links to the corresponding concepts page, how-to
   guides, and related reference pages.
+
+---
+
+## Pre-submission checklist
+
+Before finishing a documentation change, verify:
+
+- [ ] Page belongs to exactly one Diataxis category and follows its template
+- [ ] Tone follows the rules above (scan for "simply," "just," "easily,"
+      passive voice, filler phrases)
+- [ ] Terminology is consistent with existing docs and the
+      [Glossary](../reference/glossary.md)
+- [ ] Code examples are syntactically correct and use current imports
+- [ ] Progressive disclosure: common case first, edge cases last
+- [ ] Cross-references link to related pages in other quadrants
+- [ ] New pages are registered in `docs/myst.yml`
+- [ ] Docs build without errors (`pixi run -e docs docs-build`)
+
+---
+
+## Cross-references
+
+- [Coding Conventions](coding-conventions.md) -- Code style, naming, and
+  project structure
+- [Tooling Decisions](tooling-decisions.md) -- Why Pixi and Prefect
+- [Orientation](../getting-started/orientation.md) -- How the docs are
+  organized from a reader's perspective

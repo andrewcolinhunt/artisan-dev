@@ -30,7 +30,7 @@ you'll find a link to the right place.
 
 ---
 
-## Five Key Abstractions
+## Five key abstractions
 
 ### Artifacts
 
@@ -41,42 +41,81 @@ deterministic caching. Artifacts follow a draft/finalize pattern: drafts are
 mutable while being assembled, and once finalized the content hash makes any
 tampering detectable.
 
-Artisan provides four built-in types: `DATA`, `METRIC`, `CONFIG`, and
-`FILE_REF`. Custom artifact types can be registered by domain layers.
+Artisan provides four built-in artifact types:
+
+| Type | Class | Purpose |
+|------|-------|---------|
+| `DATA` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
+| `METRIC` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
+| `CONFIG` | `ExecutionConfigArtifact` | Execution configuration snapshots (JSON) |
+| `FILE_REF` | `FileRefArtifact` | References to files at their original paths on disk |
+
+Custom artifact types can be registered by domain layers through the
+`ArtifactTypeDef` registry.
 
 > **Deep dive:** [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md)
 
 ### Operations
 
 An **operation** is a Python class that consumes artifacts and produces
-artifacts. Operations declare typed input and output specifications and know
-nothing about orchestration or infrastructure.
+artifacts. Operations declare typed input and output specifications via
+`InputSpec` and `OutputSpec`, and know nothing about orchestration or
+infrastructure.
 
 There are two kinds:
 
 - **Creator operations** run heavy computation (external tools, GPU work) in a
-  three-phase lifecycle — preprocess, execute, postprocess — each running in its
-  own filesystem-isolated working directory.
+  three-phase lifecycle — `preprocess`, `execute`, `postprocess` — each running
+  in its own filesystem-isolated working directory.
 - **Curator operations** perform lightweight metadata work (filtering, merging,
   ingesting) in a single `execute_curator` method call, skipping sandboxing
   entirely.
 
-> **Deep dive:** [Operations Model](../concepts/operations-model.md)
+The framework ships with example creators (`DataGenerator`, `DataTransformer`,
+`MetricCalculator`) and built-in curators (`Filter`, `Merge`, `IngestFiles`,
+`IngestData`, `IngestPipelineStep`). There is also an `InteractiveFilter` tool
+for exploratory filtering in notebooks, though it is not a pipeline operation.
+
+When operations are tightly coupled — for example, always running transform
+immediately followed by scoring — you can bundle them into a **composite**.
+A `CompositeDefinition` declares its own inputs and outputs and wires
+internal operations together via a `compose()` method, creating a reusable
+building block that the pipeline can execute as a single step (collapsed)
+or as separate steps (expanded).
+
+> **Deep dive:** [Operations Model](../concepts/operations-model.md) | [Composites and Composition](../concepts/composites-and-composition.md)
 
 ### Pipelines
 
 A **pipeline** is a directed acyclic graph (DAG) of steps. You build one by
-calling `pipeline.run(Operation, ...)` to add steps, wiring outputs from
-earlier steps into inputs of later ones. `PipelineManager` handles dispatch,
-caching, and atomic commits.
+calling `pipeline.run()` to execute steps and `pipeline.output(name, role)` to
+wire outputs from earlier steps into inputs of later ones. `PipelineManager`
+handles dispatch, caching, and atomic commits.
 
 ```python
-pipeline = PipelineManager.create(name="example", delta_root=..., staging_root=...)
+from artisan.orchestration import PipelineManager
+from artisan.operations.examples import DataGenerator, DataTransformer
 
-step0 = pipeline.run(DataGenerator, params={"count": 4})
-step1 = pipeline.run(DataTransformer, inputs={"dataset": step0.output("datasets")})
+pipeline = PipelineManager.create(
+    name="example",
+    delta_root="runs/delta",
+    staging_root="runs/staging",
+)
+output = pipeline.output
+
+pipeline.run(DataGenerator, name="generate", params={"count": 4})
+pipeline.run(
+    DataTransformer,
+    name="transform",
+    inputs={"dataset": output("generate", "datasets")},
+)
 result = pipeline.finalize()
 ```
+
+Each `run()` call executes a step, and `output("step_name", "role")` creates a
+lazy reference that connects one step's outputs to another step's inputs. Steps
+can run on different backends — `"local"` for in-process execution or
+`"slurm"` for cluster dispatch — configured per-pipeline or per-step.
 
 > **Deep dive:** [Execution Flow](../concepts/execution-flow.md)
 
@@ -84,13 +123,15 @@ result = pipeline.finalize()
 
 The framework captures **dual provenance** automatically:
 
-- **Execution provenance** records what computation happened -- which operation
+- **Execution provenance** records what computation happened — which operation
   ran, when, with what parameters, and whether it succeeded.
 - **Artifact provenance** records which input artifacts produced which output
   artifacts, forming a derivation graph across the entire pipeline.
 
-You never need to wire provenance manually. The framework infers it from
-filename stem matching during execution.
+You never need to wire provenance manually. Each operation declares lineage
+relationships through `infer_lineage_from` on its output specs, and the
+framework resolves them at runtime using filename stem matching to pair inputs
+with outputs.
 
 > **Deep dive:** [Provenance System](../concepts/provenance-system.md)
 
@@ -98,13 +139,15 @@ filename stem matching during execution.
 
 All pipeline data lives in **Delta Lake** tables, giving you ACID transactions,
 time travel, and efficient queries via Polars. Artifact content is stored
-directly in Delta table columns (binary data, JSON, or tabular rows depending on
-the type), while `FILE_REF` artifacts store references to files at their original
-paths. Workers stage results as Parquet files during execution, and the
+directly in Delta table columns — binary bytes for data artifacts, JSON strings
+for metrics and configs — while `FILE_REF` artifacts store path references to
+files on disk. Workers stage results as Parquet files during execution, and the
 orchestrator commits them atomically to the Delta tables.
 
 ```python
 import polars as pl
+
+# Read the artifact index — every artifact in the pipeline
 df = pl.read_delta(str(delta_root / "artifacts" / "index"))
 ```
 
@@ -112,7 +155,7 @@ df = pl.read_delta(str(delta_root / "artifacts" / "index"))
 
 ---
 
-## Where to Go Next
+## Where to go next
 
 | Goal | Page |
 |------|------|

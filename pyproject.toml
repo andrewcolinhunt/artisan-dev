@@ -76,7 +76,7 @@ pydantic = "*"
 
 # Workflow orchestration
 prefect = { version = ">=3.6,<4.0", extras = ["dask"] }
-prefect-submitit = { path = "/Users/andrewhunt/git/prefect-submitit-dev", editable = true }
+prefect-submitit = ">=0.1.4"
 submitit = "*"  # For SLURM job submission
 asyncpg = "*"  # PostgreSQL async driver for Prefect server
 
@@ -172,6 +172,7 @@ docs-serve = { cmd = "python -m http.server -d _build/html 8000", cwd = "docs" }
 [tool.pytest.ini_options]
 minversion = "7"
 testpaths = ["tests"]
+pythonpath = ["tests"]
 log_cli_level = "INFO"
 xfail_strict = true
 addopts = ["-ra", "--strict-config", "--strict-markers"]
