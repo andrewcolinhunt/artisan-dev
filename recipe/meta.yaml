@@ -1,0 +1,62 @@
+{% set name = "artisan" %}
+{% set version = "0.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.org/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  # sha256 will be filled in after the first PyPI release
+  # sha256: <hash>
+
+build:
+  noarch: python
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+
+requirements:
+  host:
+    - python >=3.12
+    - pip
+    - hatchling
+    - hatch-vcs
+  run:
+    - python >=3.12
+    - beartype
+    - pydantic >=2
+    - rich
+    - rootutils >=1.0
+    - xxhash
+    - deltalake >=0.14.0
+    - polars >=0.20.0
+    - pandas >=2.2
+    - graphviz
+    - python-graphviz
+    - cloudpickle >=3.0
+    - ipywidgets
+
+test:
+  imports:
+    - artisan
+  requires:
+    - pip
+  commands:
+    - pip check
+
+about:
+  home: https://github.com/dexterity-systems/artisan
+  summary: A domain-agnostic pipeline framework with provenance tracking
+  description: |
+    Artisan is a pipeline framework that gives computational tools a common
+    interface and chains them into tracked, repeatable workflows. Every result
+    is automatically linked back to the inputs and parameters that produced it.
+  license: BSD-3-Clause
+  license_file: LICENSE
+  doc_url: https://artisan.readthedocs.io
+  dev_url: https://github.com/dexterity-systems/artisan
+
+extra:
+  recipe-maintainers:
+    - andrewcolinhunt
+    - anantmittal

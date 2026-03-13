@@ -1,0 +1,49 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature! For larger proposals, consider
+        opening a [Discussion](https://github.com/dexterity-systems/artisan/discussions)
+        first so we can align on the approach before you invest effort.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Use Case
+      description: |
+        What problem does this solve? Describe the use case or pain point.
+      placeholder: "I'm trying to … but currently …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: |
+        How do you think this should work? Include API sketches or examples
+        if helpful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: |
+        Have you considered other approaches? What are their trade-offs?
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, references, or screenshots.
+    validations:
+      required: false
