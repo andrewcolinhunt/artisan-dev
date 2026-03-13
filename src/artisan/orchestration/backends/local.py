@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import multiprocessing
+import signal
 import warnings
 from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from prefect.task_runners import ProcessPoolTaskRunner
@@ -16,6 +19,33 @@ from artisan.orchestration.backends.base import (
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.operation_config.resource_config import ResourceConfig
+
+
+def _ignore_sigint() -> None:
+    """Worker initializer: ignore SIGINT so the parent handles cancellation."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+class SIGINTSafeProcessPoolTaskRunner(ProcessPoolTaskRunner):
+    """ProcessPoolTaskRunner whose workers ignore SIGINT.
+
+    Prevents child processes from receiving KeyboardInterrupt, which causes
+    noisy tracebacks. The parent process handles SIGINT via PipelineManager's
+    signal handler and propagates cancellation cleanly.
+    """
+
+    def __enter__(self) -> SIGINTSafeProcessPoolTaskRunner:
+        result = super().__enter__()
+        # Replace the process pool with one whose workers ignore SIGINT
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
+        mp_context = multiprocessing.get_context("spawn")
+        self._executor = ProcessPoolExecutor(
+            max_workers=self._max_workers,
+            mp_context=mp_context,
+            initializer=_ignore_sigint,
+        )
+        return result
 
 
 class LocalBackend(BackendBase):
@@ -42,7 +72,9 @@ class LocalBackend(BackendBase):
     ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
         """Build a local ProcessPool flow."""
         max_workers = execution.max_workers or self._default_max_workers
-        return self._build_prefect_flow(ProcessPoolTaskRunner(max_workers=max_workers))
+        return self._build_prefect_flow(
+            SIGINTSafeProcessPoolTaskRunner(max_workers=max_workers)
+        )
 
     def capture_logs(
         self,

@@ -119,14 +119,14 @@ class IngestPipelineStep(OperationDefinition):
         """
         if self.artifact_type is not None:
             # User specified a type — check it exists at the step
-            ids = source_store.load_artifact_ids_by_type(
+            ids = source_store.provenance.load_artifact_ids_by_type(
                 self.artifact_type, step_numbers=[self.source_step]
             )
             return [self.artifact_type] if ids else []
 
         # Discover all types at the step
-        type_map = source_store.load_artifact_type_map()
-        step_map = source_store.load_step_number_map()
+        type_map = source_store.provenance.load_type_map()
+        step_map = source_store.provenance.load_step_map()
 
         types_at_step: set[str] = set()
         for aid, atype in type_map.items():
@@ -151,7 +151,7 @@ class IngestPipelineStep(OperationDefinition):
         Returns:
             List of finalized draft artifacts.
         """
-        artifact_ids = source_store.load_artifact_ids_by_type(
+        artifact_ids = source_store.provenance.load_artifact_ids_by_type(
             artifact_type, step_numbers=[self.source_step]
         )
         if not artifact_ids:

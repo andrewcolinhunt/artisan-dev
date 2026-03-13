@@ -72,13 +72,10 @@ def _flatten_struct_columns(frame: pl.DataFrame) -> pl.DataFrame:
             col_dtype = result[col_name].dtype
             if isinstance(col_dtype, pl.Struct):
                 fields = col_dtype.fields
-                unnested = result.unnest(col_name)
-                renames = {
-                    f.name: f"{col_name}.{f.name}"
-                    for f in fields
-                    if f.name in unnested.columns
-                }
-                result = unnested.rename(renames)
+                prefixed_names = [f"{col_name}.{f.name}" for f in fields]
+                result = result.with_columns(
+                    pl.col(col_name).struct.rename_fields(prefixed_names)
+                ).unnest(col_name)
                 changed = True
                 break
     return result
@@ -92,6 +89,111 @@ class Criterion(BaseModel):
     value: float | int | str | bool
     step: str | None = None
     step_number: int | None = None
+
+
+def _build_metric_namespace(
+    passthrough_df: pl.DataFrame,
+    metric_pairs: pl.DataFrame,
+    artifact_store: ArtifactStore,
+) -> tuple[pl.DataFrame, dict[str, set[int]] | None]:
+    """Hydrate metrics and build wide DataFrame for evaluation.
+
+    Args:
+        passthrough_df: DataFrame with passthrough artifact_id column.
+        metric_pairs: DataFrame with [passthrough_id, metric_id].
+        artifact_store: Store for metric loading.
+
+    Returns:
+        Tuple of (wide DataFrame with passthrough_id + metric columns,
+        step_info mapping field names to sets of step numbers that
+        produce them — None if no metrics found).
+    """
+    base_df = passthrough_df.select(pl.col("artifact_id").alias("passthrough_id"))
+
+    if metric_pairs.is_empty():
+        return base_df, None
+
+    unique_metric_ids = metric_pairs["metric_id"].unique().to_list()
+    metrics_df = artifact_store.load_metrics_df(unique_metric_ids)
+
+    if metrics_df.is_empty():
+        return base_df, None
+
+    # Decode JSON content: Binary -> Utf8 -> struct -> unnest -> flatten
+    parsed_series = metrics_df["content"].cast(pl.Utf8).str.json_decode()
+    decoded = (
+        metrics_df.select("artifact_id")
+        .with_columns(parsed_series.alias("_parsed"))
+        .unnest("_parsed")
+    )
+    decoded = _flatten_struct_columns(decoded)
+
+    value_columns = [c for c in decoded.columns if c != "artifact_id"]
+
+    # Enrich with step info
+    step_number_map = artifact_store.provenance.load_step_map(set(unique_metric_ids))
+    step_name_map = artifact_store.provenance.load_step_name_map()
+
+    # Build step_info: {field_name: {step_numbers}}
+    step_info: dict[str, Any] = {"_step_names": {}}
+    for mid, sn in step_number_map.items():
+        step_info["_step_names"][sn] = step_name_map.get(sn, "")
+
+    for col in value_columns:
+        step_info[col] = set()
+        for mid in unique_metric_ids:
+            if mid in step_number_map:
+                row = decoded.filter(pl.col("artifact_id") == mid)
+                if not row.is_empty() and col in row.columns:
+                    val = row[col][0]
+                    if val is not None:
+                        step_info[col].add(step_number_map[mid])
+
+    # Join metrics to passthrough via metric_pairs
+    mapping = metric_pairs.select(
+        pl.col("passthrough_id"),
+        pl.col("metric_id").alias("artifact_id"),
+    )
+    values = mapping.join(decoded, on="artifact_id", how="left").drop("artifact_id")
+
+    # Aggregate: take first non-null per passthrough_id
+    agg_exprs = [
+        pl.col(c).drop_nulls().first().alias(c)
+        for c in value_columns
+        if c in values.columns
+    ]
+    if agg_exprs:
+        agg = values.group_by("passthrough_id").agg(agg_exprs)
+        base_df = base_df.join(agg, on="passthrough_id", how="left")
+
+    return base_df, step_info
+
+
+def _check_collision(field: str, step_info: dict[str, Any]) -> None:
+    """Raise ValueError if a field comes from multiple steps.
+
+    Args:
+        field: Metric field name to check.
+        step_info: Mapping from field names to sets of step numbers.
+
+    Raises:
+        ValueError: When the field appears in metrics from multiple steps.
+    """
+    if field not in step_info or field.startswith("_"):
+        return
+
+    step_nums = step_info[field]
+    if len(step_nums) <= 1:
+        return
+
+    step_names = step_info.get("_step_names", {})
+    lines = [f"Field '{field}' found in metrics from multiple steps:"]
+    for sn in sorted(step_nums):
+        name = step_names.get(sn, "unknown")
+        lines.append(f'  - step {sn} ("{name}")')
+    lines.append("Add 'step' or 'step_number' to disambiguate:")
+    lines.append(f'  {{"metric": "{field}", "step_number": {min(step_nums)}, ...}}')
+    raise ValueError("\n".join(lines))
 
 
 class _DiagnosticsAccumulator:
@@ -268,7 +370,7 @@ class Filter(OperationDefinition):
     def execute_curator(
         self,
         inputs: dict[str, pl.DataFrame],
-        step_number: int,  # noqa: ARG002
+        step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
         """Evaluate filter criteria and return passing artifact IDs.
@@ -333,7 +435,7 @@ class Filter(OperationDefinition):
         )
         if default_criteria:
             metric_pairs = self._discover_descendant_metrics(
-                passthrough_df, artifact_store
+                passthrough_df, artifact_store, step_number
             )
 
         # Backward walk for step-targeted criteria
@@ -494,12 +596,16 @@ class Filter(OperationDefinition):
         self,
         passthrough_df: pl.DataFrame,
         artifact_store: ArtifactStore,
+        step_number: int,
     ) -> pl.DataFrame:
         """Forward walk from passthrough to find descendant metrics.
 
         Args:
             passthrough_df: DataFrame with passthrough artifact_id column.
             artifact_store: Store for edge/step loading.
+            step_number: Current filter step number (upper bound for edge
+                loading — descendant metrics are at higher steps than the
+                passthrough artifacts).
 
         Returns:
             DataFrame with columns [passthrough_id, metric_id].
@@ -508,23 +614,23 @@ class Filter(OperationDefinition):
             schema={"passthrough_id": pl.String, "metric_id": pl.String}
         )
 
-        from artisan.execution.inputs.lineage_matching import (
-            walk_forward_to_targets,
-        )
+        from artisan.provenance.traversal import walk_forward
 
-        step_range = artifact_store.get_step_range(passthrough_df["artifact_id"])
+        step_range = artifact_store.provenance.get_step_range(
+            passthrough_df["artifact_id"]
+        )
         if step_range is None:
             return empty
 
-        step_min, step_max = step_range
-        edges = artifact_store.load_provenance_edges_df(
-            step_min, step_max, include_target_type=True
+        step_min, _ = step_range
+        edges = artifact_store.provenance.load_edges_df(
+            step_min, step_number, include_target_type=True
         )
 
         if edges.is_empty():
             return empty
 
-        walk_result = walk_forward_to_targets(
+        walk_result = walk_forward(
             sources=passthrough_df,
             edges=edges,
             target_type="metric",
@@ -560,12 +666,10 @@ class Filter(OperationDefinition):
             schema={"passthrough_id": pl.String, "metric_id": pl.String}
         )
 
-        from artisan.execution.inputs.lineage_matching import (
-            walk_provenance_to_targets,
-        )
+        from artisan.provenance.traversal import walk_backward
 
         # Resolve step identity
-        step_name_map = artifact_store.load_step_name_map()
+        step_name_map = artifact_store.provenance.load_step_name_map()
         target_step_number = step_number
 
         if step is not None and step_number is None:
@@ -588,7 +692,7 @@ class Filter(OperationDefinition):
             return empty
 
         # Load metric IDs from the target step
-        metric_ids = artifact_store.load_artifact_ids_by_type(
+        metric_ids = artifact_store.provenance.load_artifact_ids_by_type(
             "metric", step_numbers=[target_step_number]
         )
 
@@ -599,14 +703,14 @@ class Filter(OperationDefinition):
 
         # Get step range covering both passthrough and metrics
         all_ids = pl.concat([passthrough_df["artifact_id"], metrics_df["artifact_id"]])
-        step_range = artifact_store.get_step_range(all_ids)
+        step_range = artifact_store.provenance.get_step_range(all_ids)
         if step_range is None:
             return empty
 
         step_min, step_max = step_range
-        edges = artifact_store.load_provenance_edges_df(step_min, step_max)
+        edges = artifact_store.provenance.load_edges_df(step_min, step_max)
 
-        walk_result = walk_provenance_to_targets(
+        walk_result = walk_backward(
             candidates=metrics_df,
             targets=passthrough_df,
             edges=edges,
@@ -638,65 +742,7 @@ class Filter(OperationDefinition):
             step_info mapping field names to sets of step numbers that
             produce them — None if no metrics found).
         """
-        base_df = passthrough_df.select(pl.col("artifact_id").alias("passthrough_id"))
-
-        if metric_pairs.is_empty():
-            return base_df, None
-
-        unique_metric_ids = metric_pairs["metric_id"].unique().to_list()
-        metrics_df = artifact_store.load_metrics_df(unique_metric_ids)
-
-        if metrics_df.is_empty():
-            return base_df, None
-
-        # Decode JSON content: Binary -> Utf8 -> struct -> unnest -> flatten
-        parsed_series = metrics_df["content"].cast(pl.Utf8).str.json_decode()
-        decoded = (
-            metrics_df.select("artifact_id")
-            .with_columns(parsed_series.alias("_parsed"))
-            .unnest("_parsed")
-        )
-        decoded = _flatten_struct_columns(decoded)
-
-        value_columns = [c for c in decoded.columns if c != "artifact_id"]
-
-        # Enrich with step info
-        step_number_map = artifact_store.load_step_number_map(set(unique_metric_ids))
-        step_name_map = artifact_store.load_step_name_map()
-
-        # Build step_info: {field_name: {step_numbers}}
-        step_info: dict[str, Any] = {"_step_names": {}}
-        for mid, sn in step_number_map.items():
-            step_info["_step_names"][sn] = step_name_map.get(sn, "")
-
-        for col in value_columns:
-            step_info[col] = set()
-            for mid in unique_metric_ids:
-                if mid in step_number_map:
-                    row = decoded.filter(pl.col("artifact_id") == mid)
-                    if not row.is_empty() and col in row.columns:
-                        val = row[col][0]
-                        if val is not None:
-                            step_info[col].add(step_number_map[mid])
-
-        # Join metrics to passthrough via metric_pairs
-        mapping = metric_pairs.select(
-            pl.col("passthrough_id"),
-            pl.col("metric_id").alias("artifact_id"),
-        )
-        values = mapping.join(decoded, on="artifact_id", how="left").drop("artifact_id")
-
-        # Aggregate: take first non-null per passthrough_id
-        agg_exprs = [
-            pl.col(c).drop_nulls().first().alias(c)
-            for c in value_columns
-            if c in values.columns
-        ]
-        if agg_exprs:
-            agg = values.group_by("passthrough_id").agg(agg_exprs)
-            base_df = base_df.join(agg, on="passthrough_id", how="left")
-
-        return base_df, step_info
+        return _build_metric_namespace(passthrough_df, metric_pairs, artifact_store)
 
     @staticmethod
     def _check_collision(field: str, step_info: dict[str, Any]) -> None:
@@ -709,18 +755,4 @@ class Filter(OperationDefinition):
         Raises:
             ValueError: When the field appears in metrics from multiple steps.
         """
-        if field not in step_info or field.startswith("_"):
-            return
-
-        step_nums = step_info[field]
-        if len(step_nums) <= 1:
-            return
-
-        step_names = step_info.get("_step_names", {})
-        lines = [f"Field '{field}' found in metrics from multiple steps:"]
-        for sn in sorted(step_nums):
-            name = step_names.get(sn, "unknown")
-            lines.append(f'  - step {sn} ("{name}")')
-        lines.append("Add 'step' or 'step_number' to disambiguate:")
-        lines.append(f'  {{"metric": "{field}", "step_number": {min(step_nums)}, ...}}')
-        raise ValueError("\n".join(lines))
+        _check_collision(field, step_info)

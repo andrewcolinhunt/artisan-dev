@@ -1,7 +1,8 @@
-"""Tests for pipeline_manager.py failure handling (Phase 4).
+"""Tests for pipeline_manager.py failure handling and cancellation.
 
 Tests that PipelineManager never raises from step execution,
-and that finalize() always returns a summary.
+that finalize() always returns a summary, and that cancel()
+correctly stops the pipeline.
 """
 
 from __future__ import annotations
@@ -417,7 +418,7 @@ class TestPipelineOutputByName:
 
         import pytest
 
-        with pytest.raises(ValueError, match="No completed step named 'nonexistent'"):
+        with pytest.raises(ValueError, match="No step named 'nonexistent'"):
             pipeline.output("nonexistent", "role")
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
@@ -704,3 +705,361 @@ class TestPipelineOutputByName:
         for i in range(3):
             ref = pipeline.output("repeat", "output", step_number=i)
             assert ref.source_step == i
+
+
+class TestCancellation:
+    """Tests for PipelineManager.cancel() and signal handling."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_cancel_sets_event_idempotent(self, mock_tracker_cls, tmp_path):
+        """cancel() sets the internal event and is idempotent."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        assert not pipeline._cancel_event.is_set()
+        pipeline.cancel()
+        assert pipeline._cancel_event.is_set()
+        # Second call is a no-op (no error)
+        pipeline.cancel()
+        assert pipeline._cancel_event.is_set()
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_skips_steps_when_cancelled(self, mock_tracker_cls, tmp_path):
+        """submit() should skip steps when cancel event is set."""
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+
+        pipeline = _make_pipeline(tmp_path)
+        pipeline.cancel()  # Cancel before any steps run
+
+        result_future = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]})
+        result = result_future.result()
+
+        assert result.metadata.get("skipped") is True
+        assert result.metadata.get("skip_reason") == "cancelled"
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_finalize_returns_cleanly_after_cancellation(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """finalize() should return summary dict after cancel."""
+        mock_tracker_cls.return_value = MagicMock()
+
+        pipeline = _make_pipeline(tmp_path)
+        pipeline.cancel()
+
+        summary = pipeline.finalize()
+
+        assert "pipeline_name" in summary
+        assert "overall_success" in summary
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_cancel_during_predecessor_wait(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ):
+        """Dependent step returns promptly when cancelled during predecessor wait."""
+        import threading
+        import time
+
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+
+        barrier = threading.Event()
+
+        def slow_execute(**_kwargs):
+            barrier.wait(timeout=10)
+            return StepResult(
+                step_name="mock_op",
+                step_number=0,
+                success=True,
+                total_count=1,
+                succeeded_count=1,
+                failed_count=0,
+                output_roles=frozenset(["output"]),
+                output_types={"output": "data"},
+            )
+
+        mock_execute.side_effect = slow_execute
+
+        pipeline = _make_pipeline(tmp_path)
+        step0 = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="slow")
+
+        # Submit the dependent step from another thread (submit() blocks
+        # in _wait_for_predecessors on the calling thread)
+        dep_result_holder: list[StepResult] = []
+
+        def submit_dependent():
+            future = pipeline.submit(
+                _MockOp,
+                inputs={"data": OutputReference(source_step=0, role="output")},
+                name="dependent",
+            )
+            dep_result_holder.append(future.result(timeout=5))
+
+        dep_thread = threading.Thread(target=submit_dependent)
+        dep_thread.start()
+
+        # Give the dependent submit time to reach _wait_for_predecessors
+        time.sleep(0.3)
+        pipeline.cancel()
+
+        # The dependent thread should finish within ~2s (not hang)
+        dep_thread.join(timeout=3.0)
+        assert not dep_thread.is_alive(), "Dependent step hung after cancel"
+        assert len(dep_result_holder) == 1
+        result = dep_result_holder[0]
+        assert result.metadata.get("skipped") is True
+        assert result.metadata.get("skip_reason") == "cancelled"
+
+        # Release step0 so the executor can shut down
+        barrier.set()
+        step0.result(timeout=5)
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_queued_run_closure_exits_on_cancel(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ):
+        """_run closure bails out immediately if cancelled while queued."""
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+
+        mock_execute.return_value = StepResult(
+            step_name="mock_op",
+            step_number=0,
+            success=True,
+            total_count=1,
+            succeeded_count=1,
+            failed_count=0,
+            output_roles=frozenset(["output"]),
+            output_types={"output": "data"},
+        )
+
+        pipeline = _make_pipeline(tmp_path)
+
+        # Submit a step, then cancel before it can run.
+        # Use a single-thread executor so the closure is queued.
+        # We cancel after submit but the closure checks cancel at start.
+        step0 = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="step0")
+        step0.result(timeout=5)  # let step0 finish
+
+        # Now cancel and submit another step
+        pipeline.cancel()
+        step1 = pipeline.submit(
+            _MockOp,
+            inputs={"data": OutputReference(source_step=0, role="output")},
+            name="step1",
+        )
+        result = step1.result(timeout=5)
+
+        assert result.metadata.get("skipped") is True
+        assert result.metadata.get("skip_reason") == "cancelled"
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_composite_skipped_on_cancel(self, mock_tracker_cls, tmp_path):
+        """_submit_composite returns skipped result when cancelled."""
+        mock_tracker_cls.return_value = MagicMock()
+
+        pipeline = _make_pipeline(tmp_path)
+        pipeline.cancel()
+
+        # Call _submit_composite directly with a mock composite class
+
+        mock_composite = MagicMock()
+        mock_composite.name = "test_composite"
+        mock_composite.outputs = {
+            "output": MagicMock(artifact_type="data"),
+        }
+        mock_composite.inputs = {
+            "data": MagicMock(artifact_type="data", required=True),
+        }
+
+        result_future = pipeline._submit_composite(
+            composite_class=mock_composite,
+            inputs={"data": ["a" * 32]},
+            params=None,
+            backend=None,
+            resources=None,
+            execution=None,
+            intermediates="discard",
+            failure_policy=None,
+            compact=False,
+            name="test_composite",
+        )
+        result = result_future.result()
+        assert result.metadata.get("skipped") is True
+        assert result.metadata.get("skip_reason") == "cancelled"
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_finalize_cancel_during_future_wait(self, mock_tracker_cls, tmp_path):
+        """finalize() returns cleanly when cancel fires while waiting on futures."""
+        import threading
+        import time
+
+        mock_tracker_cls.return_value = MagicMock()
+
+        pipeline = _make_pipeline(tmp_path)
+
+        # Create a blocking future and inject it into _active_futures
+        blocker = threading.Event()
+        future = Future()
+
+        def _resolve_after_cancel():
+            # Wait for cancel, then let the future sit until the 5s grace
+            blocker.wait(timeout=10)
+            future.set_result(None)
+
+        resolver = threading.Thread(target=_resolve_after_cancel)
+        resolver.start()
+
+        pipeline._active_futures[0] = future
+
+        # Fire cancel after a short delay so finalize's polling loop exits
+        def _cancel_later():
+            time.sleep(0.5)
+            pipeline.cancel()
+            blocker.set()
+
+        cancel_thread = threading.Thread(target=_cancel_later)
+        cancel_thread.start()
+
+        start = time.time()
+        summary = pipeline.finalize()
+        elapsed = time.time() - start
+
+        cancel_thread.join(timeout=2)
+        resolver.join(timeout=2)
+
+        assert "pipeline_name" in summary
+        assert "overall_success" in summary
+        # Should finish within ~7s (0.5s cancel delay + 5s grace + margin)
+        assert elapsed < 8.0
+        # Signal handlers should be restored
+        assert pipeline._prev_sigint is None
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_finalize_cancel_already_set(self, mock_tracker_cls, tmp_path):
+        """finalize() with pre-set cancel skips polling and uses short timeout."""
+        import time
+
+        mock_tracker_cls.return_value = MagicMock()
+
+        pipeline = _make_pipeline(tmp_path)
+        pipeline.cancel()
+
+        # Inject a future that will time out
+        future = Future()
+        pipeline._active_futures[0] = future
+
+        start = time.time()
+        summary = pipeline.finalize()
+        elapsed = time.time() - start
+
+        assert "pipeline_name" in summary
+        # Should finish in ~5s (the grace timeout), not hang
+        assert elapsed < 7.0
+
+
+class TestStepRegistry:
+    """Tests for _step_registry: output() works before step completion."""
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_output_before_submit_completes(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ):
+        """output() returns OutputReference for a submitted-but-not-completed step."""
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+
+        # Make execute_step block until we release it
+        import threading
+
+        barrier = threading.Event()
+
+        def slow_execute(**_kwargs):
+            barrier.wait(timeout=5)
+            return StepResult(
+                step_name="mock_op",
+                step_number=0,
+                success=True,
+                total_count=1,
+                succeeded_count=1,
+                failed_count=0,
+                output_roles=frozenset(["output"]),
+                output_types={"output": "data"},
+            )
+
+        mock_execute.side_effect = slow_execute
+
+        pipeline = _make_pipeline(tmp_path)
+        future = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="gen")
+
+        # Step is still running — output() should work via _step_registry
+        ref = pipeline.output("gen", "output")
+        assert isinstance(ref, OutputReference)
+        assert ref.source_step == 0
+        assert ref.role == "output"
+        assert ref.artifact_type == "data"
+
+        # Release the step and clean up
+        barrier.set()
+        future.result(timeout=5)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_output_after_cancellation(self, mock_tracker_cls, tmp_path):
+        """output() works for steps skipped due to cancellation."""
+        mock_tracker_cls.return_value = MagicMock()
+
+        pipeline = _make_pipeline(tmp_path)
+        pipeline.cancel()
+
+        pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="cancelled_step")
+
+        ref = pipeline.output("cancelled_step", "output")
+        assert isinstance(ref, OutputReference)
+        assert ref.source_step == 0
+        assert ref.role == "output"
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_output_invalid_name_raises(self, mock_tracker_cls, tmp_path):
+        """output() with nonexistent step name raises ValueError."""
+        import pytest
+
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(ValueError, match="No step named 'ghost'"):
+            pipeline.output("ghost", "output")
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_output_invalid_role_raises(self, mock_tracker_cls, mock_execute, tmp_path):
+        """output() with wrong role raises ValueError."""
+        import pytest
+
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+
+        mock_execute.return_value = StepResult(
+            step_name="mock_op",
+            step_number=0,
+            success=True,
+            total_count=1,
+            succeeded_count=1,
+            failed_count=0,
+            output_roles=frozenset(["output"]),
+            output_types={"output": "data"},
+        )
+
+        pipeline = _make_pipeline(tmp_path)
+        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="foo")
+
+        with pytest.raises(ValueError, match="Output role 'bad' not available"):
+            pipeline.output("foo", "bad")

@@ -1,10 +1,8 @@
 """Unit tests for provenance graph walking utilities.
 
 Tests cover:
-- _build_target_ancestry_index — BFS index construction
-- _find_target — candidate-to-target resolution
 - match_by_ancestry — end-to-end matching with filtering
-- walk_forward_to_targets — forward provenance walk for metric discovery
+- walk_forward — forward provenance walk for metric discovery
 """
 
 from __future__ import annotations
@@ -12,12 +10,33 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from artisan.execution.inputs.lineage_matching import (
-    _build_target_ancestry_index,
-    _find_target,
-    match_by_ancestry,
-    walk_forward_to_targets,
-)
+from artisan.execution.inputs.lineage_matching import match_by_ancestry
+from artisan.provenance.traversal import walk_forward
+
+
+def _provenance_map_to_edges(
+    provenance_map: dict[str, list[str]],
+) -> pl.DataFrame:
+    """Convert {target: [sources]} dict to edges DataFrame."""
+    sources = []
+    targets = []
+    for target_id, source_ids in provenance_map.items():
+        for source_id in source_ids:
+            sources.append(source_id)
+            targets.append(target_id)
+    if not sources:
+        return pl.DataFrame(
+            schema={
+                "source_artifact_id": pl.String,
+                "target_artifact_id": pl.String,
+            }
+        )
+    return pl.DataFrame(
+        {
+            "source_artifact_id": sources,
+            "target_artifact_id": targets,
+        }
+    )
 
 
 @pytest.fixture
@@ -54,6 +73,8 @@ def provenance_graph():
         M_B1: [B1],
     }
 
+    edges = _provenance_map_to_edges(provenance_map)
+
     ids = {
         "A": A,
         "B": B,
@@ -65,103 +86,7 @@ def provenance_graph():
         "M_B1": M_B1,
     }
 
-    return provenance_map, ids
-
-
-class TestBuildTargetAncestryIndex:
-    """Tests for _build_target_ancestry_index."""
-
-    def test_target_maps_to_self(self, provenance_graph):
-        """Target ID in index maps to itself."""
-        provenance_map, ids = provenance_graph
-        index = _build_target_ancestry_index({ids["A1a"]}, provenance_map)
-
-        assert index[ids["A1a"]] == ids["A1a"]
-
-    def test_ancestors_map_to_target(self, provenance_graph):
-        """Ancestors of target resolve to that target."""
-        provenance_map, ids = provenance_graph
-        index = _build_target_ancestry_index({ids["A1a"]}, provenance_map)
-
-        # A1a -> A1 -> A
-        assert index[ids["A1"]] == ids["A1a"]
-        assert index[ids["A"]] == ids["A1a"]
-
-    def test_multiple_targets_independent(self, provenance_graph):
-        """Two targets from different lineages build independent index entries."""
-        provenance_map, ids = provenance_graph
-        index = _build_target_ancestry_index({ids["A1a"], ids["B1a"]}, provenance_map)
-
-        assert index[ids["A1a"]] == ids["A1a"]
-        assert index[ids["A1"]] == ids["A1a"]
-        assert index[ids["A"]] == ids["A1a"]
-        assert index[ids["B1a"]] == ids["B1a"]
-        assert index[ids["B1"]] == ids["B1a"]
-        assert index[ids["B"]] == ids["B1a"]
-
-    def test_empty_targets(self, provenance_graph):
-        """Empty target set produces empty index."""
-        provenance_map, _ = provenance_graph
-        index = _build_target_ancestry_index(set(), provenance_map)
-
-        assert index == {}
-
-    def test_shared_ancestor_first_claim_wins(self):
-        """Ancestor reachable from 2 targets is claimed by first BFS."""
-        # shared_root -> T1, shared_root -> T2
-        shared_root = "root" + "0" * 28
-        t1 = "t1" + "0" * 30
-        t2 = "t2" + "0" * 30
-        provenance_map = {t1: [shared_root], t2: [shared_root]}
-
-        index = _build_target_ancestry_index({t1, t2}, provenance_map)
-
-        # shared_root claimed by one of the two targets
-        assert index[shared_root] in (t1, t2)
-        # Both targets map to themselves
-        assert index[t1] == t1
-        assert index[t2] == t2
-
-
-class TestFindTarget:
-    """Tests for _find_target."""
-
-    def test_candidate_in_index_directly(self, provenance_graph):
-        """Candidate that IS a target resolves immediately."""
-        provenance_map, ids = provenance_graph
-        index = _build_target_ancestry_index({ids["A1a"]}, provenance_map)
-
-        result = _find_target(ids["A1a"], index, provenance_map)
-        assert result == ids["A1a"]
-
-    def test_walks_backward_to_find_target(self, provenance_graph):
-        """Candidate BFS backward finds ancestor in index (sibling case)."""
-        provenance_map, ids = provenance_graph
-        # Targets are A1a and B1a; candidates are M_A1 and M_B1
-        index = _build_target_ancestry_index({ids["A1a"], ids["B1a"]}, provenance_map)
-
-        # M_A1 walks back to A1, which is in index -> resolves to A1a
-        result = _find_target(ids["M_A1"], index, provenance_map)
-        assert result == ids["A1a"]
-
-    def test_no_connection_returns_none(self, provenance_graph):
-        """Unrelated candidate returns None."""
-        provenance_map, ids = provenance_graph
-        # Only index A-lineage
-        index = _build_target_ancestry_index({ids["A1a"]}, provenance_map)
-
-        # M_B1 has no connection to A-lineage
-        result = _find_target(ids["M_B1"], index, provenance_map)
-        assert result is None
-
-    def test_candidate_one_hop_from_target(self, provenance_graph):
-        """Direct child of target finds it in one step."""
-        provenance_map, ids = provenance_graph
-        # Target is A1 (step 1); candidate is A1a (step 2, child of A1)
-        index = _build_target_ancestry_index({ids["A1"]}, provenance_map)
-
-        result = _find_target(ids["A1a"], index, provenance_map)
-        assert result == ids["A1"]
+    return edges, ids
 
 
 class TestMatchByAncestry:
@@ -169,12 +94,12 @@ class TestMatchByAncestry:
 
     def test_direct_ancestry_matching(self, provenance_graph):
         """Candidates are descendants of targets (different step numbers)."""
-        provenance_map, ids = provenance_graph
+        edges, ids = provenance_graph
         # Targets at step 1 (A1, B1), candidates at step 2 (A1a, B1a)
         result = match_by_ancestry(
             target_ids={ids["A1"], ids["B1"]},
             candidate_ids_by_role={"results": [ids["A1a"], ids["B1a"]]},
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert ids["A1"] in result
@@ -184,12 +109,12 @@ class TestMatchByAncestry:
 
     def test_sibling_matching(self, provenance_graph):
         """Candidates share common ancestor with targets (same step case)."""
-        provenance_map, ids = provenance_graph
+        edges, ids = provenance_graph
         # A1a and M_A1 are siblings (both step 2, share ancestor A1)
         result = match_by_ancestry(
             target_ids={ids["A1a"], ids["B1a"]},
             candidate_ids_by_role={"metrics": [ids["M_A1"], ids["M_B1"]]},
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert ids["A1a"] in result
@@ -199,14 +124,14 @@ class TestMatchByAncestry:
 
     def test_multi_role_complete_matches(self, provenance_graph):
         """All roles match for all targets."""
-        provenance_map, ids = provenance_graph
+        edges, ids = provenance_graph
         result = match_by_ancestry(
             target_ids={ids["A1"], ids["B1"]},
             candidate_ids_by_role={
                 "results": [ids["A1a"], ids["B1a"]],
                 "metrics": [ids["M_A1"], ids["M_B1"]],
             },
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert len(result) == 2
@@ -215,7 +140,7 @@ class TestMatchByAncestry:
 
     def test_multi_role_incomplete_excluded(self, provenance_graph):
         """Target matched in role A but not role B is excluded."""
-        provenance_map, ids = provenance_graph
+        edges, ids = provenance_graph
         # A1 has child A1a in results, but M_B1 in metrics has no link to A1
         result = match_by_ancestry(
             target_ids={ids["A1"]},
@@ -223,18 +148,18 @@ class TestMatchByAncestry:
                 "results": [ids["A1a"]],
                 "metrics": [ids["M_B1"]],  # wrong lineage
             },
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert len(result) == 0
 
     def test_unmatched_candidate_warns(self, provenance_graph, caplog):
         """Warning logged with 'no common ancestor' for unmatched candidate."""
-        provenance_map, ids = provenance_graph
+        edges, ids = provenance_graph
         match_by_ancestry(
             target_ids={ids["A1a"]},
             candidate_ids_by_role={"metrics": [ids["M_B1"]]},
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert "no common ancestor" in caplog.text.lower()
@@ -245,16 +170,16 @@ class TestMatchByAncestry:
         t = "t" * 32
         c1 = "c1" + "0" * 30
         c2 = "c2" + "0" * 30
-        provenance_map = {c1: [t], c2: [t]}
+        edges = _provenance_map_to_edges({c1: [t], c2: [t]})
 
         result = match_by_ancestry(
             target_ids={t},
             candidate_ids_by_role={"role": [c1, c2]},
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert t in result
-        assert result[t]["role"] == [c1, c2]
+        assert set(result[t]["role"]) == {c1, c2}
 
     def test_one_to_n_matching(self):
         """1 target with N candidates produces list of N in result.
@@ -266,40 +191,42 @@ class TestMatchByAncestry:
         c1 = "c1" + "0" * 30
         c2 = "c2" + "0" * 30
         c3 = "c3" + "0" * 30
-        provenance_map = {
-            dataset: [root],
-            c1: [root],
-            c2: [root],
-            c3: [root],
-        }
+        edges = _provenance_map_to_edges(
+            {
+                dataset: [root],
+                c1: [root],
+                c2: [root],
+                c3: [root],
+            }
+        )
 
         result = match_by_ancestry(
             target_ids={dataset},
             candidate_ids_by_role={"configs": [c1, c2, c3]},
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert dataset in result
-        assert result[dataset]["configs"] == [c1, c2, c3]
+        assert set(result[dataset]["configs"]) == {c1, c2, c3}
 
     def test_empty_targets_returns_empty(self, provenance_graph):
         """Empty target set produces empty result."""
-        provenance_map, ids = provenance_graph
+        edges, ids = provenance_graph
         result = match_by_ancestry(
             target_ids=set(),
             candidate_ids_by_role={"metrics": [ids["M_A1"]]},
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert result == {}
 
     def test_empty_candidates_returns_empty(self, provenance_graph):
         """Empty candidate dict produces empty result."""
-        provenance_map, ids = provenance_graph
+        edges, ids = provenance_graph
         result = match_by_ancestry(
             target_ids={ids["A1a"]},
             candidate_ids_by_role={},
-            provenance_map=provenance_map,
+            edges=edges,
         )
 
         assert result == {}
@@ -330,14 +257,14 @@ def _edges_df(
 
 
 class TestWalkForwardToTargets:
-    """Tests for walk_forward_to_targets."""
+    """Tests for walk_forward."""
 
     def test_single_hop(self):
         """Source finds target one hop forward."""
         edges = _edges_df([("S", "T")], type_map={"T": "metric"})
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.height == 1
         assert result["source_id"][0] == "S"
@@ -351,7 +278,7 @@ class TestWalkForwardToTargets:
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.height == 1
         assert result["source_id"][0] == "S"
@@ -362,7 +289,7 @@ class TestWalkForwardToTargets:
         edges = _edges_df([("S", "M")], type_map={"M": "data"})
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.is_empty()
 
@@ -374,7 +301,7 @@ class TestWalkForwardToTargets:
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.height == 1
         assert result["target_id"][0] == "M"
@@ -387,7 +314,7 @@ class TestWalkForwardToTargets:
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.height == 2
         target_ids = set(result["target_id"].to_list())
@@ -401,7 +328,7 @@ class TestWalkForwardToTargets:
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.height == 1
         assert result["target_id"][0] == "T"
@@ -411,7 +338,7 @@ class TestWalkForwardToTargets:
         edges = _edges_df([("S", "T")], type_map={"T": "metric"})
         sources = pl.DataFrame(schema={"artifact_id": pl.String})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.is_empty()
 
@@ -420,7 +347,7 @@ class TestWalkForwardToTargets:
         sources = pl.DataFrame({"artifact_id": ["S"]})
         edges = _edges_df([], type_map={})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.is_empty()
 
@@ -432,7 +359,7 @@ class TestWalkForwardToTargets:
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
-        result = walk_forward_to_targets(sources, edges, target_type=None)
+        result = walk_forward(sources, edges, target_type=None)
 
         target_ids = set(result["target_id"].to_list())
         assert target_ids == {"A", "B"}
@@ -445,7 +372,7 @@ class TestWalkForwardToTargets:
         )
         sources = pl.DataFrame({"artifact_id": ["S1", "S2"]})
 
-        result = walk_forward_to_targets(sources, edges, target_type="metric")
+        result = walk_forward(sources, edges, target_type="metric")
 
         assert result.height == 2
         pairs = set(

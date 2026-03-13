@@ -1,9 +1,17 @@
 # Artisan
 
-A domain-agnostic pipeline framework with automatic provenance tracking.
-Artisan gives computational tools a common interface and chains them into
-tracked, repeatable workflows. Every result is automatically linked back to
-the inputs and parameters that produced it.
+A Python framework for building computational pipelines with automatic
+provenance tracking.
+
+Artisan is intended to be more protocol than platform. Operations declare a
+contract (typed inputs, typed outputs, parameters) and the framework uses that
+contract to wire things together, track what produced what, and store results
+as content-addressed artifacts. The computation inside each operation is a
+black box: wrap whatever tools you're already using.
+
+Because the contract is explicit and structured, caching, lineage queries, and
+portability across environments come for free. The same pipeline runs on a
+laptop or an HPC cluster without changes to the operations themselves.
 
 > **Status:** This project is in active development (v0.1). APIs may change
 > between releases.
@@ -12,22 +20,21 @@ the inputs and parameters that produced it.
 
 ## Why Artisan?
 
-**Simple** — Define steps, connect outputs to inputs, run. No boilerplate, just Python.
+**Simple** — Define steps, connect outputs to inputs, run. No boilerplate,
+just Python.
 
-**Extensible** — Wrap any tool as an `OperationDefinition`. Declare
-inputs/outputs, implement three methods, and the framework handles
-the rest.
+**Extensible** — Wrap any tool as an `OperationDefinition`. Declare inputs and
+outputs, implement three methods, and the framework handles the rest.
 
-**Reproducible** — Content-addressed artifacts and dual provenance mean every
-result traces back to its inputs. Same content = same ID, always.
+**Reproducible** — Artifacts are content-addressed and provenance is tracked
+automatically. Same content, same identity. Every result traces back to the
+inputs and parameters that produced it.
 
-**Scale-invariant** — The same pipeline code runs on a laptop or an HPC cluster.
-Switch from local to SLURM execution with a single parameter — the framework
-handles batching, job arrays, and resource management automatically.
+**Scale-invariant** — The same pipeline code runs on a laptop or an HPC
+cluster. Switch from local to SLURM execution with a single parameter.
 
-**Structured data** — All artifacts, metrics, and provenance are collected in a
-single store and accessible as dataframes. No parsing log files, no hunting
-through directory trees — query your results directly.
+**Queryable** — Artifacts, metrics, and provenance live in a single store,
+accessible as dataframes. No log parsing, no directory archaeology.
 
 ---
 
@@ -195,6 +202,36 @@ pixi run -e docs docs-clean       # Remove build artifacts
 - **[Concepts](docs/concepts/index.md)** — Architecture, design principles, and
   system internals
 - **[Reference](docs/reference/index.md)** — API reference and coding conventions
+
+---
+
+## Claude Code Integration
+
+Artisan includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+plugin with skills for scaffolding operations, pipelines, and documentation.
+
+| Skill | Description |
+|-------|-------------|
+| `/artisan:write-operation` | Scaffold or review an `OperationDefinition` subclass |
+| `/artisan:write-composite` | Scaffold or review a `CompositeDefinition` subclass |
+| `/artisan:write-pipeline` | Scaffold a pipeline script composing operations |
+| `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
+
+**Marketplace install** (recommended):
+
+```bash
+/plugin marketplace add        # register the plugin from this repo
+/plugin install                # install registered plugins
+```
+
+**Manual fallback** — point Claude Code at the repo root:
+
+```bash
+claude --plugin-dir /path/to/artisan-repo
+```
+
+See [Installation — Claude Code plugin](docs/getting-started/installation.md#claude-code-plugin)
+for details.
 
 ---
 

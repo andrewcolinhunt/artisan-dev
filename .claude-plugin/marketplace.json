@@ -1,0 +1,20 @@
+{
+  "name": "artisan",
+  "owner": {
+    "name": "Andrew Colin Hunt"
+  },
+  "plugins": [
+    {
+      "name": "artisan",
+      "source": "./",
+      "strict": false,
+      "description": "Skills for building pipelines and operations with the Artisan framework",
+      "skills": [
+        "./skills/write-operation",
+        "./skills/write-pipeline",
+        "./skills/write-composite",
+        "./skills/write-docs"
+      ]
+    }
+  ]
+}

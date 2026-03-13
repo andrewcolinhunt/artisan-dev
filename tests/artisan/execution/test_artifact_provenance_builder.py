@@ -162,7 +162,7 @@ class TestBuildConfigReferenceEdges:
         ).finalize()
 
         mock_artifact_store = Mock()
-        mock_artifact_store.load_artifact_type_map.return_value = {
+        mock_artifact_store.provenance.load_type_map.return_value = {
             "s" * 32: ArtifactTypes.DATA,
         }
 
@@ -199,7 +199,7 @@ class TestBuildConfigReferenceEdges:
         ).finalize()
 
         mock_artifact_store = Mock()
-        mock_artifact_store.load_artifact_type_map.return_value = {
+        mock_artifact_store.provenance.load_type_map.return_value = {
             "s" * 32: ArtifactTypes.DATA,
             "r" * 32: ArtifactTypes.DATA,
         }
@@ -252,7 +252,7 @@ class TestBuildConfigReferenceEdges:
         )
 
         assert edges == []
-        mock_artifact_store.load_artifact_type_map.assert_not_called()
+        mock_artifact_store.provenance.load_type_map.assert_not_called()
 
     def test_unknown_artifact_type_uses_unknown(self):
         """Unknown artifact type in store uses 'UNKNOWN' string."""
@@ -268,7 +268,7 @@ class TestBuildConfigReferenceEdges:
         ).finalize()
 
         mock_artifact_store = Mock()
-        mock_artifact_store.load_artifact_type_map.return_value = {}
+        mock_artifact_store.provenance.load_type_map.return_value = {}
 
         edges = build_config_reference_edges(
             config_artifacts=[config],
@@ -300,4 +300,4 @@ class TestBuildConfigReferenceEdges:
         )
 
         assert edges == []
-        mock_artifact_store.load_artifact_type_map.assert_not_called()
+        mock_artifact_store.provenance.load_type_map.assert_not_called()

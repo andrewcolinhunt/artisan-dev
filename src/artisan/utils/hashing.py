@@ -108,37 +108,34 @@ def compute_step_spec_id(
     return xxhash.xxh3_128(hash_input.encode()).hexdigest()
 
 
-def compute_chain_spec_id(
-    operations: list[tuple[str, dict[str, Any] | None]],
-    initial_inputs: dict[str, list[str]],
+def compute_composite_spec_id(
+    composite_name: str,
+    params: dict[str, Any] | None,
+    input_spec: dict[str, tuple[str, str]],
 ) -> str:
-    """Compute deterministic spec ID for a chain of operations.
+    """Compute deterministic spec ID for a composite step.
 
-    Hashes all operation names and params in order, plus the sorted
-    initial input artifact IDs. Any change to any operation's params
-    or the input set invalidates the cache.
+    The composite is identified by class name plus params, with inputs
+    referenced by upstream spec_ids.
 
     Args:
-        operations: List of (operation_name, params_dict) tuples in order.
-        initial_inputs: Initial input artifact IDs keyed by role.
+        composite_name: The composite's name attribute.
+        params: Composite parameters dict.
+        input_spec: Maps each input role to a (upstream_step_spec_id,
+            upstream_role) tuple.
 
     Returns:
         32-character xxh3_128 hex string.
     """
-    # Hash operations in order
-    op_parts: list[str] = []
-    for name, params in operations:
-        params_json = _canonicalize_dict(params)
-        op_parts.append(f"{name}:{params_json}")
-    ops_str = "|".join(op_parts)
+    input_parts = []
+    for role in sorted(input_spec.keys()):
+        upstream_spec_id, upstream_role = input_spec[role]
+        input_parts.append(f"{role}:{upstream_spec_id}:{upstream_role}")
+    input_str = ",".join(input_parts)
 
-    # Hash sorted initial input IDs
-    all_ids: set[str] = set()
-    for role_ids in initial_inputs.values():
-        all_ids.update(role_ids)
-    sorted_ids = ",".join(sorted(all_ids)) if all_ids else ""
+    params_json = _canonicalize_dict(params)
 
-    hash_input = f"chain|{ops_str}|{sorted_ids}"
+    hash_input = f"composite|{composite_name}|{params_json}|{input_str}"
     return xxhash.xxh3_128(hash_input.encode()).hexdigest()
 
 

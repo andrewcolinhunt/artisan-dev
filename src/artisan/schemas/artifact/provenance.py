@@ -81,7 +81,7 @@ class ArtifactProvenanceEdge(BaseModel):
         default=True,
         description="Whether this edge crosses a step boundary. "
         "True for edges visible at the pipeline level (default, backward compatible). "
-        "False for edges internal to a chain.",
+        "False for edges internal to a composite.",
     )
 
     def __hash__(self) -> int:

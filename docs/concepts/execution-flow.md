@@ -20,11 +20,13 @@ Each pipeline step flows through three phases split across two runtime roles:
 ┌────────────────────┐  ┌──────────────────────────┐  ┌────────────────────────┐
 │      DISPATCH      │  │        EXECUTE           │  │        COMMIT          │
 │                    │  │                          │  │                        │
-│  Resolve inputs    │  │  Set up sandbox          │  │  Collect staged files   │
-│  Compute cache key │  │  Materialize inputs      │  │  Deduplicate           │
-│  Check cache       │──│  Run operation lifecycle │──│  Write to Delta Lake   │
-│  Batch + dispatch  │  │  Capture lineage         │  │  Return StepResult     │
-│                    │  │  Stage to Parquet        │  │                        │
+│  Resolve inputs    │  │  Set up sandbox          │  │  Verify staging files  │
+│  Pair multi-inputs │  │  Materialize inputs      │  │  Capture worker logs   │
+│  Compute cache key │──│  Run operation lifecycle │──│  Collect staged files  │
+│  Check cache       │  │  Capture lineage         │  │  Deduplicate           │
+│  Batch + dispatch  │  │  Stage to Parquet        │  │  Write to Delta Lake   │
+│                    │  │                          │  │  Compact tables        │
+│                    │  │                          │  │  Return StepResult     │
 └────────────────────┘  └──────────────────────────┘  └────────────────────────┘
 ```
 
@@ -52,6 +54,11 @@ The result is a sorted, deduplicated list of artifact IDs per role.
 of inputs must always produce the same key regardless of the order workers
 completed in the prior step.
 
+**Empty input handling.** When every input role resolves to zero artifact IDs,
+the step is skipped entirely. The orchestrator records a "skipped" result
+(with the reason `empty_inputs`) in the steps table so that downstream steps
+and resume logic know the step was attempted but produced no work.
+
 ### Multi-input pairing
 
 Operations consuming multiple input roles need their artifacts aligned. The
@@ -59,30 +66,46 @@ orchestrator [pairs inputs](operations-model.md#pairing-strategies) according
 to the operation's `group_by` strategy before batching, so batch boundaries
 respect paired groups.
 
+Three strategies are available:
+
+- **ZIP** -- positional pairing (first with first, second with second). All
+  roles must have the same length.
+- **LINEAGE** -- provenance-aware matching. Artifacts sharing common ancestry
+  in the provenance graph are paired together. Requires exactly two input roles.
+- **CROSS_PRODUCT** -- all combinations of artifacts across roles. Useful when
+  every combination is meaningful.
+
+For operations with a primary input role (such as Filter), a variant called
+anchor-based matching pairs each primary artifact independently against every
+other role, retaining only complete matches.
+
 ### Two-level caching
 
 The framework checks two caches before any computation runs. Each level exists
 because it skips different amounts of work.
 
 **Step-level cache** checks first. The `step_spec_id` hashes the operation
-name, step number, upstream step spec IDs, parameters, and config overrides.
-A hit here skips the entire step -- no input resolution, no batching, no worker
-dispatch. The orchestrator returns a pre-resolved `StepResult` immediately.
+name, step number, upstream step spec IDs and roles (from `OutputReference`
+pointers), parameters, and config overrides (environment, tool). A hit here skips the
+entire step -- no input resolution, no batching, no worker dispatch. The
+orchestrator returns a previously recorded `StepResult` from the steps Delta
+table.
 
 **Execution-level cache** checks per batch. The `execution_spec_id` hashes the
-operation name, sorted input artifact IDs, parameters, and config overrides.
-A hit skips that batch while other batches in the same step may still execute.
+operation name, sorted input artifact IDs across all roles, parameters, and
+config overrides. A hit skips that batch while other batches in the same step
+may still execute.
 
 ```
 prev = pipeline.run(operation=PrevOp, ...)
 pipeline.run(operation=MyOp, inputs={"data": prev.output("data")})
     │
     ▼
-step_spec_id = hash(op_name | step_number | upstream_spec_ids | params | config)
+step_spec_id = hash(op_name | step_number | upstream_spec_ids_and_roles | params | config)
     │
     ├── HIT:  return cached StepResult (skip everything)
     │
-    └── MISS: resolve inputs → batch → per-batch:
+    └── MISS: resolve inputs → pair → batch → per-batch:
                   │
                   execution_spec_id = hash(op_name | sorted_artifact_ids | params | config)
                       │
@@ -124,24 +147,25 @@ group IDs from pairing. Workers need nothing else to execute.
 ## Execute: running operations
 
 Workers receive `ExecutionUnit` objects and run the operation lifecycle. The
-creator and curator paths diverge here because they optimize for different
-workloads.
+creator, curator, and composite paths diverge here because they optimize for
+different workloads.
 
 ### Creator operations: the sandbox lifecycle
 
 Each creator execution gets an isolated sandbox on disk:
 
 ```
-{working_root}/{step}_{op_name}/{shard}/{execution_run_id}/
+{working_root}/{N}_{op_name}/{ab}/{cd}/{execution_run_id}/
     materialized_inputs/    # Input artifacts written to disk
     preprocess/             # Preprocess working directory
     execute/                # Execute output directory
     postprocess/            # Postprocess working directory
+    tool_output.log         # Captured tool stdout/stderr
 ```
 
-The `{shard}` directories (two levels of hex prefix from the run ID) distribute
-thousands of sandboxes across the filesystem, avoiding inode contention on HPC
-shared filesystems.
+The `{ab}/{cd}` directories (first four characters of the run ID, split into
+two levels) distribute sandboxes across the filesystem, avoiding inode
+contention on HPC shared filesystems.
 
 The framework runs the [three-phase creator lifecycle](operations-model.md#the-creator-lifecycle)
 within this sandbox, with two additional runtime steps:
@@ -150,27 +174,67 @@ within this sandbox, with two additional runtime steps:
 in the `materialized_inputs/` directory. Config artifacts are materialized last
 because they may contain `$artifact` references that resolve to paths of other
 materialized artifacts. Operations can request format conversion at this stage
-(e.g., materializing a JSON record as CSV) via the `materialize_as` field
-on `InputSpec`.
+(e.g., materializing with a different file extension) via the `materialize_as`
+field on `InputSpec`.
 
 **Finalize** (after postprocess). The framework computes content-addressed IDs
 for all draft artifacts (`artifact_id = xxh3_128(content)`). After this point,
 artifacts have their permanent identity.
 
+After finalization, the sandbox is cleaned up unless `preserve_working` is set
+in the pipeline configuration.
+
 ### Curator operations: the lightweight path
 
 [Curators](operations-model.md#the-curator-lifecycle) skip the sandbox entirely
-— no materialization, no three-phase lifecycle, no remote worker dispatch. The
-orchestrator spawns a local subprocess for memory isolation and runs
-`run_curator_flow` with input DataFrames rather than on-disk artifacts. This
-eliminates the overhead of sandboxing and remote dispatch that would add latency
-with no benefit for metadata-only operations like Filter and Merge.
+-- no materialization, no three-phase lifecycle, no remote worker dispatch. The
+orchestrator spawns a local subprocess (via `ProcessPoolExecutor` with the
+`spawn` context) for memory isolation and runs the curator flow with input
+DataFrames rather than on-disk artifacts. This eliminates the overhead of
+sandboxing and remote dispatch that would add latency with no benefit for
+metadata-only operations like Filter and Merge.
+
+**Why a subprocess?** Curator operations can load large DataFrames into memory.
+Running them in a subprocess means the operating system reclaims all memory when
+the subprocess exits, preventing gradual memory growth in the orchestrator. If
+the subprocess is killed (typically by the OOM killer), the framework detects
+the broken process pool, captures diagnostic information (peak RSS, system
+memory), and stages a failure record rather than crashing the pipeline.
+
+### Composite execution: collapsed and expanded modes
+
+When multiple creator operations are composed into a
+[composite](operations-model.md), they can execute in two modes.
+
+In **collapsed** mode, the composite runs within a single worker process.
+Each `ctx.run()` call executes its operation eagerly through the standard
+creator lifecycle (`run_creator_lifecycle`), and artifacts are passed
+in-memory to subsequent operations via `ArtifactSource` objects, avoiding
+Delta Lake round-trips.
+
+In **expanded** mode, each `ctx.run()` call delegates to the parent pipeline
+as a separate step, giving each internal operation its own dispatch-execute-commit
+cycle with full parallelism and independent failure handling.
+
+In both modes, the `intermediates` policy controls what happens to artifacts
+produced by non-final operations:
+
+- **DISCARD** (default) -- only the final operation's artifacts are committed.
+  Shortcut provenance edges link the composite's initial inputs directly to
+  its final outputs.
+- **PERSIST** -- intermediate artifacts and their internal provenance edges are
+  also committed, preserving the full composite lineage.
+- **EXPOSE** -- like PERSIST, but provenance edges for intermediates are marked
+  with `step_boundary=True` so they appear in step-level provenance queries.
+
+For the full conceptual model of composites, see
+[Composites and Composition](composites-and-composition.md).
 
 ---
 
 ## Lineage capture
 
-After postprocess, the framework captures artifact provenance — which specific
+After postprocess, the framework captures artifact provenance -- which specific
 input produced which specific output. This happens during execution because
 the context needed for matching (filename stems, pairing order, declarations)
 is lost once execution completes.
@@ -180,12 +244,16 @@ to infer which input produced which output. Each output's lineage source is
 declared via [`infer_lineage_from`](operations-model.md#output-specs) on
 `OutputSpec`, which the framework validates at class definition time.
 
+When multi-input pairing is active (`group_by` is set), the framework creates
+co-input edges from all paired input roles at the matched index. Each co-input
+edge carries a `group_id` that links it to the rest of its paired group.
+
 ---
 
 ## Staging: the contract between workers and orchestrator
 
 Workers never write to Delta Lake. Instead, each worker writes Parquet files to
-an isolated staging directory — one file per table type, with `executions.parquet`
+an isolated staging directory -- one file per table type, with `executions.parquet`
 written last as a sentinel. The orchestrator collects these after all workers
 complete and commits them atomically.
 
@@ -193,6 +261,15 @@ This [staging-commit pattern](storage-and-delta-lake.md#the-staging-commit-patte
 eliminates write conflicts, ensures atomic visibility, and tolerates worker
 failures. See the storage page for the full directory layout, sharding strategy,
 and NFS consistency handling.
+
+### Staging verification
+
+On distributed filesystems (NFS), directory attribute caching can delay
+visibility of files written by SLURM workers. Before committing, the
+orchestrator polls for `executions.parquet` sentinel files using
+close-to-open consistency checks (`open()` + `read()` rather than `stat()`)
+with exponential backoff. This verification runs only when the backend reports
+a shared filesystem; local backends skip it entirely.
 
 ---
 
@@ -209,6 +286,30 @@ During commit, content-addressed
 artifacts that already exist in storage. After commit, optional compaction
 merges small Parquet files into larger ones for better read performance.
 
+### Worker log capture
+
+For SLURM backends, worker stdout/stderr is captured after dispatch completes
+and patched into the `executions.parquet` staging files before commit. Failed
+executions also get human-readable log files written to a per-step directory
+under `logs/failures/`. This happens on a best-effort basis -- missing logs
+never block the commit.
+
+---
+
+## Step tracking
+
+The orchestrator records each step's lifecycle in the steps Delta table. A
+"running" row is written before dispatch. After completion, it is updated to
+"completed", "skipped", "cancelled", or "failed" with timing and count metadata.
+This table serves three purposes:
+
+- **Step-level caching** -- the `check_cache` query scans this table for a
+  completed step matching the same `step_spec_id`.
+- **Resume** -- `load_completed_steps` returns all completed or skipped steps
+  from a prior run so the pipeline can skip them on restart.
+- **Observability** -- the table records `pipeline_run_id`, operation class,
+  parameters, compute backend, and timing for every step ever executed.
+
 ---
 
 ## Error handling across phases
@@ -224,6 +325,16 @@ early as possible.
 | Postprocess/lineage (worker) | Caught, failure staged | Same as execute failure |
 | Dispatch infrastructure | Caught in step executor | Error recorded in step metadata |
 | Commit (orchestrator) | Per-table error logging | Successfully committed tables preserved |
+| Subprocess OOM (curator) | Broken pool detected | Synthetic failure record staged with diagnostics |
+
+**Double-fault protection.** If staging a failure record itself fails, the error
+is folded into the `StagingResult` so the caller always gets a value. The
+original error and the staging error are combined into a single message.
+
+**Failure logs.** Every failed execution writes a human-readable log file
+containing the run ID, operation name, step number, backend, timestamp, full
+traceback, and (when available) tool output. These live in
+`logs/failures/step_{N}_{op_name}/` alongside the Delta tables.
 
 The `failure_policy` controls what happens when some batches fail within a step:
 
@@ -240,13 +351,65 @@ diagnosis.
 
 ---
 
+## Cancellation
+
+The framework supports cooperative cancellation through `pipeline.cancel()` or
+signal handling (SIGINT/SIGTERM). Cancellation is checked between step phases
+-- a step that is mid-execution completes its current phase before stopping,
+so no partial writes occur.
+
+### Cancel checkpoints
+
+The cancel event is checked at multiple gates:
+
+| Checkpoint | Effect |
+|-----------|--------|
+| Before step dispatch | Step skipped with `skip_reason="cancelled"` |
+| After waiting for predecessors | Step skipped before any work begins |
+| Between execute and commit phases | Step returns a cancelled result |
+| Inside curator subprocess polling | Curator stops waiting for results |
+
+### Signal escalation
+
+When running from a terminal, the framework installs signal handlers on the
+first dispatched step. These implement a three-press escalation:
+
+| Press | Effect |
+|-------|--------|
+| First Ctrl+C | Graceful cancellation -- current step drains, remaining steps skip |
+| Second Ctrl+C | Restores Python's default signal handlers |
+| Third Ctrl+C | Raises `KeyboardInterrupt`, force-killing the process |
+
+Worker child processes ignore SIGINT (via `SIG_IGN` in the process pool
+initializer), so only the orchestrator handles the signal. In Jupyter
+notebooks, signal handlers are not installed -- use `pipeline.cancel()`
+directly.
+
+### SLURM limitations
+
+On SLURM, cancellation stops the orchestrator from dispatching new steps, but
+jobs already running on the cluster continue. You must cancel them manually
+with `scancel`. Auto-scancel is planned but not yet implemented.
+
+### Cache interaction
+
+Cancelled steps are recorded with `status="cancelled"` in the steps Delta
+table. They are excluded from cache lookups, so re-running the same pipeline
+re-executes cancelled steps while completed steps load from cache.
+
+---
+
 ## Key design decisions
 
 | Decision | Rationale |
 |----------|-----------|
 | Two-level caching (step + execution) | Step-level is fast but coarse; execution-level catches fine-grained reuse |
 | Two-level batching (artifacts per unit + units per worker) | Separates logical batching from cluster adaptation |
+| Curator subprocess isolation | Prevents memory leaks from accumulating in the long-lived orchestrator process |
+| Staging verification with close-to-open consistency | NFS attribute caching can hide files; `stat()` is not sufficient |
 | Default continue-on-failure | Large runs expect occasional failures; successful results should not be discarded |
+| Composite collapsed mode | Avoids Delta Lake round-trips for tightly coupled operations |
+| Steps Delta table | Enables step-level caching, resume, and observability without additional infrastructure |
 
 ---
 
@@ -263,4 +426,5 @@ diagnosis.
 - [Design Principles](design-principles.md) -- Foundational rationale for
   content addressing, scale transparency, fail-fast validation
 - [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) -- See the execution flow in action
-- [SLURM Execution Tutorial](../tutorials/getting-started/04-slurm-execution.ipynb) -- Run operations on a SLURM cluster
+- [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) -- Run operations on a SLURM cluster
+- [Pipeline Cancellation Tutorial](../tutorials/execution/08-pipeline-cancellation.ipynb) -- Cooperative cancellation in action
