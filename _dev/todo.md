@@ -2,7 +2,12 @@
 
 ## TOP PRIORITIES
 
+- handholding installation
+- IPD specific getting started
+- add a claude code tutorial for protein design
+- using claude code in artisan
 
+update for prefect cloud
 
 ---
 ---
