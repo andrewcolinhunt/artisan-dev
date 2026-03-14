@@ -16,14 +16,14 @@ the current getting-started experience fails at multiple points:
 - Prefect Cloud as an alternative to local server is unmentioned
 
 **First experience is too complex**
-- README "Quick Example" references `path/to/csv/files` (doesn't exist)
+- First Pipeline tutorial (`first-pipeline.md`) references `path/to/csv/files`
+  in the `IngestData` step — the path doesn't exist, so the first real step
+  errors out
 - First Pipeline tutorial introduces 6 operations, 3 storage directories,
   merging, filtering, metrics, and output references — all at once
 - No "hello world" moment: the simplest runnable example requires
   understanding too many concepts simultaneously
 - No expected output shown anywhere — user can't verify they're on track
-- `IngestData` step uses nonexistent files, so a user following along hits
-  an error on the first real step
 
 **Structural issues**
 - No gentle on-ramp between "installed successfully" and the complex 7-step
@@ -67,7 +67,8 @@ docs/getting-started/
 
 ### README changes
 
-The README `Quick Start` and `Quick Example` sections need parallel updates.
+The README `Quick Start` section needs minor updates. The `Quick Example` is
+already clean (no placeholder paths) — it just needs expected output added.
 
 ---
 
@@ -267,9 +268,12 @@ workflow a first-class part of the getting-started experience.
   - "You don't need to explain the project from scratch each time — the
     context is built in."
 
-- **Install the Artisan plugin**
-  - The plugin adds framework-specific skills (slash commands).
-  - Show the install commands:
+- **Artisan skills**
+  - The repo ships with framework-specific skills (slash commands) that
+    Claude Code auto-discovers from the `.claude-plugin/` directory.
+  - If skills aren't available automatically, install them manually (these
+    commands are run inside the Claude Code interactive session, not in a
+    regular terminal):
     ```
     /plugin marketplace add
     /plugin install
@@ -320,9 +324,9 @@ workflow a first-class part of the getting-started experience.
 - Or: keep `prefect-start` but add a one-line note about what it does
 
 **Quick Example section:**
-- Replace with the same minimal 2-step pipeline from `quick-start.md`
-- Remove `IngestData` and `Filter` (they need external files / more context)
-- Show expected output inline (even just `# Pipeline complete: 2 steps`)
+- The current README example already uses DataGenerator → DataTransformer →
+  MetricCalculator → Filter with no placeholder paths — it works as-is
+- Add expected output inline (even just `# Pipeline complete: 4 steps`)
 - Add "See the full Getting Started guide for more"
 
 ---
@@ -369,5 +373,5 @@ Add HPC callouts (tip boxes) to installation.md for now.
 - Update `index.md` — new reading order
 - Update `myst.yml` — register new pages
 - Update `orientation.md` — add intro paragraph referencing prior experience
-- Update README — fix Quick Start and Quick Example sections
+- Update README — add expected output to Quick Example, minor Quick Start tweaks
 - Update tutorial notebooks to match (follow-on task)
