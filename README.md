@@ -60,6 +60,14 @@ pixi run prefect-start
 
 ```
 
+For a full walkthrough — installation, your first pipeline, and the mental model
+behind the framework — see the **[Getting Started guide](docs/getting-started/index.md)**:
+
+- **[Installation](docs/getting-started/installation.md)** — Pixi setup, Prefect server, IDE configuration
+- **[Quick Start](docs/getting-started/quick-start.md)** — Run a 2-step pipeline in 5 minutes
+- **[Your First Pipeline](docs/getting-started/first-pipeline.md)** — Metrics, filtering, and provenance in a 5-step pipeline
+- **[Orientation](docs/getting-started/orientation.md)** — Artifacts, operations, pipelines, provenance, and storage explained
+
 ---
 
 ## IDE Setup (VSCode)
@@ -142,9 +150,6 @@ pipeline.run(
 result = pipeline.finalize()
 print(f"Pipeline complete: {result['total_steps']} steps")
 ```
-
-See the [Getting Started guide](docs/getting-started/index.md) for a full
-walkthrough.
 
 ## Development Setup
 
