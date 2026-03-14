@@ -69,7 +69,7 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
                 "  prefect cloud login\n"
                 "\n"
                 "Or set the URL directly:\n"
-                f"  export PREFECT_API_URL=http://<host>:<port>/api\n"
+                "  export PREFECT_API_URL=http://<host>:<port>/api\n"
             ) from None
         source = "prefect_profile"
 

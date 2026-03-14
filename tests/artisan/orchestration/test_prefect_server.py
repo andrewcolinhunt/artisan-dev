@@ -26,9 +26,7 @@ from artisan.orchestration.prefect_server import (
 
 class TestIsCloudUrl:
     def test_cloud_url(self) -> None:
-        assert _is_cloud_url(
-            "https://api.prefect.cloud/api/accounts/x/workspaces/y"
-        )
+        assert _is_cloud_url("https://api.prefect.cloud/api/accounts/x/workspaces/y")
 
     def test_self_hosted_url(self) -> None:
         assert not _is_cloud_url("http://host:4200/api")
@@ -60,9 +58,10 @@ class TestNormalizeUrl:
         assert _normalize_url(cloud) == cloud
 
     def test_cloud_url_trailing_slash(self) -> None:
-        assert _normalize_url(
-            "https://api.prefect.cloud/api/accounts/x/workspaces/y/"
-        ) == "https://api.prefect.cloud/api/accounts/x/workspaces/y"
+        assert (
+            _normalize_url("https://api.prefect.cloud/api/accounts/x/workspaces/y/")
+            == "https://api.prefect.cloud/api/accounts/x/workspaces/y"
+        )
 
     def test_url_with_api_in_path(self) -> None:
         url = "http://host:4200/api/v2/something"
@@ -193,9 +192,7 @@ class TestDiscoverServerCloud:
 
     def test_cloud_skips_health_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PREFECT_API_URL", CLOUD_URL)
-        with patch(
-            "artisan.orchestration.prefect_server.health_check"
-        ) as mock_hc:
+        with patch("artisan.orchestration.prefect_server.health_check") as mock_hc:
             discover_server()
         mock_hc.assert_not_called()
 
@@ -293,9 +290,7 @@ class TestActivateServer:
         stale_api = current_ctx.settings.api.model_copy(
             update={"url": "http://stale:4200/api"}
         )
-        stale_settings = current_ctx.settings.model_copy(
-            update={"api": stale_api}
-        )
+        stale_settings = current_ctx.settings.model_copy(update={"api": stale_api})
         stale_ctx = SettingsContext(
             profile=current_ctx.profile, settings=stale_settings
         )
