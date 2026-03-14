@@ -1,6 +1,7 @@
 # Orientation
 
-A quick map of the system before you build anything. This page covers how the
+You've built a pipeline and seen artifacts, operations, provenance, and storage
+in action. This page explains the mental model behind them — how the
 documentation is organized and the five key abstractions you will encounter
 throughout.
 
@@ -159,7 +160,7 @@ df = pl.read_delta(str(delta_root / "artifacts" / "index"))
 
 | Goal | Page |
 |------|------|
-| Install the project | [Installation](installation.md) |
-| Build your first pipeline hands-on | [Your First Pipeline](first-pipeline.md) |
+| AI-assisted development | [Using Claude Code](using-claude-code.md) |
+| Build your first pipeline hands-on | [Tutorials](../tutorials/index.md) |
 | Learn the framework in depth | [Concepts](../concepts/index.md) |
-| Browse interactive notebooks | [Tutorials](../tutorials/index.md) |
+| Task-oriented recipes | [How-to Guides](../how-to-guides/index.md) |
