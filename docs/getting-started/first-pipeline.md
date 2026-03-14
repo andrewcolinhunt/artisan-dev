@@ -2,14 +2,17 @@
 
 :::{note}
 This tutorial is also available as an [interactive notebook](../tutorials/getting-started/01-first-pipeline.ipynb).
+The notebook version may differ slightly from this page.
 :::
 
-This walkthrough builds a pipeline that ingests data, generates synthetic
-datasets, merges them, transforms the result, computes metrics, and filters
-by score. Every artifact is tracked with full provenance.
+This walkthrough builds a pipeline that generates synthetic datasets, transforms
+them, computes metrics, filters by score, and refines the survivors. Every
+artifact is tracked with full provenance.
 
 **Estimated time:** 15 minutes \
-**Prerequisites:** Artisan installed (`pixi install`), Prefect server running (`pixi run prefect-start`)
+**Prerequisites:** Artisan installed (`pixi install`), Prefect server running
+(`pixi run prefect-start`). If you haven't run a pipeline before, start with
+the [Quick Start](quick-start.md).
 
 ---
 
@@ -69,27 +72,6 @@ output = pipeline.output
 The `output` shorthand is a callable that creates lazy references to a
 step's outputs. You will use it to wire steps together.
 
-## Ingest CSV files
-
-`IngestData` brings external files into the pipeline's tracking system. Pass
-a list of file paths as `inputs`.
-
-```python
-from artisan.operations.curator import IngestData
-
-# Point at any CSV files you want to ingest
-source_files = sorted(Path("path/to/csv/files").glob("*.csv"))
-
-pipeline.run(
-    operation=IngestData,
-    name="ingest",
-    inputs=[str(f) for f in source_files],
-)
-```
-
-`pipeline.run()` executes the operation and returns a `StepResult`. The `name`
-parameter gives the step a label you can reference later when wiring inputs.
-
 ## Generate synthetic data
 
 `DataGenerator` is a generative operation — it takes no inputs and produces
@@ -101,43 +83,21 @@ from artisan.operations.examples import DataGenerator
 pipeline.run(
     operation=DataGenerator,
     name="generate",
-    params={"count": 2, "seed": 44},
+    params={"count": 5, "seed": 42},
 )
 ```
 
-At this point the pipeline has two independent data streams: artifacts from
-ingestion and artifacts from generation.
+`pipeline.run()` executes the operation and returns a `StepResult`. The `name`
+parameter gives the step a label you can reference later when wiring inputs.
 
-## Merge streams
-
-`Merge` unions multiple data streams into one using passthrough semantics — no
-new artifacts are created, existing ones are routed into a single output stream.
-
-This is where **output references** come in. `output(step_name, role)` creates
-a lazy reference to a previous step's outputs:
-
-```python
-from artisan.operations.curator import Merge
-
-pipeline.run(
-    operation=Merge,
-    name="merge",
-    inputs={
-        "branch_a": output("ingest", "data"),
-        "branch_b": output("generate", "datasets"),
-    },
-)
-```
-
-The `inputs` dictionary maps input role names to output references.
-`output("ingest", "data")` says "give me the artifacts from the `ingest` step
-with role `data`." After merging, the `"merged"` output role contains all
-artifacts from both streams.
+This step created 5 dataset artifacts from nothing — each a CSV with columns
+`id`, `x`, `y`, `z`, `score`.
 
 ## Transform datasets
 
 `DataTransformer` reads each input CSV, scales numeric columns, and writes the
-result.
+result. This is where **output references** come in: `output(step_name, role)`
+creates a lazy reference to a previous step's outputs.
 
 ```python
 from artisan.operations.examples import DataTransformer
@@ -145,13 +105,14 @@ from artisan.operations.examples import DataTransformer
 pipeline.run(
     operation=DataTransformer,
     name="transform",
-    inputs={"dataset": output("merge", "merged")},
+    inputs={"dataset": output("generate", "datasets")},
     params={"scale_factor": 0.5, "variants": 1, "seed": 100},
 )
 ```
 
-Notice how the input wiring chains: `output("merge", "merged")` connects the
-merged stream to the transformer's `"dataset"` input role.
+`output("generate", "datasets")` says "give me the artifacts from the `generate`
+step with role `datasets`." The transformer's input role is `"dataset"`
+(singular) — this maps each generated dataset to a transformation job.
 
 ## Compute metrics
 
@@ -168,6 +129,8 @@ pipeline.run(
     inputs={"dataset": output("transform", "dataset")},
 )
 ```
+
+Each input dataset now has associated metrics that downstream steps can query.
 
 ## Filter by score
 
@@ -221,6 +184,19 @@ result = pipeline.finalize()
 print(f"Pipeline complete: {result['total_steps']} steps, success={result['overall_success']}")
 ```
 
+Expected output:
+
+```
+Pipeline 'first_pipeline' complete: 5 steps, all succeeded
+  Step 0: generate         1.1s  [1/1]
+  Step 1: transform        1.4s  [5/5]
+  Step 2: metrics          1.1s  [5/5]
+  Step 3: filter           0.9s  [5/5]
+  Step 4: refine           1.4s  [5/5]
+  Total: 5.9s
+Pipeline complete: 5 steps, success=True
+```
+
 ---
 
 ## Inspect results
@@ -236,12 +212,27 @@ from artisan.visualization import inspect_pipeline
 inspect_pipeline(delta_root)
 ```
 
+Expected output:
+
+```
+shape: (5, 5)
+┌──────┬───────────┬────────┬──────────┬──────────┐
+│ step ┆ operation ┆ status ┆ produced ┆ duration │
+│ ---  ┆ ---       ┆ ---    ┆ ---      ┆ ---      │
+│ i64  ┆ str       ┆ str    ┆ str      ┆ str      │
+╞══════╪═══════════╪════════╪══════════╪══════════╡
+│ 0    ┆ generate  ┆ ok     ┆ 5 data   ┆ 1.1s     │
+│ 1    ┆ transform ┆ ok     ┆ 5 data   ┆ 1.4s     │
+│ 2    ┆ metrics   ┆ ok     ┆ 5 metric ┆ 1.1s     │
+│ 3    ┆ filter    ┆ ok     ┆ 5 passed ┆ 0.9s     │
+│ 4    ┆ refine    ┆ ok     ┆ 5 data   ┆ 1.4s     │
+└──────┴───────────┴────────┴──────────┴──────────┘
+```
+
 A few things to notice:
 
-- **Merge** produced no new artifacts. It routed existing artifacts without
-  copying them.
 - **Filter** shows how many artifacts passed rather than artifact counts.
-  Like Merge, it works by selecting, not creating.
+  It works by selecting, not creating.
 - **Refine** only processes the artifacts that survived the filter.
 
 ### Metric values
@@ -251,7 +242,7 @@ A few things to notice:
 ```python
 from artisan.visualization import inspect_metrics
 
-inspect_metrics(delta_root, step_number=4)
+inspect_metrics(delta_root, step_number=2)
 ```
 
 ### Provenance graph
@@ -269,9 +260,9 @@ build_macro_graph(delta_root)
 
 ## What you've seen
 
-You built a pipeline that ingests, generates, merges, transforms, scores,
-filters, and refines data — with automatic content addressing, provenance
-tracking, and deterministic caching. The key patterns:
+You built a pipeline that generates, transforms, scores, filters, and refines
+data — with automatic content addressing, provenance tracking, and deterministic
+caching. The key patterns:
 
 | Concept | What it does |
 |---|---|
@@ -285,9 +276,9 @@ tracking, and deterministic caching. The key patterns:
 
 The operations fall into two patterns:
 
-- **Producing operations** (`IngestData`, `DataGenerator`, `DataTransformer`,
+- **Producing operations** (`DataGenerator`, `DataTransformer`,
   `MetricCalculator`) create new artifacts.
-- **Passthrough operations** (`Merge`, `Filter`) route or select existing
+- **Passthrough operations** (`Filter`) route or select existing
   artifacts without creating new ones.
 
 To understand how these mechanisms work, see
