@@ -103,6 +103,7 @@ project:
         - title: Configuration
           children:
             - file: how-to-guides/configuring-execution.md
+            - file: how-to-guides/connect-to-prefect-cloud.md
         - title: Results
           children:
             - file: how-to-guides/inspecting-provenance.md
