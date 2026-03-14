@@ -2,12 +2,10 @@
 
 ## TOP PRIORITIES
 
-- PR
-- test claude skill marketplace
+
 
 ---
 ---
-
 
 ## TO ORGANIZE
 - propogation of slurm job cancellation to the pipeline still seems slow, but tolerable.
