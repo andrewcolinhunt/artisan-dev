@@ -57,12 +57,13 @@ parallel code paths — just three small fixes to the discovery/validation layer
 - Add Prefect profile fallback to `discover_server()`
 - Update error messages and log output for mode awareness
 - Add tests for Cloud URL handling
+- Modernize `activate_server()` to use Prefect 3.x settings API
+- Add how-to guide for using Prefect Cloud
 
 ### Out of scope
 
 - Changing `PipelineManager.create()` / `resume()` signatures
 - Changing `PrefectServerInfo` dataclass fields
-- Changing `activate_server()` behavior
 - Adding Cloud-specific features (deployments, work pools, blocks)
 - Modifying `prefect_submitit`
 - Network/firewall configuration for SLURM + Cloud
@@ -123,6 +124,13 @@ def _validate_health(info: PrefectServerInfo) -> None:
         raise PrefectServerUnreachable(...)
 ```
 
+An authenticated Cloud health check (via `get_client()` → `api_healthcheck()`)
+is possible but not worth the complexity: it introduces an async dependency into
+a sync code path, requires the API key to be resolvable at discovery time, and
+adds latency to every `PipelineManager.create()` call. Auth errors surface
+clearly at flow submission with Prefect's own messages — the same behavior as
+the `prefect` CLI itself.
+
 ### Add Prefect profile fallback to `discover_server()`
 
 When `resolve_api_url()` fails (no explicit arg, no env vars, no discovery
@@ -160,9 +168,9 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
 def _resolve_from_prefect_settings() -> str | None:
     """Fallback: read API URL from Prefect's own settings (handles profiles)."""
     try:
-        from prefect.settings import PREFECT_API_URL
+        from prefect.settings import get_current_settings
 
-        url = PREFECT_API_URL.value()
+        url = str(get_current_settings().api.url)
         if url:
             return _normalize_url(url)
     except Exception:
@@ -173,14 +181,37 @@ def _resolve_from_prefect_settings() -> str | None:
 The fallback is lazy-imported so Prefect isn't loaded unless primary discovery
 fails.
 
-### Update `activate_server()` log message
+### Modernize `activate_server()`
 
-Make the log output mode-aware:
+`activate_server()` currently uses the deprecated `PREFECT_API_URL` settings
+object with `copy_with_update()`. Update to use Pydantic v2 `model_copy()` on
+the settings model directly:
 
 ```python
-mode = "Cloud" if _is_cloud_url(info.url) else "self-hosted"
-logger.info("Prefect %s: %s (source: %s)", mode, info.url, info.source)
+def activate_server(info: PrefectServerInfo) -> None:
+    os.environ["PREFECT_API_URL"] = info.url
+
+    try:
+        from prefect.context import SettingsContext
+
+        ctx = SettingsContext.get()
+        if ctx is not None:
+            new_api = ctx.settings.api.model_copy(update={"url": info.url})
+            new_settings = ctx.settings.model_copy(update={"api": new_api})
+            new_ctx = SettingsContext(profile=ctx.profile, settings=new_settings)
+            new_ctx.__enter__()
+    except Exception:
+        pass  # Prefect not imported yet or API changed; env var still set
+
+    mode = "Cloud" if _is_cloud_url(info.url) else "self-hosted"
+    logger.info("Prefect %s: %s (source: %s)", mode, info.url, info.source)
 ```
+
+This removes the `from prefect.settings import PREFECT_API_URL` import (a
+deprecated compat shim in Prefect 3.x) and uses standard Pydantic v2 APIs
+instead. The existing test (`test_overrides_prefect_cached_settings`) should
+also be updated to use `get_current_settings().api.url` instead of
+`PREFECT_API_URL.value()`.
 
 ### What does NOT change
 
@@ -277,8 +308,11 @@ $ python my_pipeline.py
 
 | File | Action |
 |------|--------|
-| `src/artisan/orchestration/prefect_server.py` | Add `_is_cloud_url`, `_resolve_from_prefect_settings`; update `_normalize_url`, `_validate_health`, `discover_server`, `activate_server` log |
-| `tests/artisan/orchestration/test_prefect_server.py` | Add Cloud URL tests |
+| `src/artisan/orchestration/prefect_server.py` | Add `_is_cloud_url`, `_resolve_from_prefect_settings`; update `_normalize_url`, `_validate_health`, `discover_server`, `activate_server` |
+| `tests/artisan/orchestration/test_prefect_server.py` | Add Cloud URL tests; update `activate_server` test for modern settings API |
+| `docs/how-to-guides/using-prefect-cloud.md` | New how-to guide |
+| `docs/how-to-guides/index.md` | Add link under Configuration |
+| `docs/myst.yml` | Register new page |
 
 ## Files unchanged
 
@@ -309,8 +343,8 @@ $ python my_pipeline.py
 **`TestDiscoverServerCloud`** — new class:
 - `test_cloud_via_env`: set `PREFECT_API_URL` to Cloud URL, verify discovery
   succeeds with `source="env:PREFECT_API_URL"` and health check skipped
-- `test_cloud_via_prefect_profile`: mock `PREFECT_API_URL.value()` to return
-  Cloud URL, verify fallback works with `source="prefect_profile"`
+- `test_cloud_via_prefect_profile`: mock `get_current_settings().api.url` to
+  return Cloud URL, verify fallback works with `source="prefect_profile"`
 - `test_cloud_skips_health_check`: verify `health_check()` is never called
   for Cloud URLs (use `assert_not_called()`)
 
@@ -337,9 +371,9 @@ a network/infra concern that should be documented but doesn't affect code.
 ## Risks
 
 - **`prefect cloud login` profile format** — The fallback reads
-  `PREFECT_API_URL.value()` from Prefect's settings system. If Prefect changes
-  how profiles work, this could break. Low risk: `PREFECT_API_URL` is a core
-  Prefect setting.
+  `get_current_settings().api.url` from Prefect's settings system. If Prefect
+  changes how profiles work, this could break. Low risk: this is the modern
+  Prefect 3.x API.
 
 - **Non-standard Cloud domains** — `_is_cloud_url()` checks for
   `api.prefect.cloud`. Users with custom/EU Cloud domains would not be
@@ -349,3 +383,69 @@ a network/infra concern that should be documented but doesn't affect code.
   means auth errors only surface at flow submission time, not at pipeline
   creation. This is acceptable — the error is still clear, just slightly
   delayed.
+
+---
+
+## How-to guide: Using Prefect Cloud
+
+New page at `docs/how-to-guides/using-prefect-cloud.md`, registered under the
+"Configuration" section in `myst.yml` (after `configuring-execution.md`) and
+linked from `how-to-guides/index.md`.
+
+Follows the existing how-to pattern: prerequisites, step-by-step, verify.
+
+### Outline
+
+**Prerequisites:** A Prefect Cloud account, a workspace, and an API key.
+
+**Option A — `prefect cloud login` (recommended)**
+
+- Run `prefect cloud login`, select workspace
+- Run pipeline as usual — Artisan discovers the Cloud URL from profile
+- Show expected log output: `Prefect Cloud: https://... (source: prefect_profile)`
+
+**Option B — Environment variables**
+
+- Set `PREFECT_API_URL` and `PREFECT_API_KEY`
+- Run pipeline
+- Show expected log output: `Prefect Cloud: https://... (source: env:PREFECT_API_URL)`
+
+**Option C — Explicit URL**
+
+- Pass `prefect_server=` to `PipelineManager.create()` / `resume()`
+- Note: API key must still be set via env var or profile
+
+**SLURM + Cloud**
+
+- Note: SLURM compute nodes need outbound HTTPS to `api.prefect.cloud`
+- Artisan propagates `PREFECT_API_URL` and `PREFECT_API_KEY` to workers
+  automatically
+- Common HPC restriction: outbound internet blocked — check with cluster admin
+
+**Verify**
+
+- Show how to confirm connection: run a single-step pipeline and check the
+  Prefect Cloud UI for the flow run
+- Troubleshooting table:
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `PrefectServerNotFound` | No profile, env var, or explicit URL | Run `prefect cloud login` or set `PREFECT_API_URL` |
+| `Unauthorized` at flow submission | Missing or expired API key | Re-run `prefect cloud login` or check `PREFECT_API_KEY` |
+| SLURM workers can't reach Cloud | No outbound HTTPS on compute nodes | Contact cluster admin to allow `api.prefect.cloud:443` |
+
+**Cross-references:** Configuring Execution, SLURM Execution Tutorial
+
+### Files to change (docs)
+
+| File | Action |
+|------|--------|
+| `docs/how-to-guides/using-prefect-cloud.md` | New page |
+| `docs/how-to-guides/index.md` | Add link under Configuration section |
+| `docs/myst.yml` | Register under How-to Guides → Configuration |
+
+---
+
+## Follow-up work
+
+None — all items are in scope.
