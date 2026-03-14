@@ -310,7 +310,7 @@ $ python my_pipeline.py
 |------|--------|
 | `src/artisan/orchestration/prefect_server.py` | Add `_is_cloud_url`, `_resolve_from_prefect_settings`; update `_normalize_url`, `_validate_health`, `discover_server`, `activate_server` |
 | `tests/artisan/orchestration/test_prefect_server.py` | Add Cloud URL tests; update `activate_server` test for modern settings API |
-| `docs/how-to-guides/using-prefect-cloud.md` | New how-to guide |
+| `docs/how-to-guides/connect-to-prefect-cloud.md` | New how-to guide |
 | `docs/how-to-guides/index.md` | Add link under Configuration |
 | `docs/myst.yml` | Register new page |
 
@@ -386,47 +386,52 @@ a network/infra concern that should be documented but doesn't affect code.
 
 ---
 
-## How-to guide: Using Prefect Cloud
+## How-to guide: Connect to Prefect Cloud
 
-New page at `docs/how-to-guides/using-prefect-cloud.md`, registered under the
-"Configuration" section in `myst.yml` (after `configuring-execution.md`) and
-linked from `how-to-guides/index.md`.
+New page at `docs/how-to-guides/connect-to-prefect-cloud.md`, registered under
+the "Configuration" section in `myst.yml` (after `configuring-execution.md`)
+and linked from `how-to-guides/index.md`.
 
-Follows the existing how-to pattern: prerequisites, step-by-step, verify.
+Follows the how-to template from `docs/contributing/writing-docs.md`.
 
-### Outline
+### Page structure
 
-**Prerequisites:** A Prefect Cloud account, a workspace, and an API key.
+**Title:** "Connect to Prefect Cloud" (verb phrase per template)
 
-**Option A — `prefect cloud login` (recommended)**
+**One-liner:** How to connect Artisan pipelines to Prefect Cloud for flow
+tracking and monitoring.
 
-- Run `prefect cloud login`, select workspace
-- Run pipeline as usual — Artisan discovers the Cloud URL from profile
-- Show expected log output: `Prefect Cloud: https://... (source: prefect_profile)`
+**Prerequisites:** [Configuring Execution](configuring-execution.md),
+a Prefect Cloud account with a workspace and API key.
 
-**Option B — Environment variables**
+---
 
-- Set `PREFECT_API_URL` and `PREFECT_API_KEY`
-- Run pipeline
-- Show expected log output: `Prefect Cloud: https://... (source: env:PREFECT_API_URL)`
+**Minimal working example** — The most common path (`prefect cloud login`)
+as a complete, copy-pasteable block: login command, then a short pipeline
+script showing expected log output.
 
-**Option C — Explicit URL**
+---
 
-- Pass `prefect_server=` to `PipelineManager.create()` / `resume()`
-- Note: API key must still be set via env var or profile
+**Connect with `prefect cloud login` (recommended)** — Run
+`prefect cloud login`, select workspace. Run pipeline. Show expected log:
+`Prefect Cloud: https://... (source: prefect_profile)`.
 
-**SLURM + Cloud**
+**Connect with environment variables** — Set `PREFECT_API_URL` and
+`PREFECT_API_KEY`. Run pipeline. Show expected log:
+`Prefect Cloud: https://... (source: env:PREFECT_API_URL)`.
 
-- Note: SLURM compute nodes need outbound HTTPS to `api.prefect.cloud`
-- Artisan propagates `PREFECT_API_URL` and `PREFECT_API_KEY` to workers
-  automatically
-- Common HPC restriction: outbound internet blocked — check with cluster admin
+**Connect with an explicit URL** — Pass `prefect_server=` to
+`PipelineManager.create()` / `resume()`. Note: API key must still be set via
+env var or profile.
 
-**Verify**
+**Use SLURM with Cloud** — Artisan propagates `PREFECT_API_URL` and
+`PREFECT_API_KEY` to workers automatically. Note: SLURM compute nodes need
+outbound HTTPS to `api.prefect.cloud`. Common HPC restriction: outbound
+internet blocked — check with cluster admin.
 
-- Show how to confirm connection: run a single-step pipeline and check the
-  Prefect Cloud UI for the flow run
-- Troubleshooting table:
+---
+
+**Common pitfalls** (table per template):
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
@@ -434,13 +439,27 @@ Follows the existing how-to pattern: prerequisites, step-by-step, verify.
 | `Unauthorized` at flow submission | Missing or expired API key | Re-run `prefect cloud login` or check `PREFECT_API_KEY` |
 | SLURM workers can't reach Cloud | No outbound HTTPS on compute nodes | Contact cluster admin to allow `api.prefect.cloud:443` |
 
-**Cross-references:** Configuring Execution, SLURM Execution Tutorial
+---
+
+**Verify** — Run a single-step pipeline and confirm the flow run appears in
+the Prefect Cloud UI.
+
+---
+
+**Cross-references:**
+
+- [Configuring Execution](configuring-execution.md) — resource allocation,
+  batching, SLURM configuration
+- [Execution Flow](../concepts/execution-flow.md) — dispatch, execute, commit
+  lifecycle
+- [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb)
+  — interactive SLURM walkthrough
 
 ### Files to change (docs)
 
 | File | Action |
 |------|--------|
-| `docs/how-to-guides/using-prefect-cloud.md` | New page |
+| `docs/how-to-guides/connect-to-prefect-cloud.md` | New page |
 | `docs/how-to-guides/index.md` | Add link under Configuration section |
 | `docs/myst.yml` | Register under How-to Guides → Configuration |
 
