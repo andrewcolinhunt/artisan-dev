@@ -140,7 +140,11 @@ pipeline.run(
 )
 
 result = pipeline.finalize()
+print(f"Pipeline complete: {result['total_steps']} steps")
 ```
+
+See the [Getting Started guide](docs/getting-started/index.md) for a full
+walkthrough.
 
 ## Development Setup
 
@@ -230,8 +234,7 @@ plugin with skills for scaffolding operations, pipelines, and documentation.
 claude --plugin-dir /path/to/artisan-repo
 ```
 
-See [Installation — Claude Code plugin](docs/getting-started/installation.md#claude-code-plugin)
-for details.
+See [Using Claude Code](docs/getting-started/using-claude-code.md) for details.
 
 ---
 
