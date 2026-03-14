@@ -22,6 +22,11 @@ ENV_VAR = "PREFECT_SUBMITIT_SERVER"
 _OLD_ENV_VAR = "ARTISAN_PREFECT_SERVER"
 
 
+def _is_cloud_url(url: str) -> bool:
+    """Check if URL points to Prefect Cloud."""
+    return "api.prefect.cloud" in url
+
+
 @dataclass(frozen=True)
 class PrefectServerInfo:
     """Resolved Prefect server connection info."""
@@ -50,18 +55,25 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
 
     try:
         url = _normalize_url(resolve_api_url(prefect_server))
-    except RuntimeError as exc:
-        raise PrefectServerNotFound(
-            "No Prefect server detected.\n"
-            "\n"
-            "Start a server:\n"
-            "  pixi run prefect-start\n"
-            "\n"
-            "Or point to an existing server:\n"
-            f"  export {ENV_VAR}=http://<host>:<port>/api\n"
-        ) from exc
+        source = _source_label(url, prefect_server)
+    except RuntimeError:
+        url = _resolve_from_prefect_settings()
+        if url is None:
+            raise PrefectServerNotFound(
+                "No Prefect server detected.\n"
+                "\n"
+                "For self-hosted:\n"
+                "  pixi run prefect-start\n"
+                "\n"
+                "For Prefect Cloud:\n"
+                "  prefect cloud login\n"
+                "\n"
+                "Or set the URL directly:\n"
+                f"  export PREFECT_API_URL=http://<host>:<port>/api\n"
+            ) from None
+        source = "prefect_profile"
 
-    info = PrefectServerInfo(url=url, source=_source_label(url, prefect_server))
+    info = PrefectServerInfo(url=url, source=source)
     _validate_health(info)
     return info
 
@@ -69,9 +81,9 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
 def _normalize_url(url: str) -> str:
     """Ensure URL ends with /api."""
     url = url.rstrip("/")
-    if not url.endswith("/api"):
-        url = f"{url}/api"
-    return url
+    if "/api/" in url or url.endswith("/api"):
+        return url
+    return f"{url}/api"
 
 
 def _validate_health(info: PrefectServerInfo) -> None:
@@ -80,7 +92,12 @@ def _validate_health(info: PrefectServerInfo) -> None:
     ``health_check()`` from prefect_submitit returns ``bool`` (never raises),
     so this wrapper checks the return value and raises with a rich error
     message including remediation instructions.
+
+    Cloud URLs are skipped — Cloud is managed infrastructure and the
+    unauthenticated health endpoint is not exposed.
     """
+    if _is_cloud_url(info.url):
+        return
     if not health_check(info.url):
         raise PrefectServerUnreachable(
             f"Prefect server at {info.url} is not reachable "
@@ -108,6 +125,19 @@ def _source_label(resolved_url: str, explicit: str | None) -> str:
     return "discovery_file"
 
 
+def _resolve_from_prefect_settings() -> str | None:
+    """Fallback: read API URL from Prefect's own settings (handles profiles)."""
+    try:
+        from prefect.settings import get_current_settings
+
+        url = str(get_current_settings().api.url)
+        if url:
+            return _normalize_url(url)
+    except Exception:
+        pass
+    return None
+
+
 def _warn_old_env_var() -> None:
     """Emit a warning if the deprecated ARTISAN_PREFECT_SERVER is set."""
     if os.environ.get(_OLD_ENV_VAR) and not os.environ.get(ENV_VAR):
@@ -130,19 +160,18 @@ def activate_server(info: PrefectServerInfo) -> None:
 
     try:
         from prefect.context import SettingsContext
-        from prefect.settings import PREFECT_API_URL
 
         ctx = SettingsContext.get()
         if ctx is not None:
-            new_settings = ctx.settings.copy_with_update(
-                updates={PREFECT_API_URL: info.url}
-            )
+            new_api = ctx.settings.api.model_copy(update={"url": info.url})
+            new_settings = ctx.settings.model_copy(update={"api": new_api})
             new_ctx = SettingsContext(profile=ctx.profile, settings=new_settings)
             new_ctx.__enter__()
     except Exception:
         pass  # Prefect not imported yet or API changed; env var still set
 
-    logger.info("Prefect server: %s (source: %s)", info.url, info.source)
+    mode = "Cloud" if _is_cloud_url(info.url) else "self-hosted"
+    logger.info("Prefect %s: %s (source: %s)", mode, info.url, info.source)
 
 
 class PrefectServerNotFound(RuntimeError):
