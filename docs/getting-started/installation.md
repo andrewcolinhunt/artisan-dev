@@ -23,6 +23,8 @@ creating and activating a virtualenv for that directory only. `pixi run <cmd>`
 runs a command inside it.
 :::
 
+TODO: expand on this a bit. also how to use `pixi shell`. why is pixi more useful than uv for this project. why is it better than conda. This should be its own section, not just a tip.
+
 ---
 
 ## Install Artisan
@@ -39,6 +41,7 @@ Restart your terminal after installing Pixi so it appears on your `PATH`.
 ```bash
 # Clone the repository
 git clone https://github.com/dexterity-systems/artisan.git
+# TODO: this should point to artisan-dev?
 cd artisan
 
 # Install all dependencies (Python 3.12, scientific stack, Prefect, etc.)
@@ -57,6 +60,7 @@ login nodes), limit Pixi's thread count:
 RAYON_NUM_THREADS=4 pixi install
 ```
 :::
+TODO: add this to troubleshooting at the end. We should not be installing on the head node.
 
 Verify the installation:
 
@@ -72,6 +76,8 @@ You should see `Installation OK` printed to the terminal.
 
 Artisan uses [Prefect](https://www.prefect.io/) to orchestrate pipeline
 execution. A Prefect server must be running before you run any pipeline.
+
+TODO: what is prefect???
 
 ```bash
 pixi run prefect-start
@@ -89,8 +95,7 @@ pixi run prefect-stop
 
 :::{tip}
 **On HPC clusters:** Don't run the Prefect server on the head node. Use a
-persistent interactive session (long-running CPU allocation with `screen` or
-`tmux`). The server must stay running while pipelines execute.
+persistent interactive session (long-running CPU allocation). The server must stay running and accessible while pipelines execute.
 :::
 
 :::{note}
@@ -114,6 +119,7 @@ When connecting, Artisan checks for a server URL in this order: explicit
 environment variable, and finally the local discovery file written by
 `prefect-start`.
 
+TODO: is this correct with cloud? what is the ~./prefect/profile and when is it checked in the heirarchy?
 ---
 
 ## Using Pixi day-to-day

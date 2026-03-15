@@ -48,6 +48,7 @@ curl -fsSL https://pixi.sh/install.sh | bash
 
 # Clone and install
 git clone https://github.com/dexterity-systems/artisan.git
+# TODO this should be pointed at artisan-dev
 cd artisan
 
 pixi install
@@ -67,6 +68,9 @@ behind the framework — see the **[Getting Started guide](docs/getting-started/
 - **[Quick Start](docs/getting-started/quick-start.md)** — Run a 2-step pipeline in 5 minutes
 - **[Your First Pipeline](docs/getting-started/first-pipeline.md)** — Metrics, filtering, and provenance in a 5-step pipeline
 - **[Orientation](docs/getting-started/orientation.md)** — Artifacts, operations, pipelines, provenance, and storage explained
+
+TODO: there is way too much overlap in quick start and first pipeline. 
+TODO: we need some explanation of how to work with pixi.
 
 ---
 
@@ -227,6 +231,8 @@ plugin with skills for scaffolding operations, pipelines, and documentation.
 | `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
 
 **Marketplace install** (recommended):
+
+TODO: this is automatic the repo already does this. should clarify that we've already added things here, and downstream repos can install the plugins by pointing the settings json to the right repo. That is the recomended path. the following two are fall backs.
 
 ```bash
 /plugin marketplace add        # register the plugin from this repo

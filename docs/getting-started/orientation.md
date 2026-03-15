@@ -1,7 +1,6 @@
 # Orientation
 
-You've built a pipeline and seen artifacts, operations, provenance, and storage
-in action. This page explains the mental model behind them — how the
+This page explains the mental model behind Artisan — how the
 documentation is organized and the five key abstractions you will encounter
 throughout.
 
@@ -65,10 +64,10 @@ infrastructure.
 
 There are two kinds:
 
-- **Creator operations** run heavy computation (external tools, GPU work) in a
+- **Creator operations** run computation (external tools, GPU work) in a
   three-phase lifecycle — `preprocess`, `execute`, `postprocess` — each running
   in its own filesystem-isolated working directory.
-- **Curator operations** perform lightweight metadata work (filtering, merging,
+- **Curator operations** perform metadata work (filtering, merging,
   ingesting) in a single `execute_curator` method call, skipping sandboxing
   entirely.
 

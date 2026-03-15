@@ -1,5 +1,7 @@
 # Your First Pipeline
 
+TODO: this page seems unecessary. we should just point to the notebook. does it add anything at all beyond the notebook?
+
 :::{note}
 This tutorial is also available as an [interactive notebook](../tutorials/getting-started/01-first-pipeline.ipynb).
 The notebook version may differ slightly from this page.

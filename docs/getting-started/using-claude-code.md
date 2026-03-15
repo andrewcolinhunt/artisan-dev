@@ -58,6 +58,8 @@ commands inside the Claude Code interactive session (not in a regular terminal):
 | `/artisan:write-pipeline` | Scaffold a pipeline script composing operations |
 | `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
 
+TODO: the skills show up without the artisan: prefix. instead there is (artisan) prefixed in the skill description.
+
 ---
 
 ## What you can do
