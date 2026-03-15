@@ -11,19 +11,36 @@ orchestration server, and configuring your editor.
 - [Pixi](https://pixi.sh) package manager (installs Python and all other
   dependencies for you)
 
-:::{tip}
-**What is Pixi?** Pixi is a project-scoped environment manager. Like `venv` or
-`conda`, it creates an isolated environment — but Pixi also handles Python
-itself and all native dependencies (Graphviz, PostgreSQL, etc.). Each clone gets
-its own environment. No global pollution, no activation conflicts between
-projects.
+## What is Pixi?
 
-If you're used to `venv` or `conda`: `pixi install` in a directory is like
-creating and activating a virtualenv for that directory only. `pixi run <cmd>`
-runs a command inside it.
-:::
+Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
+it creates an isolated environment — but Pixi also handles Python itself and
+all non-Python dependencies (Graphviz, PostgreSQL, Node.js, etc.) from a single
+lockfile. Each clone gets its own environment. No global pollution, no
+activation conflicts between projects.
 
-TODO: expand on this a bit. also how to use `pixi shell`. why is pixi more useful than uv for this project. why is it better than conda. This should be its own section, not just a tip.
+| Tool | Manages Python? | Manages system deps? | Project-scoped? |
+|------|:-:|:-:|:-:|
+| venv + pip | No | No | Yes |
+| conda | Yes | Yes | No (shared envs) |
+| uv | Yes | No | Yes |
+| **Pixi** | **Yes** | **Yes** | **Yes** |
+
+**Why Pixi for this project?** Artisan needs PostgreSQL, Graphviz, and Node.js
+alongside Python. Pixi resolves all of them from conda-forge and PyPI in one
+lockfile (`pixi.lock`), so every contributor gets an identical environment
+regardless of platform.
+
+**Key commands:**
+
+```bash
+pixi install           # Create the environment and install all dependencies
+pixi run <cmd>         # Run a command inside the environment
+pixi shell             # Start an interactive shell (like `source .venv/bin/activate`)
+```
+
+See [Tooling Decisions](../contributing/tooling-decisions.md) for the full
+rationale.
 
 ---
 
@@ -41,7 +58,6 @@ Restart your terminal after installing Pixi so it appears on your `PATH`.
 ```bash
 # Clone the repository
 git clone https://github.com/dexterity-systems/artisan.git
-# TODO: this should point to artisan-dev?
 cd artisan
 
 # Install all dependencies (Python 3.12, scientific stack, Prefect, etc.)
@@ -53,15 +69,6 @@ The first `pixi install` downloads Python and all dependencies, which may take
 several minutes. Subsequent runs are fast.
 :::
 
-:::{tip}
-If you see a thread-spawn panic on resource-constrained nodes (common on HPC
-login nodes), limit Pixi's thread count:
-```bash
-RAYON_NUM_THREADS=4 pixi install
-```
-:::
-TODO: add this to troubleshooting at the end. We should not be installing on the head node.
-
 Verify the installation:
 
 ```bash
@@ -72,12 +79,20 @@ You should see `Installation OK` printed to the terminal.
 
 ---
 
+## What is Prefect?
+
+Artisan uses [Prefect](https://www.prefect.io/) as a dispatch layer for
+parallel task execution. Prefect is **not** a workflow engine here — Artisan
+owns pipeline definition, step sequencing, caching, and provenance. Prefect
+dispatches work to local processes or SLURM nodes and provides an optional
+monitoring UI.
+
+For local-only execution the server is not required. For SLURM execution,
+workers need a coordination point, so a Prefect server must be running. See
+[Tooling Decisions](../contributing/tooling-decisions.md) for the full
+rationale.
+
 ## Start the Prefect server
-
-Artisan uses [Prefect](https://www.prefect.io/) to orchestrate pipeline
-execution. A Prefect server must be running before you run any pipeline.
-
-TODO: what is prefect???
 
 ```bash
 pixi run prefect-start
@@ -101,7 +116,7 @@ persistent interactive session (long-running CPU allocation). The server must st
 :::{note}
 **Using Prefect Cloud:** You can use [Prefect Cloud](https://www.prefect.io/cloud)
 instead of a local server. Set `PREFECT_API_URL` to your cloud workspace URL and
-skip the `prefect-start` step. See the Prefect Cloud docs for setup.
+skip the `prefect-start` step. See [Connect to Prefect Cloud](../how-to-guides/connect-to-prefect-cloud.md) for setup.
 :::
 
 ### Use an existing server
@@ -113,13 +128,16 @@ instead of starting a local one:
 export PREFECT_SUBMITIT_SERVER=http://<host>:<port>/api
 ```
 
-When connecting, Artisan checks for a server URL in this order: explicit
-`prefect_server` argument passed to `PipelineManager.create()`, the
-`PREFECT_SUBMITIT_SERVER` environment variable, the `PREFECT_API_URL`
-environment variable, and finally the local discovery file written by
-`prefect-start`.
+When connecting, Artisan checks for a server URL in this order:
 
-TODO: is this correct with cloud? what is the ~./prefect/profile and when is it checked in the heirarchy?
+| Priority | Source | How to set |
+|----------|--------|-----------|
+| Highest | Explicit `prefect_server` argument | `PipelineManager.create(prefect_server="...")` |
+| | `PREFECT_SUBMITIT_SERVER` env var | `export PREFECT_SUBMITIT_SERVER=http://...` |
+| | `PREFECT_API_URL` env var | `export PREFECT_API_URL=http://...` |
+| | Discovery file | Written by `pixi run prefect-start` |
+| Lowest | Prefect profile | `~/.prefect/profiles.toml` (set via `prefect cloud login`) |
+
 ---
 
 ## Using Pixi day-to-day
@@ -188,7 +206,5 @@ usage.
 
 ## Next steps
 
-- [Quick Start](quick-start.md) — Run your first pipeline in 5 minutes
-- [Your First Pipeline](first-pipeline.md) — Build a multi-step pipeline with
-  data flow
+- [Your First Pipeline](../tutorials/getting-started/01-first-pipeline.ipynb) — Build and run a pipeline in an interactive notebook
 - [Orientation](orientation.md) — The mental model behind the framework
