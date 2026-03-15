@@ -2,12 +2,19 @@
 
 ## TOP PRIORITIES
 
+update for prefect cloud
+
+
 - handholding installation
 - IPD specific getting started
+do not do anything on the head node.
+work on your linux box.
+work on jojo.
+work on a long running jupyter hub node.
+
+
 - add a claude code tutorial for protein design
 - using claude code in artisan
-
-update for prefect cloud
 
 ---
 ---
