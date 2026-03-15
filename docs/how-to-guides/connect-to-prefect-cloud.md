@@ -16,6 +16,8 @@ The most common path — log in with the Prefect CLI, then run a pipeline:
 prefect cloud login
 ```
 
+NOTE: should be pixi run prefect cloud login
+
 ```python
 from artisan.orchestration import PipelineManager
 from myops import PreprocessOp
@@ -137,3 +139,5 @@ Cloud UI at `https://app.prefect.cloud`. The pipeline log should show
 - [Configuring Execution](configuring-execution.md) -- Resource allocation, batching, and SLURM configuration
 - [Execution Flow](../concepts/execution-flow.md) -- Dispatch, execute, commit lifecycle
 - [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) -- Interactive SLURM walkthrough
+
+TODO: lets simplify this more. point it to the first tutorial in getting started.
