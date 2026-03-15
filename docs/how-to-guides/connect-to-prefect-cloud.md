@@ -13,10 +13,8 @@ Prefect Cloud account with a workspace and API key.
 The most common path — log in with the Prefect CLI, then run a pipeline:
 
 ```bash
-prefect cloud login
+pixi run prefect cloud login
 ```
-
-NOTE: should be pixi run prefect cloud login
 
 ```python
 from artisan.orchestration import PipelineManager
@@ -48,7 +46,7 @@ This is the recommended approach. It stores your API URL and key in
 environment variables are set.
 
 ```bash
-prefect cloud login
+pixi run prefect cloud login
 # Select your workspace when prompted
 ```
 
@@ -136,8 +134,7 @@ Cloud UI at `https://app.prefect.cloud`. The pipeline log should show
 
 ## Cross-references
 
-- [Configuring Execution](configuring-execution.md) -- Resource allocation, batching, and SLURM configuration
-- [Execution Flow](../concepts/execution-flow.md) -- Dispatch, execute, commit lifecycle
-- [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) -- Interactive SLURM walkthrough
-
-TODO: lets simplify this more. point it to the first tutorial in getting started.
+- [Installation](../getting-started/installation.md) — Server discovery and Prefect setup
+- [Your First Pipeline](../tutorials/getting-started/01-first-pipeline.ipynb) — Getting started tutorial
+- [Configuring Execution](configuring-execution.md) — Resource allocation, batching, and SLURM
+- [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) — Interactive SLURM walkthrough
