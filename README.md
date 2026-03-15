@@ -56,7 +56,7 @@ pixi install
 pixi run python -c "import artisan; print('Artisan installed successfully')"
 ```
 
-→ **[Getting Started guide](docs/getting-started/index.md)** for Prefect setup,
+→ **[Getting Started guide](docs/getting-started/index.md)** for detailed setup, Prefect setup,
 your first pipeline, and the mental model behind the framework.
 
 ---
@@ -101,7 +101,6 @@ pipeline.run(
 )
 
 result = pipeline.finalize()
-print(f"Pipeline complete: {result['total_steps']} steps")
 ```
 
 ## Development Setup
