@@ -48,67 +48,16 @@ curl -fsSL https://pixi.sh/install.sh | bash
 
 # Clone and install
 git clone https://github.com/dexterity-systems/artisan.git
-# TODO this should be pointed at artisan-dev
 cd artisan
 
 pixi install
 
 # Verify
 pixi run python -c "import artisan; print('Artisan installed successfully')"
-
-# Start the Prefect server (orchestrates pipeline execution)
-pixi run prefect-start
-
 ```
 
-For a full walkthrough — installation, your first pipeline, and the mental model
-behind the framework — see the **[Getting Started guide](docs/getting-started/index.md)**:
-
-- **[Installation](docs/getting-started/installation.md)** — Pixi setup, Prefect server, IDE configuration
-- **[Quick Start](docs/getting-started/quick-start.md)** — Run a 2-step pipeline in 5 minutes
-- **[Your First Pipeline](docs/getting-started/first-pipeline.md)** — Metrics, filtering, and provenance in a 5-step pipeline
-- **[Orientation](docs/getting-started/orientation.md)** — Artifacts, operations, pipelines, provenance, and storage explained
-
-TODO: there is way too much overlap in quick start and first pipeline. 
-TODO: we need some explanation of how to work with pixi.
-
----
-
-## IDE Setup (VSCode)
-
-### Python Interpreter
-
-Set the Pixi environment as your VSCode Python interpreter:
-
-```bash
-pixi run which python
-# Example output: /home/user/artisan/.pixi/envs/default/bin/python
-```
-
-In VSCode: `Ctrl+Shift+P` → "Python: Select Interpreter" → paste the path above.
-
-### Jupyter Kernel
-
-Register the Pixi environment as a Jupyter kernel so notebooks use the correct
-packages:
-
-```bash
-pixi run install-kernel
-```
-
-In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**.
-
-### VS Code Jupyter Kernel Slowness (Pixi Environments)
-
-If your pixi Jupyter kernel takes 30+ seconds to start in VS Code, the
-`Python Environments` extension (`ms-python.vscode-python-envs`) is likely the
-cause. It doesn't recognize pixi as a known environment type and spends 30
-seconds trying to activate it before timing out.
-
-**Fix:** Uninstall the `Python Environments` extension (`ms-python.vscode-python-envs`)
-in VS Code. The core Python extension works fine without it.
-
-Tracked upstream: [microsoft/vscode-python#25804](https://github.com/microsoft/vscode-python/issues/25804)
+→ **[Getting Started guide](docs/getting-started/index.md)** for Prefect setup,
+your first pipeline, and the mental model behind the framework.
 
 ---
 
@@ -206,8 +155,8 @@ pixi run -e docs docs-serve       # Serve locally at http://localhost:8000
 pixi run -e docs docs-clean       # Remove build artifacts
 ```
 
-- **[Getting Started](docs/getting-started/index.md)** — Installation and
-  your first pipeline
+- **[Getting Started](docs/getting-started/index.md)** — Installation and first
+  steps
 - **[Tutorials](docs/tutorials/index.md)** — Interactive notebooks from first
   steps through advanced patterns
 - **[How-to Guides](docs/how-to-guides/index.md)** — Task-oriented guides for
@@ -230,22 +179,9 @@ plugin with skills for scaffolding operations, pipelines, and documentation.
 | `/artisan:write-pipeline` | Scaffold a pipeline script composing operations |
 | `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
 
-**Marketplace install** (recommended):
-
-TODO: this is automatic the repo already does this. should clarify that we've already added things here, and downstream repos can install the plugins by pointing the settings json to the right repo. That is the recomended path. the following two are fall backs.
-
-```bash
-/plugin marketplace add        # register the plugin from this repo
-/plugin install                # install registered plugins
-```
-
-**Manual fallback** — point Claude Code at the repo root:
-
-```bash
-claude --plugin-dir /path/to/artisan-repo
-```
-
-See [Using Claude Code](docs/getting-started/using-claude-code.md) for details.
+The plugin is included in the repository and activates automatically.
+Downstream repos can install it by pointing their settings to this repo. See
+[Using Claude Code](docs/getting-started/using-claude-code.md) for details.
 
 ---
 
