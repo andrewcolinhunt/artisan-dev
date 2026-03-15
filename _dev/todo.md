@@ -3,9 +3,12 @@
 ## TOP PRIORITIES
 
 update for prefect cloud
-
+personally I do not find the prefect web ui particularly useful.
+we need to update the how to doc to describe the different ways of using prefect.
 
 - handholding installation
+
+
 - IPD specific getting started
 do not do anything on the head node.
 work on your linux box.
@@ -20,6 +23,8 @@ work on a long running jupyter hub node.
 ---
 
 ## TO ORGANIZE
+
+- ingested files vs externally pointing artifact references is still confusingly named.
 - propogation of slurm job cancellation to the pipeline still seems slow, but tolerable.
 
 - artifact creation claude skill
