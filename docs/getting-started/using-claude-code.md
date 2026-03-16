@@ -53,12 +53,10 @@ commands inside the Claude Code interactive session (not in a regular terminal):
 
 | Skill | Description |
 |-------|-------------|
-| `/artisan:write-operation` | Scaffold or review an `OperationDefinition` subclass |
-| `/artisan:write-composite` | Scaffold or review a `CompositeDefinition` subclass |
-| `/artisan:write-pipeline` | Scaffold a pipeline script composing operations |
-| `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
-
-TODO: the skills show up without the artisan: prefix. instead there is (artisan) prefixed in the skill description.
+| `/write-operation` | Scaffold or review an `OperationDefinition` subclass |
+| `/write-composite` | Scaffold or review a `CompositeDefinition` subclass |
+| `/write-pipeline` | Scaffold a pipeline script composing operations |
+| `/write-docs` | Write or edit documentation pages, tutorials, and guides |
 
 ---
 
@@ -87,7 +85,7 @@ formatting rules. It follows the same conventions a human contributor would.
 - **Be specific** about what you want ("write an operation that computes
   column statistics from CSV input" not "help me with operations").
 - **Review generated code** before committing — Claude proposes, you decide.
-- **Use skills for scaffolding**, then iterate: `/artisan:write-operation` gets
+- **Use skills for scaffolding**, then iterate: `/write-operation` gets
   you most of the way, then refine the details.
 - **Let Claude run checks** — ask it to run the pre-PR checklist (`fmt`, `test`,
   `docs-build`).

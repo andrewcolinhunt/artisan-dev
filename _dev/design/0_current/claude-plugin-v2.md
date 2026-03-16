@@ -186,13 +186,13 @@ Skills are then available in all projects.
 
 | Skill | Invocation | Description |
 |---|---|---|
-| Write Operation | `/artisan:write-operation` | Scaffold an Artisan operation |
-| Write Pipeline | `/artisan:write-pipeline` | Design and write a pipeline |
-| Write Composite | `/artisan:write-composite` | Write a composite operation |
-| Write Docs | `/artisan:write-docs` | Write documentation pages |
+| Write Operation | `/write-operation` | Scaffold an Artisan operation |
+| Write Pipeline | `/write-pipeline` | Design and write a pipeline |
+| Write Composite | `/write-composite` | Write a composite operation |
+| Write Docs | `/write-docs` | Write documentation pages |
 
-Skills are namespaced as `/artisan:*` in both the artisan repo and downstream
-repos.
+Skills appear without a namespace prefix. The plugin name (`artisan`) is shown
+in the skill description rather than the invocation command.
 
 ---
 

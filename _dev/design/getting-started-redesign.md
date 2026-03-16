@@ -279,8 +279,8 @@ workflow a first-class part of the getting-started experience.
     /plugin install
     ```
   - Brief table of available skills (same as current installation.md):
-    `/artisan:write-operation`, `/artisan:write-composite`,
-    `/artisan:write-pipeline`, `/artisan:write-docs`
+    `/write-operation`, `/write-composite`,
+    `/write-pipeline`, `/write-docs`
 
 - **What you can do**
   - Walk through concrete examples of real workflows. Not exhaustive — just
@@ -301,7 +301,7 @@ workflow a first-class part of the getting-started experience.
   - Be specific about what you want ("write an operation that..." not "help
     me with operations")
   - Review generated code before committing — Claude proposes, you decide
-  - Use skills for scaffolding, then iterate: `/artisan:write-operation` gets
+  - Use skills for scaffolding, then iterate: `/write-operation` gets
     you 80% there, then refine
   - Claude Code can run tests and format code for you: ask it to run the
     pre-PR checklist
