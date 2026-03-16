@@ -11,37 +11,6 @@ orchestration server, and configuring your editor.
 - [Pixi](https://pixi.sh) package manager (installs Python and all other
   dependencies for you)
 
-## What is Pixi?
-
-Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
-it creates an isolated environment — but Pixi also handles Python itself and
-all non-Python dependencies (Graphviz, PostgreSQL, Node.js, etc.) from a single
-lockfile. Each clone gets its own environment. No global pollution, no
-activation conflicts between projects.
-
-| Tool | Manages Python? | Manages system deps? | Project-scoped? |
-|------|:-:|:-:|:-:|
-| venv + pip | No | No | Yes |
-| conda | Yes | Yes | No (shared envs) |
-| uv | Yes | No | Yes |
-| **Pixi** | **Yes** | **Yes** | **Yes** |
-
-**Why Pixi for this project?** Artisan needs PostgreSQL, Graphviz, and Node.js
-alongside Python. Pixi resolves all of them from conda-forge and PyPI in one
-lockfile (`pixi.lock`), so every contributor gets an identical environment
-regardless of platform.
-
-**Key commands:**
-
-```bash
-pixi install           # Create the environment and install all dependencies
-pixi run <cmd>         # Run a command inside the environment
-pixi shell             # Start an interactive shell (like `source .venv/bin/activate`)
-```
-
-See [Tooling Decisions](../contributing/tooling-decisions.md) for the full
-rationale.
-
 ---
 
 ## Install Artisan
@@ -77,20 +46,27 @@ pixi run python -c "import artisan; print('Installation OK')"
 
 You should see `Installation OK` printed to the terminal.
 
+:::{dropdown} What is Pixi?
+Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
+it creates an isolated environment — but Pixi also handles Python itself and
+all non-Python dependencies (Graphviz, PostgreSQL, Node.js, etc.) from a single
+lockfile. Each clone gets its own environment.
+
+| Tool | Manages Python? | Manages system deps? | Project-scoped? |
+|------|:-:|:-:|:-:|
+| venv + pip | No | No | Yes |
+| conda | Yes | Yes | No (shared envs) |
+| uv | Yes | No | Yes |
+| **Pixi** | **Yes** | **Yes** | **Yes** |
+
+**Why Pixi for this project?** Artisan needs PostgreSQL, Graphviz, and Node.js
+alongside Python. Pixi resolves all of them from conda-forge and PyPI in one
+lockfile (`pixi.lock`), so every contributor gets an identical environment
+regardless of platform. See [Tooling Decisions](../contributing/tooling-decisions.md)
+for the full rationale.
+:::
+
 ---
-
-## What is Prefect?
-
-Artisan uses [Prefect](https://www.prefect.io/) as a dispatch layer for
-parallel task execution. Prefect is **not** a workflow engine here — Artisan
-owns pipeline definition, step sequencing, caching, and provenance. Prefect
-dispatches work to local processes or SLURM nodes and provides an optional
-monitoring UI.
-
-For local-only execution the server is not required. For SLURM execution,
-workers need a coordination point, so a Prefect server must be running. See
-[Tooling Decisions](../contributing/tooling-decisions.md) for the full
-rationale.
 
 ## Start the Prefect server
 
@@ -110,13 +86,27 @@ pixi run prefect-stop
 
 :::{tip}
 **On HPC clusters:** Don't run the Prefect server on the head node. Use a
-persistent interactive session (long-running CPU allocation). The server must stay running and accessible while pipelines execute.
+persistent interactive session (long-running CPU allocation). The server must
+stay running and accessible while pipelines execute.
 :::
 
 :::{note}
 **Using Prefect Cloud:** You can use [Prefect Cloud](https://www.prefect.io/cloud)
-instead of a local server. Set `PREFECT_API_URL` to your cloud workspace URL and
-skip the `prefect-start` step. See [Connect to Prefect Cloud](../how-to-guides/connect-to-prefect-cloud.md) for setup.
+instead of a local server. See
+[Connect to Prefect](../how-to-guides/connect-to-prefect-cloud.md) for setup.
+:::
+
+:::{dropdown} What is Prefect?
+Artisan uses [Prefect](https://www.prefect.io/) as a dispatch layer for
+parallel task execution. Prefect is **not** a workflow engine here — Artisan
+owns pipeline definition, step sequencing, caching, and provenance. Prefect
+dispatches work to local processes or SLURM nodes and provides an optional
+monitoring UI.
+
+For local-only execution the server is not required. For SLURM execution,
+workers need a coordination point, so a Prefect server must be running. See
+[Tooling Decisions](../contributing/tooling-decisions.md) for the full
+rationale.
 :::
 
 ### Use an existing server
