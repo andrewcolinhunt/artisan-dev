@@ -2,22 +2,23 @@
 
 ## TOP PRIORITIES
 
+re read the updated docs
+
 update for prefect cloud
 personally I do not find the prefect web ui particularly useful.
 we need to update the how to doc to describe the different ways of using prefect.
 
 - handholding installation
 
-
 - IPD specific getting started
 do not do anything on the head node.
 work on your linux box.
 work on jojo.
 work on a long running jupyter hub node.
-
+default working root.
+backfill jobs.
 
 - add a claude code tutorial for protein design
-- using claude code in artisan
 
 ---
 ---
