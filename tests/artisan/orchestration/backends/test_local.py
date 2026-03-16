@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from artisan.orchestration.backends.local import LocalBackend
+from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 @pytest.fixture
@@ -17,12 +19,12 @@ def local_backend() -> LocalBackend:
 
 @pytest.fixture
 def mock_operation() -> MagicMock:
+    """Mock operation for validate_operation tests."""
     op = MagicMock()
     op.name = "test_op"
     op.execution.max_workers = None
-    op.resources.gres = None
-    op.resources.partition = "cpu"
-    op.resources.extra_slurm_kwargs = {}
+    op.resources.gpus = 0
+    op.resources.extra = {}
     return op
 
 
@@ -50,24 +52,28 @@ class TestLocalBackendCreateFlow:
         _mock_unmapped: MagicMock,
         mock_flow: MagicMock,
         local_backend: LocalBackend,
-        mock_operation: MagicMock,
     ) -> None:
         mock_flow.return_value = lambda fn: fn
-        result = local_backend.create_flow(mock_operation, step_number=0)
+        result = local_backend.create_flow(
+            ResourceConfig(), ExecutionConfig(), step_number=0, job_name="test_op"
+        )
         assert callable(result)
 
     @patch("prefect.flow")
     @patch("prefect.unmapped")
-    def test_create_flow_uses_operation_max_workers(
+    def test_create_flow_uses_execution_max_workers(
         self,
         _mock_unmapped: MagicMock,
         mock_flow: MagicMock,
         local_backend: LocalBackend,
-        mock_operation: MagicMock,
     ) -> None:
-        mock_operation.execution.max_workers = 8
         mock_flow.return_value = lambda fn: fn
-        local_backend.create_flow(mock_operation, step_number=0)
+        local_backend.create_flow(
+            ResourceConfig(),
+            ExecutionConfig(max_workers=8),
+            step_number=0,
+            job_name="test_op",
+        )
         call_kwargs = mock_flow.call_args[1]
         task_runner = call_kwargs["task_runner"]
         assert task_runner._max_workers == 8
@@ -79,12 +85,13 @@ class TestLocalBackendCreateFlow:
         _mock_unmapped: MagicMock,
         mock_flow: MagicMock,
         local_backend: LocalBackend,
-        mock_operation: MagicMock,
     ) -> None:
         from prefect.task_runners import ProcessPoolTaskRunner
 
         mock_flow.return_value = lambda fn: fn
-        local_backend.create_flow(mock_operation, step_number=0)
+        local_backend.create_flow(
+            ResourceConfig(), ExecutionConfig(), step_number=0, job_name="test_op"
+        )
         call_kwargs = mock_flow.call_args[1]
         task_runner = call_kwargs["task_runner"]
         assert isinstance(task_runner, ProcessPoolTaskRunner)
@@ -98,17 +105,17 @@ class TestLocalBackendValidateOperation:
             warnings.simplefilter("error")
             local_backend.validate_operation(mock_operation)
 
-    def test_warns_on_slurm_gres(
+    def test_warns_on_gpus(
         self, local_backend: LocalBackend, mock_operation: MagicMock
     ) -> None:
-        mock_operation.resources.gres = "gpu:1"
+        mock_operation.resources.gpus = 1
         with pytest.warns(UserWarning, match="SLURM-specific resources"):
             local_backend.validate_operation(mock_operation)
 
-    def test_warns_on_non_cpu_partition(
+    def test_warns_on_extra_kwargs(
         self, local_backend: LocalBackend, mock_operation: MagicMock
     ) -> None:
-        mock_operation.resources.partition = "gpu"
+        mock_operation.resources.extra = {"partition": "gpu"}
         with pytest.warns(UserWarning, match="SLURM-specific resources"):
             local_backend.validate_operation(mock_operation)
 

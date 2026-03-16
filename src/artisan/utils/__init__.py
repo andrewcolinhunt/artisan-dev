@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from artisan.schemas.enums import FailurePolicy
-from artisan.utils.dataframes import pivot_metrics_wide, to_float
+from artisan.utils.dataframes import (
+    encode_metric_value,
+    is_scalar_metric,
+    pivot_metrics_wide,
+)
 from artisan.utils.dicts import flatten_dict
 from artisan.utils.errors import format_error
 from artisan.utils.external_tools import (
-    ArgStyle,
     Command,
     ExternalToolError,
-    build_command_from_spec,
     format_args,
-    run_external_command,
+    run_command,
     to_cli_value,
 )
 from artisan.utils.filename import strip_extensions
@@ -23,19 +25,18 @@ from artisan.utils.tutorial import TutorialEnv, tutorial_setup
 
 __all__ = [
     # DataFrame utilities
+    "encode_metric_value",
+    "is_scalar_metric",
     "pivot_metrics_wide",
-    "to_float",
     # Dict utilities
     "flatten_dict",
     # Error formatting
     "format_error",
     # External tools
-    "ArgStyle",
     "Command",
     "ExternalToolError",
-    "build_command_from_spec",
     "format_args",
-    "run_external_command",
+    "run_command",
     "to_cli_value",
     # Filename utilities
     "strip_extensions",

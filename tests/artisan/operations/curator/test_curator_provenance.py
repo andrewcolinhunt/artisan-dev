@@ -70,10 +70,11 @@ class TestFilterProvenance:
         spec = Filter.outputs["passthrough"]
         assert spec.infer_lineage_from is None
 
-    def test_runtime_defined_inputs(self):
-        """Test that Filter uses runtime-defined inputs (direct-input pattern)."""
-        assert Filter.runtime_defined_inputs is True
+    def test_fixed_inputs(self):
+        """Test that Filter declares fixed passthrough input only."""
+        assert Filter.runtime_defined_inputs is False
         assert "passthrough" in Filter.inputs
+        assert len(Filter.inputs) == 1
 
 
 class TestCuratorOperationsSummary:

@@ -83,11 +83,11 @@ distinct purpose:
 delta_root/
 ├── artifacts/              Content and metadata for every artifact
 │   ├── index/              Type and origin lookup (artifact_id → type)
-│   ├── metrics/            Metric values
-│   ├── configs/            Computation specifications
-│   ├── data/               Generic tabular data
-│   ├── file_refs/          External file references
-│   └── [domain types]/     Registered by domain layers (e.g., custom_type)
+│   ├── metrics/            Metric values (built-in)
+│   ├── configs/            Execution configuration snapshots (built-in)
+│   ├── data/               Generic tabular data (built-in)
+│   ├── file_refs/          External file references (built-in)
+│   └── [custom_type]/      Domain types registered at runtime
 ├── provenance/             Derivation and execution relationships
 │   ├── artifact_edges/     Source → target derivation edges
 │   └── execution_edges/    Input/output edges per execution
@@ -111,8 +111,21 @@ partitioned, because provenance queries need to traverse across steps.
 
 **Orchestration tables** track execution metadata. The `executions` table is
 partitioned by step number (queries are step-scoped). The `steps` table is
-written directly by the orchestrator (not through staging) and is not
+written directly by the orchestrator (not through the staging path) and is not
 partitioned.
+
+### Partitioning summary
+
+Not all tables are partitioned. The choice depends on access patterns:
+
+| Table | Partitioned by `origin_step_number` | Reason |
+|-------|-------------------------------------|--------|
+| Artifact content tables | Yes | Queries are step-scoped |
+| `artifacts/index` | No | Small table, cross-step lookups |
+| `provenance/artifact_edges` | No | Graph traversal crosses steps |
+| `provenance/execution_edges` | No | Joined with executions by run ID |
+| `orchestration/executions` | Yes | Queries are step-scoped |
+| `orchestration/steps` | No | Few rows, written directly by orchestrator |
 
 ### The artifact index
 
@@ -121,8 +134,18 @@ its type and origin step number. This allows the framework to locate an
 artifact without scanning every content table — given an ID, the index reveals
 which type-specific table contains the actual data.
 
-The index is not partitioned. It is small (one row per artifact, no content
-bytes) and must support fast lookups across all steps.
+The index is small (one row per artifact, no content bytes) and must support
+fast lookups across all steps. It also powers bulk queries like loading type
+maps and step maps for provenance graph rendering.
+
+### The provenance store
+
+Provenance queries (ancestor/descendant lookups, edge loading, type maps, step
+maps) are handled by a dedicated `ProvenanceStore` class. `ArtifactStore`
+delegates all provenance-related methods to it, keeping artifact content
+queries and graph traversal cleanly separated. This split means provenance
+queries never need access to artifact content tables, and content queries never
+need to load the edge graph.
 
 ---
 
@@ -167,29 +190,33 @@ to Delta Lake.
 
 ```
                               staging_root/
-                              ├── step_1_ToolB/
-Worker A ──writes──>          │   ├── a1/b2/{run_abc}/
-Worker B ──writes──>          │   │   ├── custom_type.parquet
+                              ├── 1_tool_b/
+Worker A ──writes──>          │   ├── ab/cd/{run_id_abcd...}/
+Worker B ──writes──>          │   │   ├── data.parquet
 Worker C ──writes──>          │   │   ├── metrics.parquet
                               │   │   ├── index.parquet
                               │   │   ├── artifact_edges.parquet
                               │   │   ├── execution_edges.parquet
                               │   │   └── executions.parquet  ← sentinel
-                              │   ├── c3/d4/{run_def}/
+                              │   ├── e1/f2/{run_id_e1f2...}/
                               │   │   └── ...
-                              │   └── e5/f6/{run_ghi}/
+                              │   └── 7a/3b/{run_id_7a3b...}/
                               │       └── ...
                               │
 Orchestrator ──reads all──>   └── commit atomically ──> Delta Lake
 ```
 
+The step directory name combines the step number and operation name
+(e.g., `1_tool_b`). Beneath it, each execution's staging files are isolated in
+a sharded subdirectory keyed by the execution run ID.
+
 ### Why staging directories are sharded
 
 Worker staging paths use a two-level hash shard: the first two and next two
 characters of the execution run ID become directory levels
-(`{hash[0:2]}/{hash[2:4]}/`). This prevents creating a single directory with
-thousands of subdirectories, which would degrade filesystem performance on both
-local and networked filesystems.
+(`{run_id[0:2]}/{run_id[2:4]}/`). This prevents creating a single directory
+with thousands of subdirectories, which would degrade filesystem performance on
+both local and networked filesystems.
 
 ### The sentinel file
 
@@ -208,7 +235,7 @@ transaction conflicts and need to retry. With staging, there are zero write
 conflicts — each worker writes to its own directory.
 
 **Partial failure isolation.** If a worker crashes, its staging directory is
-simply ignored during commit. The orchestrator has a complete view of which
+ignored during commit. The orchestrator has a complete view of which
 workers succeeded and which failed before committing anything. There is no need
 to roll back partially-written data.
 
@@ -226,15 +253,22 @@ shared NFS filesystem, a write-then-read race condition exists: a worker writes
 a file, but the orchestrator (running on a different node) may not see it
 immediately due to NFS caching.
 
-The framework handles this with a two-part strategy:
+The framework handles this with a three-part strategy:
 
 **Writer-side fsync.** After writing all staging files, SLURM workers call
 `fsync()` on each file and its containing directory. This forces the NFS client
-to flush data to the server.
+to flush data to the server. The fsync is conditional — it runs only when the
+execution is on a shared filesystem, avoiding unnecessary I/O overhead for
+local execution.
 
-**Reader-side verification.** Before committing, the orchestrator
-deterministically computes where each worker's staging files should be and
-polls for the sentinel file (`executions.parquet`) with exponential backoff.
+**Reader-side directory cache invalidation.** Before checking for a staging
+file, the orchestrator walks the ancestor directories of the expected path and
+calls `listdir()` on each one. This forces READDIR RPCs that flush stale NFS
+directory entry caches, ensuring newly created directories become visible.
+
+**Reader-side file verification.** The orchestrator deterministically computes
+where each worker's staging files should be and polls for the sentinel file
+(`executions.parquet`) with exponential backoff (capped at 5-second intervals).
 The polling uses `open()` + `read(1)` rather than `os.path.exists()`, because
 the open-read pattern triggers NFS close-to-open consistency guarantees that
 stat-based checks do not.
@@ -250,15 +284,26 @@ written but not yet visible through NFS caching.
 The orchestrator commits tables in a specific order designed to maintain
 referential integrity even if a crash occurs mid-commit:
 
-1. **Artifact content tables** (data, metrics, configs, etc.)
-2. **Artifact index** (maps IDs to types)
-3. **Provenance tables** (artifact edges, execution edges)
-4. **Execution records** (execution log)
+```
+Artifact content tables    (data, metrics, configs, file_refs, custom types)
+        ↓
+Artifact index             (maps IDs to types)
+        ↓
+Artifact edges             (source → target derivation)
+        ↓
+Execution edges            (input/output per execution)
+        ↓
+Executions                 (execution log — last)
+```
 
 **Why this order:** Content exists before its index entry. Index entries exist
-before provenance edges reference them. If a crash interrupts the commit
-sequence, the database is in a consistent (if incomplete) state — there are
-never dangling references pointing to content that does not exist.
+before provenance edges reference them. Provenance edges exist before execution
+records reference them. If a crash interrupts the commit sequence, the database
+is in a consistent (if incomplete) state — there are never dangling references
+pointing to content that does not exist.
+
+The `steps` table is excluded from this sequence. It is written directly by the
+orchestrator at step start and end, outside the staging-commit path.
 
 Delta Lake does not support multi-table transactions. Each table commit is
 atomic individually, but the sequence across tables is not. The commit ordering
@@ -284,6 +329,57 @@ The deduplication check is a single Polars scan of the existing table's
 `artifact_id` column, joined against the incoming staged data. The cost is
 proportional to the number of existing artifacts, not the total data volume,
 because only the ID column is read.
+
+Deduplication applies to all tables with an `artifact_id` column (content
+tables, the artifact index, artifact edges) but not to execution edges, which
+are keyed by execution run ID instead.
+
+---
+
+## Crash recovery
+
+If the orchestrator crashes after workers have staged their files but before
+commit completes, the staged Parquet files remain on disk. The `recover_staged`
+method detects leftover staging files by probing for `executions.parquet` files,
+then runs the standard commit path over them.
+
+Because commit uses content-addressed deduplication, recovery is idempotent. If
+some tables were already committed before the crash, those rows are skipped
+during recovery. The result is always the same as if the original commit had
+succeeded.
+
+---
+
+## Compaction and maintenance
+
+Repeated appends to Delta Lake tables create many small Parquet files — one per
+commit. Over time this degrades read performance because each query must open
+many files.
+
+The framework provides two maintenance operations:
+
+**Compaction** merges small files into larger ones. It can optionally apply
+Z-ORDER clustering, which co-locates rows with similar values in key columns
+(e.g., `artifact_id` for content tables, `execution_spec_id` for the
+executions table). Z-ORDER improves predicate pushdown performance for queries
+that filter on those columns.
+
+**Vacuum** removes stale data files that are no longer referenced by the Delta
+transaction log. The default retention period is 7 days, ensuring that
+concurrent readers are not affected by cleanup.
+
+Both operations can be scoped to a single partition (step number) or applied
+across the entire table.
+
+---
+
+## Compression
+
+All Parquet files — both staged files written by workers and Delta Lake commits
+written by the orchestrator — use zstd compression. Zstd provides a good
+balance of compression ratio and read/write speed, which matters when a
+pipeline produces large volumes of artifact data that will be scanned
+repeatedly during provenance queries and result analysis.
 
 ---
 
@@ -329,10 +425,13 @@ For hands-on examples of querying pipeline results, see the
 | Registry-driven tables | Domain layers extend storage without framework changes |
 | Ordered table commits | Maintains referential integrity without multi-table transactions |
 | Partition by step number | Enables fast predicate pushdown for step-scoped queries |
+| Separate provenance store | Keeps graph queries independent of artifact content |
+| Zstd compression everywhere | Good compression ratio with fast read/write performance |
+| Conditional fsync | NFS flush only on shared filesystems, avoiding local overhead |
 
 ---
 
-## Cross-References
+## Cross-references
 
 - [Artifacts and Content Addressing](artifacts-and-content-addressing.md) --
   Content hashing, deduplication, and the draft/finalize lifecycle

@@ -32,31 +32,38 @@ project:
     - title: Tutorials
       children:
         - file: tutorials/index.md
-        - title: First Steps
+        - title: Getting Started
           children:
             - file: tutorials/getting-started/01-first-pipeline.ipynb
             - file: tutorials/getting-started/02-exploring-results.ipynb
-            - file: tutorials/getting-started/03-run-vs-submit.ipynb
-            - file: tutorials/getting-started/04-slurm-execution.ipynb
-            - file: tutorials/getting-started/05-writing-an-operation.ipynb
-        - title: Pipeline Patterns
+        - title: Pipeline Design
           children:
-            - file: tutorials/pipeline-patterns/01-sources-and-chains.ipynb
-            - file: tutorials/pipeline-patterns/02-branching-and-merging.ipynb
-            - file: tutorials/pipeline-patterns/03-metrics-and-filtering.ipynb
-            - file: tutorials/pipeline-patterns/04-multi-input-operations.ipynb
-            - file: tutorials/pipeline-patterns/05-advanced-patterns.ipynb
-            - file: tutorials/pipeline-patterns/06-error-visibility.ipynb
-        - title: Working with Results
+            - file: tutorials/pipeline-design/01-sources-and-sequencing.ipynb
+            - file: tutorials/pipeline-design/02-branching-and-merging.ipynb
+            - file: tutorials/pipeline-design/03-metrics-and-filtering.ipynb
+            - file: tutorials/pipeline-design/04-multi-input-operations.ipynb
+            - file: tutorials/pipeline-design/05-diamonds-and-iteration.ipynb
+            - file: tutorials/pipeline-design/06-composites.ipynb
+        - title: Execution
           children:
-            - file: tutorials/working-with-results/01-provenance-graphs.ipynb
-            - file: tutorials/working-with-results/02-resume-and-caching.ipynb
-            - file: tutorials/working-with-results/03-interactive-filter.ipynb
-            - file: tutorials/working-with-results/04-timing-analysis.ipynb
-        - title: Execution and Tuning
+            - file: tutorials/execution/01-run-vs-submit.ipynb
+            - file: tutorials/execution/02-resume-and-caching.ipynb
+            - file: tutorials/execution/03-batching-and-performance.ipynb
+            - file: tutorials/execution/04-error-visibility.ipynb
+            - file: tutorials/execution/05-storage-and-logging.ipynb
+            - file: tutorials/execution/06-step-overrides.ipynb
+            - file: tutorials/execution/07-slurm-execution.ipynb
+            - file: tutorials/execution/08-pipeline-cancellation.ipynb
+        - title: Analysis
           children:
-            - file: tutorials/execution-and-tuning/01-batching-and-performance.ipynb
-            - file: tutorials/execution-and-tuning/02-step-overrides.ipynb
+            - file: tutorials/analysis/01-provenance-graphs.ipynb
+            - file: tutorials/analysis/02-lineage-tracing.ipynb
+            - file: tutorials/analysis/03-interactive-filter.ipynb
+            - file: tutorials/analysis/04-timing-analysis.ipynb
+        - title: Writing Operations
+          children:
+            - file: tutorials/writing-operations/01-writing-an-operation.ipynb
+            - file: tutorials/writing-operations/02-writing-a-composite.ipynb
 
     # ── Concepts ──
     - title: Concepts
@@ -66,6 +73,7 @@ project:
           children:
             - file: concepts/architecture-overview.md
             - file: concepts/operations-model.md
+            - file: concepts/composites-and-composition.md
             - file: concepts/artifacts-and-content-addressing.md
         - title: Data and Tracking
           children:
@@ -85,6 +93,7 @@ project:
           children:
             - file: how-to-guides/writing-creator-operations.md
             - file: how-to-guides/writing-curator-operations.md
+            - file: how-to-guides/writing-composite-operations.md
             - file: how-to-guides/creating-artifact-types.md
         - title: Pipelines
           children:
@@ -103,6 +112,7 @@ project:
         - file: reference/index.md
         - file: reference/comparison-to-alternatives.md
         - file: reference/glossary.md
+        - file: reference/composite-definition.md
 
     # ── Contributing ──
     - title: Contributing
@@ -123,6 +133,10 @@ site:
       url: /tutorials
     - title: Concepts
       url: /concepts
+    - title: How-to Guides
+      url: /how-to-guides
+    - title: Reference
+      url: /reference
     - title: Contributing
       url: /contributing
 

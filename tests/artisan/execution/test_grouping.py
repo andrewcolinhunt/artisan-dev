@@ -1,19 +1,20 @@
 """Unit tests for framework pairing functions (group_inputs, match_inputs_to_primary).
 
 Tests cover:
-1. group_inputs() with ZIP strategy
-2. group_inputs() with CROSS_PRODUCT strategy
-3. group_inputs() with LINEAGE strategy
-4. group_id computation (deterministic, content-addressed)
-5. match_inputs_to_primary() with LINEAGE strategy
-6. validate_stem_match_uniqueness()
-7. Error handling and edge cases
+- group_inputs() with ZIP strategy
+- group_inputs() with CROSS_PRODUCT strategy
+- group_inputs() with LINEAGE strategy
+- group_id computation (deterministic, content-addressed)
+- match_inputs_to_primary() with LINEAGE strategy
+- validate_stem_match_uniqueness()
+- Error handling and edge cases
 """
 
 from __future__ import annotations
 
 from unittest.mock import Mock
 
+import polars as pl
 import pytest
 
 from artisan.execution.inputs.grouping import (
@@ -23,6 +24,64 @@ from artisan.execution.inputs.grouping import (
     validate_stem_match_uniqueness,
 )
 from artisan.schemas.enums import GroupByStrategy
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _provenance_map_to_edges(
+    provenance_map: dict[str, list[str]],
+) -> pl.DataFrame:
+    """Convert {target: [sources]} dict to edges DataFrame."""
+    sources = []
+    targets = []
+    for target_id, source_ids in provenance_map.items():
+        for source_id in source_ids:
+            sources.append(source_id)
+            targets.append(target_id)
+    if not sources:
+        return pl.DataFrame(
+            schema={
+                "source_artifact_id": pl.String,
+                "target_artifact_id": pl.String,
+            }
+        )
+    return pl.DataFrame(
+        {
+            "source_artifact_id": sources,
+            "target_artifact_id": targets,
+        }
+    )
+
+
+def _make_mock_store(
+    provenance_map: dict[str, list[str]],
+    step_numbers: dict[str, int],
+    test_ids: dict,
+) -> Mock:
+    """Build a mock ArtifactStore with edges and step number support."""
+    store = Mock()
+
+    edges_df = _provenance_map_to_edges(provenance_map)
+
+    store.provenance.load_step_map.side_effect = lambda ids=None: (
+        {k: v for k, v in step_numbers.items() if ids is None or k in ids}
+    )
+
+    def _get_step_range(artifact_ids: pl.Series) -> tuple[int, int] | None:
+        id_list = artifact_ids.to_list()
+        steps = [step_numbers[aid] for aid in id_list if aid in step_numbers]
+        if not steps:
+            return None
+        return (min(steps), max(steps))
+
+    store.provenance.get_step_range.side_effect = _get_step_range
+    store.provenance.load_edges_df.return_value = edges_df
+    store._test_ids = test_ids
+
+    return store
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -44,8 +103,6 @@ def mock_artifact_store():
     A1a and M_A1 share ancestor A1 (step 1).
     B1a and M_B1 share ancestor B1 (step 1).
     """
-    store = Mock()
-
     A = "a" * 32
     B = "b" * 32
     A1 = "a1" + "0" * 30
@@ -75,23 +132,20 @@ def mock_artifact_store():
         M_B1: 2,
     }
 
-    store.load_provenance_map.return_value = provenance_map
-    store.load_step_number_map.side_effect = lambda ids=None: (
-        {k: v for k, v in step_numbers.items() if ids is None or k in ids}
+    return _make_mock_store(
+        provenance_map,
+        step_numbers,
+        {
+            "A": A,
+            "B": B,
+            "A1": A1,
+            "B1": B1,
+            "A1a": A1a,
+            "B1a": B1a,
+            "M_A1": M_A1,
+            "M_B1": M_B1,
+        },
     )
-
-    store._test_ids = {
-        "A": A,
-        "B": B,
-        "A1": A1,
-        "B1": B1,
-        "A1a": A1a,
-        "B1a": B1a,
-        "M_A1": M_A1,
-        "M_B1": M_B1,
-    }
-
-    return store
 
 
 @pytest.fixture
@@ -111,12 +165,7 @@ def mock_artifact_store_three_lineages():
     P = passthrough, MA/MB = metrics from roles A and B respectively.
     S = intermediate (e.g., processing step output).
     R = root ingest.
-
-    P1 <-> MA1 (via S1), P1 <-> MB1 (via S1 -> R1, since MB1's chain is
-    MB1->MA1->S1 ... wait, let's keep it simple: MA and MB both descend from S.
     """
-    store = Mock()
-
     R1 = "r1" + "0" * 30
     R2 = "r2" + "0" * 30
     R3 = "r3" + "0" * 30
@@ -166,24 +215,21 @@ def mock_artifact_store_three_lineages():
         MB3: 3,
     }
 
-    store.load_provenance_map.return_value = provenance_map
-    store.load_step_number_map.side_effect = lambda ids=None: (
-        {k: v for k, v in step_numbers.items() if ids is None or k in ids}
+    return _make_mock_store(
+        provenance_map,
+        step_numbers,
+        {
+            "P1": P1,
+            "P2": P2,
+            "P3": P3,
+            "MA1": MA1,
+            "MA2": MA2,
+            "MA3": MA3,
+            "MB1": MB1,
+            "MB2": MB2,
+            "MB3": MB3,
+        },
     )
-
-    store._test_ids = {
-        "P1": P1,
-        "P2": P2,
-        "P3": P3,
-        "MA1": MA1,
-        "MA2": MA2,
-        "MA3": MA3,
-        "MB1": MB1,
-        "MB2": MB2,
-        "MB3": MB3,
-    }
-
-    return store
 
 
 @pytest.fixture
@@ -201,8 +247,6 @@ def mock_artifact_store_one_to_n():
     Dataset and all configs share ancestor Root.
     Dataset is the target (lower step), configs are candidates.
     """
-    store = Mock()
-
     root = "root" + "0" * 28
     dataset = "ds" + "0" * 30
     configs = [f"c{i}" + "0" * 30 for i in range(1, 7)]
@@ -215,14 +259,11 @@ def mock_artifact_store_one_to_n():
     for c in configs:
         step_numbers[c] = 2
 
-    store.load_provenance_map.return_value = provenance_map
-    store.load_step_number_map.side_effect = lambda ids=None: (
-        {k: v for k, v in step_numbers.items() if ids is None or k in ids}
+    return _make_mock_store(
+        provenance_map,
+        step_numbers,
+        {"dataset": dataset, "configs": configs, "root": root},
     )
-
-    store._test_ids = {"dataset": dataset, "configs": configs, "root": root}
-
-    return store
 
 
 # ---------------------------------------------------------------------------
@@ -715,8 +756,8 @@ class TestMatchInputsToPrimary:
         assert all(p == ids["dataset"] for p in result["primary"])
         assert set(result["configs"]) == set(ids["configs"])
 
-    def test_ancestry_cache_built_once(self, mock_artifact_store):
-        """Ancestry cache is built once (single call to load_provenance_map)."""
+    def test_edges_loaded_once(self, mock_artifact_store):
+        """Edge loading is called once per match operation."""
         ids = mock_artifact_store._test_ids
 
         inputs = {
@@ -728,8 +769,7 @@ class TestMatchInputsToPrimary:
             "passthrough", inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
-        # match_by_ancestry calls load_provenance_map exactly once
-        assert mock_artifact_store.load_provenance_map.call_count == 1
+        assert mock_artifact_store.provenance.load_edges_df.call_count == 1
 
     def test_requires_artifact_store(self):
         """LINEAGE strategy without artifact_store raises RuntimeError."""

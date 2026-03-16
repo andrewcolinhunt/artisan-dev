@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from artisan.orchestration.backends.slurm import SlurmBackend
+from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 class TestSlurmBackendTraits:
@@ -37,18 +39,17 @@ class TestSlurmBackendCreateFlow:
     ) -> None:
         mock_flow.return_value = lambda fn: fn
         backend = SlurmBackend()
-        op = MagicMock()
-        op.name = "test_op"
-        op.resources.partition = "gpu"
-        op.resources.time_limit = "02:00:00"
-        op.resources.mem_gb = 8
-        op.resources.cpus_per_task = 4
-        op.resources.gres = "gpu:1"
-        op.resources.extra_slurm_kwargs = {}
-        op.execution.units_per_worker = 1
-        op.execution.job_name = None
 
-        backend.create_flow(op, step_number=3)
+        resources = ResourceConfig(
+            cpus=4,
+            memory_gb=8,
+            gpus=1,
+            time_limit="02:00:00",
+            extra={"partition": "gpu"},
+        )
+        execution = ExecutionConfig(units_per_worker=1)
+
+        backend.create_flow(resources, execution, step_number=3, job_name="test_op")
 
         mock_slurm_runner.assert_called_once()
         call_kwargs = mock_slurm_runner.call_args[1]
@@ -68,18 +69,11 @@ class TestSlurmBackendCreateFlow:
     ) -> None:
         mock_flow.return_value = lambda fn: fn
         backend = SlurmBackend()
-        op = MagicMock()
-        op.name = "test_op"
-        op.resources.partition = "cpu"
-        op.resources.time_limit = "01:00:00"
-        op.resources.mem_gb = 4
-        op.resources.cpus_per_task = 1
-        op.resources.gres = None
-        op.resources.extra_slurm_kwargs = {}
-        op.execution.units_per_worker = 1
-        op.execution.job_name = "custom_name"
 
-        backend.create_flow(op, step_number=5)
+        resources = ResourceConfig()
+        execution = ExecutionConfig(units_per_worker=1)
+
+        backend.create_flow(resources, execution, step_number=5, job_name="custom_name")
 
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["slurm_job_name"] == "s5_custom_name"

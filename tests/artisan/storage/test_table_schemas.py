@@ -301,7 +301,7 @@ class TestArtifactEdgesSchema:
     """Tests for ARTIFACT_EDGES_SCHEMA."""
 
     def test_artifact_edges_has_required_columns(self):
-        """artifact_edges has all required columns (8 total, includes group_id)."""
+        """artifact_edges has all required columns (9 total, includes group_id + step_boundary)."""
         required = {
             "execution_run_id",
             "source_artifact_id",
@@ -311,9 +311,10 @@ class TestArtifactEdgesSchema:
             "source_role",
             "target_role",
             "group_id",
+            "step_boundary",
         }
         assert required == set(ARTIFACT_EDGES_SCHEMA.keys())
-        assert len(ARTIFACT_EDGES_SCHEMA) == 8
+        assert len(ARTIFACT_EDGES_SCHEMA) == 9
 
     def test_artifact_edges_no_inference_method(self):
         """artifact_edges does NOT have inference_method column."""
@@ -336,10 +337,13 @@ class TestArtifactEdgesSchema:
         """ARTIFACT_EDGES is registered in FRAMEWORK_SCHEMAS."""
         assert TablePath.ARTIFACT_EDGES in FRAMEWORK_SCHEMAS
 
-    def test_artifact_edges_all_string_columns(self):
-        """All columns in artifact_edges are String type."""
+    def test_artifact_edges_column_types(self):
+        """All columns except step_boundary are String; step_boundary is Boolean."""
         for col_name, col_type in ARTIFACT_EDGES_SCHEMA.items():
-            assert col_type == pl.String, f"{col_name} should be pl.String"
+            if col_name == "step_boundary":
+                assert col_type == pl.Boolean, f"{col_name} should be pl.Boolean"
+            else:
+                assert col_type == pl.String, f"{col_name} should be pl.String"
 
     def test_create_empty_artifact_edges_dataframe(self):
         """Create empty artifact_edges DataFrame."""
@@ -366,12 +370,14 @@ class TestArtifactEdgesSchema:
             "source_role": ["data"],
             "target_role": ["energy"],
             "group_id": [None],
+            "step_boundary": [True],
         }
         df = pl.DataFrame(data, schema=ARTIFACT_EDGES_SCHEMA)
-        assert df.shape == (1, 8)
+        assert df.shape == (1, 9)
         assert df["source_artifact_type"][0] == "data"
         assert df["target_artifact_type"][0] == "metric"
         assert df["group_id"][0] is None
+        assert df["step_boundary"][0] is True
 
     def test_artifact_edges_group_edges(self):
         """Test creating GROUP-related edges in artifact_edges."""
@@ -384,6 +390,7 @@ class TestArtifactEdgesSchema:
             "source_role": ["input_data"],
             "target_role": ["comparison_group"],
             "group_id": [None],
+            "step_boundary": [True],
         }
         df1 = pl.DataFrame(member_to_group, schema=ARTIFACT_EDGES_SCHEMA)
         assert df1["target_artifact_type"][0] == "group"
@@ -397,6 +404,7 @@ class TestArtifactEdgesSchema:
             "source_role": ["comparison_group"],
             "target_role": ["accuracy"],
             "group_id": [None],
+            "step_boundary": [True],
         }
         df2 = pl.DataFrame(group_to_output, schema=ARTIFACT_EDGES_SCHEMA)
         assert df2["source_artifact_type"][0] == "group"
@@ -417,9 +425,10 @@ class TestArtifactEdgesSchema:
             "source_role": ["data", "data"],
             "target_role": ["energy", "energy"],
             "group_id": ["g" * 32, "g" * 32],
+            "step_boundary": [True, True],
         }
         df = pl.DataFrame(data, schema=ARTIFACT_EDGES_SCHEMA)
-        assert df.shape == (2, 8)
+        assert df.shape == (2, 9)
         assert df["group_id"][0] == "g" * 32
         assert df["group_id"][1] == "g" * 32
 

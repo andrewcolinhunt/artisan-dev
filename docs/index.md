@@ -1,5 +1,9 @@
-```{include} ../README.md
-```
+# Artisan
+
+A Python framework for building reproducible, provenance-tracked computational
+pipelines. Define operations, wire them into pipelines, and get automatic
+artifact tracking, content-addressed caching, and full lineage graphs.
+
 ::::{grid} 2
 :::{grid-item-card} Getting Started
 :link: getting-started/index.md
@@ -35,6 +39,6 @@ API signatures, schema tables, parameter lists. Structured for quick lookup.
 :::{grid-item-card} Contributing
 :link: contributing/index.md
 
-Coding conventions, Prefect best practices, and project-level guides.
+Coding conventions, tooling decisions, and documentation guidelines.
 :::
 ::::

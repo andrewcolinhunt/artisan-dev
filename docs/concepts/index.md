@@ -10,6 +10,8 @@ then explore topics relevant to your work.
   structure and component relationships
 - [Operations Model](operations-model.md) -- Why Creators and Curators, the
   three-phase execution model, and the spec system
+- [Composites and Composition](composites-and-composition.md) -- Reusable
+  compositions of operations with collapsed and expanded execution
 - [Artifacts and Content Addressing](artifacts-and-content-addressing.md) --
   Immutable artifacts and hash-based identity
 
@@ -28,7 +30,7 @@ then explore topics relevant to your work.
 - [Error Handling](error-handling.md) -- Fail-fast philosophy and error
   propagation
 
-## Cross-References
+## Cross-references
 
 - [Tutorials](../tutorials/index.md) -- Hands-on walkthroughs that demonstrate these concepts in practice
 - [How-to Guides](../how-to-guides/index.md) -- Task-oriented instructions that apply these concepts

@@ -311,7 +311,7 @@ def build_micro_graph(
     for anchor in anchor_nodes:
         graph.node(anchor, label="", width="0", height="0", style="invis")
 
-    # Chain anchors with invisible edges to enforce column order
+    # Link anchors with invisible edges to enforce column order
     for i in range(len(anchor_nodes) - 1):
         graph.edge(anchor_nodes[i], anchor_nodes[i + 1], style="invis")
 

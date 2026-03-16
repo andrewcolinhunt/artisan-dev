@@ -1,7 +1,7 @@
 """Tutorial setup utility for reducing notebook boilerplate.
 
-Provides :func:`tutorial_setup` which handles directory creation, cleanup,
-and logging configuration in a single call.
+Provides :func:`tutorial_setup` which handles directory creation and cleanup
+in a single call.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ import shutil
 from pathlib import Path
 from typing import NamedTuple
 
-from artisan.utils.logging import configure_logging
 from artisan.utils.path import get_caller_dir
 
 
@@ -28,7 +27,6 @@ def tutorial_setup(
     *,
     base_dir: Path | None = None,
     clean: bool = True,
-    log_level: str = "INFO",
 ) -> TutorialEnv:
     """Set up a tutorial environment with standard directory layout.
 
@@ -36,12 +34,11 @@ def tutorial_setup(
         name: Tutorial name, used as subdirectory under runs/.
         base_dir: Base directory. Defaults to caller's directory.
         clean: Remove existing runs directory if True.
-        log_level: Logging level. Defaults to "INFO".
 
     Returns:
         TutorialEnv with runs_dir, delta_root, staging_root, working_root.
     """
-    base_dir = base_dir or get_caller_dir()
+    base_dir = base_dir or get_caller_dir(stack_level=2)
     runs_dir = base_dir / "runs" / name
 
     if clean and runs_dir.exists():
@@ -53,8 +50,6 @@ def tutorial_setup(
 
     for d in [delta_root, staging_root, working_root]:
         d.mkdir(parents=True, exist_ok=True)
-
-    configure_logging(level=log_level)
 
     return TutorialEnv(
         runs_dir=runs_dir,

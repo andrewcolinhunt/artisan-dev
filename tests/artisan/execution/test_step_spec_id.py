@@ -125,55 +125,55 @@ class TestComputeStepSpecId:
         )
         assert spec_none == spec_empty
 
-    def test_command_overrides_none_same_as_empty(self):
-        """command_overrides=None produces same spec_id as empty dict."""
+    def test_config_overrides_none_same_as_empty(self):
+        """config_overrides=None produces same spec_id as empty dict."""
         spec_none = compute_step_spec_id(
             operation_name="Op",
             step_number=0,
             params=None,
             input_spec={},
-            command_overrides=None,
+            config_overrides=None,
         )
         spec_empty = compute_step_spec_id(
             operation_name="Op",
             step_number=0,
             params=None,
             input_spec={},
-            command_overrides={},
+            config_overrides={},
         )
         assert spec_none == spec_empty
 
-    def test_command_overrides_changes_hash(self):
-        """Different command_overrides produce different spec_id."""
+    def test_config_overrides_changes_hash(self):
+        """Different config_overrides produce different spec_id."""
         spec1 = compute_step_spec_id(
             operation_name="ToolC",
             step_number=1,
             params=None,
             input_spec={"data": ("abc123", "data")},
-            command_overrides=None,
+            config_overrides=None,
         )
         spec2 = compute_step_spec_id(
             operation_name="ToolC",
             step_number=1,
             params=None,
             input_spec={"data": ("abc123", "data")},
-            command_overrides={"image": "/path/to/image.sif"},
+            config_overrides={"image": "/path/to/image.sif"},
         )
         assert spec1 != spec2
 
-    def test_command_overrides_deterministic(self):
-        """Same command_overrides produce same spec_id."""
+    def test_config_overrides_deterministic(self):
+        """Same config_overrides produce same spec_id."""
         kwargs = {
             "operation_name": "ToolC",
             "step_number": 1,
             "params": None,
             "input_spec": {"data": ("abc123", "data")},
-            "command_overrides": {"image": "/path/to/image.sif", "gpu": True},
+            "config_overrides": {"image": "/path/to/image.sif", "gpu": True},
         }
         assert compute_step_spec_id(**kwargs) == compute_step_spec_id(**kwargs)
 
-    def test_command_overrides_with_path_objects(self):
-        """Path objects in command_overrides serialize correctly."""
+    def test_config_overrides_with_path_objects(self):
+        """Path objects in config_overrides serialize correctly."""
         from pathlib import Path
 
         spec1 = compute_step_spec_id(
@@ -181,14 +181,14 @@ class TestComputeStepSpecId:
             step_number=1,
             params=None,
             input_spec={},
-            command_overrides={"image": Path("/opt/containers/tool_c.sif")},
+            config_overrides={"image": Path("/opt/containers/tool_c.sif")},
         )
         spec2 = compute_step_spec_id(
             operation_name="ToolC",
             step_number=1,
             params=None,
             input_spec={},
-            command_overrides={"image": Path("/opt/containers/tool_c.sif")},
+            config_overrides={"image": Path("/opt/containers/tool_c.sif")},
         )
         assert spec1 == spec2
         assert len(spec1) == 32

@@ -76,7 +76,7 @@ pydantic = "*"
 
 # Workflow orchestration
 prefect = { version = ">=3.6,<4.0", extras = ["dask"] }
-prefect-submitit = "*"  # SLURM task runner for Prefect
+prefect-submitit = ">=0.1.4"
 submitit = "*"  # For SLURM job submission
 asyncpg = "*"  # PostgreSQL async driver for Prefect server
 
@@ -144,11 +144,17 @@ dev = { features = ["dev"], solve-group = "default" }
 docs = { features = ["docs"], solve-group = "default" }
 
 # =============================================================================
+# ACTIVATION
+# =============================================================================
+[tool.pixi.activation]
+scripts = ["scripts/pixi/activate.sh"]
+
+# =============================================================================
 # TASKS
 # =============================================================================
 [tool.pixi.tasks]
-prefect-start = "./scripts/prefect/start_prefect_server.sh --bg"
-prefect-stop = "./scripts/prefect/stop_prefect_server.sh -f"
+prefect-start = "prefect-server start --bg"
+prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
@@ -174,6 +180,7 @@ docs-serve = { cmd = "python -m http.server -d _build/html 8000", cwd = "docs" }
 [tool.pytest.ini_options]
 minversion = "7"
 testpaths = ["tests"]
+pythonpath = ["tests"]
 log_cli_level = "INFO"
 xfail_strict = true
 addopts = ["-ra", "--strict-config", "--strict-markers"]

@@ -36,7 +36,7 @@ class TestInstantiateInputs:
     def test_empty_inputs(self):
         """Empty inputs dict returns empty result."""
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {}
+        store.provenance.load_type_map.return_value = {}
         result, associated = instantiate_inputs({}, store, {})
         assert result == {}
         assert associated == {}
@@ -46,7 +46,7 @@ class TestInstantiateInputs:
         s_id = "s" * 32
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {s_id: ArtifactTypes.METRIC}
+        store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         store.get_artifacts_by_type.return_value = {s_id: _make_metric_alt(s_id)}
 
         spec = InputSpec(hydrate=True)
@@ -63,7 +63,7 @@ class TestInstantiateInputs:
         s_id = "s" * 32
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {s_id: ArtifactTypes.METRIC}
+        store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         store.get_artifacts_by_type.return_value = {}
 
         spec = InputSpec(hydrate=False)
@@ -81,7 +81,7 @@ class TestInstantiateInputs:
         m_id = "m" * 32
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {
+        store.provenance.load_type_map.return_value = {
             s_id: ArtifactTypes.METRIC,
             m_id: ArtifactTypes.METRIC,
         }
@@ -102,7 +102,7 @@ class TestInstantiateInputs:
     def test_missing_ids_skipped(self):
         """IDs not in type_map are skipped."""
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {}
+        store.provenance.load_type_map.return_value = {}
         store.get_artifacts_by_type.return_value = {}
 
         result, _ = instantiate_inputs({"data": ["missing" + "0" * 25]}, store, {})
@@ -114,7 +114,7 @@ class TestInstantiateInputs:
         import logging
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {}
+        store.provenance.load_type_map.return_value = {}
         store.get_artifacts_by_type.return_value = {}
 
         missing_id = "x" * 32
@@ -134,7 +134,7 @@ class TestInstantiateInputs:
 
         s_id = "s" * 32
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {s_id: ArtifactTypes.METRIC}
+        store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         # Hydrated bulk load returns empty — s_id missed the batch
         store.get_artifacts_by_type.return_value = {}
         store.get_artifact.return_value = None  # fallback also fails
@@ -154,7 +154,7 @@ class TestInstantiateInputs:
         s_id = "s" * 32
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {s_id: ArtifactTypes.METRIC}
+        store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         store.get_artifacts_by_type.return_value = {s_id: _make_metric_alt(s_id)}
 
         # No spec for "data" role, default_hydrate=True
@@ -170,7 +170,7 @@ class TestInstantiateInputs:
         s_id = "s" * 32
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {s_id: ArtifactTypes.METRIC}
+        store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         store.get_artifacts_by_type.return_value = {}
 
         result, _ = instantiate_inputs(
@@ -182,12 +182,12 @@ class TestInstantiateInputs:
         store.get_artifact.assert_not_called()
 
     def test_bulk_type_resolution_single_call(self):
-        """All IDs across roles are resolved in a single load_artifact_type_map call."""
+        """All IDs across roles are resolved in a single load_type_map call."""
         s_id = "s" * 32
         m_id = "m" * 32
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {
+        store.provenance.load_type_map.return_value = {
             s_id: ArtifactTypes.METRIC,
             m_id: ArtifactTypes.METRIC,
         }
@@ -200,8 +200,8 @@ class TestInstantiateInputs:
         )
 
         # Single call with all IDs
-        store.load_artifact_type_map.assert_called_once()
-        call_args = store.load_artifact_type_map.call_args[0][0]
+        store.provenance.load_type_map.assert_called_once()
+        call_args = store.provenance.load_type_map.call_args[0][0]
         assert set(call_args) == {s_id, m_id}
         store.get_artifact.assert_not_called()
 
@@ -213,7 +213,7 @@ class TestInstantiateInputs:
         f_id = "f" * 32
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {
+        store.provenance.load_type_map.return_value = {
             m_id: ArtifactTypes.METRIC,
             f_id: ArtifactTypes.FILE_REF,
         }
@@ -248,7 +248,7 @@ class TestInstantiateInputs:
         ).finalize()
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {s_id: ArtifactTypes.METRIC}
+        store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         store.get_artifacts_by_type.return_value = {s_id: _make_metric_alt(s_id)}
         store.get_associated.return_value = {s_id: [assoc]}
 
@@ -270,7 +270,7 @@ class TestInstantiateInputs:
         s_id = "s" * 32
 
         store = MagicMock()
-        store.load_artifact_type_map.return_value = {s_id: ArtifactTypes.METRIC}
+        store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         store.get_artifacts_by_type.return_value = {s_id: _make_metric_alt(s_id)}
 
         spec = InputSpec(artifact_type="data")

@@ -166,7 +166,7 @@ def await_staging_files(
                 missing[run_id] = issues[0] if issues else "unknown issue"
 
         if not missing:
-            logger.info(
+            logger.debug(
                 f"Staging verification complete: {len(execution_run_ids)} files "
                 f"verified in {elapsed:.1f}s ({attempt} attempts)"
             )
