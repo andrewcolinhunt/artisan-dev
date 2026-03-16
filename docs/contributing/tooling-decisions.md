@@ -79,7 +79,7 @@ and observability.
 required.
 
 **See:** [How Artisan Uses
-Prefect](../reference/comparison-to-alternatives.md#how-artisan-uses-prefect)
+Prefect](../reference/comparison-to-alternatives.md#comparison-prefect-relationship)
 for the dispatch architecture diagram.
 
 ---
