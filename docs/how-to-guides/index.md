@@ -4,31 +4,33 @@ Task-oriented instructions for common Artisan framework operations. Each guide f
 
 ## Operations
 
-- [Writing Creator Operations](writing-creator-operations.md) — Build
+- [Writing Creator Operations](writing-creator-operations.md) -- Build
   operations that produce new artifacts
-- [Writing Curator Operations](writing-curator-operations.md) — Build
+- [Writing Curator Operations](writing-curator-operations.md) -- Build
   operations that filter, merge, or transform collections
-- [Creating Artifact Types](creating-artifact-types.md) — Define custom
+- [Writing Composite Operations](writing-composite-operations.md) -- Group
+  tightly coupled operations into reusable composites
+- [Creating Artifact Types](creating-artifact-types.md) -- Define custom
   artifact types for your domain
 
 ## Pipelines
 
-- [Building a Pipeline](building-a-pipeline.md) — Create, wire, and execute
+- [Building a Pipeline](building-a-pipeline.md) -- Create, wire, and execute
   a pipeline from scratch
 
 ## Configuration
 
-- [Configuring Execution](configuring-execution.md) — Resource allocation,
+- [Configuring Execution](configuring-execution.md) -- Resource allocation,
   batching, and SLURM configuration
 
 ## Results
 
-- [Inspecting Provenance](inspecting-provenance.md) — Query lineage and trace
+- [Inspecting Provenance](inspecting-provenance.md) -- Query lineage and trace
   artifact history
-- [Exporting Results](exporting-results.md) — Extract data from Delta tables
+- [Exporting Results](exporting-results.md) -- Extract data from Delta tables
   and export artifacts
 
-## Cross-References
+## Cross-references
 
 - [Concepts](../concepts/index.md) -- Understand the design decisions behind the tasks in these guides
 - [Reference](../reference/index.md) -- API details and schema specifications for types used in these guides

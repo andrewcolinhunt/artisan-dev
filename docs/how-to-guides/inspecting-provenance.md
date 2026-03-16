@@ -28,7 +28,7 @@ The rest of this guide covers each inspection technique in detail.
 
 ---
 
-## Step 1: Get a pipeline overview
+## Get a pipeline overview
 
 Start with `inspect_pipeline` to see what happened at each step:
 
@@ -43,8 +43,8 @@ Returns a Polars DataFrame with one row per step:
 | Column | Description |
 |--------|-------------|
 | `step` | Step number |
-| `operation` | Operation name |
-| `status` | `completed` or `skipped` |
+| `operation` | Step name |
+| `status` | `ok`, `skipped` |
 | `produced` | Artifact summary (e.g., `"5 data, 5 metric"` or `"3 passed"` for filters) |
 | `duration` | Wall-clock time (e.g., `"2.3s"`) |
 
@@ -56,7 +56,7 @@ inspect_pipeline(delta_root, pipeline_run_id="run_abc123...")
 
 ---
 
-## Step 2: Inspect artifacts at a step
+## Inspect artifacts at a step
 
 Drill into a step to see individual artifacts:
 
@@ -73,11 +73,11 @@ Returns one row per artifact with type-specific details:
 | `data` | `"N rows, M cols"` |
 | `metric` | Up to 4 metric key names |
 | `config` | `"N params"` |
-| `file_ref`, `structure` | Human-readable file size |
+| `file_ref` | Human-readable file size |
 
 ---
 
-## Step 3: Read metric values
+## Read metric values
 
 `inspect_metrics` parses metric JSON into a flat table with one column per
 metric key:
@@ -97,9 +97,10 @@ becomes a column).
 
 ---
 
-## Step 4: Read data artifact contents
+## Read data artifact contents
 
-`inspect_data` parses the actual CSV content of `DataArtifact` entries:
+`inspect_data` reads the CSV content stored in `DataArtifact` entries and returns
+it as a Polars DataFrame:
 
 ```python
 from artisan.visualization import inspect_data
@@ -113,7 +114,7 @@ df = inspect_data(delta_root, step_number=1)
 
 ---
 
-## Step 5: Visualize the pipeline graph
+## Visualize the pipeline graph
 
 ### Macro graph (step-level)
 
@@ -150,6 +151,7 @@ To save to a file or render per-step images:
 from artisan.visualization import render_micro_graph, render_micro_graph_steps
 
 render_micro_graph(delta_root, output_path=Path("provenance"), format="svg")
+render_micro_graph(delta_root, output_path=Path("provenance"), format="png", max_step=3)
 render_micro_graph_steps(delta_root, output_dir=Path("steps/"), format="svg")
 ```
 
@@ -161,6 +163,9 @@ Step through the provenance graph one step at a time with a slider:
 from artisan.visualization import display_provenance_stepper
 
 display_provenance_stepper(delta_root)
+
+# Custom output directory for rendered step images
+display_provenance_stepper(delta_root, output_dir=Path("my_images/"))
 ```
 
 ### Reading the graph
@@ -168,14 +173,14 @@ display_provenance_stepper(delta_root)
 | Element | Meaning |
 |---------|---------|
 | Grey boxes | Execution records (one per step) |
-| Coloured boxes | Artifacts (colour varies by type) |
+| Blue boxes | Artifacts (shade varies by type from a blue palette) |
 | Solid arrows with dot tails | Execution provenance (consumed/produced) |
 | Orange arrows | Artifact provenance (derived from) |
 | Dashed arrows | Backward/passthrough edges |
 
 ---
 
-## Step 6: Trace lineage programmatically
+## Trace lineage programmatically
 
 Use `ArtifactStore` when you need lineage data in code rather than as a
 visualization.
@@ -206,35 +211,50 @@ metric_children = store.get_descendant_artifact_ids(
 
 ### Full graph traversal
 
-Load the entire provenance graph into memory for BFS traversal:
+Load the entire provenance graph or transitively walk ancestors/descendants:
 
 ```python
 # Backward map: {target_id: [source_ids]}
-backward_map = store.load_provenance_map()
+backward_map = store.provenance.load_backward_map()
 
 # Forward map: {source_id: [target_ids]}
-forward_map = store.load_forward_provenance_map()
+forward_map = store.provenance.load_forward_map()
 
-# Walk all ancestors of an artifact
-def get_all_ancestors(artifact_id: str, backward_map: dict) -> set[str]:
-    ancestors = set()
-    queue = [artifact_id]
-    while queue:
-        current = queue.pop()
-        for parent in backward_map.get(current, []):
-            if parent not in ancestors:
-                ancestors.add(parent)
-                queue.append(parent)
-    return ancestors
+# Transitive ancestor/descendant queries (no hand-rolled BFS needed)
+ancestor_ids = store.provenance.get_ancestor_ids("artifact_abc123...")
+descendant_ids = store.provenance.get_descendant_ids("artifact_abc123...")
+
+# Filter transitive results by artifact type
+metric_ancestors = store.provenance.get_ancestor_ids(
+    "artifact_abc123...", ancestor_type="metric"
+)
+data_descendants = store.provenance.get_descendant_ids(
+    "artifact_abc123...", descendant_type="data"
+)
 ```
 
-For forward traversal with a target filter, use the built-in utility:
+For forward traversal using the DataFrame-based walk:
 
 ```python
-from artisan.storage.provenance_utils import trace_derived_artifacts
+import polars as pl
+from artisan.provenance import walk_forward
 
-# BFS forward from source, collecting only artifacts in target_ids
-derived = trace_derived_artifacts(source_id, forward_map, target_ids)
+sources = pl.DataFrame({"artifact_id": [source_id]})
+edges = store.load_provenance_edges_df(step_min, step_max, include_target_type=True)
+result = walk_forward(sources, edges, target_type="metric")
+# result has columns [source_id, target_id]
+```
+
+For backward traversal (e.g., matching candidates to their source targets):
+
+```python
+from artisan.provenance import walk_backward
+
+candidates = pl.DataFrame({"artifact_id": [candidate_id]})
+targets = pl.DataFrame({"artifact_id": [target_id]})
+edges_df = store.load_provenance_edges_df(step_min, step_max)
+result = walk_backward(candidates, targets, edges_df)
+# result has columns [candidate_id, target_id]
 ```
 
 ### Get descendants as full artifact objects
@@ -246,7 +266,7 @@ metrics = store.get_associated({"abc123..."}, associated_type="metric")
 
 ---
 
-## Step 7: Look up artifact metadata
+## Look up artifact metadata
 
 ```python
 store = ArtifactStore(delta_root)
@@ -266,7 +286,7 @@ ids = store.load_artifact_ids_by_type("metric", step_numbers=[2, 3])
 
 ---
 
-## Step 8: Profile execution timing
+## Profile execution timing
 
 `PipelineTimings` provides step-level and execution-level timing breakdowns:
 
@@ -274,6 +294,9 @@ ids = store.load_artifact_ids_by_type("metric", step_numbers=[2, 3])
 from artisan.visualization import PipelineTimings
 
 timings = PipelineTimings.from_delta(delta_root)
+
+# Filter to a specific pipeline run
+timings = PipelineTimings.from_delta(delta_root, pipeline_run_id="run_abc123...")
 
 # Step-level durations (one row per step, columns per phase)
 timings.step_timings()
@@ -286,6 +309,7 @@ timings.execution_stats(step_number=1)
 
 # Matplotlib plots
 timings.plot_steps()              # Stacked bar chart of step timings
+timings.plot_steps(step_numbers=[0, 2, 4])  # Subset of steps
 timings.plot_execution_stats()    # Stacked bar chart of mean execution timings
 ```
 
@@ -307,22 +331,24 @@ inspect_step(delta_root, step_number=2)
 ### Find all metrics derived from a source artifact
 
 ```python
+import polars as pl
+from artisan.provenance import walk_forward
 from artisan.storage import ArtifactStore
-from artisan.storage.provenance_utils import trace_derived_artifacts
 
 store = ArtifactStore(delta_root)
-forward_map = store.load_forward_provenance_map()
-metric_ids = store.load_artifact_ids_by_type("metric")
+sources = pl.DataFrame({"artifact_id": ["source_abc..."]})
+step_range = store.get_step_range(pl.Series(["source_abc..."]))
+edges = store.load_provenance_edges_df(*step_range, include_target_type=True)
 
-derived_metrics = trace_derived_artifacts("source_abc...", forward_map, metric_ids)
+derived = walk_forward(sources, edges, target_type="metric")
+# derived has columns [source_id, target_id]
 ```
 
 ### Compare ancestry of two artifacts
 
 ```python
-backward_map = store.load_provenance_map()
-ancestors_a = get_all_ancestors("artifact_a", backward_map)
-ancestors_b = get_all_ancestors("artifact_b", backward_map)
+ancestors_a = set(store.provenance.get_ancestor_ids("artifact_a"))
+ancestors_b = set(store.provenance.get_ancestor_ids("artifact_b"))
 
 shared = ancestors_a & ancestors_b
 unique_to_a = ancestors_a - ancestors_b
@@ -362,9 +388,12 @@ from artisan.visualization import render_micro_graph, render_micro_graph_steps
 # Single graph as PNG
 render_micro_graph(delta_root, output_path=Path("provenance"), format="png")
 
+# Limit to a step range
+render_micro_graph(delta_root, output_path=Path("provenance"), format="svg", max_step=5)
+
 # Step-by-step frames for animation
 paths = render_micro_graph_steps(delta_root, output_dir=Path("frames/"))
-# ["frames/step_00.svg", "frames/step_01.svg", ...]
+# [Path("frames/step_00.svg"), Path("frames/step_01.svg"), ...]
 ```
 
 ---
@@ -397,7 +426,7 @@ assert len(df) > 0, "No completed steps found"
 
 # Should contain entries linking source and target artifacts
 store = ArtifactStore(delta_root)
-prov_map = store.load_provenance_map()
+prov_map = store.provenance.load_backward_map()
 assert len(prov_map) > 0, "No provenance edges found"
 ```
 
@@ -407,7 +436,11 @@ assert len(prov_map) > 0, "No provenance edges found"
 
 - [Provenance System](../concepts/provenance-system.md) — Dual provenance
   model, stem matching, and design rationale
-- [Provenance Graphs Tutorial](../tutorials/working-with-results/01-provenance-graphs.ipynb) — Interactive
+- [Provenance Graphs Tutorial](../tutorials/analysis/01-provenance-graphs.ipynb) — Interactive
   provenance visualization walkthrough
 - [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) — Table
   schemas and Delta Lake layout
+- [Export Pipeline Results](exporting-results.md) — Artifact retrieval,
+  materialization, and raw Delta table access
+- [Error Handling](../concepts/error-handling.md) — Understanding step status
+  values and failure modes

@@ -73,6 +73,3 @@ docs/_build/
 
 # Run outputs (pipeline execution artifacts)
 **/runs/
-
-# Personal overrides
-CLAUDE.local.md

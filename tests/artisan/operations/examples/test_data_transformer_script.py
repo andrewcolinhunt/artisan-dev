@@ -6,7 +6,7 @@ import csv
 import json
 from pathlib import Path
 
-from conftest import make_csv
+from fixtures.csv import make_csv
 
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.operations.examples import DataTransformerScript

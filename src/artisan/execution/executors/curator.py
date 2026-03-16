@@ -99,7 +99,7 @@ def _hydrate_inputs_for_lineage(
             continue
 
         # Determine artifact type from the operation's input specs
-        type_map = artifact_store.load_artifact_type_map(ids)
+        type_map = artifact_store.provenance.load_type_map(ids)
 
         # Group by type for bulk loading
         ids_by_type: dict[str, list[str]] = {}

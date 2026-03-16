@@ -289,7 +289,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/eb/21/9b55bea940524324625b1e8fd96233290303eb1bf2c23b54573487bbbc25/polars_runtime_32-1.37.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/f1/8e/06f2e0d795b0ecc97047e4cef9192b192715531a9097ee393ae5d71ca3a8/prefect-3.6.13-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/cb/a1/d4b936e871af1b4b1c2c5feea32f38b08dfb413a23b5cf845f21cc287b81/prefect_dask-0.3.6-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/c5/c1/cab74bbb0b1f8f58513c30d4bd14571a7e8bfb858f9dd4f98a47b3873428/prefect_submitit-0.1.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a4/22/e6f0bea02600ebb91386dd715522cbe8f6f549eb18578070d92a4d72cdc6/prefect_submitit-0.1.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/99/10/72f6f213b8f0bce36eff21fda0a13271834e9eeff7f9609b01afdc253c79/py_key_value_aio-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/51/e4/b8b0a03ece72f47dce2307d36e1c34725b7223d209fc679315ffe6a4e2c3/py_key_value_shared-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/5a/87/b70ad306ebb6f9b585f114d0ac2137d792b48be34d732d60e597c2f8465a/pydantic-2.12.5-py3-none-any.whl
@@ -555,7 +555,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/7e/46/81b71b7aa9e3703ee6e4ef1f69a87e40f58ea7c99212bf49a95071e99c8c/polars_runtime_32-1.37.1-cp310-abi3-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/f1/8e/06f2e0d795b0ecc97047e4cef9192b192715531a9097ee393ae5d71ca3a8/prefect-3.6.13-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/cb/a1/d4b936e871af1b4b1c2c5feea32f38b08dfb413a23b5cf845f21cc287b81/prefect_dask-0.3.6-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/c5/c1/cab74bbb0b1f8f58513c30d4bd14571a7e8bfb858f9dd4f98a47b3873428/prefect_submitit-0.1.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a4/22/e6f0bea02600ebb91386dd715522cbe8f6f549eb18578070d92a4d72cdc6/prefect_submitit-0.1.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/99/10/72f6f213b8f0bce36eff21fda0a13271834e9eeff7f9609b01afdc253c79/py_key_value_aio-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/51/e4/b8b0a03ece72f47dce2307d36e1c34725b7223d209fc679315ffe6a4e2c3/py_key_value_shared-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/5a/87/b70ad306ebb6f9b585f114d0ac2137d792b48be34d732d60e597c2f8465a/pydantic-2.12.5-py3-none-any.whl
@@ -936,7 +936,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/5f/4f/91c4ee1af60bb4b2519540fd46fb56dfc70ede0cf3d97f57aff62d61190b/icecream-2.1.10-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/42/77/de194443bf38daed9452139e960c632b0ef9f9a5dd9ce605fdf18ca9f1b1/id-1.6.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/7f/66/b15ce62552d84bbfcec9a4873ab79d993a1dd4edb922cbfccae192bd5b5f/jaraco.classes-3.4.0-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/8d/48/aa685dbf1024c7bd82bede569e3a85f82c32fd3d79ba5fea578f0159571a/jaraco_context-6.1.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/f4/49/c152890d49102b280ecf86ba5f80a8c111c3a155dafa3bd24aeb64fde9e1/jaraco_context-6.1.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fd/c4/813bb09f0985cb21e959f21f2464169eca882656849adf727ac7bb7e1767/jaraco_functools-4.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/b2/a3/e137168c9c44d18eff0376253da9f1e9234d0239e0ee230d2fee6cea8e55/jeepney-0.9.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/26/b4/08c9d297edd5e1182506edecccbb88a92e1122a057953068cadac420ca5d/jinja2_humanize_extension-0.4.0-py3-none-any.whl
@@ -962,7 +962,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/eb/21/9b55bea940524324625b1e8fd96233290303eb1bf2c23b54573487bbbc25/polars_runtime_32-1.37.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/f1/8e/06f2e0d795b0ecc97047e4cef9192b192715531a9097ee393ae5d71ca3a8/prefect-3.6.13-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/cb/a1/d4b936e871af1b4b1c2c5feea32f38b08dfb413a23b5cf845f21cc287b81/prefect_dask-0.3.6-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/c5/c1/cab74bbb0b1f8f58513c30d4bd14571a7e8bfb858f9dd4f98a47b3873428/prefect_submitit-0.1.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a4/22/e6f0bea02600ebb91386dd715522cbe8f6f549eb18578070d92a4d72cdc6/prefect_submitit-0.1.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/99/10/72f6f213b8f0bce36eff21fda0a13271834e9eeff7f9609b01afdc253c79/py_key_value_aio-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/51/e4/b8b0a03ece72f47dce2307d36e1c34725b7223d209fc679315ffe6a4e2c3/py_key_value_shared-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/5a/87/b70ad306ebb6f9b585f114d0ac2137d792b48be34d732d60e597c2f8465a/pydantic-2.12.5-py3-none-any.whl
@@ -1293,7 +1293,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/5f/4f/91c4ee1af60bb4b2519540fd46fb56dfc70ede0cf3d97f57aff62d61190b/icecream-2.1.10-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/42/77/de194443bf38daed9452139e960c632b0ef9f9a5dd9ce605fdf18ca9f1b1/id-1.6.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/7f/66/b15ce62552d84bbfcec9a4873ab79d993a1dd4edb922cbfccae192bd5b5f/jaraco.classes-3.4.0-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/8d/48/aa685dbf1024c7bd82bede569e3a85f82c32fd3d79ba5fea578f0159571a/jaraco_context-6.1.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/f4/49/c152890d49102b280ecf86ba5f80a8c111c3a155dafa3bd24aeb64fde9e1/jaraco_context-6.1.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fd/c4/813bb09f0985cb21e959f21f2464169eca882656849adf727ac7bb7e1767/jaraco_functools-4.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/26/b4/08c9d297edd5e1182506edecccbb88a92e1122a057953068cadac420ca5d/jinja2_humanize_extension-0.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/73/07/02e16ed01e04a374e644b575638ec7987ae846d25ad97bcc9945a3ee4b0e/jsonpatch-1.33-py2.py3-none-any.whl
@@ -1318,7 +1318,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/7e/46/81b71b7aa9e3703ee6e4ef1f69a87e40f58ea7c99212bf49a95071e99c8c/polars_runtime_32-1.37.1-cp310-abi3-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/f1/8e/06f2e0d795b0ecc97047e4cef9192b192715531a9097ee393ae5d71ca3a8/prefect-3.6.13-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/cb/a1/d4b936e871af1b4b1c2c5feea32f38b08dfb413a23b5cf845f21cc287b81/prefect_dask-0.3.6-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/c5/c1/cab74bbb0b1f8f58513c30d4bd14571a7e8bfb858f9dd4f98a47b3873428/prefect_submitit-0.1.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a4/22/e6f0bea02600ebb91386dd715522cbe8f6f549eb18578070d92a4d72cdc6/prefect_submitit-0.1.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/99/10/72f6f213b8f0bce36eff21fda0a13271834e9eeff7f9609b01afdc253c79/py_key_value_aio-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/51/e4/b8b0a03ece72f47dce2307d36e1c34725b7223d209fc679315ffe6a4e2c3/py_key_value_shared-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/5a/87/b70ad306ebb6f9b585f114d0ac2137d792b48be34d732d60e597c2f8465a/pydantic-2.12.5-py3-none-any.whl
@@ -1697,7 +1697,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/eb/21/9b55bea940524324625b1e8fd96233290303eb1bf2c23b54573487bbbc25/polars_runtime_32-1.37.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/f1/8e/06f2e0d795b0ecc97047e4cef9192b192715531a9097ee393ae5d71ca3a8/prefect-3.6.13-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/cb/a1/d4b936e871af1b4b1c2c5feea32f38b08dfb413a23b5cf845f21cc287b81/prefect_dask-0.3.6-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/c5/c1/cab74bbb0b1f8f58513c30d4bd14571a7e8bfb858f9dd4f98a47b3873428/prefect_submitit-0.1.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a4/22/e6f0bea02600ebb91386dd715522cbe8f6f549eb18578070d92a4d72cdc6/prefect_submitit-0.1.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/99/10/72f6f213b8f0bce36eff21fda0a13271834e9eeff7f9609b01afdc253c79/py_key_value_aio-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/51/e4/b8b0a03ece72f47dce2307d36e1c34725b7223d209fc679315ffe6a4e2c3/py_key_value_shared-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/5a/87/b70ad306ebb6f9b585f114d0ac2137d792b48be34d732d60e597c2f8465a/pydantic-2.12.5-py3-none-any.whl
@@ -2011,7 +2011,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/7e/46/81b71b7aa9e3703ee6e4ef1f69a87e40f58ea7c99212bf49a95071e99c8c/polars_runtime_32-1.37.1-cp310-abi3-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/f1/8e/06f2e0d795b0ecc97047e4cef9192b192715531a9097ee393ae5d71ca3a8/prefect-3.6.13-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/cb/a1/d4b936e871af1b4b1c2c5feea32f38b08dfb413a23b5cf845f21cc287b81/prefect_dask-0.3.6-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/c5/c1/cab74bbb0b1f8f58513c30d4bd14571a7e8bfb858f9dd4f98a47b3873428/prefect_submitit-0.1.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/a4/22/e6f0bea02600ebb91386dd715522cbe8f6f549eb18578070d92a4d72cdc6/prefect_submitit-0.1.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/99/10/72f6f213b8f0bce36eff21fda0a13271834e9eeff7f9609b01afdc253c79/py_key_value_aio-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/51/e4/b8b0a03ece72f47dce2307d36e1c34725b7223d209fc679315ffe6a4e2c3/py_key_value_shared-0.3.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/5a/87/b70ad306ebb6f9b585f114d0ac2137d792b48be34d732d60e597c2f8465a/pydantic-2.12.5-py3-none-any.whl
@@ -3236,7 +3236,7 @@ packages:
 - pypi: ./
   name: dexterity-artisan
   version: 0.1.1
-  sha256: 55e2f4a8d79b53446b1e05bb00b5c70f4f60a2e4f6085011726077226c23f5cd
+  sha256: 1e1eb6b305797c78e02e351ddf4ef6d258e8d5b1f5a97cb4231b6d1de08cff15
   requires_python: '>=3.12'
   editable: true
 - conda: https://conda.anaconda.org/conda-forge/noarch/distlib-0.4.0-pyhd8ed1ab_0.conda
@@ -4379,10 +4379,10 @@ packages:
   - pytest-enabler>=2.2 ; extra == 'testing'
   - pytest-ruff>=0.2.1 ; extra == 'testing'
   requires_python: '>=3.8'
-- pypi: https://files.pythonhosted.org/packages/8d/48/aa685dbf1024c7bd82bede569e3a85f82c32fd3d79ba5fea578f0159571a/jaraco_context-6.1.0-py3-none-any.whl
+- pypi: https://files.pythonhosted.org/packages/f4/49/c152890d49102b280ecf86ba5f80a8c111c3a155dafa3bd24aeb64fde9e1/jaraco_context-6.1.1-py3-none-any.whl
   name: jaraco-context
-  version: 6.1.0
-  sha256: a43b5ed85815223d0d3cfdb6d7ca0d2bc8946f28f30b6f3216bda070f68badda
+  version: 6.1.1
+  sha256: 0df6a0287258f3e364072c3e40d5411b20cafa30cb28c4839d24319cecf9f808
   requires_dist:
   - backports-tarfile ; python_full_version < '3.12'
   - pytest>=6,!=8.1.* ; extra == 'test'
@@ -7518,10 +7518,10 @@ packages:
   - prefect>=3.4.7
   - distributed>=2022.5.0,!=2023.3.2,!=2023.3.2.1,!=2023.4.*,!=2023.5.*
   requires_python: '>=3.9'
-- pypi: https://files.pythonhosted.org/packages/c5/c1/cab74bbb0b1f8f58513c30d4bd14571a7e8bfb858f9dd4f98a47b3873428/prefect_submitit-0.1.3-py3-none-any.whl
+- pypi: https://files.pythonhosted.org/packages/a4/22/e6f0bea02600ebb91386dd715522cbe8f6f549eb18578070d92a4d72cdc6/prefect_submitit-0.1.4-py3-none-any.whl
   name: prefect-submitit
-  version: 0.1.3
-  sha256: c0bc3e22d8163f7d2c780d092aca08bc107c93d713df7ee22d366d394f7fbe56
+  version: 0.1.4
+  sha256: e3478b269dc0a954b89aa3e6e086eb75698183886e31ec6e3924eaef15b3522f
   requires_python: '>=3.12'
 - conda: https://conda.anaconda.org/conda-forge/noarch/prometheus_client-0.24.1-pyhd8ed1ab_0.conda
   sha256: 75b2589159d04b3fb92db16d9970b396b9124652c784ab05b66f584edc97f283

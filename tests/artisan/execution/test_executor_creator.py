@@ -20,7 +20,11 @@ import polars as pl
 import pytest
 import xxhash
 
-from artisan.execution.executors.creator import run_creator_flow
+from artisan.execution.executors.creator import (
+    LifecycleResult,
+    run_creator_flow,
+    run_creator_lifecycle,
+)
 from artisan.execution.lineage.enrich import (
     build_artifact_edges_from_store,
 )
@@ -711,7 +715,7 @@ class TestBuildArtifactEdgesFromStore:
     def test_enriches_source_target_pairs(self):
         """Test that SourceTargetPairs are enriched to ArtifactProvenance."""
         mock_store = MagicMock()
-        mock_store.load_artifact_type_map.return_value = {
+        mock_store.provenance.load_type_map.return_value = {
             "s" * 32: ArtifactTypes.METRIC,
             "t" * 32: ArtifactTypes.METRIC,
         }
@@ -744,7 +748,7 @@ class TestBuildArtifactEdgesFromStore:
     def test_enriches_multiple_pairs(self):
         """Test that multiple SourceTargetPairs are enriched."""
         mock_store = MagicMock()
-        mock_store.load_artifact_type_map.return_value = {
+        mock_store.provenance.load_type_map.return_value = {
             "a" * 32: ArtifactTypes.METRIC,
             "b" * 32: ArtifactTypes.METRIC,
             "c" * 32: ArtifactTypes.METRIC,
@@ -786,4 +790,111 @@ class TestBuildArtifactEdgesFromStore:
         )
 
         assert result == []
-        mock_store.load_artifact_type_map.assert_not_called()
+        mock_store.provenance.load_type_map.assert_not_called()
+
+
+class TestRunCreatorLifecycle:
+    """Tests for the extracted run_creator_lifecycle function."""
+
+    def test_lifecycle_returns_lifecycle_result(
+        self, delta_root_with_input, working_root, staging_root
+    ):
+        """run_creator_lifecycle returns a LifecycleResult with correct structure."""
+        delta_path, input_artifact_id = delta_root_with_input
+
+        config = RuntimeEnvironment(
+            delta_root_path=delta_path,
+            working_root_path=working_root,
+            staging_root_path=staging_root,
+        )
+
+        unit = ExecutionUnit(
+            operation=MetricCopyTestOp(suffix="_copy"),
+            inputs={"source": [input_artifact_id]},
+            execution_spec_id="spec_lc1" + "0" * 24,
+            step_number=1,
+        )
+
+        result = run_creator_lifecycle(unit, config)
+
+        assert isinstance(result, LifecycleResult)
+        assert "source" in result.input_artifacts
+        assert len(result.input_artifacts["source"]) == 1
+        assert "output" in result.artifacts
+        assert len(result.artifacts["output"]) == 1
+        assert len(result.edges) >= 1
+        assert "setup" in result.timings
+        assert "preprocess" in result.timings
+        assert "execute" in result.timings
+        assert "postprocess" in result.timings
+        assert "lineage" in result.timings
+
+    def test_lifecycle_generative_returns_artifacts(
+        self, delta_root_with_input, working_root, staging_root
+    ):
+        """Generative operation returns output artifacts with no input artifacts."""
+        delta_path, _ = delta_root_with_input
+
+        config = RuntimeEnvironment(
+            delta_root_path=delta_path,
+            working_root_path=working_root,
+            staging_root_path=staging_root,
+        )
+
+        unit = ExecutionUnit(
+            operation=GenerativeTestOp(count=3),
+            inputs={},
+            execution_spec_id="spec_lc2" + "0" * 24,
+            step_number=0,
+        )
+
+        result = run_creator_lifecycle(unit, config)
+
+        assert isinstance(result, LifecycleResult)
+        assert result.input_artifacts == {}
+        assert "output" in result.artifacts
+        assert len(result.artifacts["output"]) == 3
+
+    def test_lifecycle_raises_on_failure(
+        self, delta_root_with_input, working_root, staging_root
+    ):
+        """Lifecycle raises when postprocess reports failure."""
+        delta_path, _ = delta_root_with_input
+
+        config = RuntimeEnvironment(
+            delta_root_path=delta_path,
+            working_root_path=working_root,
+            staging_root_path=staging_root,
+        )
+
+        unit = ExecutionUnit(
+            operation=FailingTestOp(),
+            inputs={},
+            execution_spec_id="spec_lc3" + "0" * 24,
+            step_number=1,
+        )
+
+        with pytest.raises(Exception, match="Intentional failure"):
+            run_creator_lifecycle(unit, config)
+
+    def test_lifecycle_raises_on_execute_exception(
+        self, delta_root_with_input, working_root, staging_root
+    ):
+        """Lifecycle raises when execute() throws."""
+        delta_path, _ = delta_root_with_input
+
+        config = RuntimeEnvironment(
+            delta_root_path=delta_path,
+            working_root_path=working_root,
+            staging_root_path=staging_root,
+        )
+
+        unit = ExecutionUnit(
+            operation=ExceptionTestOp(),
+            inputs={},
+            execution_spec_id="spec_lc4" + "0" * 24,
+            step_number=1,
+        )
+
+        with pytest.raises(Exception, match="Intentional exception"):
+            run_creator_lifecycle(unit, config)

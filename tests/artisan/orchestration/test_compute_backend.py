@@ -7,13 +7,15 @@ parameter work correctly across PipelineManager and execute_step.
 from __future__ import annotations
 
 import inspect
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from artisan.orchestration.backends import Backend, resolve_backend
 from artisan.orchestration.backends.local import LocalBackend
 from artisan.orchestration.backends.slurm import SlurmBackend
+from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 class TestBackendRouting:
@@ -25,10 +27,11 @@ class TestBackendRouting:
         self, _mock_unmapped, mock_flow
     ):
         mock_flow.return_value = lambda fn: fn
-        op = MagicMock()
-        op.name = "test_op"
-        op.execution.max_workers = None
-        result = Backend.LOCAL.create_flow(op, step_number=0)
+        resources = ResourceConfig()
+        execution = ExecutionConfig()
+        result = Backend.LOCAL.create_flow(
+            resources, execution, step_number=0, job_name="test_op"
+        )
         assert callable(result)
 
     @patch("prefect_submitit.SlurmTaskRunner")
@@ -38,18 +41,18 @@ class TestBackendRouting:
         self, _mock_unmapped, mock_flow, mock_slurm_runner
     ):
         mock_flow.return_value = lambda fn: fn
-        op = MagicMock()
-        op.name = "test_op"
-        op.resources.partition = "gpu"
-        op.resources.time_limit = "02:00:00"
-        op.resources.mem_gb = 8
-        op.resources.cpus_per_task = 4
-        op.resources.gres = "gpu:1"
-        op.resources.extra_slurm_kwargs = {}
-        op.execution.units_per_worker = 1
-        op.execution.job_name = None
+        resources = ResourceConfig(
+            cpus=4,
+            memory_gb=8,
+            gpus=1,
+            time_limit="02:00:00",
+            extra={"partition": "gpu"},
+        )
+        execution = ExecutionConfig(units_per_worker=1)
 
-        Backend.SLURM.create_flow(op, step_number=3)
+        Backend.SLURM.create_flow(
+            resources, execution, step_number=3, job_name="test_op"
+        )
 
         mock_slurm_runner.assert_called_once()
         call_kwargs = mock_slurm_runner.call_args[1]

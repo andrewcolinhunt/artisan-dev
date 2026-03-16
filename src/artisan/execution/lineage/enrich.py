@@ -55,7 +55,7 @@ def build_artifact_edges_from_store(
     for pair in source_target_pairs:
         all_ids.add(pair.source)
         all_ids.add(pair.target)
-    type_map = artifact_store.load_artifact_type_map(list(all_ids))
+    type_map = artifact_store.provenance.load_type_map(list(all_ids))
 
     artifact_edges: list[ArtifactProvenanceEdge] = []
     for pair in source_target_pairs:
@@ -148,7 +148,9 @@ def build_config_reference_edges(
 
     # Bulk-resolve types (1 scan instead of N)
     type_map = (
-        artifact_store.load_artifact_type_map(list(all_ref_ids)) if all_ref_ids else {}
+        artifact_store.provenance.load_type_map(list(all_ref_ids))
+        if all_ref_ids
+        else {}
     )
 
     edges: list[ArtifactProvenanceEdge] = []

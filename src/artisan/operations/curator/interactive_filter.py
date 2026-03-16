@@ -8,9 +8,7 @@ metric distributions before committing to thresholds.
 from __future__ import annotations
 
 import json
-import operator as _op
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,7 +16,13 @@ from typing import Any
 
 import polars as pl
 
-from artisan.operations.curator.filter import Criterion
+from artisan.operations.curator.filter import (
+    Criterion,
+    _build_metric_namespace,
+    _check_collision,
+    _criterion_to_expr,
+)
+from artisan.provenance.traversal import walk_forward
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.step_result import StepResult
@@ -28,30 +32,9 @@ from artisan.storage.core.table_schemas import (
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
 )
-from artisan.storage.provenance_utils import trace_derived_artifacts
-from artisan.utils.dataframes import pivot_metrics_wide, to_float
+from artisan.utils.dataframes import encode_metric_value
 from artisan.utils.dicts import flatten_dict
 from artisan.utils.hashing import compute_artifact_id
-
-# Python operator mapping for per-value comparisons
-_OPERATORS: dict[str, Callable] = {
-    "gt": _op.gt,
-    "ge": _op.ge,
-    "lt": _op.lt,
-    "le": _op.le,
-    "eq": _op.eq,
-    "ne": _op.ne,
-}
-
-# Polars operator mapping for filter expressions
-_PL_OPERATORS: dict[str, str] = {
-    "gt": "gt",
-    "ge": "ge",
-    "lt": "lt",
-    "le": "le",
-    "eq": "eq",
-    "ne": "ne",
-}
 
 
 @dataclass
@@ -95,6 +78,9 @@ class InteractiveFilter:
         self._criteria: list[Criterion] = []
         self._pipeline_run_id: str | None = None
         self._primary_artifact_ids: set[str] = set()
+        self._step_info: dict[str, Any] | None = None
+        self._total_metrics_discovered: int = 0
+        self._metric_sources: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
     # Load
@@ -109,8 +95,9 @@ class InteractiveFilter:
     ) -> None:
         """Load artifacts and their derived metrics from the Delta store.
 
-        Traces the provenance graph forward from primary artifacts to find
-        all derived metrics, then builds tidy and wide DataFrames.
+        Discovers descendant metrics via forward provenance walk, then builds
+        tidy and wide DataFrames. Wide DataFrame uses raw field names matching
+        Filter's ``_build_metric_namespace`` approach.
 
         Args:
             step_numbers: Only load primary artifacts from these steps.
@@ -154,63 +141,88 @@ class InteractiveFilter:
         primary_ids = set(primary_df["artifact_id"].to_list())
         self._primary_artifact_ids = primary_ids
 
-        # Load all metric IDs
-        metric_ids = self._store.load_artifact_ids_by_type("metric")
-        if not metric_ids:
-            msg = "No metric artifacts found in the store"
-            raise ValueError(msg)
-
-        # Trace forward provenance to find metrics derived from primaries.
-        # A metric may be reachable from multiple primaries (e.g. a step-0
-        # artifact reaches metrics via step-5 outputs). Assign each metric
-        # only to its nearest primary (highest step number) to avoid duplicates.
-        forward_map = self._store.load_forward_provenance_map()
-        primary_step_map = dict(
-            zip(
-                primary_df["artifact_id"].to_list(),
-                primary_df["origin_step_number"].to_list(),
-                strict=True,
-            )
-        )
-
-        # First pass: collect all claims {metric_id: [(primary_id, step)]}
-        metric_claimants: dict[str, list[tuple[str, int]]] = {}
-        for pid in primary_ids:
-            derived = trace_derived_artifacts(pid, forward_map, metric_ids)
-            step = primary_step_map[pid]
-            for mid in derived:
-                metric_claimants.setdefault(mid, []).append((pid, step))
-
-        # Second pass: assign each metric to the nearest primary only
-        primary_to_metrics: dict[str, list[str]] = {}
-        all_found_metric_ids: set[str] = set()
-
-        for mid, claimants in metric_claimants.items():
-            # Pick the primary with the highest step number (nearest ancestor)
-            winner_pid, _ = max(claimants, key=lambda x: x[1])
-            primary_to_metrics.setdefault(winner_pid, []).append(mid)
-            all_found_metric_ids.add(mid)
-
-        if not all_found_metric_ids:
-            msg = "No metrics found derived from the primary artifacts"
-            raise ValueError(msg)
-
-        # Bulk-load metric artifacts
-        metric_artifacts = self._store.get_artifacts_by_type(
-            list(all_found_metric_ids), "metric"
-        )
-
-        # Resolve step info
-        metric_step_map = self._store.load_step_number_map(all_found_metric_ids)
-        step_name_map = self._store.load_step_name_map(pipeline_run_id)
-
         # Detect pipeline_run_id
         if pipeline_run_id:
             self._pipeline_run_id = pipeline_run_id
         else:
             self._pipeline_run_id = self._detect_pipeline_run_id()
 
-        # Build tidy DataFrame
+        # ── Metric discovery via forward provenance walk ──
+        # Use ALL artifact IDs for step range (not just primaries) so metrics
+        # at higher steps are included in the edge scan.
+        step_range = self._store.provenance.get_step_range(all_index["artifact_id"])
+        if step_range is None:
+            msg = "No metrics found derived from the primary artifacts"
+            raise ValueError(msg)
+
+        step_min, step_max = step_range
+        edges = self._store.provenance.load_edges_df(
+            step_min, step_max, include_target_type=True
+        )
+
+        if edges.is_empty():
+            msg = "No metrics found derived from the primary artifacts"
+            raise ValueError(msg)
+
+        walk_result = walk_forward(
+            sources=primary_df.select("artifact_id"),
+            edges=edges,
+            target_type="metric",
+        )
+
+        if walk_result.is_empty():
+            msg = "No metrics found derived from the primary artifacts"
+            raise ValueError(msg)
+
+        metric_pairs = walk_result.rename(
+            {"source_id": "passthrough_id", "target_id": "metric_id"}
+        )
+
+        self._total_metrics_discovered = metric_pairs["metric_id"].n_unique()
+
+        # ── Build wide DataFrame via _build_metric_namespace ──
+        wide_df, step_info = _build_metric_namespace(
+            primary_df, metric_pairs, self._store
+        )
+        self._wide_df = wide_df.rename({"passthrough_id": "artifact_id"})
+        self._step_info = step_info
+
+        # Build metric_sources from step_info
+        self._metric_sources = []
+        if step_info is not None:
+            step_names = step_info.get("_step_names", {})
+            seen_steps: set[int] = set()
+            for field, step_nums in step_info.items():
+                if field.startswith("_"):
+                    continue
+                for sn in step_nums:
+                    seen_steps.add(sn)
+            for sn in sorted(seen_steps):
+                self._metric_sources.append(
+                    {
+                        "step_number": sn,
+                        "step_name": step_names.get(sn, ""),
+                    }
+                )
+
+        # ── Build tidy DataFrame for exploration ──
+        # Tidy uses qualified names (step_name.metric_name) for exploration.
+        # Source metric IDs from walk_result.
+        all_found_metric_ids = set(metric_pairs["metric_id"].unique().to_list())
+        metric_artifacts = self._store.get_artifacts_by_type(
+            list(all_found_metric_ids), "metric"
+        )
+
+        metric_step_map = self._store.provenance.load_step_map(all_found_metric_ids)
+        step_name_map = self._store.provenance.load_step_name_map(pipeline_run_id)
+
+        # Build primary->metrics mapping from metric_pairs
+        primary_to_metrics: dict[str, list[str]] = {}
+        for row in metric_pairs.iter_rows(named=True):
+            primary_to_metrics.setdefault(row["passthrough_id"], []).append(
+                row["metric_id"]
+            )
+
         rows: list[dict[str, Any]] = []
         for pid in primary_ids:
             for mid in primary_to_metrics.get(pid, []):
@@ -228,13 +240,15 @@ class InteractiveFilter:
                 )
 
                 for metric_name, raw_value in flatten_dict(values).items():
+                    scalar, compound = encode_metric_value(raw_value)
                     rows.append(
                         {
                             "artifact_id": pid,
                             "step_number": step_num,
                             "step_name": step_name,
                             "metric_name": metric_name,
-                            "metric_value": to_float(raw_value),
+                            "metric_value": scalar,
+                            "metric_compound": compound,
                         }
                     )
 
@@ -247,12 +261,10 @@ class InteractiveFilter:
             "step_number": pl.Int32,
             "step_name": pl.String,
             "metric_name": pl.String,
-            "metric_value": pl.Float64,
+            "metric_value": pl.String,
+            "metric_compound": pl.String,
         }
         self._tidy_df = pl.DataFrame(rows, schema=tidy_schema)
-
-        # Build wide DataFrame with qualified column names
-        self._wide_df = pivot_metrics_wide(self._tidy_df)
 
     def _detect_pipeline_run_id(self) -> str | None:
         """Try to detect the pipeline_run_id from the steps table."""
@@ -314,8 +326,9 @@ class InteractiveFilter:
             criteria: List of criterion dicts with keys: metric, operator, value.
 
         Raises:
-            ValueError: If data not loaded or a metric name doesn't exist
-                as a column in wide_df.
+            ValueError: If data not loaded, a metric name doesn't exist
+                as a column in wide_df, or a metric name is ambiguous
+                across multiple steps without disambiguation.
         """
         if self._wide_df is None:
             msg = "No data loaded. Call load() first."
@@ -331,6 +344,14 @@ class InteractiveFilter:
                     f"Available columns: {sorted(available)}"
                 )
                 raise ValueError(msg)
+
+            # Collision detection for criteria without explicit step
+            if (
+                crit.step is None
+                and crit.step_number is None
+                and self._step_info is not None
+            ):
+                _check_collision(crit.metric, self._step_info)
 
         self._criteria = parsed
 
@@ -361,13 +382,8 @@ class InteractiveFilter:
             msg = "No criteria set. Call set_criteria() first."
             raise ValueError(msg)
 
-        mask = pl.lit(True)
-        for crit in self._criteria:
-            col = pl.col(crit.metric)
-            op_name = _PL_OPERATORS[crit.operator]
-            mask = mask & getattr(col, op_name)(crit.value)
-
-        return self._wide_df.filter(mask)
+        bool_exprs = [_criterion_to_expr(c).fill_null(False) for c in self._criteria]
+        return self._wide_df.filter(pl.all_horizontal(bool_exprs))
 
     # ------------------------------------------------------------------
     # Summary
@@ -395,15 +411,11 @@ class InteractiveFilter:
         # Per-criterion stats
         crit_rows: list[dict[str, Any]] = []
         for crit in self._criteria:
+            expr = _criterion_to_expr(crit).fill_null(False)
+            pass_count = wide.select(expr.sum()).item()
+
             col_data = wide[crit.metric].drop_nulls()
             numeric = col_data.cast(pl.Float64, strict=False).drop_nulls()
-
-            op_func = _OPERATORS[crit.operator]
-            pass_count = sum(
-                1
-                for v in col_data.to_list()
-                if v is not None and op_func(v, crit.value)
-            )
 
             row: dict[str, Any] = {
                 "metric": crit.metric,
@@ -416,38 +428,36 @@ class InteractiveFilter:
 
             if numeric.len() > 0:
                 row["min"] = numeric.min()
-                row["median"] = numeric.median()
+                row["mean"] = round(numeric.mean(), 6)
                 row["max"] = numeric.max()
             else:
                 row["min"] = None
-                row["median"] = None
+                row["mean"] = None
                 row["max"] = None
 
             crit_rows.append(row)
 
         criteria_df = pl.DataFrame(crit_rows)
 
-        # Cumulative funnel
-        funnel_rows: list[dict[str, Any]] = [
-            {"step": "All", "remaining": total, "eliminated": 0}
-        ]
-        surviving = wide
+        # Cumulative funnel with fill_null(False)
+        funnel_rows: list[dict[str, Any]] = [{"label": "All evaluated", "count": total}]
+        mask = pl.lit(True)
         for crit in self._criteria:
-            col = pl.col(crit.metric)
-            op_name = _PL_OPERATORS[crit.operator]
-            prev_count = surviving.height
-            surviving = surviving.filter(getattr(col, op_name)(crit.value))
+            expr = _criterion_to_expr(crit).fill_null(False)
+            mask = mask & expr
+            count = wide.filter(mask).height
+            prev_count = funnel_rows[-1]["count"]
             funnel_rows.append(
                 {
-                    "step": f"+ {crit.metric} {crit.operator} {crit.value}",
-                    "remaining": surviving.height,
-                    "eliminated": prev_count - surviving.height,
+                    "label": f"+ {crit.metric} {crit.operator} {crit.value}",
+                    "count": count,
+                    "eliminated": prev_count - count,
                 }
             )
 
         funnel_df = pl.DataFrame(funnel_rows)
 
-        passed = surviving.height
+        passed = funnel_rows[-1]["count"]
         rate = round(passed / total * 100, 1) if total else 0.0
         header = f"{passed} / {total} pass ({rate}%)"
 
@@ -586,16 +596,8 @@ class InteractiveFilter:
         tracker = StepTracker(self._delta_root, pipeline_run_id)
         tracker.record_step_start(start_record)
 
-        # Build diagnostics summary
-        summary = self.summary()
-        diagnostics = {
-            "version": 2,
-            "interactive": True,
-            "total_input": len(self._primary_artifact_ids),
-            "total_passed": len(filtered),
-            "criteria": summary.criteria.to_dicts(),
-            "funnel": summary.funnel.to_dicts(),
-        }
+        # Build v4 diagnostics
+        diagnostics = self._build_diagnostics(filtered)
 
         # Write execution record
         exec_row = pl.DataFrame(
@@ -666,6 +668,86 @@ class InteractiveFilter:
         tracker.record_step_completed(start_record, result)
 
         return result
+
+    def _build_diagnostics(self, filtered: list[str]) -> dict[str, Any]:
+        """Build v4 diagnostics dict matching Filter's format.
+
+        Args:
+            filtered: List of artifact IDs that passed all criteria.
+
+        Returns:
+            Diagnostics dict with v4 structure.
+        """
+        wide = self._wide_df
+        total = len(self._primary_artifact_ids)
+
+        # Per-criterion diagnostics
+        criteria_diags: list[dict[str, Any]] = []
+        resolved_steps: list[int | None] = []
+        for crit in self._criteria:
+            expr = _criterion_to_expr(crit).fill_null(False)
+            pass_count = wide.select(expr.sum()).item()
+
+            # Resolve step
+            resolved: int | None = None
+            if crit.step_number is not None:
+                resolved = crit.step_number
+            elif self._step_info is not None and crit.metric in self._step_info:
+                step_nums = self._step_info[crit.metric]
+                if len(step_nums) == 1:
+                    resolved = next(iter(step_nums))
+            resolved_steps.append(resolved)
+
+            # Stats
+            col_data = wide[crit.metric].drop_nulls()
+            numeric = col_data.cast(pl.Float64, strict=False).drop_nulls()
+            stats: dict[str, Any] = {}
+            if numeric.len() > 0:
+                mean_val = numeric.mean()
+                stats = {
+                    "min": numeric.min(),
+                    "max": numeric.max(),
+                    "mean": round(mean_val, 6),
+                }
+
+            criteria_diags.append(
+                {
+                    "metric": crit.metric,
+                    "operator": crit.operator,
+                    "value": crit.value,
+                    "pass_count": pass_count,
+                    "resolved_from_step": resolved,
+                    "stats": stats,
+                }
+            )
+
+        # Funnel
+        funnel: list[dict[str, Any]] = [{"label": "All evaluated", "count": total}]
+        mask = pl.lit(True)
+        for crit in self._criteria:
+            expr = _criterion_to_expr(crit).fill_null(False)
+            mask = mask & expr
+            count = wide.filter(mask).height
+            prev_count = funnel[-1]["count"]
+            funnel.append(
+                {
+                    "label": f"+ {crit.metric} {crit.operator} {crit.value}",
+                    "count": count,
+                    "eliminated": prev_count - count,
+                }
+            )
+
+        return {
+            "version": 4,
+            "interactive": True,
+            "total_input": total,
+            "total_evaluated": total,
+            "total_metrics_discovered": self._total_metrics_discovered,
+            "total_passed": len(filtered),
+            "metric_sources": self._metric_sources,
+            "criteria": criteria_diags,
+            "funnel": funnel,
+        }
 
     def _next_step_number(self) -> int:
         """Determine the next step number from the steps table."""

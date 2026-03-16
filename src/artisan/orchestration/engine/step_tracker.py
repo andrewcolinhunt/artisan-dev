@@ -223,6 +223,48 @@ class StepTracker:
         df = pl.DataFrame([row], schema=STEPS_SCHEMA)
         self._write_row(df)
 
+    def record_step_cancelled(
+        self,
+        start_record: StepStartRecord,
+        reason: str = "Pipeline cancelled",
+    ) -> None:
+        """Write a 'cancelled' row when a step is aborted mid-pipeline.
+
+        Cancelled steps are excluded from both ``check_cache`` (filters
+        ``status == "completed"``) and ``load_completed_steps`` (filters
+        ``["completed", "skipped"]``).
+
+        Args:
+            start_record: The original StepStartRecord for metadata.
+            reason: Human-readable cancellation reason.
+        """
+        row = {
+            "step_run_id": start_record.step_run_id,
+            "step_spec_id": start_record.step_spec_id,
+            "pipeline_run_id": self._pipeline_run_id,
+            "step_number": start_record.step_number,
+            "step_name": start_record.step_name,
+            "status": "cancelled",
+            "operation_class": start_record.operation_class,
+            "params_json": start_record.params_json,
+            "input_refs_json": start_record.input_refs_json,
+            "compute_backend": start_record.compute_backend,
+            "compute_options_json": start_record.compute_options_json,
+            "output_roles_json": start_record.output_roles_json,
+            "output_types_json": start_record.output_types_json,
+            "total_count": None,
+            "succeeded_count": None,
+            "failed_count": None,
+            "timestamp": datetime.now(UTC),
+            "duration_seconds": None,
+            "error": reason,
+            "dispatch_error": None,
+            "commit_error": None,
+            "metadata": None,
+        }
+        df = pl.DataFrame([row], schema=STEPS_SCHEMA)
+        self._write_row(df)
+
     def load_completed_steps(
         self, pipeline_run_id: str | None = None
     ) -> list[StepState]:

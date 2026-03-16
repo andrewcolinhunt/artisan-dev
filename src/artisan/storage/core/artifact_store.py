@@ -15,6 +15,7 @@ import polars as pl
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.provenance_store import ProvenanceStore
 from artisan.storage.core.table_schemas import get_schema
 
 
@@ -34,6 +35,14 @@ class ArtifactStore:
                 ``artifact_index/``).
         """
         self.base_path = Path(base_path)
+        self._provenance: ProvenanceStore | None = None
+
+    @property
+    def provenance(self) -> ProvenanceStore:
+        """Lazy-initialized provenance store for graph queries."""
+        if self._provenance is None:
+            self._provenance = ProvenanceStore(self.base_path)
+        return self._provenance
 
     def _table_path(self, table: TablePath) -> Path:
         """Resolve the filesystem path for a Delta table."""
@@ -175,57 +184,16 @@ class ArtifactStore:
     def get_ancestor_artifact_ids(self, artifact_id: str) -> list[str]:
         """Return direct ancestor (source) artifact IDs.
 
-        Trace one step backward in the provenance graph by querying
-        artifact_edges for rows where ``artifact_id`` is the target.
-
-        Args:
-            artifact_id: Target artifact whose parents are requested.
-
-        Returns:
-            Source artifact IDs. Empty if no ancestors exist or the
-            artifact_edges table is missing.
+        Delegates to ``self.provenance.get_direct_ancestors``.
         """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
-            return []
-
-        result = (
-            pl.scan_delta(str(prov_path))
-            .filter(pl.col("target_artifact_id") == artifact_id)
-            .select("source_artifact_id")
-            .collect()
-        )
-
-        if result.is_empty():
-            return []
-
-        return result["source_artifact_id"].to_list()
+        return self.provenance.get_direct_ancestors(artifact_id)
 
     def load_provenance_map(self) -> dict[str, list[str]]:
-        """Load the full backward provenance map in one Delta scan.
+        """Load the full backward provenance map.
 
-        Returns:
-            Mapping of target artifact ID to its source (ancestor) IDs.
-            Empty dict if the artifact_edges table does not exist.
+        Delegates to ``self.provenance.load_backward_map``.
         """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
-            return {}
-
-        result = (
-            pl.scan_delta(str(prov_path))
-            .select(["source_artifact_id", "target_artifact_id"])
-            .collect()
-        )
-
-        if result.is_empty():
-            return {}
-
-        provenance_map: dict[str, list[str]] = {}
-        for row in result.iter_rows():
-            source_id, target_id = row
-            provenance_map.setdefault(target_id, []).append(source_id)
-        return provenance_map
+        return self.provenance.load_backward_map()
 
     def get_associated(
         self,
@@ -251,7 +219,7 @@ class ArtifactStore:
         if not artifact_ids:
             return {}
 
-        descendant_map = self.get_descendant_artifact_ids(
+        descendant_map = self.provenance.get_direct_descendants(
             artifact_ids, target_artifact_type=associated_type
         )
         if not descendant_map:
@@ -272,224 +240,38 @@ class ArtifactStore:
         source_artifact_ids: set[str],
         target_artifact_type: str | None = None,
     ) -> dict[str, list[str]]:
-        """Return direct descendant artifact IDs for given sources.
-
-        Trace one step forward in the provenance graph by querying
-        artifact_edges for rows where the given IDs are the source.
-
-        Args:
-            source_artifact_ids: Source IDs to query. An empty set
-                returns immediately.
-            target_artifact_type: If given, only include descendants
-                of this type (e.g. ``"metric"``).
-
-        Returns:
-            Mapping of source ID to its descendant target IDs. Sources
-            with no descendants are omitted. Empty dict when the
-            artifact_edges table does not exist.
-        """
-        if not source_artifact_ids:
-            return {}
-
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
-            return {}
-
-        query = pl.scan_delta(str(prov_path)).filter(
-            pl.col("source_artifact_id").is_in(list(source_artifact_ids))
+        """Delegates to ``self.provenance.get_direct_descendants``."""
+        return self.provenance.get_direct_descendants(
+            source_artifact_ids, target_artifact_type
         )
-
-        if target_artifact_type is not None:
-            query = query.filter(pl.col("target_artifact_type") == target_artifact_type)
-
-        result = query.select(["source_artifact_id", "target_artifact_id"]).collect()
-
-        if result.is_empty():
-            return {}
-
-        descendant_map: dict[str, list[str]] = {}
-        for row in result.iter_rows():
-            source_id, target_id = row
-            descendant_map.setdefault(source_id, []).append(target_id)
-        return descendant_map
 
     def load_step_number_map(
         self, artifact_ids: set[str] | None = None
     ) -> dict[str, int]:
-        """Load origin step numbers from the artifact_index.
-
-        Args:
-            artifact_ids: Restrict results to these IDs. If None, load
-                every entry in the index.
-
-        Returns:
-            Mapping of artifact ID to origin step number. Empty dict
-            if the artifact_index table does not exist.
-        """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
-            return {}
-
-        query = pl.scan_delta(str(index_path)).select(
-            ["artifact_id", "origin_step_number"]
-        )
-
-        if artifact_ids is not None:
-            query = query.filter(pl.col("artifact_id").is_in(list(artifact_ids)))
-
-        result = query.collect()
-
-        if result.is_empty():
-            return {}
-
-        return dict(
-            zip(
-                result["artifact_id"].to_list(),
-                result["origin_step_number"].to_list(),
-                strict=True,
-            )
-        )
+        """Delegates to ``self.provenance.load_step_map``."""
+        return self.provenance.load_step_map(artifact_ids)
 
     def get_step_range(self, artifact_ids: pl.Series) -> tuple[int, int] | None:
-        """Return the min and max origin step numbers for the given IDs.
-
-        Use a single lazy scan with aggregation to avoid materializing
-        the full step number map.
-
-        Args:
-            artifact_ids: Artifact IDs to query. An empty Series
-                returns None immediately.
-
-        Returns:
-            ``(step_min, step_max)`` tuple, or None if no matches exist
-            or the artifact_index table is missing.
-        """
-        if artifact_ids.is_empty():
-            return None
-
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
-            return None
-
-        result = (
-            pl.scan_delta(str(index_path))
-            .filter(pl.col("artifact_id").is_in(artifact_ids))
-            .select(
-                pl.col("origin_step_number").min().alias("step_min"),
-                pl.col("origin_step_number").max().alias("step_max"),
-            )
-            .collect()
-        )
-
-        if result.is_empty() or result["step_min"][0] is None:
-            return None
-
-        return (result["step_min"][0], result["step_max"][0])
+        """Delegates to ``self.provenance.get_step_range``."""
+        return self.provenance.get_step_range(artifact_ids)
 
     def get_descendant_ids_df(
         self,
         source_ids: pl.Series,
         target_artifact_type: str | None = None,
     ) -> pl.DataFrame:
-        """Return direct descendant IDs as a two-column DataFrame.
-
-        DataFrame-native alternative to ``get_descendant_artifact_ids``
-        that avoids materializing a Python dict-of-lists.
-
-        Args:
-            source_ids: Source artifact IDs to query. An empty Series
-                returns the empty schema immediately.
-            target_artifact_type: If given, restrict to descendants of
-                this type.
-
-        Returns:
-            DataFrame with columns ``[source_artifact_id,
-            target_artifact_id]``. Empty with correct schema when no
-            matches exist.
-        """
-        empty = pl.DataFrame(
-            schema={
-                "source_artifact_id": pl.String,
-                "target_artifact_id": pl.String,
-            }
-        )
-
-        if source_ids.is_empty():
-            return empty
-
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
-            return empty
-
-        query = pl.scan_delta(str(prov_path)).filter(
-            pl.col("source_artifact_id").is_in(source_ids)
-        )
-
-        if target_artifact_type is not None:
-            query = query.filter(pl.col("target_artifact_type") == target_artifact_type)
-
-        result = query.select(["source_artifact_id", "target_artifact_id"]).collect()
-
-        return result if not result.is_empty() else empty
+        """Delegates to ``self.provenance.get_descendant_ids_df``."""
+        return self.provenance.get_descendant_ids_df(source_ids, target_artifact_type)
 
     def get_artifact_step_number(self, artifact_id: str) -> int | None:
-        """Return the origin step number for a single artifact.
-
-        Args:
-            artifact_id: Content-addressed ID to look up in the index.
-
-        Returns:
-            Origin step number, or None if the artifact is not indexed.
-        """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
-            return None
-
-        result = (
-            pl.scan_delta(str(index_path))
-            .filter(pl.col("artifact_id") == artifact_id)
-            .select("origin_step_number")
-            .limit(1)
-            .collect()
-        )
-
-        if result.is_empty():
-            return None
-
-        return result["origin_step_number"][0]
+        """Delegates to ``self.provenance.get_artifact_step_number``."""
+        return self.provenance.get_artifact_step_number(artifact_id)
 
     def load_artifact_type_map(
         self, artifact_ids: list[str] | None = None
     ) -> dict[str, str]:
-        """Bulk-load artifact type strings from the index.
-
-        Args:
-            artifact_ids: Restrict results to these IDs. If None, load
-                every entry in the index.
-
-        Returns:
-            Mapping of artifact ID to type string. Empty dict if the
-            artifact_index table does not exist.
-        """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
-            return {}
-
-        query = pl.scan_delta(str(index_path)).select(["artifact_id", "artifact_type"])
-        if artifact_ids is not None:
-            query = query.filter(pl.col("artifact_id").is_in(artifact_ids))
-        result = query.collect()
-
-        if result.is_empty():
-            return {}
-
-        return dict(
-            zip(
-                result["artifact_id"].to_list(),
-                result["artifact_type"].to_list(),
-                strict=True,
-            )
-        )
+        """Delegates to ``self.provenance.load_type_map``."""
+        return self.provenance.load_type_map(artifact_ids)
 
     def load_artifact_ids_by_type(
         self,
@@ -498,169 +280,30 @@ class ArtifactStore:
         step_numbers: list[int] | None = None,
         artifact_ids: list[str] | None = None,
     ) -> set[str]:
-        """Return artifact IDs from the index matching a given type.
-
-        Args:
-            artifact_type: Required type filter.
-            step_numbers: If given, restrict to these origin steps.
-            artifact_ids: If given, restrict to these IDs (useful for
-                validating that a set of IDs actually exist with the
-                expected type).
-
-        Returns:
-            Matching artifact IDs. Empty set if the artifact_index
-            table does not exist.
-        """
-
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
-            return set()
-
-        query = pl.scan_delta(str(index_path)).filter(
-            pl.col("artifact_type") == artifact_type
+        """Delegates to ``self.provenance.load_artifact_ids_by_type``."""
+        return self.provenance.load_artifact_ids_by_type(
+            artifact_type, step_numbers=step_numbers, artifact_ids=artifact_ids
         )
-        if step_numbers is not None:
-            query = query.filter(pl.col("origin_step_number").is_in(step_numbers))
-        if artifact_ids is not None:
-            query = query.filter(pl.col("artifact_id").is_in(artifact_ids))
-
-        result = query.select("artifact_id").collect()
-        return set(result["artifact_id"].to_list())
 
     def load_forward_provenance_map(self) -> dict[str, list[str]]:
-        """Load the full forward provenance map in one Delta scan.
-
-        Complement of ``load_provenance_map`` (which maps targets to
-        sources).
-
-        Returns:
-            Mapping of source artifact ID to its descendant (target)
-            IDs. Empty dict if the artifact_edges table does not exist.
-        """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
-            return {}
-
-        result = (
-            pl.scan_delta(str(prov_path))
-            .select(["source_artifact_id", "target_artifact_id"])
-            .collect()
-        )
-
-        if result.is_empty():
-            return {}
-
-        forward_map: dict[str, list[str]] = {}
-        for row in result.iter_rows():
-            source_id, target_id = row
-            forward_map.setdefault(source_id, []).append(target_id)
-        return forward_map
+        """Delegates to ``self.provenance.load_forward_map``."""
+        return self.provenance.load_forward_map()
 
     def load_step_name_map(self, pipeline_run_id: str | None = None) -> dict[int, str]:
-        """Load a mapping of step number to human-readable step name.
+        """Delegates to ``self.provenance.load_step_name_map``."""
+        return self.provenance.load_step_name_map(pipeline_run_id)
 
-        Prefer the steps table (most recent completed entry per step).
-        Fall back to ``executions.operation_name`` when the steps table
-        is missing.
-
-        Args:
-            pipeline_run_id: If given, restrict the steps query to this
-                pipeline run. None uses the latest available names.
-
-        Returns:
-            Mapping of step number to step or operation name. Empty
-            dict if neither table exists.
-        """
-        steps_path = self._table_path(TablePath.STEPS)
-        if steps_path.exists():
-            lf = pl.scan_delta(str(steps_path)).filter(pl.col("status") == "completed")
-            if pipeline_run_id:
-                lf = lf.filter(pl.col("pipeline_run_id") == pipeline_run_id)
-
-            df = (
-                lf.sort("timestamp", descending=True)
-                .unique(subset=["step_number"], keep="first")
-                .select(["step_number", "step_name"])
-                .collect()
-            )
-            if not df.is_empty():
-                return dict(
-                    zip(
-                        df["step_number"].to_list(),
-                        df["step_name"].to_list(),
-                        strict=True,
-                    )
-                )
-
-        records_path = self._table_path(TablePath.EXECUTIONS)
-        if records_path.exists():
-            df = (
-                pl.scan_delta(str(records_path))
-                .filter(pl.col("success") == True)  # noqa: E712
-                .select(["origin_step_number", "operation_name"])
-                .unique(subset=["origin_step_number"], keep="first")
-                .collect()
-            )
-            if not df.is_empty():
-                return dict(
-                    zip(
-                        df["origin_step_number"].to_list(),
-                        df["operation_name"].to_list(),
-                        strict=True,
-                    )
-                )
-
-        return {}
-
-    def load_provenance_edges_df(self, step_min: int, step_max: int) -> pl.DataFrame:
-        """Load provenance edges where both endpoints fall within a step range.
-
-        Join artifact_edges with artifact_index to resolve step numbers,
-        then keep only edges whose source and target both lie in
-        ``[step_min, step_max]``.
-
-        Args:
-            step_min: Minimum step number (inclusive).
-            step_max: Maximum step number (inclusive).
-
-        Returns:
-            DataFrame with columns ``[source_artifact_id,
-            target_artifact_id]``. Empty with correct schema when no
-            edges match.
-        """
-        empty = pl.DataFrame(
-            schema={"source_artifact_id": pl.String, "target_artifact_id": pl.String}
+    def load_provenance_edges_df(
+        self,
+        step_min: int,
+        step_max: int,
+        *,
+        include_target_type: bool = False,
+    ) -> pl.DataFrame:
+        """Delegates to ``self.provenance.load_edges_df``."""
+        return self.provenance.load_edges_df(
+            step_min, step_max, include_target_type=include_target_type
         )
-
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-
-        if not prov_path.exists() or not index_path.exists():
-            return empty
-
-        edges = pl.scan_delta(str(prov_path)).select(
-            ["source_artifact_id", "target_artifact_id"]
-        )
-        index = pl.scan_delta(str(index_path)).select(
-            ["artifact_id", "origin_step_number"]
-        )
-
-        result = (
-            edges.join(index, left_on="source_artifact_id", right_on="artifact_id")
-            .rename({"origin_step_number": "source_step"})
-            .join(index, left_on="target_artifact_id", right_on="artifact_id")
-            .rename({"origin_step_number": "target_step"})
-            .filter(
-                (pl.col("source_step") >= step_min)
-                & (pl.col("source_step") <= step_max)
-                & (pl.col("target_step") >= step_min)
-                & (pl.col("target_step") <= step_max)
-            )
-            .select(["source_artifact_id", "target_artifact_id"])
-            .collect()
-        )
-
-        return result if not result.is_empty() else empty
 
     def load_metrics_df(self, artifact_ids: list[str]) -> pl.DataFrame:
         """Load metric artifacts as a two-column DataFrame.

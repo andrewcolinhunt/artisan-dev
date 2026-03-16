@@ -6,13 +6,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.backends.base import (
     BackendBase,
     OrchestratorTraits,
     WorkerTraits,
 )
+from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 class SlurmBackend(BackendBase):
@@ -30,26 +31,26 @@ class SlurmBackend(BackendBase):
 
     def create_flow(
         self,
-        operation: OperationDefinition,
+        resources: ResourceConfig,
+        execution: ExecutionConfig,
         step_number: int,
+        job_name: str,
     ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
         """Build a Prefect flow that dispatches units via SLURM job arrays."""
         from prefect_submitit import SlurmTaskRunner
 
-        r = operation.resources
-        e = operation.execution
-        slurm_kwargs: dict[str, Any] = dict(r.extra_slurm_kwargs)
-        if r.gres:
-            slurm_kwargs["slurm_gres"] = r.gres
+        slurm_kwargs: dict[str, Any] = dict(resources.extra)
+        if resources.gpus > 0:
+            slurm_kwargs["slurm_gres"] = f"gpu:{resources.gpus}"
 
         task_runner = SlurmTaskRunner(
-            partition=r.partition,
-            time_limit=r.time_limit,
-            mem_gb=r.mem_gb,
-            cpus_per_task=r.cpus_per_task,
+            partition=slurm_kwargs.pop("partition", "cpu"),
+            time_limit=resources.time_limit,
+            mem_gb=resources.memory_gb,
+            cpus_per_task=resources.cpus,
             gpus_per_node=slurm_kwargs.pop("gpus_per_node", 0),
-            units_per_worker=e.units_per_worker,
-            slurm_job_name=f"s{step_number}_{e.job_name or operation.name}",
+            units_per_worker=execution.units_per_worker,
+            slurm_job_name=f"s{step_number}_{job_name}",
             **slurm_kwargs,
         )
         return self._build_prefect_flow(task_runner)

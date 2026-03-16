@@ -20,14 +20,23 @@ from pydantic import BaseModel
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import (
-    _validate_command,
+    _validate_environment,
     _validate_execution,
     _validate_input_roles,
+    _validate_input_types,
     _validate_params,
+    _validate_required_inputs,
     _validate_resources,
+    _validate_tool,
 )
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.operation_config.command_spec import ApptainerCommandSpec
+from artisan.schemas.operation_config.environment_spec import (
+    ApptainerEnvironmentSpec,
+    DockerEnvironmentSpec,
+)
+from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -81,7 +90,7 @@ class MockFlatFieldsOp(OperationDefinition):
 
 
 class MockCreatorOp(OperationDefinition):
-    """Creator op with a command field (for command override tests)."""
+    """Creator op with tool and environments (for override tests)."""
 
     class InputRole(StrEnum):
         data = auto()
@@ -100,10 +109,10 @@ class MockCreatorOp(OperationDefinition):
         ),
     }
 
-    command: ApptainerCommandSpec = ApptainerCommandSpec(
-        script="/opt/run.sh",
-        arg_style="hydra",
-        image="/opt/image.sif",
+    tool: ToolSpec = ToolSpec(executable="/opt/run.sh")
+    environments: Environments = Environments(
+        apptainer=ApptainerEnvironmentSpec(image="/opt/image.sif"),
+        docker=DockerEnvironmentSpec(image="img:latest"),
     )
 
     def preprocess(self, inputs: Any) -> dict:
@@ -159,6 +168,60 @@ class MockRuntimeInputsOp(OperationDefinition):
         return ArtifactResult(success=True)
 
 
+class MockOpWithOptionalInput(OperationDefinition):
+    """Operation with both required and optional inputs."""
+
+    class InputRole(StrEnum):
+        dataset = auto()
+        reference = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "mock_with_optional"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.dataset: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        InputRole.reference: InputSpec(
+            artifact_type=ArtifactTypes.DATA, required=False
+        ),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.DATA, is_memory_output=True
+        ),
+    }
+
+    def execute_curator(self, execute_input: Any) -> Any:
+        from artisan.schemas.execution.curator_result import ArtifactResult
+
+        return ArtifactResult(success=True)
+
+
+class MockOpWithAnyInput(OperationDefinition):
+    """Operation that accepts ANY artifact type."""
+
+    class InputRole(StrEnum):
+        data = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "mock_any_input"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.ANY, required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.DATA, is_memory_output=True
+        ),
+    }
+
+    def execute_curator(self, execute_input: Any) -> Any:
+        from artisan.schemas.execution.curator_result import ArtifactResult
+
+        return ArtifactResult(success=True)
+
+
 # =============================================================================
 # Tests for _validate_params
 # =============================================================================
@@ -196,7 +259,7 @@ class TestValidateResources:
 
     def test_valid_resources(self):
         """Valid resource keys should not raise."""
-        _validate_resources({"partition": "gpu", "mem_gb": 32})
+        _validate_resources({"memory_gb": 32, "gpus": 1})
 
     def test_unknown_resource_raises(self):
         """Unknown resource key should raise with valid keys listed."""
@@ -205,7 +268,7 @@ class TestValidateResources:
 
     def test_error_lists_valid_keys(self):
         """Error message should list valid keys."""
-        with pytest.raises(ValueError, match="Valid keys:.*partition"):
+        with pytest.raises(ValueError, match="Valid keys:.*memory_gb"):
             _validate_resources({"bogus": True})
 
 
@@ -228,30 +291,66 @@ class TestValidateExecution:
 
 
 # =============================================================================
-# Tests for _validate_command
+# Tests for _validate_environment
 # =============================================================================
 
 
-class TestValidateCommand:
-    """Tests for command validation."""
+class TestValidateEnvironment:
+    """Tests for environment validation."""
 
-    def test_valid_command_override(self):
-        """Valid command keys should not raise."""
-        _validate_command(MockCreatorOp, {"gpu": True})
+    def test_valid_string_environment(self):
+        """Valid environment string should not raise."""
+        _validate_environment(MockCreatorOp, "local")
 
-    def test_unknown_command_key_raises(self):
-        """Unknown command key should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown command keys.*bogus"):
-            _validate_command(MockCreatorOp, {"bogus": True})
+    def test_unknown_string_environment_raises(self):
+        """Unknown environment string should raise ValueError."""
+        with pytest.raises(ValueError, match="not configured"):
+            _validate_environment(MockCreatorOp, "pixi")
 
-    def test_curator_op_raises_on_command(self):
-        """Curator ops without command field should raise on any command overrides."""
-        with pytest.raises(ValueError, match="does not support command overrides"):
-            _validate_command(MockCuratorOp, {"gpu": True})
+    def test_valid_dict_environment(self):
+        """Valid environment dict should not raise."""
+        _validate_environment(MockCreatorOp, {"active": "docker"})
 
-    def test_empty_command_accepted(self):
-        """Empty command dict should not raise (treated as no overrides)."""
-        _validate_command(MockCreatorOp, {})
+    def test_unknown_environment_key_raises(self):
+        """Unknown environment key should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown environment keys.*bogus"):
+            _validate_environment(MockCreatorOp, {"bogus": True})
+
+    def test_unknown_nested_key_raises(self):
+        """Unknown key in nested environment spec should raise."""
+        with pytest.raises(ValueError, match="Unknown keys for docker.*bogus"):
+            _validate_environment(MockCreatorOp, {"docker": {"bogus": True}})
+
+    def test_empty_dict_accepted(self):
+        """Empty dict should not raise."""
+        _validate_environment(MockCreatorOp, {})
+
+
+# =============================================================================
+# Tests for _validate_tool
+# =============================================================================
+
+
+class TestValidateTool:
+    """Tests for tool validation."""
+
+    def test_valid_tool_override(self):
+        """Valid tool keys should not raise."""
+        _validate_tool(MockCreatorOp, {"executable": "/new/path"})
+
+    def test_unknown_tool_key_raises(self):
+        """Unknown tool key should raise ValueError."""
+        with pytest.raises(ValueError, match="Unknown tool keys.*bogus"):
+            _validate_tool(MockCreatorOp, {"bogus": True})
+
+    def test_no_tool_raises(self):
+        """Operation without tool should raise on tool override."""
+        with pytest.raises(ValueError, match="has no tool to override"):
+            _validate_tool(MockCuratorOp, {"executable": "/new"})
+
+    def test_empty_tool_accepted(self):
+        """Empty tool dict should not raise."""
+        _validate_tool(MockCreatorOp, {})
 
 
 # =============================================================================
@@ -300,8 +399,104 @@ class TestNoOverrides:
         )
 
         instance = instantiate_operation(
-            MockOpWithParams, params=None, resources=None, execution=None, command=None
+            MockOpWithParams,
+            params=None,
+            resources=None,
+            execution=None,
+            environment=None,
+            tool=None,
         )
         assert instance.params.count == 1
-        assert instance.resources.partition == "cpu"
+        assert instance.resources.cpus == 1
         assert instance.execution.artifacts_per_unit == 1
+
+
+# =============================================================================
+# Tests for _validate_required_inputs
+# =============================================================================
+
+
+class TestValidateRequiredInputs:
+    """Tests for required input validation."""
+
+    def test_missing_required_role_raises(self):
+        """Missing a required role should raise ValueError."""
+        with pytest.raises(ValueError, match="Missing required input.*data"):
+            _validate_required_inputs(MockCuratorOp, {})
+
+    def test_all_required_provided(self):
+        """All required roles provided should not raise."""
+        ref = MagicMock()
+        _validate_required_inputs(MockCuratorOp, {"data": ref})
+
+    def test_optional_missing_no_error(self):
+        """Missing optional role should not raise."""
+        ref = MagicMock()
+        _validate_required_inputs(MockOpWithOptionalInput, {"dataset": ref})
+
+    def test_runtime_defined_inputs_skips(self):
+        """runtime_defined_inputs=True should skip validation."""
+        _validate_required_inputs(MockRuntimeInputsOp, {})
+
+    def test_generative_op_no_error(self):
+        """Generative op (empty inputs ClassVar) should not raise."""
+        _validate_required_inputs(MockOpWithParams, None)
+
+    def test_non_dict_inputs_skips(self):
+        """Non-dict inputs (list, None) should skip validation."""
+        _validate_required_inputs(MockCuratorOp, None)
+        _validate_required_inputs(MockCuratorOp, [MagicMock()])
+
+
+# =============================================================================
+# Tests for _validate_input_types
+# =============================================================================
+
+
+class TestValidateInputTypes:
+    """Tests for input type validation."""
+
+    def test_type_mismatch_raises(self):
+        """Wiring metric output into data input should raise ValueError."""
+        ref = OutputReference(
+            source_step=0, role="metrics", artifact_type=ArtifactTypes.METRIC
+        )
+        with pytest.raises(ValueError, match="Type mismatch.*data"):
+            _validate_input_types(MockCuratorOp, {"data": ref})
+
+    def test_type_match_no_error(self):
+        """Matching types should not raise."""
+        ref = OutputReference(
+            source_step=0, role="output", artifact_type=ArtifactTypes.DATA
+        )
+        _validate_input_types(MockCuratorOp, {"data": ref})
+
+    def test_any_downstream_spec_no_error(self):
+        """ANY downstream spec should accept any upstream type."""
+        ref = OutputReference(
+            source_step=0, role="output", artifact_type=ArtifactTypes.DATA
+        )
+        _validate_input_types(MockOpWithAnyInput, {"data": ref})
+
+    def test_any_upstream_ref_skips(self):
+        """ANY upstream ref should skip type check."""
+        ref = OutputReference(
+            source_step=0, role="output", artifact_type=ArtifactTypes.ANY
+        )
+        _validate_input_types(MockCuratorOp, {"data": ref})
+
+    def test_non_output_reference_skips(self):
+        """Non-OutputReference values (raw lists) should skip type check."""
+        _validate_input_types(MockCuratorOp, {"data": ["artifact-id-1"]})
+
+    def test_non_dict_inputs_skips(self):
+        """Non-dict inputs should skip type check."""
+        _validate_input_types(MockCuratorOp, None)
+        _validate_input_types(MockCuratorOp, [MagicMock()])
+
+    def test_runtime_defined_role_skips(self):
+        """Role not in operation.inputs (runtime-defined) should skip."""
+        ref = OutputReference(
+            source_step=0, role="output", artifact_type=ArtifactTypes.METRIC
+        )
+        _validate_input_types(MockRuntimeInputsOp, {"custom_role": ref})

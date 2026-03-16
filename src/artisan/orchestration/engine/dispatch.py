@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import logging
 import pickle
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from prefect import task
 
+from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.utils.errors import format_error
@@ -20,7 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 def _save_units(
-    units: list[ExecutionUnit], staging_root: Path, step_number: int
+    units: list[ExecutionUnit | ExecutionComposite],
+    staging_root: Path,
+    step_number: int,
 ) -> Path:
     """Serialize execution units to a pickle file for Prefect dispatch."""
     path = staging_root / "_dispatch" / f"step_{step_number}_units.pkl"
@@ -30,7 +34,7 @@ def _save_units(
     return path
 
 
-def _load_units(path: Path) -> list[ExecutionUnit]:
+def _load_units(path: Path) -> list[ExecutionUnit | ExecutionComposite]:
     """Deserialize execution units from a pickle file."""
     with open(path, "rb") as f:
         return pickle.load(f)
@@ -38,13 +42,13 @@ def _load_units(path: Path) -> list[ExecutionUnit]:
 
 @task
 def execute_unit_task(
-    unit: ExecutionUnit,
+    unit: ExecutionUnit | ExecutionComposite,
     runtime_env: RuntimeEnvironment,
 ) -> dict:
-    """Execute a single unit, routing to the creator or curator executor.
+    """Execute a single unit or composite, routing to the appropriate executor.
 
     Args:
-        unit: Batch of artifacts to process.
+        unit: Batch of artifacts to process or a composite.
         runtime_env: Runtime paths and backend configuration.
 
     Returns:
@@ -54,18 +58,29 @@ def execute_unit_task(
     try:
         import os
 
+        # Get worker_id from backend-specific environment variable
+        env_var = runtime_env.worker_id_env_var
+        worker_id = int(os.environ.get(env_var, 0)) if env_var else 0
+
+        # Route composite to composite executor
+        if isinstance(unit, ExecutionComposite):
+            from artisan.execution.executors.composite import run_composite
+
+            result = run_composite(unit, runtime_env, worker_id=worker_id)
+            return {
+                "success": result.success,
+                "error": result.error,
+                "item_count": 1,
+                "execution_run_ids": [result.execution_run_id],
+            }
+
         from artisan.execution.executors.curator import (
             is_curator_operation,
             run_curator_flow,
         )
 
-        # Get worker_id from backend-specific environment variable
-        env_var = runtime_env.worker_id_env_var
-        worker_id = int(os.environ.get(env_var, 0)) if env_var else 0
-
         # Route to appropriate executor based on operation type
         if is_curator_operation(unit.operation):
-            # Curator ops return StagingResult (same as creator ops)
             result = run_curator_flow(unit, runtime_env, worker_id=worker_id)
 
             return {
@@ -82,8 +97,10 @@ def execute_unit_task(
             "success": result.success,
             "error": result.error,
             "item_count": unit.get_batch_size() or 1,
-            "execution_run_ids": [result.execution_run_id],  # Normalize to list
+            "execution_run_ids": [result.execution_run_id],
         }
+    except KeyboardInterrupt:
+        raise RuntimeError("Operation interrupted by SIGINT") from None
     except Exception as exc:
         return {
             "success": False,
@@ -93,26 +110,43 @@ def execute_unit_task(
         }
 
 
+def _get_one(future: object) -> dict:
+    """Retrieve result from a single future, converting exceptions to failure dicts."""
+    try:
+        return future.result()
+    except Exception as exc:
+        logger.error(
+            "Future raised during result collection: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return {
+            "success": False,
+            "error": format_error(exc),
+            "item_count": 1,
+            "execution_run_ids": [],
+        }
+
+
 def _collect_results(futures: list) -> list[dict]:
-    """Collect results from Prefect futures, converting exceptions to failure dicts."""
-    results = []
-    for f in futures:
-        try:
-            results.append(f.result())
-        except Exception as exc:
-            logger.error(
-                "Future raised during result collection: %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            results.append(
-                {
-                    "success": False,
-                    "error": format_error(exc),
-                    "item_count": 1,
-                    "execution_run_ids": [],
-                }
-            )
+    """Collect results from Prefect futures in parallel.
+
+    Uses a thread pool so that multiple blocking ``f.result()`` calls
+    run concurrently — critical for SLURM backends where each call
+    blocks until scancel/squeue completes.
+    """
+    if not futures:
+        return []
+
+    results: list[dict | None] = [None] * len(futures)
+    max_workers = min(len(futures), 32)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        submitted = {pool.submit(_get_one, f): i for i, f in enumerate(futures)}
+        for cf in as_completed(submitted):
+            idx = submitted[cf]
+            results[idx] = cf.result()
+
+    logger.info("Collected results from %d futures", len(futures))
 
     # Best-effort SLURM log capture
     for future, result in zip(futures, results, strict=False):
@@ -145,6 +179,11 @@ def _capture_slurm_logs(future: object, result: dict) -> None:
             parts.append(f"--- stderr ---\n{stderr[-100_000:]}")
         if parts:
             result["worker_log"] = "\n".join(parts)
+            logger.debug(
+                "SLURM job log: stdout=%d bytes, stderr=%d bytes",
+                len(stdout or ""),
+                len(stderr or ""),
+            )
         if hasattr(log_future, "slurm_job_id"):
             result["slurm_job_id"] = log_future.slurm_job_id
     except Exception:

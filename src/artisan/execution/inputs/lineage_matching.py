@@ -1,157 +1,125 @@
-"""Backward-walk ancestry matching for artifact provenance graphs.
+"""Provenance-based artifact lineage matching.
 
-Match candidate artifacts to target artifacts by walking provenance
-edges backward.  Used by Filter and multi-input pairing operations.
+DataFrame-based backward matching for multi-input grouping, using
+common-ancestor resolution through provenance edges.
 
-Complexity: O((T + M) x A) where T = targets, M = candidates,
-A = average ancestry depth.
+Re-exports ``walk_backward`` and ``walk_forward`` under their legacy
+names for backwards compatibility during migration.
 """
 
 from __future__ import annotations
 
 import logging
-from collections import deque
 
 import polars as pl
 
+from artisan.provenance.traversal import walk_backward as walk_provenance_to_targets
+from artisan.provenance.traversal import walk_forward as walk_forward_to_targets
+
 logger = logging.getLogger(__name__)
 
+# Re-export so existing callers don't break
+__all__ = [
+    "match_by_ancestry",
+    "walk_forward_to_targets",
+    "walk_provenance_to_targets",
+]
 
-def walk_provenance_to_targets(
-    candidates: pl.DataFrame,
-    targets: pl.DataFrame,
+
+def _collect_ancestors(
+    nodes: pl.DataFrame,
     edges: pl.DataFrame,
+    id_col: str = "node_id",
 ) -> pl.DataFrame:
-    """Walk backward from candidates through provenance edges to find targets.
+    """Walk backward from nodes collecting all visited ancestors.
 
-    Iterative backward walk: frontier starts as candidates, each iteration
-    joins on edges to step backward one hop, checks for target matches,
-    continues with unmatched candidates. First-match semantics.
+    Returns DataFrame with [node_id, ancestor_id] — each node maps to
+    itself and all transitive ancestors reachable via backward edges.
 
     Args:
-        candidates: DataFrame with at least an ``artifact_id`` column.
-        targets: DataFrame with at least an ``artifact_id`` column.
+        nodes: DataFrame with ``artifact_id`` column.
         edges: DataFrame with ``source_artifact_id``, ``target_artifact_id``.
+        id_col: Name for the tracking column in the output.
 
     Returns:
-        DataFrame with columns [candidate_id, target_id] for matched pairs.
-        Candidates without a matching target are omitted.
+        DataFrame with columns [<id_col>, ancestor_id].
     """
-    empty = pl.DataFrame(schema={"candidate_id": pl.String, "target_id": pl.String})
+    empty = pl.DataFrame(schema={id_col: pl.String, "ancestor_id": pl.String})
 
-    if candidates.is_empty() or targets.is_empty() or edges.is_empty():
+    if nodes.is_empty() or edges.is_empty():
+        # Still include self-mapping for non-empty nodes
+        if not nodes.is_empty():
+            return pl.DataFrame(
+                {
+                    id_col: nodes["artifact_id"],
+                    "ancestor_id": nodes["artifact_id"],
+                }
+            )
         return empty
 
-    target_ids = targets.select(pl.col("artifact_id").alias("_target_id"))
-
-    # frontier: (candidate_id, current_node) — tracks the walk state
+    # frontier: (id_col, current_node)
     frontier = pl.DataFrame(
         {
-            "candidate_id": candidates["artifact_id"],
-            "current_node": candidates["artifact_id"],
+            id_col: nodes["artifact_id"],
+            "current_node": nodes["artifact_id"],
         }
     )
 
-    # visited: (candidate_id, node) — all nodes visited per candidate
-    visited = frontier.select("candidate_id", pl.col("current_node").alias("node"))
-
-    # Check if any candidates are themselves targets
-    initial_matches = frontier.join(
-        target_ids, left_on="current_node", right_on="_target_id", how="semi"
-    ).select(
-        pl.col("candidate_id"),
-        pl.col("current_node").alias("target_id"),
+    # Start: each node is its own ancestor
+    all_ancestors = frontier.select(
+        pl.col(id_col), pl.col("current_node").alias("ancestor_id")
     )
-
-    all_matched: list[pl.DataFrame] = []
-    if not initial_matches.is_empty():
-        all_matched.append(initial_matches)
-
-    # Remove matched candidates from frontier
-    frontier = frontier.join(
-        initial_matches.select("candidate_id"),
-        on="candidate_id",
-        how="anti",
-    )
+    visited = frontier.select(id_col, pl.col("current_node").alias("node"))
 
     while not frontier.is_empty():
-        # Walk backward one hop: current_node is a target_artifact_id in edges
         stepped = frontier.join(
             edges,
             left_on="current_node",
             right_on="target_artifact_id",
             how="inner",
         ).select(
-            pl.col("candidate_id"),
+            pl.col(id_col),
             pl.col("source_artifact_id").alias("current_node"),
         )
 
         if stepped.is_empty():
             break
 
-        # Anti-join with visited to skip already-seen nodes
         stepped = stepped.join(
             visited,
-            left_on=["candidate_id", "current_node"],
-            right_on=["candidate_id", "node"],
+            left_on=[id_col, "current_node"],
+            right_on=[id_col, "node"],
             how="anti",
         )
 
         if stepped.is_empty():
             break
 
-        # Add to visited
         visited = pl.concat(
+            [visited, stepped.select(id_col, pl.col("current_node").alias("node"))]
+        )
+        all_ancestors = pl.concat(
             [
-                visited,
-                stepped.select("candidate_id", pl.col("current_node").alias("node")),
+                all_ancestors,
+                stepped.select(id_col, pl.col("current_node").alias("ancestor_id")),
             ]
         )
-
-        # Check for target matches — semi-join with targets
-        new_matches = stepped.join(
-            target_ids, left_on="current_node", right_on="_target_id", how="semi"
-        )
-
-        if not new_matches.is_empty():
-            # First-match per candidate: keep first match only
-            new_matches = new_matches.unique(
-                subset=["candidate_id"], keep="first"
-            ).select(
-                pl.col("candidate_id"),
-                pl.col("current_node").alias("target_id"),
-            )
-            all_matched.append(new_matches)
-
-            # Remove matched candidates from frontier
-            stepped = stepped.join(
-                new_matches.select("candidate_id"),
-                on="candidate_id",
-                how="anti",
-            )
-
-        if stepped.is_empty():
-            break
         frontier = stepped
 
-    if not all_matched:
-        return empty
-
-    return pl.concat(all_matched)
+    return all_ancestors
 
 
 def match_by_ancestry(
     target_ids: set[str],
     candidate_ids_by_role: dict[str, list[str]],
-    provenance_map: dict[str, list[str]],
+    edges: pl.DataFrame,
 ) -> dict[str, dict[str, list[str]]]:
-    """Match candidates to targets via backward provenance walk.
+    """Match candidates to targets via common-ancestor resolution.
 
-    Two-phase algorithm:
-    1. Build target ancestry index: BFS backward from each target,
-       recording {ancestor_id: target_id}. Targets map to themselves.
-    2. For each candidate, BFS backward through provenance. At each
-       node, check if it's in the index -- resolve to its target.
+    For each role, collects the full ancestry set of both targets and
+    candidates, then joins on shared ancestors to find which target
+    each candidate is related to. First-claim-wins for candidates
+    reachable from multiple targets via different ancestors.
 
     Supports 1:N matching — multiple candidates in the same role can
     map to the same target (e.g., parameter sweep producing N configs
@@ -161,8 +129,8 @@ def match_by_ancestry(
         target_ids: Artifact IDs of the target role (lower step number,
             or the anchor/primary role).
         candidate_ids_by_role: {role_name: [artifact_ids]} for other roles.
-        provenance_map: {target_id: [source_ids]} from
-            ArtifactStore.load_provenance_map().
+        edges: DataFrame with ``source_artifact_id``, ``target_artifact_id``
+            columns (from ``load_provenance_edges_df``).
 
     Returns:
         {target_id: {role: [candidate_ids]}} for targets with matches
@@ -171,91 +139,55 @@ def match_by_ancestry(
     if not target_ids or not candidate_ids_by_role:
         return {}
 
-    target_ancestry_index = _build_target_ancestry_index(target_ids, provenance_map)
+    # Collect ancestors of all targets once
+    targets_df = pl.DataFrame({"artifact_id": sorted(target_ids)})
+    target_ancestors = _collect_ancestors(targets_df, edges, id_col="target_id")
 
     matches: dict[str, dict[str, list[str]]] = {}
 
     for role, candidate_ids in candidate_ids_by_role.items():
-        for candidate_id in candidate_ids:
-            target = _find_target(candidate_id, target_ancestry_index, provenance_map)
+        candidates_df = pl.DataFrame({"artifact_id": candidate_ids})
+        candidate_ancestors = _collect_ancestors(
+            candidates_df, edges, id_col="candidate_id"
+        )
 
-            if target is None:
+        # Join on shared ancestors
+        joined = candidate_ancestors.join(
+            target_ancestors,
+            on="ancestor_id",
+            how="inner",
+        )
+
+        if joined.is_empty():
+            for candidate_id in candidate_ids:
                 logger.warning(
                     "LINEAGE matching: candidate %s... from role '%s' has "
                     "no common ancestor with any target",
                     candidate_id[:8],
                     role,
                 )
-                continue
+            continue
 
-            matches.setdefault(target, {}).setdefault(role, []).append(candidate_id)
+        # First-claim-wins per candidate: keep first match
+        resolved = joined.unique(subset=["candidate_id"], keep="first").select(
+            "candidate_id", "target_id"
+        )
+
+        matched_candidates = set()
+        for row in resolved.iter_rows(named=True):
+            candidate_id = row["candidate_id"]
+            target_id = row["target_id"]
+            matched_candidates.add(candidate_id)
+            matches.setdefault(target_id, {}).setdefault(role, []).append(candidate_id)
+
+        unmatched = set(candidate_ids) - matched_candidates
+        for candidate_id in unmatched:
+            logger.warning(
+                "LINEAGE matching: candidate %s... from role '%s' has "
+                "no common ancestor with any target",
+                candidate_id[:8],
+                role,
+            )
 
     n_roles = len(candidate_ids_by_role)
     return {t: rm for t, rm in matches.items() if len(rm) == n_roles}
-
-
-def _build_target_ancestry_index(
-    target_ids: set[str],
-    provenance_map: dict[str, list[str]],
-) -> dict[str, str]:
-    """BFS backward from each target to build an ancestry lookup index.
-
-    Records {ancestor_id: target_id} so any ancestor resolves to its
-    target in O(1). Targets are included in the index (map to themselves).
-    First-claim-wins for shared ancestors.
-
-    Args:
-        target_ids: Set of target artifact IDs.
-        provenance_map: {target_id: [source_ids]}.
-
-    Returns:
-        Dict mapping ancestor IDs to their owning target ID.
-    """
-    index: dict[str, str] = {}
-    for target_id in target_ids:
-        queue = deque([target_id])
-        visited = {target_id}
-        while queue:
-            current = queue.popleft()
-            if current not in index:
-                index[current] = target_id
-            for source in provenance_map.get(current, []):
-                if source not in visited:
-                    visited.add(source)
-                    queue.append(source)
-    return index
-
-
-def _find_target(
-    artifact_id: str,
-    target_ancestry_index: dict[str, str],
-    provenance_map: dict[str, list[str]],
-) -> str | None:
-    """BFS backward from a candidate to find its matching target.
-
-    At each node, checks the target ancestry index. Returns on first hit.
-
-    Args:
-        artifact_id: Candidate artifact ID.
-        target_ancestry_index: Index built by _build_target_ancestry_index.
-        provenance_map: {target_id: [source_ids]}.
-
-    Returns:
-        The matching target ID, or None if no connection found.
-    """
-    if artifact_id in target_ancestry_index:
-        return target_ancestry_index[artifact_id]
-
-    queue = deque([artifact_id])
-    visited = {artifact_id}
-
-    while queue:
-        current = queue.popleft()
-        for source in provenance_map.get(current, []):
-            if source in target_ancestry_index:
-                return target_ancestry_index[source]
-            if source not in visited:
-                visited.add(source)
-                queue.append(source)
-
-    return None

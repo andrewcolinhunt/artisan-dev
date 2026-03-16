@@ -1,9 +1,17 @@
 # Artisan
 
-A domain-agnostic pipeline framework with automatic provenance tracking.
-Artisan gives computational tools a common interface and chains them into
-tracked, repeatable workflows. Every result is automatically linked back to
-the inputs and parameters that produced it.
+A Python framework for building computational pipelines with automatic
+provenance tracking.
+
+Artisan is intended to be more protocol than platform. Operations declare a
+contract (typed inputs, typed outputs, parameters) and the framework uses that
+contract to wire things together, track what produced what, and store results
+as content-addressed artifacts. The computation inside each operation is a
+black box: wrap whatever tools you're already using.
+
+Because the contract is explicit and structured, caching, lineage queries, and
+portability across environments come for free. The same pipeline runs on a
+laptop or an HPC cluster without changes to the operations themselves.
 
 > **Status:** This project is in active development (v0.1). APIs may change
 > between releases.
@@ -12,22 +20,21 @@ the inputs and parameters that produced it.
 
 ## Why Artisan?
 
-**Simple** — Define steps, connect outputs to inputs, run. No boilerplate, just Python.
+**Simple** — Define steps, connect outputs to inputs, run. No boilerplate,
+just Python.
 
-**Extensible** — Wrap any tool as an `OperationDefinition`. Declare
-inputs/outputs, implement three methods, and the framework handles
-the rest.
+**Extensible** — Wrap any tool as an `OperationDefinition`. Declare inputs and
+outputs, implement three methods, and the framework handles the rest.
 
-**Reproducible** — Content-addressed artifacts and dual provenance mean every
-result traces back to its inputs. Same content = same ID, always.
+**Reproducible** — Artifacts are content-addressed and provenance is tracked
+automatically. Same content, same identity. Every result traces back to the
+inputs and parameters that produced it.
 
-**Scale-invariant** — The same pipeline code runs on a laptop or an HPC cluster.
-Switch from local to SLURM execution with a single parameter — the framework
-handles batching, job arrays, and resource management automatically.
+**Scale-invariant** — The same pipeline code runs on a laptop or an HPC
+cluster. Switch from local to SLURM execution with a single parameter.
 
-**Structured data** — All artifacts, metrics, and provenance are collected in a
-single store and accessible as dataframes. No parsing log files, no hunting
-through directory trees — query your results directly.
+**Queryable** — Artifacts, metrics, and provenance live in a single store,
+accessible as dataframes. No log parsing, no directory archaeology.
 
 ---
 
@@ -79,6 +86,18 @@ pixi run install-kernel
 
 In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**.
 
+### VS Code Jupyter Kernel Slowness (Pixi Environments)
+
+If your pixi Jupyter kernel takes 30+ seconds to start in VS Code, the
+`Python Environments` extension (`ms-python.vscode-python-envs`) is likely the
+cause. It doesn't recognize pixi as a known environment type and spends 30
+seconds trying to activate it before timing out.
+
+**Fix:** Uninstall the `Python Environments` extension (`ms-python.vscode-python-envs`)
+in VS Code. The core Python extension works fine without it.
+
+Tracked upstream: [microsoft/vscode-python#25804](https://github.com/microsoft/vscode-python/issues/25804)
+
 ---
 
 ## Quick Example
@@ -94,27 +113,28 @@ pipeline = PipelineManager.create(
     staging_root="runs/staging",
     working_root="runs/working",
 )
+output = pipeline.output
 
 # Generate datasets -> transform -> compute metrics -> filter by score
-step0 = pipeline.run(DataGenerator, params={"count": 5, "seed": 42})
-step1 = pipeline.run(
-    DataTransformer,
-    inputs={"dataset": step0.output("datasets")},
+pipeline.run(operation=DataGenerator, name="generate", params={"count": 5, "seed": 42})
+pipeline.run(
+    operation=DataTransformer,
+    name="transform",
+    inputs={"dataset": output("generate", "datasets")},
     params={"scale_factor": 2.0},
 )
-step2 = pipeline.run(
-    MetricCalculator,
-    inputs={"dataset": step1.output("dataset")},
+pipeline.run(
+    operation=MetricCalculator,
+    name="score",
+    inputs={"dataset": output("transform", "dataset")},
 )
-step3 = pipeline.run(
-    Filter,
-    inputs={
-        "passthrough": step1.output("dataset"),
-        "metrics": step2.output("metrics"),
-    },
+pipeline.run(
+    operation=Filter,
+    name="filter",
+    inputs={"passthrough": output("transform", "dataset")},
     params={
         "criteria": [
-            {"metric": "metrics.mean_score", "operator": "gt", "value": 0.5},
+            {"metric": "distribution.median", "operator": "gt", "value": 0.5},
         ]
     },
 )
@@ -182,6 +202,36 @@ pixi run -e docs docs-clean       # Remove build artifacts
 - **[Concepts](docs/concepts/index.md)** — Architecture, design principles, and
   system internals
 - **[Reference](docs/reference/index.md)** — API reference and coding conventions
+
+---
+
+## Claude Code Integration
+
+Artisan includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+plugin with skills for scaffolding operations, pipelines, and documentation.
+
+| Skill | Description |
+|-------|-------------|
+| `/artisan:write-operation` | Scaffold or review an `OperationDefinition` subclass |
+| `/artisan:write-composite` | Scaffold or review a `CompositeDefinition` subclass |
+| `/artisan:write-pipeline` | Scaffold a pipeline script composing operations |
+| `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
+
+**Marketplace install** (recommended):
+
+```bash
+/plugin marketplace add        # register the plugin from this repo
+/plugin install                # install registered plugins
+```
+
+**Manual fallback** — point Claude Code at the repo root:
+
+```bash
+claude --plugin-dir /path/to/artisan-repo
+```
+
+See [Installation — Claude Code plugin](docs/getting-started/installation.md#claude-code-plugin)
+for details.
 
 ---
 

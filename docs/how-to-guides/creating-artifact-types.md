@@ -28,9 +28,7 @@ from pydantic import Field
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.common import get_compound_extension
 from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.filename import strip_extensions
-from artisan.utils.hashing import compute_artifact_id
 
 
 class DataRecordArtifact(Artifact):
@@ -55,13 +53,11 @@ class DataRecordArtifact(Artifact):
     size_bytes: int | None = Field(default=None, ge=0)
     record_count: int | None = Field(default=None, ge=0)
 
-    _default_hydrate: ClassVar[bool] = True
-
-    def materialize_to(self, directory: Path, *, format: str | None = None) -> Path:
-        if format is not None:
-            raise ValueError(f"DataRecordArtifact does not support format conversion (got {format!r})")
+    def _materialize_content(self, directory: Path) -> Path:
         if self.content is None:
             raise ValueError("Cannot materialize: artifact not hydrated")
+        if self.original_name is None:
+            raise ValueError("Cannot materialize: original_name not set")
         filename = f"{self.original_name}{self.extension or '.csv'}"
         path = directory / filename
         path.write_bytes(self.content)
@@ -87,14 +83,6 @@ class DataRecordArtifact(Artifact):
             record_count=record_count,
             metadata=metadata or {},
         )
-
-    def finalize(self) -> DataRecordArtifact:
-        if self.artifact_id is not None:
-            return self
-        if self.content is None:
-            raise ValueError("Cannot finalize: artifact not hydrated")
-        self.artifact_id = compute_artifact_id(self.content)
-        return self
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -135,20 +123,43 @@ That is the complete implementation. The rest of this guide breaks it down.
 
 ---
 
-## Step 1: Create the artifact model
+## Create the artifact model
 
 Create a new file in `src/artisan/schemas/artifact/` (or your domain layer's
-`schemas/artifact/` directory). The model must subclass `Artifact` and implement
-six members:
+`schemas/artifact/` directory). The model must subclass `Artifact` and provide
+these members:
 
 | Member | Kind | Purpose |
 |--------|------|---------|
 | `POLARS_SCHEMA` | `ClassVar` | Column names and Polars types for the Delta Lake table |
+| `artifact_type` | field | String discriminator with `frozen=True` |
 | `draft()` | classmethod | Create a mutable artifact with `artifact_id=None` |
-| `finalize()` | method | Compute the content hash and set `artifact_id` |
-| `materialize_to()` | method | Write content to disk, return the `Path` |
+| `_materialize_content()` | method | Write content to disk, return the `Path` |
 | `to_row()` | method | Serialize to a dict matching `POLARS_SCHEMA` |
 | `from_row()` | classmethod | Deserialize from a dict back to the model |
+
+The base `Artifact` class provides `finalize()`, `materialize_to()`, and
+several fields your model inherits automatically. You do not need to redeclare
+these inherited fields on your subclass, but you must include them in
+`POLARS_SCHEMA` and `to_row()`/`from_row()` because they are stored as
+Delta Lake columns.
+
+### Inherited fields from the base class
+
+The `Artifact` base class defines these fields that every artifact type shares:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `artifact_id` | `str \| None` | Content-addressed ID (32-char hex). `None` for drafts. |
+| `artifact_type` | `str` | Type discriminator. Must be overridden with a default on each subclass. |
+| `origin_step_number` | `int \| None` | Pipeline step that produced this artifact. |
+| `metadata` | `dict[str, Any]` | Generic JSON-serializable metadata dict. |
+| `external_path` | `str \| None` | Path to external content on disk. |
+| `materialized_path` | `Path \| None` | Runtime-only path (excluded from serialization). |
+
+The base class also sets `model_config = ConfigDict(extra="forbid")`, which
+means Pydantic rejects any fields not declared on your model. This catches
+typos in field names early.
 
 ### Set the artifact type
 
@@ -156,7 +167,14 @@ six members:
 artifact_type: str = Field(default="data_record", frozen=True)
 ```
 
-The value is a plain string. `frozen=True` prevents mutation after creation.
+The value is a plain string that uniquely identifies this type. `frozen=True`
+prevents mutation after creation. Built-in types use `ArtifactTypes` constants
+(e.g., `default=ArtifactTypes.METRIC`), but a plain string works identically
+for custom types.
+
+The base class validates that `artifact_type` is never set to
+`ArtifactTypes.ANY`, which is a spec-only sentinel that cannot appear on
+concrete artifacts.
 
 ### Define the Polars schema
 
@@ -179,10 +197,9 @@ Parquet column order. All artifact types share the first two columns
 (`artifact_id`, `origin_step_number`) and typically end with `metadata` and
 `external_path`.
 
-### Implement draft and finalize
+### Implement draft
 
-`draft()` builds a mutable artifact with `artifact_id=None`. `finalize()`
-computes the content hash:
+`draft()` builds a mutable artifact with `artifact_id=None`:
 
 ```python
 @classmethod
@@ -196,20 +213,29 @@ def draft(cls, content: bytes, original_name: str, step_number: int, ...) -> Dat
         size_bytes=len(content),
         ...
     )
-
-def finalize(self) -> DataRecordArtifact:
-    if self.artifact_id is not None:
-        return self  # idempotent
-    if self.content is None:
-        raise ValueError("Cannot finalize: artifact not hydrated")
-    self.artifact_id = compute_artifact_id(self.content)
-    return self
 ```
 
-Use `compute_artifact_id` from `artisan.utils.hashing`. It takes `bytes` and
-returns a 32-character hex string (xxh3_128). For JSON-based content, use
-`json.dumps(data, sort_keys=True).encode("utf-8")` to ensure deterministic
-hashing.
+Use `strip_extensions()` from `artisan.utils.filename` to extract the bare
+filename stem and `get_compound_extension()` from
+`artisan.schemas.artifact.common` to capture compound extensions like
+`.tar.gz`.
+
+### Understand finalize (base class)
+
+You do not need to implement `finalize()`. The base `Artifact.finalize()`
+method:
+
+- Returns `self` if `artifact_id` is already set (idempotent)
+- Calls `_finalize_content()` to get the bytes to hash
+- Raises `ValueError` if `_finalize_content()` returns `None`
+- Passes those bytes to `compute_artifact_id` (xxh3_128, returns a 32-character hex string)
+- Sets `artifact_id` on the instance
+
+The default `_finalize_content()` returns `getattr(self, "content", None)`. If
+your artifact has a `content: bytes | None` field, finalization works out of
+the box. For metadata-only types without a `content` field, override
+`_finalize_content()` instead -- see
+[Metadata-only types](#metadata-only-types-no-embedded-content).
 
 ### Implement serialization
 
@@ -222,6 +248,7 @@ def to_row(self) -> dict[str, Any]:
     return {
         ...
         "metadata": json.dumps(self.metadata or {}),  # dict -> str
+        "external_path": self.external_path,           # include inherited fields
     }
 
 @classmethod
@@ -230,19 +257,26 @@ def from_row(cls, row: dict[str, Any]) -> Self:
     return cls(
         ...
         metadata=json.loads(metadata_raw) if metadata_raw else {},  # str -> dict
+        external_path=row.get("external_path"),
     )
 ```
 
-### Implement materialize_to
+Include the inherited fields (`artifact_id`, `origin_step_number`, `metadata`,
+`external_path`) in both methods. The keys in the dict returned by `to_row()`
+must match `POLARS_SCHEMA` exactly.
 
-Write the artifact content to a file in the given directory:
+### Implement _materialize_content
+
+The base class `_materialize_content()` raises `NotImplementedError`, so your
+subclass must provide an implementation. Write the artifact content to a file
+in the given directory, set `self.materialized_path`, and return the path:
 
 ```python
-def materialize_to(self, directory: Path, *, format: str | None = None) -> Path:
-    if format is not None:
-        raise ValueError(f"... does not support format conversion (got {format!r})")
+def _materialize_content(self, directory: Path) -> Path:
     if self.content is None:
         raise ValueError("Cannot materialize: artifact not hydrated")
+    if self.original_name is None:
+        raise ValueError("Cannot materialize: original_name not set")
     filename = f"{self.original_name}{self.extension or '.csv'}"
     path = directory / filename
     path.write_bytes(self.content)
@@ -250,12 +284,16 @@ def materialize_to(self, directory: Path, *, format: str | None = None) -> Path:
     return path
 ```
 
-If your artifact type supports format conversion (e.g., `.json` to `.csv`),
-handle the `format` parameter instead of rejecting it.
+The base class `materialize_to()` rejects format conversion by default and
+delegates to your `_materialize_content()`. For most artifact types,
+implementing `_materialize_content()` is sufficient. Override
+`materialize_to()` only if you need custom logic beyond writing content to
+disk -- for example, `ExecutionConfigArtifact` overrides it to resolve
+`{"$artifact": id}` reference patterns into filesystem paths before writing.
 
 ---
 
-## Step 2: Register the type definition
+## Register the type definition
 
 Add a three-line `ArtifactTypeDef` subclass. You can place it at the bottom of
 your model file (as `DataArtifact` does) or in `registry.py` alongside the
@@ -270,16 +308,18 @@ class DataRecordTypeDef(ArtifactTypeDef):
 
 When Python loads this class, `__init_subclass__` fires and:
 
-1. Validates that `key`, `table_path`, and `model` are set
-2. Validates that the model has `POLARS_SCHEMA`, `to_row`, and `from_row`
-3. Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.DATA_RECORD` works)
-4. Registers the type def in `ArtifactTypeDef._registry`
+- Validates that `key`, `table_path`, and `model` are set
+- Validates that the model has `POLARS_SCHEMA`, `to_row`, and `from_row`
+- Rejects duplicate keys (raises `ValueError` if another type def already uses the same key)
+- Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.DATA_RECORD` works at runtime)
+- Registers the type def in `ArtifactTypeDef._registry`
 
-If any validation fails, you get an immediate `TypeError` at import time.
+If any validation fails, you get an immediate `TypeError` or `ValueError` at
+import time.
 
 ---
 
-## Step 3: Update exports
+## Update exports
 
 Add the new model to the package `__init__.py`:
 
@@ -293,12 +333,17 @@ __all__ = [
 ]
 ```
 
+The `ArtifactTypeDef` subclass must be importable for registration to happen.
+If the type def lives in the same file as the model (the recommended pattern
+for domain-layer types), importing the model is sufficient. If it lives in
+`registry.py`, that module is already imported by the package init.
+
 For domain-layer types (outside `artisan`), update your domain package's
 `__init__.py` instead.
 
 ---
 
-## Step 4: Write tests
+## Write tests
 
 Cover these scenarios:
 
@@ -396,29 +441,65 @@ record_count: int | None = Field(default=None, ge=0)
 metadata={"record_count": 42}
 ```
 
+### Using JsonContentMixin for JSON-based artifacts
+
+If your artifact stores JSON-encoded content (like `MetricArtifact` and
+`ExecutionConfigArtifact` do), use the `JsonContentMixin` from
+`artisan.schemas.artifact.common`. It provides a cached `values` property that
+parses and returns the JSON content as a dict:
+
+```python
+from artisan.schemas.artifact.common import JsonContentMixin
+
+class MyJsonArtifact(JsonContentMixin, Artifact):
+    """Artifact storing JSON-encoded data."""
+
+    content: bytes | None = Field(default=None)
+    # ... other fields
+
+    @classmethod
+    def draft(cls, content: dict[str, Any], ...) -> MyJsonArtifact:
+        encoded = json.dumps(content, sort_keys=True).encode("utf-8")
+        return cls(artifact_id=None, content=encoded, ...)
+```
+
+After drafting or loading, access parsed values with `artifact.values` instead
+of manually decoding `artifact.content`. The mixin caches the parsed result, so
+repeated access is free. It raises `ValueError` if the artifact is not hydrated.
+
+Note the MRO: list `JsonContentMixin` before `Artifact` in the class
+definition so the mixin's methods are resolved first.
+
 ### Metadata-only types (no embedded content)
 
 Some artifact types reference external data rather than storing content inline.
-`FileRefArtifact` is the built-in example. For metadata-only types, hash a
-metadata record instead of raw content:
+`FileRefArtifact` is the built-in example. These types have no `content` field,
+so the default `_finalize_content()` (which calls `getattr(self, "content",
+None)`) returns `None`, causing `finalize()` to raise `ValueError`. Override
+`_finalize_content()` to hash a metadata record instead:
 
 ```python
-def finalize(self) -> MyRefArtifact:
-    if self.artifact_id is not None:
-        return self
-    metadata_json = json.dumps(
-        {"path": self.path, "size_bytes": self.size_bytes},
+def _finalize_content(self) -> bytes | None:
+    if self.content_hash is None:
+        return None
+    return json.dumps(
+        {"content_hash": self.content_hash, "path": self.path, "size_bytes": self.size_bytes},
         sort_keys=True,
     ).encode("utf-8")
-    self.artifact_id = compute_artifact_id(metadata_json)
-    return self
 ```
+
+The base class `finalize()` calls your `_finalize_content()` and hashes the
+result. You do not override `finalize()` itself.
 
 ### Domain-layer types
 
 Domain types can live in a separate package outside `artisan`. The pattern is
 identical -- subclass `Artifact`, define an `ArtifactTypeDef`, and the
-framework discovers it at import time.
+framework discovers it at import time via `__init_subclass__`.
+
+Ensure the module containing your `ArtifactTypeDef` subclass is imported
+somewhere during application startup. If it is never imported, the type will
+not be registered.
 
 ### Placing the type definition
 
@@ -443,6 +524,8 @@ Both work identically. Pick whichever keeps your import graph cleaner.
 | Data loss in round-trip | `to_row()` and `from_row()` are out of sync | Test with `from_row(artifact.to_row())` and compare all fields |
 | Non-deterministic artifact IDs | JSON encoding without `sort_keys=True` | Always use `json.dumps(..., sort_keys=True)` for hash inputs |
 | `POLARS_SCHEMA` mismatch | Schema columns don't match `to_row()` keys | Keep schema and `to_row()` in sync -- same keys, same order |
+| `ValidationError: extra fields not permitted` | Field name typo in `from_row()` or `draft()` | The base class uses `ConfigDict(extra="forbid")` -- check field names match the model |
+| `ValueError` on `artifact_type` | Used `ArtifactTypes.ANY` as a default | `ANY` is a spec-only sentinel; use a concrete type string |
 
 ---
 
@@ -480,7 +563,7 @@ definitions. The registry handles everything.
 
 ---
 
-## Cross-References
+## Cross-references
 
 - [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md) -- artifact identity, draft/finalize lifecycle, hydration
 - [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) -- how artifact tables are persisted

@@ -207,12 +207,12 @@ class TestTwoDataclassPattern:
             "group_id",
         }
 
-    def test_artifact_edge_has_8_fields(self):
-        """Test that ArtifactProvenanceEdge has exactly 8 fields."""
+    def test_artifact_edge_has_9_fields(self):
+        """Test that ArtifactProvenanceEdge has exactly 9 fields."""
         from artisan.schemas import ArtifactProvenanceEdge
 
         field_names = list(ArtifactProvenanceEdge.model_fields.keys())
-        assert len(field_names) == 8
+        assert len(field_names) == 9
         assert set(field_names) == {
             "execution_run_id",
             "source_artifact_id",
@@ -222,6 +222,7 @@ class TestTwoDataclassPattern:
             "source_role",
             "target_role",
             "group_id",
+            "step_boundary",
         }
 
     def test_source_target_pair_is_lightweight(self):

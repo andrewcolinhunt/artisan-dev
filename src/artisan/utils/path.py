@@ -16,7 +16,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 
-def get_caller_dir() -> Path:
+def get_caller_dir(stack_level: int = 1) -> Path:
     """Get the directory of the calling file (script or notebook).
 
     Tries multiple strategies so the same code works in a plain Python script,
@@ -29,12 +29,18 @@ def get_caller_dir() -> Path:
        ``ipykernel`` ≥ 6.9 with the notebook path.
     4. **Fallback** — ``Path.cwd()``.
 
+    Args:
+        stack_level: How many frames to walk up. 1 (default) means
+            "my caller", 2 means "my caller's caller", etc.
+
     Returns:
         Absolute path to the directory containing the running file.
     """
     frame = inspect.currentframe()
     try:
-        caller = frame.f_back if frame else None
+        caller = frame
+        for _ in range(stack_level):
+            caller = caller.f_back if caller else None
         if caller:
             # Strategy 1: script with __file__
             caller_file = caller.f_globals.get("__file__")
