@@ -3,7 +3,7 @@
 A Python framework for building computational pipelines with automatic
 provenance tracking.
 
-Artisan is intended to be more protocol than platform. Operations declare a
+Artisan is a set of protocols for composable, scalable, and reproducible computation. Operations declare a
 contract (typed inputs, typed outputs, parameters) and the framework uses that
 contract to wire things together, track what produced what, and store results
 as content-addressed artifacts. The computation inside each operation is a
@@ -173,10 +173,10 @@ plugin with skills for scaffolding operations, pipelines, and documentation.
 
 | Skill | Description |
 |-------|-------------|
-| `/artisan:write-operation` | Scaffold or review an `OperationDefinition` subclass |
-| `/artisan:write-composite` | Scaffold or review a `CompositeDefinition` subclass |
-| `/artisan:write-pipeline` | Scaffold a pipeline script composing operations |
-| `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
+| `/write-operation` | Scaffold or review an `OperationDefinition` subclass |
+| `/write-composite` | Scaffold or review a `CompositeDefinition` subclass |
+| `/write-pipeline` | Scaffold a pipeline script composing operations |
+| `/write-docs` | Write or edit documentation pages, tutorials, and guides |
 
 The plugin is included in the repository and activates automatically.
 Downstream repos can install it by pointing their settings to this repo. See
