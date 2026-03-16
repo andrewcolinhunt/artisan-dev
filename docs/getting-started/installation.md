@@ -75,8 +75,9 @@ pixi run prefect-start
 ```
 
 This starts a local Prefect server (backed by PostgreSQL) in the background and
-writes a discovery file so Artisan can locate it automatically. You can verify
-the server is running by opening <http://localhost:4200> in your browser.
+writes a discovery file so Artisan can locate it automatically. The server binds
+to a UID-based port to avoid collisions when multiple users share a machine.
+Check the terminal output for the URL, then open it in your browser to verify.
 
 To stop the server when you're done:
 
@@ -91,9 +92,10 @@ stay running and accessible while pipelines execute.
 :::
 
 :::{note}
-**Using Prefect Cloud:** You can use [Prefect Cloud](https://www.prefect.io/cloud)
-instead of a local server. See
-[Connect to Prefect](../how-to-guides/connect-to-prefect-cloud.md) for setup.
+**Prefect Cloud** is also supported as an alternative, though the self-hosted
+server is recommended for most use cases — especially on HPC clusters. See
+[Connect to Prefect](../how-to-guides/connect-to-prefect.md) for details on
+both options.
 :::
 
 :::{dropdown} What is Prefect?
@@ -126,7 +128,7 @@ When connecting, Artisan checks for a server URL in this order:
 | | `PREFECT_SUBMITIT_SERVER` env var | `export PREFECT_SUBMITIT_SERVER=http://...` |
 | | `PREFECT_API_URL` env var | `export PREFECT_API_URL=http://...` |
 | | Discovery file | Written by `pixi run prefect-start` |
-| Lowest | Prefect profile | `~/.prefect/profiles.toml` (set via `prefect cloud login`) |
+| Lowest | Prefect profile | `~/.prefect/profiles.toml` (set via `pixi run prefect cloud login`) |
 
 ---
 
