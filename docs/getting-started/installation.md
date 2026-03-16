@@ -105,8 +105,8 @@ owns pipeline definition, step sequencing, caching, and provenance. Prefect
 dispatches work to local processes or SLURM nodes and provides an optional
 monitoring UI.
 
-For local-only execution the server is not required. For SLURM execution,
-workers need a coordination point, so a Prefect server must be running. See
+The server is required for all execution modes — both local and SLURM. Even
+local execution uses Prefect to dispatch tasks to a process pool. See
 [Tooling Decisions](../contributing/tooling-decisions.md) for the full
 rationale.
 :::
