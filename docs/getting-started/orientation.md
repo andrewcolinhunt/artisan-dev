@@ -139,8 +139,8 @@ with outputs.
 
 All pipeline data lives in **Delta Lake** tables, giving you ACID transactions,
 time travel, and efficient queries via Polars. Artifact content is stored
-directly in Delta table columns — binary bytes for data artifacts, JSON strings
-for metrics and configs — while `FILE_REF` artifacts store path references to
+directly in Delta table columns — binary bytes for data artifacts, JSON content
+serialized as bytes for metrics and configs — while `FILE_REF` artifacts store path references to
 files on disk. Workers stage results as Parquet files during execution, and the
 orchestrator commits them atomically to the Delta tables.
 

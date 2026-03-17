@@ -49,8 +49,8 @@ You should see `Installation OK` printed to the terminal.
 :::{dropdown} What is Pixi?
 Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
 it creates an isolated environment — but Pixi also handles Python itself and
-all non-Python dependencies (Graphviz, PostgreSQL, Node.js, etc.) from a single
-lockfile. Each clone gets its own environment.
+all non-Python dependencies (PostgreSQL, Graphviz, etc.) from a single lockfile.
+Each clone gets its own environment.
 
 | Tool | Manages Python? | Manages system deps? | Project-scoped? |
 |------|:-:|:-:|:-:|
@@ -59,8 +59,8 @@ lockfile. Each clone gets its own environment.
 | uv | Yes | No | Yes |
 | **Pixi** | **Yes** | **Yes** | **Yes** |
 
-**Why Pixi for this project?** Artisan needs PostgreSQL, Graphviz, and Node.js
-alongside Python. Pixi resolves all of them from conda-forge and PyPI in one
+**Why Pixi for this project?** Artisan needs PostgreSQL and Graphviz
+alongside Python (plus Node.js for documentation builds). Pixi resolves all of them from conda-forge and PyPI in one
 lockfile (`pixi.lock`), so every contributor gets an identical environment
 regardless of platform. See [Tooling Decisions](../contributing/tooling-decisions.md)
 for the full rationale.
@@ -176,9 +176,9 @@ In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**
 ## Claude Code
 
 Artisan ships with a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-plugin for AI-assisted development — scaffolding operations, building pipelines,
-and writing docs. See [Using Claude Code](using-claude-code.md) for setup and
-usage.
+configuration for AI-assisted development — scaffolding operations, building
+pipelines, and writing docs. See [Using Claude Code](using-claude-code.md) for
+setup and usage.
 
 ---
 

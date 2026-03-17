@@ -13,15 +13,15 @@ Because the contract is explicit and structured, caching, lineage queries, and
 portability across environments come for free. The same pipeline runs on a
 laptop or an HPC cluster without changes to the operations themselves.
 
-> **Status:** This project is in active development (v0.1). APIs may change
-> between releases.
+> **Status:** This project is in early development. APIs may change between
+> releases.
 
 ---
 
 ## Why Artisan?
 
 **Simple** — Define steps, connect outputs to inputs, run. No boilerplate,
-just Python.
+plain Python.
 
 **Extensible** — Wrap any tool as an `OperationDefinition`. Declare inputs and
 outputs, implement three methods, and the framework handles the rest.
@@ -102,6 +102,12 @@ pipeline.run(
 
 result = pipeline.finalize()
 ```
+
+:::{note}
+This example requires a running Prefect server. See the
+[Getting Started guide](docs/getting-started/installation.md#start-the-prefect-server)
+for setup instructions.
+:::
 
 ## Development Setup
 

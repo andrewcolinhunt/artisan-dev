@@ -41,15 +41,7 @@ context is built in.
 ## Artisan skills
 
 The repo ships with framework-specific skills (slash commands) that Claude Code
-auto-discovers from the `.claude-plugin/` directory.
-
-If skills aren't available automatically, install them manually. Run these
-commands inside the Claude Code interactive session (not in a regular terminal):
-
-```
-/plugin marketplace add
-/plugin install
-```
+auto-discovers from the `skills/` directory at the repo root.
 
 | Skill | Description |
 |-------|-------------|
@@ -102,3 +94,10 @@ would follow.
 
 You can create a personal `CLAUDE.local.md` for your own preferences (editor
 settings, branch conventions, etc.). It's auto-gitignored.
+
+---
+
+## Cross-references
+
+- [Installation](installation.md) — Installing Artisan and configuring your environment
+- [Orientation](orientation.md) — The mental model behind the framework

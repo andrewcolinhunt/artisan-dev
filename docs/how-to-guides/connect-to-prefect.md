@@ -8,7 +8,7 @@ monitoring.
 
 ---
 
-## Why Prefect needs a server
+## Prefect's role in Artisan
 
 Artisan uses Prefect as a dispatch layer for parallel task execution — not as a
 workflow engine. Artisan owns pipeline definition, step sequencing, caching, and
@@ -113,6 +113,7 @@ Artisan propagates Prefect connection settings to SLURM workers
 automatically. No extra configuration is needed:
 
 ```python
+from artisan.operations.examples import DataGenerator
 from artisan.orchestration import Backend
 
 pipeline.run(
