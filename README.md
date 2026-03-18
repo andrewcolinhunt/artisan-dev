@@ -3,7 +3,7 @@
 A Python framework for building computational pipelines with automatic
 provenance tracking.
 
-Artisan is intended to be more protocol than platform. Operations declare a
+Artisan is a set of protocols for composable, scalable, and reproducible computation. Operations declare a
 contract (typed inputs, typed outputs, parameters) and the framework uses that
 contract to wire things together, track what produced what, and store results
 as content-addressed artifacts. The computation inside each operation is a
@@ -13,15 +13,15 @@ Because the contract is explicit and structured, caching, lineage queries, and
 portability across environments come for free. The same pipeline runs on a
 laptop or an HPC cluster without changes to the operations themselves.
 
-> **Status:** This project is in active development (v0.1). APIs may change
-> between releases.
+> **Status:** This project is in early development. APIs may change between
+> releases.
 
 ---
 
 ## Why Artisan?
 
 **Simple** — Define steps, connect outputs to inputs, run. No boilerplate,
-just Python.
+plain Python.
 
 **Extensible** — Wrap any tool as an `OperationDefinition`. Declare inputs and
 outputs, implement three methods, and the framework handles the rest.
@@ -54,49 +54,10 @@ pixi install
 
 # Verify
 pixi run python -c "import artisan; print('Artisan installed successfully')"
-
-# Start the Prefect server (orchestrates pipeline execution)
-pixi run prefect-start
-
 ```
 
----
-
-## IDE Setup (VSCode)
-
-### Python Interpreter
-
-Set the Pixi environment as your VSCode Python interpreter:
-
-```bash
-pixi run which python
-# Example output: /home/user/artisan/.pixi/envs/default/bin/python
-```
-
-In VSCode: `Ctrl+Shift+P` → "Python: Select Interpreter" → paste the path above.
-
-### Jupyter Kernel
-
-Register the Pixi environment as a Jupyter kernel so notebooks use the correct
-packages:
-
-```bash
-pixi run install-kernel
-```
-
-In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**.
-
-### VS Code Jupyter Kernel Slowness (Pixi Environments)
-
-If your pixi Jupyter kernel takes 30+ seconds to start in VS Code, the
-`Python Environments` extension (`ms-python.vscode-python-envs`) is likely the
-cause. It doesn't recognize pixi as a known environment type and spends 30
-seconds trying to activate it before timing out.
-
-**Fix:** Uninstall the `Python Environments` extension (`ms-python.vscode-python-envs`)
-in VS Code. The core Python extension works fine without it.
-
-Tracked upstream: [microsoft/vscode-python#25804](https://github.com/microsoft/vscode-python/issues/25804)
+→ **[Getting Started guide](docs/getting-started/index.md)** for detailed setup, Prefect setup,
+your first pipeline, and the mental model behind the framework.
 
 ---
 
@@ -141,6 +102,12 @@ pipeline.run(
 
 result = pipeline.finalize()
 ```
+
+:::{note}
+This example requires a running Prefect server. See the
+[Getting Started guide](docs/getting-started/installation.md#start-the-prefect-server)
+for setup instructions.
+:::
 
 ## Development Setup
 
@@ -193,8 +160,8 @@ pixi run -e docs docs-serve       # Serve locally at http://localhost:8000
 pixi run -e docs docs-clean       # Remove build artifacts
 ```
 
-- **[Getting Started](docs/getting-started/index.md)** — Installation and
-  your first pipeline
+- **[Getting Started](docs/getting-started/index.md)** — Installation and first
+  steps
 - **[Tutorials](docs/tutorials/index.md)** — Interactive notebooks from first
   steps through advanced patterns
 - **[How-to Guides](docs/how-to-guides/index.md)** — Task-oriented guides for
@@ -212,26 +179,14 @@ plugin with skills for scaffolding operations, pipelines, and documentation.
 
 | Skill | Description |
 |-------|-------------|
-| `/artisan:write-operation` | Scaffold or review an `OperationDefinition` subclass |
-| `/artisan:write-composite` | Scaffold or review a `CompositeDefinition` subclass |
-| `/artisan:write-pipeline` | Scaffold a pipeline script composing operations |
-| `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
+| `/write-operation` | Scaffold or review an `OperationDefinition` subclass |
+| `/write-composite` | Scaffold or review a `CompositeDefinition` subclass |
+| `/write-pipeline` | Scaffold a pipeline script composing operations |
+| `/write-docs` | Write or edit documentation pages, tutorials, and guides |
 
-**Marketplace install** (recommended):
-
-```bash
-/plugin marketplace add        # register the plugin from this repo
-/plugin install                # install registered plugins
-```
-
-**Manual fallback** — point Claude Code at the repo root:
-
-```bash
-claude --plugin-dir /path/to/artisan-repo
-```
-
-See [Installation — Claude Code plugin](docs/getting-started/installation.md#claude-code-plugin)
-for details.
+The plugin is included in the repository and activates automatically.
+Downstream repos can install it by pointing their settings to this repo. See
+[Using Claude Code](docs/getting-started/using-claude-code.md) for details.
 
 ---
 
