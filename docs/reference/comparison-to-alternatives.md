@@ -1,8 +1,9 @@
 # Comparison to Alternatives
 
-Artisan targets batch scientific computation on HPC clusters with per-artifact
-provenance, queryable structured results, and content-addressed caching — all on
-a shared filesystem with no services to deploy. This page places Artisan
+Artisan targets batch scientific computation with per-artifact provenance,
+queryable structured results, and content-addressed caching — with no services
+to deploy. Its extensible backend architecture supports HPC clusters (SLURM)
+and cloud environments from the same pipeline code. This page places Artisan
 alongside the major workflow frameworks so you can decide which fits your
 problem.
 
@@ -19,7 +20,8 @@ For the design rationale behind the differences highlighted here, see
 | File-in/file-out transformations with wildcard naming patterns | **Snakemake** |
 | Scheduled recurring ETL/ELT with enterprise system integrations | **Airflow** |
 | General-purpose Python workflow orchestration and observability | **Prefect** |
-| Batch scientific computation needing per-artifact lineage and queryable results on HPC | **Artisan** |
+| Asset-centric data platform with built-in UI, scheduling, and cloud-native deployment | **Dagster** |
+| Batch scientific computation needing per-artifact lineage and queryable results | **Artisan** |
 
 These are not mutually exclusive. Artisan uses Prefect internally as its
 dispatch layer (see [below](#comparison-prefect-relationship)), and a team could use
@@ -29,20 +31,20 @@ Airflow to trigger Artisan pipelines on a schedule.
 
 ## Comparison matrix
 
-| Dimension | Nextflow | Snakemake | Airflow | Prefect | Artisan |
-|---|---|---|---|---|---|
-| **Fundamental unit** | Process (channel-connected) | Rule (file-matched) | Task (operator-based) | Task (decorator-based) | Artifact (content-addressed) |
-| **Workflow language** | Groovy DSL | Python-embedded DSL | Python | Python | Python |
-| **Data model** | File channels between processes | Files matched by wildcards | XComs (small JSON) | Opaque task returns | Typed artifacts in Delta Lake tables |
-| **Provenance** | Execution-level (file checksums, task lineage) | File-level metadata + HTML reports | External (OpenLineage) | Flow/task run history | Dual: execution + per-artifact derivation chains |
-| **Caching** | Hash of inputs + command, automatic | Timestamp + Merkle tree | None built-in | Opt-in per-task (`cache_key_fn`) | Content-addressed hashes, automatic (configurable via `CachePolicy`) |
-| **Result storage** | Files in `work/` dirs | Files on filesystem | External (user-managed) | External (opt-in persistence) | Delta Lake tables (queryable, ACID) |
-| **Result querying** | Parse files or use Seqera Platform | Parse files | External tools | External tools | Direct SQL-like queries via Polars/DuckDB |
-| **HPC / SLURM** | Native (+ PBS, LSF, SGE) | Native (plugin-based) | None | Indirect (Dask + SLURMCluster) | Native (`SlurmBackend` via job arrays) |
-| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Extensible `BackendBase` architecture (LOCAL, SLURM built-in) |
-| **Infrastructure** | None (file-based) | None (file-based) | Scheduler + DB + web server | Server or Prefect Cloud | None (Delta Lake on filesystem) |
-| **Error model** | Per-process retry with resource escalation | Delete incomplete, retry with escalation | Task retry + SLA alerts | Task retry + state machine | Per-item containment with configurable policy (CONTINUE or FAIL_FAST) |
-| **Ecosystem** | nf-core (100+ pipelines) | Workflow Catalog, Bioconda | 1,000+ provider operators | Growing integrations | Domain-extensible artifact type registry |
+| Dimension | Nextflow | Snakemake | Airflow | Prefect | Dagster | Artisan |
+|---|---|---|---|---|---|---|
+| **Fundamental unit** | Process (channel-connected) | Rule (file-matched) | Task (operator-based) | Task (decorator-based) | Asset (software-defined) | Artifact (content-addressed) |
+| **Workflow language** | Groovy DSL | Python-embedded DSL | Python | Python | Python | Python |
+| **Data model** | File channels between processes | Files matched by wildcards | XComs (small JSON) | Opaque task returns | Assets with IO Managers | Typed artifacts in Delta Lake tables |
+| **Provenance** | Execution-level (file checksums, task lineage) | File-level metadata + HTML reports | External (OpenLineage) | Flow/task run history | Asset-level lineage graph | Dual: execution + per-artifact derivation chains |
+| **Caching** | Hash of inputs + command, automatic | Timestamp + Merkle tree | None built-in | Opt-in per-task (`cache_key_fn`) | Code + data version hashing, opt-in | Content-addressed hashes, automatic (configurable via `CachePolicy`) |
+| **Result storage** | Files in `work/` dirs | Files on filesystem | External (user-managed) | External (opt-in persistence) | IO Manager-dependent (S3, Snowflake, local, etc.) | Delta Lake tables (queryable, ACID) |
+| **Result querying** | Parse files or use Seqera Platform | Parse files | External tools | External tools | Asset metadata in Dagster UI | Direct SQL-like queries via Polars/DuckDB |
+| **HPC / SLURM** | Native (+ PBS, LSF, SGE) | Native (plugin-based) | None | Indirect (Dask + SLURMCluster) | None | Native (`SlurmBackend` via job arrays) |
+| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Kubernetes, ECS, Dagster Cloud | Extensible `BackendBase` architecture (LOCAL, SLURM built-in) |
+| **Infrastructure** | None (file-based) | None (file-based) | Scheduler + DB + web server | Server or Prefect Cloud | Dagster UI + daemon + PostgreSQL (or Dagster Cloud) | None (Delta Lake on filesystem) |
+| **Error model** | Per-process retry with resource escalation | Delete incomplete, retry with escalation | Task retry + SLA alerts | Task retry + state machine | Op-level retry with run-level policies | Per-item containment with configurable policy (CONTINUE or FAIL_FAST) |
+| **Ecosystem** | nf-core (100+ pipelines) | Workflow Catalog, Bioconda | 1,000+ provider operators | Growing integrations | Growing integrations (dbt, Spark, Fivetran, etc.) | Domain-extensible artifact type registry |
 
 ---
 
@@ -53,14 +55,14 @@ to the closest Artisan equivalents.
 
 | Concept in other frameworks | Artisan equivalent |
 |---|---|
-| Nextflow **channel** / Snakemake **wildcard rule** | `OutputReference` — a typed, resolvable pointer to a step's output artifacts |
-| Nextflow **process** / Snakemake **rule** / Airflow **operator** / Prefect **task** | `OperationDefinition` — a computation with declared inputs and outputs |
-| Nextflow **workflow** / Snakemake **Snakefile** / Airflow **DAG** / Prefect **flow** | `PipelineManager` — step sequencer with automatic caching and provenance |
-| Nextflow `publishDir` / Snakemake output files | Delta Lake commit — artifacts are stored as table rows, not scattered files |
-| Nextflow `-resume` / Snakemake timestamp check / Prefect `cache_key_fn` | Content-addressed cache — automatic, no flags or per-task configuration |
+| Nextflow **channel** / Snakemake **wildcard rule** / Dagster **asset dependency** | `OutputReference` — a typed, resolvable pointer to a step's output artifacts |
+| Nextflow **process** / Snakemake **rule** / Airflow **operator** / Prefect **task** / Dagster **`@asset`** | `OperationDefinition` — a computation with declared inputs and outputs |
+| Nextflow **workflow** / Snakemake **Snakefile** / Airflow **DAG** / Prefect **flow** / Dagster **asset graph** | `PipelineManager` — step sequencer with automatic caching and provenance |
+| Nextflow `publishDir` / Snakemake output files / Dagster **IO Manager** | Delta Lake commit — artifacts are stored as table rows, not scattered files |
+| Nextflow `-resume` / Snakemake timestamp check / Prefect `cache_key_fn` / Dagster **asset versioning** | Content-addressed cache — automatic, no flags or per-task configuration |
 | Nextflow `work/` directory | Staging directory → atomic Delta Lake commit |
 | Airflow XCom | Artifact — content-addressed, typed, and queryable |
-| Nextflow **operator chain** / Snakemake **rule dependencies** | `CompositeDefinition` — compose multiple operations into a reusable unit with collapsed or expanded execution |
+| Nextflow **operator chain** / Snakemake **rule dependencies** / Dagster **`@graph_asset`** | `CompositeDefinition` — compose multiple operations into a reusable unit with collapsed or expanded execution |
 
 ---
 
@@ -127,6 +129,37 @@ a different problem.
 - Native HPC/SLURM support
 - Built-in per-artifact provenance (Airflow requires external OpenLineage)
 - Designed for batch computation, not scheduled job orchestration
+
+### vs. Dagster
+
+Dagster is the closest peer on the data-awareness axis. Both treat data as a
+first-class citizen with built-in lineage and intelligent caching. The key
+differences are in lineage granularity, infrastructure model, and compute
+targets.
+
+**Where Dagster is stronger:**
+
+- Polished web UI with asset graph visualization, run monitoring, and alerting
+- Built-in scheduling, sensors, and freshness policies
+- Large integration ecosystem: dbt, Spark, Fivetran, Snowflake, and more
+- Managed cloud offering (Dagster Cloud) with serverless execution
+- Mature and well-funded — battle-tested in production data teams
+
+**Where Artisan is stronger:**
+
+- Per-artifact lineage within batches, not only per-asset. Dagster tracks "the
+  users table was materialized from raw_users." Artisan tracks "artifact A₁₇
+  was derived from artifacts B₃ and C₉."
+- Zero infrastructure — no database, no daemon, no web server. Delta Lake on
+  the filesystem.
+- Native HPC/SLURM support via `SlurmBackend`, with extensible `BackendBase`
+  for cloud environments
+- Content-addressed identity is universal and automatic. Dagster's asset
+  versioning is opt-in and based on code version hashing, not content hashing.
+- All results are queryable Delta Lake tables. Dagster delegates storage to IO
+  Managers, which may write to opaque formats.
+- Composites with collapsed or expanded execution modes. Dagster's
+  graph-backed assets always execute as a unit.
 
 ### vs. Prefect
 
