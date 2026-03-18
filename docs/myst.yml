@@ -25,8 +25,8 @@ project:
       children:
         - file: getting-started/index.md
         - file: getting-started/installation.md
-        - file: getting-started/first-pipeline.md
         - file: getting-started/orientation.md
+        - file: getting-started/using-claude-code.md
 
     # ── Tutorials ──
     - title: Tutorials
@@ -101,6 +101,7 @@ project:
         - title: Configuration
           children:
             - file: how-to-guides/configuring-execution.md
+            - file: how-to-guides/connect-to-prefect.md
         - title: Results
           children:
             - file: how-to-guides/inspecting-provenance.md

@@ -22,6 +22,8 @@ Task-oriented instructions for common Artisan framework operations. Each guide f
 
 - [Configuring Execution](configuring-execution.md) -- Resource allocation,
   batching, and SLURM configuration
+- [Connect to Prefect](connect-to-prefect.md) -- Connect pipelines to Prefect
+  for monitoring
 
 ## Results
 

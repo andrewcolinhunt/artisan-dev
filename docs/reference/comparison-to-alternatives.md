@@ -22,7 +22,7 @@ For the design rationale behind the differences highlighted here, see
 | Batch scientific computation needing per-artifact lineage and queryable results on HPC | **Artisan** |
 
 These are not mutually exclusive. Artisan uses Prefect internally as its
-dispatch layer (see [below](#how-artisan-uses-prefect)), and a team could use
+dispatch layer (see [below](#comparison-prefect-relationship)), and a team could use
 Airflow to trigger Artisan pipelines on a schedule.
 
 ---

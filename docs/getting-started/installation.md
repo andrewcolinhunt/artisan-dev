@@ -33,6 +33,11 @@ cd artisan
 pixi install
 ```
 
+:::{note}
+The first `pixi install` downloads Python and all dependencies, which may take
+several minutes. Subsequent runs are fast.
+:::
+
 Verify the installation:
 
 ```bash
@@ -41,26 +46,70 @@ pixi run python -c "import artisan; print('Installation OK')"
 
 You should see `Installation OK` printed to the terminal.
 
+:::{dropdown} What is Pixi?
+Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
+it creates an isolated environment — but Pixi also handles Python itself and
+all non-Python dependencies (PostgreSQL, Graphviz, etc.) from a single lockfile.
+Each clone gets its own environment.
+
+| Tool | Manages Python? | Manages system deps? | Project-scoped? |
+|------|:-:|:-:|:-:|
+| venv + pip | No | No | Yes |
+| conda | Yes | Yes | No (shared envs) |
+| uv | Yes | No | Yes |
+| **Pixi** | **Yes** | **Yes** | **Yes** |
+
+**Why Pixi for this project?** Artisan needs PostgreSQL and Graphviz
+alongside Python (plus Node.js for documentation builds). Pixi resolves all of them from conda-forge and PyPI in one
+lockfile (`pixi.lock`), so every contributor gets an identical environment
+regardless of platform. See [Tooling Decisions](../contributing/tooling-decisions.md)
+for the full rationale.
+:::
+
 ---
 
 ## Start the Prefect server
-
-Artisan uses [Prefect](https://www.prefect.io/) to orchestrate pipeline
-execution. A Prefect server must be running before you run any pipeline.
 
 ```bash
 pixi run prefect-start
 ```
 
 This starts a local Prefect server (backed by PostgreSQL) in the background and
-writes a discovery file so Artisan can locate it automatically. You can verify
-the server is running by opening <http://localhost:4200> in your browser.
+writes a discovery file so Artisan can locate it automatically. The server binds
+to a UID-based port to avoid collisions when multiple users share a machine.
+Check the terminal output for the URL, then open it in your browser to verify.
 
 To stop the server when you're done:
 
 ```bash
 pixi run prefect-stop
 ```
+
+:::{tip}
+**On HPC clusters:** Don't run the Prefect server on the head node. Use a
+persistent interactive session (long-running CPU allocation). The server must
+stay running and accessible while pipelines execute.
+:::
+
+:::{note}
+**Prefect Cloud** is also supported as an alternative, though the self-hosted
+server is recommended for most use cases — especially on HPC clusters. See
+[Connect to Prefect](../how-to-guides/connect-to-prefect.md) for details on
+both options.
+:::
+
+:::{dropdown} What is Prefect?
+Artisan uses [Prefect](https://www.prefect.io/) as a dispatch layer for
+parallel task execution. Prefect is **not** a workflow engine here — Artisan
+owns pipeline definition, step sequencing, caching, and provenance. Prefect
+dispatches work to local processes or SLURM nodes and provides an optional
+monitoring UI.
+
+The server is required for all execution modes — both local and SLURM. Even
+local execution uses Prefect to dispatch tasks to a process pool. See
+[Tooling Decisions](../contributing/tooling-decisions.md) for the full
+rationale.
+:::
 
 ### Use an existing server
 
@@ -71,11 +120,29 @@ instead of starting a local one:
 export PREFECT_SUBMITIT_SERVER=http://<host>:<port>/api
 ```
 
-When connecting, Artisan checks for a server URL in this order: explicit
-`prefect_server` argument passed to `PipelineManager.create()`, the
-`PREFECT_SUBMITIT_SERVER` environment variable, the `PREFECT_API_URL`
-environment variable, and finally the local discovery file written by
-`prefect-start`.
+When connecting, Artisan checks for a server URL in this order:
+
+| Priority | Source | How to set |
+|----------|--------|-----------|
+| Highest | Explicit `prefect_server` argument | `PipelineManager.create(prefect_server="...")` |
+| | `PREFECT_SUBMITIT_SERVER` env var | `export PREFECT_SUBMITIT_SERVER=http://...` |
+| | `PREFECT_API_URL` env var | `export PREFECT_API_URL=http://...` |
+| | Discovery file | Written by `pixi run prefect-start` |
+| Lowest | Prefect profile | `~/.prefect/profiles.toml` (set via `pixi run prefect cloud login`) |
+
+---
+
+## Using Pixi day-to-day
+
+```bash
+pixi run <command>              # Run a single command in the environment
+pixi run python script.py       # Run a Python script
+pixi shell                      # Start an interactive shell (like `source .venv/bin/activate`)
+```
+
+All `pixi` commands are project-scoped — run them from the repo directory. If
+you use `pixi shell`, you can run `python`, `pytest`, etc. directly without
+the `pixi run` prefix.
 
 ---
 
@@ -106,32 +173,12 @@ In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**
 
 ---
 
-## Claude Code plugin
+## Claude Code
 
-Artisan includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-plugin with framework-aware skills for scaffolding operations, pipelines, and
-documentation. The plugin is defined at the repo root and distributed via the
-Claude Code marketplace.
-
-**Marketplace install** (recommended) — run these commands inside Claude Code:
-
-```bash
-/plugin marketplace add        # register the plugin from this repo
-/plugin install                # install registered plugins
-```
-
-**Manual fallback** — point Claude Code at the repo root:
-
-```bash
-claude --plugin-dir /path/to/artisan-repo
-```
-
-| Skill | Description |
-|-------|-------------|
-| `/artisan:write-operation` | Scaffold or review an `OperationDefinition` subclass |
-| `/artisan:write-composite` | Scaffold or review a `CompositeDefinition` subclass |
-| `/artisan:write-pipeline` | Scaffold a pipeline script composing operations |
-| `/artisan:write-docs` | Write or edit documentation pages, tutorials, and guides |
+Artisan ships with a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+configuration for AI-assisted development — scaffolding operations, building
+pipelines, and writing docs. See [Using Claude Code](using-claude-code.md) for
+setup and usage.
 
 ---
 
@@ -140,6 +187,8 @@ claude --plugin-dir /path/to/artisan-repo
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | `pixi: command not found` | Pixi not on `PATH` | Restart your terminal, or add `~/.pixi/bin` to your `PATH` manually |
+| Thread-spawn panic during `pixi install` | Too many threads on constrained node | `RAYON_NUM_THREADS=4 pixi install` |
+| `pixi install` is very slow | First run downloads Python + all deps | Expected on first install — subsequent runs are fast |
 | `PrefectServerNotFound` when running a pipeline | No Prefect server detected | Run `pixi run prefect-start`, or set `PREFECT_SUBMITIT_SERVER` |
 | `PrefectServerUnreachable` | Server URL found but server is not responding | Check that the server process is running (`pixi run prefect-start`) |
 | `dot` / Graphviz errors in provenance graphs | Graphviz layout plugins not registered | Run `pixi run dot -c` to register plugins (normally handled automatically) |
@@ -149,7 +198,5 @@ claude --plugin-dir /path/to/artisan-repo
 
 ## Next steps
 
-- [Your First Pipeline](first-pipeline.md) — Build and run a complete pipeline
-  in ~15 minutes
-- [Orientation](orientation.md) — A quick map of the key abstractions before
-  diving deeper
+- [Your First Pipeline](../tutorials/getting-started/01-first-pipeline.ipynb) — Build and run a pipeline in an interactive notebook
+- [Orientation](orientation.md) — The mental model behind the framework
