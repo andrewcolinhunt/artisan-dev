@@ -34,35 +34,14 @@ Airflow to trigger Artisan pipelines on a schedule.
 | Dimension | Nextflow | Snakemake | Airflow | Prefect | Dagster | Artisan |
 |---|---|---|---|---|---|---|
 | **Fundamental unit** | Process (channel-connected) | Rule (file-matched) | Task (operator-based) | Task (decorator-based) | Asset (software-defined) | Artifact (content-addressed) |
-| **Workflow language** | Groovy DSL | Python-embedded DSL | Python | Python | Python | Python |
 | **Data model** | File channels between processes | Files matched by wildcards | XComs (JSON; pluggable backend) | Untyped task returns | Assets with IO Managers | Typed artifacts in Delta Lake tables |
 | **Provenance** | Execution-level (file checksums, task lineage) | File-level metadata + HTML reports | External (OpenLineage) | Flow/task run history | Asset-level lineage graph | Dual: execution + per-artifact derivation chains |
 | **Caching** | Hash of inputs + command, automatic | Provenance-based triggers + Merkle-tree cross-workflow cache | None built-in | Opt-in per-task (`cache_policy`) | Code + data version hashing, opt-in | Content-addressed hashes, automatic (configurable via `CachePolicy`) |
 | **Result storage** | Files in `work/` dirs | Files on filesystem | External (user-managed) | External (opt-in persistence) | IO Manager-dependent (S3, Snowflake, local, etc.) | Delta Lake tables (queryable, ACID) |
-| **Result querying** | Parse files or use Seqera Platform | Parse files | External tools | External tools | Asset metadata in Dagster UI | Direct SQL-like queries via Polars/DuckDB |
 | **HPC / SLURM** | Native (+ PBS, LSF, SGE) | Native (plugin-based) | Community plugins | Via integrations (Dask, prefect-submitit) | Community plugin (`dagster-slurm`) | Native (`SlurmBackend` via job arrays) |
-| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Kubernetes, ECS, Dagster Cloud | Extensible `BackendBase` architecture (LOCAL, SLURM built-in) |
 | **Infrastructure** | None (file-based) | None (file-based) | Scheduler + DB + web server | Server or Prefect Cloud | Dagster UI + daemon + database (or Dagster+) | None (Delta Lake on filesystem) |
 | **Error model** | Per-process retry with resource escalation | Delete incomplete, retry with escalation | Task retry + deadline alerts | Task retry + state machine | Op-level retry with run-level policies | Per-item containment with configurable policy (CONTINUE or FAIL_FAST) |
 | **Ecosystem** | nf-core (100+ pipelines) | Workflow Catalog, Bioconda | 1,000+ provider operators | Growing integrations | Growing integrations (dbt, Spark, Fivetran, etc.) | Domain-extensible artifact type registry |
-
----
-
-## Mapping concepts across frameworks
-
-If you are coming from another framework, this table maps its core abstractions
-to the closest Artisan equivalents.
-
-| Concept in other frameworks | Artisan equivalent |
-|---|---|
-| Nextflow **channel** / Snakemake **wildcard rule** / Dagster **asset dependency** | `OutputReference` — a typed, resolvable pointer to a step's output artifacts |
-| Nextflow **process** / Snakemake **rule** / Airflow **operator** / Prefect **task** / Dagster **`@asset`** | `OperationDefinition` — a computation with declared inputs and outputs |
-| Nextflow **workflow** / Snakemake **Snakefile** / Airflow **DAG** / Prefect **flow** / Dagster **asset graph** | `PipelineManager` — step sequencer with automatic caching and provenance |
-| Nextflow `publishDir` / Snakemake output files / Dagster **IO Manager** | Delta Lake commit — artifacts are stored as table rows, not scattered files |
-| Nextflow `-resume` / Snakemake **rerun triggers** / Prefect `cache_policy` / Dagster **asset versioning** | Content-addressed cache — automatic, no flags or per-task configuration |
-| Nextflow `work/` directory | Staging directory → atomic Delta Lake commit |
-| Airflow XCom | Artifact — content-addressed, typed, and queryable |
-| Nextflow **operator chain** / Snakemake **rule dependencies** / Dagster **`@graph_asset`** | `CompositeDefinition` — compose multiple operations into a reusable unit with collapsed or expanded execution |
 
 ---
 
@@ -77,7 +56,7 @@ support SLURM natively, and both have content-based caching.
 
 - nf-core provides 100+ production-ready bioinformatics pipelines
 - Native multi-executor support: PBS, LSF, SGE, Kubernetes, AWS Batch
-- Channel model fits naturally when chaining CLI tools via stdin/stdout
+- Channel model fits naturally when chaining CLI tools
 - Larger community, Seqera Platform for managed deployment
 
 **Where Artisan is stronger:**
@@ -85,8 +64,6 @@ support SLURM natively, and both have content-based caching.
 - Per-artifact lineage within batches, not only per-task
 - Results are queryable Delta Lake tables — "all metrics from step 3" is a
   Polars scan, not a directory walk
-- Content stored in table rows prevents filesystem bloat from millions of
-  small output files
 - Typed artifact system extensible by domain layers without framework changes
 - Composites compose multiple operations within a single step, with collapsed or expanded execution
 - Pure Python — no Groovy DSL
@@ -105,9 +82,7 @@ reproducible file transformation chains.
 
 **Where Artisan is stronger:**
 
-- Content-addressed caching is fully deterministic — Snakemake's rerun triggers
-  still include mtime, which can be affected by clock skew on distributed
-  filesystems
+- Content-addressed caching is fully deterministic — Snakemake's mtime-based triggers can be affected by clock skew on distributed filesystems
 - Per-artifact lineage within batch operations
 - Results are queryable without parsing files
 - Table-based storage prevents filesystem bloat at scale
@@ -149,20 +124,16 @@ targets.
 
 **Where Artisan is stronger:**
 
-- Per-artifact lineage within batches, not only per-asset. Dagster tracks "the
-  users table was materialized from raw_users." Artisan tracks "artifact A₁₇
-  was derived from artifacts B₃ and C₉."
+- Per-artifact lineage within batches, not only per-asset
 - Zero infrastructure — no database, no daemon, no web server. Delta Lake on
   the filesystem.
-- Native, built-in HPC/SLURM support via `SlurmBackend` (Dagster has a
-  community plugin but no built-in support), with extensible `BackendBase`
+- Native HPC/SLURM support via `SlurmBackend` with extensible `BackendBase`
   for cloud environments
 - Content-addressed identity is universal and automatic. Dagster's asset
   versioning is opt-in and based on code version hashing, not content hashing.
 - All results are queryable Delta Lake tables. Dagster delegates storage to IO
   Managers, which may write to opaque formats.
-- Composites with collapsed or expanded execution modes. Dagster's
-  graph-backed assets always execute as a unit.
+- Composites with collapsed or expanded execution modes
 
 ### vs. Prefect
 
@@ -218,22 +189,8 @@ Two built-in backends control which Prefect `task_runner` is used:
 | `LocalBackend` | `ProcessPoolTaskRunner` | Process pool on the orchestrator machine |
 | `SlurmBackend` | `SlurmTaskRunner` (from `prefect_submitit`) | SLURM job arrays via `submitit` |
 
-| Responsibility | Handled by |
-|---|---|
-| Pipeline definition, step sequencing | Artisan (`PipelineManager`) |
-| Input resolution, cache lookup | Artisan (orchestration layer) |
-| Backend selection and flow creation | Artisan (`BackendBase`) |
-| Parallel dispatch to workers | Prefect (via backend-selected `task_runner`) |
-| Operation lifecycle (preprocess/execute/postprocess) | Artisan (execution layer) |
-| Composite routing (single ops vs. composed composites) | Artisan (`execute_unit_task`) |
-| Lineage capture, staging | Artisan (execution layer) |
-| Atomic commit to Delta Lake | Artisan (orchestration layer) |
-| Flow/task run observability UI | Prefect |
-
 Workers run the same execution code regardless of backend — Prefect is the
-transport, not the brain. Curator operations bypass Prefect dispatch and
-execute locally in a subprocess on the orchestrator. Custom backends can be
-created by subclassing
+transport, not the brain. Custom backends can be created by subclassing
 `BackendBase` and implementing `create_flow()` and `capture_logs()`.
 
 ---
