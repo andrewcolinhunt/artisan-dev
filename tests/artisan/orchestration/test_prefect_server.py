@@ -12,11 +12,28 @@ from artisan.orchestration.prefect_server import (
     PrefectServerInfo,
     PrefectServerNotFound,
     PrefectServerUnreachable,
+    _is_cloud_url,
     _normalize_url,
     _validate_health,
     activate_server,
     discover_server,
 )
+
+# =============================================================================
+# _is_cloud_url
+# =============================================================================
+
+
+class TestIsCloudUrl:
+    def test_cloud_url(self) -> None:
+        assert _is_cloud_url("https://api.prefect.cloud/api/accounts/x/workspaces/y")
+
+    def test_self_hosted_url(self) -> None:
+        assert not _is_cloud_url("http://host:4200/api")
+
+    def test_localhost(self) -> None:
+        assert not _is_cloud_url("http://localhost:4200/api")
+
 
 # =============================================================================
 # _normalize_url
@@ -35,6 +52,20 @@ class TestNormalizeUrl:
 
     def test_trailing_slash_with_api(self) -> None:
         assert _normalize_url("http://host:4200/api/") == "http://host:4200/api"
+
+    def test_cloud_url_unchanged(self) -> None:
+        cloud = "https://api.prefect.cloud/api/accounts/x/workspaces/y"
+        assert _normalize_url(cloud) == cloud
+
+    def test_cloud_url_trailing_slash(self) -> None:
+        assert (
+            _normalize_url("https://api.prefect.cloud/api/accounts/x/workspaces/y/")
+            == "https://api.prefect.cloud/api/accounts/x/workspaces/y"
+        )
+
+    def test_url_with_api_in_path(self) -> None:
+        url = "http://host:4200/api/v2/something"
+        assert _normalize_url(url) == url
 
 
 # =============================================================================
@@ -116,8 +147,12 @@ class TestDiscoverServerNotFound:
             "prefect_submitit.server.discovery.DEFAULT_DATA_DIR",
             tmp_path / "nonexistent",
         )
-        with pytest.raises(PrefectServerNotFound):
-            discover_server()
+        with patch(
+            "artisan.orchestration.prefect_server._resolve_from_prefect_settings",
+            return_value=None,
+        ):
+            with pytest.raises(PrefectServerNotFound):
+                discover_server()
 
 
 class TestDiscoverServerPriority:
@@ -136,6 +171,32 @@ class TestDiscoverServerPriority:
         assert info.source == "env:PREFECT_SUBMITIT_SERVER"
 
 
+CLOUD_URL = "https://api.prefect.cloud/api/accounts/abc/workspaces/xyz"
+
+
+class TestDiscoverServerCloud:
+    def test_cloud_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PREFECT_API_URL", CLOUD_URL)
+        info = discover_server()
+        assert info.url == CLOUD_URL
+        assert info.source == "env:PREFECT_API_URL"
+
+    def test_cloud_via_prefect_profile(self) -> None:
+        with patch(
+            "artisan.orchestration.prefect_server._resolve_from_prefect_settings",
+            return_value=CLOUD_URL,
+        ):
+            info = discover_server()
+        assert info.url == CLOUD_URL
+        assert info.source == "prefect_profile"
+
+    def test_cloud_skips_health_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PREFECT_API_URL", CLOUD_URL)
+        with patch("artisan.orchestration.prefect_server.health_check") as mock_hc:
+            discover_server()
+        mock_hc.assert_not_called()
+
+
 class TestDeprecationWarning:
     def test_old_env_var_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ARTISAN_PREFECT_SERVER", "http://old:4200/api")
@@ -148,9 +209,13 @@ class TestDeprecationWarning:
             "prefect_submitit.server.discovery.DEFAULT_DATA_DIR",
             Path("/nonexistent"),
         )
-        with pytest.warns(DeprecationWarning, match="ARTISAN_PREFECT_SERVER"):
-            with pytest.raises(PrefectServerNotFound):
-                discover_server()
+        with patch(
+            "artisan.orchestration.prefect_server._resolve_from_prefect_settings",
+            return_value=None,
+        ):
+            with pytest.warns(DeprecationWarning, match="ARTISAN_PREFECT_SERVER"):
+                with pytest.raises(PrefectServerNotFound):
+                    discover_server()
 
     def test_old_env_var_no_warn_if_new_set(
         self, monkeypatch: pytest.MonkeyPatch
@@ -218,21 +283,22 @@ class TestActivateServer:
         settings are cached and os.environ changes alone won't take effect.
         """
         from prefect.context import SettingsContext
-        from prefect.settings import PREFECT_API_URL
+        from prefect.settings import get_current_settings
 
         # Push a stale settings context to simulate cached profile settings
         current_ctx = SettingsContext.get()
-        stale_settings = current_ctx.settings.copy_with_update(
-            updates={PREFECT_API_URL: "http://stale:4200/api"}
+        stale_api = current_ctx.settings.api.model_copy(
+            update={"url": "http://stale:4200/api"}
         )
+        stale_settings = current_ctx.settings.model_copy(update={"api": stale_api})
         stale_ctx = SettingsContext(
             profile=current_ctx.profile, settings=stale_settings
         )
         stale_ctx.__enter__()
-        assert PREFECT_API_URL.value() == "http://stale:4200/api"
+        assert str(get_current_settings().api.url) == "http://stale:4200/api"
 
         # activate_server should override the cached setting
         info = PrefectServerInfo(url="http://correct:4200/api", source="test")
         activate_server(info)
-        assert PREFECT_API_URL.value() == "http://correct:4200/api"
+        assert str(get_current_settings().api.url) == "http://correct:4200/api"
         assert os.environ["PREFECT_API_URL"] == "http://correct:4200/api"
