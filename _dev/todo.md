@@ -14,33 +14,23 @@
 
 ### Lineage & Artifact Identity
 
-- `original_name` isn't guaranteed unique — materialization and lineage matching should use `artifact_id` instead
-- Lineage matching breaks on merge with mpnn_fr and mpnn (based on mpnn_fr) — likely same root cause as above
+- `original_name` isn't guaranteed unique — materialization and lineage matching should use `artifact_id` instead. `validate_stem_match_uniqueness` exists but is dead code (never called). Lineage builder silently overwrites on duplicate names. Materialization can overwrite files too.
+- Lineage matching breaks on merge (e.g. mpnn_fr and mpnn) — Merge concatenates artifact IDs with no `original_name` uniqueness check, breaking stem-matching in lineage capture. Same root cause as above.
 
 ### Execution
 
-- CROSS_PRODUCT pairing broken — needs unique name per paired set; `original_name` can't disambiguate when same structure appears in multiple groups
-- Compute backend hardcoded to Slurm in creator context builder — should reflect actual backend
-- Check step caching and pipeline stopping on no returned outputs for expected inputs
-- Filter fails at 10M artifacts input (works at 1M) — memory bottleneck related to execution units and artifact resolution
-- Execution unit gets serialized with too many references — should be fully lazy
+- CROSS_PRODUCT pairing — lineage capture breaks because `primary_id_to_idx` overwrites earlier indices when the same artifact appears in multiple groups. Pairing itself works fine. No fix attempted yet.
+- Filter fails at 10M artifacts input (works at 1M) — curators create a single ExecutionUnit with ALL IDs. Phase 1 provenance walk has no chunking. Multiple multi-GB memory pressure points.
+- Execution unit serialized with too many references — ID lists eagerly materialized (4-5 GB peak at 10M). Design doc exists at `_dev/design/1_future/lazy_execution_units.md` with phased approach.
 - Slurm job cancellation propagation to the pipeline is slow (tolerable but not ideal)
 
 ### Storage
 
-- Delta table partition names have unnecessary quotes (e.g. `'origin=1'`) — strip them
+- Delta table partition quotes — cosmetic issue caused by upstream `deltalake-rs`/Polars, not Artisan code. Reads work fine (transparent handling).
 
 ### Visualization
 
-- Provenance stepper is broken — slider bar breaks things
-
-### Export
-
-- Bug in export for nested metrics and metric name collisions TODO: i think we addressed this
-
-### Logging
-
-- External tool stdout/stderr leaks to console in streaming mode — non-streaming captures correctly, but streaming (e.g. AF3) still prints to console. Design doc exists. This is the root cause of AtomWorks log pollution and similar issues.
+- Provenance stepper broken — likely widget rendering issue (output clearing + SVG reload causing flickering/blank states), not indexing error. Tests don't cover the interactive callback.
 
 ---
 
@@ -53,32 +43,30 @@
 
 ### Operations & Filtering
 
-- Filter is only single-hop provenance — should we change that?
-- Interactive filter provenance edges
+- Interactive filter provenance edges — InteractiveFilter writes `execution_edges` but not `artifact_edges`, making it invisible in the provenance graph
 - Expected number of outputs per operation per input (validation config)
-- `IngestPipeline`: support ingesting all artifacts up through step N (not just from exactly step N)
-- Verify cross-pipeline ingest is working — may need to provide artifact field mapping
+- `IngestPipelineStep`: support ingesting all artifacts up through step N (not just from exactly step N) — currently exact single-step only. `load_artifact_ids_by_type` already accepts a list, so straightforward.
+- Cross-pipeline ingest field mapping — ingest works but has no field mapping. Key mismatch between output names and artifact types. No cross-pipeline provenance edges.
 
 ### Execution & Orchestration
 
-- Cache policy should be settable per step
-- Verify caching end-to-end
-- Instantiate all steps at startup to validate operations, params, inputs/outputs before running
-- Record the actual executed command in execution records
-- Surface script defaults as operation params (avoid two sources of truth)
-- Debug mode: re-run a single execution unit with verbose output and saved intermediate steps
-- Reduce unnecessary materialization — ops that are not external tools shouldn't need it
-- Timings should also measure subprocess startup
+- Cache policy should be settable per step — currently pipeline-level only on `PipelineConfig`
+- Instantiate all steps at startup to validate operations, params, inputs/outputs before running — validation is currently lazy/per-step. A typo in step 5 params won't be caught until steps 0-4 have run.
+- Record the actual executed command in execution records — `ExecutionRecord` has no command field. Command is constructed at runtime but discarded.
+- Surface script defaults as operation params (avoid two sources of truth) — no bridging between argparse defaults and operation params
+- Debug mode: re-run a single execution unit with verbose output and saved intermediate steps — `preserve_working` flag is the closest thing
+- Reduce unnecessary materialization — all creator ops get full materialization by default (`InputSpec.materialize=True`). The `materialize=False` escape hatch exists but isn't the default. Sandbox directories still created regardless.
+- Timings should also measure subprocess startup — `execute` phase timer wraps the entire call with no subprocess startup breakdown
 
 ### Lineage
 
-- Role-based lineage tracing for fan-in branches (choose which role to follow backward)
-- Primary vs secondary lineage key
-- Name-based grouping for lineage across different trajectories? New group_by mode?
+- Role-based lineage tracing for fan-in branches — role info stored on edges but never used in traversal. `walk_backward`/`walk_forward` ignore roles entirely.
+- Primary vs secondary lineage key — primary role concept exists at execution time but not persisted on `ArtifactProvenanceEdge`. No way to query "primary lineage chain" post-hoc.
+- Name-based grouping for lineage across different trajectories — no `GroupByStrategy.NAME` mode. Stem-matching infrastructure could be reused but hasn't been lifted into grouping layer.
 
 ### Visualization & Export
 
-- Interactive filter plot: wrap histograms after three columns wide
+- Interactive filter plot: wrap histograms after three columns wide — all histograms render in a single row. Straightforward fix in `plot()`.
 
 ---
 
@@ -86,40 +74,35 @@
 
 ### API Consistency
 
-- Operation docstrings should display as "role" format (e.g. `type: STRUCTURE`)
-- Should we require step name in every step?
+- Operation docstrings role format — auto-generated role-doc system exists, uses `role_name (type)` format. Cosmetic change needed in `_build_role_docs` if different format desired.
+- Step name optional — defaults to `operation.name`. Duplicate default names cause silent ambiguity (last-wins). Consider requiring, auto-generating unique names, or warning on duplicates.
 
 ### Naming
 
-- `hydrate` -> `load_contents` or similar (less jargony)
-- `load_provenance_map` -> make forward/reverse naming symmetric
-- `tool_output` -> `execution_log` or `stdout_error`
-- Merged and passthrough naming is weird — output roles could be confusing
-- `display_provenance_stepper` -> `interactive_micro_graph` or similar
-- Ingested files vs externally-pointing artifact references — confusingly named
+None renamed yet. Scope varies:
+
+- `hydrate` -> `load_contents` or similar — very large scope (20+ files, public API)
+- `load_provenance_map` -> `load_backward_provenance_map` — small scope. `ProvenanceStore` already has symmetric names internally.
+- `tool_output` -> `execution_log` or `stdout_error` — medium scope (6+ source files, 11 test files, Delta schema)
+- Merged and passthrough naming — large scope. `Filter` returns `passthrough={"passthrough": [...]}`. Deeply embedded.
+- `display_provenance_stepper` -> `interactive_micro_graph` or similar — small scope (3 source files, 1 test, 1 doc)
+- Ingested files vs artifact references — medium scope. `IngestFiles` vs `FileRefArtifact` naming confusing.
 
 ### Code Organization
 
-- Clean up worker ID usage (hacky throughout)
-- Should each package have its own `ArtifactTypes` enum, or is the shared extensible registry sufficient?
-- Partition delta lake tables by step
-- Code quality pass
-- Remove hardcoded comment numbers (unmaintainable)
+- Clean up worker ID usage — threaded as a loose `int` through 5+ function signatures. Should be resolved once onto `RuntimeEnvironment`.
+- Partition delta lake tables by step — partially done. Most tables partitioned by `origin_step_number`. `artifact_index` and `artifact_edges` are not.
 - Reorganize test and demo files — demos that need input files should be self-contained in their demo dir
 
 ### Logging
 
-- Slurm logs should go to project root, not git repo root
-- Better log handling — reduce default verbosity, external tool pollution
+- Slurm logs should go to project root, not git repo root — `SlurmTaskRunner` created without `log_folder` parameter. Fix: pass explicit path.
 
 ---
 
 ## Open Questions
 
 - AF3 config: preprocess vs config generator — where's the boundary?
-- Implicit inputs behavior — is this needed?
-- Are curator operations invokable on Slurm?
-- Data frames throughout as an optimization? Should creators use data frames?
 
 ---
 
