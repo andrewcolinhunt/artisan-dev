@@ -109,7 +109,7 @@ Orchestrator                          Worker (remote node)
     │                                     ├─ unpickle callable
     │                                     ├─ execute
     │                                     ├─ pickle(result) → NFS
-    │  poll for result file ◄─────────────┤
+    │  poll for result file  ◄─────────────┤
     ├─ unpickle result                    │
 ```
 
