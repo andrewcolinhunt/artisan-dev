@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from artisan.orchestration.engine import (
-    aggregate_results,
+from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
 )
+from artisan.orchestration.engine.results import aggregate_results
 from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.orchestration.batch_config import BatchConfig
 

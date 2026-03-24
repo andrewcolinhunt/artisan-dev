@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from artisan.schemas.artifact.data import DataArtifact  # noqa: F401 (registers DataTypeDef)
-from artisan.schemas.artifact import Artifact, ArtifactTypeDef
+from artisan.schemas.artifact import Artifact
+from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas import (
     ArtifactResult,
     ExecuteInput,
