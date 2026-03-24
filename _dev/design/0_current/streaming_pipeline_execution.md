@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-24
 **Status:** Draft
-**Analysis:** `_dev/analysis/streaming-pipeline-execution-v2.md`
+**Analysis:** `_dev/analysis/streaming-pipeline-execution.md`
 
 ---
 
@@ -34,18 +34,42 @@ different resources (CPU vs GPU).
 Three layers with distinct responsibilities:
 
 **Orchestration layer (Artisan):** Owns the pipeline DAG, step dependencies,
-priority scheduling, and resource budget tracking. Decides what to dispatch
-and when.
+priority scheduling, resource budget tracking, and dispatch ordering.
+Decides what to dispatch and when. Contains the **coordinator** — a
+dedicated dispatch thread that manages the lifecycle of all tasks.
 
 **Backend (dispatch layer):** Translates "run this unit with these resources"
-into system-specific commands (srun, sbatch, subprocess, kubectl). Does not
-schedule, prioritize, or track resources. Interchangeable.
+into system-specific commands (srun, sbatch, subprocess, kubectl). Returns
+a `DispatchHandle` for non-blocking completion tracking. Does not schedule,
+prioritize, or track resources. Interchangeable.
 
 **Underlying system (resource pool):** SLURM allocation, local machine, Ray
 cluster, Kubernetes namespace. Owns the physical resources.
 
-Priority and streaming live in the orchestration layer. The backend is a
-thin dispatch mechanism.
+Priority, streaming, and resource-aware dispatch live in the orchestration
+layer. The backend is a thin dispatch mechanism.
+
+---
+
+## Constraints
+
+**Readiness-gated dispatch.** Tasks must not be dispatched until their
+predecessors have completed. Dispatching tasks that block waiting for
+predecessors wastes thread slots — with chain depth D, only 1/D of threads
+do useful work. Priority ordering amplifies this: high-priority deep tasks
+fill the pool while low-priority runnable tasks queue behind them. The
+dispatch mechanism must check readiness before allocating resources.
+
+**Thread count independent of task count.** The target scale is 1000
+branches × 5 steps = 5000 tasks. Backend execution takes minutes to hours.
+One OS thread per in-flight task is impractical for queue-managed backends
+(thousands of threads) and wasteful for resource-managed backends (threads
+blocked on I/O for 95%+ of their lifetime). The orchestration layer's
+thread count must be bounded by a small constant, not by task count.
+
+**Serialized Delta Lake writes.** Concurrent Delta Lake commits from many
+threads create transaction log pressure and compaction conflicts. Write
+concurrency must be controlled independently of dispatch concurrency.
 
 ---
 
@@ -81,9 +105,91 @@ Stream depth is the default. Priority is configurable via a priority
 function that maps step metadata (depth, step number, operation name,
 resource requirements) to a priority value.
 
+### Coordinator dispatch thread
+
+A single long-lived thread running a dispatch loop:
+
+```
+loop:
+  drain completion queue → release resources, mark successors ready
+  dispatch highest-priority ready tasks that fit → I/O pool
+  poll in-flight DispatchHandles (is_done?)
+  sleep until woken or timeout
+```
+
+The coordinator never blocks on backend execution. It dispatches tasks via
+an I/O pool (which handles the short-lived prep and commit phases) and
+polls DispatchHandles for completion. The long backend wait (minutes to hours)
+consumes no threads.
+
+**I/O pool:** A `ThreadPoolExecutor` (~16–32 workers) handles blocking
+operations: input resolution, cache lookup, backend dispatch calls, staging
+verification, and Delta Lake commits. Each I/O pool thread is occupied for
+seconds, not minutes — then returns to the pool.
+
+**Thread count:** 1 coordinator + ~16–32 I/O pool threads, regardless of
+how many tasks are in flight.
+
+**User API:** Unchanged. `submit()` registers the task with the coordinator
+and returns a `StepFuture`. `finalize()` blocks until the coordinator has
+drained all tasks. The coordinator is an internal implementation detail.
+
+### DispatchHandle interface
+
+The backend returns a `DispatchHandle` that supports both blocking execution
+(non-streaming pipelines) and non-blocking dispatch with completion polling
+(coordinator):
+
+```python
+class DispatchHandle(ABC):
+    def run(self) -> list[dict]:
+        """Block until complete."""
+
+    def dispatch(self) -> None:
+        """Start execution, return immediately."""
+
+    def is_done(self) -> bool:
+        """Non-blocking completion check."""
+
+    def collect(self) -> list[dict]:
+        """Get results. Valid only after is_done() returns True."""
+
+    def cancel(self) -> None:
+        """Cancel in-flight work."""
+```
+
+`run()` is equivalent to `dispatch()` + poll `is_done()` + `collect()`.
+Non-streaming pipelines use `run()` via the step executor. The coordinator
+uses the non-blocking methods.
+
+Backend implementations:
+
+- **LocalDispatchHandle:** `dispatch()` submits to `ProcessPoolExecutor`.
+  `is_done()` checks the future. `cancel()` sets cancel event.
+- **SlurmDispatchHandle:** `dispatch()` calls `srun`/`sbatch`.
+  `is_done()` checks job status. `cancel()` calls `scancel`.
+
+### Task lifecycle
+
+A task moves through phases, each handled by a different component:
+
+```
+submitted → ready → prepping → dispatched → in-flight → committing → done
+              │        │           │            │           │
+              │        I/O pool    I/O pool     coordinator I/O pool
+              │        (~2s)       (<1s)        polls       (~5s)
+              coordinator          (backend     is_done()   (commit +
+              checks               .dispatch)               compact)
+              predecessors
+```
+
+The in-flight phase (minutes to hours) consumes no threads. The prep and
+commit phases (~seconds each) use I/O pool threads that return to the pool
+immediately.
+
 ### Resource-aware dispatch
 
-The orchestration layer tracks a resource budget: total resources, per-task
+The coordinator tracks a resource budget: total resources, per-task
 requirements, and what is currently dispatched. It dispatches the
 highest-priority ready task that fits within available resources.
 
@@ -115,18 +221,13 @@ class BackendBase:
 The coordinator always dispatches highest-priority first. The only variation
 is whether it gates on resource availability or submits freely.
 
-### Task-level dispatch
+### Commit batching
 
-The current backend interface is step-level: `create_flow()` returns a
-callable that runs an entire step's units. The coordinator needs task-level
-dispatch: submit individual units with resource requirements, receive
-completion notifications.
-
-The backend interface evolves to support both:
-
-- `create_flow()` — existing step-level dispatch (retained for
-  non-streaming pipelines)
-- `dispatch_unit()` — new task-level dispatch for the coordinator
+The coordinator batches Delta Lake commits: accumulate completed tasks up
+to N completions or T seconds, then commit all staged data in one pass per
+table. This reduces transaction log growth and compaction frequency.
+Compaction runs on a background thread or after pipeline completion,
+decoupled from the commit path.
 
 ---
 
@@ -134,36 +235,38 @@ The backend interface evolves to support both:
 
 Each phase is independently shippable.
 
-### Phase 1: Parallel step execution
+### Parallel step execution
 
-Enable `max_parallel_steps > 1` on `PipelineManager`. Move
+Enable `max_parallel_steps > 1` on `PipelineConfig`. Move
 `_wait_for_predecessors` into the `_run()` closure. Add `threading.Lock`
-for `_step_results` and `StepTracker` writes.
+for `_step_results` and `StepTracker` writes. FIFO dispatch — no priority,
+no resource awareness.
 
-Streaming emerges from branched pipeline structure. FIFO dispatch — no
-priority, no resource awareness.
+Sufficient for small branch counts (10–50) where thread waste is tolerable.
 
 Fix: `_stopped` propagation is currently pipeline-global. Must be scoped
 per-branch or replaced with input-resolution-based skip logic.
 
 See: `streaming_prerequisites.md` Component A
 
-### Phase 2: Priority-aware dispatch
+### Coordinator
 
-Replace FIFO `ThreadPoolExecutor` with a priority-ordered dispatch
-mechanism. Compute stream depth at `submit()` time. Higher depth dispatches
-first.
+Replace `ThreadPoolExecutor` with the coordinator dispatch thread. Priority
+and resource awareness ship together — priority ordering without readiness
+gating causes priority inversion, so they are not separable.
 
-### Phase 3: Resource-aware coordinator
+- Coordinator thread with dispatch loop
+- DispatchHandle with `dispatch()` / `is_done()` / `collect()` / `cancel()`
+- I/O pool for prep and commit phases
+- Priority queue ordered by stream depth (configurable)
+- Resource budget tracking for resource-managed backends
+- Commit batching for Delta Lake writes
 
-Add `resource_budget()` to `BackendBase`. Coordinator tracks available
-resources and dispatches the highest-priority task that fits. Add
-`dispatch_unit()` to the backend interface for task-level dispatch.
-
-### Phase 4: Backpressure
+### Backpressure
 
 Limit in-flight work per stream depth to prevent fast upstream from
-overwhelming slow downstream.
+overwhelming slow downstream. The coordinator enforces per-depth caps in
+addition to resource constraints.
 
 ---
 
@@ -174,20 +277,31 @@ independent and can be built in parallel.
 
 - **A: Parallel step execution** — foundation for all phases
 - **B: Bulk cache lookup** — performance requirement for frequent dispatch
-- **C: FlowHandle cancellation** — clean cleanup of concurrent in-flight
-  work
+- **C: DispatchHandle** — the coordinator's interface to the backend, with
+  `dispatch()`, `is_done()`, `collect()`, and `cancel()` for non-blocking
+  completion tracking
 
 ---
 
 ## Open Questions
 
-- **Backend interface coexistence:** Can `create_flow()` and
-  `dispatch_unit()` coexist, or does the coordinator subsume `create_flow()`?
+- **Commit batching granularity:** Batch by time window, completion count,
+  or stream depth? Per-depth batching is natural but adds latency.
+  Time-window batching is simpler.
+- **Coordinator failure recovery:** If the coordinator thread dies,
+  in-flight tracking is lost. Crash-restart with re-scan for completed
+  work, or persist coordinator state to Delta?
+- **DispatchHandle polling overhead:** At 5000 in-flight handles, polling
+  `is_done()` every 500ms is 10K checks/second. Acceptable for SLURM
+  (sacct can be batched), but worth measuring. Callback-based notification
+  is the escape hatch if polling becomes a bottleneck.
+- **I/O pool sizing:** Too small starves prep/commit throughput. Too large
+  creates Delta write contention. Needs empirical tuning per backend.
 - **Backpressure mechanism:** Per-depth in-flight cap, total queue cap, or
   dynamic based on downstream consumption rate?
-- **Delta Lake write amplification:** Many concurrent branch commits grow the
-  transaction log. Compaction strategy?
-- **Failure and partial completion:** How does recovery handle branches that
-  partially completed? How do downstream branches handle upstream retries?
 - **Step-level caching:** Streaming steps have incrementally-arriving inputs.
   Are they uncacheable at the step level (unit-level caching only)?
+- **Backend interface coexistence:** Non-streaming pipelines use
+  `create_flow()` + `DispatchHandle.run()`. The coordinator uses the
+  non-blocking methods. Does the coordinator eventually subsume the step
+  executor entirely?
