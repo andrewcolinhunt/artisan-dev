@@ -401,9 +401,12 @@ approach — branches are just tasks in the coordinator's queue.
 
 - **Parallel step execution** — the foundation for all of the above
 - **Bulk cache lookup** — makes frequent small dispatches practical
-- **`pipeline_run_id` scoping** — prevents output resolution from mixing
-  artifacts across concurrent branches or streaming batches
 - **`FlowHandle` cancellation** — clean cleanup of in-flight work
+
+Note: `pipeline_run_id` scoping is NOT a streaming prerequisite. Parallel
+branches within a single pipeline get unique step numbers from the
+monotonically increasing `_current_step` counter. Output resolution by
+`origin_step_number` is unambiguous within a single run.
 
 ---
 

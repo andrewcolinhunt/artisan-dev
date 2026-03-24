@@ -146,7 +146,7 @@ priority, no resource awareness.
 Fix: `_stopped` propagation is currently pipeline-global. Must be scoped
 per-branch or replaced with input-resolution-based skip logic.
 
-See: `_dev/design/2_future_future/parallel_step_execution.md`
+See: `streaming_prerequisites.md` Component A
 
 ### Phase 2: Priority-aware dispatch
 
@@ -169,13 +169,13 @@ overwhelming slow downstream.
 
 ## Prerequisites
 
-- **Parallel step execution** — foundation for all phases
-- **Bulk cache lookup** — frequent small dispatches multiply per-unit cache
-  check cost without it
-- **`pipeline_run_id` scoping** — prevents output resolution from mixing
-  artifacts across concurrent branches
-- **`FlowHandle` cancellation** — clean cleanup of in-flight work on error
-  or priority change
+See `streaming_prerequisites.md` for the full specification. All three are
+independent and can be built in parallel.
+
+- **A: Parallel step execution** — foundation for all phases
+- **B: Bulk cache lookup** — performance requirement for frequent dispatch
+- **C: FlowHandle cancellation** — clean cleanup of concurrent in-flight
+  work
 
 ---
 
