@@ -173,6 +173,37 @@ Ray Data proves this pattern: its downstream-first priority
 (`select_operator_to_run`) is application-level scheduling built above
 `ray.remote()`. Ray Core itself has no task-level priority.
 
+### Priority is stream depth, not step number
+
+Step number is submission order — an artifact of how the user's script runs,
+not where a task sits in the pipeline. With many branches, branch 4's RFD3
+(step 15) would outrank branch 1's AF3 (step 3) under step-number priority.
+That's backwards.
+
+The correct default metric is **stream depth**: how many steps from the
+branch's root. All AF3 tasks are depth 3 regardless of which branch they
+belong to. All RFD3 tasks are depth 0. Later pipeline position always wins,
+independent of submission order.
+
+Stream depth is trivial to compute at `submit()` time. Predecessor steps are
+already known from the input `OutputReference` objects:
+
+```
+depth = 0                                       (no predecessors)
+depth = max(depth[pred] for pred in preds) + 1  (otherwise)
+```
+
+One dict (`step_number → depth`) on `PipelineManager`. No graph traversal —
+predecessors are always submitted first. Handles diamonds and merges
+correctly (depth is the longest path from any root).
+
+Priority should be configurable. Stream depth is the default — it gives the
+"drain later stages first" behavior that maximizes throughput and minimizes
+stragglers. But users may want alternative strategies: FIFO (submission
+order), estimated runtime, or custom priority functions. The coordinator
+should accept a priority function that maps a step's metadata (depth,
+step number, operation name, resource requirements) to a priority value.
+
 ### Priority scheduling requires resource awareness
 
 You cannot prioritize "dispatch AF3 before RFD3" without knowing whether
@@ -191,6 +222,50 @@ This is sufficient to make resource-aware priority decisions: pick the
 highest-priority ready task that fits within available resources. Skip tasks
 whose resources are exhausted and find tasks that can run now. This is what
 Ray Data's `ResourceManager` + `select_operator_to_run()` does.
+
+### Backends have different resource models
+
+Not all backends can be treated the same. They fall into two categories
+based on who owns the resources:
+
+**Resource-managed backends (LOCAL, SLURM_INTRA):** The coordinator owns
+exclusive, fixed resources. It knows the total budget and tracks what it has
+dispatched. Resource-aware scheduling works directly — dispatch when
+resources are available, hold when they're not.
+
+| Backend | GPU budget source | CPU budget source |
+|---------|-------------------|-------------------|
+| LOCAL | Hardware detection (`CUDA_VISIBLE_DEVICES`, device count) | `os.cpu_count()` |
+| SLURM_INTRA | `SLURM_GPUS`, `CUDA_VISIBLE_DEVICES` | `SLURM_CPUS_ON_NODE` |
+
+**Queue-managed backends (SLURM sbatch, Cloud, Kubernetes):** An external
+system owns the resources. Other users compete for them. The coordinator
+cannot know what's available — only the external scheduler knows. Holding
+back submissions because "we think the cluster is full" is
+counterproductive. The right approach: submit in priority order (propagating
+priority hints where the system supports them — SLURM `--nice`, Kubernetes
+`PriorityClass`) and let the external system schedule. Optionally cap
+in-flight submissions to avoid overwhelming the scheduler.
+
+The coordinator handles both modes. The difference is the dispatch policy:
+
+- Resource-managed: "Is there a GPU slot free? If yes, dispatch the
+  highest-priority GPU task. If no, try the highest-priority CPU task."
+- Queue-managed: "Submit the next highest-priority task. If at the
+  concurrency cap, wait for one to complete."
+
+The backend declares which mode it uses:
+
+```python
+class BackendBase:
+    def resource_budget(self) -> ResourceBudget | None:
+        """Resource-managed backends return a budget.
+        Queue-managed backends return None."""
+```
+
+This keeps the coordinator backend-agnostic. It always maintains a priority
+queue. It always dispatches highest-priority first. The only variation is
+whether it gates on resource availability or submits freely.
 
 ### This changes the dispatch model
 
@@ -243,7 +318,7 @@ steps is manageable; 1000 × 5 = 5000 is not.
 ### Resource-aware priority coordinator
 
 A shared dispatch queue in the orchestration layer. Tasks enter the queue
-with a priority (step number) and resource requirements. The coordinator
+with a priority (stream depth) and resource requirements. The coordinator
 tracks a resource budget and drains the queue: pick the highest-priority task
 that fits within available resources, dispatch it, update the budget. When a
 task completes, free the budget and dispatch the next eligible task.
@@ -278,9 +353,6 @@ sophistication. The progression:
   awareness — may dispatch GPU work when only CPUs are free.
 - **Add resource awareness:** Track budget, dispatch highest-priority task
   that fits. This is the coordinator.
-- **Add incremental commit:** `commit_batch_size` decouples commit from step
-  boundary. Downstream can start before upstream fully completes even within
-  a single step's batch.
 - **Add backpressure:** Limit in-flight work per stage to prevent fast
   upstream from overwhelming slow downstream.
 
@@ -308,7 +380,7 @@ to be per-branch or replaced with input-resolution-based skip logic).
 ### Mid-term: priority-aware dispatch
 
 Replace the FIFO `ThreadPoolExecutor` with a priority-ordered dispatch
-mechanism. Steps with higher step numbers dispatch first when ready. No
+mechanism. Steps with higher stream depth dispatch first when ready. No
 resource awareness yet — just ordering.
 
 Sufficient when: all operations use the same resource type (all GPU or all
@@ -341,9 +413,6 @@ approach — branches are just tasks in the coordinator's queue.
   callable that runs an entire step. The coordinator needs task-level
   dispatch. Should the backend interface add `dispatch_unit()` alongside
   `create_flow()`, or replace it? Can both coexist during the transition?
-- **Resource budget source:** Where does the coordinator learn the total
-  resource budget? User-provided config, environment detection
-  (`SLURM_GPUS`, `CUDA_VISIBLE_DEVICES`), or backend-reported?
 - **Backpressure mechanism:** Limit in-flight tasks per stage? Cap total
   queued work? Dynamic based on downstream consumption rate (Ray Data's
   approach)?
