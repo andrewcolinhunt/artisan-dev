@@ -47,8 +47,7 @@ changes below have been implemented.
   waits on its own thread
 - Add `threading.Lock` for `_step_results` list
 - Add `threading.Lock` for `StepTracker._write_row()`
-- Fix `_stopped` propagation — currently pipeline-global, must be scoped
-  per-branch or replaced with input-resolution-based skip logic (empty
+- Fix `_stopped` propagation — currently pipeline-global, must be replaced with input-resolution-based skip logic (empty
   input resolution already returns empty and triggers skip)
 
 ---
