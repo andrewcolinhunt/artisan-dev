@@ -8,6 +8,11 @@
 - Write up PR message as an md file
 - Write up release message as an md file
 
+
+- Slurm intra backend
+
+- comparison to ray, dask, flyte
+
 ---
 
 ## Bugs
