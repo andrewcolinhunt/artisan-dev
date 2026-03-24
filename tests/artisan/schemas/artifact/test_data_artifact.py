@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from artisan.schemas.artifact import ArtifactTypeDef, ArtifactTypes
+from artisan.schemas.artifact import ArtifactTypes
 from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.registry import ArtifactTypeDef
 
 
 def _csv_bytes(text: str) -> bytes:
