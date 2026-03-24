@@ -16,7 +16,7 @@ parallel.
 ```
 A (parallel step execution)
 B (bulk cache lookup)
-C (FlowHandle cancellation)
+C (DispatchHandle cancellation)
 ```
 
 Note: `pipeline_run_id` scoped output resolution (see `pipeline_replay.md`)
@@ -73,7 +73,7 @@ never read.
 
 ---
 
-## Component C: FlowHandle Cancellation
+## Component C: DispatchHandle Cancellation
 
 **Problem:** `BackendBase.create_flow()` returns a plain callable. Once
 called, there is no way to cancel in-flight backend work. The cancel event
@@ -82,16 +82,16 @@ blocked on SLURM results. With streaming, multiple steps run concurrently —
 upstream errors or priority changes require cancelling in-flight dispatches.
 
 **Current state:** `cancel()` method, `_cancel_event`, signal handling, and
-parallel result collection already exist. The `FlowHandle` abstraction does
+parallel result collection already exist. The `DispatchHandle` abstraction does
 not.
 
 **Changes:**
 
-- Add `FlowHandle` ABC with `run()` and `cancel()` methods
+- Add `DispatchHandle` ABC with `run()` and `cancel()` methods
 - Change `BackendBase.create_flow()` return type from `Callable` to
-  `FlowHandle`
-- Implement `LocalFlowHandle` (cancel event propagation)
-- Implement `SlurmFlowHandle` (`scancel --name` + cancel event)
+  `DispatchHandle`
+- Implement `LocalDispatchHandle` (cancel event propagation)
+- Implement `SlurmDispatchHandle` (`scancel --name` + cancel event)
 - Update `_execute_creator_step` to use `flow_handle.run()` and track
   active flow handle for cancellation
 - Pass `cancel_event` to `_collect_results` for cancel-aware result

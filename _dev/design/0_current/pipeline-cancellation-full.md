@@ -112,13 +112,13 @@ current interface gives the backend no way to express that.
 
 ## Design
 
-### Core abstraction: `FlowHandle`
+### Core abstraction: `DispatchHandle`
 
 Replace the fire-and-forget callable with a richer object that gives the
 caller a cancellation handle while the backend retains ownership of cleanup.
 
 ```python
-class FlowHandle(ABC):
+class DispatchHandle(ABC):
     """Handle to an in-flight step execution.
 
     Returned by BackendBase.create_flow(). The caller starts execution
@@ -156,10 +156,10 @@ killing — it just calls `handle.cancel()`.
 
 ### Backend implementations
 
-#### `SlurmFlowHandle`
+#### `SlurmDispatchHandle`
 
 ```python
-class SlurmFlowHandle(FlowHandle):
+class SlurmDispatchHandle(DispatchHandle):
     def __init__(self, task_runner, job_name: str):
         self._task_runner = task_runner
         self._job_name = job_name
@@ -202,10 +202,10 @@ This means we can cancel jobs *before* submitit returns job IDs, and even
 cancel jobs that haven't been submitted yet (SLURM rejects the scancel
 harmlessly for non-existent names).
 
-#### `LocalFlowHandle`
+#### `LocalDispatchHandle`
 
 ```python
-class LocalFlowHandle(FlowHandle):
+class LocalDispatchHandle(DispatchHandle):
     def __init__(self, task_runner):
         self._task_runner = task_runner
         self._cancel_event = threading.Event()
@@ -264,7 +264,7 @@ def _collect_results(futures, cancel_event=None):
 **Cancel event check** — so `cancel()` interrupts result collection
 promptly rather than waiting for all futures to time out.
 
-The cancel event flows from `FlowHandle` into `_collect_results` via the
+The cancel event flows from `DispatchHandle` into `_collect_results` via the
 Prefect flow closure:
 
 ```python
@@ -291,18 +291,18 @@ class BackendBase(ABC):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
-    ) -> FlowHandle:
+    ) -> DispatchHandle:
         """Build a configured flow handle for this backend.
 
         Returns:
-            FlowHandle with run() and cancel() methods.
+            DispatchHandle with run() and cancel() methods.
         """
         ...
 
     # capture_logs and validate_operation unchanged
 ```
 
-The return type changes from `Callable` to `FlowHandle`. This is the only
+The return type changes from `Callable` to `DispatchHandle`. This is the only
 breaking change to the backend interface. Existing call sites change from:
 
 ```python
@@ -317,14 +317,14 @@ results = flow_handle.run(units_path=..., runtime_env=...)
 
 ### Pipeline-level cancellation
 
-With `FlowHandle` in place, `PipelineManager.cancel()` is simple:
+With `DispatchHandle` in place, `PipelineManager.cancel()` is simple:
 
 ```python
 class PipelineManager:
     def __init__(self, ...):
         ...
         self._cancel_event = threading.Event()
-        self._active_flow_handle: FlowHandle | None = None
+        self._active_flow_handle: DispatchHandle | None = None
 
     def cancel(self) -> None:
         """Cancel the running pipeline.
@@ -382,7 +382,7 @@ Add `record_step_cancelled`. `load_completed_steps` treats "cancelled" like
 
 ```
 PipelineManager.submit()
-  → backend.create_flow() returns FlowHandle
+  → backend.create_flow() returns DispatchHandle
   → self._active_flow_handle = flow_handle
   → _execute_creator_step:
       Phase 1 (DISPATCH): check cancel_event, prepare units
@@ -397,8 +397,8 @@ On cancellation (from any thread):
 PipelineManager.cancel()
   → self._cancel_event.set()
   → self._active_flow_handle.cancel()
-      → SlurmFlowHandle: scancel --name <job_name>
-      → LocalFlowHandle: set cancel_event (result collection stops)
+      → SlurmDispatchHandle: scancel --name <job_name>
+      → LocalDispatchHandle: set cancel_event (result collection stops)
   → _collect_results sees cancel_event, fills remaining with "Cancelled"
   → step_flow returns partial results
   → step_executor checks cancel_event, skips commit
@@ -408,7 +408,7 @@ PipelineManager.cancel()
 
 ### Future backends
 
-The `FlowHandle` abstraction scales to any backend:
+The `DispatchHandle` abstraction scales to any backend:
 
 | Backend | `cancel()` implementation |
 |---------|--------------------------|
@@ -419,13 +419,13 @@ The `FlowHandle` abstraction scales to any backend:
 
 Each backend brings its own cleanup logic. The pipeline manager and step
 executor are completely backend-agnostic — they only interact with
-`FlowHandle.run()` and `FlowHandle.cancel()`.
+`DispatchHandle.run()` and `DispatchHandle.cancel()`.
 
 ---
 
 ## Improvement: Parallel result collection
 
-Independent of the `FlowHandle` refactor, `_collect_results` should collect
+Independent of the `DispatchHandle` refactor, `_collect_results` should collect
 futures in parallel. This is the biggest bang-for-buck fix:
 
 **Before:** Sequential — 300 cancelled SLURM jobs × ~12s polling interval
@@ -434,14 +434,14 @@ futures in parallel. This is the biggest bang-for-buck fix:
 **After:** Parallel — all 300 futures resolve concurrently, total time ≈
 1 polling interval ≈ seconds.
 
-This can ship first, before the `FlowHandle` refactor, as a standalone
+This can ship first, before the `DispatchHandle` refactor, as a standalone
 change to `dispatch.py`.
 
 ---
 
 ## Improvement: Active SLURM job monitoring (optional)
 
-A background thread in `SlurmFlowHandle` that polls `squeue` to detect
+A background thread in `SlurmDispatchHandle` that polls `squeue` to detect
 externally cancelled jobs:
 
 ```python
@@ -465,7 +465,7 @@ node. May be unnecessary if parallel result collection is fast enough.
 - **Parallel result collection first** — standalone change to `dispatch.py`.
   Biggest impact on the "scancel took an hour" problem. No interface changes.
 
-- **`FlowHandle` + `PipelineManager.cancel()` second** — the real feature.
+- **`DispatchHandle` + `PipelineManager.cancel()` second** — the real feature.
   Changes `BackendBase` interface, adds cancellation to both backends,
   signal handling, context manager, "cancelled" step state.
 
@@ -494,7 +494,7 @@ node. May be unnecessary if parallel result collection is fast enough.
   adds complexity. Current behavior: incomplete step → nothing committed →
   resume re-runs the entire step.
 
-- **`FlowHandle` thread safety.** `cancel()` is called from signal handlers
+- **`DispatchHandle` thread safety.** `cancel()` is called from signal handlers
   or other threads while `run()` is blocked. The implementation must be
   thread-safe. `threading.Event` handles the coordination; `scancel` is
   idempotent. But Prefect flow internals may not be safe to interrupt — need
@@ -507,10 +507,10 @@ node. May be unnecessary if parallel result collection is fast enough.
 | File | Change | Phase |
 |------|--------|-------|
 | `orchestration/engine/dispatch.py` | Parallel result collection, cancel_event param | Parallel collection |
-| `orchestration/backends/base.py` | `FlowHandle` ABC, updated `create_flow` return type | FlowHandle |
-| `orchestration/backends/slurm.py` | `SlurmFlowHandle` with scancel | FlowHandle |
-| `orchestration/backends/local.py` | `LocalFlowHandle` | FlowHandle |
-| `orchestration/pipeline_manager.py` | `cancel()`, signal handling, context manager, flow handle tracking | FlowHandle |
-| `orchestration/engine/step_executor.py` | Check cancel_event between phases in `_execute_creator_step`, pass to flow handle | FlowHandle |
-| `orchestration/engine/step_tracker.py` | Add "cancelled" state | FlowHandle |
-| `orchestration/step_future.py` | Optional: add `cancel()` delegation | FlowHandle |
+| `orchestration/backends/base.py` | `DispatchHandle` ABC, updated `create_flow` return type | DispatchHandle |
+| `orchestration/backends/slurm.py` | `SlurmDispatchHandle` with scancel | DispatchHandle |
+| `orchestration/backends/local.py` | `LocalDispatchHandle` | DispatchHandle |
+| `orchestration/pipeline_manager.py` | `cancel()`, signal handling, context manager, flow handle tracking | DispatchHandle |
+| `orchestration/engine/step_executor.py` | Check cancel_event between phases in `_execute_creator_step`, pass to flow handle | DispatchHandle |
+| `orchestration/engine/step_tracker.py` | Add "cancelled" state | DispatchHandle |
+| `orchestration/step_future.py` | Optional: add `cancel()` delegation | DispatchHandle |
