@@ -1,17 +1,7 @@
-"""Staging and execution-record persistence helpers."""
+"""Staging and execution-record persistence helpers (internal).
 
-from __future__ import annotations
+Import symbols directly from their submodules:
 
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import (
-    build_execution_edges,
-    record_execution_failure,
-    record_execution_success,
-)
-
-__all__ = [
-    "StagingResult",
-    "build_execution_edges",
-    "record_execution_failure",
-    "record_execution_success",
-]
+- ``artisan.execution.staging.parquet_writer``
+- ``artisan.execution.staging.recorder``
+"""

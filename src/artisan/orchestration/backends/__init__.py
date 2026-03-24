@@ -10,11 +10,7 @@ Usage::
 
 from __future__ import annotations
 
-from artisan.orchestration.backends.base import (
-    BackendBase,
-    OrchestratorTraits,
-    WorkerTraits,
-)
+from artisan.orchestration.backends.base import BackendBase
 from artisan.orchestration.backends.local import LocalBackend
 from artisan.orchestration.backends.slurm import SlurmBackend
 
@@ -51,18 +47,13 @@ def resolve_backend(backend: str | BackendBase) -> BackendBase:
     if isinstance(backend, BackendBase):
         return backend
     if backend not in _REGISTRY:
-        raise ValueError(
-            f"Unknown backend: {backend!r}. Available: {sorted(_REGISTRY)}"
-        )
+        msg = f"Unknown backend: {backend!r}. Available: {sorted(_REGISTRY)}"
+        raise ValueError(msg)
     return _REGISTRY[backend]
 
 
 __all__ = [
     "Backend",
     "BackendBase",
-    "LocalBackend",
-    "OrchestratorTraits",
-    "SlurmBackend",
-    "WorkerTraits",
     "resolve_backend",
 ]

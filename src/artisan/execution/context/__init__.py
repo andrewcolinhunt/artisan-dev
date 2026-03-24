@@ -1,16 +1,7 @@
-"""Runtime context construction for execution."""
+"""Runtime context construction for execution (internal).
 
-from __future__ import annotations
+Import symbols directly from their submodules:
 
-from artisan.execution.context.builder import (
-    build_creator_execution_context,
-    build_curator_execution_context,
-)
-from artisan.execution.context.sandbox import create_sandbox, output_snapshot
-
-__all__ = [
-    "build_creator_execution_context",
-    "build_curator_execution_context",
-    "create_sandbox",
-    "output_snapshot",
-]
+- ``artisan.execution.context.builder``
+- ``artisan.execution.context.sandbox``
+"""
