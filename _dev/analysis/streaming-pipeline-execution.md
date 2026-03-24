@@ -1,7 +1,6 @@
-# Analysis: Streaming Pipeline Execution (v2)
+# Analysis: Streaming Pipeline Execution
 
 **Date:** 2026-03-24
-**Supersedes:** `streaming-pipeline-execution.md`
 **Context:** Conversation with Brian (potential power user) about running
 protein design pipelines on Perlmutter. Extended analysis of the solution
 space, architectural layering, and resource-aware scheduling.
@@ -121,7 +120,7 @@ Scoped output resolution prevents mixing artifacts from different runs or
 streaming sessions. Without it, incremental output resolution needs manual
 tracking of already-processed outputs.
 
-**`FlowHandle` with `cancel()`** (`_dev/design/1_future/pipeline-cancellation-full.md`):
+**`DispatchHandle` with `cancel()`** (`_dev/design/1_future/pipeline-cancellation-full.md`):
 Control surface for cancelling in-flight work — essential for streaming where
 upstream errors or priority changes require clean cancellation of dispatched
 batches.
@@ -401,7 +400,7 @@ approach — branches are just tasks in the coordinator's queue.
 
 - **Parallel step execution** — the foundation for all of the above
 - **Bulk cache lookup** — makes frequent small dispatches practical
-- **`FlowHandle` cancellation** — clean cleanup of in-flight work
+- **`DispatchHandle` cancellation** — clean cleanup of in-flight work
 
 Note: `pipeline_run_id` scoping is NOT a streaming prerequisite. Parallel
 branches within a single pipeline get unique step numbers from the
