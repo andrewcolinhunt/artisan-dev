@@ -247,7 +247,7 @@ Sufficient for small branch counts (10–50) where thread waste is tolerable.
 Fix: `_stopped` propagation is currently pipeline-global. Must be scoped
 per-branch or replaced with input-resolution-based skip logic.
 
-See: `streaming_prerequisites.md` Component A
+See: `parallel_step_execution.md`
 
 ### Coordinator
 
@@ -272,14 +272,15 @@ addition to resource constraints.
 
 ## Prerequisites
 
-See `streaming_prerequisites.md` for the full specification. All three are
-independent and can be built in parallel.
+Independent of each other and can be built in parallel.
 
-- **A: Parallel step execution** — foundation for all phases
-- **B: Bulk cache lookup** — performance requirement for frequent dispatch
-- **C: DispatchHandle** — the coordinator's interface to the backend, with
-  `dispatch()`, `is_done()`, `collect()`, and `cancel()` for non-blocking
-  completion tracking
+- **Parallel step execution** (`parallel_step_execution.md`) — foundation
+  for all phases. Configurable `max_parallel_steps`, thread safety,
+  per-branch skip propagation.
+- **DispatchHandle** (`dispatch_handle.md`) — the coordinator's interface
+  to the backend. Non-blocking dispatch with `dispatch()` / `is_done()` /
+  `collect()`, cancellation with `cancel()`, and pipeline-level
+  cancel support.
 
 ---
 
