@@ -58,6 +58,13 @@ repos:
         args: []
         additional_dependencies:
           - pytest
+          - pydantic
+          - polars>=0.20.0
+          - xxhash
+          - deltalake>=0.14.0
+          - rich
+          - prefect>=3.6,<4.0
+          - prefect-submitit>=0.1.4
 
   # Fix common misspellings in text files.
   - repo: https://github.com/codespell-project/codespell
