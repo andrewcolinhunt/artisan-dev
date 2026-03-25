@@ -31,25 +31,42 @@ Serves two purposes:
 
 ```python
 class DispatchHandle(ABC):
-    def run(self, units_path: str, runtime_env: RuntimeEnvironment) -> list[dict]:
-        """Execute the step. Blocks until completion or cancellation."""
-
+    @abstractmethod
     def dispatch(self, units_path: str, runtime_env: RuntimeEnvironment) -> None:
         """Start execution, return immediately."""
 
+    @abstractmethod
     def is_done(self) -> bool:
-        """Non-blocking completion check."""
+        """Non-blocking completion check. Thread-safe."""
 
+    @abstractmethod
     def collect(self) -> list[dict]:
         """Get results. Valid only after is_done() returns True."""
 
+    @abstractmethod
     def cancel(self) -> None:
         """Cancel in-flight work. Thread-safe, idempotent."""
+
+    def run(self, units_path: str, runtime_env: RuntimeEnvironment) -> list[dict]:
+        """Execute the step. Blocks until completion or cancellation.
+
+        Concrete template method: dispatch() + poll is_done() + collect().
+        """
+        self.dispatch(units_path, runtime_env)
+        while not self.is_done():
+            time.sleep(0.1)
+        return self.collect()
 ```
 
-`run()` is equivalent to `dispatch()` + poll `is_done()` + `collect()`.
-Non-streaming pipelines use `run()`. The step scheduler uses the non-blocking
-methods.
+`run()` is a concrete template method. Non-streaming pipelines use `run()`.
+The step scheduler uses the non-blocking methods.
+
+**State machine:** `dispatch()` must be called exactly once. Calling
+`is_done()` or `collect()` before `dispatch()` raises `RuntimeError`.
+Calling `dispatch()` twice raises `RuntimeError`. `cancel()` is valid in
+any state (no-op if not dispatched or already done). If `dispatch()` itself
+fails (e.g. SLURM submission error), it raises immediately — the handle
+is not recoverable.
 
 ---
 
@@ -57,12 +74,14 @@ methods.
 
 ### LocalDispatchHandle
 
-- `dispatch()` submits units to `ProcessPoolExecutor` via Prefect flow,
-  stores the futures.
-- `is_done()` checks whether all futures have resolved.
-- `collect()` gathers results from futures via `_collect_results`.
-- `cancel()` sets cancel event. Prefect handles pool shutdown when the
-  flow exits.
+- `dispatch()` enters the Prefect task runner context, loads units, calls
+  `execute_unit_task.map()`, and stores the resulting Prefect futures.
+- `is_done()` checks whether all Prefect futures have resolved.
+- `collect()` gathers results from Prefect futures via `_collect_results`,
+  then exits the task runner context.
+- `cancel()` sets a `threading.Event`. The `_collect_results` call fills
+  unresolved futures with cancellation markers. The task runner context
+  exit shuts down the process pool.
 
 ### SlurmDispatchHandle
 
@@ -86,8 +105,30 @@ and harmlessly no-ops for non-existent names.
 via `ThreadPoolExecutor`. Add a `cancel_event` parameter: when set, fill
 remaining unresolved futures with cancellation markers instead of waiting.
 
-The cancel event flows from `DispatchHandle` → `_build_prefect_flow`
-(in `backends/base.py`) → `_collect_results` (in `engine/dispatch.py`).
+The cancel event flows from `DispatchHandle` → `collect()` →
+`_collect_results` (in `engine/dispatch.py`).
+
+---
+
+## Refactoring `_build_prefect_flow`
+
+`BackendBase._build_prefect_flow()` currently builds a Prefect `@flow`
+closure that loads units, maps `execute_unit_task`, and calls
+`_collect_results` — all in one blocking call. Both `LocalBackend` and
+`SlurmBackend` delegate to it.
+
+With `DispatchHandle`, these steps are split across `dispatch()` and
+`collect()`, so the monolithic flow closure no longer fits. Replace
+`_build_prefect_flow` with shared helpers that the handles call directly:
+
+- `_load_units` and `execute_unit_task` already exist in `dispatch.py`
+  and are reused as-is.
+- Each handle's `dispatch()` enters the task runner context, loads units,
+  and calls `execute_unit_task.map()`.
+- Each handle's `collect()` calls `_collect_results(futures, cancel_event)`.
+
+`_build_prefect_flow` is removed from `BackendBase`. No backwards-compat
+shim — call sites are updated in the same change.
 
 ---
 
@@ -103,6 +144,12 @@ future steps.
 - `cancel()` iterates active handles and calls `handle.cancel()`
 - The pipeline manager doesn't know or care what `cancel()` does
   internally — the backend handles cleanup
+
+**Interaction with existing cancel checks.** `execute_step` already checks
+`cancel_event` between phases (before dispatch, before commit). Those
+checks remain — they prevent wasted work when cancellation happens between
+phases. `handle.cancel()` is complementary: it stops work *during* the
+dispatch phase. Both are needed.
 
 ---
 
@@ -139,7 +186,7 @@ results = handle.run(units_path=..., runtime_env=...)
 
 | File | Change |
 |------|--------|
-| `orchestration/backends/base.py` | `DispatchHandle` ABC, updated `create_flow` return type |
+| `orchestration/backends/base.py` | `DispatchHandle` ABC, updated `create_flow` return type, remove `_build_prefect_flow` |
 | `orchestration/backends/local.py` | `LocalDispatchHandle` |
 | `orchestration/backends/slurm.py` | `SlurmDispatchHandle` with scancel |
 | `orchestration/engine/dispatch.py` | `cancel_event` param on `_collect_results` |
