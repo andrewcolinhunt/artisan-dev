@@ -5,6 +5,7 @@ Key exports: ``PipelineManager`` (create, run, submit, finalize).
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import logging
@@ -16,7 +17,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import uuid4
 
 import polars as pl
@@ -37,7 +38,15 @@ from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
+from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import compute_step_spec_id
+
+if TYPE_CHECKING:
+    from artisan.composites.base.composite_definition import CompositeDefinition
+
+# Validation helpers accept both OperationDefinition and CompositeDefinition,
+# which share ClassVars (name, inputs, outputs) but have no common base.
+_OpLike = type[OperationDefinition] | type["CompositeDefinition"]
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +135,8 @@ def _set_default(o: Any) -> Any:
         return sorted(o)
     if isinstance(o, Path):
         return str(o)
-    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+    msg = f"Object of type {type(o).__name__} is not JSON serializable"
+    raise TypeError(msg)
 
 
 def _is_file_path_input(inputs: Any) -> bool:
@@ -144,7 +154,6 @@ def _promote_file_paths_to_store(
     config: PipelineConfig,
     step_number: int,
     operation_name: str,
-    failure_policy: FailurePolicy,
 ) -> tuple[dict[str, list[str]] | None, int]:
     """Validate file paths, create FileRefArtifacts, and commit to delta.
 
@@ -153,7 +162,6 @@ def _promote_file_paths_to_store(
         config: Pipeline configuration.
         step_number: Pipeline step number.
         operation_name: Operation name (for logging).
-        failure_policy: Failure policy for the step.
 
     Returns:
         Tuple of (resolved inputs dict or None if all invalid,
@@ -193,14 +201,17 @@ def _promote_file_paths_to_store(
         content = path.read_bytes()
         content_hash = xxhash.xxh3_128(content).hexdigest()
         size_bytes = len(content)
-        artifact = FileRefArtifact.draft(
-            path=str(path.absolute()),
-            content_hash=content_hash,
-            size_bytes=size_bytes,
-            step_number=step_number,
-            original_name=strip_extensions(path.name),
-            extension=path.suffix,
-        ).finalize()
+        artifact = cast(
+            FileRefArtifact,
+            FileRefArtifact.draft(
+                path=str(path.absolute()),
+                content_hash=content_hash,
+                size_bytes=size_bytes,
+                step_number=step_number,
+                original_name=strip_extensions(path.name),
+                extension=path.suffix,
+            ).finalize(),
+        )
         file_ref_artifacts.append(artifact)
 
     # Build DataFrames for file_refs table and artifact_index
@@ -231,7 +242,9 @@ def _promote_file_paths_to_store(
     committer.commit_dataframe(file_ref_df, "artifacts/file_refs")
     committer.commit_dataframe(index_df, TablePath.ARTIFACT_INDEX)
 
-    artifact_ids = [a.artifact_id for a in file_ref_artifacts]
+    artifact_ids: list[str] = [
+        a.artifact_id for a in file_ref_artifacts if a.artifact_id is not None
+    ]
     resolved_inputs = {"file": sorted(artifact_ids)}
 
     logger.debug(
@@ -249,13 +262,13 @@ def _promote_file_paths_to_store(
 
 
 def _validate_params(
-    operation: type,
+    operation: _OpLike,
     params: dict[str, Any],
 ) -> None:
     """Raise ValueError if any param keys are unrecognized by the operation."""
     if "params" in operation.model_fields:
         params_cls = operation.model_fields["params"].annotation
-        valid_keys = set(params_cls.model_fields)
+        valid_keys = set(params_cls.model_fields) if params_cls is not None else set()
     else:
         # Flat fields — exclude ClassVar and base fields
         base_fields = set(OperationDefinition.model_fields)
@@ -311,6 +324,8 @@ def _validate_environment(
             )
             raise ValueError(msg)
     else:
+        from pydantic import BaseModel
+
         from artisan.schemas.operation_config.environment_spec import (
             ApptainerEnvironmentSpec,
             DockerEnvironmentSpec,
@@ -328,7 +343,7 @@ def _validate_environment(
             )
             raise ValueError(msg)
         # Validate nested dicts against their EnvironmentSpec subclass
-        env_field_types = {
+        env_field_types: dict[str, type[BaseModel]] = {
             "local": LocalEnvironmentSpec,
             "docker": DockerEnvironmentSpec,
             "apptainer": ApptainerEnvironmentSpec,
@@ -363,15 +378,12 @@ def _validate_tool(
     valid_keys = set(ToolSpec.model_fields)
     unknown = set(tool) - valid_keys
     if unknown:
-        msg = (
-            f"Unknown tool keys: {sorted(unknown)}. "
-            f"Valid keys: {sorted(valid_keys)}"
-        )
+        msg = f"Unknown tool keys: {sorted(unknown)}. Valid keys: {sorted(valid_keys)}"
         raise ValueError(msg)
 
 
 def _validate_input_roles(
-    operation: type,
+    operation: _OpLike,
     inputs: Any,
 ) -> None:
     """Raise ValueError if dict input roles are not declared by the operation.
@@ -393,7 +405,7 @@ def _validate_input_roles(
 
 
 def _validate_required_inputs(
-    operation: type,
+    operation: _OpLike,
     inputs: Any,
 ) -> None:
     """Raise ValueError if any required input roles are missing."""
@@ -420,7 +432,7 @@ def _validate_required_inputs(
 
 
 def _validate_input_types(
-    operation: type,
+    operation: _OpLike,
     inputs: Any,
 ) -> None:
     """Raise ValueError if upstream output types don't match input specs."""
@@ -525,8 +537,8 @@ class PipelineManager:
         self._step_tracker = StepTracker(config.delta_root, config.pipeline_run_id)
         self._stopped: bool = False
         self._cancel_event = threading.Event()
-        self._prev_sigint: signal.Handlers | None = None
-        self._prev_sigterm: signal.Handlers | None = None
+        self._prev_sigint: Any = None
+        self._prev_sigterm: Any = None
         self._active_futures: dict[int, StepFuture] = {}
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="pipeline-step"
@@ -593,7 +605,7 @@ class PipelineManager:
         self,
         name: str,
         step_number: int,
-        operation_outputs: dict,
+        operation_outputs: dict[str, OutputSpec],
     ) -> None:
         """Record step metadata at declaration time for ``output()`` lookups."""
         entry = _StepEntry(
@@ -605,6 +617,66 @@ class PipelineManager:
             },
         )
         self._step_registry.setdefault(name, []).append(entry)
+
+    @staticmethod
+    def _build_output_types(
+        operation_outputs: dict[str, OutputSpec],
+    ) -> dict[str, str | None]:
+        """Extract output role to artifact type mapping from operation outputs."""
+        return {
+            role: spec.artifact_type if spec.artifact_type else None
+            for role, spec in operation_outputs.items()
+        }
+
+    def _skip_step(
+        self,
+        step_name: str,
+        operation_outputs: dict[str, OutputSpec],
+        skip_reason: str,
+    ) -> StepFuture:
+        """Record a skipped step and return a resolved StepFuture.
+
+        Handles all bookkeeping: result creation, step registration,
+        step counter increment, and future resolution.
+
+        Args:
+            step_name: Human-readable step name.
+            operation_outputs: The operation's outputs dict (role -> OutputSpec).
+            skip_reason: Why this step was skipped
+                (e.g. "pipeline_stopped", "cancelled").
+
+        Returns:
+            A resolved StepFuture with the skipped result.
+        """
+        step_number = self._current_step
+        output_types = self._build_output_types(operation_outputs)
+        output_roles = frozenset(operation_outputs.keys())
+
+        result = StepResult(
+            step_name=step_name,
+            step_number=step_number,
+            success=True,
+            total_count=0,
+            succeeded_count=0,
+            failed_count=0,
+            output_roles=output_roles,
+            output_types=output_types,
+            metadata={"skipped": True, "skip_reason": skip_reason},
+        )
+        self._step_results.append(result)
+        self._register_step(step_name, step_number, operation_outputs)
+        self._named_steps.setdefault(step_name, []).append(result)
+        self._current_step += 1
+
+        resolved: Future[StepResult] = Future()
+        resolved.set_result(result)
+        return StepFuture(
+            step_number=step_number,
+            step_name=step_name,
+            output_roles=output_roles,
+            output_types=output_types,
+            future=resolved,
+        )
 
     # =========================================================================
     # Cancellation
@@ -634,7 +706,7 @@ class PipelineManager:
         except ValueError:
             pass  # Not on main thread (e.g. Jupyter)
 
-    def _handle_signal(self, signum: int, frame: Any) -> None:
+    def _handle_signal(self, signum: int, _frame: Any) -> None:
         """Signal handler: escalating cancel → restore → force-kill."""
         sig_name = signal.Signals(signum).name
         if self._cancel_event.is_set():
@@ -719,7 +791,7 @@ class PipelineManager:
         return OutputReference(
             source_step=entry.step_number,
             role=role,
-            artifact_type=entry.output_types.get(role),
+            artifact_type=entry.output_types.get(role) or ArtifactTypes.ANY,
         )
 
     # =========================================================================
@@ -851,16 +923,16 @@ class PipelineManager:
             raise ValueError(msg)
 
         run_id = pipeline_run_id or completed_steps[0].pipeline_run_id
-        config = PipelineConfig(
+        config_kwargs: dict[str, Any] = dict(
             name=name or _extract_name_from_run_id(run_id),
             pipeline_run_id=run_id,
             delta_root=delta_root,
             staging_root=Path(staging_root),
-            **(
-                {"working_root": Path(working_root)} if working_root is not None else {}
-            ),
             **kwargs,
         )
+        if working_root is not None:
+            config_kwargs["working_root"] = Path(working_root)
+        config = PipelineConfig(**config_kwargs)
 
         instance = cls(config)
         for step_state in completed_steps:
@@ -896,7 +968,7 @@ class PipelineManager:
 
     def run(
         self,
-        operation: type[OperationDefinition] | type,
+        operation: type[OperationDefinition] | type[CompositeDefinition],
         inputs: (
             dict[str, OutputReference | list[str]]
             | list[OutputReference]
@@ -954,7 +1026,7 @@ class PipelineManager:
 
     def submit(
         self,
-        operation: type[OperationDefinition] | type,
+        operation: type[OperationDefinition] | type[CompositeDefinition],
         inputs: (
             dict[str, OutputReference | list[str]]
             | list[OutputReference]
@@ -998,8 +1070,9 @@ class PipelineManager:
         """
         from artisan.composites.base.composite_definition import CompositeDefinition
 
-        # Detect composite and route accordingly
-        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):
+        # 1. Route composites to a dedicated handler — composites expand into
+        #    multiple internal operations and have their own caching/dispatch.
+        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):  # type: ignore[redundant-expr]
             return self._submit_composite(
                 composite_class=operation,
                 inputs=inputs,
@@ -1013,7 +1086,117 @@ class PipelineManager:
                 name=name or operation.name,
             )
 
-        # Validate overrides immediately (fail-fast, before waiting for predecessors)
+        # 2. Fail-fast validation before any blocking work. Checks params,
+        #    resources, execution, environment, and tool keys against the
+        #    operation's declared fields, plus input role/type compatibility.
+        self._validate_operation_overrides(
+            operation,
+            inputs,
+            params,
+            resources,
+            execution,
+            environment,
+            tool,
+        )
+
+        step_name = name or operation.name
+
+        # 3. Early exit: skip if pipeline is stopped (earlier step had empty
+        #    inputs) or cancelled. Also blocks until predecessor steps finish,
+        #    then re-checks cancellation.
+        early = self._check_early_exit(step_name, operation.outputs, inputs)
+        if early is not None:
+            return early
+
+        step_number = self._current_step
+
+        # 4. Instantiate the operation with merged defaults + overrides to
+        #    compute a deterministic step_spec_id (content hash of operation
+        #    name, params, input provenance, and config overrides). This ID
+        #    drives the step-level cache.
+        step_spec_id, temp_instance = self._prepare_step_spec(
+            operation,
+            params,
+            resources,
+            execution,
+            environment,
+            tool,
+            step_number,
+            inputs,
+        )
+
+        # 5. Cache check: if a prior run produced identical spec_id, return
+        #    the cached StepResult immediately without re-executing.
+        cached = self._try_cached_step(
+            step_spec_id,
+            step_number,
+            step_name,
+            operation.outputs,
+        )
+        if cached is not None:
+            return cached
+
+        # 6. File path promotion: if the user passed raw file paths (list of
+        #    strings), validate them and commit FileRefArtifacts to Delta Lake
+        #    so downstream execution sees artifact IDs, not filesystem paths.
+        #    Only curator operations accept raw paths; creators must receive
+        #    artifact references from a prior ingest step.
+        if _is_file_path_input(inputs):
+            file_result = self._handle_file_path_inputs(
+                cast(list[str], inputs),
+                temp_instance,
+                operation,
+                step_number,
+                step_spec_id,
+                step_name,
+                failure_policy,
+            )
+            if isinstance(file_result, StepFuture):
+                return file_result
+            inputs = file_result  # type: ignore[assignment]
+
+        # 7. Dispatch: register the step, resolve the backend (local vs SLURM),
+        #    record the step start in Delta, and submit the _run() closure to
+        #    the thread pool executor for background execution.
+        return self._dispatch_step(
+            operation=operation,
+            inputs=inputs,
+            params=params,
+            backend=backend,
+            resources=resources,
+            execution=execution,
+            environment=environment,
+            tool=tool,
+            failure_policy=failure_policy,
+            compact=compact,
+            step_name=step_name,
+            step_number=step_number,
+            step_spec_id=step_spec_id,
+            temp_instance=temp_instance,
+        )
+
+    # =========================================================================
+    # submit() helpers
+    # =========================================================================
+
+    @staticmethod
+    def _validate_operation_overrides(
+        operation: type[OperationDefinition],
+        inputs: Any,
+        params: dict[str, Any] | None,
+        resources: dict[str, Any] | None,
+        execution: dict[str, Any] | None,
+        environment: str | dict[str, Any] | None,
+        tool: dict[str, Any] | None,
+    ) -> None:
+        """Validate all overrides against the operation (fail-fast).
+
+        Checks each override dict against the operation's declared fields
+        and raises ValueError with the unrecognized keys before any
+        blocking work (predecessor waits, execution) begins. Input
+        validation covers role existence, required roles, and upstream
+        type compatibility.
+        """
         if params:
             _validate_params(operation, params)
         if resources:
@@ -1028,143 +1211,88 @@ class PipelineManager:
         _validate_required_inputs(operation, inputs)
         _validate_input_types(operation, inputs)
 
-        step_name = name or operation.name
+    def _check_early_exit(
+        self,
+        step_name: str,
+        operation_outputs: dict[str, OutputSpec],
+        inputs: Any,
+    ) -> StepFuture | None:
+        """Check stop/cancel conditions and wait for predecessors.
 
-        # If an earlier step was skipped (empty inputs), skip all remaining steps
+        Three gates are checked in order:
+        1. ``_stopped`` — set when a prior step had empty inputs, halting
+           the pipeline to prevent meaningless downstream work.
+        2. ``_cancel_event`` — set by SIGINT/SIGTERM or explicit cancel().
+        3. Predecessor wait — blocks until all upstream StepFutures
+           complete, then re-checks cancellation (which may have been
+           signalled while waiting).
+
+        Used by both ``submit()`` and ``_submit_composite()``.
+
+        Returns:
+            Resolved StepFuture if the step should be skipped,
+            None if execution should proceed.
+        """
         if self._stopped:
-            step_number = self._current_step
             logger.info(
                 "Step %d (%s): pipeline stopped (earlier step had empty inputs)"
                 " — skipping.",
-                step_number,
+                self._current_step,
                 step_name,
             )
-            output_types_map: dict[str, str | None] = {
-                role: spec.artifact_type if spec.artifact_type else None
-                for role, spec in operation.outputs.items()
-            }
-            skipped_result = StepResult(
-                step_name=step_name,
-                step_number=step_number,
-                success=True,
-                total_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                output_roles=frozenset(operation.outputs.keys()),
-                output_types=output_types_map,
-                metadata={
-                    "skipped": True,
-                    "skip_reason": "pipeline_stopped",
-                },
-            )
-            self._step_results.append(skipped_result)
-            self._register_step(step_name, step_number, operation.outputs)
-            self._named_steps.setdefault(skipped_result.step_name, []).append(
-                skipped_result
-            )
-            self._current_step += 1
+            return self._skip_step(step_name, operation_outputs, "pipeline_stopped")
 
-            resolved_stopped: Future[StepResult] = Future()
-            resolved_stopped.set_result(skipped_result)
-            return StepFuture(
-                step_number=step_number,
-                step_name=step_name,
-                output_roles=frozenset(operation.outputs.keys()),
-                output_types=output_types_map,
-                future=resolved_stopped,
-            )
-
-        # If pipeline has been cancelled, skip remaining steps
         if self._cancel_event.is_set():
-            step_number = self._current_step
             logger.info(
                 "Step %d (%s): pipeline cancelled — skipping.",
-                step_number,
+                self._current_step,
                 step_name,
             )
-            output_types_map = {
-                role: spec.artifact_type if spec.artifact_type else None
-                for role, spec in operation.outputs.items()
-            }
-            skipped_result = StepResult(
-                step_name=step_name,
-                step_number=step_number,
-                success=True,
-                total_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                output_roles=frozenset(operation.outputs.keys()),
-                output_types=output_types_map,
-                metadata={
-                    "skipped": True,
-                    "skip_reason": "cancelled",
-                },
-            )
-            self._step_results.append(skipped_result)
-            self._register_step(step_name, step_number, operation.outputs)
-            self._named_steps.setdefault(skipped_result.step_name, []).append(
-                skipped_result
-            )
-            self._current_step += 1
-
-            resolved_cancelled: Future[StepResult] = Future()
-            resolved_cancelled.set_result(skipped_result)
-            return StepFuture(
-                step_number=step_number,
-                step_name=step_name,
-                output_roles=frozenset(operation.outputs.keys()),
-                output_types=output_types_map,
-                future=resolved_cancelled,
-            )
+            return self._skip_step(step_name, operation_outputs, "cancelled")
 
         self._wait_for_predecessors(inputs)
 
-        # Re-check cancel after waiting — may have been set while blocked
+        # Re-check cancel — may have been set while blocked on predecessors
         if self._cancel_event.is_set():
-            step_number = self._current_step
-            output_types_map = {
-                role: spec.artifact_type if spec.artifact_type else None
-                for role, spec in operation.outputs.items()
-            }
-            skipped_result = StepResult(
-                step_name=step_name,
-                step_number=step_number,
-                success=True,
-                total_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                output_roles=frozenset(operation.outputs.keys()),
-                output_types=output_types_map,
-                metadata={"skipped": True, "skip_reason": "cancelled"},
-            )
-            self._step_results.append(skipped_result)
-            self._register_step(step_name, step_number, operation.outputs)
-            self._named_steps.setdefault(skipped_result.step_name, []).append(
-                skipped_result
-            )
-            self._current_step += 1
-            resolved_post_wait: Future[StepResult] = Future()
-            resolved_post_wait.set_result(skipped_result)
-            return StepFuture(
-                step_number=step_number,
-                step_name=step_name,
-                output_roles=frozenset(operation.outputs.keys()),
-                output_types=output_types_map,
-                future=resolved_post_wait,
-            )
+            return self._skip_step(step_name, operation_outputs, "cancelled")
 
-        step_number = self._current_step
+        return None
 
-        # Instantiate operation to get full params (defaults + overrides)
-        # for deterministic step_spec_id computation
+    def _prepare_step_spec(
+        self,
+        operation: type[OperationDefinition],
+        params: dict[str, Any] | None,
+        resources: dict[str, Any] | None,
+        execution: dict[str, Any] | None,
+        environment: str | dict[str, Any] | None,
+        tool: dict[str, Any] | None,
+        step_number: int,
+        inputs: Any,
+    ) -> tuple[str, OperationDefinition]:
+        """Instantiate operation and compute deterministic step spec ID.
+
+        The step_spec_id is a content hash of (operation name, step number,
+        merged params, upstream spec IDs, and config overrides). Two runs
+        with identical inputs and configuration produce the same spec ID,
+        enabling the step-level cache to skip re-execution.
+
+        The temp_instance is kept around because downstream code needs it
+        for ``is_curator_operation()`` checks and ``build_step_result()``
+        on the file-promotion failure path.
+
+        Returns:
+            Tuple of (step_spec_id, temp_instance).
+        """
+        # Instantiate with merged defaults + user overrides so we can
+        # dump the *full* params (including defaults) for hashing.
         temp_instance = instantiate_operation(
             operation, params, resources, execution, environment, tool
         )
         if "params" in type(temp_instance).model_fields:
-            full_params = temp_instance.params.model_dump(mode="json")
+            full_params = temp_instance.params.model_dump(mode="json")  # type: ignore[attr-defined]
         else:
-            # Flat-field operations: dump all user-defined instance fields
-            # (exclude base OperationDefinition fields like resources, execution)
+            # Flat-field operations: exclude base OperationDefinition
+            # fields (resources, execution, etc.) — only user params.
             base_fields = set(OperationDefinition.model_fields)
             full_params = {
                 k: v
@@ -1172,12 +1300,11 @@ class PipelineManager:
                 if k not in base_fields
             }
 
-        # Merge environment + tool overrides for hashing
+        # TODO: _merge_config_overrides should not start with _
         from artisan.orchestration.engine.step_executor import _merge_config_overrides
 
         config_overrides = _merge_config_overrides(environment, tool)
 
-        # Compute step_spec_id for caching
         input_spec = self._build_input_spec(inputs)
         step_spec_id = compute_step_spec_id(
             operation_name=operation.name,
@@ -1187,81 +1314,163 @@ class PipelineManager:
             config_overrides=config_overrides,
         )
 
-        # Check step cache
-        cached = self._step_tracker.check_cache(step_spec_id, self._config.cache_policy)
-        if cached is not None:
-            logger.info(
-                "Step %d (%s) CACHED — skipping execution",
-                step_number,
-                step_name,
+        return step_spec_id, temp_instance
+
+    def _try_cached_step(
+        self,
+        step_spec_id: str,
+        step_number: int,
+        step_name: str,
+        operation_outputs: dict[str, OutputSpec],
+    ) -> StepFuture | None:
+        """Return a resolved StepFuture if step is cached, None otherwise.
+
+        Looks up step_spec_id in the steps delta table. On a hit, records
+        the cached result in all bookkeeping structures (step_results,
+        step_registry, named_steps) and advances the step counter — so the
+        caller can return immediately without any execution.
+        """
+        cached = self._step_tracker.check_cache(
+            step_spec_id,
+            self._config.cache_policy,
+        )
+        if cached is None:
+            return None
+
+        logger.info(
+            "Step %d (%s) CACHED — skipping execution",
+            step_number,
+            step_name,
+        )
+        self._step_spec_ids[step_number] = step_spec_id
+        self._step_results.append(cached)
+        self._register_step(step_name, step_number, operation_outputs)
+        self._named_steps.setdefault(cached.step_name, []).append(cached)
+        self._current_step += 1
+
+        resolved: Future[StepResult] = Future()
+        resolved.set_result(cached)
+        return StepFuture(
+            step_number=step_number,
+            step_name=cached.step_name,
+            output_roles=cached.output_roles,
+            output_types=cached.output_types,
+            future=resolved,
+        )
+
+    def _handle_file_path_inputs(
+        self,
+        inputs: list[str],
+        temp_instance: OperationDefinition,
+        operation: type[OperationDefinition],
+        step_number: int,
+        step_spec_id: str,
+        step_name: str,
+        failure_policy: FailurePolicy | None,
+    ) -> dict[str, list[str]] | StepFuture:
+        """Promote raw file paths to FileRefArtifacts in the store.
+
+        When the user passes ``["path/a.nc", "path/b.nc"]`` as inputs,
+        this method validates each path, hashes file contents, creates
+        FileRefArtifact records, and commits them to Delta Lake. The
+        returned dict maps the ``"file"`` role to a sorted list of
+        artifact IDs that the executor will resolve at dispatch time.
+
+        Only curator operations (IngestData, IngestFiles, etc.) accept
+        raw paths. Creator operations must receive artifact references
+        from a prior ingest step.
+
+        Returns:
+            Promoted inputs dict ``{"file": [artifact_ids...]}`` on
+            success, or a resolved StepFuture wrapping a failure result
+            if all files are invalid.
+
+        Raises:
+            ValueError: If operation is not a curator operation.
+        """
+        if not is_curator_operation(temp_instance):
+            msg = (
+                "Raw file paths are not allowed for creator operations. "
+                "Use a curator ingest operation to bring files into the "
+                "pipeline first."
             )
-            self._step_spec_ids[step_number] = step_spec_id
-            self._step_results.append(cached)
-            self._register_step(step_name, step_number, operation.outputs)
-            self._named_steps.setdefault(cached.step_name, []).append(cached)
-            self._current_step += 1
+            raise ValueError(msg)
 
-            resolved: Future[StepResult] = Future()
-            resolved.set_result(cached)
-            return StepFuture(
-                step_number=step_number,
-                step_name=cached.step_name,
-                output_roles=cached.output_roles,
-                output_types=cached.output_types,
-                future=resolved,
-            )
+        promoted, _count = _promote_file_paths_to_store(
+            inputs,
+            self._config,
+            step_number,
+            operation.name,
+        )
+        if promoted is not None:
+            return promoted
 
-        # Promote raw file paths to FileRefArtifacts before dispatch
-        if _is_file_path_input(inputs):
-            if is_curator_operation(temp_instance):
-                promoted, _count = _promote_file_paths_to_store(
-                    inputs,
-                    self._config,
-                    step_number,
-                    operation.name,
-                    failure_policy or self._config.failure_policy,
-                )
-                if promoted is None:
-                    from artisan.orchestration.engine.step_executor import (
-                        build_step_result,
-                    )
+        from artisan.orchestration.engine.step_executor import build_step_result
 
-                    failed_result = build_step_result(
-                        operation=temp_instance,
-                        step_number=step_number,
-                        succeeded_count=0,
-                        failed_count=len(inputs),
-                        failure_policy=failure_policy or self._config.failure_policy,
-                        metadata={"error": "All input files are invalid"},
-                    )
-                    self._step_spec_ids[step_number] = step_spec_id
-                    self._step_results.append(failed_result)
-                    self._register_step(step_name, step_number, operation.outputs)
-                    self._named_steps.setdefault(failed_result.step_name, []).append(
-                        failed_result
-                    )
-                    self._current_step += 1
-                    resolved_fail: Future[StepResult] = Future()
-                    resolved_fail.set_result(failed_result)
-                    return StepFuture(
-                        step_number=step_number,
-                        step_name=failed_result.step_name,
-                        output_roles=frozenset(operation.outputs.keys()),
-                        output_types={
-                            r: s.artifact_type for r, s in operation.outputs.items()
-                        },
-                        future=resolved_fail,
-                    )
-                inputs = promoted
-            else:
-                raise ValueError(
-                    "Raw file paths are not allowed for creator operations. "
-                    "Use a curator ingest operation to bring files into the "
-                    "pipeline first."
-                )
+        _fp = failure_policy or self._config.failure_policy
+        failed_result = build_step_result(
+            operation=temp_instance,
+            step_number=step_number,
+            succeeded_count=0,
+            failed_count=len(inputs),
+            failure_policy=_fp,
+            metadata={"error": "All input files are invalid"},
+        )
+        self._step_spec_ids[step_number] = step_spec_id
+        self._step_results.append(failed_result)
+        self._register_step(step_name, step_number, operation.outputs)
+        self._named_steps.setdefault(failed_result.step_name, []).append(failed_result)
+        self._current_step += 1
+        resolved_fail: Future[StepResult] = Future()
+        resolved_fail.set_result(failed_result)
+        return StepFuture(
+            step_number=step_number,
+            step_name=failed_result.step_name,
+            output_roles=frozenset(operation.outputs.keys()),
+            output_types={r: s.artifact_type for r, s in operation.outputs.items()},
+            future=resolved_fail,
+        )
 
-        # Cache miss — dispatch in background
-        # Install signal handlers on the first dispatched step
+    def _dispatch_step(
+        self,
+        operation: type[OperationDefinition],
+        inputs: Any,
+        params: dict[str, Any] | None,
+        backend: str | BackendBase | None,
+        resources: dict[str, Any] | None,
+        execution: dict[str, Any] | None,
+        environment: str | dict[str, Any] | None,
+        tool: dict[str, Any] | None,
+        failure_policy: FailurePolicy | None,
+        compact: bool,
+        step_name: str,
+        step_number: int,
+        step_spec_id: str,
+        temp_instance: OperationDefinition,
+    ) -> StepFuture:
+        """Register step, resolve backend, and submit execution to thread pool.
+
+        This is the final phase of submit(). It performs three things
+        synchronously on the calling thread, then hands off to the
+        single-threaded executor:
+
+        1. **Bookkeeping** — registers the step in the step registry,
+           advances the step counter, installs signal handlers (first
+           dispatch only), and generates a unique step_run_id.
+        2. **Backend resolution** — curator operations are forced to
+           LOCAL; otherwise per-step override > pipeline default.
+        3. **Delta recording** — writes a StepStartRecord to the steps
+           delta table for audit/resume.
+
+        The ``_run()`` closure is then submitted to the ThreadPoolExecutor
+        (max_workers=1, so steps execute sequentially). The closure calls
+        ``execute_step()`` which handles batching, worker dispatch, and
+        Delta commits. Results are recorded back via ``_step_results``
+        and ``_named_steps`` for finalize() to collect.
+
+        Returns:
+            StepFuture tracking the background execution.
+        """
         if self._current_step == 0:
             self._install_signal_handlers()
         self._register_step(step_name, step_number, operation.outputs)
@@ -1269,14 +1478,11 @@ class PipelineManager:
         self._step_spec_ids[step_number] = step_spec_id
         step_run_id = _generate_step_run_id(step_spec_id)
 
-        # Resolve output metadata from operation class
-        output_types_map: dict[str, str | None] = {
-            role: spec.artifact_type if spec.artifact_type else None
-            for role, spec in operation.outputs.items()
-        }
+        output_types_map = self._build_output_types(operation.outputs)
 
-        # Resolve backend: per-step override > pipeline default
-        # Curator operations always run locally
+        # Curator operations always run locally (they read/write Delta
+        # directly). Non-curator: per-step override > pipeline default.
+        resolved_backend: BackendBase
         if is_curator_operation(temp_instance):
             resolved_backend = Backend.LOCAL
         elif backend is not None:
@@ -1284,7 +1490,6 @@ class PipelineManager:
         else:
             resolved_backend = resolve_backend(self._config.default_backend)
 
-        # Record step start in delta
         compute_options_data = {
             "resources": resources or {},
             "execution": execution or {},
@@ -1306,11 +1511,11 @@ class PipelineManager:
         )
         self._step_tracker.record_step_start(start_record)
 
-        # Capture all parameters for the closure
         _failure_policy = failure_policy or self._config.failure_policy
 
         def _run() -> StepResult:
-            # Bail out immediately if cancelled while queued in the executor
+            # Last-chance cancel check: the step may have been queued in
+            # the executor while a cancel signal arrived.
             if self._cancel_event.is_set():
                 cancelled_result = StepResult(
                     step_name=step_name,
@@ -1358,6 +1563,9 @@ class PipelineManager:
                     update={"step_name": step_name, "duration_seconds": elapsed}
                 )
 
+                # execute_step may detect cancellation mid-batch and
+                # return a result with metadata={"cancelled": True}
+                # rather than raising — record and bail.
                 if result.metadata.get("cancelled"):
                     self._step_tracker.record_step_cancelled(start_record)
                     logger.info(
@@ -1369,6 +1577,9 @@ class PipelineManager:
                     self._named_steps.setdefault(result.step_name, []).append(result)
                     return result
 
+                # Empty inputs at dispatch time: the step is "skipped"
+                # and _stopped is set so all subsequent steps short-circuit
+                # via _check_early_exit.
                 if result.metadata.get("skipped"):
                     self._step_tracker.record_step_skipped(start_record, result)
                     self._stopped = True
@@ -1420,7 +1631,6 @@ class PipelineManager:
                 )
                 return failed_result
 
-        # Submit to executor with context propagation
         ctx = contextvars.copy_context()
         cf_future = self._executor.submit(ctx.run, _run)
 
@@ -1436,14 +1646,14 @@ class PipelineManager:
 
     def expand(
         self,
-        composite: type,
+        composite: type[CompositeDefinition],
         inputs: (dict[str, OutputReference | list[str]] | None) = None,
         params: dict[str, Any] | None = None,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
-        environment: str | dict[str, Any] | None = None,
-        tool: dict[str, Any] | None = None,
+        resources: dict[str, Any] | None = None,  # noqa: ARG002 — reserved for forwarding to composite steps
+        execution: dict[str, Any] | None = None,  # noqa: ARG002
+        backend: str | BackendBase | None = None,  # noqa: ARG002
+        environment: str | dict[str, Any] | None = None,  # noqa: ARG002
+        tool: dict[str, Any] | None = None,  # noqa: ARG002
         name: str | None = None,
     ) -> Any:
         """Expand a composite into individual pipeline steps.
@@ -1470,11 +1680,10 @@ class PipelineManager:
         from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
 
         if not (
-            isinstance(composite, type) and issubclass(composite, CompositeDefinition)
+            isinstance(composite, type) and issubclass(composite, CompositeDefinition)  # type: ignore[redundant-expr]
         ):
-            raise TypeError(
-                f"expand() requires a CompositeDefinition subclass, got {composite}"
-            )
+            msg = f"expand() requires a CompositeDefinition subclass, got {composite}"  # type: ignore[unreachable]
+            raise TypeError(msg)
 
         # Validate inputs
         _validate_input_roles(composite, inputs)
@@ -1521,14 +1730,14 @@ class PipelineManager:
 
     def _submit_composite(
         self,
-        composite_class: type,
+        composite_class: type[CompositeDefinition],
         inputs: Any,
         params: dict[str, Any] | None,
-        backend: Any | None,
+        backend: str | BackendBase | None,
         resources: dict[str, Any] | None,
         execution: dict[str, Any] | None,
         intermediates: str,
-        failure_policy: Any | None,
+        failure_policy: FailurePolicy | None,
         compact: bool,
         name: str,
     ) -> StepFuture:
@@ -1566,108 +1775,14 @@ class PipelineManager:
         if execution:
             _validate_execution(execution)
 
-        if self._stopped:
-            step_number = self._current_step
-            output_types_map: dict[str, str | None] = {
-                role: spec.artifact_type if spec.artifact_type else None
-                for role, spec in composite_class.outputs.items()
-            }
-            skipped_result = StepResult(
-                step_name=name,
-                step_number=step_number,
-                success=True,
-                total_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                output_roles=frozenset(composite_class.outputs.keys()),
-                output_types=output_types_map,
-                metadata={"skipped": True, "skip_reason": "pipeline_stopped"},
-            )
-            self._step_results.append(skipped_result)
-            self._register_step(name, step_number, composite_class.outputs)
-            self._named_steps.setdefault(name, []).append(skipped_result)
-            self._current_step += 1
-
-            resolved_stopped: Future[StepResult] = Future()
-            resolved_stopped.set_result(skipped_result)
-            return StepFuture(
-                step_number=step_number,
-                step_name=name,
-                output_roles=frozenset(composite_class.outputs.keys()),
-                output_types=output_types_map,
-                future=resolved_stopped,
-            )
-
-        # If pipeline has been cancelled, skip remaining steps
-        if self._cancel_event.is_set():
-            step_number = self._current_step
-            output_types_map: dict[str, str | None] = {
-                role: spec.artifact_type if spec.artifact_type else None
-                for role, spec in composite_class.outputs.items()
-            }
-            skipped_result = StepResult(
-                step_name=name,
-                step_number=step_number,
-                success=True,
-                total_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                output_roles=frozenset(composite_class.outputs.keys()),
-                output_types=output_types_map,
-                metadata={"skipped": True, "skip_reason": "cancelled"},
-            )
-            self._step_results.append(skipped_result)
-            self._register_step(name, step_number, composite_class.outputs)
-            self._named_steps.setdefault(name, []).append(skipped_result)
-            self._current_step += 1
-            resolved_cancelled: Future[StepResult] = Future()
-            resolved_cancelled.set_result(skipped_result)
-            return StepFuture(
-                step_number=step_number,
-                step_name=name,
-                output_roles=frozenset(composite_class.outputs.keys()),
-                output_types=output_types_map,
-                future=resolved_cancelled,
-            )
-
-        self._wait_for_predecessors(inputs)
-
-        # Re-check cancel after waiting — may have been set while blocked
-        if self._cancel_event.is_set():
-            step_number = self._current_step
-            output_types_map = {
-                role: spec.artifact_type if spec.artifact_type else None
-                for role, spec in composite_class.outputs.items()
-            }
-            skipped_result = StepResult(
-                step_name=name,
-                step_number=step_number,
-                success=True,
-                total_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                output_roles=frozenset(composite_class.outputs.keys()),
-                output_types=output_types_map,
-                metadata={"skipped": True, "skip_reason": "cancelled"},
-            )
-            self._step_results.append(skipped_result)
-            self._register_step(name, step_number, composite_class.outputs)
-            self._named_steps.setdefault(name, []).append(skipped_result)
-            self._current_step += 1
-            resolved_post_wait: Future[StepResult] = Future()
-            resolved_post_wait.set_result(skipped_result)
-            return StepFuture(
-                step_number=step_number,
-                step_name=name,
-                output_roles=frozenset(composite_class.outputs.keys()),
-                output_types=output_types_map,
-                future=resolved_post_wait,
-            )
+        early = self._check_early_exit(name, composite_class.outputs, inputs)
+        if early is not None:
+            return early
 
         step_number = self._current_step
 
         # Compute composite step_spec_id
-        temp = instantiate_operation(composite_class, params)
+        temp = instantiate_operation(composite_class, params)  # type: ignore[arg-type]
         if hasattr(temp, "params"):
             full_params = temp.params.model_dump(mode="json")
         else:
@@ -1707,10 +1822,7 @@ class PipelineManager:
         self._current_step += 1
         self._step_spec_ids[step_number] = step_spec_id
 
-        output_types_map = {
-            role: spec.artifact_type if spec.artifact_type else None
-            for role, spec in composite_class.outputs.items()
-        }
+        output_types_map = self._build_output_types(composite_class.outputs)
 
         # Resolve backend
         if backend is not None:
@@ -1921,10 +2033,8 @@ class PipelineManager:
                         continue
                 else:
                     # Cancel detected — short wait for cleanup
-                    try:
+                    with contextlib.suppress(TimeoutError, Exception):
                         future.result(timeout=5.0)
-                    except (TimeoutError, Exception):
-                        pass
             except Exception as exc:
                 logger.error(
                     "Step %d future failed during finalize: %s: %s",
