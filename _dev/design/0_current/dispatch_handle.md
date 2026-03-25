@@ -19,8 +19,8 @@ Serves two purposes:
   backend a way to stop its own work (SLURM: `scancel`, local: cancel
   event, K8s: delete pods).
 
-- **Non-blocking dispatch for the coordinator.** The streaming coordinator
-  dispatch thread cannot block one thread per in-flight task. It needs to
+- **Non-blocking dispatch for the step scheduler.** The streaming
+  step scheduler cannot block one thread per in-flight task. It needs to
   fire off backend work and poll for completion. `dispatch()` / `is_done()`
   / `collect()` provide this.
 
@@ -47,7 +47,7 @@ class DispatchHandle(ABC):
 ```
 
 `run()` is equivalent to `dispatch()` + poll `is_done()` + `collect()`.
-Non-streaming pipelines use `run()`. The coordinator uses the non-blocking
+Non-streaming pipelines use `run()`. The step scheduler uses the non-blocking
 methods.
 
 ---
