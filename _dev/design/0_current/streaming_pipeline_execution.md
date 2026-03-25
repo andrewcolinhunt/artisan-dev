@@ -143,10 +143,10 @@ The backend returns a `DispatchHandle` that supports both blocking execution
 
 ```python
 class DispatchHandle(ABC):
-    def run(self) -> list[dict]:
-        """Block until complete."""
+    def run(self, units_path: str, runtime_env: RuntimeEnvironment) -> list[dict]:
+        """Execute the step. Blocks until completion or cancellation."""
 
-    def dispatch(self) -> None:
+    def dispatch(self, units_path: str, runtime_env: RuntimeEnvironment) -> None:
         """Start execution, return immediately."""
 
     def is_done(self) -> bool:
@@ -156,7 +156,7 @@ class DispatchHandle(ABC):
         """Get results. Valid only after is_done() returns True."""
 
     def cancel(self) -> None:
-        """Cancel in-flight work."""
+        """Cancel in-flight work. Thread-safe, idempotent."""
 ```
 
 `run()` is equivalent to `dispatch()` + poll `is_done()` + `collect()`.
@@ -213,7 +213,7 @@ gates on resource availability.
 | SLURM_INTRA | `SLURM_GPUS`, `CUDA_VISIBLE_DEVICES` | `SLURM_CPUS_ON_NODE` |
 
 **Queue-managed (SLURM sbatch, Cloud, Kubernetes):** External system owns
-resources. Coordinator submits in priority order and lets the external
+resources. The step scheduler submits in priority order and lets the external
 system schedule. Optionally propagates priority hints (SLURM `--nice`,
 Kubernetes `PriorityClass`). Optionally caps in-flight submissions.
 
@@ -262,13 +262,13 @@ per-branch or replaced with input-resolution-based skip logic.
 
 See: `parallel_step_execution.md`
 
-### Coordinator
+### Step scheduler
 
 Replace `ThreadPoolExecutor` with the step scheduler. Priority
 and resource awareness ship together — priority ordering without readiness
 gating causes priority inversion, so they are not separable.
 
-- Coordinator thread with dispatch loop
+- Step scheduler thread with dispatch loop
 - DispatchHandle with `dispatch()` / `is_done()` / `collect()` / `cancel()`
 - I/O pool for prep and commit phases
 - Priority queue ordered by stream depth (configurable)

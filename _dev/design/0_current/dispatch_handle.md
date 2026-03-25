@@ -13,11 +13,12 @@ in-flight backend work: start, poll, collect results, and cancel.
 
 Serves two purposes:
 
-- **Cancellation.** Currently there is no way to cancel in-flight backend
-  work. `create_flow()` returns a callable — once called, the caller is
-  blocked until all futures resolve. `DispatchHandle.cancel()` gives each
-  backend a way to stop its own work (SLURM: `scancel`, local: cancel
-  event, K8s: delete pods).
+- **Cancellation of in-flight backend work.** Pipeline-level cancellation
+  already exists (`PipelineManager.cancel()`, signal handling,
+  `record_step_cancelled`), but it only prevents future steps from
+  starting — it cannot stop work already dispatched to a backend.
+  `DispatchHandle.cancel()` gives each backend a way to stop its own
+  in-flight work (SLURM: `scancel`, local: cancel event, K8s: delete pods).
 
 - **Non-blocking dispatch for the step scheduler.** The streaming
   step scheduler cannot block one thread per in-flight task. It needs to
@@ -85,28 +86,23 @@ and harmlessly no-ops for non-existent names.
 via `ThreadPoolExecutor`. Add a `cancel_event` parameter: when set, fill
 remaining unresolved futures with cancellation markers instead of waiting.
 
-The cancel event flows from `DispatchHandle` → `_build_prefect_flow` →
-`_collect_results`.
+The cancel event flows from `DispatchHandle` → `_build_prefect_flow`
+(in `backends/base.py`) → `_collect_results` (in `engine/dispatch.py`).
 
 ---
 
 ## Pipeline-level cancellation
 
-With `DispatchHandle`, `PipelineManager.cancel()` is straightforward:
+`PipelineManager` already has `cancel()`, `_cancel_event`, signal handling
+(SIGINT/SIGTERM), `record_step_cancelled`, and the "cancelled" step state.
+The new work is wiring `cancel()` to also call `handle.cancel()` on active
+dispatch handles, so that in-flight backend work is stopped — not just
+future steps.
 
-- Set `_cancel_event`
-- Call `cancel()` on active dispatch handles
-- Pending steps see the cancel event and skip
-
-Signal handling (SIGINT, SIGTERM) calls `cancel()`. The pipeline manager
-doesn't know or care what `cancel()` does internally — the backend handles
-cleanup.
-
-### Cancelled step state
-
-Add `record_step_cancelled` to `StepTracker`. Cancelled steps are
-distinguishable from failed steps. `load_completed_steps` treats
-"cancelled" like "failed" — not eligible for cache hits.
+- `PipelineManager` tracks active `DispatchHandle` instances
+- `cancel()` iterates active handles and calls `handle.cancel()`
+- The pipeline manager doesn't know or care what `cancel()` does
+  internally — the backend handles cleanup
 
 ---
 
@@ -147,9 +143,8 @@ results = handle.run(units_path=..., runtime_env=...)
 | `orchestration/backends/local.py` | `LocalDispatchHandle` |
 | `orchestration/backends/slurm.py` | `SlurmDispatchHandle` with scancel |
 | `orchestration/engine/dispatch.py` | `cancel_event` param on `_collect_results` |
-| `orchestration/engine/step_executor.py` | Use `handle.run()`, check cancel_event between phases |
-| `orchestration/engine/step_tracker.py` | Add "cancelled" state |
-| `orchestration/pipeline_manager.py` | `cancel()`, signal handling, dispatch handle tracking |
+| `orchestration/engine/step_executor.py` | Use `handle.run()` instead of calling returned callable |
+| `orchestration/pipeline_manager.py` | Track active dispatch handles, wire `cancel()` to call `handle.cancel()` |
 
 ---
 
