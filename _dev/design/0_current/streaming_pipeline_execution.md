@@ -24,8 +24,10 @@ different resources (CPU vs GPU).
 - **Independent branch streaming** — downstream starts before upstream
   finishes across all branches
 - **Priority scheduling** — later pipeline stages dispatched first
-- **Backend-agnostic** — works across LOCAL, SLURM, SLURM_INTRA, and
-  future backends (Kubernetes, cloud)
+- **Backend-agnostic** — works across LOCAL, SLURM, and future backends
+  (SLURM_INTRA, Kubernetes, cloud). SLURM_INTRA (intra-allocation srun
+  dispatch) does not yet have a backend implementation — it will be built
+  as part of or before this work.
 
 ---
 
@@ -130,16 +132,25 @@ seconds, not minutes — then returns to the pool.
 **Thread count:** 1 step scheduler + ~16–32 I/O pool threads,
 regardless of how many tasks are in flight.
 
-**User API:** Unchanged. `submit()` registers the task with the dispatch
-step scheduler and returns a `StepFuture`. `finalize()` blocks until all
-tasks have drained. The step scheduler is an internal implementation
+**User API:** Unchanged. `submit()` registers the task with the step
+scheduler and returns a `StepFuture`. `finalize()` signals the step
+scheduler to drain remaining tasks, joins the scheduler thread, and
+shuts down the I/O pool. The step scheduler is an internal implementation
 detail.
 
 ### DispatchHandle interface
 
-The backend returns a `DispatchHandle` that supports both blocking execution
-(non-streaming pipelines) and non-blocking dispatch with completion polling
-(step scheduler):
+`DispatchHandle` replaces the current `create_flow()` callable interface on
+`BackendBase`. Today, `create_flow()` returns a Prefect flow callable;
+`DispatchHandle` subsumes that by wrapping backend-specific execution
+(Prefect, srun, subprocess) behind a uniform non-blocking interface.
+Backends implement a new `create_handle()` method that returns a
+`DispatchHandle` instead of a callable. The existing `create_flow()` method
+is removed.
+
+The `DispatchHandle` supports both blocking execution (non-streaming
+pipelines) and non-blocking dispatch with completion polling (step
+scheduler):
 
 ```python
 class DispatchHandle(ABC):
@@ -160,8 +171,8 @@ class DispatchHandle(ABC):
 ```
 
 `run()` is equivalent to `dispatch()` + poll `is_done()` + `collect()`.
-Non-streaming pipelines use `run()` via the step executor. The dispatch
-step scheduler uses the non-blocking methods.
+Non-streaming pipelines use `run()` via the step executor. The step
+scheduler uses the non-blocking methods.
 
 Backend implementations:
 
@@ -195,11 +206,12 @@ The step scheduler tracks a resource budget: total resources,
 per-task requirements, and what is currently dispatched. It dispatches the
 highest-priority ready task that fits within available resources.
 
-The total budget comes from the backend via `resource_budget()` —
-auto-detected from the environment (hardware for LOCAL, SLURM env vars for
-SLURM_INTRA). Per-task requirements come from `ResourceConfig` on each
-step. The user can optionally override the detected budget (e.g., to
-reserve CPUs for the orchestrator process).
+The total budget comes from the backend via a new `resource_budget()`
+method on `BackendBase` — auto-detected from the environment (hardware
+for LOCAL, SLURM env vars for SLURM_INTRA). Per-task requirements come
+from the existing `ResourceConfig` on each step. The user can optionally
+override the detected budget (e.g., to reserve CPUs for the orchestrator
+process).
 
 ### Two backend resource models
 
@@ -217,7 +229,8 @@ resources. The step scheduler submits in priority order and lets the external
 system schedule. Optionally propagates priority hints (SLURM `--nice`,
 Kubernetes `PriorityClass`). Optionally caps in-flight submissions.
 
-The backend declares its model:
+The backend declares its model via a new method and return type (neither
+exists in the codebase today):
 
 ```python
 class BackendBase:
@@ -264,22 +277,24 @@ See: `parallel_step_execution.md`
 
 ### Step scheduler
 
-Replace `ThreadPoolExecutor` with the step scheduler. Priority
-and resource awareness ship together — priority ordering without readiness
-gating causes priority inversion, so they are not separable.
+Replace the current `ThreadPoolExecutor(max_workers=1)` in
+`PipelineManager` with the step scheduler. Priority and resource awareness
+ship together — priority ordering without readiness gating causes priority
+inversion, so they are not separable.
 
 - Step scheduler thread with dispatch loop
-- DispatchHandle with `dispatch()` / `is_done()` / `collect()` / `cancel()`
+- DispatchHandle replacing `create_flow()` with `dispatch()` / `is_done()` / `collect()` / `cancel()`
 - I/O pool for prep and commit phases
 - Priority queue ordered by stream depth (configurable)
 - Resource budget tracking for resource-managed backends
 - Commit batching for Delta Lake writes
 
-### Backpressure
+### Backpressure (future scope)
 
 Limit in-flight work per stream depth to prevent fast upstream from
 overwhelming slow downstream. The step scheduler enforces per-depth caps in
-addition to resource constraints.
+addition to resource constraints. Deferred until the step scheduler is
+operational and we can observe real dispatch patterns.
 
 ---
 
@@ -315,7 +330,7 @@ Independent of each other and can be built in parallel.
   dynamic based on downstream consumption rate?
 - **Step-level caching:** Streaming steps have incrementally-arriving inputs.
   Are they uncacheable at the step level (unit-level caching only)?
-- **Backend interface coexistence:** Non-streaming pipelines use
-  `create_flow()` + `DispatchHandle.run()`. The step scheduler uses
-  the non-blocking methods. Does it eventually subsume the step
-  executor entirely?
+- **Step executor subsumption:** Non-streaming pipelines use
+  `DispatchHandle.run()` via the step executor. The step scheduler uses
+  the non-blocking methods. Does the step scheduler eventually subsume
+  the step executor entirely, or do both paths coexist long-term?
