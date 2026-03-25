@@ -55,10 +55,18 @@ returns immediately after validation, step numbering, and cache check.
 
 ### Thread safety
 
-- `threading.Lock` for `_step_results` list mutations
-- `threading.Lock` for `StepTracker._write_row()` Delta writes
-- `_current_step` increment and step numbering stay on the main thread
-  (inside `submit()`), so no lock needed
+**Main-thread only (no lock needed):**
+
+- `_current_step` increment and step numbering (inside `submit()`)
+- `_step_registry` mutations (via `_register_step()`, called from `submit()`)
+
+**Locked (mutated from both main thread and worker threads):**
+
+- `threading.Lock` for `_step_results` and `_named_steps` mutations (single
+  shared lock — they are always updated together)
+- `threading.Lock` for `StepTracker._write_row()` — Delta Lake supports
+  concurrent appends via optimistic concurrency, but `_write_row()` has a
+  TOCTOU race on the `exists()` check before the first write
 
 ### Replace `_stopped` with input-resolution skip logic
 
@@ -71,6 +79,19 @@ result without dispatching.
 Skip propagation becomes per-branch: a skipped step on branch A does not
 affect branch B, because branch B's inputs resolve independently.
 
+### `_step_results` ordering
+
+With parallel execution, steps can complete out of order. `_step_results`
+becomes completion-ordered rather than step-number-ordered. `finalize()`
+sorts `_step_results` by `step_number` before returning so that the
+`__getitem__`/`__iter__` contract is restored for post-pipeline inspection.
+
+### `run()` stays sequential
+
+`run()` is `submit(...).result()` — it blocks until the step completes.
+Calling `run()` for step A then `run()` for step B still serializes them.
+Parallelism requires `submit()` + `finalize()`.
+
 ---
 
 ## Scope
@@ -78,5 +99,5 @@ affect branch B, because branch B's inputs resolve independently.
 | File | Change |
 |------|--------|
 | `schemas/orchestration/pipeline_config.py` | Add `max_parallel_steps: int = 1` |
-| `orchestration/pipeline_manager.py` | Use `max_parallel_steps` for executor, move `_wait_for_predecessors` into `_run()`, add locks, remove `_stopped` |
+| `orchestration/pipeline_manager.py` | Use `max_parallel_steps` for executor, move `_wait_for_predecessors` into `_run()`, add locks, remove `_stopped`. Applies to both `submit()` and `_submit_composite()`. Sort `_step_results` by `step_number` in `finalize()`. |
 | `orchestration/engine/step_tracker.py` | Add lock around `_write_row()` |
