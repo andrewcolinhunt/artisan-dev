@@ -7,15 +7,34 @@ correctly stops the pipeline.
 
 from __future__ import annotations
 
+import json
+import signal
 from concurrent.futures import Future
 from enum import StrEnum, auto
+from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
+
+import pytest
+from pydantic import BaseModel
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import (
     PipelineManager,
+    _extract_name_from_run_id,
     _extract_source_steps,
+    _generate_run_id,
+    _generate_step_run_id,
+    _is_file_path_input,
+    _qualified_name,
+    _serialize_input_refs,
+    _set_default,
+    _validate_execution,
+    _validate_input_roles,
+    _validate_input_types,
+    _validate_params,
+    _validate_required_inputs,
+    _validate_resources,
 )
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.orchestration.output_reference import OutputReference
@@ -1063,3 +1082,735 @@ class TestStepRegistry:
 
         with pytest.raises(ValueError, match="Output role 'bad' not available"):
             pipeline.output("foo", "bad")
+
+
+# =============================================================================
+# Module-level helper functions
+# =============================================================================
+
+
+class TestGenerateRunId:
+    """Tests for _generate_run_id."""
+
+    def test_contains_name_prefix(self):
+        run_id = _generate_run_id("my_pipeline")
+        assert run_id.startswith("my_pipeline_")
+
+    def test_contains_timestamp_and_hex(self):
+        run_id = _generate_run_id("test")
+        parts = run_id.split("_")
+        assert len(parts) >= 4
+        assert len(parts[-1]) == 8  # 8-char hex suffix
+
+    def test_unique_across_calls(self):
+        a = _generate_run_id("x")
+        b = _generate_run_id("x")
+        assert a != b
+
+
+class TestGenerateStepRunId:
+    """Tests for _generate_step_run_id."""
+
+    def test_returns_32_char_hex(self):
+        result = _generate_step_run_id("spec123")
+        assert len(result) == 32
+        int(result, 16)  # valid hex
+
+    def test_different_spec_ids_differ(self):
+        a = _generate_step_run_id("spec_a")
+        b = _generate_step_run_id("spec_b")
+        assert a != b
+
+
+class TestQualifiedName:
+    """Tests for _qualified_name."""
+
+    def test_returns_module_and_qualname(self):
+        result = _qualified_name(_MockOp)
+        assert result.endswith("_MockOp")
+        assert "." in result
+
+
+class TestSerializeInputRefs:
+    """Tests for _serialize_input_refs."""
+
+    def test_none_returns_null(self):
+        assert _serialize_input_refs(None) == "null"
+
+    def test_dict_with_output_reference(self):
+        inputs = {"data": OutputReference(source_step=0, role="output")}
+        result = json.loads(_serialize_input_refs(inputs))
+        assert result["data"]["type"] == "output_ref"
+        assert result["data"]["source_step"] == 0
+        assert result["data"]["role"] == "output"
+
+    def test_dict_with_literal(self):
+        inputs = {"data": ["some_artifact_id"]}
+        result = json.loads(_serialize_input_refs(inputs))
+        assert result["data"]["type"] == "literal"
+        assert result["data"]["value"] == ["some_artifact_id"]
+
+    def test_list_with_output_references(self):
+        inputs = [
+            OutputReference(source_step=0, role="a"),
+            OutputReference(source_step=1, role="b"),
+        ]
+        result = json.loads(_serialize_input_refs(inputs))
+        assert len(result) == 2
+        assert result[0]["type"] == "output_ref"
+        assert result[1]["source_step"] == 1
+
+    def test_list_with_literal(self):
+        inputs = ["literal_val"]
+        result = json.loads(_serialize_input_refs(inputs))
+        assert len(result) == 1
+        assert result[0]["type"] == "literal"
+
+    def test_fallback_to_str(self):
+        result = json.loads(_serialize_input_refs(42))
+        assert result == "42"
+
+
+class TestExtractNameFromRunId:
+    """Tests for _extract_name_from_run_id."""
+
+    def test_standard_run_id(self):
+        assert (
+            _extract_name_from_run_id("my_pipeline_20240101_120000_abc12345")
+            == "my_pipeline"
+        )
+
+    def test_name_with_underscores(self):
+        result = _extract_name_from_run_id("a_b_c_20240101_120000_abc12345")
+        assert result == "a_b_c"
+
+    def test_simple_name(self):
+        assert _extract_name_from_run_id("test_20240101_120000_abc12345") == "test"
+
+
+class TestSetDefault:
+    """Tests for _set_default JSON serializer."""
+
+    def test_set_becomes_sorted_list(self):
+        result = _set_default({"c", "a", "b"})
+        assert result == ["a", "b", "c"]
+
+    def test_path_becomes_string(self):
+        result = _set_default(Path("/tmp/foo"))
+        assert result == "/tmp/foo"
+
+    def test_unsupported_type_raises(self):
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            _set_default(object())
+
+
+class TestIsFilePathInput:
+    """Tests for _is_file_path_input."""
+
+    def test_valid_file_paths(self):
+        assert _is_file_path_input(["/path/to/file.nc"]) is True
+
+    def test_empty_list(self):
+        assert _is_file_path_input([]) is False
+
+    def test_non_list(self):
+        assert _is_file_path_input({"data": "val"}) is False
+        assert _is_file_path_input(None) is False
+
+    def test_output_reference_list(self):
+        refs = [OutputReference(source_step=0, role="data")]
+        assert _is_file_path_input(refs) is False
+
+    def test_non_string_list(self):
+        assert _is_file_path_input([123]) is False
+
+
+# =============================================================================
+# Validation helpers
+# =============================================================================
+
+
+class _ParamsOp(OperationDefinition):
+    """Op with a params model for validation testing."""
+
+    class Params(BaseModel):
+        alpha: float = 1.0
+        beta: int = 2
+
+    class InputRole(StrEnum):
+        data = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "params_op"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        "data": InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "output": OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": ["data"]},
+        ),
+    }
+
+    params: Params = Params()
+
+    def preprocess(self, inputs: Any) -> dict:
+        return {}
+
+    def execute(self, inputs: Any, output_dir: Any) -> Any:
+        return None
+
+
+class _MultiInputOp(OperationDefinition):
+    """Op with required + optional inputs for validation testing."""
+
+    class InputRole(StrEnum):
+        primary = auto()
+        reference = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "multi_input_op"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        "primary": InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        "reference": InputSpec(artifact_type=ArtifactTypes.METRIC, required=False),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "output": OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": ["primary"]},
+        ),
+    }
+
+    def preprocess(self, inputs: Any) -> dict:
+        return {}
+
+    def execute(self, inputs: Any, output_dir: Any) -> Any:
+        return None
+
+
+class TestValidateParams:
+    """Tests for _validate_params."""
+
+    def test_valid_params_accepted(self):
+        _validate_params(_ParamsOp, {"alpha": 2.0})
+
+    def test_unknown_param_raises(self):
+        with pytest.raises(ValueError, match="Unknown params.*gamma"):
+            _validate_params(_ParamsOp, {"gamma": 99})
+
+    def test_flat_field_operation(self):
+        _validate_params(_MockOp, {})
+
+
+class TestValidateResources:
+    """Tests for _validate_resources."""
+
+    def test_valid_keys_accepted(self):
+        _validate_resources({"cpus": 4, "memory_gb": 8})
+
+    def test_unknown_key_raises(self):
+        with pytest.raises(ValueError, match="Unknown resource keys.*bogus"):
+            _validate_resources({"bogus": 42})
+
+
+class TestValidateExecution:
+    """Tests for _validate_execution."""
+
+    def test_valid_keys_accepted(self):
+        _validate_execution({"artifacts_per_unit": 10, "max_workers": 4})
+
+    def test_unknown_key_raises(self):
+        with pytest.raises(ValueError, match="Unknown execution keys.*bad_key"):
+            _validate_execution({"bad_key": True})
+
+
+class TestValidateInputRoles:
+    """Tests for _validate_input_roles."""
+
+    def test_valid_roles_accepted(self):
+        _validate_input_roles(_MultiInputOp, {"primary": "something"})
+
+    def test_unknown_role_raises(self):
+        with pytest.raises(ValueError, match="Unknown input roles.*bogus"):
+            _validate_input_roles(_MultiInputOp, {"bogus": "val"})
+
+    def test_non_dict_is_noop(self):
+        _validate_input_roles(_MultiInputOp, ["list_input"])
+
+    def test_none_is_noop(self):
+        _validate_input_roles(_MultiInputOp, None)
+
+
+class TestValidateRequiredInputs:
+    """Tests for _validate_required_inputs."""
+
+    def test_all_required_provided(self):
+        _validate_required_inputs(_MultiInputOp, {"primary": "val"})
+
+    def test_missing_required_raises(self):
+        with pytest.raises(ValueError, match="Missing required input.*primary"):
+            _validate_required_inputs(_MultiInputOp, {"reference": "val"})
+
+    def test_optional_can_be_omitted(self):
+        _validate_required_inputs(_MultiInputOp, {"primary": "val"})
+
+    def test_non_dict_is_noop(self):
+        _validate_required_inputs(_MultiInputOp, ["list"])
+
+
+class TestValidateInputTypes:
+    """Tests for _validate_input_types."""
+
+    def test_matching_type_accepted(self):
+        inputs = {
+            "primary": OutputReference(source_step=0, role="out", artifact_type="data")
+        }
+        _validate_input_types(_MultiInputOp, inputs)
+
+    def test_mismatched_type_raises(self):
+        inputs = {
+            "primary": OutputReference(
+                source_step=0, role="out", artifact_type="metric"
+            )
+        }
+        with pytest.raises(ValueError, match="Type mismatch on input 'primary'"):
+            _validate_input_types(_MultiInputOp, inputs)
+
+    def test_any_type_always_accepted(self):
+        inputs = {
+            "primary": OutputReference(
+                source_step=0, role="out", artifact_type=ArtifactTypes.ANY
+            )
+        }
+        _validate_input_types(_MultiInputOp, inputs)
+
+    def test_non_dict_is_noop(self):
+        _validate_input_types(_MultiInputOp, ["list"])
+
+
+# =============================================================================
+# PipelineManager dunder methods and properties
+# =============================================================================
+
+
+class TestPipelineManagerDunderMethods:
+    """Tests for PipelineManager __repr__, __str__, __len__, etc."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_repr(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        r = repr(pipeline)
+        assert "PipelineManager(" in r
+        assert "name='test'" in r
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_str_no_steps(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert "no steps executed" in str(pipeline)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_str_with_steps(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._step_results = [
+            StepResult(step_name="a", step_number=0, success=True),
+            StepResult(step_name="b", step_number=1, success=False),
+        ]
+        s = str(pipeline)
+        assert "2 steps" in s
+        assert "1/2 succeeded" in s
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_str_all_succeeded(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._step_results = [
+            StepResult(step_name="a", step_number=0, success=True),
+        ]
+        assert "all succeeded" in str(pipeline)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_len(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert len(pipeline) == 0
+        pipeline._step_results.append(
+            StepResult(step_name="a", step_number=0, success=True)
+        )
+        assert len(pipeline) == 1
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_iter(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        r1 = StepResult(step_name="a", step_number=0, success=True)
+        r2 = StepResult(step_name="b", step_number=1, success=True)
+        pipeline._step_results = [r1, r2]
+        assert list(pipeline) == [r1, r2]
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_getitem_index(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        r0 = StepResult(step_name="a", step_number=0, success=True)
+        r1 = StepResult(step_name="b", step_number=1, success=True)
+        pipeline._step_results = [r0, r1]
+        assert pipeline[0] == r0
+        assert pipeline[1] == r1
+        assert pipeline[-1] == r1
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_getitem_slice(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        r0 = StepResult(step_name="a", step_number=0, success=True)
+        r1 = StepResult(step_name="b", step_number=1, success=True)
+        pipeline._step_results = [r0, r1]
+        assert pipeline[0:1] == [r0]
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_getitem_out_of_range(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        with pytest.raises(IndexError):
+            pipeline[0]
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_bool_empty(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert not pipeline
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_bool_all_success(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._step_results = [
+            StepResult(step_name="a", step_number=0, success=True),
+        ]
+        assert pipeline
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_bool_with_failure(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._step_results = [
+            StepResult(step_name="a", step_number=0, success=True),
+            StepResult(step_name="b", step_number=1, success=False),
+        ]
+        assert not pipeline
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_config_property(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert pipeline.config.name == "test"
+        assert isinstance(pipeline.config, PipelineConfig)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_current_step_property(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert pipeline.current_step == 0
+
+
+# =============================================================================
+# Internal helper methods
+# =============================================================================
+
+
+class TestBuildOutputTypes:
+    """Tests for PipelineManager._build_output_types."""
+
+    def test_extracts_types(self):
+        outputs = {
+            "data": MagicMock(artifact_type="data"),
+            "metric": MagicMock(artifact_type="metric"),
+        }
+        result = PipelineManager._build_output_types(outputs)
+        assert result == {"data": "data", "metric": "metric"}
+
+    def test_none_artifact_type(self):
+        outputs = {"out": MagicMock(artifact_type=None)}
+        result = PipelineManager._build_output_types(outputs)
+        assert result == {"out": None}
+
+    def test_empty_outputs(self):
+        assert PipelineManager._build_output_types({}) == {}
+
+
+class TestBuildInputSpec:
+    """Tests for PipelineManager._build_input_spec."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_none_returns_empty(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert pipeline._build_input_spec(None) == {}
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_dict_with_output_reference(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._step_spec_ids[0] = "upstream_spec_abc"
+        inputs = {"data": OutputReference(source_step=0, role="output")}
+        result = pipeline._build_input_spec(inputs)
+        assert "data" in result
+        assert result["data"] == ("upstream_spec_abc", "output")
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_dict_with_literal_list(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        inputs = {"data": ["artifact_id_1", "artifact_id_2"]}
+        result = pipeline._build_input_spec(inputs)
+        assert "data" in result
+        assert result["data"][1] == ""  # literal role is empty
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_list_of_output_references(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._step_spec_ids[0] = "spec_0"
+        pipeline._step_spec_ids[1] = "spec_1"
+        inputs = [
+            OutputReference(source_step=0, role="data"),
+            OutputReference(source_step=1, role="data"),
+        ]
+        result = pipeline._build_input_spec(inputs)
+        assert "_merged_streams" in result
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_list_of_file_paths(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        result = pipeline._build_input_spec(["/path/a.nc", "/path/b.nc"])
+        assert "_file_paths" in result
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_unsupported_type_returns_empty(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert pipeline._build_input_spec(42) == {}
+
+
+class TestRegisterStep:
+    """Tests for PipelineManager._register_step."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_registers_entry(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        outputs = {"data": MagicMock(artifact_type="data")}
+        pipeline._register_step("my_step", 0, outputs)
+        assert "my_step" in pipeline._step_registry
+        assert pipeline._step_registry["my_step"][0].step_number == 0
+        assert "data" in pipeline._step_registry["my_step"][0].output_roles
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_appends_for_duplicate_names(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        outputs = {"out": MagicMock(artifact_type="data")}
+        pipeline._register_step("dup", 0, outputs)
+        pipeline._register_step("dup", 1, outputs)
+        assert len(pipeline._step_registry["dup"]) == 2
+
+
+class TestSkipStep:
+    """Tests for PipelineManager._skip_step."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_returns_resolved_future(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        outputs = {"output": MagicMock(artifact_type="data")}
+        future = pipeline._skip_step("skipped", outputs, "test_reason")
+        result = future.result()
+        assert result.metadata["skipped"] is True
+        assert result.metadata["skip_reason"] == "test_reason"
+        assert result.step_name == "skipped"
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_increments_step_counter(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert pipeline._current_step == 0
+        outputs = {"output": MagicMock(artifact_type="data")}
+        pipeline._skip_step("s", outputs, "reason")
+        assert pipeline._current_step == 1
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_populates_bookkeeping(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        outputs = {"output": MagicMock(artifact_type="data")}
+        pipeline._skip_step("my_step", outputs, "reason")
+        assert len(pipeline._step_results) == 1
+        assert "my_step" in pipeline._step_registry
+        assert "my_step" in pipeline._named_steps
+
+
+# =============================================================================
+# Signal handling
+# =============================================================================
+
+
+class TestSignalHandling:
+    """Tests for signal handler install / handle / restore."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_install_and_restore(self, mock_tracker_cls, tmp_path):
+        """Signal handlers can be installed and restored."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        prev_sigint = signal.getsignal(signal.SIGINT)
+        pipeline._install_signal_handlers()
+        assert signal.getsignal(signal.SIGINT) == pipeline._handle_signal
+        pipeline._restore_signal_handlers()
+        assert signal.getsignal(signal.SIGINT) == prev_sigint
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_handle_signal_first_call_cancels(self, mock_tracker_cls, tmp_path):
+        """First signal call triggers cancel."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._install_signal_handlers()
+        try:
+            assert not pipeline._cancel_event.is_set()
+            pipeline._handle_signal(signal.SIGINT, None)
+            assert pipeline._cancel_event.is_set()
+        finally:
+            pipeline._restore_signal_handlers()
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_handle_signal_second_call_restores(self, mock_tracker_cls, tmp_path):
+        """Second signal call restores default handlers."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._install_signal_handlers()
+        try:
+            pipeline._handle_signal(signal.SIGINT, None)
+            pipeline._handle_signal(signal.SIGINT, None)
+            assert pipeline._prev_sigint is None
+        finally:
+            # Ensure we don't leave bad handlers
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_restore_is_noop_without_install(self, mock_tracker_cls, tmp_path):
+        """Restoring without installing is a no-op."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._restore_signal_handlers()
+
+
+# =============================================================================
+# Validate operation overrides (static method)
+# =============================================================================
+
+
+class TestValidateOperationOverrides:
+    """Tests for PipelineManager._validate_operation_overrides."""
+
+    def test_no_overrides(self):
+        PipelineManager._validate_operation_overrides(
+            _MockOp,
+            {"data": ["a" * 32]},
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    def test_invalid_params_raises(self):
+        with pytest.raises(ValueError, match="Unknown params"):
+            PipelineManager._validate_operation_overrides(
+                _ParamsOp,
+                None,
+                {"bad_param": 1},
+                None,
+                None,
+                None,
+                None,
+            )
+
+    def test_invalid_resources_raises(self):
+        with pytest.raises(ValueError, match="Unknown resource"):
+            PipelineManager._validate_operation_overrides(
+                _MockOp,
+                None,
+                None,
+                {"bogus": 1},
+                None,
+                None,
+                None,
+            )
+
+    def test_invalid_execution_raises(self):
+        with pytest.raises(ValueError, match="Unknown execution"):
+            PipelineManager._validate_operation_overrides(
+                _MockOp,
+                None,
+                None,
+                None,
+                {"bad_key": 1},
+                None,
+                None,
+            )
+
+    def test_invalid_input_roles_raises(self):
+        with pytest.raises(ValueError, match="Unknown input roles"):
+            PipelineManager._validate_operation_overrides(
+                _MockOp,
+                {"bad_role": "val"},
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+
+# =============================================================================
+# CheckEarlyExit
+# =============================================================================
+
+
+class TestCheckEarlyExit:
+    """Tests for PipelineManager._check_early_exit."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_returns_none_when_no_exit_conditions(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        outputs = {"output": MagicMock(artifact_type="data")}
+        result = pipeline._check_early_exit("step", outputs, None)
+        assert result is None
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_returns_skipped_when_stopped(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._stopped = True
+        outputs = {"output": MagicMock(artifact_type="data")}
+        result = pipeline._check_early_exit("step", outputs, None)
+        assert result is not None
+        assert result.result().metadata["skip_reason"] == "pipeline_stopped"
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_returns_skipped_when_cancelled(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._cancel_event.set()
+        outputs = {"output": MagicMock(artifact_type="data")}
+        result = pipeline._check_early_exit("step", outputs, None)
+        assert result is not None
+        assert result.result().metadata["skip_reason"] == "cancelled"
