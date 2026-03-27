@@ -14,7 +14,12 @@ import polars as pl
 from pydantic import Field
 
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.common import JsonContentMixin, get_compound_extension
+from artisan.schemas.artifact.common import (
+    JsonContentMixin,
+    get_compound_extension,
+    metadata_from_json,
+    metadata_to_json,
+)
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.filename import strip_extensions
 
@@ -66,7 +71,8 @@ class MetricArtifact(JsonContentMixin, Artifact):
             ValueError: If content is None.
         """
         if self.content is None:
-            raise ValueError("Cannot materialize: artifact not hydrated")
+            msg = "Cannot materialize: artifact not hydrated"
+            raise ValueError(msg)
         if self.original_name:
             filename = f"{self.original_name}{self.extension or '.json'}"
         else:
@@ -113,7 +119,7 @@ class MetricArtifact(JsonContentMixin, Artifact):
             "content": self.content,
             "original_name": self.original_name,
             "extension": self.extension,
-            "metadata": json.dumps(self.metadata or {}),
+            "metadata": metadata_to_json(self.metadata),
             "external_path": self.external_path,
         }
 
@@ -127,13 +133,12 @@ class MetricArtifact(JsonContentMixin, Artifact):
         Args:
             row: Dict with keys matching POLARS_SCHEMA columns.
         """
-        metadata_raw = row.get("metadata")
         return cls(
             artifact_id=row["artifact_id"],
             origin_step_number=row.get("origin_step_number"),
             content=row.get("content"),
             original_name=row.get("original_name"),
             extension=row.get("extension"),
-            metadata=json.loads(metadata_raw) if metadata_raw else {},
+            metadata=metadata_from_json(row.get("metadata")),
             external_path=row.get("external_path"),
         )

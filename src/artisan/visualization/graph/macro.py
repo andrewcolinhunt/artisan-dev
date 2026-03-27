@@ -21,7 +21,9 @@ from artisan.schemas.enums import TablePath
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
     PASSTHROUGH_STYLE,
+    apply_default_layout,
     get_artifact_style,
+    render_graph,
 )
 
 # =============================================================================
@@ -127,11 +129,7 @@ def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
     steps_df = _load_completed_steps(delta_root)
 
     graph = graphviz.Digraph("pipeline", format="svg")
-    graph.attr(rankdir="LR")
-    graph.attr("node", style="filled")
-    graph.attr(nodesep="0.25", ranksep="0.4")
-    graph.attr(outputorder="edgesfirst")
-    graph.attr(splines="line")
+    apply_default_layout(graph)
 
     if steps_df.is_empty():
         return graph
@@ -255,14 +253,4 @@ def render_macro_graph(
         Path to the rendered file.
     """
     graph = build_macro_graph(delta_root)
-    graph.format = format
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    rendered_path = graph.render(
-        filename=str(output_path),
-        cleanup=True,
-    )
-
-    return Path(rendered_path)
+    return render_graph(graph, output_path, format)

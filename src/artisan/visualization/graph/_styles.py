@@ -1,10 +1,15 @@
-"""Shared styling constants for provenance graph visualization.
+"""Shared styling constants and helpers for provenance graph visualization.
 
 Both micro (artifact-level) and macro (step-level) graphs import from here
 to ensure consistent visual language.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal
+
+import graphviz
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 
@@ -46,3 +51,34 @@ def get_artifact_style(artifact_type: str) -> tuple[str, str]:
     except ValueError:
         color = _DEFAULT_ARTIFACT_COLOR
     return ("box", color)
+
+
+def apply_default_layout(graph: graphviz.Digraph) -> None:
+    """Apply the standard graph attributes shared by macro and micro graphs."""
+    graph.attr(rankdir="LR")
+    graph.attr("node", style="filled")
+    graph.attr(nodesep="0.25", ranksep="0.4")
+    graph.attr(outputorder="edgesfirst")
+    graph.attr(splines="line")
+
+
+def render_graph(
+    graph: graphviz.Digraph,
+    output_path: Path,
+    format: Literal["svg", "png"] = "svg",
+) -> Path:
+    """Render a Graphviz digraph to a file.
+
+    Args:
+        graph: The Graphviz Digraph to render.
+        output_path: Output file path (without extension).
+        format: Output format.
+
+    Returns:
+        Path to the rendered file.
+    """
+    graph.format = format
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rendered_path = graph.render(filename=str(output_path), cleanup=True)
+    return Path(rendered_path)

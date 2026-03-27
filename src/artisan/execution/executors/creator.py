@@ -414,9 +414,9 @@ def run_creator_flow(
 
 def _get_params_dict(operation: Any) -> dict[str, Any]:
     """Extract serialized params from an operation."""
-    if hasattr(operation, "params"):
-        return operation.params.model_dump(mode="json")
-    return {}
+    from artisan.utils.hashing import serialize_params
+
+    return serialize_params(operation)
 
 
 def _build_execution_context(
