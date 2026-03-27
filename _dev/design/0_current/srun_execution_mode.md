@@ -96,14 +96,14 @@ submitit's execution pattern is:
 
 ```
 Orchestrator                          Worker (remote node)
-    |                                     |
-    +- pickle(callable) -> NFS            |
-    +- launch process -----------------> |
-    |                                     +- unpickle callable
-    |                                     +- execute
-    |                                     +- pickle(result) -> NFS
-    |  poll for result file  <------------+
-    +- unpickle result                    |
+    │                                     │
+    ├─ pickle(callable) → NFS             │
+    ├─ launch process ──────────────────► │
+    │                                     ├─ unpickle callable
+    │                                     ├─ execute
+    │                                     ├─ pickle(result) → NFS
+    │  poll for result file  ◄─────────────┤
+    ├─ unpickle result                    │
 ```
 
 The `srun` mode reuses this exactly. submitit's `_submit` module

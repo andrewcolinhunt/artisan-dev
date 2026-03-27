@@ -65,28 +65,28 @@ Nothing else changes in artisan. `execute_unit_task`, `_build_prefect_flow`,
 
 ```
 artisan                          prefect-submitit              SLURM
--------                          ----------------              -----
+───────                          ────────────────              ─────
 
 SlurmIntraBackend                SlurmTaskRunner
   .create_flow()                   execution_mode="srun"
-      |                                |
-      +- constructs TaskRunner         |
-      +- calls _build_prefect_flow()   |
-      |                                |
-      v                                |
-  Prefect @flow                        |
-    execute_unit_task.map() ---------->|
-                                       +- pickle callable to NFS
-                                       +- srun --exclusive ... python -m submitit.core._submit
-                                       |      |
-                                       |      +--> Node 0, GPU 0: unpickle -> execute -> pickle result
-                                       |      +--> Node 1, GPU 2: unpickle -> execute -> pickle result
-                                       |      +--> Node 3, GPU 7: unpickle -> execute -> pickle result
-                                       |
-                                       +- poll for result pickles on NFS
-                                       +- return SrunPrefectFuture per task
-                                       |
-  _collect_results()  <----------------+
+      │                                │
+      ├─ constructs TaskRunner         │
+      ├─ calls _build_prefect_flow()   │
+      │                                │
+      ▼                                │
+  Prefect @flow                        │
+    execute_unit_task.map() ──────────►│
+                                       ├─ pickle callable to NFS
+                                       ├─ srun --exclusive ... python -m submitit.core._submit
+                                       │      │
+                                       │      ├──► Node 0, GPU 0: unpickle → execute → pickle result
+                                       │      ├──► Node 1, GPU 2: unpickle → execute → pickle result
+                                       │      └──► Node 3, GPU 7: unpickle → execute → pickle result
+                                       │
+                                       ├─ poll for result pickles on NFS
+                                       ├─ return SrunPrefectFuture per task
+                                       │
+  _collect_results()  ◄────────────────┘
   commit staged parquet
 ```
 
