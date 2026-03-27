@@ -139,10 +139,10 @@ SlurmIntraBackend                SlurmTaskRunner
   .create_flow()                   execution_mode="srun"
       │                                │
       ├─ constructs TaskRunner         │
-      ├─ calls _build_prefect_flow()   │
+      ├─ calls _build_prefect_flow()    │
       │                                │
       ▼                                │
-  Prefect @flow                        │
+  Prefect @flow                         │
     execute_unit_task.map() ──────────►│
                                        ├─ pickle callable to NFS
                                        ├─ srun --exclusive ... python -m submitit.core._submit
@@ -154,7 +154,7 @@ SlurmIntraBackend                SlurmTaskRunner
                                        ├─ poll for result pickles on NFS
                                        ├─ return SrunPrefectFuture per task
                                        │
-  _collect_results() ◄────────────────┘
+  _collect_results()  ◄────────────────┘
   commit staged parquet
 ```
 
