@@ -20,16 +20,8 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA
+from artisan.utils.json import artisan_json_default
 from artisan.utils.path import shard_path
-
-
-def _json_default(obj: Any) -> Any:
-    """Handle non-standard types at the JSON serialization boundary."""
-    if isinstance(obj, set):
-        return sorted(obj)
-    if isinstance(obj, Path):
-        return str(obj)
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def _sync_staging_to_nfs(staging_path: Path) -> None:
@@ -179,7 +171,7 @@ def _stage_artifact_index(
             "artifact_id": artifact.artifact_id,
             "artifact_type": artifact.artifact_type,
             "origin_step_number": step_number,
-            "metadata": json.dumps(artifact.metadata, default=_json_default),
+            "metadata": json.dumps(artifact.metadata, default=artisan_json_default),
         }
         for artifact_list in artifacts.values()
         for artifact in artifact_list
@@ -254,8 +246,10 @@ def _write_execution_record(
         "execution_spec_id": execution_spec_id,
         "origin_step_number": step_number,
         "operation_name": operation_name,
-        "params": json.dumps(params or {}, default=_json_default),
-        "user_overrides": json.dumps(user_overrides or {}, default=_json_default),
+        "params": json.dumps(params or {}, default=artisan_json_default),
+        "user_overrides": json.dumps(
+            user_overrides or {}, default=artisan_json_default
+        ),
         "timestamp_start": timestamp_start,
         "timestamp_end": timestamp_end,
         "source_worker": worker_id,
@@ -264,7 +258,7 @@ def _write_execution_record(
         "tool_output": tool_output,
         "worker_log": worker_log,
         "compute_backend": compute_backend,
-        "metadata": json.dumps(result_metadata or {}, default=_json_default),
+        "metadata": json.dumps(result_metadata or {}, default=artisan_json_default),
     }
     pl.DataFrame([row]).cast(
         {"error": pl.String, "tool_output": pl.String, "worker_log": pl.String}

@@ -61,10 +61,9 @@ def is_curator_operation(op: type[OperationDefinition] | OperationDefinition) ->
 
 def _get_params(operation: OperationDefinition) -> dict[str, Any]:
     """Safely serialize operation params when available."""
-    params = getattr(operation, "params", None)
-    if params is None or not hasattr(params, "model_dump"):
-        return {}
-    return params.model_dump(mode="json")
+    from artisan.utils.hashing import serialize_params
+
+    return serialize_params(operation)
 
 
 def _hydrate_inputs_for_lineage(

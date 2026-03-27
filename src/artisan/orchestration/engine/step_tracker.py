@@ -69,19 +69,15 @@ class StepTracker:
 
         return _row_to_step_result(result.row(0, named=True))
 
-    def record_step_start(self, record: StepStartRecord) -> None:
-        """Write a 'running' row for a step that is about to execute.
-
-        Args:
-            record: StepStartRecord with all metadata fields.
-        """
-        row = {
+    def _base_row(self, record: StepStartRecord, status: str) -> dict:
+        """Build the common row dict shared by all record_step_* methods."""
+        return {
             "step_run_id": record.step_run_id,
             "step_spec_id": record.step_spec_id,
             "pipeline_run_id": self._pipeline_run_id,
             "step_number": record.step_number,
             "step_name": record.step_name,
-            "status": "running",
+            "status": status,
             "operation_class": record.operation_class,
             "params_json": record.params_json,
             "input_refs_json": record.input_refs_json,
@@ -99,6 +95,14 @@ class StepTracker:
             "commit_error": None,
             "metadata": None,
         }
+
+    def record_step_start(self, record: StepStartRecord) -> None:
+        """Write a 'running' row for a step that is about to execute.
+
+        Args:
+            record: StepStartRecord with all metadata fields.
+        """
+        row = self._base_row(record, "running")
         df = pl.DataFrame([row], schema=STEPS_SCHEMA)
         self._write_row(df)
 
@@ -113,34 +117,22 @@ class StepTracker:
             start_record: The original StepStartRecord for metadata.
             result: The StepResult from execute_step().
         """
-        dispatch_error = (
-            result.metadata.get("dispatch_error") if result.metadata else None
+        row = self._base_row(start_record, "completed")
+        row.update(
+            output_roles_json=json.dumps(sorted(result.output_roles)),
+            output_types_json=json.dumps(result.output_types),
+            total_count=result.total_count,
+            succeeded_count=result.succeeded_count,
+            failed_count=result.failed_count,
+            duration_seconds=result.duration_seconds,
+            dispatch_error=(
+                result.metadata.get("dispatch_error") if result.metadata else None
+            ),
+            commit_error=(
+                result.metadata.get("commit_error") if result.metadata else None
+            ),
+            metadata=json.dumps(result.metadata) if result.metadata else None,
         )
-        commit_error = result.metadata.get("commit_error") if result.metadata else None
-        row = {
-            "step_run_id": start_record.step_run_id,
-            "step_spec_id": start_record.step_spec_id,
-            "pipeline_run_id": self._pipeline_run_id,
-            "step_number": start_record.step_number,
-            "step_name": start_record.step_name,
-            "status": "completed",
-            "operation_class": start_record.operation_class,
-            "params_json": start_record.params_json,
-            "input_refs_json": start_record.input_refs_json,
-            "compute_backend": start_record.compute_backend,
-            "compute_options_json": start_record.compute_options_json,
-            "output_roles_json": json.dumps(sorted(result.output_roles)),
-            "output_types_json": json.dumps(result.output_types),
-            "total_count": result.total_count,
-            "succeeded_count": result.succeeded_count,
-            "failed_count": result.failed_count,
-            "timestamp": datetime.now(UTC),
-            "duration_seconds": result.duration_seconds,
-            "error": None,
-            "dispatch_error": dispatch_error,
-            "commit_error": commit_error,
-            "metadata": json.dumps(result.metadata) if result.metadata else None,
-        }
         df = pl.DataFrame([row], schema=STEPS_SCHEMA)
         self._write_row(df)
 
@@ -158,30 +150,16 @@ class StepTracker:
             start_record: The original StepStartRecord for metadata.
             result: The StepResult from execute_step().
         """
-        row = {
-            "step_run_id": start_record.step_run_id,
-            "step_spec_id": start_record.step_spec_id,
-            "pipeline_run_id": self._pipeline_run_id,
-            "step_number": start_record.step_number,
-            "step_name": start_record.step_name,
-            "status": "skipped",
-            "operation_class": start_record.operation_class,
-            "params_json": start_record.params_json,
-            "input_refs_json": start_record.input_refs_json,
-            "compute_backend": start_record.compute_backend,
-            "compute_options_json": start_record.compute_options_json,
-            "output_roles_json": json.dumps(sorted(result.output_roles)),
-            "output_types_json": json.dumps(result.output_types),
-            "total_count": result.total_count,
-            "succeeded_count": result.succeeded_count,
-            "failed_count": result.failed_count,
-            "timestamp": datetime.now(UTC),
-            "duration_seconds": result.duration_seconds,
-            "error": None,
-            "dispatch_error": None,
-            "commit_error": None,
-            "metadata": json.dumps(result.metadata) if result.metadata else None,
-        }
+        row = self._base_row(start_record, "skipped")
+        row.update(
+            output_roles_json=json.dumps(sorted(result.output_roles)),
+            output_types_json=json.dumps(result.output_types),
+            total_count=result.total_count,
+            succeeded_count=result.succeeded_count,
+            failed_count=result.failed_count,
+            duration_seconds=result.duration_seconds,
+            metadata=json.dumps(result.metadata) if result.metadata else None,
+        )
         df = pl.DataFrame([row], schema=STEPS_SCHEMA)
         self._write_row(df)
 
@@ -196,30 +174,8 @@ class StepTracker:
             start_record: The original StepStartRecord for metadata.
             error: Error message string.
         """
-        row = {
-            "step_run_id": start_record.step_run_id,
-            "step_spec_id": start_record.step_spec_id,
-            "pipeline_run_id": self._pipeline_run_id,
-            "step_number": start_record.step_number,
-            "step_name": start_record.step_name,
-            "status": "failed",
-            "operation_class": start_record.operation_class,
-            "params_json": start_record.params_json,
-            "input_refs_json": start_record.input_refs_json,
-            "compute_backend": start_record.compute_backend,
-            "compute_options_json": start_record.compute_options_json,
-            "output_roles_json": start_record.output_roles_json,
-            "output_types_json": start_record.output_types_json,
-            "total_count": None,
-            "succeeded_count": None,
-            "failed_count": None,
-            "timestamp": datetime.now(UTC),
-            "duration_seconds": None,
-            "error": error,
-            "dispatch_error": None,
-            "commit_error": None,
-            "metadata": None,
-        }
+        row = self._base_row(start_record, "failed")
+        row["error"] = error
         df = pl.DataFrame([row], schema=STEPS_SCHEMA)
         self._write_row(df)
 
@@ -238,30 +194,8 @@ class StepTracker:
             start_record: The original StepStartRecord for metadata.
             reason: Human-readable cancellation reason.
         """
-        row = {
-            "step_run_id": start_record.step_run_id,
-            "step_spec_id": start_record.step_spec_id,
-            "pipeline_run_id": self._pipeline_run_id,
-            "step_number": start_record.step_number,
-            "step_name": start_record.step_name,
-            "status": "cancelled",
-            "operation_class": start_record.operation_class,
-            "params_json": start_record.params_json,
-            "input_refs_json": start_record.input_refs_json,
-            "compute_backend": start_record.compute_backend,
-            "compute_options_json": start_record.compute_options_json,
-            "output_roles_json": start_record.output_roles_json,
-            "output_types_json": start_record.output_types_json,
-            "total_count": None,
-            "succeeded_count": None,
-            "failed_count": None,
-            "timestamp": datetime.now(UTC),
-            "duration_seconds": None,
-            "error": reason,
-            "dispatch_error": None,
-            "commit_error": None,
-            "metadata": None,
-        }
+        row = self._base_row(start_record, "cancelled")
+        row["error"] = reason
         df = pl.DataFrame([row], schema=STEPS_SCHEMA)
         self._write_row(df)
 

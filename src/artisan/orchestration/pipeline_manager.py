@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import uuid4
 
 import polars as pl
-import xxhash
 
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -39,7 +38,8 @@ from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.hashing import compute_step_spec_id
+from artisan.utils.hashing import compute_artifact_id, compute_step_spec_id, digest_utf8
+from artisan.utils.json import artisan_json_default as _set_default
 
 if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
@@ -63,8 +63,9 @@ def _generate_run_id(name: str) -> str:
 
 def _generate_step_run_id(step_spec_id: str) -> str:
     """Generate a unique 32-char hex step run identifier."""
-    data = f"{step_spec_id}:{datetime.now(UTC).isoformat()}"
-    return xxhash.xxh3_128(data.encode()).hexdigest()
+    from artisan.utils.hashing import digest_utf8
+
+    return digest_utf8(f"{step_spec_id}:{datetime.now(UTC).isoformat()}")
 
 
 def _qualified_name(operation: type[OperationDefinition]) -> str:
@@ -129,16 +130,6 @@ def _extract_name_from_run_id(run_id: str) -> str:
     return parts[0]
 
 
-def _set_default(o: Any) -> Any:
-    """JSON default handler for sets and Paths."""
-    if isinstance(o, set):
-        return sorted(o)
-    if isinstance(o, Path):
-        return str(o)
-    msg = f"Object of type {type(o).__name__} is not JSON serializable"
-    raise TypeError(msg)
-
-
 def _is_file_path_input(inputs: Any) -> bool:
     """Return True if inputs is a non-empty list of raw file path strings."""
     return (
@@ -199,7 +190,7 @@ def _promote_file_paths_to_store(
     for path_str in valid_paths:
         path = Path(path_str)
         content = path.read_bytes()
-        content_hash = xxhash.xxh3_128(content).hexdigest()
+        content_hash = compute_artifact_id(content)
         size_bytes = len(content)
         artifact = cast(
             FileRefArtifact,
@@ -1960,9 +1951,7 @@ class PipelineManager:
                     upstream_spec_id = self._step_spec_ids[value.source_step]
                     spec[role] = (upstream_spec_id, value.role)
                 elif isinstance(value, list):
-                    ids_hash = xxhash.xxh3_128(
-                        ",".join(sorted(value)).encode()
-                    ).hexdigest()
+                    ids_hash = digest_utf8(",".join(sorted(value)))
                     spec[role] = (ids_hash, "")
             return spec
         if isinstance(inputs, list):
@@ -1971,11 +1960,9 @@ class PipelineManager:
                 for ref in inputs:
                     upstream_spec_id = self._step_spec_ids[ref.source_step]
                     parts.append(f"{upstream_spec_id}:{ref.role}")
-                composite_hash = xxhash.xxh3_128(",".join(parts).encode()).hexdigest()
+                composite_hash = digest_utf8(",".join(parts))
                 return {"_merged_streams": (composite_hash, "")}
-            paths_hash = xxhash.xxh3_128(
-                ",".join(sorted(str(p) for p in inputs)).encode()
-            ).hexdigest()
+            paths_hash = digest_utf8(",".join(sorted(str(p) for p in inputs)))
             return {"_file_paths": (paths_hash, "")}
         return {}
 

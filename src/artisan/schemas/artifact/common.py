@@ -9,6 +9,16 @@ from typing import Any
 from pydantic import BaseModel, PrivateAttr
 
 
+def metadata_to_json(metadata: dict[str, Any] | None) -> str:
+    """Encode artifact metadata dict to JSON string for Parquet storage."""
+    return json.dumps(metadata or {})
+
+
+def metadata_from_json(raw: str | None) -> dict[str, Any]:
+    """Decode artifact metadata JSON string from a Parquet row."""
+    return json.loads(raw) if raw else {}
+
+
 def get_compound_extension(filename: str) -> str:
     """Get the compound extension from a filename.
 
@@ -45,10 +55,11 @@ class JsonContentMixin(BaseModel):
             return self._cached_values
         content: bytes | None = getattr(self, "content", None)
         if content is None:
-            raise ValueError(
+            msg = (
                 "Cannot access values: artifact was not hydrated. "
                 "Use artifact_store.get_artifact(id, hydrate=True)."
             )
+            raise ValueError(msg)
         self._cached_values = json.loads(content.decode("utf-8"))
         assert self._cached_values is not None
         return self._cached_values
