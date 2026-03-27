@@ -19,7 +19,11 @@ evaluate in comparison to ray data
 
 if name == main guard error message. it is required for pipeline scripts because of multiprocessing.
 
+how is materialization handled for files that are external files, only references stored in the delta lake?
 
+
+better pixi handling guide
+dexterity-artisan = { path = "/path/to/your/artisan-fork", editable = true }
 
 ---
 
