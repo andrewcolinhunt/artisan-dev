@@ -17,13 +17,7 @@ evaluate in comparison to ray data
 
 - cache invalidation, forced execution
 
-
-Btw when you start the prefect server by pixi run prefect-start it tells you
-
-For remote clients (e.g., SLURM workers), set:
-  export PREFECT_API_URL="http://digs.ipd:4830/api"
-
-But the code inside the pipeline it seems to append another /api to it, at least in magnus' version.
+if name == main guard error message. it is required for pipeline scripts because of multiprocessing.
 
 
 
