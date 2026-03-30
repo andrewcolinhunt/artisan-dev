@@ -14,13 +14,13 @@ import pytest
 
 from artisan.execution.staging.parquet_writer import (
     StagingResult,
-    _json_default,
     _stage_artifact_edges,
     _stage_artifact_index,
     _stage_artifacts_by_type,
     _sync_staging_to_nfs,
     _write_execution_record,
 )
+from artisan.utils.json import artisan_json_default as _json_default
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
