@@ -7,10 +7,11 @@ execution spec deduplication, and step-level cache keys.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import xxhash
+
+from artisan.utils.json import artisan_json_default
 
 
 def compute_artifact_id(content: bytes) -> str:
@@ -23,6 +24,33 @@ def compute_artifact_id(content: bytes) -> str:
         32-character hexadecimal hash string.
     """
     return xxhash.xxh3_128(content).hexdigest()
+
+
+def digest_utf8(s: str) -> str:
+    """Compute xxh3_128 hex digest of a UTF-8 string.
+
+    Args:
+        s: String to hash.
+
+    Returns:
+        32-character hexadecimal hash string.
+    """
+    return xxhash.xxh3_128(s.encode()).hexdigest()
+
+
+def serialize_params(operation: Any) -> dict[str, Any]:
+    """Safely serialize operation/composite params to a JSON-ready dict.
+
+    Args:
+        operation: An OperationDefinition or CompositeDefinition instance.
+
+    Returns:
+        JSON-serializable dict, or empty dict if no params.
+    """
+    params = getattr(operation, "params", None)
+    if params is None or not hasattr(params, "model_dump"):
+        return {}
+    return params.model_dump(mode="json")
 
 
 def compute_execution_spec_id(
@@ -65,7 +93,7 @@ def compute_execution_spec_id(
     # Hash: operation_name | sorted_artifact_ids | params_json | config_json
     hash_input = f"{operation_name}|{sorted_ids}|{params_json}|{config_json}"
 
-    return xxhash.xxh3_128(hash_input.encode()).hexdigest()
+    return digest_utf8(hash_input)
 
 
 def compute_step_spec_id(
@@ -93,11 +121,7 @@ def compute_step_spec_id(
     Returns:
         32-character xxh3_128 hex string.
     """
-    input_parts = []
-    for role in sorted(input_spec.keys()):
-        upstream_spec_id, upstream_role = input_spec[role]
-        input_parts.append(f"{role}:{upstream_spec_id}:{upstream_role}")
-    input_str = ",".join(input_parts)
+    input_str = _serialize_input_spec(input_spec)
 
     params_json = _canonicalize_dict(params)
     config_json = _canonicalize_dict(config_overrides)
@@ -105,7 +129,16 @@ def compute_step_spec_id(
     hash_input = (
         f"{operation_name}|{step_number}|{input_str}|{params_json}|{config_json}"
     )
-    return xxhash.xxh3_128(hash_input.encode()).hexdigest()
+    return digest_utf8(hash_input)
+
+
+def _serialize_input_spec(input_spec: dict[str, tuple[str, str]]) -> str:
+    """Serialize an input_spec dict to a deterministic string for hashing."""
+    parts = []
+    for role in sorted(input_spec.keys()):
+        upstream_spec_id, upstream_role = input_spec[role]
+        parts.append(f"{role}:{upstream_spec_id}:{upstream_role}")
+    return ",".join(parts)
 
 
 def compute_composite_spec_id(
@@ -127,27 +160,18 @@ def compute_composite_spec_id(
     Returns:
         32-character xxh3_128 hex string.
     """
-    input_parts = []
-    for role in sorted(input_spec.keys()):
-        upstream_spec_id, upstream_role = input_spec[role]
-        input_parts.append(f"{role}:{upstream_spec_id}:{upstream_role}")
-    input_str = ",".join(input_parts)
-
+    input_str = _serialize_input_spec(input_spec)
     params_json = _canonicalize_dict(params)
 
     hash_input = f"composite|{composite_name}|{params_json}|{input_str}"
-    return xxhash.xxh3_128(hash_input.encode()).hexdigest()
+    return digest_utf8(hash_input)
 
 
 class _CanonicalEncoder(json.JSONEncoder):
     """JSON encoder that handles sets and Paths for deterministic output."""
 
     def default(self, o: Any) -> Any:
-        if isinstance(o, set):
-            return sorted(o)
-        if isinstance(o, Path):
-            return str(o)
-        return super().default(o)
+        return artisan_json_default(o)
 
 
 def _canonicalize_dict(input_dict: dict[str, Any] | None) -> str:

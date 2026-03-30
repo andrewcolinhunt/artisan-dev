@@ -23,7 +23,7 @@ class EnvironmentSpec(BaseModel):
 
     env: dict[str, str] = Field(default_factory=dict)
 
-    def wrap_command(self, cmd: list[str], cwd: Path | None = None) -> list[str]:
+    def wrap_command(self, cmd: list[str], _cwd: Path | None = None) -> list[str]:
         """Wrap a command for this environment. Base returns unchanged."""
         return cmd
 
@@ -59,6 +59,33 @@ class LocalEnvironmentSpec(EnvironmentSpec):
         return super().prepare_env()
 
 
+def _container_wrap(
+    prefix: list[str],
+    gpu_args: list[str],
+    bind_flag: str,
+    binds: list[tuple[Path, Path]],
+    env: dict[str, str],
+    image: str,
+    cmd: list[str],
+    cwd: Path | None,
+    *,
+    gpu: bool,
+) -> list[str]:
+    """Build a container-wrapped command line (shared by Docker and Apptainer)."""
+    parts = list(prefix)
+    if gpu:
+        parts.extend(gpu_args)
+    if cwd is not None:
+        parts.extend([bind_flag, f"{cwd.parent}:{cwd.parent}"])
+    for host, container in binds:
+        parts.extend([bind_flag, f"{host}:{container}"])
+    for k, v in env.items():
+        parts.extend(["--env", f"{k}={v}"])
+    parts.append(image)
+    parts.extend(cmd)
+    return parts
+
+
 class DockerEnvironmentSpec(EnvironmentSpec):
     """Run inside a Docker container.
 
@@ -73,22 +100,22 @@ class DockerEnvironmentSpec(EnvironmentSpec):
     binds: list[tuple[Path, Path]] = Field(default_factory=list)
 
     def wrap_command(self, cmd: list[str], cwd: Path | None = None) -> list[str]:
-        parts = ["docker", "run", "--rm"]
-        if self.gpu:
-            parts.extend(["--gpus", "all"])
-        if cwd is not None:
-            parts.extend(["--volume", f"{cwd.parent}:{cwd.parent}"])
-        for host, container in self.binds:
-            parts.extend(["--volume", f"{host}:{container}"])
-        for k, v in self.env.items():
-            parts.extend(["--env", f"{k}={v}"])
-        parts.append(self.image)
-        parts.extend(cmd)
-        return parts
+        return _container_wrap(
+            prefix=["docker", "run", "--rm"],
+            gpu_args=["--gpus", "all"],
+            bind_flag="--volume",
+            binds=self.binds,
+            env=self.env,
+            image=self.image,
+            cmd=cmd,
+            cwd=cwd,
+            gpu=self.gpu,
+        )
 
     def validate_environment(self) -> None:
         if not shutil.which("docker"):
-            raise FileNotFoundError("Docker is not installed or not on PATH")
+            msg = "Docker is not installed or not on PATH"
+            raise FileNotFoundError(msg)
 
 
 class ApptainerEnvironmentSpec(EnvironmentSpec):
@@ -105,24 +132,25 @@ class ApptainerEnvironmentSpec(EnvironmentSpec):
     binds: list[tuple[Path, Path]] = Field(default_factory=list)
 
     def wrap_command(self, cmd: list[str], cwd: Path | None = None) -> list[str]:
-        parts = ["apptainer", "exec"]
-        if self.gpu:
-            parts.append("--nv")
-        if cwd is not None:
-            parts.extend(["--bind", f"{cwd.parent}:{cwd.parent}"])
-        for host, container in self.binds:
-            parts.extend(["--bind", f"{host}:{container}"])
-        for k, v in self.env.items():
-            parts.extend(["--env", f"{k}={v}"])
-        parts.append(str(self.image))
-        parts.extend(cmd)
-        return parts
+        return _container_wrap(
+            prefix=["apptainer", "exec"],
+            gpu_args=["--nv"],
+            bind_flag="--bind",
+            binds=self.binds,
+            env=self.env,
+            image=str(self.image),
+            cmd=cmd,
+            cwd=cwd,
+            gpu=self.gpu,
+        )
 
     def validate_environment(self) -> None:
         if not shutil.which("apptainer"):
-            raise FileNotFoundError("Apptainer is not installed or not on PATH")
+            msg = "Apptainer is not installed or not on PATH"
+            raise FileNotFoundError(msg)
         if not self.image.exists():
-            raise FileNotFoundError(f"Container image not found: {self.image}")
+            msg = f"Container image not found: {self.image}"
+            raise FileNotFoundError(msg)
 
 
 class PixiEnvironmentSpec(EnvironmentSpec):
@@ -136,7 +164,7 @@ class PixiEnvironmentSpec(EnvironmentSpec):
     pixi_environment: str = "default"
     manifest_path: Path | None = None
 
-    def wrap_command(self, cmd: list[str], cwd: Path | None = None) -> list[str]:
+    def wrap_command(self, cmd: list[str], _cwd: Path | None = None) -> list[str]:
         parts = ["pixi", "run", "-e", self.pixi_environment]
         if self.manifest_path:
             parts.extend(["--manifest-path", str(self.manifest_path)])
@@ -145,4 +173,5 @@ class PixiEnvironmentSpec(EnvironmentSpec):
 
     def validate_environment(self) -> None:
         if not shutil.which("pixi"):
-            raise FileNotFoundError("Pixi is not installed or not on PATH")
+            msg = "Pixi is not installed or not on PATH"
+            raise FileNotFoundError(msg)

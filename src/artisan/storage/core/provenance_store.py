@@ -7,6 +7,7 @@ focused class: edge loading, step/type maps, ancestor/descendant lookups.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -40,12 +41,17 @@ class ProvenanceStore:
     # Backward / forward maps (dict-based, full scan)
     # -------------------------------------------------------------------------
 
-    def load_backward_map(self) -> dict[str, list[str]]:
-        """Load the full backward provenance map in one Delta scan.
+    def _build_adjacency(
+        self, key_index: int, value_index: int
+    ) -> dict[str, list[str]]:
+        """Build an adjacency map from provenance edges.
+
+        Args:
+            key_index: Column index to use as dict keys (0=source, 1=target).
+            value_index: Column index to use as dict values (0=source, 1=target).
 
         Returns:
-            Mapping of target artifact ID to its source (ancestor) IDs.
-            Empty dict if the artifact_edges table does not exist.
+            Adjacency mapping. Empty dict if table does not exist or is empty.
         """
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
         if not prov_path.exists():
@@ -60,11 +66,19 @@ class ProvenanceStore:
         if result.is_empty():
             return {}
 
-        provenance_map: dict[str, list[str]] = {}
+        adj: dict[str, list[str]] = {}
         for row in result.iter_rows():
-            source_id, target_id = row
-            provenance_map.setdefault(target_id, []).append(source_id)
-        return provenance_map
+            adj.setdefault(row[key_index], []).append(row[value_index])
+        return adj
+
+    def load_backward_map(self) -> dict[str, list[str]]:
+        """Load the full backward provenance map in one Delta scan.
+
+        Returns:
+            Mapping of target artifact ID to its source (ancestor) IDs.
+            Empty dict if the artifact_edges table does not exist.
+        """
+        return self._build_adjacency(key_index=1, value_index=0)
 
     def load_forward_map(self) -> dict[str, list[str]]:
         """Load the full forward provenance map in one Delta scan.
@@ -73,28 +87,46 @@ class ProvenanceStore:
             Mapping of source artifact ID to its descendant (target)
             IDs. Empty dict if the artifact_edges table does not exist.
         """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
-            return {}
-
-        result = (
-            pl.scan_delta(str(prov_path))
-            .select(["source_artifact_id", "target_artifact_id"])
-            .collect()
-        )
-
-        if result.is_empty():
-            return {}
-
-        forward_map: dict[str, list[str]] = {}
-        for row in result.iter_rows():
-            source_id, target_id = row
-            forward_map.setdefault(source_id, []).append(target_id)
-        return forward_map
+        return self._build_adjacency(key_index=0, value_index=1)
 
     # -------------------------------------------------------------------------
     # Type and step maps
     # -------------------------------------------------------------------------
+
+    def _load_index_column(
+        self,
+        value_column: str,
+        artifact_ids: list[str] | set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Load a single column from artifact_index as a dict keyed by artifact_id.
+
+        Args:
+            value_column: Column name to load alongside artifact_id.
+            artifact_ids: Optional restriction to these IDs.
+
+        Returns:
+            Mapping of artifact ID to column value. Empty dict if table
+            does not exist or query returns no rows.
+        """
+        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
+        if not index_path.exists():
+            return {}
+
+        query = pl.scan_delta(str(index_path)).select(["artifact_id", value_column])
+        if artifact_ids is not None:
+            query = query.filter(pl.col("artifact_id").is_in(list(artifact_ids)))
+        result = query.collect()
+
+        if result.is_empty():
+            return {}
+
+        return dict(
+            zip(
+                result["artifact_id"].to_list(),
+                result[value_column].to_list(),
+                strict=True,
+            )
+        )
 
     def load_type_map(self, artifact_ids: list[str] | None = None) -> dict[str, str]:
         """Bulk-load artifact type strings from the index.
@@ -107,25 +139,7 @@ class ProvenanceStore:
             Mapping of artifact ID to type string. Empty dict if the
             artifact_index table does not exist.
         """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
-            return {}
-
-        query = pl.scan_delta(str(index_path)).select(["artifact_id", "artifact_type"])
-        if artifact_ids is not None:
-            query = query.filter(pl.col("artifact_id").is_in(artifact_ids))
-        result = query.collect()
-
-        if result.is_empty():
-            return {}
-
-        return dict(
-            zip(
-                result["artifact_id"].to_list(),
-                result["artifact_type"].to_list(),
-                strict=True,
-            )
-        )
+        return self._load_index_column("artifact_type", artifact_ids)
 
     def load_step_map(self, artifact_ids: set[str] | None = None) -> dict[str, int]:
         """Load origin step numbers from the artifact_index.
@@ -138,29 +152,7 @@ class ProvenanceStore:
             Mapping of artifact ID to origin step number. Empty dict
             if the artifact_index table does not exist.
         """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
-            return {}
-
-        query = pl.scan_delta(str(index_path)).select(
-            ["artifact_id", "origin_step_number"]
-        )
-
-        if artifact_ids is not None:
-            query = query.filter(pl.col("artifact_id").is_in(list(artifact_ids)))
-
-        result = query.collect()
-
-        if result.is_empty():
-            return {}
-
-        return dict(
-            zip(
-                result["artifact_id"].to_list(),
-                result["origin_step_number"].to_list(),
-                strict=True,
-            )
-        )
+        return self._load_index_column("origin_step_number", artifact_ids)
 
     # -------------------------------------------------------------------------
     # Direct queries (1-hop)
@@ -460,7 +452,7 @@ class ProvenanceStore:
         output_cols = (
             [*base_cols, "target_artifact_type"] if include_target_type else base_cols
         )
-        empty = pl.DataFrame(schema={c: pl.String for c in output_cols})
+        empty = pl.DataFrame(schema=dict.fromkeys(output_cols, pl.String))
 
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)

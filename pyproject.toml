@@ -230,6 +230,7 @@ extend-select = [
   "YTT",      # flake8-2020
 ]
 ignore = [
+  "PLC0415",  # Deferred imports are intentional (circular deps, optional deps)
   "PLR09",    # Too many <...>
   "PLR2004",  # Magic value used in comparison
 ]
@@ -240,7 +241,7 @@ isort.required-imports = ["from __future__ import annotations"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["T20"]
 "noxfile.py" = ["T20"]
-"docs/**/*.ipynb" = ["T20", "PD901"]
+"docs/**/*.ipynb" = ["T20"]
 
 [tool.codespell]
 skip = "pixi.lock,_dev/**"

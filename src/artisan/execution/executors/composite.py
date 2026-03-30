@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
 
 from artisan.composites.base.composite_context import CollapsedCompositeContext
 from artisan.composites.base.provenance import (
@@ -83,12 +82,11 @@ def run_composite(
 
         if not all_artifacts:
             # No internal operations produced artifacts
-            staging_result = StagingResult(
+            return StagingResult(
                 success=True,
                 execution_run_id=execution_run_id,
                 artifact_ids=[],
             )
-            return staging_result
 
         # Build ancestor map for shortcut edges
         ancestor_map: dict[str, list[str]] = {}
@@ -133,9 +131,9 @@ def run_composite(
             shared_filesystem=runtime_env.shared_filesystem,
         )
 
-        params_dict: dict[str, Any] = {}
-        if hasattr(composite, "params"):
-            params_dict = composite.params.model_dump(mode="json")
+        from artisan.utils.hashing import serialize_params
+
+        params_dict = serialize_params(composite)
 
         original_inputs = {
             role: list(ids) for role, ids in composite_transport.inputs.items()

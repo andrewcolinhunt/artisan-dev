@@ -165,7 +165,7 @@ class TestFilePathPromotion:
 
         non_existent = str(tmp_path / "does_not_exist.csv")
         result, count = _promote_file_paths_to_store(
-            [non_existent], config, 1, "mock_ingest", "continue"
+            [non_existent], config, 1, "mock_ingest"
         )
 
         assert result is None
@@ -191,7 +191,7 @@ class TestFilePathPromotion:
         test_dir.mkdir()
 
         result, count = _promote_file_paths_to_store(
-            [str(test_dir)], config, 1, "mock_ingest", "continue"
+            [str(test_dir)], config, 1, "mock_ingest"
         )
 
         assert result is None
@@ -217,7 +217,7 @@ class TestFilePathPromotion:
         test_file.write_bytes(b"ATOM content")
 
         result, count = _promote_file_paths_to_store(
-            [str(test_file)], config, 0, "mock_ingest", "continue"
+            [str(test_file)], config, 0, "mock_ingest"
         )
 
         assert result is not None
@@ -1368,7 +1368,6 @@ class TestFileValidationBatch:
             config,
             1,
             "mock_ingest",
-            "continue",
         )
 
         # Should promote the valid file, skip the invalid one
@@ -1738,7 +1737,7 @@ class TestCuratorSubprocessIsolation:
 
         with (
             patch("artisan.orchestration.engine.step_executor.resource") as mock_res,
-            patch("builtins.open", mock_open(read_data=meminfo_content)),
+            patch("pathlib.Path.open", mock_open(read_data=meminfo_content)),
         ):
             mock_res.getrusage.return_value = mock_rusage
             mock_res.RUSAGE_CHILDREN = resource.RUSAGE_CHILDREN

@@ -1,7 +1,6 @@
-"""Execution runtime models."""
+"""Execution runtime models (internal).
 
-from __future__ import annotations
+Import symbols directly from their submodules:
 
-from artisan.execution.models.execution_unit import ExecutionUnit
-
-__all__ = ["ExecutionUnit"]
+- ``artisan.execution.models.execution_unit``
+"""

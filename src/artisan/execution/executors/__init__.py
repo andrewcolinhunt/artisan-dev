@@ -1,11 +1,7 @@
-"""Execution entry points for creator and curator operations."""
+"""Execution entry points for creator and curator operations (internal).
 
-from __future__ import annotations
+Import symbols directly from their submodules:
 
-from artisan.execution.executors.creator import run_creator_flow
-from artisan.execution.executors.curator import (
-    is_curator_operation,
-    run_curator_flow,
-)
-
-__all__ = ["is_curator_operation", "run_creator_flow", "run_curator_flow"]
+- ``artisan.execution.executors.creator``
+- ``artisan.execution.executors.curator``
+"""

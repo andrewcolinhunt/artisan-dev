@@ -9,11 +9,8 @@ import polars as pl
 import pytest
 
 from artisan.schemas.enums import CacheValidationReason
-from artisan.storage import (
-    CacheHit,
-    CacheMiss,
-    cache_lookup,
-)
+from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
+from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.core.table_schemas import (
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
