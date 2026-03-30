@@ -7,16 +7,14 @@ produces DataArtifact drafts.
 from __future__ import annotations
 
 from enum import StrEnum, auto
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from artisan.operations.curator.ingest_files import IngestFiles
+from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.output_spec import OutputSpec
-
-if TYPE_CHECKING:
-    from artisan.schemas.artifact.data import DataArtifact
 
 
 class IngestData(IngestFiles):
@@ -39,10 +37,14 @@ class IngestData(IngestFiles):
     }
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
+    resources: ResourceConfig = ResourceConfig(
+        cpus=1, memory_gb=4, gpus=0, time_limit="00:10:00"
+    )
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="ingest")
+    execution: ExecutionConfig = ExecutionConfig(
+        artifacts_per_unit=1, units_per_worker=1, job_name="ingest"
+    )
 
     # ---------- Lifecycle ----------
     def convert_file(self, file_ref: FileRefArtifact, step_number: int) -> DataArtifact:
@@ -55,7 +57,6 @@ class IngestData(IngestFiles):
         Returns:
             A draft DataArtifact with content read from disk.
         """
-        from artisan.schemas.artifact.data import DataArtifact
 
         content = file_ref.read_content()
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"

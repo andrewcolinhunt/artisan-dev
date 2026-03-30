@@ -10,7 +10,12 @@ import polars as pl
 from pydantic import Field, PrivateAttr
 
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.common import JsonContentMixin, get_compound_extension
+from artisan.schemas.artifact.common import (
+    JsonContentMixin,
+    get_compound_extension,
+    metadata_from_json,
+    metadata_to_json,
+)
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.filename import strip_extensions
 
@@ -58,7 +63,8 @@ def substitute_references(obj: Any, id_to_path: dict[str, str]) -> Any:
         if "$artifact" in obj and len(obj) == 1:
             artifact_id = obj["$artifact"]
             if artifact_id not in id_to_path:
-                raise ValueError(f"No path for referenced artifact: {artifact_id}")
+                msg = f"No path for referenced artifact: {artifact_id}"
+                raise ValueError(msg)
             return id_to_path[artifact_id]
         return {k: substitute_references(v, id_to_path) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -144,7 +150,8 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
             msg = f"ExecutionConfigArtifact does not support format conversion (got {format!r})"
             raise ValueError(msg)
         if self.content is None:
-            raise ValueError("Cannot materialize: artifact not hydrated")
+            msg = "Cannot materialize: artifact not hydrated"
+            raise ValueError(msg)
 
         stem = self.original_name or self.artifact_id
         ext = self.extension or ".json"
@@ -154,7 +161,8 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
         if ref_ids and resolved_paths is not None:
             missing = [ref_id for ref_id in ref_ids if ref_id not in resolved_paths]
             if missing:
-                raise ValueError(f"Missing paths for referenced artifacts: {missing}")
+                msg = f"Missing paths for referenced artifacts: {missing}"
+                raise ValueError(msg)
             id_to_path = {ref_id: str(resolved_paths[ref_id]) for ref_id in ref_ids}
             resolved = substitute_references(self.values, id_to_path)
             config_path.write_text(json.dumps(resolved, indent=2))
@@ -201,7 +209,7 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
             "content": self.content,
             "original_name": self.original_name,
             "extension": self.extension,
-            "metadata": json.dumps(self.metadata or {}),
+            "metadata": metadata_to_json(self.metadata),
             "external_path": self.external_path,
         }
 
@@ -215,13 +223,12 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
         Args:
             row: Dict with keys matching POLARS_SCHEMA columns.
         """
-        metadata_raw = row.get("metadata")
         return cls(
             artifact_id=row["artifact_id"],
             origin_step_number=row.get("origin_step_number"),
             content=row.get("content"),
             original_name=row.get("original_name"),
             extension=row.get("extension"),
-            metadata=json.loads(metadata_raw) if metadata_raw else {},
+            metadata=metadata_from_json(row.get("metadata")),
             external_path=row.get("external_path"),
         )

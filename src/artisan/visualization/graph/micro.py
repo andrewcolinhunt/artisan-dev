@@ -19,48 +19,56 @@ import polars as pl
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
-from artisan.visualization.graph._styles import EXECUTION_STYLE, get_artifact_style
+from artisan.visualization.graph._styles import (
+    EXECUTION_STYLE,
+    apply_default_layout,
+    get_artifact_style,
+    render_graph,
+)
 
 # =============================================================================
 # Data Loading
 # =============================================================================
 
 
+def _scan_or_empty(
+    delta_root: Path,
+    table: TablePath,
+    columns: list[str],
+    empty_schema: dict[str, pl.DataType],
+) -> pl.DataFrame:
+    """Scan a Delta table, returning an empty DataFrame if it doesn't exist."""
+    table_path = delta_root / table
+    if not table_path.exists():
+        return pl.DataFrame(schema=empty_schema)
+    return pl.scan_delta(str(table_path)).select(columns).collect()
+
+
 def _load_executions(delta_root: Path) -> pl.DataFrame:
     """Return execution records from the executions Delta table."""
-    table_path = delta_root / TablePath.EXECUTIONS
-    if not table_path.exists():
-        return pl.DataFrame(
-            schema={
-                "execution_run_id": pl.String,
-                "operation_name": pl.String,
-                "origin_step_number": pl.Int32,
-            }
-        )
-
-    return (
-        pl.scan_delta(str(table_path))
-        .select(["execution_run_id", "operation_name", "origin_step_number"])
-        .collect()
+    return _scan_or_empty(
+        delta_root,
+        TablePath.EXECUTIONS,
+        ["execution_run_id", "operation_name", "origin_step_number"],
+        {
+            "execution_run_id": pl.String,
+            "operation_name": pl.String,
+            "origin_step_number": pl.Int32,
+        },
     )
 
 
 def _load_artifact_index(delta_root: Path) -> pl.DataFrame:
     """Return artifact index records from the artifact_index Delta table."""
-    table_path = delta_root / TablePath.ARTIFACT_INDEX
-    if not table_path.exists():
-        return pl.DataFrame(
-            schema={
-                "artifact_id": pl.String,
-                "artifact_type": pl.String,
-                "origin_step_number": pl.Int32,
-            }
-        )
-
-    return (
-        pl.scan_delta(str(table_path))
-        .select(["artifact_id", "artifact_type", "origin_step_number"])
-        .collect()
+    return _scan_or_empty(
+        delta_root,
+        TablePath.ARTIFACT_INDEX,
+        ["artifact_id", "artifact_type", "origin_step_number"],
+        {
+            "artifact_id": pl.String,
+            "artifact_type": pl.String,
+            "origin_step_number": pl.Int32,
+        },
     )
 
 
@@ -104,38 +112,28 @@ def _load_artifact_labels(delta_root: Path) -> dict[str, str]:
 
 def _load_execution_edges(delta_root: Path) -> pl.DataFrame:
     """Return execution-to-artifact provenance edges."""
-    table_path = delta_root / TablePath.EXECUTION_EDGES
-    if not table_path.exists():
-        return pl.DataFrame(
-            schema={
-                "execution_run_id": pl.String,
-                "direction": pl.String,
-                "artifact_id": pl.String,
-            }
-        )
-
-    return (
-        pl.scan_delta(str(table_path))
-        .select(["execution_run_id", "direction", "artifact_id"])
-        .collect()
+    return _scan_or_empty(
+        delta_root,
+        TablePath.EXECUTION_EDGES,
+        ["execution_run_id", "direction", "artifact_id"],
+        {
+            "execution_run_id": pl.String,
+            "direction": pl.String,
+            "artifact_id": pl.String,
+        },
     )
 
 
 def _load_artifact_edges(delta_root: Path) -> pl.DataFrame:
     """Return artifact-to-artifact lineage edges."""
-    table_path = delta_root / TablePath.ARTIFACT_EDGES
-    if not table_path.exists():
-        return pl.DataFrame(
-            schema={
-                "source_artifact_id": pl.String,
-                "target_artifact_id": pl.String,
-            }
-        )
-
-    return (
-        pl.scan_delta(str(table_path))
-        .select(["source_artifact_id", "target_artifact_id"])
-        .collect()
+    return _scan_or_empty(
+        delta_root,
+        TablePath.ARTIFACT_EDGES,
+        ["source_artifact_id", "target_artifact_id"],
+        {
+            "source_artifact_id": pl.String,
+            "target_artifact_id": pl.String,
+        },
     )
 
 
@@ -220,16 +218,8 @@ def build_micro_graph(
     # Build label mappings
     artifact_labels = _build_artifact_labels(artifact_index, name_labels)
 
-    # Create graph with strict left-to-right layout
     graph = graphviz.Digraph("provenance", format="svg")
-    graph.attr(rankdir="LR")
-    graph.attr("node", style="filled")
-    # Keep layout compact
-    graph.attr(nodesep="0.25", ranksep="0.4")
-    # Draw edges behind nodes for cleaner visualization
-    graph.attr(outputorder="edgesfirst")
-    # Use straight line edges instead of splines that route around nodes
-    graph.attr(splines="line")
+    apply_default_layout(graph)
 
     # Build execution step lookup
     exec_step_lookup: dict[str, int] = {}
@@ -426,18 +416,7 @@ def render_micro_graph(
         Path to the rendered file.
     """
     graph = build_micro_graph(delta_root, max_step=max_step)
-    graph.format = format
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Graphviz render() returns path with extension added
-    rendered_path = graph.render(
-        filename=str(output_path),
-        cleanup=True,  # Remove intermediate .gv file
-    )
-
-    return Path(rendered_path)
+    return render_graph(graph, output_path, format)
 
 
 def get_max_step_number(delta_root: Path) -> int | None:

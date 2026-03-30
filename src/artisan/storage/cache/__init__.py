@@ -1,8 +1,6 @@
-"""Execution cache lookup APIs."""
+"""Execution cache lookup APIs (internal).
 
-from __future__ import annotations
+Import symbols directly from their submodules:
 
-from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
-from artisan.storage.cache.cache_lookup import cache_lookup
-
-__all__ = ["CacheHit", "CacheMiss", "cache_lookup"]
+- ``artisan.storage.cache.cache_lookup``
+"""

@@ -47,6 +47,7 @@ from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
 from artisan.storage.cache.cache_lookup import CacheHit, cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
+from artisan.utils.hashing import serialize_params
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
@@ -211,6 +212,139 @@ def _all_inputs_empty(resolved_inputs: dict[str, list[str]]) -> bool:
     if not resolved_inputs:
         return False  # {} = generative op, not empty inputs
     return all(len(ids) == 0 for ids in resolved_inputs.values())
+
+
+def _skip_for_empty_inputs(
+    operation: type[OperationDefinition] | OperationDefinition,
+    resolved_inputs: dict[str, list[str]],
+    step_number: int,
+    failure_policy: FailurePolicy,
+    *,
+    log_label: str = "",
+) -> StepResult | None:
+    """Return a skip StepResult if all input roles are empty, else None."""
+    if not _all_inputs_empty(resolved_inputs):
+        return None
+    label = log_label or operation.name
+    logger.debug(
+        "Step %d (%s): all input roles are empty — skipping execution.",
+        step_number,
+        label,
+    )
+    return build_step_result(
+        operation=operation,
+        step_number=step_number,
+        succeeded_count=0,
+        failed_count=0,
+        failure_policy=failure_policy,
+        metadata={"skipped": True, "skip_reason": "empty_inputs"},
+    )
+
+
+def _commit_and_compact(
+    config: PipelineConfig,
+    runtime_env: RuntimeEnvironment,
+    step_number: int,
+    operation_name: str,
+    timings: dict[str, Any],
+    *,
+    has_work: bool,
+    compact: bool,
+) -> str | None:
+    """Run commit and compact phases, returning any commit error message."""
+    commit_error = None
+    with phase_timer("commit", timings):
+        if has_work:
+            try:
+                from artisan.storage.io.commit import DeltaCommitter
+
+                committer = DeltaCommitter(config.delta_root, config.staging_root)
+                committer.commit_all_tables(
+                    cleanup_staging=not runtime_env.preserve_staging,
+                    step_number=step_number,
+                    operation_name=operation_name,
+                )
+            except Exception as exc:
+                commit_error = f"{type(exc).__name__}: {exc}"
+                logger.error("Commit failed for step %d: %s", step_number, commit_error)
+
+    with phase_timer("compact", timings):
+        if has_work and compact:
+            _compact_step_tables(config.delta_root, config.staging_root)
+
+    return commit_error
+
+
+def _build_step_metadata(
+    timings: dict[str, Any],
+    commit_error: str | None,
+    dispatch_error: str | None,
+) -> dict[str, Any]:
+    """Build the metadata dict for a StepResult."""
+    metadata: dict[str, Any] = {"timings": timings}
+    if commit_error:
+        metadata["commit_error"] = commit_error
+    if dispatch_error:
+        metadata["dispatch_error"] = dispatch_error
+    return metadata
+
+
+def _handle_dispatch_exception(
+    exc: Exception,
+    step_number: int,
+    *,
+    label: str = "Dispatch",
+    unit_count: int = 1,
+) -> tuple[str, list, int, int]:
+    """Handle a generic dispatch exception; returns (error, results, succeeded, failed)."""
+    dispatch_error = f"{type(exc).__name__}: {exc}"
+    logger.error(
+        "%s failed for step %d: %s",
+        label,
+        step_number,
+        dispatch_error,
+    )
+    return dispatch_error, [], 0, unit_count
+
+
+def _verify_staging_if_needed(
+    backend: BackendBase,
+    results: list[dict[str, Any]],
+    config: PipelineConfig,
+    step_number: int,
+    operation_name: str,
+    timings: dict[str, Any],
+) -> None:
+    """Run staging verification when the backend requires it."""
+    with phase_timer("verify_staging", timings):
+        if backend.orchestrator_traits.needs_staging_verification:
+            execution_run_ids = extract_execution_run_ids(results)
+            try:
+                await_staging_files(
+                    staging_root=config.staging_root,
+                    execution_run_ids=execution_run_ids,
+                    timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
+                    step_number=step_number,
+                    operation_name=operation_name,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Staging file verification timed out for step %d (%s). "
+                    "Proceeding to commit with available files.",
+                    step_number,
+                    operation_name,
+                )
+
+
+def _finalize_timings(
+    timings: dict[str, Any],
+    total_start: float,
+    step_number: int,
+    label: str,
+) -> None:
+    """Record total elapsed time and log it."""
+    timings["total"] = round(time.perf_counter() - total_start, 4)
+    logger.debug("%s step %d timings: %s", label, step_number, timings)
 
 
 def _create_runtime_environment(
@@ -380,21 +514,11 @@ def _execute_curator_step(
                 total_artifacts,
             )
 
-        # Skip downstream execution when upstream produced no artifacts
-        if _all_inputs_empty(resolved_inputs):
-            logger.debug(
-                "Step %d (%s): all input roles are empty — skipping execution.",
-                step_number,
-                operation.name,
-            )
-            return build_step_result(
-                operation=operation,
-                step_number=step_number,
-                succeeded_count=0,
-                failed_count=0,
-                failure_policy=failure_policy,
-                metadata={"skipped": True, "skip_reason": "empty_inputs"},
-            )
+        skip_result = _skip_for_empty_inputs(
+            operation, resolved_inputs, step_number, failure_policy
+        )
+        if skip_result is not None:
+            return skip_result
 
         # Framework pairing for curator ops with group_by
         if operation.group_by is not None:
@@ -417,11 +541,7 @@ def _execute_curator_step(
             spec_id = step_spec_id
         else:
             # Fallback: direct calls without PipelineManager (tests, standalone)
-            merged_params = (
-                operation.params.model_dump(mode="json")
-                if hasattr(operation, "params")
-                else {}
-            )
+            merged_params = serialize_params(operation)
             from artisan.utils.hashing import compute_execution_spec_id
 
             spec_id = compute_execution_spec_id(
@@ -539,14 +659,9 @@ def _execute_curator_step(
         except RuntimeError:
             raise  # fail_fast — intentional abort
         except Exception as exc:
-            dispatch_error = f"{type(exc).__name__}: {exc}"
-            logger.error(
-                "Dispatch failed for step %d: %s",
-                step_number,
-                dispatch_error,
+            dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
+                exc, step_number
             )
-            results = []
-            succeeded, failed = 0, 1
 
     # --- verify_staging phase (no-op: curator runs in-process, no NFS delay) ---
     with phase_timer("verify_staging", timings):
@@ -556,36 +671,16 @@ def _execute_curator_step(
     if cancel_event is not None and cancel_event.is_set():
         return _cancelled_result(operation, step_number, failure_policy)
 
-    # --- commit phase ---
-    commit_error = None
-    with phase_timer("commit", timings):
-        if results:
-            try:
-                from artisan.storage.io.commit import DeltaCommitter
-
-                committer = DeltaCommitter(config.delta_root, config.staging_root)
-                committer.commit_all_tables(
-                    cleanup_staging=not runtime_env.preserve_staging,
-                    step_number=step_number,
-                    operation_name=operation.name,
-                )
-            except Exception as exc:
-                commit_error = f"{type(exc).__name__}: {exc}"
-                logger.error("Commit failed for step %d: %s", step_number, commit_error)
-
-    # --- compact phase ---
-    with phase_timer("compact", timings):
-        if results and compact:
-            _compact_step_tables(config.delta_root, config.staging_root)
-
-    timings["total"] = round(time.perf_counter() - total_start, 4)
-    logger.debug("Curator step %d timings: %s", step_number, timings)
-
-    metadata: dict[str, Any] = {"timings": timings}
-    if commit_error:
-        metadata["commit_error"] = commit_error
-    if dispatch_error:
-        metadata["dispatch_error"] = dispatch_error
+    commit_error = _commit_and_compact(
+        config,
+        runtime_env,
+        step_number,
+        operation.name,
+        timings,
+        has_work=bool(results),
+        compact=compact,
+    )
+    _finalize_timings(timings, total_start, step_number, "Curator")
 
     return build_step_result(
         operation=operation,
@@ -593,7 +688,7 @@ def _execute_curator_step(
         succeeded_count=succeeded,
         failed_count=failed,
         failure_policy=failure_policy,
-        metadata=metadata,
+        metadata=_build_step_metadata(timings, commit_error, dispatch_error),
     )
 
 
@@ -609,9 +704,10 @@ def _run_curator_in_subprocess(
         while True:
             try:
                 return future.result(timeout=0.5)
-            except TimeoutError:
+            except TimeoutError as err:
                 if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("Curator interrupted by cancellation")
+                    msg = "Curator interrupted by cancellation"
+                    raise RuntimeError(msg) from err
                 continue
 
 
@@ -626,7 +722,7 @@ def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
     ]
 
     try:
-        with open("/proc/meminfo") as f:
+        with Path("/proc/meminfo").open() as f:
             meminfo = {}
             for line in f:
                 key, _, value = line.partition(":")
@@ -687,21 +783,11 @@ def _execute_creator_step(
         # Resolve inputs to artifact IDs
         resolved_inputs = resolve_inputs(inputs, config.delta_root)
 
-        # Skip downstream execution when upstream produced no artifacts
-        if _all_inputs_empty(resolved_inputs):
-            logger.debug(
-                "Step %d (%s): all input roles are empty — skipping execution.",
-                step_number,
-                operation.name,
-            )
-            return build_step_result(
-                operation=operation,
-                step_number=step_number,
-                succeeded_count=0,
-                failed_count=0,
-                failure_policy=failure_policy,
-                metadata={"skipped": True, "skip_reason": "empty_inputs"},
-            )
+        skip_result = _skip_for_empty_inputs(
+            operation, resolved_inputs, step_number, failure_policy
+        )
+        if skip_result is not None:
+            return skip_result
 
         total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
         logger.debug(
@@ -728,12 +814,7 @@ def _execute_creator_step(
         # Get batch configuration from the instance
         batch_config = get_batch_config(operation)
 
-        # Get params for spec_id computation
-        merged_params = (
-            operation.params.model_dump(mode="json")
-            if hasattr(operation, "params")
-            else {}
-        )
+        merged_params = serialize_params(operation)
 
         # Import lazily to avoid package import cycles during module initialization.
         from artisan.utils.hashing import compute_execution_spec_id
@@ -844,37 +925,20 @@ def _execute_creator_step(
                 except RuntimeError:
                     raise  # fail_fast — intentional abort
                 except Exception as exc:
-                    dispatch_error = f"{type(exc).__name__}: {exc}"
-                    logger.error(
-                        "Dispatch failed for step %d: %s",
-                        step_number,
-                        dispatch_error,
+                    dispatch_error, results, succeeded, failed = (
+                        _handle_dispatch_exception(
+                            exc, step_number, unit_count=len(units_to_dispatch)
+                        )
                     )
-                    results = []
-                    succeeded, failed = 0, len(units_to_dispatch)
 
         # --- verify_staging phase ---
-        with phase_timer("verify_staging", timings):
-            if (
-                units_to_dispatch
-                and backend.orchestrator_traits.needs_staging_verification
-            ):
-                execution_run_ids = extract_execution_run_ids(results)
-                try:
-                    await_staging_files(
-                        staging_root=config.staging_root,
-                        execution_run_ids=execution_run_ids,
-                        timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
-                        step_number=step_number,
-                        operation_name=operation.name,
-                    )
-                except TimeoutError:
-                    logger.warning(
-                        "Staging file verification timed out for step %d (%s). "
-                        "Proceeding to commit with available files.",
-                        step_number,
-                        operation.name,
-                    )
+        if units_to_dispatch:
+            _verify_staging_if_needed(
+                backend, results, config, step_number, operation.name, timings
+            )
+        else:
+            with phase_timer("verify_staging", timings):
+                pass
 
         # --- capture_logs phase ---
         with phase_timer("capture_logs", timings):
@@ -894,42 +958,20 @@ def _execute_creator_step(
         if cancel_event is not None and cancel_event.is_set():
             return _cancelled_result(operation, step_number, failure_policy)
 
-        # --- commit phase ---
-        commit_error = None
-        with phase_timer("commit", timings):
-            if units_to_dispatch:
-                try:
-                    from artisan.storage.io.commit import DeltaCommitter
-
-                    committer = DeltaCommitter(config.delta_root, config.staging_root)
-                    committer.commit_all_tables(
-                        cleanup_staging=not runtime_env.preserve_staging,
-                        step_number=step_number,
-                        operation_name=operation.name,
-                    )
-                except Exception as exc:
-                    commit_error = f"{type(exc).__name__}: {exc}"
-                    logger.error(
-                        "Commit failed for step %d: %s", step_number, commit_error
-                    )
-
-        # --- compact phase ---
-        with phase_timer("compact", timings):
-            if units_to_dispatch and compact:
-                _compact_step_tables(config.delta_root, config.staging_root)
+        commit_error = _commit_and_compact(
+            config,
+            runtime_env,
+            step_number,
+            operation.name,
+            timings,
+            has_work=bool(units_to_dispatch),
+            compact=compact,
+        )
     finally:
         if dispatch_dir.exists():
             shutil.rmtree(dispatch_dir, ignore_errors=True)
 
-    timings["total"] = round(time.perf_counter() - total_start, 4)
-    logger.debug("Creator step %d timings: %s", step_number, timings)
-
-    # Build and return StepResult
-    metadata: dict[str, Any] = {"timings": timings}
-    if commit_error:
-        metadata["commit_error"] = commit_error
-    if dispatch_error:
-        metadata["dispatch_error"] = dispatch_error
+    _finalize_timings(timings, total_start, step_number, "Creator")
 
     return build_step_result(
         operation=operation,
@@ -937,7 +979,7 @@ def _execute_creator_step(
         succeeded_count=succeeded + cached_count,
         failed_count=failed,
         failure_policy=failure_policy,
-        metadata=metadata,
+        metadata=_build_step_metadata(timings, commit_error, dispatch_error),
     )
 
 
@@ -985,27 +1027,20 @@ def execute_composite_step(
     with phase_timer("resolve_inputs", timings):
         resolved_inputs = resolve_inputs(inputs, config.delta_root)
 
-        if _all_inputs_empty(resolved_inputs):
-            logger.debug(
-                "Step %d (composite): all input roles are empty — skipping.",
-                step_number,
-            )
-            instance = instantiate_operation(composite_class, params)
-            return build_step_result(
-                operation=instance,
-                step_number=step_number,
-                succeeded_count=0,
-                failed_count=0,
-                failure_policy=failure_policy,
-                metadata={"skipped": True, "skip_reason": "empty_inputs"},
-            )
+        instance = instantiate_operation(composite_class, params)
+        skip_result = _skip_for_empty_inputs(
+            instance,
+            resolved_inputs,
+            step_number,
+            failure_policy,
+            log_label="composite",
+        )
+        if skip_result is not None:
+            return skip_result
 
     # --- build_composite phase ---
     with phase_timer("build_composite", timings):
-        instance = instantiate_operation(composite_class, params)
-        merged_params: dict[str, Any] = {}
-        if hasattr(instance, "params"):
-            merged_params = instance.params.model_dump(mode="json")
+        merged_params = serialize_params(instance)
 
         spec_id = compute_execution_spec_id(
             operation_name=instance.name,
@@ -1048,68 +1083,28 @@ def execute_composite_step(
             except RuntimeError:
                 raise
             except Exception as exc:
-                dispatch_error = f"{type(exc).__name__}: {exc}"
-                logger.error(
-                    "Composite dispatch failed for step %d: %s",
-                    step_number,
-                    dispatch_error,
-                )
-                results = []
-                succeeded, failed = 0, 1
-
-        # --- verify_staging phase ---
-        with phase_timer("verify_staging", timings):
-            if backend.orchestrator_traits.needs_staging_verification:
-                execution_run_ids = extract_execution_run_ids(results)
-                try:
-                    await_staging_files(
-                        staging_root=config.staging_root,
-                        execution_run_ids=execution_run_ids,
-                        timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
-                        step_number=step_number,
-                        operation_name=instance.name,
-                    )
-                except TimeoutError:
-                    logger.warning(
-                        "Staging verification timed out for composite step %d.",
-                        step_number,
-                    )
-
-        # --- commit phase ---
-        commit_error = None
-        with phase_timer("commit", timings):
-            try:
-                from artisan.storage.io.commit import DeltaCommitter
-
-                committer = DeltaCommitter(config.delta_root, config.staging_root)
-                committer.commit_all_tables(
-                    cleanup_staging=not runtime_env.preserve_staging,
-                    step_number=step_number,
-                    operation_name=instance.name,
-                )
-            except Exception as exc:
-                commit_error = f"{type(exc).__name__}: {exc}"
-                logger.error(
-                    "Commit failed for composite step %d: %s",
-                    step_number,
-                    commit_error,
+                dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
+                    exc, step_number, label="Composite dispatch"
                 )
 
-        # --- compact phase ---
-        with phase_timer("compact", timings):
-            if compact:
-                _compact_step_tables(config.delta_root, config.staging_root)
+        _verify_staging_if_needed(
+            backend, results, config, step_number, instance.name, timings
+        )
+
+        commit_error = _commit_and_compact(
+            config,
+            runtime_env,
+            step_number,
+            instance.name,
+            timings,
+            has_work=True,
+            compact=compact,
+        )
     finally:
         if dispatch_dir.exists():
             shutil.rmtree(dispatch_dir, ignore_errors=True)
 
-    timings["total"] = round(time.perf_counter() - total_start, 4)
-
-    metadata: dict[str, Any] = {"timings": timings}
-    if commit_error:
-        metadata["commit_error"] = commit_error
-    if dispatch_error:
-        metadata["dispatch_error"] = dispatch_error
+    _finalize_timings(timings, total_start, step_number, "Composite")
 
     return build_step_result(
         operation=instance,
@@ -1117,7 +1112,7 @@ def execute_composite_step(
         succeeded_count=succeeded,
         failed_count=failed,
         failure_policy=failure_policy,
-        metadata=metadata,
+        metadata=_build_step_metadata(timings, commit_error, dispatch_error),
     )
 
 

@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import xxhash
-
 from artisan.execution.exceptions import PassthroughValidationError
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.curator_result import PassthroughResult
@@ -26,8 +24,9 @@ def generate_execution_run_id(
     Returns:
         32-character xxh3_128 hex digest.
     """
-    data = f"{spec_id}:{timestamp.isoformat()}:{worker_id}"
-    return xxhash.xxh3_128(data.encode()).hexdigest()
+    from artisan.utils.hashing import digest_utf8
+
+    return digest_utf8(f"{spec_id}:{timestamp.isoformat()}:{worker_id}")
 
 
 def finalize_artifacts(

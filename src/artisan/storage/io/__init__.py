@@ -1,24 +1,8 @@
-"""Storage I/O orchestration for staging and Delta commits."""
+"""Storage I/O orchestration for staging and Delta commits (internal).
 
-from __future__ import annotations
+Import symbols directly from their submodules:
 
-from artisan.storage.io.commit import DeltaCommitter
-from artisan.storage.io.staging import StagingArea, StagingManager
-from artisan.storage.io.staging_verification import (
-    REQUIRED_STAGING_FILE,
-    await_staging_files,
-    compute_expected_staging_paths,
-    verify_file_exists_nfs,
-    verify_staging_directory,
-)
-
-__all__ = [
-    "StagingArea",
-    "StagingManager",
-    "REQUIRED_STAGING_FILE",
-    "verify_file_exists_nfs",
-    "compute_expected_staging_paths",
-    "verify_staging_directory",
-    "await_staging_files",
-    "DeltaCommitter",
-]
+- ``artisan.storage.io.commit``
+- ``artisan.storage.io.staging``
+- ``artisan.storage.io.staging_verification``
+"""

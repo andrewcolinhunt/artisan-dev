@@ -7,7 +7,6 @@ generation, and the operation registry live here.
 
 from __future__ import annotations
 
-import re
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -21,6 +20,11 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, ConfigDict
 
+from artisan.operations.base._role_docs import (
+    append_role_docs,
+    get_registered,
+    validate_role_enums,
+)
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, CuratorResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
@@ -34,47 +38,6 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-
-_ROLE_SECTION_RE = re.compile(
-    r"\n?\s*(Input Roles|Output Roles):.*?(?=\n\s*\S|\n\s*\n|\Z)",
-    re.DOTALL,
-)
-
-
-def _build_role_docs(cls: type) -> str:
-    """Generate Input/Output Roles docstring sections from class specs."""
-    sections: list[str] = []
-
-    if cls.inputs:
-        lines = ["    Input Roles:"]
-        for role, spec in cls.inputs.items():
-            type_label = spec.artifact_type if spec.artifact_type else "any"
-            desc = f" -- {spec.description}" if spec.description else ""
-            lines.append(f"        {role} ({type_label}){desc}")
-        sections.append("\n".join(lines))
-
-    if cls.outputs:
-        lines = ["    Output Roles:"]
-        for role, spec in cls.outputs.items():
-            type_label = spec.artifact_type if spec.artifact_type else "any"
-            desc = f" -- {spec.description}" if spec.description else ""
-            lines.append(f"        {role} ({type_label}){desc}")
-        sections.append("\n".join(lines))
-
-    return "\n\n".join(sections)
-
-
-def _append_role_docs(cls: type) -> None:
-    """Replace role sections in the class docstring with freshly generated ones."""
-    doc = cls.__doc__ or ""
-    # Strip any existing Input/Output Roles sections
-    doc = _ROLE_SECTION_RE.sub("", doc).rstrip()
-
-    role_docs = _build_role_docs(cls)
-    if role_docs:
-        cls.__doc__ = f"{doc}\n\n{role_docs}\n"
-    else:
-        cls.__doc__ = doc
 
 
 class OperationDefinition(BaseModel):
@@ -207,7 +170,7 @@ class OperationDefinition(BaseModel):
     """Batching and scheduling configuration."""
 
     # ---------- Lifecycle ----------
-    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+    def preprocess(self, _inputs: PreprocessInput) -> dict[str, Any]:
         """Transform framework artifacts into the format expected by execute.
 
         Required for creator operations with inputs. Override to extract
@@ -249,9 +212,8 @@ class OperationDefinition(BaseModel):
         Raises:
             NotImplementedError: If the subclass does not override this method.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement execute() method"
-        )
+        msg = f"{self.__class__.__name__} must implement execute() method"
+        raise NotImplementedError(msg)
 
     def execute_curator(
         self,
@@ -278,12 +240,13 @@ class OperationDefinition(BaseModel):
         Raises:
             NotImplementedError: If not overridden (operation is a creator).
         """
-        raise NotImplementedError(
+        msg = (
             f"{self.__class__.__name__} does not implement execute_curator() - "
             "this is a creator operation, not a curator operation"
         )
+        raise NotImplementedError(msg)
 
-    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+    def postprocess(self, _inputs: PostprocessInput) -> ArtifactResult:
         """Construct draft artifacts from execution outputs.
 
         Override to select files from ``file_outputs``, unpack
@@ -320,60 +283,34 @@ class OperationDefinition(BaseModel):
             cls.execute_curator is not OperationDefinition.execute_curator
         )
         if not has_execute and not has_execute_curator:
-            raise TypeError(
+            msg = (
                 f"{cls.__name__} must implement either execute() (creator ops) "
                 "or execute_curator() (curator ops)"
             )
+            raise TypeError(msg)
 
         # Creator ops must declare explicit lineage for all outputs
         if has_execute:
             for role_name, spec in cls.outputs.items():
                 if spec.infer_lineage_from is None:
-                    raise TypeError(
+                    msg = (
                         f"{cls.__name__}.outputs['{role_name}'] must set "
                         "infer_lineage_from (explicit lineage required for creators)"
                     )
+                    raise TypeError(msg)
 
         # Creator ops with inputs must implement preprocess
         if has_execute and cls.inputs:
             has_preprocess = cls.preprocess is not OperationDefinition.preprocess
             if not has_preprocess:
-                raise TypeError(
+                msg = (
                     f"{cls.__name__} is a creator operation with inputs — "
                     "must implement preprocess()"
                 )
+                raise TypeError(msg)
 
-        # Validate OutputRole enum matches outputs dict
-        if cls.outputs:
-            out_enum = getattr(cls, "OutputRole", None)
-            if out_enum is None:
-                raise TypeError(
-                    f"{cls.__name__} must define OutputRole(StrEnum) "
-                    "matching outputs keys"
-                )
-            if set(out_enum) != set(cls.outputs):
-                raise TypeError(
-                    f"{cls.__name__}.OutputRole values {set(out_enum)} "
-                    f"don't match outputs keys {set(cls.outputs)}"
-                )
-
-        # Validate InputRole enum matches inputs dict
-        # Skip for generative ops (empty inputs)
-        if cls.inputs:
-            in_enum = getattr(cls, "InputRole", None)
-            if in_enum is None:
-                raise TypeError(
-                    f"{cls.__name__} must define InputRole(StrEnum) "
-                    "matching inputs keys"
-                )
-            if set(in_enum) != set(cls.inputs):
-                raise TypeError(
-                    f"{cls.__name__}.InputRole values {set(in_enum)} "
-                    f"don't match inputs keys {set(cls.inputs)}"
-                )
-
-        # Generate runtime docstring with role documentation
-        _append_role_docs(cls)
+        validate_role_enums(cls, "operation")
+        append_role_docs(cls)
 
         # Register in operation registry (concrete ops only)
         if cls.name:
@@ -393,12 +330,7 @@ class OperationDefinition(BaseModel):
         Raises:
             KeyError: If name is not registered.
         """
-        if name not in cls._registry:
-            raise KeyError(
-                f"Unknown operation: {name!r}. "
-                f"Registered: {list(cls._registry.keys())}"
-            )
-        return cls._registry[name]
+        return get_registered(name, cls._registry, "operation")
 
     @classmethod
     def get_all(cls) -> dict[str, type[OperationDefinition]]:

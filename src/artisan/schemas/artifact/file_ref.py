@@ -14,6 +14,7 @@ import polars as pl
 from pydantic import Field, PrivateAttr
 
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.common import metadata_from_json, metadata_to_json
 from artisan.schemas.artifact.types import ArtifactTypes
 
 
@@ -75,7 +76,8 @@ class FileRefArtifact(Artifact):
         """
         if self._cached_content is None:
             if self.path is None:
-                raise ValueError("Cannot read content: artifact not hydrated")
+                msg = "Cannot read content: artifact not hydrated"
+                raise ValueError(msg)
             self._cached_content = Path(self.path).read_bytes()
         return self._cached_content
 
@@ -92,7 +94,8 @@ class FileRefArtifact(Artifact):
             ValueError: If path is None (not hydrated).
         """
         if self.path is None:
-            raise ValueError("Cannot materialize: artifact not hydrated")
+            msg = "Cannot materialize: artifact not hydrated"
+            raise ValueError(msg)
         path = directory / Path(self.path).name
         path.write_bytes(self.read_content())
         self.materialized_path = path
@@ -161,7 +164,7 @@ class FileRefArtifact(Artifact):
             "size_bytes": self.size_bytes,
             "original_name": self.original_name,
             "extension": self.extension,
-            "metadata": json.dumps(self.metadata or {}),
+            "metadata": metadata_to_json(self.metadata),
             "external_path": self.external_path,
         }
 
@@ -175,7 +178,6 @@ class FileRefArtifact(Artifact):
         Args:
             row: Dict with keys matching POLARS_SCHEMA columns.
         """
-        metadata_raw = row.get("metadata")
         return cls(
             artifact_id=row["artifact_id"],
             origin_step_number=row.get("origin_step_number"),
@@ -184,6 +186,6 @@ class FileRefArtifact(Artifact):
             size_bytes=row.get("size_bytes"),
             original_name=row.get("original_name"),
             extension=row.get("extension"),
-            metadata=json.loads(metadata_raw) if metadata_raw else {},
+            metadata=metadata_from_json(row.get("metadata")),
             external_path=row.get("external_path"),
         )
