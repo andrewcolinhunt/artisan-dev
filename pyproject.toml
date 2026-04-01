@@ -1,6 +1,6 @@
 [project]
 name = "dexterity-artisan"
-version = "0.1.2a2"
+dynamic = ["version"]
 description = "A domain-agnostic pipeline framework with provenance tracking"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -30,6 +30,12 @@ Documentation = "https://artisan.readthedocs.io"
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/artisan/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/artisan"]
