@@ -54,6 +54,7 @@ project:
             - file: tutorials/execution/06-step-overrides.ipynb
             - file: tutorials/execution/07-slurm-execution.ipynb
             - file: tutorials/execution/08-pipeline-cancellation.ipynb
+            - file: tutorials/execution/09-skip-cache.ipynb
         - title: Analysis
           children:
             - file: tutorials/analysis/01-provenance-graphs.ipynb

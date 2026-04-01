@@ -388,6 +388,7 @@ def execute_step(
     compact: bool = True,
     step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
+    skip_cache: bool = False,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
 ) -> StepResult:
@@ -415,6 +416,7 @@ def execute_step(
         step_spec_id: Pre-computed step spec ID from PipelineManager. When
             provided for curator ops, used directly as execution_spec_id to
             skip the O(N log N) compute_execution_spec_id call.
+        skip_cache: Bypass execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
         step_run_ids: Mapping of upstream step_number to step_run_id
             for scoped output resolution.
@@ -443,6 +445,7 @@ def execute_step(
             user_overrides=user_overrides,
             step_spec_id=step_spec_id,
             cancel_event=cancel_event,
+            skip_cache=skip_cache,
             step_run_id=step_run_id,
             step_run_ids=step_run_ids,
         )
@@ -459,6 +462,7 @@ def execute_step(
         compact=compact,
         user_overrides=user_overrides,
         cancel_event=cancel_event,
+        skip_cache=skip_cache,
         step_run_id=step_run_id,
         step_run_ids=step_run_ids,
     )
@@ -491,6 +495,7 @@ def _execute_curator_step(
     user_overrides: dict[str, Any] | None = None,
     step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
+    skip_cache: bool = False,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
 ) -> StepResult:
@@ -510,6 +515,7 @@ def _execute_curator_step(
         user_overrides: User-provided parameter overrides.
         step_spec_id: Pre-computed step spec ID; when provided, reused as
             execution_spec_id and cache check is skipped.
+        skip_cache: Bypass execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
         step_run_ids: Upstream step_number to step_run_id mapping.
 
@@ -569,21 +575,22 @@ def _execute_curator_step(
                 params=merged_params,
                 config_overrides=config_overrides,
             )
-            cache_result = check_cache_for_batch(spec_id, config.delta_root)
-            if cache_result is not None:
-                logger.info(
-                    "Step %d (%s) CACHED — skipping execution",
-                    step_number,
-                    operation.name,
-                )
-                cached_count = sum(len(ids) for ids in paired_inputs.values()) or 1
-                return build_step_result(
-                    operation=operation,
-                    step_number=step_number,
-                    succeeded_count=cached_count,
-                    failed_count=0,
-                    failure_policy=failure_policy,
-                )
+            if not skip_cache:
+                cache_result = check_cache_for_batch(spec_id, config.delta_root)
+                if cache_result is not None:
+                    logger.info(
+                        "Step %d (%s) CACHED — skipping execution",
+                        step_number,
+                        operation.name,
+                    )
+                    cached_count = sum(len(ids) for ids in paired_inputs.values()) or 1
+                    return build_step_result(
+                        operation=operation,
+                        step_number=step_number,
+                        succeeded_count=cached_count,
+                        failed_count=0,
+                        failure_policy=failure_policy,
+                    )
 
     # --- cancel check: before execute ---
     if cancel_event is not None and cancel_event.is_set():
@@ -779,6 +786,7 @@ def _execute_creator_step(
     compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
     cancel_event: threading.Event | None = None,
+    skip_cache: bool = False,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
 ) -> StepResult:
@@ -794,6 +802,7 @@ def _execute_creator_step(
         failure_policy: Continue or fail-fast on errors.
         compact: Whether to run Delta Lake compaction.
         user_overrides: User-provided parameter overrides.
+        skip_cache: Bypass per-batch execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
         step_run_ids: Upstream step_number to step_run_id mapping.
 
@@ -870,7 +879,11 @@ def _execute_creator_step(
             )
 
             # Cache lookup
-            cache_result = check_cache_for_batch(spec_id, config.delta_root)
+            cache_result = (
+                None
+                if skip_cache
+                else check_cache_for_batch(spec_id, config.delta_root)
+            )
 
             if cache_result is not None:
                 # Cache hit - skip this unit
