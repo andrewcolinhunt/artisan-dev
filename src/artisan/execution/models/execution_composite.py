@@ -50,3 +50,4 @@ class ExecutionComposite:
     resources: ResourceConfig = field(default_factory=ResourceConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     intermediates: CompositeIntermediates = CompositeIntermediates.DISCARD
+    step_run_id: str | None = None

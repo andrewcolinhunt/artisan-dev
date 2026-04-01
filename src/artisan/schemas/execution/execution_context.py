@@ -51,3 +51,4 @@ class ExecutionContext:
     sandbox_path: Path | None  # None for curator operations
     compute_backend: str = "local"
     shared_filesystem: bool = False
+    step_run_id: str | None = None

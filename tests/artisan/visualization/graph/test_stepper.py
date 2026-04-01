@@ -31,6 +31,7 @@ def delta_root_with_steps(tmp_path: Path) -> Path:
     exec_data = {
         "execution_run_id": ["exec_0", "exec_1", "exec_2"],
         "execution_spec_id": ["spec_0", "spec_1", "spec_2"],
+        "step_run_id": [None, None, None],
         "origin_step_number": [0, 1, 2],
         "operation_name": ["ingest", "creator", "calculate"],
         "params": ["{}", "{}", "{}"],

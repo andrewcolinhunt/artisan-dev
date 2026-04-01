@@ -91,6 +91,7 @@ class TestFrameworkSchemaDefinitions:
         required = {
             "execution_run_id",
             "execution_spec_id",
+            "step_run_id",
             "origin_step_number",
             "operation_name",
             "params",
@@ -266,6 +267,7 @@ class TestDataFrameCreation:
         data = {
             "execution_run_id": ["r" * 32],
             "execution_spec_id": ["s" * 32],
+            "step_run_id": [None],
             "origin_step_number": [1],
             "operation_name": ["relax"],
             "params": ["{}"],
@@ -281,7 +283,7 @@ class TestDataFrameCreation:
             "metadata": ["{}"],
         }
         df = pl.DataFrame(data, schema=EXECUTIONS_SCHEMA)
-        assert df.shape == (1, 15)  # 15 columns, no inputs/outputs
+        assert df.shape == (1, 16)  # 16 columns, no inputs/outputs
 
     def test_create_execution_edges_dataframe(self):
         """Create execution_edges DataFrame with input/output edges."""

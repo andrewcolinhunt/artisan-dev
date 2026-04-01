@@ -12,11 +12,10 @@ import pytest
 
 pytestmark = pytest.mark.slow
 
-from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
+from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.backends import Backend
 from artisan.schemas.orchestration.output_reference import OutputReference
-
 
 # =============================================================================
 # Dunder methods

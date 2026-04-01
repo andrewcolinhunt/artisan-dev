@@ -35,6 +35,10 @@ class StepResult(BaseModel):
         default_factory=dict,
         description="Step metadata (timings, diagnostics, etc.).",
     )
+    step_run_id: str | None = Field(
+        default=None,
+        description="Unique ID for this step execution attempt.",
+    )
 
     def output(self, role: str) -> OutputReference:
         """Return a lazy reference to outputs for the given role.
@@ -74,6 +78,7 @@ class StepResultBuilder:
     step_name: str
     step_number: int
     operation_outputs: dict[str, str | None]  # role -> artifact_type from outputs
+    step_run_id: str | None = None
 
     _total_count: int = 0
     _succeeded_count: int = 0
@@ -119,4 +124,5 @@ class StepResultBuilder:
             output_roles=frozenset(self.operation_outputs.keys()),
             output_types=dict(self.operation_outputs),
             metadata=metadata or {},
+            step_run_id=self.step_run_id,
         )
