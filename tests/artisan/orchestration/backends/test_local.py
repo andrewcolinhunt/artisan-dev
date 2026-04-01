@@ -96,6 +96,82 @@ class TestLocalBackendCreateFlow:
         task_runner = call_kwargs["task_runner"]
         assert isinstance(task_runner, ProcessPoolTaskRunner)
 
+    @patch("prefect.flow")
+    @patch("prefect.unmapped")
+    def test_create_flow_gpu_defaults_to_sequential(
+        self,
+        _mock_unmapped: MagicMock,
+        mock_flow: MagicMock,
+        local_backend: LocalBackend,
+    ) -> None:
+        mock_flow.return_value = lambda fn: fn
+        local_backend.create_flow(
+            ResourceConfig(gpus=1),
+            ExecutionConfig(),
+            step_number=0,
+            job_name="test_op",
+        )
+        call_kwargs = mock_flow.call_args[1]
+        task_runner = call_kwargs["task_runner"]
+        assert task_runner._max_workers == 1
+
+    @patch("prefect.flow")
+    @patch("prefect.unmapped")
+    def test_create_flow_cpu_defaults_to_pool_size(
+        self,
+        _mock_unmapped: MagicMock,
+        mock_flow: MagicMock,
+        local_backend: LocalBackend,
+    ) -> None:
+        mock_flow.return_value = lambda fn: fn
+        local_backend.create_flow(
+            ResourceConfig(gpus=0),
+            ExecutionConfig(),
+            step_number=0,
+            job_name="test_op",
+        )
+        call_kwargs = mock_flow.call_args[1]
+        task_runner = call_kwargs["task_runner"]
+        assert task_runner._max_workers == 2  # fixture default
+
+    @patch("prefect.flow")
+    @patch("prefect.unmapped")
+    def test_create_flow_explicit_max_workers_overrides_gpu(
+        self,
+        _mock_unmapped: MagicMock,
+        mock_flow: MagicMock,
+        local_backend: LocalBackend,
+    ) -> None:
+        mock_flow.return_value = lambda fn: fn
+        local_backend.create_flow(
+            ResourceConfig(gpus=1),
+            ExecutionConfig(max_workers=3),
+            step_number=0,
+            job_name="test_op",
+        )
+        call_kwargs = mock_flow.call_args[1]
+        task_runner = call_kwargs["task_runner"]
+        assert task_runner._max_workers == 3
+
+    @patch("prefect.flow")
+    @patch("prefect.unmapped")
+    def test_create_flow_explicit_max_workers_overrides_cpu_default(
+        self,
+        _mock_unmapped: MagicMock,
+        mock_flow: MagicMock,
+        local_backend: LocalBackend,
+    ) -> None:
+        mock_flow.return_value = lambda fn: fn
+        local_backend.create_flow(
+            ResourceConfig(gpus=0),
+            ExecutionConfig(max_workers=6),
+            step_number=0,
+            job_name="test_op",
+        )
+        call_kwargs = mock_flow.call_args[1]
+        task_runner = call_kwargs["task_runner"]
+        assert task_runner._max_workers == 6
+
 
 class TestLocalBackendValidateOperation:
     def test_no_warning_for_default_resources(
@@ -105,11 +181,13 @@ class TestLocalBackendValidateOperation:
             warnings.simplefilter("error")
             local_backend.validate_operation(mock_operation)
 
-    def test_warns_on_gpus(
+    def test_no_warning_for_gpu_only(
         self, local_backend: LocalBackend, mock_operation: MagicMock
     ) -> None:
         mock_operation.resources.gpus = 1
-        with pytest.warns(UserWarning, match="SLURM-specific resources"):
+        mock_operation.resources.extra = {}
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             local_backend.validate_operation(mock_operation)
 
     def test_warns_on_extra_kwargs(
