@@ -4,23 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from artisan.utils.path import shard_path
-
 
 def create_sandbox(
-    working_root: Path,
-    execution_run_id: str,
-    step_number: int,
-    operation_name: str | None = None,
+    sandbox_path: Path,
 ) -> tuple[Path, Path, Path, Path]:
-    """Create sharded sandbox directories for creator execution.
+    """Create sandbox directories for creator execution.
+
+    Args:
+        sandbox_path: Pre-computed path for this execution unit's sandbox.
 
     Returns:
         Tuple of (sandbox_path, preprocess_dir, execute_dir, postprocess_dir).
     """
-    sandbox_path = shard_path(
-        working_root, execution_run_id, step_number, operation_name=operation_name
-    )
     sandbox_path.mkdir(parents=True, exist_ok=True)
 
     preprocess_dir = sandbox_path / "preprocess"
