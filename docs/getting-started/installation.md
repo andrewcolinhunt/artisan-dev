@@ -134,15 +134,8 @@ When connecting, Artisan checks for a server URL in this order:
 
 ## Using Pixi day-to-day
 
-```bash
-pixi run <command>              # Run a single command in the environment
-pixi run python script.py       # Run a Python script
-pixi shell                      # Start an interactive shell (like `source .venv/bin/activate`)
-```
-
-All `pixi` commands are project-scoped — run them from the repo directory. If
-you use `pixi shell`, you can run `python`, `pytest`, etc. directly without
-the `pixi run` prefix.
+See [Using Pixi](using-pixi.md) for a full guide to environments, tasks, shells,
+and workspaces.
 
 ---
 

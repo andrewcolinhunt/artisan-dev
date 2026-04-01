@@ -25,6 +25,7 @@ project:
       children:
         - file: getting-started/index.md
         - file: getting-started/installation.md
+        - file: getting-started/using-pixi.md
         - file: getting-started/orientation.md
         - file: getting-started/using-claude-code.md
 
