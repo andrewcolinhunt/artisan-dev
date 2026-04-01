@@ -1,11 +1,5 @@
 # Artisan
 
-[![PyPI](https://img.shields.io/pypi/v/dexterity-artisan)](https://pypi.org/project/dexterity-artisan/)
-[![Python](https://img.shields.io/pypi/pyversions/dexterity-artisan)](https://pypi.org/project/dexterity-artisan/)
-[![Docs](https://readthedocs.org/projects/dexterity-artisan/badge/?version=latest)](https://dexterity-artisan.readthedocs.io/en/latest/)
-[![License](https://img.shields.io/github/license/dexterity-systems/artisan)](LICENSE)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-
 A Python framework for building computational pipelines with automatic
 provenance tracking.
 
@@ -62,7 +56,7 @@ pixi install
 pixi run python -c "import artisan; print('Artisan installed successfully')"
 ```
 
-→ **[Getting Started guide](https://dexterity-artisan.readthedocs.io/en/latest/getting-started/)** for detailed setup, Prefect setup,
+→ **[Getting Started guide](docs/getting-started/index.md)** for detailed setup, Prefect setup,
 your first pipeline, and the mental model behind the framework.
 
 ---
@@ -111,7 +105,7 @@ result = pipeline.finalize()
 
 :::{note}
 This example requires a running Prefect server. See the
-[Getting Started guide](https://dexterity-artisan.readthedocs.io/en/latest/getting-started/installation.html#start-the-prefect-server)
+[Getting Started guide](docs/getting-started/installation.md#start-the-prefect-server)
 for setup instructions.
 :::
 
@@ -166,15 +160,15 @@ pixi run -e docs docs-serve       # Serve locally at http://localhost:8000
 pixi run -e docs docs-clean       # Remove build artifacts
 ```
 
-- **[Getting Started](https://dexterity-artisan.readthedocs.io/en/latest/getting-started/)** — Installation and first
+- **[Getting Started](docs/getting-started/index.md)** — Installation and first
   steps
-- **[Tutorials](https://dexterity-artisan.readthedocs.io/en/latest/tutorials/)** — Interactive notebooks from first
+- **[Tutorials](docs/tutorials/index.md)** — Interactive notebooks from first
   steps through advanced patterns
-- **[How-to Guides](https://dexterity-artisan.readthedocs.io/en/latest/how-to-guides/)** — Task-oriented guides for
+- **[How-to Guides](docs/how-to-guides/index.md)** — Task-oriented guides for
   building pipelines, writing operations, and more
-- **[Concepts](https://dexterity-artisan.readthedocs.io/en/latest/concepts/)** — Architecture, design principles, and
+- **[Concepts](docs/concepts/index.md)** — Architecture, design principles, and
   system internals
-- **[Reference](https://dexterity-artisan.readthedocs.io/en/latest/reference/)** — API reference and coding conventions
+- **[Reference](docs/reference/index.md)** — API reference and coding conventions
 
 ---
 
@@ -192,7 +186,7 @@ plugin with skills for scaffolding operations, pipelines, and documentation.
 
 The plugin is included in the repository and activates automatically.
 Downstream repos can install it by pointing their settings to this repo. See
-[Using Claude Code](https://dexterity-artisan.readthedocs.io/en/latest/getting-started/using-claude-code.html) for details.
+[Using Claude Code](docs/getting-started/using-claude-code.md) for details.
 
 ---
 
@@ -202,14 +196,4 @@ Artisan is a domain-agnostic pipeline framework. It handles execution,
 orchestration, storage, provenance tracking, and the base operation interface.
 Domain-specific operations extend it by subclassing `OperationDefinition`.
 
-See [Architecture Overview](https://dexterity-artisan.readthedocs.io/en/latest/concepts/architecture-overview.html) for details.
-
----
-
-## Contributing
-
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-- [Issue Tracker](https://github.com/dexterity-systems/artisan/issues) — Bug reports and feature requests
-- [Changelog](https://github.com/dexterity-systems/artisan/releases) — Release history
-- [Discussions](https://github.com/dexterity-systems/artisan/discussions) — Questions and community conversation
+See [Architecture Overview](docs/concepts/architecture-overview.md) for details.
