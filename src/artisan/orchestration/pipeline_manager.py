@@ -803,6 +803,7 @@ class PipelineManager:
         preserve_staging: bool = False,
         preserve_working: bool = False,
         recover_staging: bool = True,
+        skip_cache: bool = False,
         prefect_server: str | None = None,
     ) -> PipelineManager:
         """Factory method to create a PipelineManager.
@@ -825,6 +826,7 @@ class PipelineManager:
             preserve_working: Debug flag to preserve sandbox after execution.
             recover_staging: Commit leftover staging files from prior crashed
                 runs at pipeline init. Defaults to True.
+            skip_cache: Bypass all cache lookups for every step.
             prefect_server: Prefect server URL. If None, auto-discovered.
 
         Returns:
@@ -858,6 +860,7 @@ class PipelineManager:
             preserve_staging=preserve_staging,
             preserve_working=preserve_working,
             recover_staging=recover_staging,
+            skip_cache=skip_cache,
         )
         instance = cls(config)
         logger.info("Pipeline '%s' initialized (run_id=%s)", name, pipeline_run_id)
@@ -979,6 +982,7 @@ class PipelineManager:
         compact: bool = True,
         name: str | None = None,
         intermediates: str = "discard",
+        skip_cache: bool = False,
     ) -> StepResult:
         """Execute a pipeline step (blocking).
 
@@ -999,6 +1003,7 @@ class PipelineManager:
             name: Custom step name. Defaults to operation.name.
             intermediates: How to handle intermediate artifacts in composites:
                 "discard" (default), "persist", or "expose".
+            skip_cache: Bypass cache lookups for this step.
 
         Returns:
             StepResult with output references and execution metadata.
@@ -1016,6 +1021,7 @@ class PipelineManager:
             compact=compact,
             name=name,
             intermediates=intermediates,
+            skip_cache=skip_cache,
         ).result()
 
     def submit(
@@ -1037,6 +1043,7 @@ class PipelineManager:
         compact: bool = True,
         name: str | None = None,
         intermediates: str = "discard",
+        skip_cache: bool = False,
     ) -> StepFuture:
         """Submit a pipeline step (non-blocking).
 
@@ -1055,6 +1062,7 @@ class PipelineManager:
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
             intermediates: How to handle intermediate artifacts in composites.
+            skip_cache: Bypass cache lookups for this step.
 
         Returns:
             StepFuture with output() for wiring to downstream steps.
@@ -1078,6 +1086,7 @@ class PipelineManager:
                 failure_policy=failure_policy,
                 compact=compact,
                 name=name or operation.name,
+                skip_cache=skip_cache,
             )
 
         # 2. Fail-fast validation before any blocking work. Checks params,
@@ -1121,14 +1130,15 @@ class PipelineManager:
 
         # 5. Cache check: if a prior run produced identical spec_id, return
         #    the cached StepResult immediately without re-executing.
-        cached = self._try_cached_step(
-            step_spec_id,
-            step_number,
-            step_name,
-            operation.outputs,
-        )
-        if cached is not None:
-            return cached
+        if not (skip_cache or self._config.skip_cache):
+            cached = self._try_cached_step(
+                step_spec_id,
+                step_number,
+                step_name,
+                operation.outputs,
+            )
+            if cached is not None:
+                return cached
 
         # 6. File path promotion: if the user passed raw file paths (list of
         #    strings), validate them and commit FileRefArtifacts to Delta Lake
@@ -1167,6 +1177,7 @@ class PipelineManager:
             step_number=step_number,
             step_spec_id=step_spec_id,
             temp_instance=temp_instance,
+            skip_cache=skip_cache,
         )
 
     # =========================================================================
@@ -1443,6 +1454,7 @@ class PipelineManager:
         step_number: int,
         step_spec_id: str,
         temp_instance: OperationDefinition,
+        skip_cache: bool = False,
     ) -> StepFuture:
         """Register step, resolve backend, and submit execution to thread pool.
 
@@ -1556,6 +1568,7 @@ class PipelineManager:
                     compact=compact,
                     step_spec_id=step_spec_id,
                     cancel_event=self._cancel_event,
+                    skip_cache=skip_cache or self._config.skip_cache,
                     step_run_id=step_run_id,
                     step_run_ids=upstream_step_run_ids,
                 )
@@ -1745,6 +1758,7 @@ class PipelineManager:
         failure_policy: FailurePolicy | None,
         compact: bool,
         name: str,
+        skip_cache: bool = False,
     ) -> StepFuture:
         """Internal: submit a composite step for collapsed execution.
 
@@ -1759,6 +1773,7 @@ class PipelineManager:
             failure_policy: Override pipeline failure policy.
             compact: Run Delta Lake compaction.
             name: Step name.
+            skip_cache: Bypass cache lookups for this step.
 
         Returns:
             StepFuture for downstream wiring.
@@ -1803,7 +1818,11 @@ class PipelineManager:
         )
 
         # Check step cache
-        cached = self._step_tracker.check_cache(step_spec_id, self._config.cache_policy)
+        cached = (
+            None
+            if (skip_cache or self._config.skip_cache)
+            else self._step_tracker.check_cache(step_spec_id, self._config.cache_policy)
+        )
         if cached is not None:
             logger.info("Step %d (%s) CACHED — skipping execution", step_number, name)
             self._step_spec_ids[step_number] = step_spec_id
