@@ -18,6 +18,7 @@ __pycache__/
 # Python packaging
 *.egg-info/
 *.egg
+src/artisan/_version.py
 dist/
 build/
 

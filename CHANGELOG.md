@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2a3] - 2026-04-01
+
+### Fixed
+
+- Release workflow now produces correct version — switched from hardcoded
+  `version` in `pyproject.toml` to dynamic versioning via `hatch-vcs` (derives
+  version from git tags at build time)
+- Added `__version__` runtime export to `artisan` package
+
 ## [0.1.2a2] - 2026-03-17
 
 ### Added
@@ -92,7 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Caching and resume support
 - Jupyter Book 2 documentation site
 
-[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a2...HEAD
+[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a3...HEAD
+[0.1.2a3]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a2...v0.1.2a3
 [0.1.2a2]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a1...v0.1.2a2
 [0.1.2a1]: https://github.com/dexterity-systems/artisan/compare/v0.1.1...v0.1.2a1
 [0.1.1]: https://github.com/dexterity-systems/artisan/releases/tag/v0.1.1
