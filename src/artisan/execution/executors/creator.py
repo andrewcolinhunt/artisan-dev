@@ -157,6 +157,7 @@ def run_creator_lifecycle(
             sandbox_path=sandbox_path,
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
+            step_run_id=unit.step_run_id,
         )
         artifact_store = execution_context.artifact_store
 
@@ -455,6 +456,7 @@ def _build_execution_context(
         sandbox_path=working_root / "dummy",
         compute_backend_name=runtime_env.compute_backend_name,
         shared_filesystem=runtime_env.shared_filesystem,
+        step_run_id=unit.step_run_id,
     )
 
 

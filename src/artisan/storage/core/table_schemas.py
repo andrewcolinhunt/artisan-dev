@@ -35,6 +35,7 @@ from artisan.schemas.enums import TablePath
 EXECUTIONS_SCHEMA = {
     "execution_run_id": pl.String,  # PK - unique per execution attempt
     "execution_spec_id": pl.String,  # Deterministic ID for caching (indexed)
+    "step_run_id": pl.String,  # Links execution to step attempt (nullable)
     "origin_step_number": pl.Int32,  # Partition key
     "operation_name": pl.String,  # From OperationDefinition.name
     "params": pl.String,  # JSON - full instantiated params

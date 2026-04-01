@@ -20,10 +20,10 @@ from artisan.execution.staging.parquet_writer import (
     _sync_staging_to_nfs,
     _write_execution_record,
 )
-from artisan.utils.json import artisan_json_default as _json_default
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+from artisan.utils.json import artisan_json_default as _json_default
 
 
 @pytest.fixture

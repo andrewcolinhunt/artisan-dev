@@ -713,6 +713,7 @@ class TestRecoverStaged:
             {
                 "execution_run_id": ["exec_001"],
                 "execution_spec_id": ["spec_001"],
+                "step_run_id": [None],
                 "origin_step_number": [0],
                 "operation_name": ["TestOp"],
                 "params": ["{}"],

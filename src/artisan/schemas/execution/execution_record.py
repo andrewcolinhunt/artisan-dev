@@ -54,6 +54,11 @@ class ExecutionRecord(BaseModel):
         max_length=32,
     )
 
+    step_run_id: str | None = Field(
+        default=None,
+        description="Step run ID linking this execution to a specific step attempt",
+    )
+
     # Partition and identification
     origin_step_number: int = Field(
         ...,
