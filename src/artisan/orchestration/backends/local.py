@@ -19,6 +19,7 @@ from artisan.orchestration.backends.base import (
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.utils.spawn import suppress_main_reimport
 
 
 def _ignore_sigint() -> None:
@@ -32,9 +33,16 @@ class SIGINTSafeProcessPoolTaskRunner(ProcessPoolTaskRunner):
     Prevents child processes from receiving KeyboardInterrupt, which causes
     noisy tracebacks. The parent process handles SIGINT via PipelineManager's
     signal handler and propagates cancellation cleanly.
+
+    Also prevents ``multiprocessing.spawn`` from re-importing the caller's
+    ``__main__`` module in worker processes.
     """
 
     def __enter__(self) -> SIGINTSafeProcessPoolTaskRunner:
+        # Workers are spawned lazily, so the guard stays until __exit__.
+        self._spawn_guard = suppress_main_reimport()
+        self._spawn_guard.__enter__()
+
         result = super().__enter__()
         # Replace the process pool with one whose workers ignore SIGINT
         if self._executor is not None:
@@ -46,6 +54,12 @@ class SIGINTSafeProcessPoolTaskRunner(ProcessPoolTaskRunner):
             initializer=_ignore_sigint,
         )
         return result
+
+    def __exit__(self, *args: object, **kwargs: object) -> None:
+        try:
+            super().__exit__(*args, **kwargs)
+        finally:
+            self._spawn_guard.__exit__(None, None, None)
 
 
 class LocalBackend(BackendBase):

@@ -48,6 +48,7 @@ from artisan.schemas.orchestration.step_result import StepResult, StepResultBuil
 from artisan.storage.cache.cache_lookup import CacheHit, cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
 from artisan.utils.hashing import serialize_params
+from artisan.utils.spawn import suppress_main_reimport
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
@@ -699,7 +700,10 @@ def _run_curator_in_subprocess(
 ) -> StagingResult:
     """Run curator flow in a spawned subprocess for memory isolation."""
     ctx = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool:
+    with (
+        suppress_main_reimport(),
+        ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool,
+    ):
         future = pool.submit(run_curator_flow, unit, runtime_env, 0)
         while True:
             try:
