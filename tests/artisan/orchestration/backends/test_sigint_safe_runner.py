@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 from artisan.orchestration.backends.local import SIGINTSafeProcessPoolTaskRunner
@@ -38,6 +39,37 @@ class TestSIGINTSafeProcessPoolTaskRunner:
         call_kwargs = mock_ppe_cls.call_args[1]
         assert call_kwargs["max_workers"] == 2
         assert call_kwargs["initializer"] is _ignore_sigint
+
+        # Clean up the spawn guard
+        runner.__exit__(None, None, None)
+
+    @patch("artisan.orchestration.backends.local.ProcessPoolExecutor")
+    def test_enter_neuters_main_file(self, mock_ppe_cls):
+        """__enter__ neuters __main__.__file__, __exit__ restores it."""
+        main_mod = sys.modules["__main__"]
+        original = main_mod.__file__
+
+        runner = SIGINTSafeProcessPoolTaskRunner(max_workers=1)
+
+        with (
+            patch.object(
+                SIGINTSafeProcessPoolTaskRunner.__bases__[0],
+                "__enter__",
+                return_value=runner,
+            ),
+            patch.object(
+                SIGINTSafeProcessPoolTaskRunner.__bases__[0],
+                "__exit__",
+                return_value=None,
+            ),
+        ):
+            runner._executor = MagicMock()
+            runner._max_workers = 1
+            runner.__enter__()
+            assert main_mod.__file__ is None
+
+            runner.__exit__(None, None, None)
+            assert main_mod.__file__ == original
 
     def test_is_subclass_of_process_pool_task_runner(self):
         """SIGINTSafeProcessPoolTaskRunner is a ProcessPoolTaskRunner."""
