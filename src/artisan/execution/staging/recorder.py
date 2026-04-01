@@ -164,6 +164,7 @@ def record_execution_success(
         result_metadata=result_metadata,
         user_overrides=user_overrides,
         tool_output=tool_output,
+        step_run_id=execution_context.step_run_id,
     )
     return StagingResult(
         success=True,
@@ -288,6 +289,7 @@ def record_execution_failure(
             shared_filesystem=execution_context.shared_filesystem,
             user_overrides=user_overrides,
             tool_output=tool_output,
+            step_run_id=execution_context.step_run_id,
         )
         _write_failure_log(
             failure_logs_root=failure_logs_root,

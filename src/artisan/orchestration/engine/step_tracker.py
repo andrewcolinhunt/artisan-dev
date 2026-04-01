@@ -250,6 +250,7 @@ class StepTracker:
             steps.append(
                 StepState(
                     pipeline_run_id=row["pipeline_run_id"],
+                    step_run_id=row.get("step_run_id", ""),
                     step_number=row["step_number"],
                     step_name=row["step_name"],
                     step_spec_id=row["step_spec_id"],
@@ -330,4 +331,5 @@ def _row_to_step_result(row: dict) -> StepResult:
         output_roles=frozenset(json.loads(row["output_roles_json"])),
         output_types=json.loads(row["output_types_json"]),
         duration_seconds=row["duration_seconds"],
+        step_run_id=row.get("step_run_id"),
     )

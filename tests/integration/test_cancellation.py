@@ -34,7 +34,10 @@ def test_cancel_before_any_steps(pipeline_env: dict[str, Path]):
         backend=Backend.LOCAL,
     )
 
-    assert result.metadata.get("skipped") is True or result.metadata.get("cancelled") is True
+    assert (
+        result.metadata.get("skipped") is True
+        or result.metadata.get("cancelled") is True
+    )
     assert result.succeeded_count == 0
 
     summary = pipeline.finalize()
@@ -109,7 +112,10 @@ def test_cancel_during_submit(pipeline_env: dict[str, Path]):
     )
 
     result = future.result(timeout=10)
-    assert result.metadata.get("skipped") is True or result.metadata.get("cancelled") is True
+    assert (
+        result.metadata.get("skipped") is True
+        or result.metadata.get("cancelled") is True
+    )
 
     summary = pipeline.finalize()
     assert "pipeline_name" in summary

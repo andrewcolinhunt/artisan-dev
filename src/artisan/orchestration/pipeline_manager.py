@@ -525,6 +525,7 @@ class PipelineManager:
         self._named_steps: dict[str, list[StepResult]] = {}
         self._step_registry: dict[str, list[_StepEntry]] = {}
         self._step_spec_ids: dict[int, str] = {}
+        self._step_run_ids: dict[int, str] = {}
         self._step_tracker = StepTracker(config.delta_root, config.pipeline_run_id)
         self._stopped: bool = False
         self._cancel_event = threading.Event()
@@ -938,6 +939,8 @@ class PipelineManager:
                 )
             )
             instance._step_spec_ids[step_state.step_number] = step_state.step_spec_id
+            if step_state.step_run_id:
+                instance._step_run_ids[step_state.step_number] = step_state.step_run_id
         instance._current_step = max(s.step_number for s in completed_steps) + 1
 
         return instance
@@ -1334,6 +1337,8 @@ class PipelineManager:
             step_name,
         )
         self._step_spec_ids[step_number] = step_spec_id
+        if cached.step_run_id:
+            self._step_run_ids[step_number] = cached.step_run_id
         self._step_results.append(cached)
         self._register_step(step_name, step_number, operation_outputs)
         self._named_steps.setdefault(cached.step_name, []).append(cached)
@@ -1468,6 +1473,7 @@ class PipelineManager:
         self._current_step += 1
         self._step_spec_ids[step_number] = step_spec_id
         step_run_id = _generate_step_run_id(step_spec_id)
+        self._step_run_ids[step_number] = step_run_id
 
         output_types_map = self._build_output_types(operation.outputs)
 
@@ -1533,6 +1539,8 @@ class PipelineManager:
             )
             start = time.perf_counter()
             try:
+                # Snapshot step_run_ids for scoped output resolution
+                upstream_step_run_ids = dict(self._step_run_ids)
                 result = execute_step(
                     operation_class=operation,
                     inputs=inputs,
@@ -1548,10 +1556,16 @@ class PipelineManager:
                     compact=compact,
                     step_spec_id=step_spec_id,
                     cancel_event=self._cancel_event,
+                    step_run_id=step_run_id,
+                    step_run_ids=upstream_step_run_ids,
                 )
                 elapsed = time.perf_counter() - start
                 result = result.model_copy(
-                    update={"step_name": step_name, "duration_seconds": elapsed}
+                    update={
+                        "step_name": step_name,
+                        "duration_seconds": elapsed,
+                        "step_run_id": step_run_id,
+                    }
                 )
 
                 # execute_step may detect cancellation mid-batch and
@@ -1793,6 +1807,8 @@ class PipelineManager:
         if cached is not None:
             logger.info("Step %d (%s) CACHED — skipping execution", step_number, name)
             self._step_spec_ids[step_number] = step_spec_id
+            if cached.step_run_id:
+                self._step_run_ids[step_number] = cached.step_run_id
             self._step_results.append(cached)
             self._register_step(name, step_number, composite_class.outputs)
             self._named_steps.setdefault(cached.step_name, []).append(cached)
@@ -1850,6 +1866,9 @@ class PipelineManager:
                 name,
                 resolved_backend.name,
             )
+            composite_step_run_id = _generate_step_run_id(step_spec_id)
+            self._step_run_ids[step_number] = composite_step_run_id
+            upstream_step_run_ids = dict(self._step_run_ids)
             start = time.perf_counter()
             try:
                 result = execute_composite_step(
@@ -1864,14 +1883,20 @@ class PipelineManager:
                     config=self._config,
                     failure_policy=_failure_policy,
                     compact=compact,
+                    step_run_ids=upstream_step_run_ids,
+                    step_run_id=composite_step_run_id,
                 )
                 elapsed = time.perf_counter() - start
                 result = result.model_copy(
-                    update={"step_name": name, "duration_seconds": elapsed},
+                    update={
+                        "step_name": name,
+                        "duration_seconds": elapsed,
+                        "step_run_id": composite_step_run_id,
+                    },
                 )
                 self._step_tracker.record_step_completed(
                     StepStartRecord(
-                        step_run_id=_generate_step_run_id(step_spec_id),
+                        step_run_id=composite_step_run_id,
                         step_spec_id=step_spec_id,
                         step_number=step_number,
                         step_name=name,
