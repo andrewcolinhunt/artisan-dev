@@ -94,6 +94,7 @@ class BackendBase(ABC):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
+        log_folder: Path | None = None,
     ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
         """Build a configured Prefect flow for this backend.
 
@@ -102,6 +103,7 @@ class BackendBase(ABC):
             execution: Batching and scheduling configuration.
             step_number: Pipeline step number (for naming).
             job_name: Human-readable name for logging and scheduler labels.
+            log_folder: Directory for scheduler log files (e.g. submitit logs).
 
         Returns:
             Callable that takes (units_path, runtime_env) and returns result dicts.
