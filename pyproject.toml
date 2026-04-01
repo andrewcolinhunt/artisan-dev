@@ -76,7 +76,7 @@ pydantic = "*"
 
 # Workflow orchestration
 prefect = { version = ">=3.6,<4.0", extras = ["dask"] }
-prefect-submitit = ">=0.1.4"
+prefect-submitit = ">=0.1.5"
 submitit = "*"  # For SLURM job submission
 asyncpg = "*"  # PostgreSQL async driver for Prefect server
 
