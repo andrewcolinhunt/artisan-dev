@@ -1,0 +1,6 @@
+ok                                                                                                                                                                                            
+                                                                                                                                                                                                
+  # Start the Prefect server (orchestrates pipeline execution)                                                                                                                                  
+  pixi run prefect-start                                                                                                                                                                        
+                                                                                                                                                                                                
+  we need more explanation here. where should the prefect server go? it should be on a long running accessible node. your machine.    
