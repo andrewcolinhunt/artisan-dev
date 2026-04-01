@@ -911,6 +911,7 @@ def _execute_creator_step(
                         operation.execution,
                         step_number,
                         job_name=operation.execution.job_name or operation.name,
+                        log_folder=config.delta_root.parent / "logs" / "slurm",
                     )
                     results = step_flow(
                         units_path=str(units_path), runtime_env=runtime_env
@@ -1081,6 +1082,7 @@ def execute_composite_step(
                     composite_execution,
                     step_number,
                     job_name=composite_execution.job_name or "composite",
+                    log_folder=config.delta_root.parent / "logs" / "slurm",
                 )
                 results = step_flow(units_path=str(units_path), runtime_env=runtime_env)
                 succeeded, failed = aggregate_results(results, failure_policy)

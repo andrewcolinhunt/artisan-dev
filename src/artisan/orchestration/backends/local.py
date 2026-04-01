@@ -83,6 +83,7 @@ class LocalBackend(BackendBase):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
+        log_folder: Path | None = None,
     ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
         """Build a local ProcessPool flow.
 

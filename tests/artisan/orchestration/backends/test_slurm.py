@@ -49,7 +49,13 @@ class TestSlurmBackendCreateFlow:
         )
         execution = ExecutionConfig(units_per_worker=1)
 
-        backend.create_flow(resources, execution, step_number=3, job_name="test_op")
+        backend.create_flow(
+            resources,
+            execution,
+            step_number=3,
+            job_name="test_op",
+            log_folder=Path("/runs/pipeline/logs/slurm"),
+        )
 
         mock_slurm_runner.assert_called_once()
         call_kwargs = mock_slurm_runner.call_args[1]
@@ -57,6 +63,7 @@ class TestSlurmBackendCreateFlow:
         assert call_kwargs["mem_gb"] == 8
         assert call_kwargs["slurm_gres"] == "gpu:1"
         assert call_kwargs["slurm_job_name"] == "s3_test_op"
+        assert call_kwargs["log_folder"] == "/runs/pipeline/logs/slurm"
 
     @patch("prefect_submitit.SlurmTaskRunner")
     @patch("prefect.flow")
@@ -77,6 +84,7 @@ class TestSlurmBackendCreateFlow:
 
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["slurm_job_name"] == "s5_custom_name"
+        assert "log_folder" not in call_kwargs
 
 
 class TestSlurmBackendCaptureLogs:
