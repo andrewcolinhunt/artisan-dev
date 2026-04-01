@@ -20,6 +20,7 @@ from artisan.schemas.orchestration.output_reference import OutputReference
 def resolve_output_reference(
     ref: OutputReference,
     delta_root: Path,
+    step_run_id: str | None = None,
 ) -> list[str]:
     """Resolve an OutputReference to concrete artifact IDs.
 
@@ -31,6 +32,7 @@ def resolve_output_reference(
     Args:
         ref: OutputReference containing source_step and role.
         delta_root: Root path for Delta Lake tables.
+        step_run_id: If provided, scope results to this step run only.
 
     Returns:
         Sorted list of artifact IDs. Empty list if no outputs match the
@@ -53,13 +55,14 @@ def resolve_output_reference(
         return []
 
     # Query successful executions for the source step
-    records_result = (
+    query = (
         pl.scan_delta(str(executions_path))
         .filter(pl.col("origin_step_number") == ref.source_step)
         .filter(pl.col("success") == True)  # noqa: E712
-        .select("execution_run_id")
-        .collect()
     )
+    if step_run_id:
+        query = query.filter(pl.col("step_run_id") == step_run_id)
+    records_result = query.select("execution_run_id").collect()
 
     if records_result.is_empty():
         logger.warning(
@@ -107,6 +110,7 @@ def resolve_output_reference(
 def resolve_inputs(
     inputs: (dict[str, OutputReference | list[str]] | list[OutputReference] | None),
     delta_root: Path,
+    step_run_ids: dict[int, str] | None = None,
 ) -> dict[str, list[str]]:
     """Resolve all inputs to concrete artifact IDs.
 
@@ -155,7 +159,7 @@ def resolve_inputs(
         first_item = inputs[0]
         if isinstance(first_item, OutputReference):
             # List of OutputReferences - convert to dict with auto-generated keys
-            return _resolve_list_inputs(inputs, delta_root)
+            return _resolve_list_inputs(inputs, delta_root, step_run_ids)
         # File paths are handled in _execute_curator_step, not here
         raise ValueError(
             "Raw file paths must be handled by _execute_curator_step(). "
@@ -166,7 +170,10 @@ def resolve_inputs(
 
     for role, value in inputs.items():
         if isinstance(value, OutputReference):
-            resolved[role] = resolve_output_reference(value, delta_root)
+            sri = step_run_ids.get(value.source_step) if step_run_ids else None
+            resolved[role] = resolve_output_reference(
+                value, delta_root, step_run_id=sri
+            )
         elif isinstance(value, list):
             # Already artifact IDs - validate format
             for artifact_id in value:
@@ -188,6 +195,7 @@ def resolve_inputs(
 def _resolve_list_inputs(
     refs: list[OutputReference],
     delta_root: Path,
+    step_run_ids: dict[int, str] | None = None,
 ) -> dict[str, list[str]]:
     """Flatten a list of OutputReferences into a single ``_merged_streams`` role.
 
@@ -202,7 +210,8 @@ def _resolve_list_inputs(
                 f"List inputs must contain OutputReference objects, "
                 f"got {type(ref).__name__} at index {i}"
             )
-        artifact_ids = resolve_output_reference(ref, delta_root)
+        sri = step_run_ids.get(ref.source_step) if step_run_ids else None
+        artifact_ids = resolve_output_reference(ref, delta_root, step_run_id=sri)
         all_artifact_ids.extend(artifact_ids)
 
     # Sort all artifact IDs for determinism

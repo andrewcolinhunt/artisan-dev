@@ -153,6 +153,7 @@ def build_step_result(
     failed_count: int,
     failure_policy: FailurePolicy,
     metadata: dict[str, Any] | None = None,
+    step_run_id: str | None = None,
 ) -> StepResult:
     """Build StepResult after step execution completes.
 
@@ -163,6 +164,7 @@ def build_step_result(
         failed_count: Number of items that failed.
         failure_policy: Failure handling policy enum.
         metadata: Optional metadata dict (timings, diagnostics, etc.).
+        step_run_id: Unique ID for this step attempt.
 
     Returns:
         StepResult with execution metadata.
@@ -176,6 +178,7 @@ def build_step_result(
         step_name=operation.name,
         step_number=step_number,
         operation_outputs=output_roles,
+        step_run_id=step_run_id,
     )
 
     builder.add_success(succeeded_count)
@@ -385,6 +388,8 @@ def execute_step(
     compact: bool = True,
     step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
+    step_run_id: str | None = None,
+    step_run_ids: dict[int, str] | None = None,
 ) -> StepResult:
     """Execute a single pipeline step.
 
@@ -410,6 +415,9 @@ def execute_step(
         step_spec_id: Pre-computed step spec ID from PipelineManager. When
             provided for curator ops, used directly as execution_spec_id to
             skip the O(N log N) compute_execution_spec_id call.
+        step_run_id: Unique ID for this step attempt (for output isolation).
+        step_run_ids: Mapping of upstream step_number to step_run_id
+            for scoped output resolution.
 
     Returns:
         StepResult with output references and execution metadata.
@@ -435,6 +443,8 @@ def execute_step(
             user_overrides=user_overrides,
             step_spec_id=step_spec_id,
             cancel_event=cancel_event,
+            step_run_id=step_run_id,
+            step_run_ids=step_run_ids,
         )
 
     # Standard creator operation execution
@@ -449,6 +459,8 @@ def execute_step(
         compact=compact,
         user_overrides=user_overrides,
         cancel_event=cancel_event,
+        step_run_id=step_run_id,
+        step_run_ids=step_run_ids,
     )
 
 
@@ -479,6 +491,8 @@ def _execute_curator_step(
     user_overrides: dict[str, Any] | None = None,
     step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
+    step_run_id: str | None = None,
+    step_run_ids: dict[int, str] | None = None,
 ) -> StepResult:
     """Execute a curator operation locally without Prefect dispatch.
 
@@ -496,6 +510,8 @@ def _execute_curator_step(
         user_overrides: User-provided parameter overrides.
         step_spec_id: Pre-computed step spec ID; when provided, reused as
             execution_spec_id and cache check is skipped.
+        step_run_id: Unique ID for this step attempt (for output isolation).
+        step_run_ids: Upstream step_number to step_run_id mapping.
 
     Returns:
         StepResult with output references and execution metadata.
@@ -505,7 +521,9 @@ def _execute_curator_step(
 
     # --- resolve_inputs phase ---
     with phase_timer("resolve_inputs", timings):
-        resolved_inputs = resolve_inputs(inputs, config.delta_root)
+        resolved_inputs = resolve_inputs(
+            inputs, config.delta_root, step_run_ids=step_run_ids
+        )
         total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
         if total_artifacts > 0:
             logger.debug(
@@ -579,6 +597,7 @@ def _execute_curator_step(
         step_number=step_number,
         group_ids=group_ids,
         user_overrides=user_overrides,
+        step_run_id=step_run_id,
     )
 
     # --- execute phase ---
@@ -638,6 +657,7 @@ def _execute_curator_step(
                 operation=unit.operation,
                 compute_backend_name=runtime_env.compute_backend_name,
                 shared_filesystem=runtime_env.shared_filesystem,
+                step_run_id=step_run_id,
             )
             staging_result = record_execution_failure(
                 execution_context=execution_context,
@@ -690,6 +710,7 @@ def _execute_curator_step(
         failed_count=failed,
         failure_policy=failure_policy,
         metadata=_build_step_metadata(timings, commit_error, dispatch_error),
+        step_run_id=step_run_id,
     )
 
 
@@ -758,6 +779,8 @@ def _execute_creator_step(
     compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
     cancel_event: threading.Event | None = None,
+    step_run_id: str | None = None,
+    step_run_ids: dict[int, str] | None = None,
 ) -> StepResult:
     """Execute a creator operation step by dispatching to workers via Prefect.
 
@@ -771,6 +794,8 @@ def _execute_creator_step(
         failure_policy: Continue or fail-fast on errors.
         compact: Whether to run Delta Lake compaction.
         user_overrides: User-provided parameter overrides.
+        step_run_id: Unique ID for this step attempt (for output isolation).
+        step_run_ids: Upstream step_number to step_run_id mapping.
 
     Returns:
         StepResult with output references and execution metadata.
@@ -785,7 +810,9 @@ def _execute_creator_step(
     # --- resolve_inputs phase ---
     with phase_timer("resolve_inputs", timings):
         # Resolve inputs to artifact IDs
-        resolved_inputs = resolve_inputs(inputs, config.delta_root)
+        resolved_inputs = resolve_inputs(
+            inputs, config.delta_root, step_run_ids=step_run_ids
+        )
 
         skip_result = _skip_for_empty_inputs(
             operation, resolved_inputs, step_number, failure_policy
@@ -861,6 +888,7 @@ def _execute_creator_step(
                 step_number=step_number,
                 group_ids=batch_group_ids,
                 user_overrides=user_overrides,
+                step_run_id=step_run_id,
             )
             units_to_dispatch.append(unit)
 
@@ -985,6 +1013,7 @@ def _execute_creator_step(
         failed_count=failed,
         failure_policy=failure_policy,
         metadata=_build_step_metadata(timings, commit_error, dispatch_error),
+        step_run_id=step_run_id,
     )
 
 
@@ -1000,6 +1029,8 @@ def execute_composite_step(
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
     compact: bool = True,
+    step_run_ids: dict[int, str] | None = None,
+    step_run_id: str | None = None,
 ) -> StepResult:
     """Execute a composite operation as a single pipeline step.
 
@@ -1018,6 +1049,8 @@ def execute_composite_step(
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
         compact: Whether to run Delta Lake compaction.
+        step_run_ids: Upstream step_number to step_run_id mapping.
+        step_run_id: Unique ID for this step attempt.
 
     Returns:
         StepResult with output references and execution metadata.
@@ -1030,7 +1063,9 @@ def execute_composite_step(
 
     # --- resolve_inputs phase ---
     with phase_timer("resolve_inputs", timings):
-        resolved_inputs = resolve_inputs(inputs, config.delta_root)
+        resolved_inputs = resolve_inputs(
+            inputs, config.delta_root, step_run_ids=step_run_ids
+        )
 
         instance = instantiate_operation(composite_class, params)
         skip_result = _skip_for_empty_inputs(
@@ -1061,6 +1096,7 @@ def execute_composite_step(
             resources=composite_resources,
             execution=composite_execution,
             intermediates=intermediates,
+            step_run_id=step_run_id,
         )
 
     # --- execute phase ---
@@ -1119,6 +1155,7 @@ def execute_composite_step(
         failed_count=failed,
         failure_policy=failure_policy,
         metadata=_build_step_metadata(timings, commit_error, dispatch_error),
+        step_run_id=step_run_id,
     )
 
 
