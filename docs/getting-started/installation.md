@@ -164,6 +164,18 @@ pixi run install-kernel
 
 In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**.
 
+### Kernel slowness (Pixi environments)
+
+If your pixi Jupyter kernel takes 30+ seconds to start in VS Code, the
+`Python Environments` extension (`ms-python.vscode-python-envs`) is likely the
+cause. It doesn't recognize pixi as a known environment type and spends 30
+seconds trying to activate it before timing out.
+
+**Fix:** Uninstall the `Python Environments` extension (`ms-python.vscode-python-envs`)
+in VS Code. The core Python extension works fine without it.
+
+Tracked upstream: [microsoft/vscode-python#25804](https://github.com/microsoft/vscode-python/issues/25804)
+
 ---
 
 ## Claude Code
