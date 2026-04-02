@@ -1,0 +1,572 @@
+# Cloud Storage Design: D+F Hybrid
+
+The storage abstraction for cloud deployment. Uses fsspec as the unified
+storage layer (D), with DispatchHandle-owned unit transport from (F).
+
+---
+
+## Design Principles
+
+- **One mental model.** All storage operations go through `fsspec`. Local
+  runs use `LocalFileSystem`. Cloud runs use `S3FileSystem` or
+  `GCSFileSystem`. The staging code, commit code, and store access code
+  are the same regardless of backend.
+
+- **Libraries do the heavy lifting.** Polars and delta-rs already support
+  S3/GCS URIs natively. The framework passes URI strings and
+  `storage_options` dicts. No custom I/O code for cloud.
+
+- **Handle owns unit transport.** The DispatchHandle decides how to send
+  ExecutionUnits to workers. For shared-FS backends, it writes a pickle
+  to the filesystem. For Modal, it passes arguments to `.map()`. This is
+  the one place where the handle has transport responsibility beyond
+  lifecycle management.
+
+- **Worker sandbox stays local.** Workers always use local `/tmp` for
+  their sandbox (materialized inputs, execute dir, postprocess dir).
+  Operations never see the storage abstraction.
+
+---
+
+## StorageConfig
+
+A serializable config object that creates fsspec filesystem instances
+and provides `storage_options` dicts for Polars/delta-rs.
+
+```python
+@dataclass(frozen=True)
+class StorageConfig:
+    """Storage backend configuration.
+
+    Credentials are NOT stored here — they come from the execution
+    environment (IAM roles, env vars, service accounts). This config
+    carries only the protocol and non-sensitive options (region,
+    endpoint, bucket).
+    """
+
+    protocol: str = "file"
+    options: dict[str, str] = field(default_factory=dict)
+
+    def filesystem(self) -> AbstractFileSystem:
+        """Create an fsspec filesystem instance."""
+        return fsspec.filesystem(self.protocol, **self.options)
+
+    def delta_storage_options(self) -> dict[str, str] | None:
+        """Storage options for deltalake-rs / Polars.
+
+        Returns None for local filesystem (no options needed).
+        """
+        if self.protocol == "file":
+            return None
+        # delta-rs uses AWS_* env vars by default for S3
+        # only non-default options need to be passed explicitly
+        return dict(self.options)
+```
+
+**Why not pass the fsspec instance directly?** Because the config must be
+serializable (it travels in RuntimeEnvironment to workers). The `fs`
+instance is created on-demand by each component.
+
+**Credentials:** Cloud backends use environment-based credentials. AWS
+containers get IAM roles. GCP pods get service accounts. The StorageConfig
+carries the protocol and region — credentials are resolved from the
+environment by fsspec and delta-rs automatically.
+
+---
+
+## RuntimeEnvironment
+
+Path fields become URI strings. A StorageConfig is added.
+
+```python
+class RuntimeEnvironment(BaseModel):
+    # Paths are now URI strings
+    delta_root: str             # "/data/delta" or "s3://bucket/delta"
+    staging_root: str           # "/data/staging" or "s3://bucket/staging"
+    working_root: str | None    # always local: "/tmp/artisan"
+
+    failure_logs_root: str | None
+
+    # Storage configuration
+    storage: StorageConfig
+
+    # Flags
+    preserve_staging: bool = False
+    preserve_working: bool = False
+
+    # Backend traits (unchanged)
+    worker_id_env_var: str | None = None
+    shared_filesystem: bool = False
+    compute_backend_name: str = "local"
+```
+
+**Migration:** `delta_root_path: Path` → `delta_root: str`. All
+consumers that currently do `Path(runtime_env.delta_root_path)` instead
+do `runtime_env.delta_root` (a string). `working_root` stays as a local
+path string — it's always on the worker's local filesystem.
+
+---
+
+## StagingArea (worker-side writes)
+
+Parameterized by an fsspec filesystem. Same API, different I/O backend.
+
+```python
+class StagingArea:
+    def __init__(
+        self,
+        staging_dir: str,
+        fs: AbstractFileSystem,
+        batch_id: str | None = None,
+        worker_id: int = 0,
+    ):
+        self._fs = fs
+        self.staging_dir = staging_dir
+        self.batch_id = batch_id or f"w{worker_id}_{uuid.uuid4().hex[:12]}"
+        self._batch_dir = f"{staging_dir}/{self.batch_id}"
+        self._fs.makedirs(self._batch_dir, exist_ok=True)
+        self._staged_tables: set[str] = set()
+
+    def stage_dataframe(self, df: pl.DataFrame, table_name: str) -> str:
+        """Write DataFrame to staged Parquet. Returns URI."""
+        if df.is_empty():
+            return f"{self._batch_dir}/{table_name}.parquet"
+
+        parquet_uri = f"{self._batch_dir}/{table_name}.parquet"
+
+        if table_name in self._staged_tables and self._fs.exists(parquet_uri):
+            with self._fs.open(parquet_uri, "rb") as f:
+                existing = pl.read_parquet(f)
+            df = pl.concat([existing, df], rechunk=True)
+
+        with self._fs.open(parquet_uri, "wb") as f:
+            df.write_parquet(f, compression="zstd")
+
+        self._staged_tables.add(table_name)
+        return parquet_uri
+
+    def cleanup(self) -> None:
+        if self._fs.exists(self._batch_dir):
+            self._fs.rm(self._batch_dir, recursive=True)
+        self._staged_tables.clear()
+```
+
+**What changes:** `Path` → `str`, `path.mkdir()` → `fs.makedirs()`,
+`df.write_parquet(path)` → `df.write_parquet(fs.open(uri, "wb"))`,
+`path.exists()` → `fs.exists()`, `shutil.rmtree()` → `fs.rm(recursive=True)`.
+
+**What stays the same:** The staging area API. The Parquet compression.
+The append-by-concat logic. The batch_id scheme. The table tracking.
+
+---
+
+## StagingManager (orchestrator-side reads)
+
+Same pattern — parameterized by fsspec.
+
+```python
+class StagingManager:
+    def __init__(self, staging_dir: str, fs: AbstractFileSystem):
+        self._fs = fs
+        self.staging_dir = staging_dir
+
+    def get_staged_files_for_table(
+        self,
+        table_name: str,
+        step_number: int | None = None,
+        operation_name: str | None = None,
+    ) -> list[str]:
+        if not self._fs.exists(self.staging_dir):
+            return []
+
+        if step_number is not None:
+            step_dir = f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
+            if not self._fs.exists(step_dir):
+                return []
+            return self._fs.glob(f"{step_dir}/**/{table_name}.parquet")
+
+        return self._fs.glob(f"{self.staging_dir}/**/{table_name}.parquet")
+
+    def read_all_staged_for_table(self, table_name: str, **kwargs) -> pl.DataFrame | None:
+        files = self.get_staged_files_for_table(table_name, **kwargs)
+        if not files:
+            return None
+
+        dfs = []
+        for uri in files:
+            try:
+                with self._fs.open(uri, "rb") as f:
+                    dfs.append(pl.read_parquet(f))
+            except Exception as exc:
+                logger.warning("Skipping corrupted staging file %s: %s", uri, exc)
+
+        if not dfs:
+            return None
+        return pl.concat(dfs, rechunk=True)
+
+    def cleanup_step(self, step_number: int, operation_name: str | None = None) -> None:
+        step_dir = f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
+        if self._fs.exists(step_dir):
+            self._fs.rm(step_dir, recursive=True)
+```
+
+**NFS cache invalidation drops out naturally.** The current code has
+`_invalidate_nfs_cache()` calls scattered through the manager. With
+fsspec, these are only relevant for `LocalFileSystem` on NFS. The staging
+verification layer (separate from the manager) handles NFS consistency.
+The manager itself doesn't need NFS-specific code — `fs.glob()` and
+`fs.exists()` behave correctly for each filesystem.
+
+---
+
+## ArtifactStore / ProvenanceStore
+
+These use `pl.scan_delta()` and `pl.read_parquet()`, which already
+support URI strings. The change is minimal: stop converting to `Path`,
+stop calling `.exists()` via `pathlib`.
+
+```python
+class ArtifactStore:
+    def __init__(self, base_path: str, fs: AbstractFileSystem, storage_options: dict | None = None):
+        self._base = base_path
+        self._fs = fs
+        self._storage_options = storage_options or {}
+
+    def _table_uri(self, table: str) -> str:
+        return f"{self._base}/{table}"
+
+    def get_artifact(self, artifact_id: str, artifact_type: str) -> Artifact | None:
+        table_path = self._table_uri(ArtifactTypeDef.get(artifact_type).table_path)
+        if not self._fs.exists(table_path):
+            return None
+        # pl.scan_delta already accepts URI strings + storage_options
+        lf = pl.scan_delta(table_path, delta_table_options={"storage_options": self._storage_options})
+        df = lf.filter(pl.col("artifact_id") == artifact_id).collect()
+        ...
+```
+
+**Key insight:** `pl.scan_delta("s3://bucket/delta/artifacts/data",
+delta_table_options={"storage_options": {...}})` works today. We just
+need to pass the URI and options instead of `str(Path(...))`.
+
+The `fs` instance is used only for `.exists()` guards. Polars and
+delta-rs handle the actual Parquet/Delta I/O through their own S3
+clients.
+
+---
+
+## DeltaCommitter
+
+Reads staged Parquet via StagingManager (which uses fsspec). Writes to
+Delta Lake via URI strings (delta-rs native).
+
+```python
+class DeltaCommitter:
+    def __init__(
+        self,
+        delta_base_path: str,
+        staging_manager: StagingManager,
+        fs: AbstractFileSystem,
+        storage_options: dict | None = None,
+    ):
+        self._delta_base = delta_base_path
+        self._staging = staging_manager
+        self._fs = fs
+        self._storage_options = storage_options or {}
+
+    def _table_uri(self, table: str) -> str:
+        return f"{self._delta_base}/{table}"
+
+    def commit_table(self, table: str, step_number: int, ...) -> None:
+        staged_df = self._staging.read_all_staged_for_table(table, step_number=step_number)
+        if staged_df is None:
+            return
+
+        table_uri = self._table_uri(table)
+        if self._fs.exists(table_uri):
+            staged_df.write_delta(
+                table_uri, mode="append",
+                storage_options=self._storage_options,
+            )
+        else:
+            staged_df.write_delta(
+                table_uri, mode="overwrite",
+                storage_options=self._storage_options,
+            )
+```
+
+**What changes:** `Path` → `str`, `str(table_path)` → `table_uri`,
+`.exists()` → `fs.exists()`. The core commit logic (read staged, write
+delta, dedup, compact) is unchanged.
+
+---
+
+## parquet_writer (worker-side staging writes)
+
+The recorder and parquet_writer create staging directories and write
+Parquet files. They receive an `fs` instance.
+
+```python
+def _create_staging_path(
+    staging_root: str,
+    execution_run_id: str,
+    step_number: int,
+    operation_name: str | None,
+    fs: AbstractFileSystem,
+) -> str:
+    """Create and return the sharded staging directory."""
+    staging_uri = shard_uri(staging_root, execution_run_id, step_number, operation_name)
+    fs.makedirs(staging_uri, exist_ok=True)
+    return staging_uri
+```
+
+`shard_path()` in `utils/path.py` becomes `shard_uri()` — pure string
+concatenation (it's already pure path arithmetic, no I/O). Returns a
+string instead of a `Path`.
+
+The NFS fsync function becomes conditional:
+
+```python
+def _sync_staging_if_needed(staging_uri: str, fs: AbstractFileSystem) -> None:
+    """Flush staged files to NFS. No-op for non-local filesystems."""
+    if not isinstance(fs, LocalFileSystem):
+        return
+    _sync_to_nfs(Path(staging_uri))
+```
+
+---
+
+## Staging Verification
+
+NFS staging verification is inherently local-filesystem-specific. It
+stays as-is but is gated on the filesystem type:
+
+```python
+def await_staging_files(
+    staging_root: str,
+    execution_run_ids: list[str],
+    fs: AbstractFileSystem,
+    timeout_seconds: float,
+    ...
+) -> None:
+    """Wait for staging files to appear. Only runs for local FS on NFS."""
+    if not isinstance(fs, LocalFileSystem):
+        return  # S3/GCS don't have cache coherency issues
+    # ... existing NFS verification code, using Path(staging_root) ...
+```
+
+---
+
+## DispatchHandle (unit transport)
+
+The handle owns unit transport — how ExecutionUnits get to workers. This
+is the one piece from F: the handle decides the transport mechanism,
+not the filesystem.
+
+**Why handle-owned instead of fsspec?** For Modal, `.map()` sends
+arguments directly — no file. For Ray, objects go through the object
+store. Writing units to S3 and having workers download them is
+unnecessary when the dispatch mechanism can carry the data.
+
+```python
+class DispatchHandle(ABC):
+    @abstractmethod
+    def dispatch(self, units: list[ExecutionUnit | ExecutionComposite],
+                 runtime_env: RuntimeEnvironment) -> None:
+        """Send units to workers. Handle owns the transport."""
+
+    @abstractmethod
+    def is_done(self) -> bool: ...
+
+    @abstractmethod
+    def collect(self) -> list[dict]: ...
+
+    @abstractmethod
+    def cancel(self) -> None: ...
+
+    def run(self, units, runtime_env) -> list[dict]:
+        self.dispatch(units, runtime_env)
+        while not self.is_done():
+            time.sleep(0.1)
+        return self.collect()
+```
+
+`dispatch()` takes units directly (not a file path). The handle decides
+how to deliver them:
+
+- **LocalDispatchHandle:** passes units through ProcessPool (in-memory
+  via pickle serialization in multiprocessing)
+- **SlurmDispatchHandle:** writes pickle to fs (shared NFS), workers
+  read from fs
+- **ModalDispatchHandle:** passes units as arguments to
+  `modal.Function.map()`
+- **K8sDispatchHandle:** writes pickle to fs (S3 or NFS PVC), workers
+  read from fs
+- **RayDispatchHandle:** puts units in Ray object store
+
+**Note:** `_save_units()` and `_load_units()` move inside handle
+implementations (shared-FS handles write pickle to fs; Modal handle
+doesn't use them).
+
+---
+
+## Worker Sandbox
+
+Unchanged. Workers always use local `/tmp`. Operations never see
+the storage abstraction.
+
+```python
+def create_sandbox(working_root: str, execution_run_id: str, ...) -> Path:
+    """Create local sandbox directory. Always on local filesystem."""
+    sandbox_path = Path(working_root) / ...
+    sandbox_path.mkdir(parents=True, exist_ok=True)
+    return sandbox_path
+```
+
+`working_root` is always a local path string. The sandbox uses
+`pathlib.Path` internally — no fsspec here.
+
+---
+
+## How Components Get the fs Instance
+
+Every component needs an `AbstractFileSystem` instance. Where does it
+come from?
+
+```
+PipelineConfig
+    └── StorageConfig (protocol + options)
+
+PipelineManager._dispatch_step()
+    ├── Creates RuntimeEnvironment with StorageConfig
+    ├── Creates fs = storage_config.filesystem()
+    ├── Creates StagingManager(staging_root, fs)
+    ├── Creates DeltaCommitter(delta_root, staging_manager, fs, storage_options)
+    └── Creates DispatchHandle (handle gets fs for shared-FS backends)
+
+Worker (inside execute_unit_task):
+    ├── Creates fs = runtime_env.storage.filesystem()
+    ├── Creates StagingArea(staging_root, fs)
+    └── Creates ArtifactStore(delta_root, fs, storage_options)
+        (for input hydration)
+```
+
+The fs instance is short-lived — created per step on the orchestrator,
+per execution on the worker. No long-lived connections to manage.
+
+---
+
+## Future Optimization: Handle-Bypass Staging
+
+For serverless backends (Modal, Lambda), the fsspec path writes to S3
+and reads back from S3. This adds ~100ms per execution unit in S3 API
+latency. For most workloads this is fine. If it becomes a bottleneck:
+
+**The optimization:** Workers accumulate staged DataFrames in memory
+instead of writing to fsspec. The DispatchHandle returns them directly.
+DeltaCommitter accepts DataFrames alongside the staged-file path.
+
+```python
+# Worker mode: return-value staging
+class InMemoryStagingArea(StagingArea):
+    """Accumulates DataFrames in memory instead of writing to fs."""
+    def stage_dataframe(self, df, table_name):
+        self._dataframes[table_name] = df
+    def get_payloads(self) -> dict[str, pl.DataFrame]:
+        return self._dataframes
+
+# Handle mode: bypass fs
+class ModalDispatchHandle(DispatchHandle):
+    def collect(self) -> list[dict]:
+        # Modal .map() returns include staged DataFrames
+        # Pass them directly to committer
+        ...
+```
+
+This is deferred. The fsspec path is correct, uniform, and testable.
+The optimization adds a parallel staging mode only where performance
+demands it.
+
+---
+
+## What Changes vs What Stays the Same
+
+### Changes
+
+| Component | Current | Ideal |
+|-----------|---------|-------|
+| `RuntimeEnvironment` paths | `Path` | `str` (URI) |
+| `RuntimeEnvironment` | no storage config | `storage: StorageConfig` |
+| `StagingArea.__init__` | `Path(staging_dir)` | `str` + `fs: AbstractFileSystem` |
+| `StagingArea` I/O | `path.mkdir()`, `df.write_parquet(path)` | `fs.makedirs()`, `df.write_parquet(fs.open())` |
+| `StagingManager.__init__` | `Path(staging_dir)` | `str` + `fs: AbstractFileSystem` |
+| `StagingManager` I/O | `rglob()`, `pl.read_parquet(path)` | `fs.glob()`, `pl.read_parquet(fs.open())` |
+| `DeltaCommitter.__init__` | `Path(delta_base_path)` | `str` + `fs` + `storage_options` |
+| `DeltaCommitter` writes | `df.write_delta(str(path))` | `df.write_delta(uri, storage_options=...)` |
+| `ArtifactStore.__init__` | `Path(base_path)` | `str` + `fs` + `storage_options` |
+| `ArtifactStore` reads | `pl.scan_delta(str(path))` | `pl.scan_delta(uri, storage_options=...)` |
+| `ProvenanceStore` | same as ArtifactStore | same pattern |
+| `.exists()` guards | `table_path.exists()` | `fs.exists(uri)` |
+| `parquet_writer` | `Path.mkdir()`, `df.write_parquet(path)` | `fs.makedirs()`, `df.write_parquet(fs.open())` |
+| NFS fsync | always runs for shared FS | gated on `isinstance(fs, LocalFileSystem)` |
+| Staging verification | NFS-specific polling | gated on fs type |
+| `_save_units()` / `_load_units()` | writes pickle to Path | moves inside DispatchHandle |
+| `shard_path()` | returns `Path` | `shard_uri()` returns `str` |
+| `BackendBase.create_flow()` | returns callable | returns `DispatchHandle` |
+| `step_executor` | calls `step_flow(units_path, runtime_env)` | calls `handle.run(units, runtime_env)` |
+
+### Unchanged
+
+| Component | Why |
+|-----------|-----|
+| Worker sandbox (`sandbox.py`) | Always local /tmp. Uses `pathlib.Path`. |
+| Input materialization | Writes to sandbox (local). |
+| Operation code (preprocess/execute/postprocess) | Never sees storage abstraction. |
+| Content-addressed hashing | Hash by content, not location. |
+| Cache keys | Based on artifact IDs + params, not paths. |
+| Failure policies | Orthogonal to storage. |
+| Provenance capture | Produces DataFrames, consumed by staging. |
+| Composite execution | Runs operations, uses same staging. |
+| PipelineManager API | `pipeline.run()`, `pipeline.submit()` — unchanged. |
+
+---
+
+## Dependency Impact
+
+**fsspec:** Already a transitive dependency of `pyarrow` and `deltalake`.
+Adding it as a direct dependency has zero install impact. It's a pure
+Python package, ~300KB.
+
+**s3fs / gcsfs:** Optional extras for S3/GCS support. `pip install
+artisan[s3]` or `artisan[gcs]`. Not required for local/SLURM.
+
+**Prefect:** Becomes optional. Only needed for local and SLURM backends
+that use Prefect task runners internally. Cloud backends use native
+dispatch.
+
+---
+
+## Testing
+
+fsspec provides `fsspec.filesystem("memory")` — a fully functional
+in-memory filesystem. All storage tests can run against it:
+
+```python
+@pytest.fixture
+def memory_fs():
+    fs = fsspec.filesystem("memory")
+    yield fs
+    fs.store.clear()
+
+def test_staging_area_writes(memory_fs):
+    area = StagingArea("mem://staging", fs=memory_fs)
+    area.stage_dataframe(df, "data")
+    assert memory_fs.exists("mem://staging/w0_.../data.parquet")
+
+def test_staging_manager_reads(memory_fs):
+    # ... write via area, read via manager, same memory_fs
+```
+
+No mocks. No temp directories. No S3 credentials in CI. The memory
+filesystem behaves like a real filesystem (supports glob, makedirs,
+exists, open).
