@@ -585,7 +585,7 @@ artisan[s3]` or `artisan[gcs]`. Not required for local/SLURM.
 **Prefect:** Becomes optional once DispatchHandle is implemented. Today
 Prefect is deeply embedded: `execute_unit_task` is a `@task`-decorated
 function (`dispatch.py`), `BackendBase._build_prefect_flow` creates
-`@flow` wrappers (`base.py`), `LocalBackend` subclasses Prefect's
+`@flow` wrappers (`base.py`), `SIGINTSafeProcessPoolTaskRunner` subclasses Prefect's
 `ProcessPoolTaskRunner` (`local.py`), and both `prefect` and
 `prefect-submitit` are hard dependencies in `pyproject.toml`.
 

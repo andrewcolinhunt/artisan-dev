@@ -89,14 +89,23 @@ any state (no-op if not dispatched or already done). If `dispatch()` itself
 fails (e.g. SLURM submission error), it raises immediately — the handle
 is not recoverable.
 
+**Error semantics:** `collect()` returns result dicts with error markers
+for per-unit failures (matching current `_collect_results` behavior) — it
+never raises for individual unit failures. Infrastructure exceptions
+(`BrokenProcessPool`, SLURM submission errors, etc.) propagate out of
+`dispatch()`, `collect()`, or `run()` for the caller to handle. The
+step executor's existing exception handling (`BrokenProcessPool` catch,
+`RuntimeError` re-raise, generic `Exception` catch) remains unchanged.
+
 **Unit transport is handle-owned.** The previous design passed a
 `units_path` (file path to pickled units). The handle now receives units
 directly and decides how to deliver them:
 
 - **LocalDispatchHandle:** passes units through ProcessPool
   (multiprocessing pickle serialization, same as current behavior)
-- **SlurmDispatchHandle:** writes pickle to shared filesystem via
-  fsspec, workers read from the same path
+- **SlurmDispatchHandle:** writes pickle to shared filesystem (pathlib
+  initially, fsspec after cloud-storage-design), workers read from the
+  same path
 - **ModalDispatchHandle:** passes units as arguments to
   `modal.Function.map()`
 - **K8sDispatchHandle:** writes pickle to fsspec (NFS PVC or S3),
@@ -126,18 +135,33 @@ shared-FS handle implementations. `dispatch.py` retains
 
 ### SlurmDispatchHandle
 
-- `dispatch(units, runtime_env)` writes units to a pickle file on the
-  shared filesystem (via fsspec), then submits via `srun`/`sbatch`.
-  Returns immediately after submission.
-- `is_done()` checks job status (sacct or job state polling).
-- `collect()` gathers results from completed futures, captures SLURM logs.
-- `cancel()` calls `scancel --name <job_name>` (works even before job IDs
-  are available, because `SlurmTaskRunner` sets `--job-name`). Also cancels
-  by ID for any captured job IDs.
+Same structure as `LocalDispatchHandle` — wraps a Prefect task runner —
+but uses `SlurmTaskRunner` from `prefect_submitit` instead of
+`SIGINTSafeProcessPoolTaskRunner`.
 
-`scancel --name` is the key mechanism — it cancels by the job name already
-set in `SlurmBackend.create_flow`, so it works before submitit returns IDs
+- `dispatch(units, runtime_env)` writes units to a pickle file on the
+  shared filesystem (pathlib, same as current `_save_units`), enters the
+  `SlurmTaskRunner` context, and calls `execute_unit_task.map()`. The
+  task runner handles `sbatch` submission internally. Returns immediately
+  after submission.
+- `is_done()` checks whether all Prefect futures have resolved.
+- `collect()` gathers results from completed futures via
+  `_collect_results`, then exits the task runner context.
+- `cancel()` calls `scancel --name <job_name>` (works even before job IDs
+  are available, because the job name is passed to `SlurmTaskRunner` via
+  `slurm_job_name=f"s{step_number}_{job_name}"`). Also cancels by ID for
+  any captured job IDs.
+
+`scancel --name` is the key mechanism — it cancels by the job name set
+during handle construction, so it works before submitit returns IDs
 and harmlessly no-ops for non-existent names.
+
+**Unit pickle uses pathlib initially.** The current `_save_units` writes
+via `Path.write_bytes()`. The SLURM handle keeps this — it moves
+`_save_units` / `_load_units` into the handle but doesn't change the I/O
+mechanism. When cloud-storage-design lands, the handle switches to fsspec
+for pickle writes (`fs.open(uri, "wb")`), enabling S3/GCS-backed shared
+storage.
 
 ---
 
@@ -149,6 +173,17 @@ remaining unresolved futures with cancellation markers instead of waiting.
 
 The cancel event flows from `DispatchHandle` → `collect()` →
 `_collect_results` (in `engine/dispatch.py`).
+
+---
+
+## `capture_logs` and `validate_operation`
+
+`capture_logs` and `validate_operation` stay on `BackendBase`. The handle
+owns dispatch lifecycle (start, poll, collect, cancel); the backend owns
+configuration and post-dispatch processing. `step_executor` continues to
+call `backend.capture_logs(results, ...)` after `handle.run()` /
+`handle.collect()` returns, and `backend.validate_operation(operation)`
+before creating the handle. No interface change to either method.
 
 ---
 
@@ -247,6 +282,21 @@ transport.
 | `orchestration/engine/dispatch.py` | Move `_save_units`/`_load_units` to handle implementations, add `cancel_event` param on `_collect_results` |
 | `orchestration/engine/step_executor.py` | Use `handle.run(units, runtime_env)` instead of `step_flow(units_path, runtime_env)`, remove `_save_units` call |
 | `orchestration/pipeline_manager.py` | Track active dispatch handles, wire `cancel()` to call `handle.cancel()` |
+
+---
+
+## Testing
+
+| File | Coverage |
+|------|----------|
+| `tests/artisan/orchestration/backends/test_dispatch_handle.py` | `DispatchHandle` state machine: dispatch-before-collect, double-dispatch raises, cancel-before-dispatch no-op, cancel-after-done no-op |
+| `tests/artisan/orchestration/backends/test_local.py` | `LocalDispatchHandle` lifecycle: dispatch + collect round-trip, cancellation fills error markers, `BrokenProcessPool` propagates |
+| `tests/artisan/orchestration/backends/test_slurm.py` | `SlurmDispatchHandle`: pickle write/read round-trip, `scancel --name` called on cancel (mock subprocess) |
+| `tests/artisan/orchestration/engine/test_step_executor.py` | Updated call sites: `handle.run()` replaces `step_flow()`, `capture_logs` still called after dispatch |
+| `tests/artisan/orchestration/test_pipeline_manager.py` | Cancel wiring: `cancel()` calls `handle.cancel()` on active handles |
+
+State machine tests use a minimal concrete subclass (in-memory, no
+Prefect). Backend-specific tests mock the task runner / subprocess layer.
 
 ---
 
