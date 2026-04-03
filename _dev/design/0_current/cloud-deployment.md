@@ -60,7 +60,7 @@ Key coupling points in the current code:
 
 | Component | File | Coupling |
 |-----------|------|----------|
-| `RuntimeEnvironment` | `schemas/execution/runtime_environment.py` | 3 `Path` fields |
+| `RuntimeEnvironment` | `schemas/execution/runtime_environment.py` | 4 `Path` fields |
 | `_save_units()` | `orchestration/engine/dispatch.py` | Writes pickle to `staging_root / "_dispatch"` |
 | `_load_units()` | `orchestration/engine/dispatch.py` | Reads pickle from local `Path` |
 | `_build_prefect_flow()` | `orchestration/backends/base.py` | Constructs Prefect `@flow` |
@@ -68,7 +68,7 @@ Key coupling points in the current code:
 | `StagingManager` | `storage/io/staging.py` | `Path.glob()`, `read_parquet(path)` |
 | `DeltaCommitter` | `storage/io/commit.py` | `DeltaTable(path)` |
 | `ArtifactStore` | `storage/core/artifact_store.py` | `DeltaTable(path)` |
-| Worker sandbox | `execution/context.py` | `Path.mkdir()`, local scratch dirs |
+| Worker sandbox | `execution/context/sandbox.py` | `Path.mkdir()`, local scratch dirs |
 
 ---
 
