@@ -34,6 +34,26 @@ Serves two purposes:
 
 ---
 
+## Result type
+
+```python
+@dataclass(frozen=True)
+class UnitResult:
+    """Result of executing one unit (or one batch of units)."""
+
+    success: bool
+    error: str | None
+    item_count: int
+    execution_run_ids: list[str]
+    worker_log: str | None = None
+```
+
+Replaces the informal `list[dict]` contract. The step executor, step
+scheduler, and commit code all consume this type. `_collect_results`
+produces `list[UnitResult]`.
+
+---
+
 ## Interface
 
 ```python
@@ -57,7 +77,7 @@ class DispatchHandle(ABC):
         """Non-blocking completion check. Thread-safe."""
 
     @abstractmethod
-    def collect(self) -> list[dict]:
+    def collect(self) -> list[UnitResult]:
         """Get results. Valid only after is_done() returns True."""
 
     @abstractmethod
@@ -68,7 +88,7 @@ class DispatchHandle(ABC):
         self,
         units: list[ExecutionUnit | ExecutionComposite],
         runtime_env: RuntimeEnvironment,
-    ) -> list[dict]:
+    ) -> list[UnitResult]:
         """Execute the step. Blocks until completion or cancellation.
 
         Concrete template method: dispatch() + poll is_done() + collect().
@@ -89,9 +109,10 @@ any state (no-op if not dispatched or already done). If `dispatch()` itself
 fails (e.g. SLURM submission error), it raises immediately — the handle
 is not recoverable.
 
-**Error semantics:** `collect()` returns result dicts with error markers
-for per-unit failures (matching current `_collect_results` behavior) — it
-never raises for individual unit failures. Infrastructure exceptions
+**Error semantics:** `collect()` returns `UnitResult` objects with
+`success=False` and `error` set for per-unit failures (matching current
+`_collect_results` behavior) — it never raises for individual unit
+failures. Infrastructure exceptions
 (`BrokenProcessPool`, SLURM submission errors, etc.) propagate out of
 `dispatch()`, `collect()`, or `run()` for the caller to handle. The
 step executor's existing exception handling (`BrokenProcessPool` catch,

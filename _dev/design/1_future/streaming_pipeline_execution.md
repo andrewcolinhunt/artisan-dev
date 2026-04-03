@@ -26,8 +26,7 @@ different resources (CPU vs GPU).
 - **Priority scheduling** — later pipeline stages dispatched first
 - **Backend-agnostic** — works across LOCAL, SLURM, and future backends
   (SLURM_INTRA, Kubernetes, cloud). SLURM_INTRA (intra-allocation srun
-  dispatch) does not yet have a backend implementation — it will be built
-  as part of or before this work.
+  dispatch) is implemented — see `slurm_intra_backend.md`.
 
 ---
 
@@ -144,9 +143,9 @@ detail.
 `BackendBase`. Today, `create_flow()` returns a Prefect flow callable;
 `DispatchHandle` subsumes that by wrapping backend-specific execution
 (Prefect, srun, subprocess) behind a uniform non-blocking interface.
-Backends implement a new `create_handle()` method that returns a
+Backends implement `create_dispatch_handle()` which returns a
 `DispatchHandle` instead of a callable. The existing `create_flow()` method
-is removed.
+is removed. See `dispatch-handle.md` for the full interface specification.
 
 The `DispatchHandle` supports both blocking execution (non-streaming
 pipelines) and non-blocking dispatch with completion polling (step
@@ -154,21 +153,36 @@ scheduler):
 
 ```python
 class DispatchHandle(ABC):
-    def run(self, units_path: str, runtime_env: RuntimeEnvironment) -> list[dict]:
+    def run(
+        self,
+        units: list[ExecutionUnit | ExecutionComposite],
+        runtime_env: RuntimeEnvironment,
+    ) -> list[UnitResult]:
         """Execute the step. Blocks until completion or cancellation."""
 
-    def dispatch(self, units_path: str, runtime_env: RuntimeEnvironment) -> None:
-        """Start execution, return immediately."""
+    def dispatch(
+        self,
+        units: list[ExecutionUnit | ExecutionComposite],
+        runtime_env: RuntimeEnvironment,
+    ) -> None:
+        """Start execution, return immediately.
+
+        The handle owns unit transport — it decides how to deliver
+        units to workers (pickle to shared FS, Modal .map() args,
+        Ray object store, etc.).
+        """
 
     def is_done(self) -> bool:
         """Non-blocking completion check."""
 
-    def collect(self) -> list[dict]:
+    def collect(self) -> list[UnitResult]:
         """Get results. Valid only after is_done() returns True."""
 
     def cancel(self) -> None:
         """Cancel in-flight work. Thread-safe, idempotent."""
 ```
+
+`UnitResult` is defined in `dispatch-handle.md`.
 
 `run()` is equivalent to `dispatch()` + poll `is_done()` + `collect()`.
 Non-streaming pipelines use `run()` via the step executor. The step
@@ -229,15 +243,34 @@ resources. The step scheduler submits in priority order and lets the external
 system schedule. Optionally propagates priority hints (SLURM `--nice`,
 Kubernetes `PriorityClass`). Optionally caps in-flight submissions.
 
-The backend declares its model via a new method and return type (neither
-exists in the codebase today):
+The backend declares its model via `resource_budget()` on `BackendBase`.
+Default implementation returns `None` (queue-managed). Resource-managed
+backends override.
 
 ```python
-class BackendBase:
+@dataclass(frozen=True)
+class ResourceBudget:
+    """Fixed resource pool for resource-managed backends."""
+
+    cpus: int
+    gpus: int = 0
+
+class BackendBase(ABC):
     def resource_budget(self) -> ResourceBudget | None:
-        """Resource-managed backends return a budget.
-        Queue-managed backends return None."""
+        """Return the fixed resource pool, or None for queue-managed backends.
+
+        Resource-managed backends (LOCAL, SLURM_INTRA) override this to
+        report available resources. Queue-managed backends (SLURM sbatch,
+        cloud) inherit the default None.
+        """
+        return None
 ```
+
+Per-backend detection:
+
+- `LocalBackend`: `ResourceBudget(cpus=os.cpu_count(), gpus=<hardware detection>)`
+- `SlurmIntraBackend`: `ResourceBudget(cpus=SLURM_CPUS_ON_NODE, gpus=SLURM_GPUS)`
+- `SlurmBackend`, cloud backends: inherit default `None`
 
 The step scheduler always dispatches highest-priority first. The only variation
 is whether it gates on resource availability or submits freely.

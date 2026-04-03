@@ -314,8 +314,8 @@ abstraction. Validates the full cloud story.
 
 ## Open Questions
 
-- **Result contract typing.** `create_flow()` returns `list[dict]` with
-  informal keys. Should this become a typed dataclass?
+- ~~**Result contract typing.**~~ **Decided:** `UnitResult` frozen
+  dataclass. See `dispatch-handle.md` for the type definition.
 
 - **Resource escalation on retry.** Nextflow and Snakemake support
   `memory = base * attempt`. Should `ResourceConfig` support callables?
