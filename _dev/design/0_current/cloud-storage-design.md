@@ -1,7 +1,8 @@
-# Cloud Storage Design: D+F Hybrid
+# Cloud Storage Design
 
 The storage abstraction for cloud deployment. Uses fsspec as the unified
-storage layer (D), with DispatchHandle-owned unit transport from (F).
+storage layer so that staging, commit, and store access code work
+identically across local, S3, and GCS backends.
 
 ---
 
@@ -16,12 +17,6 @@ storage layer (D), with DispatchHandle-owned unit transport from (F).
   S3/GCS URIs natively. The framework passes URI strings and
   `storage_options` dicts. No custom I/O code for cloud.
 
-- **Handle owns unit transport.** The DispatchHandle decides how to send
-  ExecutionUnits to workers. For shared-FS backends, it writes a pickle
-  to the filesystem. For Modal, it passes arguments to `.map()`. This is
-  the one place where the handle has transport responsibility beyond
-  lifecycle management.
-
 - **Worker sandbox stays local.** Workers always use local `/tmp` for
   their sandbox (materialized inputs, execute dir, postprocess dir).
   Operations never see the storage abstraction.
@@ -29,6 +24,8 @@ storage layer (D), with DispatchHandle-owned unit transport from (F).
 ---
 
 ## StorageConfig
+
+**File:** `src/artisan/schemas/execution/storage_config.py`
 
 A serializable config object that creates fsspec filesystem instances
 and provides `storage_options` dicts for Polars/delta-rs.
@@ -110,17 +107,20 @@ class RuntimeEnvironment(BaseModel):
     compute_backend_name: str = "local"
 ```
 
-**Migration:** Three fields are renamed (dropping the `_path` suffix) and
+**Migration:** Four fields are renamed (dropping the `_path` suffix) and
 change from `Path` to `str`:
 
 - `delta_root_path: Path` → `delta_root: str`
 - `staging_root_path: Path` → `staging_root: str`
 - `working_root_path: Path | None` → `working_root: str | None`
+- `failure_logs_root: Path | None` → `failure_logs_root: str | None`
 
 All consumers that currently do `Path(runtime_env.delta_root_path)` (or
 the staging/working equivalents) switch to `runtime_env.delta_root` (a
 string). `working_root` stays as a local path string — it's always on
-the worker's local filesystem.
+the worker's local filesystem. `failure_logs_root` stays local — it's
+written by workers on the same machine as the orchestrator (local) or
+on a shared NFS (SLURM).
 
 ---
 
@@ -185,7 +185,11 @@ class StagingArea:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.cleanup()
+        """Exit the staging context, preserving files for debugging on error."""
+        if exc_type is None:
+            # No exception — cleanup is handled by orchestrator after commit
+            pass
+        # On exception, leave staging files for debugging
 ```
 
 **What changes:** `Path` → `str`, `path.mkdir()` → `fs.makedirs()`,
@@ -194,6 +198,8 @@ class StagingArea:
 
 **What stays the same:** The staging area API. The Parquet compression.
 The append-by-concat logic. The batch_id scheme. The table tracking.
+The `__exit__` behavior (preserves files for debugging on error,
+defers cleanup to orchestrator on success).
 
 ---
 
@@ -277,14 +283,15 @@ class ArtifactStore:
         if not self._fs.exists(table_path):
             return None
         # pl.scan_delta already accepts URI strings + storage_options
-        lf = pl.scan_delta(table_path, delta_table_options={"storage_options": self._storage_options})
+        lf = pl.scan_delta(table_path, storage_options=self._storage_options)
         df = lf.filter(pl.col("artifact_id") == artifact_id).collect()
         ...
 ```
 
 **Key insight:** `pl.scan_delta("s3://bucket/delta/artifacts/data",
-delta_table_options={"storage_options": {...}})` works today. We just
-need to pass the URI and options instead of `str(Path(...))`.
+storage_options={...})` works today. We just need to pass the URI and
+options instead of `str(Path(...))`. Both `scan_delta` and `write_delta`
+accept `storage_options` as a top-level keyword argument.
 
 The `fs` instance is used only for `.exists()` guards. Polars and
 delta-rs handle the actual Parquet/Delta I/O through their own S3
@@ -324,11 +331,18 @@ class DeltaCommitter:
             staged_df.write_delta(
                 table_uri, mode="append",
                 storage_options=self._storage_options,
+                delta_write_options={
+                    "writer_properties": DEFAULT_WRITER_PROPERTIES,
+                    "schema_mode": "merge",
+                },
             )
         else:
             staged_df.write_delta(
                 table_uri, mode="overwrite",
                 storage_options=self._storage_options,
+                delta_write_options={
+                    "writer_properties": DEFAULT_WRITER_PROPERTIES,
+                },
             )
 ```
 
@@ -361,9 +375,10 @@ def _create_staging_path(
     return staging_uri
 ```
 
-`shard_path()` in `utils/path.py` becomes `shard_uri()` — pure string
-concatenation (it's already pure path arithmetic, no I/O). Returns a
-string instead of a `Path`.
+`shard_path()` in `utils/path.py` becomes `shard_uri()` (same file) —
+pure string concatenation (it's already pure path arithmetic, no I/O).
+Takes `root: str` instead of `root: Path`, returns `str` instead of
+`Path`.
 
 The NFS fsync function becomes conditional on `StorageConfig.is_local`:
 
@@ -398,56 +413,14 @@ def await_staging_files(
 
 ---
 
-## DispatchHandle (unit transport)
+## Unit Transport (out of scope)
 
-The handle owns unit transport — how ExecutionUnits get to workers. This
-is the one piece from F: the handle decides the transport mechanism,
-not the filesystem.
-
-**Why handle-owned instead of fsspec?** For Modal, `.map()` sends
-arguments directly — no file. For Ray, objects go through the object
-store. Writing units to S3 and having workers download them is
-unnecessary when the dispatch mechanism can carry the data.
-
-```python
-class DispatchHandle(ABC):
-    @abstractmethod
-    def dispatch(self, units: list[ExecutionUnit | ExecutionComposite],
-                 runtime_env: RuntimeEnvironment) -> None:
-        """Send units to workers. Handle owns the transport."""
-
-    @abstractmethod
-    def is_done(self) -> bool: ...
-
-    @abstractmethod
-    def collect(self) -> list[dict]: ...
-
-    @abstractmethod
-    def cancel(self) -> None: ...
-
-    def run(self, units, runtime_env) -> list[dict]:
-        self.dispatch(units, runtime_env)
-        while not self.is_done():
-            time.sleep(0.1)
-        return self.collect()
-```
-
-`dispatch()` takes units directly (not a file path). The handle decides
-how to deliver them:
-
-- **LocalDispatchHandle:** passes units through ProcessPool (in-memory
-  via pickle serialization in multiprocessing)
-- **SlurmDispatchHandle:** writes pickle to fs (shared NFS), workers
-  read from fs
-- **ModalDispatchHandle:** passes units as arguments to
-  `modal.Function.map()`
-- **K8sDispatchHandle:** writes pickle to fs (S3 or NFS PVC), workers
-  read from fs
-- **RayDispatchHandle:** puts units in Ray object store
-
-**Note:** `_save_units()` and `_load_units()` move inside handle
-implementations (shared-FS handles write pickle to fs; Modal handle
-doesn't use them).
+How ExecutionUnits get to workers (pickle files, `.map()` arguments,
+object stores) is handled by the DispatchHandle abstraction, designed
+separately in `dispatch-handle.md`. This design covers storage only —
+the filesystem layer that workers write staged artifacts to and the
+orchestrator reads them from. The two designs are independent and can
+land in either order.
 
 ---
 
@@ -482,8 +455,7 @@ PipelineManager._dispatch_step()
     ├── Creates RuntimeEnvironment with StorageConfig
     ├── Creates fs = storage_config.filesystem()
     ├── Creates StagingManager(staging_root, fs)
-    ├── Creates DeltaCommitter(delta_root, staging_manager, fs, storage_options)
-    └── Creates DispatchHandle (handle gets fs for shared-FS backends)
+    └── Creates DeltaCommitter(delta_root, staging_manager, fs, storage_options)
 
 Worker (inside execute_unit_task):
     ├── Creates fs = runtime_env.storage.filesystem()
@@ -497,36 +469,16 @@ per execution on the worker. No long-lived connections to manage.
 
 ---
 
-## Future Optimization: Handle-Bypass Staging
+## Future Optimization: Return-Value Staging
 
 For serverless backends (Modal, Lambda), the fsspec path writes to S3
 and reads back from S3. This adds ~100ms per execution unit in S3 API
-latency. For most workloads this is fine. If it becomes a bottleneck:
-
-**The optimization:** Workers accumulate staged DataFrames in memory
-instead of writing to fsspec. The DispatchHandle returns them directly.
-DeltaCommitter accepts DataFrames alongside the staged-file path.
-
-```python
-# Worker mode: return-value staging
-class InMemoryStagingArea(StagingArea):
-    """Accumulates DataFrames in memory instead of writing to fs."""
-    def stage_dataframe(self, df, table_name):
-        self._dataframes[table_name] = df
-    def get_payloads(self) -> dict[str, pl.DataFrame]:
-        return self._dataframes
-
-# Handle mode: bypass fs
-class ModalDispatchHandle(DispatchHandle):
-    def collect(self) -> list[dict]:
-        # Modal .map() returns include staged DataFrames
-        # Pass them directly to committer
-        ...
-```
+latency. For most workloads this is fine. If it becomes a bottleneck,
+workers could accumulate DataFrames in memory and return them through
+the dispatch handle instead of writing to the filesystem.
 
 This is deferred. The fsspec path is correct, uniform, and testable.
-The optimization adds a parallel staging mode only where performance
-demands it.
+See `dispatch-handle.md` for the handle-side of this optimization.
 
 ---
 
@@ -538,24 +490,25 @@ demands it.
 |-----------|---------|----------|
 | `RuntimeEnvironment` fields | `delta_root_path`, `staging_root_path`, `working_root_path` | `delta_root`, `staging_root`, `working_root` (drop `_path` suffix) |
 | `RuntimeEnvironment` path types | `Path` | `str` (URI) |
+| `RuntimeEnvironment` `failure_logs_root` | `Path \| None` | `str \| None` |
 | `RuntimeEnvironment` | no storage config | `storage: StorageConfig` |
 | `StagingArea.__init__` | `Path(staging_dir)` | `str` + `fs: AbstractFileSystem` |
 | `StagingArea` I/O | `path.mkdir()`, `df.write_parquet(path)` | `fs.makedirs()`, `df.write_parquet(fs.open())` |
 | `StagingManager.__init__` | `Path(staging_dir)` | `str` + `fs: AbstractFileSystem` |
 | `StagingManager` I/O | `rglob()`, `pl.read_parquet(path)` | `fs.glob()`, `pl.read_parquet(fs.open())` |
 | `DeltaCommitter.__init__` | `Path(delta_base_path)`, `staging_dir` (creates `StagingManager` internally) | `str` + `fs` + `storage_options` + receives `StagingManager` |
-| `DeltaCommitter` writes | `df.write_delta(str(path))` | `df.write_delta(uri, storage_options=...)` |
+| `DeltaCommitter` writes | `df.write_delta(str(path))` | `df.write_delta(uri, storage_options=..., delta_write_options=...)` |
 | `ArtifactStore.__init__` | `Path(base_path)` | `str` + `fs` + `storage_options` |
 | `ArtifactStore` reads | `pl.scan_delta(str(path))` | `pl.scan_delta(uri, storage_options=...)` |
 | `ProvenanceStore` | same as ArtifactStore | same pattern |
+| All `pl.scan_delta` callers | `pl.scan_delta(str(path))` with no storage options | `pl.scan_delta(uri, storage_options=...)` — see migration inventory |
+| All `write_delta` callers | `df.write_delta(str(path))` with no storage options | `df.write_delta(uri, storage_options=..., delta_write_options=...)` |
 | `.exists()` guards | `table_path.exists()` | `fs.exists(uri)` |
 | `parquet_writer` | `Path.mkdir()`, `df.write_parquet(path)` | `fs.makedirs()`, `df.write_parquet(fs.open())` |
+| `recorder` failure log writes | `Path /`, `.mkdir()`, `.open("w")` | `fs.makedirs()`, `fs.open(uri, "w")` |
 | NFS fsync (`_sync_staging_to_nfs`) | always runs for shared FS | gated on `StorageConfig.is_local` |
 | Staging verification | NFS-specific polling | gated on `StorageConfig.is_local` |
-| `_save_units()` / `_load_units()` | writes pickle to Path | moves inside DispatchHandle |
-| `shard_path()` | returns `Path` | `shard_uri()` returns `str` |
-| `BackendBase.create_flow()` | returns callable | returns `DispatchHandle` |
-| `step_executor` | calls `step_flow(units_path, runtime_env)` | calls `handle.run(units, runtime_env)` |
+| `shard_path()` | `root: Path` → `Path` | `shard_uri()`: `root: str` → `str` |
 
 ### Unchanged
 
@@ -582,19 +535,9 @@ Python package, ~300KB.
 **s3fs / gcsfs:** Optional extras for S3/GCS support. `pip install
 artisan[s3]` or `artisan[gcs]`. Not required for local/SLURM.
 
-**Prefect:** Becomes optional once DispatchHandle is implemented. Today
-Prefect is deeply embedded: `execute_unit_task` is a `@task`-decorated
-function (`dispatch.py`), `BackendBase._build_prefect_flow` creates
-`@flow` wrappers (`base.py`), `SIGINTSafeProcessPoolTaskRunner` subclasses Prefect's
-`ProcessPoolTaskRunner` (`local.py`), and both `prefect` and
-`prefect-submitit` are hard dependencies in `pyproject.toml`.
-
-Decoupling Prefect is a **separate effort** from the storage refactoring.
-The storage changes (fsspec, StorageConfig, URI paths) can land first
-with Prefect still in place. The DispatchHandle abstraction then replaces
-Prefect's `@task`/`@flow` machinery, at which point Prefect moves behind
-`LocalDispatchHandle` and `SlurmDispatchHandle` as an internal
-implementation detail (or is replaced entirely).
+**Prefect:** Unchanged by this design. Prefect remains the dispatch
+mechanism. Decoupling Prefect is covered by the DispatchHandle design
+(`dispatch-handle.md`).
 
 ---
 
@@ -622,3 +565,133 @@ def test_staging_manager_reads(memory_fs):
 No mocks. No temp directories. No S3 credentials in CI. The memory
 filesystem behaves like a real filesystem (supports glob, makedirs,
 exists, open).
+
+Existing tests that use `tmp_path` (pytest fixture) continue to work —
+`LocalFileSystem` handles local paths. New storage tests should use
+`memory_fs` to validate the abstraction. Test files follow the project
+convention: `tests/artisan/storage/test_staging.py`,
+`tests/artisan/storage/test_commit.py`, etc.
+
+---
+
+## Migration Inventory
+
+Every file that needs changes, grouped by subsystem.
+
+### `pl.scan_delta` call sites (44 total)
+
+| Subsystem | File | Calls |
+|-----------|------|-------|
+| storage | `storage/core/artifact_store.py` | 4 |
+| storage | `storage/core/provenance_store.py` | 14 |
+| storage | `storage/cache/cache_lookup.py` | 3 |
+| storage | `storage/io/commit.py` | 1 |
+| orchestration | `orchestration/engine/step_tracker.py` | 4 |
+| orchestration | `orchestration/engine/inputs.py` | 2 |
+| visualization | `visualization/inspect.py` | 7 |
+| visualization | `visualization/timing.py` | 2 |
+| visualization | `visualization/graph/micro.py` | 3 |
+| visualization | `visualization/graph/macro.py` | 1 |
+| operations | `operations/curator/interactive_filter.py` | 3 |
+
+All follow the same pattern: `pl.scan_delta(str(path))` → `pl.scan_delta(uri, storage_options=storage_options)`.
+
+### `write_delta` call sites (8 total)
+
+| Subsystem | File | Calls |
+|-----------|------|-------|
+| storage | `storage/io/commit.py` | 6 |
+| orchestration | `orchestration/engine/step_tracker.py` | 2 |
+
+All follow the same pattern: add `storage_options=...` alongside existing `delta_write_options`.
+
+### `RuntimeEnvironment` path field consumers
+
+| Subsystem | File | Fields accessed |
+|-----------|------|----------------|
+| schemas | `schemas/execution/runtime_environment.py` | definition (all four fields) |
+| orchestration | `orchestration/engine/step_executor.py` | `delta_root_path`, `staging_root_path` |
+| execution | `execution/executors/creator.py` | `working_root_path`, `delta_root_path`, `staging_root_path` |
+| execution | `execution/executors/curator.py` | `delta_root_path`, `staging_root_path` |
+| execution | `execution/executors/composite.py` | `delta_root_path`, `working_root_path`, `staging_root_path` |
+| composites | `composites/base/composite_context.py` | `staging_root_path`, `delta_root_path` |
+
+### `failure_logs_root` consumers (heavy Path API usage)
+
+| Subsystem | File | Path operations |
+|-----------|------|-----------------|
+| orchestration | `orchestration/engine/dispatch.py` | `.iterdir()`, `.is_dir()`, `/`, `.exists()`, `.open("a")` |
+| execution | `execution/staging/recorder.py` | `Path /`, `.mkdir()`, `.open("w")` |
+| orchestration | `orchestration/backends/base.py` | type signature only |
+| orchestration | `orchestration/backends/local.py` | type signature only |
+| orchestration | `orchestration/backends/slurm.py` | type signature, pass-through |
+| execution | `execution/executors/creator.py` | pass-through |
+| execution | `execution/executors/curator.py` | pass-through |
+
+### Summary
+
+| Subsystem | Files affected |
+|-----------|---------------|
+| storage/ | 4 |
+| orchestration/ | 6 |
+| execution/ | 4 |
+| composites/ | 1 |
+| visualization/ | 4 |
+| operations/ | 1 |
+| utils/ | 1 (`path.py`) |
+| **Total** | **21** |
+
+---
+
+## Rollout Strategy
+
+The migration can be done incrementally. Each phase is independently
+shippable and testable.
+
+### Phase 1: Foundation
+
+Add `StorageConfig` and wire it into `RuntimeEnvironment` with a default
+that preserves current behavior (`protocol="file"`). Add `fsspec` as a
+direct dependency. No consumers change yet — this is purely additive.
+
+**Files:** `schemas/execution/storage_config.py` (new),
+`schemas/execution/runtime_environment.py`, `pyproject.toml`
+
+### Phase 2: Storage layer
+
+Migrate the core storage classes that are constructed with explicit `fs`
+parameters: `StagingArea`, `StagingManager`, `DeltaCommitter`,
+`ArtifactStore`, `ProvenanceStore`. Update `shard_path` → `shard_uri`.
+Update the parquet_writer and recorder. Update their callers in
+`step_executor.py` and the executors to create `fs` from
+`StorageConfig` and pass it through.
+
+**Files:** `storage/` (4 files), `execution/` (4 files),
+`orchestration/engine/step_executor.py`, `composites/base/composite_context.py`,
+`utils/path.py`
+
+### Phase 3: Delta read sites
+
+Mechanically update all `pl.scan_delta(str(path))` calls to pass
+`storage_options`. These are read-only consumers — low risk. Can be
+done file-by-file.
+
+**Files:** `storage/cache/cache_lookup.py`,
+`orchestration/engine/step_tracker.py`, `orchestration/engine/inputs.py`,
+`visualization/` (4 files), `operations/curator/interactive_filter.py`
+
+### Phase 4: RuntimeEnvironment field rename
+
+Rename `delta_root_path` → `delta_root`, `staging_root_path` →
+`staging_root`, `working_root_path` → `working_root`. Change types
+from `Path` to `str`. This is a cross-cutting rename that touches all
+consumers — do it last so the earlier phases can land without a flag day.
+
+**Files:** All 21 files in the migration inventory.
+
+### RuntimeEnvironment is not persisted
+
+`RuntimeEnvironment` is constructed fresh per pipeline run by
+`step_executor.py` from `PipelineConfig` fields. It is not serialized
+to disk, stored in a database, or cached across runs. The field rename
+is a code-only change with no data migration required.
