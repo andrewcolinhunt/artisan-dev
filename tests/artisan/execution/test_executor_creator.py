@@ -898,3 +898,66 @@ class TestRunCreatorLifecycle:
 
         with pytest.raises(Exception, match="Intentional exception"):
             run_creator_lifecycle(unit, config)
+
+
+class TestSandboxPathComputation:
+    """Tests for sandbox path layout selection in run_creator_lifecycle."""
+
+    def test_sandbox_path_flat_for_temp(
+        self, delta_root_with_input, staging_root, tmp_path, monkeypatch
+    ):
+        """When working_root matches gettempdir(), sandbox is flat."""
+        import tempfile as tempfile_mod
+
+        delta_path, _ = delta_root_with_input
+        fake_tmp = tmp_path / "fake_tmp"
+        fake_tmp.mkdir()
+        monkeypatch.setattr(tempfile_mod, "tempdir", str(fake_tmp))
+
+        config = RuntimeEnvironment(
+            delta_root_path=delta_path,
+            working_root_path=Path(tempfile_mod.gettempdir()),
+            staging_root_path=staging_root,
+            preserve_working=True,
+        )
+
+        unit = ExecutionUnit(
+            operation=GenerativeTestOp(count=1),
+            inputs={},
+            execution_spec_id="spec_flat" + "0" * 24,
+            step_number=1,
+        )
+
+        run_creator_lifecycle(unit, config)
+
+        # Sandbox should be directly under fake_tmp (flat, no step/shard dirs)
+        sandbox_dirs = [d for d in fake_tmp.iterdir() if d.is_dir()]
+        assert len(sandbox_dirs) == 1
+        assert sandbox_dirs[0].parent == fake_tmp
+
+    def test_sandbox_path_sharded_for_custom_root(
+        self, delta_root_with_input, working_root, staging_root
+    ):
+        """When working_root is user-specified, sandbox uses shard_path layout."""
+        delta_path, _ = delta_root_with_input
+
+        config = RuntimeEnvironment(
+            delta_root_path=delta_path,
+            working_root_path=working_root,
+            staging_root_path=staging_root,
+            preserve_working=True,
+        )
+
+        unit = ExecutionUnit(
+            operation=GenerativeTestOp(count=1),
+            inputs={},
+            execution_spec_id="spec_shard" + "0" * 23,
+            step_number=1,
+        )
+
+        run_creator_lifecycle(unit, config)
+
+        # Sandbox should be sharded: working_root / step_dir / xx / yy / run_id
+        step_dirs = [d for d in working_root.iterdir() if d.is_dir()]
+        assert len(step_dirs) == 1
+        assert step_dirs[0].name.startswith("1_")

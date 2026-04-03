@@ -52,5 +52,9 @@ class PipelineConfig(BaseModel):
         default=True,
         description="Commit leftover staging files from prior crashed runs at pipeline init.",
     )
+    skip_cache: bool = Field(
+        default=False,
+        description="Bypass all cache lookups (step-level and execution-level).",
+    )
 
     model_config = {"frozen": True}

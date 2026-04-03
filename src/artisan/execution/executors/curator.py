@@ -238,6 +238,7 @@ def _handle_passthrough_result(
         shared_filesystem=execution_context.shared_filesystem,
         result_metadata=result.metadata if result.metadata else None,
         user_overrides=user_overrides,
+        step_run_id=execution_context.step_run_id,
     )
     all_passthrough_ids = [aid for ids in result.passthrough.values() for aid in ids]
     return StagingResult(
@@ -293,6 +294,7 @@ def run_curator_flow(
                 operation=operation,
                 compute_backend_name=runtime_env.compute_backend_name,
                 shared_filesystem=runtime_env.shared_filesystem,
+                step_run_id=unit.step_run_id,
             )
 
             # Build DataFrames with artifact_id column per role

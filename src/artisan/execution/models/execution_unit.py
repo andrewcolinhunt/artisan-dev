@@ -48,6 +48,10 @@ class ExecutionUnit(BaseModel):
         default=None,
         description="Original user-provided parameter overrides (before default merge)",
     )
+    step_run_id: str | None = Field(
+        default=None,
+        description="Step run ID for output isolation scoping",
+    )
 
     @model_validator(mode="after")
     def validate_inputs(self) -> ExecutionUnit:

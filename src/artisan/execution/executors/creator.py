@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import shutil
+import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from artisan.execution.context.builder import build_creator_execution_context
@@ -40,6 +42,7 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.utils.errors import format_error
+from artisan.utils.path import shard_path
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
@@ -123,11 +126,19 @@ def run_creator_lifecycle(
         if working_root is None:
             msg = "RuntimeEnvironment.working_root_path must be set to create a sandbox"
             raise ValueError(msg)
+
+        if working_root == Path(tempfile.gettempdir()):
+            sandbox_path = working_root / execution_run_id
+        else:
+            sandbox_path = shard_path(
+                working_root,
+                execution_run_id,
+                unit.step_number,
+                operation_name=operation.name,
+            )
+
         sandbox_path, preprocess_dir, execute_dir, postprocess_dir = create_sandbox(
-            working_root,
-            execution_run_id,
-            unit.step_number,
-            operation_name=operation.name,
+            sandbox_path,
         )
 
         log_path = sandbox_path / "tool_output.log"
@@ -146,6 +157,7 @@ def run_creator_lifecycle(
             sandbox_path=sandbox_path,
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
+            step_run_id=unit.step_run_id,
         )
         artifact_store = execution_context.artifact_store
 
@@ -444,6 +456,7 @@ def _build_execution_context(
         sandbox_path=working_root / "dummy",
         compute_backend_name=runtime_env.compute_backend_name,
         shared_filesystem=runtime_env.shared_filesystem,
+        step_run_id=unit.step_run_id,
     )
 
 

@@ -766,6 +766,7 @@ class TestLoadStepNameMap:
             {
                 "execution_run_id": ["e" * 32],
                 "execution_spec_id": ["s" * 32],
+                "step_run_id": [None],
                 "origin_step_number": [0],
                 "operation_name": ["ingest_fallback"],
                 "params": ["{}"],

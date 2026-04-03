@@ -29,6 +29,7 @@ def executions_path(tmp_path: Path) -> Path:
     records_data = {
         "execution_run_id": ["run_success", "run_failed"],
         "execution_spec_id": ["spec_success", "spec_failed"],
+        "step_run_id": [None, None],
         "origin_step_number": [1, 1],
         "operation_name": ["relax", "relax"],
         "params": ["{}", "{}"],
@@ -108,6 +109,7 @@ def test_cache_lookup_returns_most_recent_on_multiple_successes(
     records_data = {
         "execution_run_id": ["run_old", "run_new"],
         "execution_spec_id": ["same_spec", "same_spec"],
+        "step_run_id": [None, None],
         "origin_step_number": [1, 1],
         "operation_name": ["op", "op"],
         "params": ["{}", "{}"],
