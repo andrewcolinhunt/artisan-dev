@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2a4] - 2026-04-03
+
+### Added
+
+- `SlurmIntraBackend` for zero-latency `srun` dispatch within an existing SLURM
+  allocation (`salloc` session) — bypasses the scheduler queue entirely
+- SLURM intra-allocation tutorial and demo script
+- GPU execution defaults — sequential `max_workers=1` for GPU steps to avoid
+  CUDA context conflicts, automatic `MASTER_PORT` allocation
+- `skip_cache` pipeline parameter to force re-execution of all steps
+- Prefect server discovery improvements — version mismatch detection, stale
+  process warnings, multi-source resolution
+- "Using Pixi" getting-started page covering environments, tasks, shells, and
+  workspaces
+
+### Changed
+
+- Rewrote getting-started documentation pages and README with relative links
+- SLURM logs now route into the pipeline runs directory instead of the working
+  directory
+- Step output isolation via `step_run_id` — each step run writes to a unique
+  subdirectory, preventing collisions on re-runs
+
+### Fixed
+
+- Subprocess re-import guard — prevents user scripts from being re-executed
+  when workers spawn child processes
+- VS Code kernel slowness workaround restored to installation page
+
+### Refactored
+
+- Separated sandbox path computation from directory creation for testability
+
 ## [0.1.2a3] - 2026-04-01
 
 ### Fixed
@@ -101,7 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Caching and resume support
 - Jupyter Book 2 documentation site
 
-[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a3...HEAD
+[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a4...HEAD
+[0.1.2a4]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a3...v0.1.2a4
 [0.1.2a3]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a2...v0.1.2a3
 [0.1.2a2]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a1...v0.1.2a2
 [0.1.2a1]: https://github.com/dexterity-systems/artisan/compare/v0.1.1...v0.1.2a1
