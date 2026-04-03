@@ -118,6 +118,7 @@ def _stage_execution(
     user_overrides: dict[str, Any] | None = None,
     tool_output: str | None = None,
     worker_log: str | None = None,
+    step_run_id: str | None = None,
 ) -> None:
     """Stage execution record and edges, optionally flushing to NFS."""
     _stage_execution_edges(execution_edges, staging_path)
@@ -138,6 +139,7 @@ def _stage_execution(
         user_overrides=user_overrides,
         tool_output=tool_output,
         worker_log=worker_log,
+        step_run_id=step_run_id,
     )
     if shared_filesystem:
         _sync_staging_to_nfs(staging_path)
@@ -239,11 +241,13 @@ def _write_execution_record(
     user_overrides: dict[str, Any] | None = None,
     tool_output: str | None = None,
     worker_log: str | None = None,
+    step_run_id: str | None = None,
 ) -> None:
     """Serialize one execution record row to ``executions.parquet``."""
     row = {
         "execution_run_id": execution_run_id,
         "execution_spec_id": execution_spec_id,
+        "step_run_id": step_run_id,
         "origin_step_number": step_number,
         "operation_name": operation_name,
         "params": json.dumps(params or {}, default=artisan_json_default),
@@ -261,7 +265,12 @@ def _write_execution_record(
         "metadata": json.dumps(result_metadata or {}, default=artisan_json_default),
     }
     pl.DataFrame([row]).cast(
-        {"error": pl.String, "tool_output": pl.String, "worker_log": pl.String}
+        {
+            "error": pl.String,
+            "tool_output": pl.String,
+            "worker_log": pl.String,
+            "step_run_id": pl.String,
+        }
     ).write_parquet(
         staging_path / "executions.parquet",
         compression="zstd",

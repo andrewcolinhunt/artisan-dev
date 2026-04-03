@@ -32,6 +32,7 @@ def _create_executions_df(**overrides) -> pl.DataFrame:
     defaults = {
         "execution_run_id": ["e" * 32],
         "execution_spec_id": ["s" * 32],
+        "step_run_id": [None],
         "origin_step_number": [0],
         "operation_name": ["TestOp"],
         "timestamp_start": [datetime.now(UTC)],
@@ -46,6 +47,12 @@ def _create_executions_df(**overrides) -> pl.DataFrame:
         "worker_log": [None],
         "metadata": ["{}"],
     }
+    # Infer row count from overrides so nullable defaults auto-scale.
+    if overrides:
+        n = len(next(iter(overrides.values())))
+        for key, val in defaults.items():
+            if key not in overrides and len(val) != n:
+                defaults[key] = val * n
     defaults.update(overrides)
     return pl.DataFrame(defaults, schema=EXECUTIONS_SCHEMA)
 

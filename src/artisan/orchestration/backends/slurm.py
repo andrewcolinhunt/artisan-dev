@@ -35,6 +35,7 @@ class SlurmBackend(BackendBase):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
+        log_folder: Path | None = None,
     ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
         """Build a Prefect flow that dispatches units via SLURM job arrays."""
         from prefect_submitit import SlurmTaskRunner
@@ -42,6 +43,8 @@ class SlurmBackend(BackendBase):
         slurm_kwargs: dict[str, Any] = dict(resources.extra)
         if resources.gpus > 0:
             slurm_kwargs["slurm_gres"] = f"gpu:{resources.gpus}"
+        if log_folder is not None:
+            slurm_kwargs["log_folder"] = str(log_folder)
 
         task_runner = SlurmTaskRunner(
             partition=slurm_kwargs.pop("partition", "cpu"),

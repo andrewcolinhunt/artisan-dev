@@ -23,6 +23,7 @@ def _build_execution_context(
     sandbox_path: Path | None,
     compute_backend_name: str = "local",
     shared_filesystem: bool = False,
+    step_run_id: str | None = None,
 ) -> ExecutionContext:
     """Build an execution context (shared by creator and curator paths)."""
     artifact_store = ArtifactStore(delta_root_path)
@@ -39,6 +40,7 @@ def _build_execution_context(
         sandbox_path=sandbox_path,
         compute_backend=compute_backend_name,
         shared_filesystem=shared_filesystem,
+        step_run_id=step_run_id,
     )
 
 
@@ -55,6 +57,7 @@ def build_creator_execution_context(
     sandbox_path: Path,
     compute_backend_name: str = "local",
     shared_filesystem: bool = False,
+    step_run_id: str | None = None,
 ) -> ExecutionContext:
     """Build an execution context for a creator operation.
 
@@ -73,6 +76,7 @@ def build_creator_execution_context(
         sandbox_path=sandbox_path,
         compute_backend_name=compute_backend_name,
         shared_filesystem=shared_filesystem,
+        step_run_id=step_run_id,
     )
 
 
@@ -88,6 +92,7 @@ def build_curator_execution_context(
     operation: OperationDefinition,
     compute_backend_name: str = "local",
     shared_filesystem: bool = False,
+    step_run_id: str | None = None,
 ) -> ExecutionContext:
     """Build an execution context for a curator operation.
 
@@ -106,4 +111,5 @@ def build_curator_execution_context(
         sandbox_path=None,
         compute_backend_name=compute_backend_name,
         shared_filesystem=shared_filesystem,
+        step_run_id=step_run_id,
     )
