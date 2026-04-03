@@ -300,6 +300,7 @@ transport.
 | `orchestration/backends/base.py` | `DispatchHandle` ABC, rename `create_flow` → `create_dispatch_handle`, remove `_build_prefect_flow` |
 | `orchestration/backends/local.py` | `LocalDispatchHandle` (units passed in-memory via ProcessPool) |
 | `orchestration/backends/slurm.py` | `SlurmDispatchHandle` with scancel + pickle-to-fs unit transport |
+| `orchestration/backends/slurm_intra.py` | `SlurmIntraDispatchHandle` — same as `SlurmDispatchHandle` but with `SlurmTaskRunner(execution_mode="srun")` |
 | `orchestration/engine/dispatch.py` | Move `_save_units`/`_load_units` to handle implementations, add `cancel_event` param on `_collect_results` |
 | `orchestration/engine/step_executor.py` | Use `handle.run(units, runtime_env)` instead of `step_flow(units_path, runtime_env)`, remove `_save_units` call |
 | `orchestration/pipeline_manager.py` | Track active dispatch handles, wire `cancel()` to call `handle.cancel()` |
