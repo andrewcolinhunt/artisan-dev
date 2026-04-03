@@ -34,8 +34,7 @@ A serializable config object that creates fsspec filesystem instances
 and provides `storage_options` dicts for Polars/delta-rs.
 
 ```python
-@dataclass(frozen=True)
-class StorageConfig:
+class StorageConfig(BaseModel):
     """Storage backend configuration.
 
     Credentials are NOT stored here — they come from the execution
@@ -44,8 +43,15 @@ class StorageConfig:
     endpoint, bucket).
     """
 
+    model_config = {"frozen": True}
+
     protocol: str = "file"
-    options: dict[str, str] = field(default_factory=dict)
+    options: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def is_local(self) -> bool:
+        """Whether this config targets a local filesystem."""
+        return self.protocol == "file"
 
     def filesystem(self) -> AbstractFileSystem:
         """Create an fsspec filesystem instance."""
@@ -56,12 +62,16 @@ class StorageConfig:
 
         Returns None for local filesystem (no options needed).
         """
-        if self.protocol == "file":
+        if self.is_local:
             return None
         # delta-rs uses AWS_* env vars by default for S3
         # only non-default options need to be passed explicitly
         return dict(self.options)
 ```
+
+**Why `BaseModel`?** `StorageConfig` is embedded inside `RuntimeEnvironment`
+(a Pydantic model). Using `BaseModel` gives native Pydantic
+serialization/validation and matches every other config class in the project.
 
 **Why not pass the fsspec instance directly?** Because the config must be
 serializable (it travels in RuntimeEnvironment to workers). The `fs`
@@ -100,10 +110,17 @@ class RuntimeEnvironment(BaseModel):
     compute_backend_name: str = "local"
 ```
 
-**Migration:** `delta_root_path: Path` → `delta_root: str`. All
-consumers that currently do `Path(runtime_env.delta_root_path)` instead
-do `runtime_env.delta_root` (a string). `working_root` stays as a local
-path string — it's always on the worker's local filesystem.
+**Migration:** Three fields are renamed (dropping the `_path` suffix) and
+change from `Path` to `str`:
+
+- `delta_root_path: Path` → `delta_root: str`
+- `staging_root_path: Path` → `staging_root: str`
+- `working_root_path: Path | None` → `working_root: str | None`
+
+All consumers that currently do `Path(runtime_env.delta_root_path)` (or
+the staging/working equivalents) switch to `runtime_env.delta_root` (a
+string). `working_root` stays as a local path string — it's always on
+the worker's local filesystem.
 
 ---
 
@@ -145,10 +162,30 @@ class StagingArea:
         self._staged_tables.add(table_name)
         return parquet_uri
 
+    def stage_artifacts(self, artifacts_by_table: dict[str, pl.DataFrame]) -> None:
+        """Stage multiple artifact DataFrames by table name."""
+        for table_name, df in artifacts_by_table.items():
+            self.stage_dataframe(df, table_name)
+
+    def get_staged_file(self, table_name: str) -> str | None:
+        """Return URI of a staged parquet file, or None."""
+        uri = f"{self._batch_dir}/{table_name}.parquet"
+        return uri if self._fs.exists(uri) else None
+
+    def list_staged_tables(self) -> list[str]:
+        """Return table names that have been staged."""
+        return sorted(self._staged_tables)
+
     def cleanup(self) -> None:
         if self._fs.exists(self._batch_dir):
             self._fs.rm(self._batch_dir, recursive=True)
         self._staged_tables.clear()
+
+    def __enter__(self) -> StagingArea:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.cleanup()
 ```
 
 **What changes:** `Path` → `str`, `path.mkdir()` → `fs.makedirs()`,
@@ -296,8 +333,12 @@ class DeltaCommitter:
 ```
 
 **What changes:** `Path` → `str`, `str(table_path)` → `table_uri`,
-`.exists()` → `fs.exists()`. The core commit logic (read staged, write
-delta, dedup, compact) is unchanged.
+`.exists()` → `fs.exists()`. The constructor now receives a
+`StagingManager` instead of a `staging_dir` string (currently
+`DeltaCommitter` creates the `StagingManager` internally). This allows
+the orchestrator to share a single `StagingManager` instance with other
+components. The core commit logic (read staged, write delta, dedup,
+compact) is unchanged.
 
 ---
 
@@ -324,14 +365,14 @@ def _create_staging_path(
 concatenation (it's already pure path arithmetic, no I/O). Returns a
 string instead of a `Path`.
 
-The NFS fsync function becomes conditional:
+The NFS fsync function becomes conditional on `StorageConfig.is_local`:
 
 ```python
-def _sync_staging_if_needed(staging_uri: str, fs: AbstractFileSystem) -> None:
+def _sync_staging_if_needed(staging_uri: str, storage: StorageConfig) -> None:
     """Flush staged files to NFS. No-op for non-local filesystems."""
-    if not isinstance(fs, LocalFileSystem):
+    if not storage.is_local:
         return
-    _sync_to_nfs(Path(staging_uri))
+    _sync_staging_to_nfs(Path(staging_uri))
 ```
 
 ---
@@ -345,12 +386,12 @@ stays as-is but is gated on the filesystem type:
 def await_staging_files(
     staging_root: str,
     execution_run_ids: list[str],
-    fs: AbstractFileSystem,
+    storage: StorageConfig,
     timeout_seconds: float,
     ...
 ) -> None:
     """Wait for staging files to appear. Only runs for local FS on NFS."""
-    if not isinstance(fs, LocalFileSystem):
+    if not storage.is_local:
         return  # S3/GCS don't have cache coherency issues
     # ... existing NFS verification code, using Path(staging_root) ...
 ```
@@ -493,23 +534,24 @@ demands it.
 
 ### Changes
 
-| Component | Current | Ideal |
-|-----------|---------|-------|
-| `RuntimeEnvironment` paths | `Path` | `str` (URI) |
+| Component | Current | Proposed |
+|-----------|---------|----------|
+| `RuntimeEnvironment` fields | `delta_root_path`, `staging_root_path`, `working_root_path` | `delta_root`, `staging_root`, `working_root` (drop `_path` suffix) |
+| `RuntimeEnvironment` path types | `Path` | `str` (URI) |
 | `RuntimeEnvironment` | no storage config | `storage: StorageConfig` |
 | `StagingArea.__init__` | `Path(staging_dir)` | `str` + `fs: AbstractFileSystem` |
 | `StagingArea` I/O | `path.mkdir()`, `df.write_parquet(path)` | `fs.makedirs()`, `df.write_parquet(fs.open())` |
 | `StagingManager.__init__` | `Path(staging_dir)` | `str` + `fs: AbstractFileSystem` |
 | `StagingManager` I/O | `rglob()`, `pl.read_parquet(path)` | `fs.glob()`, `pl.read_parquet(fs.open())` |
-| `DeltaCommitter.__init__` | `Path(delta_base_path)` | `str` + `fs` + `storage_options` |
+| `DeltaCommitter.__init__` | `Path(delta_base_path)`, `staging_dir` (creates `StagingManager` internally) | `str` + `fs` + `storage_options` + receives `StagingManager` |
 | `DeltaCommitter` writes | `df.write_delta(str(path))` | `df.write_delta(uri, storage_options=...)` |
 | `ArtifactStore.__init__` | `Path(base_path)` | `str` + `fs` + `storage_options` |
 | `ArtifactStore` reads | `pl.scan_delta(str(path))` | `pl.scan_delta(uri, storage_options=...)` |
 | `ProvenanceStore` | same as ArtifactStore | same pattern |
 | `.exists()` guards | `table_path.exists()` | `fs.exists(uri)` |
 | `parquet_writer` | `Path.mkdir()`, `df.write_parquet(path)` | `fs.makedirs()`, `df.write_parquet(fs.open())` |
-| NFS fsync | always runs for shared FS | gated on `isinstance(fs, LocalFileSystem)` |
-| Staging verification | NFS-specific polling | gated on fs type |
+| NFS fsync (`_sync_staging_to_nfs`) | always runs for shared FS | gated on `StorageConfig.is_local` |
+| Staging verification | NFS-specific polling | gated on `StorageConfig.is_local` |
 | `_save_units()` / `_load_units()` | writes pickle to Path | moves inside DispatchHandle |
 | `shard_path()` | returns `Path` | `shard_uri()` returns `str` |
 | `BackendBase.create_flow()` | returns callable | returns `DispatchHandle` |
@@ -540,9 +582,19 @@ Python package, ~300KB.
 **s3fs / gcsfs:** Optional extras for S3/GCS support. `pip install
 artisan[s3]` or `artisan[gcs]`. Not required for local/SLURM.
 
-**Prefect:** Becomes optional. Only needed for local and SLURM backends
-that use Prefect task runners internally. Cloud backends use native
-dispatch.
+**Prefect:** Becomes optional once DispatchHandle is implemented. Today
+Prefect is deeply embedded: `execute_unit_task` is a `@task`-decorated
+function (`dispatch.py`), `BackendBase._build_prefect_flow` creates
+`@flow` wrappers (`base.py`), `LocalBackend` subclasses Prefect's
+`ProcessPoolTaskRunner` (`local.py`), and both `prefect` and
+`prefect-submitit` are hard dependencies in `pyproject.toml`.
+
+Decoupling Prefect is a **separate effort** from the storage refactoring.
+The storage changes (fsspec, StorageConfig, URI paths) can land first
+with Prefect still in place. The DispatchHandle abstraction then replaces
+Prefect's `@task`/`@flow` machinery, at which point Prefect moves behind
+`LocalDispatchHandle` and `SlurmDispatchHandle` as an internal
+implementation detail (or is replaced entirely).
 
 ---
 
