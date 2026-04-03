@@ -13,6 +13,7 @@ from __future__ import annotations
 from artisan.orchestration.backends.base import BackendBase
 from artisan.orchestration.backends.local import LocalBackend
 from artisan.orchestration.backends.slurm import SlurmBackend
+from artisan.orchestration.backends.slurm_intra import SlurmIntraBackend
 
 
 class Backend:
@@ -27,9 +28,12 @@ class Backend:
 
     LOCAL = LocalBackend()
     SLURM = SlurmBackend()
+    SLURM_INTRA = SlurmIntraBackend()
 
 
-_REGISTRY: dict[str, BackendBase] = {b.name: b for b in [Backend.LOCAL, Backend.SLURM]}
+_REGISTRY: dict[str, BackendBase] = {
+    b.name: b for b in [Backend.LOCAL, Backend.SLURM, Backend.SLURM_INTRA]
+}
 
 
 def resolve_backend(backend: str | BackendBase) -> BackendBase:

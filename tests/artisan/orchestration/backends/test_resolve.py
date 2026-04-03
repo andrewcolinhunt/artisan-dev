@@ -9,6 +9,7 @@ from artisan.orchestration.backends import (
     BackendBase,
     LocalBackend,
     SlurmBackend,
+    SlurmIntraBackend,
     resolve_backend,
 )
 
@@ -20,6 +21,9 @@ class TestBackendNamespace:
     def test_slurm_is_slurm_backend(self) -> None:
         assert isinstance(Backend.SLURM, SlurmBackend)
 
+    def test_slurm_intra_is_slurm_intra_backend(self) -> None:
+        assert isinstance(Backend.SLURM_INTRA, SlurmIntraBackend)
+
 
 class TestResolveBackend:
     def test_resolve_string_local(self) -> None:
@@ -29,6 +33,10 @@ class TestResolveBackend:
     def test_resolve_string_slurm(self) -> None:
         result = resolve_backend("slurm")
         assert isinstance(result, SlurmBackend)
+
+    def test_resolve_string_slurm_intra(self) -> None:
+        result = resolve_backend("slurm_intra")
+        assert isinstance(result, SlurmIntraBackend)
 
     def test_passthrough_instance(self) -> None:
         backend = LocalBackend(default_max_workers=8)
@@ -45,5 +53,5 @@ class TestResolveBackend:
         assert result._default_max_workers == 16
 
     def test_all_backends_are_backend_base(self) -> None:
-        for name in ("local", "slurm"):
+        for name in ("local", "slurm", "slurm_intra"):
             assert isinstance(resolve_backend(name), BackendBase)

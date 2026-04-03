@@ -50,8 +50,9 @@ Registration is automatic at class definition time via `__init_subclass__`.
 ## Backend
 
 An execution backend that controls where and how workers run.
-Artisan ships with two backends: `local` (ProcessPool on the orchestrator
-machine) and `slurm` (job array submission via submitit on HPC clusters). Each
+Artisan ships with three backends: `local` (ProcessPool on the orchestrator
+machine), `slurm` (job array submission via submitit on HPC clusters), and
+`slurm_intra` (srun dispatch within an existing SLURM allocation). Each
 backend defines `WorkerTraits` (worker-side I/O behavior) and
 `OrchestratorTraits` (post-dispatch behavior on the orchestrator).
 

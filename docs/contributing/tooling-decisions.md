@@ -63,10 +63,11 @@ and observability.
 - **Python-native.** No DSL, no YAML. Task dispatch expressed as decorated
   Python functions. Dependencies flow through normal Python variables.
 - **TaskRunner extensibility.** The `TaskRunner` interface provides a clean
-  extension point for compute backends. The project ships two backends: a
-  `ProcessPoolTaskRunner` for local execution and a `SlurmTaskRunner` (via
-  `prefect-submitit`) for HPC clusters. Additional backends (Kubernetes, cloud)
-  can be added by implementing the same interface.
+  extension point for compute backends. The project ships three backends: a
+  `ProcessPoolTaskRunner` for local execution, a `SlurmTaskRunner` (via
+  `prefect-submitit`) for HPC cluster job arrays, and the same
+  `SlurmTaskRunner` in srun mode for intra-allocation dispatch. Additional
+  backends (Kubernetes, cloud) can be added by implementing the same interface.
 - **Thin dispatch layer.** Prefect handles task dispatch and provides a UI for
   run observability, but does not own the data model. All artifacts, provenance,
   and pipeline state live in Delta Lake. The framework is not locked to Prefect —
