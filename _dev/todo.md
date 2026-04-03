@@ -10,6 +10,7 @@
 
 - in docs, add comparison to ray, dask, flyte
 evaluate in comparison to ray data
+MLflow, DVC, Neptune, Weights & Biases, and Sacred all offer similar provenance/artifact tracking.
 
 - how is materialization handled for files that are external files, only references stored in the delta lake?
 
