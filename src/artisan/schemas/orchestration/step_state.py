@@ -15,6 +15,7 @@ class StepState(BaseModel):
     """
 
     pipeline_run_id: str
+    step_run_id: str = ""
     step_number: int
     step_name: str
     step_spec_id: str
@@ -46,6 +47,7 @@ class StepState(BaseModel):
             output_roles=self.output_roles,
             output_types=self.output_types,
             duration_seconds=self.duration_seconds,
+            step_run_id=self.step_run_id or None,
         )
 
     model_config = {"frozen": True}

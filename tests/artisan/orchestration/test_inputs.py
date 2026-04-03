@@ -17,6 +17,7 @@ def _create_executions_df(**overrides) -> pl.DataFrame:
     defaults = {
         "execution_run_id": ["e" * 32],
         "execution_spec_id": ["s" * 32],
+        "step_run_id": [None],
         "origin_step_number": [0],
         "operation_name": ["TestOp"],
         "timestamp_start": [datetime.now(UTC)],

@@ -83,9 +83,21 @@ class LocalBackend(BackendBase):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
+        log_folder: Path | None = None,
     ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
-        """Build a local ProcessPool flow."""
-        max_workers = execution.max_workers or self._default_max_workers
+        """Build a local ProcessPool flow.
+
+        GPU operations default to sequential execution (max_workers=1) to
+        avoid GPU memory contention and CUDA context conflicts. CPU
+        operations use the configured pool size.
+        """
+        if execution.max_workers is not None:
+            max_workers = execution.max_workers
+        elif resources.gpus > 0:
+            max_workers = 1
+        else:
+            max_workers = self._default_max_workers
+
         return self._build_prefect_flow(
             SIGINTSafeProcessPoolTaskRunner(max_workers=max_workers)
         )
@@ -102,10 +114,10 @@ class LocalBackend(BackendBase):
     def validate_operation(self, operation: OperationDefinition) -> None:
         """Warn if SLURM-specific resources are configured on a local backend."""
         r = operation.resources
-        if r.gpus > 0 or r.extra:
+        if r.extra:
             warnings.warn(
                 f"Operation {operation.name!r} has SLURM-specific resources "
-                f"(gpus={r.gpus!r}, extra={r.extra!r}) but backend is "
-                f"'local'. These will be ignored.",
+                f"(extra={r.extra!r}) but backend is 'local'. "
+                f"These will be ignored.",
                 stacklevel=2,
             )
