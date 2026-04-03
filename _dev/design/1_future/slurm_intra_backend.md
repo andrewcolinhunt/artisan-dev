@@ -1,9 +1,9 @@
 # Design: SLURM Intra-Allocation Backend
 
-**Date:** 2026-03-20
-**Status:** Draft
+**Date:** 2026-04-02
+**Status:** Draft (revised after prefect-submitit srun implementation)
 **Repo:** `artisan`
-**Related:** [srun Execution Mode (prefect-submitit)](srun_execution_mode.md)
+**Depends on:** `prefect-submitit` v0.1.6+ (srun execution mode)
 
 ---
 
@@ -76,14 +76,14 @@ SlurmIntraBackend                SlurmTaskRunner
       ▼                                │
   Prefect @flow                        │
     execute_unit_task.map() ──────────►│
-                                       ├─ pickle callable to NFS
-                                       ├─ srun --exclusive ... python -m submitit.core._submit
+                                       ├─ cloudpickle callable → job.pkl on NFS
+                                       ├─ srun --exact --mpi=none -n1 ... python -m prefect_submitit.srun_worker
                                        │      │
-                                       │      ├──► Node 0, GPU 0: unpickle → execute → pickle result
-                                       │      ├──► Node 1, GPU 2: unpickle → execute → pickle result
-                                       │      └──► Node 3, GPU 7: unpickle → execute → pickle result
+                                       │      ├──► Node 0, GPU 0: load job.pkl → execute → write result.pkl
+                                       │      ├──► Node 1, GPU 2: load job.pkl → execute → write result.pkl
+                                       │      └──► Node 3, GPU 7: load job.pkl → execute → write result.pkl
                                        │
-                                       ├─ poll for result pickles on NFS
+                                       ├─ poll for result.pkl on NFS
                                        ├─ return SrunPrefectFuture per task
                                        │
   _collect_results()  ◄────────────────┘
@@ -107,7 +107,7 @@ class SlurmIntraBackend(BackendBase):
 
     name = "slurm_intra"
     worker_traits = WorkerTraits(
-        worker_id_env_var=None,
+        worker_id_env_var="SLURM_STEP_ID",
         shared_filesystem=True,
     )
     orchestrator_traits = OrchestratorTraits(
@@ -120,13 +120,16 @@ class SlurmIntraBackend(BackendBase):
 
         slurm_kwargs = dict(resources.extra)
 
+        # Unlike SlurmBackend, pass gpus directly as gpus_per_node rather
+        # than routing through slurm_gres. The SrunBackend builds
+        # --gres=gpu:N from gpus_per_node, so this is the correct path.
         task_runner = SlurmTaskRunner(
             execution_mode="srun",
             time_limit=resources.time_limit,
             mem_gb=resources.memory_gb,
             gpus_per_node=resources.gpus,
+            cpus_per_task=resources.cpus,
             units_per_worker=execution.units_per_worker,
-            slurm_job_name=f"s{step_number}_{job_name}",
             **slurm_kwargs,
         )
         return self._build_prefect_flow(task_runner)
@@ -144,9 +147,17 @@ class SlurmIntraBackend(BackendBase):
             )
 ```
 
-This mirrors `SlurmBackend.create_flow()` almost exactly — same parameter
-mapping, same `_build_prefect_flow` call. The only difference is
-`execution_mode="srun"` instead of the implicit `"slurm"`.
+This follows the same pattern as `SlurmBackend.create_flow()` — same
+`_build_prefect_flow` call, same trait configuration. The differences:
+
+- `execution_mode="srun"` instead of the implicit `"slurm"`.
+- `gpus_per_node=resources.gpus` directly, rather than routing through
+  `slurm_gres`. The `SrunBackend._build_srun_command()` builds
+  `--gres=gpu:N` from `gpus_per_node`, so this is the correct path.
+- `partition` is omitted — srun dispatches within the existing allocation,
+  so the partition is already determined by the `salloc`/`sbatch`.
+- `slurm_job_name` is omitted — srun steps don't carry independent job
+  names in SLURM.
 
 ### Registration
 
@@ -180,9 +191,36 @@ pipeline.run(
 
 ---
 
-## Open Questions
+## Resolved Design Questions
 
-**Worker ID propagation.** With `worker_id_env_var=None`, all srun workers
-report `worker_id=0` in provenance. `srun` sets `SLURM_PROCID` (global rank)
-and `SLURM_LOCALID` (node-local rank) in each task's environment. We could
-use `SLURM_PROCID` as the worker ID env var for provenance tracking.
+These were open during the prefect-submitit srun implementation and are now
+settled.
+
+**Worker entry point.** The srun worker is `prefect_submitit.srun_worker`,
+a custom module that loads `job.pkl`, executes the callable, and writes an
+envelope dict (`{"status": "ok"/"error", "result": ...}`) to `result.pkl`
+via atomic rename. submitit's `_submit` module was evaluated but not suitable
+as a standalone srun entry point.
+
+**Worker ID propagation.** `worker_id_env_var="SLURM_STEP_ID"`. Each srun
+invocation creates a SLURM job step with a unique, incrementing step ID.
+This maps naturally to artisan's `worker_id` for provenance tracking.
+(`SLURM_PROCID` would always be 0 since each srun is `-n1`.)
+
+**Concurrency control.** `SrunBackend` caps concurrent srun processes via
+`srun_launch_concurrency` (default 128) with a `_wait_for_slot()` gate and
+a 50ms minimum launch interval to avoid overwhelming slurmctld. Excess tasks
+block in Python, not in srun.
+
+**Batching (`units_per_worker > 1`).** Fully supported. `SlurmTaskRunner._map_srun()`
+groups items into batches, launches one srun per batch, and wraps per-item
+results in `SlurmBatchedItemFuture`.
+
+**Log capture.** `SrunPrefectFuture` captures stderr via the subprocess pipe
+and exposes it through `logs()`. artisan's `_capture_slurm_logs()` already
+handles this — it checks for `logs()` and `slurm_job_id` on the future,
+both of which `SrunPrefectFuture` provides.
+
+**Cleanup.** Pickle files (`job.pkl`, `result.pkl`) remain in `srun/step_N/`
+under the log folder after execution. No automatic cleanup — left for user
+or external tooling.
