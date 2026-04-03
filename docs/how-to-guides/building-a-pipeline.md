@@ -61,7 +61,7 @@ pipeline = PipelineManager.create(
 | `working_root` | `Path \| str \| None` | `tempfile.gettempdir()` | Worker sandbox directory. Defaults to `$TMPDIR` |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | How to handle step failures (`CONTINUE` or `FAIL_FAST`) |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When completed steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
-| `backend` | `str \| BackendBase` | `"local"` | Default execution backend. Accepts an instance or string name (`"local"`, `"slurm"`) |
+| `backend` | `str \| BackendBase` | `"local"` | Default execution backend. Accepts an instance or string name (`"local"`, `"slurm"`, `"slurm_intra"`) |
 | `preserve_staging` | `bool` | `False` | Keep staging files after commit (debugging) |
 | `preserve_working` | `bool` | `False` | Keep worker sandboxes after execution (debugging) |
 | `recover_staging` | `bool` | `True` | Commit leftover staging files from prior crashed runs at init |
