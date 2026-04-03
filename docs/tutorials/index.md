@@ -55,6 +55,8 @@ configuration.
   operations on a SLURM cluster
 - [Pipeline Cancellation](execution/08-pipeline-cancellation.ipynb) (~10 min) --
   Cancel pipelines with `cancel()` or Ctrl+C, inspect results, and re-run
+- [SLURM Intra-Allocation](execution/10-slurm-intra-execution.ipynb) (~10 min) --
+  Dispatch work via srun within an existing SLURM allocation
 
 ## Analysis
 
