@@ -13,6 +13,7 @@ from artisan.schemas.operation_config.environment_spec import (
     EnvironmentSpec,
     LocalEnvironmentSpec,
     PixiEnvironmentSpec,
+    _find_free_port,
 )
 
 
@@ -212,3 +213,70 @@ class TestPixiEnvironmentSpec:
     def test_isinstance(self):
         spec = PixiEnvironmentSpec()
         assert isinstance(spec, EnvironmentSpec)
+
+
+class TestFindFreePort:
+    def test_returns_positive_int(self):
+        port = _find_free_port()
+        assert isinstance(port, int)
+        assert port > 0
+
+    def test_consecutive_calls_return_different_ports(self):
+        ports = {_find_free_port() for _ in range(10)}
+        assert len(ports) > 1
+
+
+class TestMasterPortInjection:
+    """MASTER_PORT/MASTER_ADDR auto-injection for GPU container specs."""
+
+    def test_apptainer_gpu_injects_master_port(self):
+        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"), gpu=True)
+        result = spec.wrap_command(["cmd"])
+        env_pairs = {result[i + 1] for i, v in enumerate(result) if v == "--env"}
+        master_ports = [p for p in env_pairs if p.startswith("MASTER_PORT=")]
+        master_addrs = [p for p in env_pairs if p.startswith("MASTER_ADDR=")]
+        assert len(master_ports) == 1
+        assert int(master_ports[0].split("=")[1]) > 0
+        assert master_addrs == ["MASTER_ADDR=127.0.0.1"]
+
+    def test_apptainer_gpu_respects_explicit_master_port(self):
+        spec = ApptainerEnvironmentSpec(
+            image=Path("/img.sif"), gpu=True, env={"MASTER_PORT": "12345"}
+        )
+        result = spec.wrap_command(["cmd"])
+        env_pairs = [result[i + 1] for i, v in enumerate(result) if v == "--env"]
+        master_ports = [p for p in env_pairs if p.startswith("MASTER_PORT=")]
+        assert master_ports == ["MASTER_PORT=12345"]
+
+    def test_apptainer_no_gpu_no_injection(self):
+        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"), gpu=False)
+        result = spec.wrap_command(["cmd"])
+        joined = " ".join(result)
+        assert "MASTER_PORT" not in joined
+        assert "MASTER_ADDR" not in joined
+
+    def test_docker_gpu_injects_master_port(self):
+        spec = DockerEnvironmentSpec(image="img:latest", gpu=True)
+        result = spec.wrap_command(["cmd"])
+        env_pairs = {result[i + 1] for i, v in enumerate(result) if v == "--env"}
+        master_ports = [p for p in env_pairs if p.startswith("MASTER_PORT=")]
+        master_addrs = [p for p in env_pairs if p.startswith("MASTER_ADDR=")]
+        assert len(master_ports) == 1
+        assert int(master_ports[0].split("=")[1]) > 0
+        assert master_addrs == ["MASTER_ADDR=127.0.0.1"]
+
+    def test_docker_gpu_respects_explicit_master_port(self):
+        spec = DockerEnvironmentSpec(
+            image="img:latest", gpu=True, env={"MASTER_PORT": "54321"}
+        )
+        result = spec.wrap_command(["cmd"])
+        env_pairs = [result[i + 1] for i, v in enumerate(result) if v == "--env"]
+        master_ports = [p for p in env_pairs if p.startswith("MASTER_PORT=")]
+        assert master_ports == ["MASTER_PORT=54321"]
+
+    def test_docker_no_gpu_no_injection(self):
+        spec = DockerEnvironmentSpec(image="img:latest", gpu=False)
+        result = spec.wrap_command(["cmd"])
+        joined = " ".join(result)
+        assert "MASTER_PORT" not in joined
+        assert "MASTER_ADDR" not in joined

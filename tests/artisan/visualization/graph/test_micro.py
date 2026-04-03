@@ -34,6 +34,7 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     exec_data = {
         "execution_run_id": ["exec_1", "exec_2"],
         "execution_spec_id": ["spec_1", "spec_2"],
+        "step_run_id": [None, None],
         "origin_step_number": [1, 2],
         "operation_name": ["data_parser", "metric_calc"],
         "params": ["{}", "{}"],

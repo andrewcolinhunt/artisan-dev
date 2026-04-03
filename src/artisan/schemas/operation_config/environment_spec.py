@@ -9,9 +9,17 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 from pathlib import Path
 
 from pydantic import BaseModel, Field
+
+
+def _find_free_port() -> int:
+    """Find a free ephemeral port by binding to port 0."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 class EnvironmentSpec(BaseModel):
@@ -81,6 +89,10 @@ def _container_wrap(
         parts.extend([bind_flag, f"{host}:{container}"])
     for k, v in env.items():
         parts.extend(["--env", f"{k}={v}"])
+    if gpu and "MASTER_PORT" not in env:
+        parts.extend(["--env", f"MASTER_PORT={_find_free_port()}"])
+    if gpu and "MASTER_ADDR" not in env:
+        parts.extend(["--env", "MASTER_ADDR=127.0.0.1"])
     parts.append(image)
     parts.extend(cmd)
     return parts
