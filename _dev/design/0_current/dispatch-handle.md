@@ -1,7 +1,7 @@
 # Design: DispatchHandle
 
-**Date:** 2026-03-24
-**Status:** Draft
+**Date:** 2026-03-24 (updated 2026-04-02)
+**Status:** Active
 
 ---
 
@@ -25,6 +25,13 @@ Serves two purposes:
   fire off backend work and poll for completion. `dispatch()` / `is_done()`
   / `collect()` provide this.
 
+- **Handle-owned unit transport for cloud backends.** Cloud backends
+  (Modal, Ray, Lambda) send units through their native dispatch
+  mechanism, not through a shared filesystem. The handle owns unit
+  transport — `dispatch()` takes units directly and decides how to
+  deliver them. See `cloud-storage-design.md` for the full storage
+  design.
+
 ---
 
 ## Interface
@@ -32,8 +39,18 @@ Serves two purposes:
 ```python
 class DispatchHandle(ABC):
     @abstractmethod
-    def dispatch(self, units_path: str, runtime_env: RuntimeEnvironment) -> None:
-        """Start execution, return immediately."""
+    def dispatch(
+        self,
+        units: list[ExecutionUnit | ExecutionComposite],
+        runtime_env: RuntimeEnvironment,
+    ) -> None:
+        """Start execution, return immediately.
+
+        The handle owns unit transport — it decides how to deliver
+        units to workers. Shared-FS handles write a pickle file.
+        Cloud handles send units through their native mechanism
+        (Modal .map() args, Ray object store, etc.).
+        """
 
     @abstractmethod
     def is_done(self) -> bool:
@@ -47,12 +64,16 @@ class DispatchHandle(ABC):
     def cancel(self) -> None:
         """Cancel in-flight work. Thread-safe, idempotent."""
 
-    def run(self, units_path: str, runtime_env: RuntimeEnvironment) -> list[dict]:
+    def run(
+        self,
+        units: list[ExecutionUnit | ExecutionComposite],
+        runtime_env: RuntimeEnvironment,
+    ) -> list[dict]:
         """Execute the step. Blocks until completion or cancellation.
 
         Concrete template method: dispatch() + poll is_done() + collect().
         """
-        self.dispatch(units_path, runtime_env)
+        self.dispatch(units, runtime_env)
         while not self.is_done():
             time.sleep(0.1)
         return self.collect()
@@ -68,14 +89,34 @@ any state (no-op if not dispatched or already done). If `dispatch()` itself
 fails (e.g. SLURM submission error), it raises immediately — the handle
 is not recoverable.
 
+**Unit transport is handle-owned.** The previous design passed a
+`units_path` (file path to pickled units). The handle now receives units
+directly and decides how to deliver them:
+
+- **LocalDispatchHandle:** passes units through ProcessPool
+  (multiprocessing pickle serialization, same as current behavior)
+- **SlurmDispatchHandle:** writes pickle to shared filesystem via
+  fsspec, workers read from the same path
+- **ModalDispatchHandle:** passes units as arguments to
+  `modal.Function.map()`
+- **K8sDispatchHandle:** writes pickle to fsspec (NFS PVC or S3),
+  workers read via fsspec
+- **RayDispatchHandle:** puts units in Ray object store
+
+`_save_units()` and `_load_units()` move from `dispatch.py` into the
+shared-FS handle implementations. `dispatch.py` retains
+`execute_unit_task` and `_collect_results`.
+
 ---
 
 ## Backend implementations
 
 ### LocalDispatchHandle
 
-- `dispatch()` enters the Prefect task runner context, loads units, calls
-  `execute_unit_task.map()`, and stores the resulting Prefect futures.
+- `dispatch(units, runtime_env)` enters the Prefect task runner context,
+  passes units directly to `execute_unit_task.map()` (no pickle file —
+  multiprocessing serializes them), and stores the resulting Prefect
+  futures.
 - `is_done()` checks whether all Prefect futures have resolved.
 - `collect()` gathers results from Prefect futures via `_collect_results`,
   then exits the task runner context.
@@ -85,8 +126,9 @@ is not recoverable.
 
 ### SlurmDispatchHandle
 
-- `dispatch()` submits via `srun`/`sbatch`. Returns immediately after
-  submission.
+- `dispatch(units, runtime_env)` writes units to a pickle file on the
+  shared filesystem (via fsspec), then submits via `srun`/`sbatch`.
+  Returns immediately after submission.
 - `is_done()` checks job status (sacct or job state polling).
 - `collect()` gathers results from completed futures, captures SLURM logs.
 - `cancel()` calls `scancel --name <job_name>` (works even before job IDs
@@ -110,7 +152,7 @@ The cancel event flows from `DispatchHandle` → `collect()` →
 
 ---
 
-## Refactoring `_build_prefect_flow`
+## Refactoring `_build_prefect_flow` and `dispatch.py`
 
 `BackendBase._build_prefect_flow()` currently builds a Prefect `@flow`
 closure that loads units, maps `execute_unit_task`, and calls
@@ -118,17 +160,24 @@ closure that loads units, maps `execute_unit_task`, and calls
 `SlurmBackend` delegate to it.
 
 With `DispatchHandle`, these steps are split across `dispatch()` and
-`collect()`, so the monolithic flow closure no longer fits. Replace
-`_build_prefect_flow` with shared helpers that the handles call directly:
+`collect()`, so the monolithic flow closure no longer fits.
 
-- `_load_units` and `execute_unit_task` already exist in `dispatch.py`
-  and are reused as-is.
-- Each handle's `dispatch()` enters the task runner context, loads units,
-  and calls `execute_unit_task.map()`.
-- Each handle's `collect()` calls `_collect_results(futures, cancel_event)`.
+**Removed from `BackendBase`:** `_build_prefect_flow()`. No
+backwards-compat shim — call sites are updated in the same change.
 
-`_build_prefect_flow` is removed from `BackendBase`. No backwards-compat
-shim — call sites are updated in the same change.
+**Moved from `dispatch.py` into handle implementations:**
+`_save_units()` and `_load_units()`. These are only needed by shared-FS
+handles (SLURM, K8s+NFS) that write pickle files. The local handle
+doesn't need them (multiprocessing serializes directly). Cloud handles
+don't need them (units travel through native transport).
+
+**Stays in `dispatch.py`:** `execute_unit_task` (the Prefect `@task`
+that runs one unit) and `_collect_results` (parallel future collection).
+These are reused by all Prefect-based handles.
+
+Each handle's `dispatch()` enters the task runner context and calls
+`execute_unit_task.map()`. Each handle's `collect()` calls
+`_collect_results(futures, cancel_event)`.
 
 ---
 
@@ -158,7 +207,7 @@ dispatch phase. Both are needed.
 ```python
 class BackendBase(ABC):
     @abstractmethod
-    def create_flow(
+    def create_dispatch_handle(
         self,
         resources: ResourceConfig,
         execution: ExecutionConfig,
@@ -168,17 +217,23 @@ class BackendBase(ABC):
         """Build a configured dispatch handle for this backend."""
 ```
 
-Return type changes from `Callable` to `DispatchHandle`. Call sites change:
+Return type changes from `Callable` to `DispatchHandle`. Method renamed
+from `create_flow` to `create_dispatch_handle` (it no longer returns a
+flow). Call sites change:
 
 ```python
 # Before
 step_flow = backend.create_flow(...)
-results = step_flow(units_path=..., runtime_env=...)
+units_path = _save_units(units, staging_root, step_number)
+results = step_flow(units_path=str(units_path), runtime_env=runtime_env)
 
 # After
-handle = backend.create_flow(...)
-results = handle.run(units_path=..., runtime_env=...)
+handle = backend.create_dispatch_handle(...)
+results = handle.run(units=units_to_dispatch, runtime_env=runtime_env)
 ```
+
+The orchestrator no longer calls `_save_units()` — the handle owns unit
+transport.
 
 ---
 
@@ -186,11 +241,11 @@ results = handle.run(units_path=..., runtime_env=...)
 
 | File | Change |
 |------|--------|
-| `orchestration/backends/base.py` | `DispatchHandle` ABC, updated `create_flow` return type, remove `_build_prefect_flow` |
-| `orchestration/backends/local.py` | `LocalDispatchHandle` |
-| `orchestration/backends/slurm.py` | `SlurmDispatchHandle` with scancel |
-| `orchestration/engine/dispatch.py` | `cancel_event` param on `_collect_results` |
-| `orchestration/engine/step_executor.py` | Use `handle.run()` instead of calling returned callable |
+| `orchestration/backends/base.py` | `DispatchHandle` ABC, rename `create_flow` → `create_dispatch_handle`, remove `_build_prefect_flow` |
+| `orchestration/backends/local.py` | `LocalDispatchHandle` (units passed in-memory via ProcessPool) |
+| `orchestration/backends/slurm.py` | `SlurmDispatchHandle` with scancel + pickle-to-fs unit transport |
+| `orchestration/engine/dispatch.py` | Move `_save_units`/`_load_units` to handle implementations, add `cancel_event` param on `_collect_results` |
+| `orchestration/engine/step_executor.py` | Use `handle.run(units, runtime_env)` instead of `step_flow(units_path, runtime_env)`, remove `_save_units` call |
 | `orchestration/pipeline_manager.py` | Track active dispatch handles, wire `cancel()` to call `handle.cancel()` |
 
 ---
@@ -206,3 +261,12 @@ results = handle.run(units_path=..., runtime_env=...)
 - **Context manager.** Should `PipelineManager` support `with` for
   automatic cancel-on-exception + finalize? Cleaner for scripts; explicit
   `finalize()` needed for notebooks.
+
+---
+
+## Related docs
+
+- `cloud-deployment.md` — overall cloud deployment design (references
+  this doc for dispatch abstraction)
+- `cloud-storage-design.md` — fsspec-based storage design that motivated
+  handle-owned unit transport
