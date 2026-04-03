@@ -14,6 +14,7 @@ import pytest
 from artisan.orchestration.backends import Backend, resolve_backend
 from artisan.orchestration.backends.local import LocalBackend
 from artisan.orchestration.backends.slurm import SlurmBackend
+from artisan.orchestration.backends.slurm_intra import SlurmIntraBackend
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 
@@ -59,6 +60,24 @@ class TestBackendRouting:
         assert call_kwargs["partition"] == "gpu"
         assert call_kwargs["slurm_job_name"] == "s3_test_op"
 
+    @patch("prefect_submitit.SlurmTaskRunner")
+    @patch("prefect.flow")
+    @patch("prefect.unmapped")
+    def test_slurm_intra_backend_create_flow_uses_srun_mode(
+        self, _mock_unmapped, mock_flow, mock_slurm_runner
+    ):
+        mock_flow.return_value = lambda fn: fn
+        resources = ResourceConfig(cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00")
+        execution = ExecutionConfig(units_per_worker=1)
+
+        Backend.SLURM_INTRA.create_flow(
+            resources, execution, step_number=1, job_name="test"
+        )
+
+        mock_slurm_runner.assert_called_once()
+        call_kwargs = mock_slurm_runner.call_args[1]
+        assert call_kwargs["execution_mode"] == "srun"
+
 
 class TestResolveBackend:
     """Tests for resolve_backend string/instance/error."""
@@ -72,6 +91,9 @@ class TestResolveBackend:
     def test_passthrough_instance(self):
         backend = LocalBackend(default_max_workers=8)
         assert resolve_backend(backend) is backend
+
+    def test_resolve_string_slurm_intra(self):
+        assert isinstance(resolve_backend("slurm_intra"), SlurmIntraBackend)
 
     def test_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown backend"):

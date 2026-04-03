@@ -39,7 +39,7 @@ Airflow to trigger Artisan pipelines on a schedule.
 | **Result storage** | Files in `work/` dirs | Files on filesystem | External (user-managed) | External (opt-in persistence) | Delta Lake tables (queryable, ACID) |
 | **Result querying** | Parse files or use Seqera Platform | Parse files | External tools | External tools | Direct SQL-like queries via Polars/DuckDB |
 | **HPC / SLURM** | Native (+ PBS, LSF, SGE) | Native (plugin-based) | None | Indirect (Dask + SLURMCluster) | Native (`SlurmBackend` via job arrays) |
-| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Extensible `BackendBase` architecture (LOCAL, SLURM built-in) |
+| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Extensible `BackendBase` architecture (LOCAL, SLURM, SLURM_INTRA built-in) |
 | **Infrastructure** | None (file-based) | None (file-based) | Scheduler + DB + web server | Server or Prefect Cloud | None (Delta Lake on filesystem) |
 | **Error model** | Per-process retry with resource escalation | Delete incomplete, retry with escalation | Task retry + SLA alerts | Task retry + state machine | Per-item containment with configurable policy (CONTINUE or FAIL_FAST) |
 | **Ecosystem** | nf-core (100+ pipelines) | Workflow Catalog, Bioconda | 1,000+ provider operators | Growing integrations | Domain-extensible artifact type registry |
@@ -175,12 +175,13 @@ PipelineManager                          (Artisan: step sequencing, caching, pro
                       └─ run_composite()        (Artisan: composite operations lifecycle)
 ```
 
-Two built-in backends control which Prefect `task_runner` is used:
+Three built-in backends control which Prefect `task_runner` is used:
 
 | Backend | Task runner | Dispatch mechanism |
 |---|---|---|
 | `LocalBackend` | `ProcessPoolTaskRunner` | Process pool on the orchestrator machine |
 | `SlurmBackend` | `SlurmTaskRunner` (from `prefect_submitit`) | SLURM job arrays via `submitit` |
+| `SlurmIntraBackend` | `SlurmTaskRunner` (from `prefect_submitit`, srun mode) | srun within existing SLURM allocation |
 
 | Responsibility | Handled by |
 |---|---|
