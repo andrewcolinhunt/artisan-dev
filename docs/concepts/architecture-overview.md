@@ -126,17 +126,18 @@ configuration), how workers behave (filesystem sharing, worker IDs), and
 how the orchestrator handles post-dispatch verification (NFS attribute
 caching, staging timeouts).
 
-The framework ships two backends:
+The framework ships three backends:
 
 | Backend | Dispatch mechanism | Filesystem | Use case |
 |---------|-------------------|------------|----------|
 | Local | ProcessPool on the orchestrator machine | Local (no sharing) | Development, small jobs |
 | SLURM | Job arrays via submitit | Shared NFS | HPC clusters, large-scale runs |
+| SLURM Intra | srun within existing allocation | Shared NFS | Interactive salloc sessions, zero queue wait |
 
-Both backends use Prefect as the underlying task execution layer. The backend
+All backends use Prefect as the underlying task execution layer. The backend
 controls which `TaskRunner` Prefect uses — `ProcessPoolTaskRunner` for local,
-`SlurmTaskRunner` for SLURM — but everything above and below that boundary
-stays the same.
+`SlurmTaskRunner` for SLURM and SLURM Intra — but everything above and below
+that boundary stays the same.
 
 ---
 

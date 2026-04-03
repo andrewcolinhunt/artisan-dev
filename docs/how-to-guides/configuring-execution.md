@@ -60,6 +60,19 @@ pipeline.run(operation=MyOp, inputs=..., backend=Backend.LOCAL)
 |---------|-------------|-------------|
 | `Backend.LOCAL` (default) | Process pool on your machine | Development, testing, lightweight ops |
 | `Backend.SLURM` | SLURM job array on cluster | Production, GPU work, HPC |
+| `Backend.SLURM_INTRA` | srun within existing SLURM allocation | Interactive salloc sessions, zero queue wait |
+
+For `SLURM_INTRA`, you must be inside an existing SLURM allocation
+(`salloc` or `sbatch`). Work is distributed via `srun` with no queue wait:
+
+```python
+pipeline.run(
+    operation=MyOp,
+    inputs=...,
+    backend=Backend.SLURM_INTRA,
+    resources={"gpus": 1, "cpus": 4, "memory_gb": 16},
+)
+```
 
 For `LOCAL`, you can cap the number of concurrent workers per step:
 
