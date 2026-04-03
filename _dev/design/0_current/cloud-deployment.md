@@ -1,6 +1,7 @@
 # Design: Cloud Deployment
 
-**Status:** Draft — core decisions pending
+**Date:** 2026-03-24 (updated 2026-04-03)
+**Status:** Active
 
 ---
 
@@ -42,17 +43,17 @@ cloud compute. It does **not** cover:
 
 ```
 Orchestrator (local Python process)
-    ├── Resolve inputs (Delta Lake on POSIX)
-    ├── Batch into ExecutionUnits
-    ├── Pickle units to shared filesystem
-    ├── backend.create_flow() → Prefect @flow callable
-    ├── step_flow(units_path, runtime_env) → list[dict]
-    │       ├── LOCAL:  ProcessPool (same machine)
-    │       └── SLURM:  sbatch job array (shared NFS)
-    ├── Workers read units from shared filesystem
-    ├── Workers write staged Parquet to shared filesystem
-    ├── Orchestrator reads staged Parquet
-    └── Commit atomically to Delta Lake
+    |-- Resolve inputs (Delta Lake on POSIX)
+    |-- Batch into ExecutionUnits
+    |-- Pickle units to shared filesystem
+    |-- backend.create_flow() -> Prefect @flow callable
+    |-- step_flow(units_path, runtime_env) -> list[dict]
+    |       |-- LOCAL:  ProcessPool (same machine)
+    |       +-- SLURM:  sbatch job array (shared NFS)
+    |-- Workers read units from shared filesystem
+    |-- Workers write staged Parquet to shared filesystem
+    |-- Orchestrator reads staged Parquet
+    +-- Commit atomically to Delta Lake
 ```
 
 Key coupling points in the current code:
@@ -75,199 +76,124 @@ Key coupling points in the current code:
 
 ```
 Orchestrator (local Python process)
-    ├── Resolve inputs (Delta Lake — local or remote)
-    ├── Batch into ExecutionUnits
-    ├── Transfer units via StorageProvider
-    │       ├── LOCAL/SLURM:  write pickle to shared filesystem
-    │       └── Cloud:        upload pickle to S3/GCS
-    ├── Dispatch via DispatchHandle
-    │       ├── LOCAL:       ProcessPool
-    │       ├── SLURM:       sbatch job array
-    │       ├── Kubernetes:  K8s Job (Prefect or direct)
-    │       ├── Modal:       .map() (native)
-    │       └── AWS Batch:   SubmitJob
-    ├── Workers download units via StorageProvider
-    ├── Workers execute locally (sandbox in /tmp)
-    ├── Workers upload staged Parquet via StorageProvider
-    ├── Orchestrator downloads staged Parquet via StorageProvider
-    └── Commit to Delta Lake (local or remote via delta-rs)
+    |-- Resolve inputs (Delta Lake -- local or S3/GCS via URI)
+    |-- Batch into ExecutionUnits
+    |-- Dispatch via DispatchHandle (handle owns unit transport)
+    |       |-- LOCAL:       ProcessPool (units via multiprocessing pickle)
+    |       |-- SLURM:       sbatch (units pickled to shared FS)
+    |       |-- Kubernetes:  K8s Job (units pickled to S3/NFS via fsspec)
+    |       |-- Modal:       .map() (units as function arguments)
+    |       +-- AWS Batch:   SubmitJob (units pickled to S3 via fsspec)
+    |-- Workers run inside operation's container image
+    |-- Workers execute locally (sandbox in /tmp)
+    |-- Workers write staged Parquet via fsspec (local FS or S3/GCS)
+    |-- Orchestrator reads staged Parquet via fsspec
+    +-- Commit to Delta Lake (local or S3/GCS via delta-rs URI support)
 ```
 
 Operations are unchanged. The worker sandbox is always local (`/tmp`).
-The framework handles data transfer transparently.
+The framework handles storage and dispatch transparently.
 
 ---
 
 ## Design Decisions
 
-### Decision 1: Storage Abstraction
+### Storage: fsspec
 
-**The question:** How should the framework abstract the difference between
-POSIX paths and cloud object storage?
+**Designed in:** `cloud-storage-design.md`
 
-**Options:**
+All storage operations go through fsspec. Local runs use
+`LocalFileSystem`. Cloud runs use `S3FileSystem` or `GCSFileSystem`.
+Staging, commit, and store access code are the same regardless of
+backend.
 
-**(A) TransferStrategy — upload/download around existing paths.**
-Workers always use local `/tmp` paths. The framework uploads/downloads
-units and staged files between the orchestrator and workers. Existing
-path-based code is untouched inside the sandbox.
+`StorageConfig` (protocol + non-sensitive options) is embedded in
+`RuntimeEnvironment`. Each component creates an `fs` instance on demand
+via `storage_config.filesystem()`. Credentials come from the execution
+environment (IAM roles, env vars, service accounts) — never stored in
+config.
 
-```python
-class TransferStrategy(ABC):
-    def upload_units(self, local_path: Path) -> str: ...
-    def download_units(self, uri: str, local_path: Path) -> None: ...
-    def upload_staging(self, local_dir: Path) -> str: ...
-    def download_staging(self, uri: str, local_dir: Path) -> None: ...
-```
+Delta Lake access uses URI strings + `storage_options` dicts, which
+Polars and delta-rs already support natively.
 
-Pros: minimal code changes, workers keep POSIX semantics internally.
-Cons: double I/O (download to /tmp, process, upload from /tmp). Doesn't
-help Delta Lake access from workers.
+Workers and orchestrator both access Delta Lake and staging via the same
+URI scheme. No separate transfer mechanism.
 
-**(B) StorageProvider — abstract file operations.**
-Replace `pathlib.Path` operations with a provider interface. Provider has
-local and cloud implementations. Workers call `provider.read()` /
-`provider.write()` instead of `Path.read_bytes()` / `Path.write_bytes()`.
+### Dispatch: DispatchHandle
 
-```python
-class StorageProvider(ABC):
-    def read_bytes(self, key: str) -> bytes: ...
-    def write_bytes(self, key: str, data: bytes) -> None: ...
-    def write_parquet(self, key: str, df: pl.DataFrame) -> None: ...
-    def read_parquet(self, key: str) -> pl.DataFrame: ...
-    def list_keys(self, prefix: str) -> list[str]: ...
-    def exists(self, key: str) -> bool: ...
-```
+**Designed in:** `dispatch-handle.md`
 
-Pros: unified interface, works for staging and Delta Lake access.
-Cons: larger refactor surface (StagingArea, StagingManager, DeltaCommitter).
+`DispatchHandle` replaces the Prefect `@flow` callable with a
+lifecycle interface: `dispatch()` / `is_done()` / `collect()` /
+`cancel()`, plus a blocking `run()` convenience method.
 
-**(C) Hybrid — TransferStrategy for staging, URI support for Delta Lake.**
-Workers use local paths for sandbox I/O (untouched). Staging transfer
-uses a TransferStrategy. Delta Lake tables accept URI strings (already
-supported by `deltalake-rs`: `DeltaTable("s3://bucket/delta")`). The
-`RuntimeEnvironment` path fields become `str | Path`.
+Unit transport is handle-owned. Each handle decides how to deliver
+`ExecutionUnit` objects to workers: multiprocessing pickle (local),
+shared filesystem pickle (SLURM, K8s+NFS), function arguments (Modal),
+object store (Ray). The orchestrator no longer calls `_save_units()`.
 
-Pros: minimal worker-side changes, leverages delta-rs S3 support.
-Cons: two abstractions instead of one.
+Prefect remains a core dependency. Local and SLURM handles continue
+to use Prefect task runners internally. Cloud handles implement
+`DispatchHandle` directly against native APIs without Prefect.
 
-**Status:** Open — needs decision.
+### Worker Image: Worker Runs Inside the Operation's Container
 
----
+On local and SLURM, operations call external tools via `run_command()`,
+which wraps commands in `docker run` or `apptainer exec` on the host.
+This two-layer model (artisan worker process + tool container) relies on
+a container runtime being available on the host.
 
-### Decision 2: Dispatch Abstraction
+Cloud workers ARE containers — no Docker daemon is available inside
+them. Instead, the dispatch handle launches workers directly inside the
+operation's container image. The operation's `docker.image` field from
+its `Environments` config tells the handle which image to use. Since
+tools are already present in the container, the operation runs with
+`active="local"` — no nested container invocation.
 
-**Decision: DispatchHandle.** Already designed in
-`_dev/design/1_future/dispatch_handle.md`. The interface
-(`dispatch`/`is_done`/`collect`/`cancel` + blocking `run()` convenience
-method) is well-specified with implementation sketches for Local and SLURM
-backends, state machine semantics, cancellation wiring to
-`PipelineManager`, and a file-by-file scope of changes.
+**Image requirements:** The operation's Docker image must include:
 
-The cross-framework research validates this: Flyte's agent/connector
-pattern uses the same `create`/`get`/`delete` lifecycle, and Prefect's
-own task runner model breaks down for serverless backends that need
-infrastructure provisioning per invocation.
+- The artisan framework (`pip install artisan`)
+- The operation's Python code (the `OperationDefinition` subclass)
+- The operation's tool dependencies (external binaries, libraries)
 
-Cloud backends implement `DispatchHandle` directly against native APIs:
-- Modal: `dispatch()` calls `modal.Function.map()`, `collect()` gathers
-- Kubernetes: `dispatch()` creates a K8s Job, `is_done()` polls status
-- AWS Batch: `dispatch()` calls `SubmitJob`, `is_done()` polls
-- Ray: `dispatch()` submits `ray.remote()` tasks, `collect()` calls
-  `ray.get()`
+**Development iteration:** Modal supports `Mount.from_local_dir()` to
+upload operation source code into the container at dispatch time,
+avoiding image rebuilds during development.
 
-**Status:** Decided. Implementation plan in `dispatch_handle.md`.
+**Composites on cloud:** Collapsed composites run multiple operations
+sequentially in a single worker. If those operations need different tool
+containers, this conflicts with the one-image-per-worker model. Two
+options:
 
----
+- **Expand the composite** — each operation runs as its own step with
+  its own container. The performance cost is small on cloud (S3 staging
+  adds ~500ms per intermediate step, not per artifact).
+- **Shared image** — if all operations in a composite use the same
+  image (or a combined image with all tools), collapsing works naturally.
 
-### Decision 3: Backend Traits
+No framework changes needed — the dispatch handle picks the image from
+the operation's environment config. Expansion is the default; collapsing
+is available when images align.
 
-**The question:** Are the current traits sufficient for cloud backends?
+### Backend Traits: No Expansion
 
-Current traits encode one distinction: shared filesystem (yes/no). Cloud
-backends vary along more axes.
+The existing two traits are sufficient:
 
-**Proposed expansion (drawing from Snakemake's CommonSettings):**
+- `worker_id_env_var: str | None` — how workers identify themselves
+- `shared_filesystem: bool` — drives NFS-specific behavior (staging
+  verification, fsync)
 
-```python
-@dataclass(frozen=True)
-class WorkerTraits:
-    worker_id_env_var: str | None = None
-    shared_filesystem: bool = False
-    requires_code_deployment: bool = False    # code must be in container image
-    requires_storage_passthrough: bool = False # storage config forwarded to workers
-```
+Cloud backends set `shared_filesystem=False`. Storage credentials
+are handled by the environment (IAM roles, service accounts), not by
+traits. Code deployment is a user responsibility (they control the
+Docker image), not a framework concern.
 
-`requires_code_deployment` would trigger validation that operations are
-importable in the target container image. `requires_storage_passthrough`
-would include storage credentials in the RuntimeEnvironment.
+### Concurrency: Configurable Caps
 
-**Status:** Low urgency — can be added incrementally as backends need them.
-
----
-
-### Decision 4: Delta Lake Location
-
-**The question:** Where does Delta Lake live when workers are on cloud
-infrastructure?
-
-**Options:**
-
-**(A) Local Delta Lake, staging transfer only.**
-Delta Lake stays on the orchestrator's local disk. Workers don't read
-Delta Lake directly — inputs are materialized into the ExecutionUnit or
-transferred alongside it. Staged outputs are transferred back. The
-orchestrator commits locally.
-
-Pros: no remote Delta Lake setup, simplest. Cons: workers can't do cache
-lookups or hydrate artifacts not in their unit.
-
-**(B) Remote Delta Lake on object storage.**
-`DeltaTable("s3://bucket/delta")` — already supported by `deltalake-rs`.
-Workers and orchestrator both read/write via S3. `RuntimeEnvironment`
-paths become URIs.
-
-Pros: workers have full store access, hybrid pipelines work. Cons:
-concurrent writes need coordination, latency for metadata queries.
-
-**(C) Local Delta Lake for orchestrator, read-only remote access for workers.**
-Orchestrator writes locally (or to S3). Workers read from S3 for input
-hydration but write staged outputs to a transfer location. The
-orchestrator commits.
-
-Pros: preserves atomic commit pattern, workers can hydrate inputs.
-Cons: workers need read credentials, still need transfer for staging.
-
-**Status:** Open — depends on Decision 1.
-
----
-
-### Decision 5: Worker Image Strategy
-
-**The question:** How do cloud workers get artisan + operation code?
-
-**Options:**
-
-**(A) Pre-built container image.**
-Users build a Docker image with artisan and their operations installed.
-The backend references this image. Standard in Nextflow, Flyte, Dagster.
-
-Pros: reliable, reproducible. Cons: rebuild on every code change.
-
-**(B) Base image + code mount/upload.**
-A base `artisan-worker` image has the framework and heavy deps. Operation
-source code is uploaded to cloud storage and downloaded at container
-startup (Metaflow pattern) or mounted (Modal `Mount.from_local_dir()`).
-
-Pros: fast iteration during development. Cons: adds startup latency,
-mount availability varies by backend.
-
-**(C) Both — configurable per backend.**
-Production uses pre-built images. Development uses base image + code
-upload. The backend exposes a `code_delivery` config.
-
-**Status:** Low urgency — operational concern, not a framework blocker.
-Document the pattern; don't build tooling yet.
+`ExecutionConfig.max_workers` must be enforced across all backends.
+Cloud backends with per-invocation billing (Modal, Lambda) make this a
+cost concern, not just a resource concern. Each dispatch handle respects
+`max_workers` when dispatching units.
 
 ---
 
@@ -278,65 +204,67 @@ Each phase is independently shippable.
 ### Phase 1: DispatchHandle
 
 Decouple dispatch from Prefect. Implement the handle interface. Wrap
-existing Prefect-based backends in handles. This is a prerequisite for
-Modal and other non-Prefect backends, and independently valuable for
-cancellation support.
+existing Prefect-based backends in handles. Prerequisite for cloud
+backends and independently valuable for cancellation support.
 
-**Scope:** `BackendBase`, `LocalBackend`, `SlurmBackend`, `step_executor`.
+**Scope:** `dispatch-handle.md` has the full file-by-file plan.
 
 ### Phase 2: Storage Abstraction
 
-Introduce the storage abstraction (whichever option is chosen). Implement
-local (passthrough) and S3 providers. Modify worker dispatch and
-orchestrator collection to use the provider.
+Introduce fsspec as the unified storage layer. `cloud-storage-design.md`
+specifies a 4-phase internal rollout: foundation (StorageConfig) →
+storage layer (StagingArea, StagingManager, DeltaCommitter, ArtifactStore)
+→ Delta read sites (44 `scan_delta` calls) → RuntimeEnvironment field
+rename. 21 files total.
 
-**Scope:** New `StorageProvider` or `TransferStrategy`, modifications to
-staging and dispatch code, `RuntimeEnvironment` path handling.
+**Scope:** `cloud-storage-design.md` has the full migration inventory.
 
 ### Phase 3: Kubernetes Backend
 
-First cloud backend. Uses shared filesystem via NFS PVC (storage model A
-from the analysis). Closest to SLURM — validates the dispatch abstraction
-with minimal storage changes.
+First cloud backend. K8s Jobs with either NFS PVC
+(`shared_filesystem=True`) or S3 (`shared_filesystem=False`). Closest to
+SLURM — validates the dispatch abstraction with a familiar execution
+model. Worker image specified in operation's `docker.image` field.
 
 ### Phase 4: Modal Backend
 
-First serverless backend. Uses Modal Volume (shared FS) or S3 transfer.
-Requires DispatchHandle (Phase 1) for non-Prefect dispatch. Validates the
-storage abstraction with a real cloud backend.
+First serverless backend. `dispatch()` calls `modal.Function.map()`.
+Workers run inside the operation's Docker image. Staging via fsspec to
+S3. Validates the full cloud story: non-Prefect dispatch, remote
+storage, container-per-operation model.
 
-### Phase 5: AWS Batch / Lambda
+### Phase 5: AWS Batch
 
-Object-storage-only backends. Requires both DispatchHandle and storage
-abstraction. Validates the full cloud story.
+`dispatch()` calls `SubmitJob`, `is_done()` polls `DescribeJobs`.
+S3 for staging and Delta Lake. Same container-per-operation model.
+Validates the design with a third cloud backend.
 
 ---
 
 ## Open Questions
 
-- ~~**Result contract typing.**~~ **Decided:** `UnitResult` frozen
-  dataclass. See `dispatch-handle.md` for the type definition.
+- **Partial commit on cancellation.** Should a cancelled step commit the
+  units that succeeded before cancellation? Current behavior: incomplete
+  step results in nothing committed, resume re-runs the entire step.
+  (See `dispatch-handle.md`.)
 
-- **Resource escalation on retry.** Nextflow and Snakemake support
-  `memory = base * attempt`. Should `ResourceConfig` support callables?
-  Or is this a backend-level concern?
-
-- **Concurrency caps for cloud.** Metaflow has `--max-workers` and
-  `--max-num-splits`. `ExecutionConfig.max_workers` exists but isn't
-  enforced for all backends. Should cloud backends have explicit caps?
-
-- **Prefect as optional dependency.** Non-Prefect backends (Modal, Lambda,
-  Ray) mean Prefect isn't required for all dispatch paths. Should it
-  become optional?
+- **Return-value staging.** For serverless backends, the fsspec path
+  writes to S3 and reads back from S3, adding ~100ms per unit in API
+  latency. Workers could instead return staged DataFrames through the
+  dispatch handle, bypassing S3. Deferred — the fsspec path is correct
+  and uniform. (See `cloud-storage-design.md`.)
 
 ---
 
 ## References
 
-- `_dev/analysis/cloud/cloud_compute_backends.md` — detailed gap analysis
+- `dispatch-handle.md` — DispatchHandle interface, state machine,
+  backend implementations, cancellation wiring
+- `cloud-storage-design.md` — fsspec storage layer, StorageConfig,
+  migration inventory, rollout phases
+- `_dev/analysis/cloud/cloud_compute_backends.md` — gap analysis
   and backend designs
 - `_dev/analysis/cloud/cloud-compute-integration.md` — Modal integration
   and cross-provider portability
 - `_dev/analysis/cloud/other-frameworks/synthesis.md` — cross-framework
   comparison and recommendations
-- `_dev/analysis/cloud/hamilton-cloud-execution.md` — Hamilton lessons
