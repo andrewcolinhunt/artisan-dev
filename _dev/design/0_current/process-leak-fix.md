@@ -43,6 +43,7 @@ Three notebooks create PipelineManagers in code cells without calling
 
 | Notebook | creates | finalizes | leaked |
 |---|---|---|---|
+| `execution/02-resume-and-caching.ipynb` | 3 | 2 | **1** |
 | `execution/04-error-visibility.ipynb` | 5 | 3 | **2** |
 | `execution/07-slurm-execution.ipynb` | 4 | 2 | **2** |
 | `execution/10-slurm-intra-execution.ipynb` | 4 | 2 | **2** |
@@ -52,12 +53,14 @@ examples, validation demos, debug config examples) where the pipeline is
 created to show a concept but never finalized.
 
 Across all 24 tutorials: 62 `PipelineManager.create()` calls, 56
-`finalize()` calls, 6 leaked.
+`finalize()` calls, 7 leaked. (One of the 56 `finalize()` calls closes a
+`PipelineManager.resume()` pipeline, not a `create()` pipeline, so only
+55 finalize calls correspond to creates.)
 
 ### RC-3: `activate_server()` leaks Prefect SettingsContext
 
-Every `PipelineManager.create()` call triggers `activate_server()`
-(`prefect_server.py:265`), which does:
+Every `PipelineManager.create()` and `PipelineManager.resume()` call
+triggers `activate_server()` (`prefect_server.py:265`), which does:
 
 ```python
 new_ctx = SettingsContext(profile=ctx.profile, settings=new_settings)
@@ -131,8 +134,9 @@ collected:
 
 ```python
 def __del__(self) -> None:
-    if hasattr(self, "_executor") and self._executor is not None:
-        self._executor.shutdown(wait=False)
+    if hasattr(self, "_finalized") and not self._finalized:
+        if hasattr(self, "_executor") and self._executor is not None:
+            self._executor.shutdown(wait=False)
 ```
 
 `wait=False` avoids blocking the GC thread. This catches the common case
@@ -178,8 +182,9 @@ atexit.register(_cleanup_executor, weakref.ref(self._executor))
 Uses `weakref` to avoid preventing garbage collection of the executor.
 
 **Tracking `_finalized` state:** Add a `self._finalized: bool = False` flag
-set in `finalize()`, checked by `__exit__` and `__del__` to avoid double
-shutdown.
+in `__init__`, set to `True` in `finalize()`, checked by `__exit__` and
+`__del__` to avoid double shutdown. Also set `self._executor = None` in
+`finalize()` after shutdown so the `atexit` weakref resolves to `None`.
 
 ### Fix B: Fix `activate_server()` SettingsContext leak
 
@@ -232,7 +237,12 @@ def activate_server(info: PrefectServerInfo) -> None:
 
 ### Fix C: Fix unfinalized tutorial notebooks
 
-**Files:** Three notebooks need `finalize()` calls added.
+**Files:** Four notebooks need `finalize()` calls added.
+
+**`execution/02-resume-and-caching.ipynb`** — One pipeline leaks:
+- Cell `cache-policy-example`: creates a pipeline with
+  `cache_policy=CachePolicy.STEP_COMPLETED`, prints a message, never
+  finalizes. Add `pipeline.finalize()` after the print.
 
 **`execution/04-error-visibility.ipynb`** — Two pipelines leak:
 - Cell 17 (fail-fast demo): wraps `pipeline.run()` in `try/except
