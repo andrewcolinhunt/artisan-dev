@@ -2,7 +2,8 @@
 
 ## Top Priorities
 
-co
+make a plan design skill. should always use the implement design skill.
+write design, should find the codebase conventions somewhere and make sure we stick to them. 
 
 
 
