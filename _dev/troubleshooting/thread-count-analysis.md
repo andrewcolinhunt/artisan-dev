@@ -58,6 +58,10 @@ IPykernel adds ~8 threads (ControlThread, ShellChannel, IOPub, Heartbeat,
 2x fd-watcher, zmq GC). Not present in our standalone script. Accounts
 for ~8 of the gap.
 
+**Prefect server process — RULED OUT:**
+Measured server thread count across 8 pipeline runs (5 finalized, 3 leaked).
+Server held steady at 4-5 threads throughout. Not the 139-thread process.
+
 **Prefect Cloud vs self-hosted:**
 If the user is connected to Prefect Cloud, all API services activate:
 GlobalEventLoopThread, APILogWorkerThread, EventsWorkerThread, plus
@@ -68,11 +72,6 @@ threads depending on concurrency.
 The reported notebooks include SLURM tutorials. The submitit task runner
 may spawn monitoring threads, polling threads, or additional event loops.
 We could not test this locally.
-
-**Prefect server process confusion:**
-The pstree shows `139*[{python}]` on one process. Need to verify this is
-actually a kernel process and not the Prefect server process (which runs
-uvicorn with many async workers).
 
 **Server CPU count effect:**
 Python's default `ThreadPoolExecutor` size is `min(32, os.cpu_count() + 4)`.
