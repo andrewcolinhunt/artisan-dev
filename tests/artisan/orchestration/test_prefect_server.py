@@ -584,6 +584,16 @@ class TestActivateServer:
         ):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _reset_active_ctx(self):
+        """Clean up module-level _active_settings_ctx between tests."""
+        import artisan.orchestration.prefect_server as mod
+
+        yield
+        if mod._active_settings_ctx is not None:
+            mod._active_settings_ctx.__exit__(None, None, None)
+            mod._active_settings_ctx = None
+
     def test_overrides_prefect_cached_settings(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -612,3 +622,28 @@ class TestActivateServer:
         activate_server(info)
         assert str(get_current_settings().api.url) == "http://correct:4200/api"
         assert os.environ["PREFECT_API_URL"] == "http://correct:4200/api"
+
+        # Clean up the manually pushed stale context
+        stale_ctx.__exit__(None, None, None)
+
+    def test_repeated_activate_does_not_stack_contexts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Calling activate_server twice exits the first context."""
+        from prefect.settings import get_current_settings
+
+        import artisan.orchestration.prefect_server as mod
+
+        info1 = PrefectServerInfo(url="http://first:4200/api", source="test")
+        activate_server(info1)
+        assert str(get_current_settings().api.url) == "http://first:4200/api"
+
+        info2 = PrefectServerInfo(url="http://second:4200/api", source="test")
+        activate_server(info2)
+        assert str(get_current_settings().api.url) == "http://second:4200/api"
+
+        # Exit the active context — should NOT fall back to "first"
+        if mod._active_settings_ctx is not None:
+            mod._active_settings_ctx.__exit__(None, None, None)
+            mod._active_settings_ctx = None
+        assert str(get_current_settings().api.url) != "http://first:4200/api"

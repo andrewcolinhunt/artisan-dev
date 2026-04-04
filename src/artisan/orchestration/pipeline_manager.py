@@ -5,6 +5,7 @@ Key exports: ``PipelineManager`` (create, run, submit, finalize).
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import contextvars
 import json
@@ -12,6 +13,7 @@ import logging
 import signal
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -465,6 +467,13 @@ class _StepEntry:
 # =============================================================================
 
 
+def _atexit_shutdown_executor(ref: weakref.ref) -> None:
+    """Last-resort cleanup: shut down a leaked ThreadPoolExecutor at exit."""
+    executor = ref()
+    if executor is not None:
+        executor.shutdown(wait=False)
+
+
 class PipelineManager:
     """Main interface for defining and executing pipelines.
 
@@ -489,6 +498,12 @@ class PipelineManager:
         step1 = pipeline.run(ScoreOp, inputs={"data": step0.output("data")})
 
         result = pipeline.finalize()
+
+    Or as a context manager (finalize called automatically)::
+
+        with PipelineManager.create(...) as pipeline:
+            pipeline.run(IngestData, inputs=files)
+        # finalize() called on exit
     """
 
     def __init__(
@@ -532,9 +547,33 @@ class PipelineManager:
         self._prev_sigint: Any = None
         self._prev_sigterm: Any = None
         self._active_futures: dict[int, StepFuture] = {}
-        self._executor = ThreadPoolExecutor(
+        self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="pipeline-step"
         )
+        self._finalized: bool = False
+        self._summary: dict[str, Any] | None = None
+        atexit.register(_atexit_shutdown_executor, weakref.ref(self._executor))
+
+    # -- Resource cleanup ------------------------------------------------------
+
+    def __del__(self) -> None:
+        """Release executor threads if finalize() was never called."""
+        if not self._finalized:
+            self._shutdown_executor(wait=False)
+
+    def __enter__(self) -> PipelineManager:
+        """Support ``with PipelineManager.create(...) as pipeline:``."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        """Finalize on context exit if not already done."""
+        if not self._finalized:
+            self.finalize()
 
     @property
     def config(self) -> PipelineConfig:
@@ -2038,12 +2077,28 @@ class PipelineManager:
     # Finalize
     # =========================================================================
 
+    def _shutdown_executor(self, *, wait: bool = True) -> None:
+        """Shut down the thread pool executor if still running.
+
+        Args:
+            wait: If True, wait for pending futures. If False, abandon them.
+        """
+        if self._executor is not None:
+            cancelled = self._cancel_event.is_set()
+            self._executor.shutdown(
+                wait=wait and not cancelled, cancel_futures=cancelled
+            )
+            self._executor = None
+
     def finalize(self) -> dict[str, Any]:
         """Finalize pipeline execution and return summary.
 
         Waits for any active futures and shuts down the executor.
         When cancellation has been requested, uses a short timeout
         on futures to avoid blocking indefinitely.
+
+        Safe to call multiple times — subsequent calls return the cached
+        summary without re-running cleanup.
 
         Returns:
             Summary dict with step results and statistics.
@@ -2054,6 +2109,10 @@ class PipelineManager:
             step1 = pipeline.run(ScoreOp, inputs={"data": step0.output("data")})
             result = pipeline.finalize()
         """
+        if self._finalized:
+            return self._summary  # type: ignore[return-value]
+        self._finalized = True
+
         for step_num, future in self._active_futures.items():
             try:
                 while not self._cancel_event.is_set():
@@ -2074,8 +2133,7 @@ class PipelineManager:
                     exc,
                 )
 
-        cancelled = self._cancel_event.is_set()
-        self._executor.shutdown(wait=not cancelled, cancel_futures=cancelled)
+        self._shutdown_executor()
         self._restore_signal_handlers()
 
         # Results may arrive out of order (sync skips before async completions)
@@ -2102,7 +2160,7 @@ class PipelineManager:
             )
         logger.info("  Total: %.1fs", total_elapsed)
 
-        return {
+        self._summary = {
             "pipeline_name": self._config.name,
             "total_steps": len(self._step_results),
             "steps": [
@@ -2119,3 +2177,4 @@ class PipelineManager:
             ],
             "overall_success": all(r.success for r in self._step_results),
         }
+        return self._summary
