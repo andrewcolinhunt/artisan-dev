@@ -9,6 +9,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from artisan.orchestration.engine.dispatch import _collect_results
+from artisan.schemas.execution.unit_result import UnitResult
+
+
+def _result(**overrides: object) -> UnitResult:
+    """Build a UnitResult with sensible defaults."""
+    defaults = dict(success=True, error=None, item_count=1, execution_run_ids=[])
+    return UnitResult(**{**defaults, **overrides})
 
 
 class TestCollectResults:
@@ -20,7 +27,7 @@ class TestCollectResults:
         # Release in reverse order to force out-of-order completion
         release_order = [2, 0, 1]
 
-        def _make_future(idx: int, value: dict) -> MagicMock:
+        def _make_future(idx: int, value: UnitResult) -> MagicMock:
             mock = MagicMock()
 
             def _result():
@@ -31,9 +38,9 @@ class TestCollectResults:
             return mock
 
         expected = [
-            {"success": True, "item_count": 1, "execution_run_ids": ["a"]},
-            {"success": True, "item_count": 2, "execution_run_ids": ["b"]},
-            {"success": True, "item_count": 3, "execution_run_ids": ["c"]},
+            _result(item_count=1, execution_run_ids=["a"]),
+            _result(item_count=2, execution_run_ids=["b"]),
+            _result(item_count=3, execution_run_ids=["c"]),
         ]
         futures = [_make_future(i, expected[i]) for i in range(3)]
 
@@ -51,24 +58,20 @@ class TestCollectResults:
 
         assert results == expected
 
-    def test_exception_produces_failure_dict(self):
-        """A future that raises should become a failure dict at the correct index."""
+    def test_exception_produces_failure_result(self):
+        """A future that raises should become a failure result at the correct index."""
         good = MagicMock()
-        good.result.return_value = {
-            "success": True,
-            "item_count": 1,
-            "execution_run_ids": ["ok"],
-        }
+        good.result.return_value = _result(execution_run_ids=["ok"])
 
         bad = MagicMock()
         bad.result.side_effect = RuntimeError("boom")
 
         results = _collect_results([good, bad])
 
-        assert results[0]["success"] is True
-        assert results[1]["success"] is False
-        assert "boom" in results[1]["error"]
-        assert results[1]["item_count"] == 1
+        assert results[0].success is True
+        assert results[1].success is False
+        assert "boom" in results[1].error
+        assert results[1].item_count == 1
 
     def test_empty_futures_list(self):
         """An empty futures list should return an empty results list."""

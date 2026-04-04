@@ -9,6 +9,13 @@ from artisan.orchestration.engine.dispatch import (
     _load_units,
     _save_units,
 )
+from artisan.schemas.execution.unit_result import UnitResult
+
+
+def _result(**overrides: object) -> UnitResult:
+    """Build a UnitResult with sensible defaults."""
+    defaults = dict(success=True, error=None, item_count=1, execution_run_ids=[])
+    return UnitResult(**{**defaults, **overrides})
 
 
 class TestCollectResults:
@@ -17,32 +24,31 @@ class TestCollectResults:
     def test_all_succeed(self):
         """All futures succeed — returns all results."""
         futures = [MagicMock(), MagicMock(), MagicMock()]
-        futures[0].result.return_value = {"success": True, "item_count": 1}
-        futures[1].result.return_value = {"success": True, "item_count": 1}
-        futures[2].result.return_value = {"success": True, "item_count": 1}
+        for f in futures:
+            f.result.return_value = _result()
 
         results = _collect_results(futures)
 
         assert len(results) == 3
-        assert all(r["success"] for r in results)
+        assert all(r.success for r in results)
 
     def test_one_fails_others_still_collected(self):
         """One future raises — other results still collected."""
         futures = [MagicMock(), MagicMock(), MagicMock()]
-        futures[0].result.return_value = {"success": True, "item_count": 1}
+        futures[0].result.return_value = _result()
         futures[1].result.side_effect = RuntimeError("task crashed")
-        futures[2].result.return_value = {"success": True, "item_count": 1}
+        futures[2].result.return_value = _result()
 
         results = _collect_results(futures)
 
         assert len(results) == 3
-        assert results[0]["success"] is True
-        assert results[1]["success"] is False
-        assert "RuntimeError" in results[1]["error"]
-        assert results[2]["success"] is True
+        assert results[0].success is True
+        assert results[1].success is False
+        assert "RuntimeError" in results[1].error
+        assert results[2].success is True
 
     def test_all_fail(self):
-        """All futures raise — all converted to failure dicts."""
+        """All futures raise — all converted to failure results."""
         futures = [MagicMock(), MagicMock()]
         futures[0].result.side_effect = ValueError("bad")
         futures[1].result.side_effect = OSError("disk")
@@ -50,9 +56,9 @@ class TestCollectResults:
         results = _collect_results(futures)
 
         assert len(results) == 2
-        assert all(not r["success"] for r in results)
-        assert "ValueError" in results[0]["error"]
-        assert "OSError" in results[1]["error"]
+        assert all(not r.success for r in results)
+        assert "ValueError" in results[0].error
+        assert "OSError" in results[1].error
 
     def test_empty_futures(self):
         """Empty futures list returns empty results."""
