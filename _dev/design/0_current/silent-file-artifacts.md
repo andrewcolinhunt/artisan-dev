@@ -30,6 +30,27 @@ an external file, those files need consolidation into a single file per step.
 Artisan has no mechanism for this -- the commit phase only merges Parquet
 metadata rows, never external content.
 
+### Name Collisions in Parallel Execution
+
+There is a deeper problem that affects all parallel execution, not just
+external content. When N workers run the same operation code, they naturally
+produce artifacts with the same `original_name` ("output_001", "result",
+etc.). Currently, `original_name` serves three roles:
+
+- **Lineage matching key** -- stem inference pairs outputs to inputs by name
+- **Materialized filename** -- `_materialize_content()` writes to
+  `{original_name}{extension}`, which means collisions cause file overwrites
+- **Human-readable identifier** -- what users see in queries
+
+When a curator receives all artifacts from parallel workers in a single
+execution unit, the stem index has N entries for the same stem. The matching
+algorithm (`_match_by_stem_indexed`) requires exactly 1 entry per stem --
+multiple entries silently return `None`, producing zero lineage edges with
+no error.
+
+This design addresses this by separating the unambiguous matching layer
+(artifact_id-based filenames) from the human-readable layer (derived names).
+
 The motivating use case is Rosetta silent files in protein structure
 pipelines (see Related Docs), but the framework changes are domain-agnostic.
 
@@ -175,6 +196,76 @@ The artifact type registry is designed for exactly this split --
 which package defines them. Similarly, `OperationDefinition` subclasses
 (curators included) work identically whether defined in Artisan or an
 external package.
+
+
+### Artifact-ID Materialization and Name Derivation
+
+This is a foundational change to how artifacts are materialized to disk and
+how lineage-inferred names propagate through the provenance chain.
+
+**Current behavior:** `_materialize_content()` writes files as
+`{original_name}{extension}`. Operations (black boxes) read these files,
+transform them, and produce output files whose names are derived from the
+input filenames. Lineage inference stem-matches output names to input names.
+This breaks when multiple artifacts share `original_name` (parallel workers).
+
+**New behavior:** Materialize inputs using `artifact_id` as the filename.
+After lineage inference, derive the human-readable name from the provenance
+chain.
+
+**The artifact_id layer (unambiguous matching):**
+
+```
+Input artifact: artifact_id=abc123, original_name=sample_001, ext=.csv
+  -> Materialized as: abc123.csv
+  -> Operation (black box) reads abc123.csv, writes abc123_scored.csv
+  -> Framework creates output draft: original_name="abc123_scored"
+  -> Stem match: "abc123_scored" prefix-matches "abc123" (unique, unambiguous)
+  -> Lineage edge: output -> input
+```
+
+Artifact IDs are globally unique (content-addressed xxh3_128 hashes), so
+stem matching is always unambiguous regardless of how many parallel workers
+produced artifacts.
+
+**The name derivation layer (human-readable names):**
+
+After lineage inference establishes which output came from which input, the
+framework derives the human-readable name:
+
+```
+Input human name:  "sample_001"
+Output stem:       "abc123_scored"
+Input stem:        "abc123"
+Operation suffix:  "_scored"  (extracted by stripping the matched prefix)
+Derived name:      "sample_001_scored"
+```
+
+The derived name replaces `original_name` on the output artifact (or is
+stored in a new field while `original_name` retains the artifact_id-based
+matching key -- TBD).
+
+**Scope of this change:**
+
+- `_materialize_content()` on all artifact types: use `artifact_id` for
+  the on-disk filename instead of `original_name`
+- Post-lineage-inference pass: extract operation-applied suffix from the
+  artifact_id-based name, apply to the input's human name
+- `original_name` semantics: needs to carry both the matching name (for
+  lineage) and the human name (for display). May need a separate field.
+
+**Fallback for unrelated names:** When an operation produces output
+filenames unrelated to input filenames (e.g., `abc123.csv` -> `output.csv`),
+stem matching cannot infer lineage. This is what explicit lineage
+(`ArtifactResult.lineage`) is for -- the operation declares its mappings.
+This requires fixing the curator explicit lineage bug (see below).
+
+**Curator explicit lineage bug:** The curator executor (`curator.py:150`)
+always calls `capture_lineage_metadata()` and ignores
+`ArtifactResult.lineage`. The creator executor (`creator.py:242`) correctly
+checks `result.lineage` first. The documentation says it should work for
+curators. This is a bug -- the curator executor should mirror the creator's
+pattern.
 
 
 ### Two Categories of External Files
@@ -444,7 +535,23 @@ MIT licensed, no Rosetta dependency. Brian Coventry (bcov) maintains it.
 
 ### Artisan Framework (this repo)
 
-#### PR 1: `files_root` configuration
+#### PR 1: Artifact-ID materialization
+
+| File | Change |
+|------|--------|
+| `src/artisan/schemas/artifact/data.py` | `_materialize_content()` uses `artifact_id` for filename |
+| `src/artisan/schemas/artifact/metric.py` | Same |
+| `src/artisan/schemas/artifact/execution_config.py` | Same |
+| `src/artisan/schemas/artifact/file_ref.py` | Same |
+| `src/artisan/execution/lineage/capture.py` | Post-inference name derivation: extract operation suffix, apply to input's human name |
+
+#### PR 2: Fix curator explicit lineage
+
+| File | Change |
+|------|--------|
+| `src/artisan/execution/executors/curator.py` | `_handle_artifact_result()` checks `result.lineage` before falling back to stem inference (mirror creator executor pattern at `creator.py:242`) |
+
+#### PR 3: `files_root` configuration
 
 | File | Change |
 |------|--------|
@@ -452,13 +559,14 @@ MIT licensed, no Rosetta dependency. Brian Coventry (bcov) maintains it.
 | `src/artisan/storage/core/artifact_store.py` | Accept and expose `files_root` |
 | `src/artisan/orchestration/pipeline_manager.py` | Pass `files_root` to ArtifactStore, accept in `create()` |
 
-#### PR 2: `post_step` pipeline sugar
+#### PR 4: `post_step` pipeline sugar
 
 | File | Change |
 |------|--------|
 | `src/artisan/orchestration/pipeline_manager.py` | Add `post_step` param to `submit()` and `run()` |
 
-PRs 1 and 2 are independent of each other.
+PRs 1-4 are independent of each other. PR 2 is a bug fix that should land
+regardless.
 
 ### Domain Repository (protein design)
 
@@ -477,11 +585,14 @@ Not part of this Artisan design, but for reference:
 
 | PR | Repo | Content | Dependencies |
 |----|------|---------|--------------|
+| Artifact-ID materialization | Artisan | Filename change + name derivation | None |
+| Curator explicit lineage fix | Artisan | Bug fix in curator executor | None |
 | `files_root` | Artisan | PipelineConfig, ArtifactStore threading | None |
 | `post_step` | Artisan | New param on submit/run | None |
-| Silent artifacts + curator | Domain | Artifact type, curator, silent_tools | Both Artisan PRs |
+| Silent artifacts + curator | Domain | Artifact type, curator, silent_tools | All Artisan PRs |
 
-The two Artisan PRs can land in any order. The domain work depends on both.
+The four Artisan PRs are independent of each other. The curator lineage fix
+is a bug fix that should land first. The domain work depends on all four.
 
 ---
 
@@ -491,6 +602,9 @@ The two Artisan PRs can land in any order. The domain work depends on both.
 
 | Test file | Coverage |
 |-----------|----------|
+| `tests/artisan/execution/test_artifact_id_materialization.py` | Artifacts materialize with artifact_id filename, no collisions with duplicate original_name, extension preserved |
+| `tests/artisan/execution/test_lineage_name_derivation.py` | Operation suffix extraction, human name derivation from provenance chain, edge cases (no suffix, extension-only change) |
+| `tests/artisan/execution/test_curator_explicit_lineage.py` | Curator honors ArtifactResult.lineage, falls back to stem inference when None, validation on explicit lineage |
 | `tests/artisan/schemas/orchestration/test_pipeline_config.py` | `files_root` default derivation from `delta_root`, explicit override, frozen model behavior |
 | `tests/artisan/storage/test_files_root.py` | `ArtifactStore` exposes `files_root`, directory creation |
 | `tests/artisan/orchestration/test_post_step.py` | StepFuture points to post_step, step numbering, downstream OutputReference resolution, caching (both cached, partial cache), role mismatch error, post_step=None is no-op |
@@ -507,29 +621,36 @@ The two Artisan PRs can land in any order. The domain work depends on both.
 
 ## Open Questions
 
+- **`original_name` field semantics after artifact-ID materialization:**
+  After lineage inference derives the human-readable name, where does it
+  go? Options: (a) overwrite `original_name` with the derived name after
+  inference, (b) add a `display_name` field and keep `original_name` as the
+  artifact-ID-based matching key, (c) keep `original_name` as human-readable
+  and add a `materialized_name` field for the artifact-ID-based name used
+  only during materialization. Option (a) is simplest but means
+  `original_name` changes meaning mid-lifecycle. Option (b) is cleanest
+  separation. Option (c) avoids changing existing `original_name` semantics.
+
+- **Name derivation edge cases:** The suffix extraction assumes the
+  operation preserved the artifact_id as a prefix in the output filename.
+  What if the operation prepended something? (e.g., `scored_abc123.csv`).
+  Prefix matching already handles the common case (operation appends).
+  Prepend/infix modifications would not match. These cases fall back to
+  explicit lineage. Is this acceptable?
+
 - **File cleanup:** When a step is re-run, should `files_root/{step}/` be
-  cleaned up? Old consolidated files become orphaned. Could follow the
-  staging cleanup pattern (delete on successful re-commit), but the files
-  are referenced by artifact rows that may still exist in Delta. Safest
-  approach: don't auto-delete, provide a `pipeline.cleanup_files()` utility.
+  cleaned up? Old consolidated files become orphaned. Safest approach:
+  don't auto-delete, provide a `pipeline.cleanup_files()` utility.
 
 - **Path stability:** `external_path` stores absolute paths. On shared
-  NFS/Lustre this works. If the pipeline moves, paths break. Could store
-  relative paths (to `files_root`) and resolve at read time. Adds
-  complexity but improves portability. Can defer -- absolute paths work for
-  the initial use case (fixed cluster paths).
+  NFS/Lustre this works. If the pipeline moves, paths break. Can defer --
+  absolute paths work for the initial use case (fixed cluster paths).
 
 - **Worker file location:** Workers need to write output files to
   `files_root/{step}/workers/` rather than their sandbox (which gets
-  cleaned up). This means `files_root` must be accessible from workers.
-  On shared NFS this is fine. On local-disk backends, files would need
-  to be transferred. For the initial SLURM/NFS use case, this is not an
-  issue.
-
-- **`files_root` propagation to workers:** Workers currently receive
-  `RuntimeEnvironment` with `delta_root`, `staging_root`, `working_root`.
-  `files_root` would need to be added to ensure workers can write to it
-  during execution. Need to verify the propagation path.
+  cleaned up). `files_root` must be accessible from workers (true on
+  shared NFS). Need to verify `RuntimeEnvironment` propagation path for
+  `files_root`.
 
 ---
 
