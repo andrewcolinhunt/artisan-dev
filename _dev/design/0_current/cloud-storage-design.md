@@ -260,6 +260,15 @@ verification layer (separate from the manager) handles NFS consistency.
 The manager itself doesn't need NFS-specific code — `fs.glob()` and
 `fs.exists()` behave correctly for each filesystem.
 
+**fsspec glob prefix behavior.** `S3FileSystem.glob()` returns paths
+without the protocol prefix (e.g., `bucket/path` not `s3://bucket/path`),
+while `LocalFileSystem.glob()` returns absolute paths. Since glob results
+are passed to `fs.open()` on the same filesystem instance, this is fine —
+fsspec methods accept both forms. But if glob results are ever passed to
+Polars or delta-rs (which expect full URIs), they would need the protocol
+prefix prepended. The current design does not do this — glob results stay
+within the fsspec layer. Verify during Phase 2 implementation.
+
 ---
 
 ## ArtifactStore / ProvenanceStore
@@ -505,7 +514,8 @@ See `dispatch-handle.md` for the handle-side of this optimization.
 | All `write_delta` callers | `df.write_delta(str(path))` with no storage options | `df.write_delta(uri, storage_options=..., delta_write_options=...)` |
 | `.exists()` guards | `table_path.exists()` | `fs.exists(uri)` |
 | `parquet_writer` | `Path.mkdir()`, `df.write_parquet(path)` | `fs.makedirs()`, `df.write_parquet(fs.open())` |
-| `recorder` failure log writes | `Path /`, `.mkdir()`, `.open("w")` | `fs.makedirs()`, `fs.open(uri, "w")` |
+| `recorder` failure log writes | `Path /`, `.mkdir()`, `.write_text()` | `Path /`, `.mkdir()`, `.write_text()` (stays local) |
+| `dispatch.py` failure log reads | `.iterdir()`, `.is_dir()`, `/`, `.exists()`, `.open("a")` | `.iterdir()`, `.is_dir()`, `/`, `.exists()`, `.open("a")` (stays local) |
 | NFS fsync (`_sync_staging_to_nfs`) | always runs for shared FS | gated on `StorageConfig.is_local` |
 | Staging verification | NFS-specific polling | gated on `StorageConfig.is_local` |
 | `shard_path()` | `root: Path` → `Path` | `shard_uri()`: `root: str` → `str` |
@@ -528,7 +538,7 @@ See `dispatch-handle.md` for the handle-side of this optimization.
 
 ## Dependency Impact
 
-**fsspec:** Already a transitive dependency of `pyarrow` and `deltalake`.
+**fsspec:** Already a transitive dependency of `prefect` and `dask`.
 Adding it as a direct dependency has zero install impact. It's a pure
 Python package, ~300KB.
 
@@ -621,7 +631,7 @@ All follow the same pattern: add `storage_options=...` alongside existing `delta
 | Subsystem | File | Path operations |
 |-----------|------|-----------------|
 | orchestration | `orchestration/engine/dispatch.py` | `.iterdir()`, `.is_dir()`, `/`, `.exists()`, `.open("a")` |
-| execution | `execution/staging/recorder.py` | `Path /`, `.mkdir()`, `.open("w")` |
+| execution | `execution/staging/recorder.py` | `Path /`, `.mkdir()`, `.write_text()` |
 | orchestration | `orchestration/backends/base.py` | type signature only |
 | orchestration | `orchestration/backends/local.py` | type signature only |
 | orchestration | `orchestration/backends/slurm.py` | type signature, pass-through |
