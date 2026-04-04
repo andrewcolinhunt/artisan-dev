@@ -2,6 +2,9 @@
 
 ## Top Priorities
 
+co
+
+
 
 In the very first tutorial. Potentially the summary table needs to be presented earlier. I had legit no idea what was happening till the summary (like what is output('asdf', 'asdf')
 I understand now but that was the only moment where I was very confused
