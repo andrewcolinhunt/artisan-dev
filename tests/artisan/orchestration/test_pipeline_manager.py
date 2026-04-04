@@ -178,6 +178,85 @@ class TestResilientFinalize:
         assert len(summary["steps"]) == 2
 
 
+class TestPipelineCleanup:
+    """Tests for resource cleanup safety net (process-leak fix)."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_finalized_flag_set_on_finalize(self, mock_tracker_cls, tmp_path):
+        """finalize() sets _finalized to True."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        assert not pipeline._finalized
+        pipeline.finalize()
+        assert pipeline._finalized
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_double_finalize_returns_cached_summary(self, mock_tracker_cls, tmp_path):
+        """Second finalize() returns the same cached summary object."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        summary1 = pipeline.finalize()
+        summary2 = pipeline.finalize()
+        assert summary1 is summary2
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_double_finalize_does_not_shutdown_twice(self, mock_tracker_cls, tmp_path):
+        """Second finalize() is a no-op — executor is already None."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline.finalize()
+        assert pipeline._executor is None
+        pipeline.finalize()  # should not raise
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_del_shuts_down_executor_when_not_finalized(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """__del__ shuts down the executor if finalize was never called."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        executor = pipeline._executor
+        pipeline.__del__()
+        assert executor._shutdown
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_del_noop_when_finalized(self, mock_tracker_cls, tmp_path):
+        """__del__ is a no-op after finalize()."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        pipeline.finalize()
+        pipeline.__del__()  # should not raise
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_context_manager_calls_finalize(self, mock_tracker_cls, tmp_path):
+        """Exiting a with-block calls finalize()."""
+        mock_tracker_cls.return_value = MagicMock()
+        config = PipelineConfig(
+            name="test",
+            delta_root=tmp_path / "delta",
+            staging_root=tmp_path / "staging",
+            working_root=tmp_path / "working",
+        )
+        with PipelineManager(config) as pipeline:
+            assert not pipeline._finalized
+        assert pipeline._finalized
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_context_manager_with_explicit_finalize(self, mock_tracker_cls, tmp_path):
+        """Explicit finalize() inside with-block doesn't cause errors on exit."""
+        mock_tracker_cls.return_value = MagicMock()
+        config = PipelineConfig(
+            name="test",
+            delta_root=tmp_path / "delta",
+            staging_root=tmp_path / "staging",
+            working_root=tmp_path / "working",
+        )
+        with PipelineManager(config) as pipeline:
+            summary = pipeline.finalize()
+        assert pipeline._finalized
+        assert pipeline._summary is summary
+
+
 class TestResilientPredecessorWaiting:
     """Tests for F24: _wait_for_predecessors() survives failed predecessors."""
 
