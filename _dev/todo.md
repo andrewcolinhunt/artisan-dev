@@ -3,6 +3,11 @@
 ## Top Priorities
 
 
+In the very first tutorial. Potentially the summary table needs to be presented earlier. I had legit no idea what was happening till the summary (like what is output('asdf', 'asdf')
+I understand now but that was the only moment where I was very confused
+But idk, maybe that's fine for the first one. It's a balance of what to tell people
+
+
 
 - slurm tutorial, how do you exclude nodes? should also show where the slurm logs end up.
 
