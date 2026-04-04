@@ -254,3 +254,70 @@ extraction. Key functions:
   tags), Parquet (row group indices), tar archives (member names), or any
   format with addressable sub-units. Should the base class be generic with
   the addressing scheme as a parameter?
+
+
+# Conversation with bcov
+If you make this work you've achieved mission success:
+
+cd /home/bcov/for/andrew/silent_test
+./test_for_andrew.py -in:file:silent in.silent
+That will produce out.silent. If you can find a way to ingest it's data I think we're good
+
+I'm happy to make all of my tools take a path to a silent file and a list of tags
+
+I can also add a function to silent tools to rip the scores out of a silent file
+
+silent files are perfectly catable but not uncatable. There is unfortunately a header
+
+If you'll allow silent_tools as a conditional import, this file is a pretty good example of how to slice them using my tools:
+/home/bcov/silent_tools/silentslice 
+
+Basically:
+
+silent_index = silent_tools.get_silent_index( path_to_silent )
+sf = open( path_to_silent )
+
+sys.stdout.write( silent_tools.silent_header( silent_index ) )
+
+for tag  in tags:
+
+    structure = silent_tools.get_silent_structure_file_open( sf, silent_index, tag )
+
+    sys.stdout.write("".join(structure))
+Apologies that that script has gained a lot of features
+
+An option I was thinking of is that the artifacts could simply be the lines inside the silent file without the header. It fits the criteria of immutable. You'd just have to know that it exists inside of a silent file (and potentially it's offset and length) 
+
+Idc if you reinvent my silent indexing scheme. It doesn't do a whole lot. Also if you're not going to need to read the scores from a silent file, there's a default header you can use that's always valid
+
+Minimum viable header:
+
+SEQUENCE: A
+SCORE:     score  description
+And then each silent file entry always starts with a line that starts with SCORE: and does not contain 'description'. Silent file data ends when you encounter either SCORE: or SEQUENCE:
+
+
+Andrew Hunt
+1:33 PM
+ok will play around with it. The only thing up front that I am not sure about is if a single command gets structures from different silent files dispatched to it. Is that problematic? If it is indexed, it should be a quick lookup, right?
+
+
+Brian Coventry
+1:36 PM
+I would probably try to avoid that, it's not terrible but not great
+
+My thought process would be that every time you branch into individual runs, they cat back to a "final" silent file of that run
+And then that final silent file along with tags get passed to the child functions
+
+
+Andrew Hunt
+1:38 PM
+
+Ah ok so you have one silent file at the end of each step that's been catted together. Thats actually much nicer.
+
+
+Brian Coventry
+1:38 PM
+Yeah, that's basically how I want my version of this to look like
+
+Idk if the temporary silents are stored to node local or system. It's a single file and I haven't broken anything yet doing it that way
