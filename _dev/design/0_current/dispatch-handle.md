@@ -1,6 +1,6 @@
 # Design: DispatchHandle
 
-**Date:** 2026-03-24 (updated 2026-04-02)
+**Date:** 2026-03-24 (updated 2026-04-03)
 **Status:** Active
 
 ---
@@ -15,7 +15,7 @@ Serves two purposes:
 
 - **Cancellation of in-flight backend work.** Pipeline-level cancellation
   already exists (`PipelineManager.cancel()`, signal handling,
-  `record_step_cancelled`), but it only prevents future steps from
+  `StepTracker.record_step_cancelled`), but it only prevents future steps from
   starting — it cannot stop work already dispatched to a backend.
   `DispatchHandle.cancel()` gives each backend a way to stop its own
   in-flight work (SLURM: `scancel`, local: cancel event, K8s: delete pods).
@@ -51,6 +51,14 @@ class UnitResult:
 Replaces the informal `list[dict]` contract. The step executor, step
 scheduler, and commit code all consume this type. `_collect_results`
 produces `list[UnitResult]`.
+
+**Ships as a separate prep PR before DispatchHandle.** The `list[dict]` →
+`UnitResult` migration is mechanical but touches every result consumer:
+`_collect_results`, `_capture_slurm_logs` (constructs `UnitResult` with
+`worker_log` populated instead of mutating a dict), `aggregate_results`,
+`extract_execution_run_ids`, `capture_logs`, `_verify_staging_if_needed`,
+and `_patch_worker_logs`. Shipping this first keeps the DispatchHandle PR
+focused on the dispatch abstraction.
 
 ---
 
@@ -204,7 +212,11 @@ owns dispatch lifecycle (start, poll, collect, cancel); the backend owns
 configuration and post-dispatch processing. `step_executor` continues to
 call `backend.capture_logs(results, ...)` after `handle.run()` /
 `handle.collect()` returns, and `backend.validate_operation(operation)`
-before creating the handle. No interface change to either method.
+before creating the handle.
+
+`capture_logs` signature changes from `results: list[dict]` to
+`results: list[UnitResult]` as part of the UnitResult prep PR.
+`validate_operation` is unchanged.
 
 ---
 
@@ -240,7 +252,7 @@ Each handle's `dispatch()` enters the task runner context and calls
 ## Pipeline-level cancellation
 
 `PipelineManager` already has `cancel()`, `_cancel_event`, signal handling
-(SIGINT/SIGTERM), `record_step_cancelled`, and the "cancelled" step state.
+(SIGINT/SIGTERM), and the "cancelled" step state (`StepTracker.record_step_cancelled`).
 The new work is wiring `cancel()` to also call `handle.cancel()` on active
 dispatch handles, so that in-flight backend work is stopped — not just
 future steps.
@@ -275,7 +287,17 @@ class BackendBase(ABC):
 
 Return type changes from `Callable` to `DispatchHandle`. Method renamed
 from `create_flow` to `create_dispatch_handle` (it no longer returns a
-flow). Call sites change:
+flow).
+
+**`log_folder` moves to backend instance state.** The current
+`create_flow` accepts `log_folder: Path | None` for SLURM stdout/stderr
+paths, but the value is always `config.delta_root.parent / "logs" / "slurm"`
+— the same for every step in a pipeline run. The backend receives it once
+during pipeline initialization (or derives it from pipeline config), and
+the SLURM handle reads it from `self._log_folder`. This keeps
+`create_dispatch_handle` clean of backend-specific parameters.
+
+Call sites change:
 
 ```python
 # Before
@@ -293,11 +315,32 @@ transport.
 
 ---
 
+## Sequencing
+
+| PR | Content |
+|----|---------|
+| Prep: UnitResult | Introduce `UnitResult`, migrate all `list[dict]` consumers (`_collect_results`, `_capture_slurm_logs`, `aggregate_results`, `extract_execution_run_ids`, `capture_logs`, `_verify_staging_if_needed`, `_patch_worker_logs`) |
+| DispatchHandle | ABC, `LocalDispatchHandle`, `SlurmDispatchHandle`, `SlurmIntraDispatchHandle`, pipeline cancel wiring, `log_folder` to backend state |
+
+---
+
 ## Scope
+
+### Prep PR: UnitResult
 
 | File | Change |
 |------|--------|
-| `orchestration/backends/base.py` | `DispatchHandle` ABC, rename `create_flow` → `create_dispatch_handle`, remove `_build_prefect_flow` |
+| `orchestration/engine/dispatch.py` | `_collect_results` returns `list[UnitResult]`, `_capture_slurm_logs` constructs `UnitResult` with `worker_log` instead of mutating dict, `execute_unit_task` returns `UnitResult` |
+| `orchestration/engine/results.py` | `aggregate_results` and `extract_execution_run_ids` accept `list[UnitResult]` (attribute access replaces `.get()`) |
+| `orchestration/engine/step_executor.py` | `_verify_staging_if_needed` accepts `list[UnitResult]` |
+| `orchestration/backends/base.py` | `capture_logs` signature: `results: list[UnitResult]`, `create_flow` return type updated |
+| `orchestration/backends/slurm.py` | `capture_logs` accepts `list[UnitResult]` |
+
+### DispatchHandle PR
+
+| File | Change |
+|------|--------|
+| `orchestration/backends/base.py` | `DispatchHandle` ABC, rename `create_flow` → `create_dispatch_handle`, remove `_build_prefect_flow`, `log_folder` to backend instance state |
 | `orchestration/backends/local.py` | `LocalDispatchHandle` (units passed in-memory via ProcessPool) |
 | `orchestration/backends/slurm.py` | `SlurmDispatchHandle` with scancel + pickle-to-fs unit transport |
 | `orchestration/backends/slurm_intra.py` | `SlurmIntraDispatchHandle` — same as `SlurmDispatchHandle` but with `SlurmTaskRunner(execution_mode="srun")` |
