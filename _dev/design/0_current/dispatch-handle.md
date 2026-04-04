@@ -1,6 +1,6 @@
 # Design: DispatchHandle
 
-**Date:** 2026-03-24 (updated 2026-04-03)
+**Date:** 2026-03-24 (updated 2026-04-03, revised 2026-04-03)
 **Status:** Active
 
 ---
@@ -11,7 +11,7 @@ Replace the fire-and-forget callable returned by `BackendBase.create_flow()`
 with a `DispatchHandle` that gives the orchestration layer control over
 in-flight backend work: start, poll, collect results, and cancel.
 
-Serves two purposes:
+Serves three purposes:
 
 - **Cancellation of in-flight backend work.** Pipeline-level cancellation
   already exists (`PipelineManager.cancel()`, signal handling,
@@ -47,6 +47,12 @@ class UnitResult:
     execution_run_ids: list[str]
     worker_log: str | None = None
 ```
+
+**`slurm_job_id` is intentionally excluded.** The current `_capture_slurm_logs`
+stores `result["slurm_job_id"]` on the dict for debug logging, but nothing
+downstream reads it. The SLURM handle already knows its job IDs internally
+(for `scancel`). If a future consumer needs it, it can be added as an
+optional field later.
 
 Replaces the informal `list[dict]` contract. The step executor, step
 scheduler, and commit code all consume this type. `_collect_results`
@@ -301,8 +307,8 @@ Call sites change:
 
 ```python
 # Before
-step_flow = backend.create_flow(...)
 units_path = _save_units(units, staging_root, step_number)
+step_flow = backend.create_flow(...)
 results = step_flow(units_path=str(units_path), runtime_env=runtime_env)
 
 # After
@@ -330,11 +336,12 @@ transport.
 
 | File | Change |
 |------|--------|
-| `orchestration/engine/dispatch.py` | `_collect_results` returns `list[UnitResult]`, `_capture_slurm_logs` constructs `UnitResult` with `worker_log` instead of mutating dict, `execute_unit_task` returns `UnitResult` |
+| `orchestration/engine/dispatch.py` | `execute_unit_task` returns `UnitResult`, `_get_one` returns `UnitResult` (error case), `_collect_results` returns `list[UnitResult]`, `_capture_slurm_logs` constructs `UnitResult` with `worker_log` instead of mutating dict (drops `slurm_job_id`) |
 | `orchestration/engine/results.py` | `aggregate_results` and `extract_execution_run_ids` accept `list[UnitResult]` (attribute access replaces `.get()`) |
-| `orchestration/engine/step_executor.py` | `_verify_staging_if_needed` accepts `list[UnitResult]` |
+| `orchestration/engine/step_executor.py` | `_verify_staging_if_needed` accepts `list[UnitResult]`, curator result dict construction (~L622) builds `UnitResult` instead |
 | `orchestration/backends/base.py` | `capture_logs` signature: `results: list[UnitResult]`, `create_flow` return type updated |
 | `orchestration/backends/slurm.py` | `capture_logs` accepts `list[UnitResult]` |
+| `orchestration/backends/slurm_intra.py` | `capture_logs` accepts `list[UnitResult]` |
 
 ### DispatchHandle PR
 
