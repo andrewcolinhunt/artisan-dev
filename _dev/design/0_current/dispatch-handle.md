@@ -161,7 +161,9 @@ shared-FS handle implementations. `dispatch.py` retains
   passes units directly to `execute_unit_task.map()` (no pickle file —
   multiprocessing serializes them), and stores the resulting Prefect
   futures.
-- `is_done()` checks whether all Prefect futures have resolved.
+- `is_done()` checks whether all Prefect futures have resolved or the
+  cancel event is set (so `run()` unblocks and `collect()` can fill
+  cancellation markers).
 - `collect()` gathers results from Prefect futures via `_collect_results`,
   then exits the task runner context.
 - `cancel()` sets a `threading.Event`. The `_collect_results` call fills
