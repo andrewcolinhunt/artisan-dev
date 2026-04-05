@@ -59,7 +59,10 @@ def run_composite(
         # Create artifact store for curator hydration
         from artisan.storage.core.artifact_store import ArtifactStore
 
-        artifact_store = ArtifactStore(runtime_env.delta_root_path)
+        artifact_store = ArtifactStore(
+            runtime_env.delta_root_path,
+            files_root=runtime_env.files_root_path,
+        )
 
         # Create collapsed context
         ctx = CollapsedCompositeContext(
