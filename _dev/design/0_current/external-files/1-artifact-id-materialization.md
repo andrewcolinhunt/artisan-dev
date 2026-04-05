@@ -75,7 +75,7 @@ Sandbox cleanup
 
 Key observations:
 - `output_snapshot()` already scans output files at postprocess
-- The sandbox is alive through record (cleanup is after staging)
+- The sandbox is alive through lineage (cleanup is before record/staging)
 - Lineage inference has no filesystem access — works only on `original_name`
 - Artifacts are mutable between finalization and staging
 - The operation author decides what `original_name` is (typically from the
@@ -95,6 +95,8 @@ Key observations:
 - `_match_by_stem_indexed`: for each output artifact, strips its
   `original_name` and looks up the index. **Returns a match only when
   `len(entries) == 1`**. Multiple entries = ambiguous = `None` = no edge.
+  Also attempts a longest-prefix fallback (progressively shorter prefixes),
+  each also requiring exactly 1 entry.
 - No error, no warning. Silent lineage gap.
 
 For creators, this rarely matters — each execution unit processes a small
