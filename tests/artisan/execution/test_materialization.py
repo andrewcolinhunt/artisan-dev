@@ -34,9 +34,10 @@ class TestMaterializeAsForwarded:
         artifacts = {"data": [artifact]}
         mock_store = MagicMock()
 
-        materialize_inputs(artifacts, specs, tmp_path, mock_store)
+        _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
 
         artifact.materialize_to.assert_called_once_with(tmp_path, format=".csv")
+        assert "a" * 32 in materialized_ids
 
     def test_no_materialize_as_passes_none(self, tmp_path: Path):
         """Default spec passes format=None."""
@@ -49,9 +50,10 @@ class TestMaterializeAsForwarded:
         artifacts = {"metric": [artifact]}
         mock_store = MagicMock()
 
-        materialize_inputs(artifacts, specs, tmp_path, mock_store)
+        _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
 
         artifact.materialize_to.assert_called_once_with(tmp_path, format=None)
+        assert "b" * 32 in materialized_ids
 
     def test_config_referenced_artifacts_get_none_format(self, tmp_path: Path):
         """Artifacts resolved from config references get format=None."""
@@ -74,6 +76,8 @@ class TestMaterializeAsForwarded:
         specs = {"config": InputSpec(materialize=True)}
         artifacts = {"config": [config]}
 
-        materialize_inputs(artifacts, specs, tmp_path, mock_store)
+        _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
 
         ref_artifact.materialize_to.assert_called_once_with(tmp_path, format=None)
+        assert config.artifact_id in materialized_ids
+        assert "c" * 32 in materialized_ids
