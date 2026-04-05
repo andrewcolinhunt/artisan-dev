@@ -836,6 +836,7 @@ class PipelineManager:
         delta_root: Path | str,
         staging_root: Path | str,
         working_root: Path | str | None = None,
+        files_root: Path | str | None = None,
         failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
         cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
         backend: str | BackendBase = "local",
@@ -857,6 +858,8 @@ class PipelineManager:
             staging_root: Root path for worker staging files.
             working_root: Root path for worker sandboxes. If None, uses
                 tempfile.gettempdir() (respects $TMPDIR).
+            files_root: Root path for Artisan-managed external files. If None,
+                defaults to delta_root.parent / "files".
             failure_policy: Default failure handling for steps.
             cache_policy: Controls when completed steps qualify as cache hits.
             backend: Default backend for step execution. Accepts a BackendBase
@@ -892,6 +895,9 @@ class PipelineManager:
             staging_root=Path(staging_root),
             **(
                 {"working_root": Path(working_root)} if working_root is not None else {}
+            ),
+            **(
+                {"files_root": Path(files_root)} if files_root is not None else {}
             ),
             failure_policy=failure_policy,
             cache_policy=cache_policy,
