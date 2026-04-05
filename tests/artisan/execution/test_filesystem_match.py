@@ -1,10 +1,14 @@
-"""Tests for build_filesystem_match_map()."""
+"""Tests for build_filesystem_match_map() and augment_match_map_from_artifacts()."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from artisan.execution.lineage.filesystem_match import build_filesystem_match_map
+from artisan.execution.lineage.filesystem_match import (
+    augment_match_map_from_artifacts,
+    build_filesystem_match_map,
+)
+from artisan.schemas.artifact.data import DataArtifact
 
 
 class TestPrefixMatching:
@@ -106,3 +110,67 @@ class TestEdgeCases:
         result = build_filesystem_match_map(ids, outputs)
 
         assert result == {f"{input_id}_out": input_id}
+
+
+def _make_artifact(artifact_id: str, original_name: str) -> DataArtifact:
+    """Create a finalized DataArtifact for testing."""
+    return DataArtifact(
+        artifact_type="data",
+        artifact_id=artifact_id,
+        origin_step_number=1,
+        content=b"a\n1\n",
+        original_name=original_name,
+        extension=".csv",
+        size_bytes=4,
+    )
+
+
+class TestAugmentMatchMapFromArtifacts:
+    """augment_match_map_from_artifacts adds entries from artifact names."""
+
+    def test_adds_memory_based_output(self):
+        """Artifacts with artifact_id-prefixed names get added to match map."""
+        input_id = "a" * 32
+        output_art = _make_artifact("x" * 32, f"{input_id}_metrics")
+
+        match_map: dict[str, str] = {}
+        augment_match_map_from_artifacts(
+            match_map, {input_id}, {"metrics": [output_art]}
+        )
+
+        assert match_map == {f"{input_id}_metrics": input_id}
+
+    def test_skips_already_matched(self):
+        """Names already in the match map are not overwritten."""
+        input_id = "a" * 32
+        output_art = _make_artifact("x" * 32, f"{input_id}_scored")
+
+        match_map = {f"{input_id}_scored": input_id}
+        augment_match_map_from_artifacts(
+            match_map, {input_id}, {"data": [output_art]}
+        )
+
+        assert match_map == {f"{input_id}_scored": input_id}
+
+    def test_skips_unrelated_names(self):
+        """Artifact names that don't start with any input ID are skipped."""
+        output_art = _make_artifact("x" * 32, "summary_report")
+
+        match_map: dict[str, str] = {}
+        augment_match_map_from_artifacts(
+            match_map, {"a" * 32}, {"data": [output_art]}
+        )
+
+        assert match_map == {}
+
+    def test_handles_none_original_name(self):
+        """Artifacts with None original_name are skipped."""
+        output_art = _make_artifact("x" * 32, "temp")
+        output_art.original_name = None
+
+        match_map: dict[str, str] = {}
+        augment_match_map_from_artifacts(
+            match_map, {"a" * 32}, {"data": [output_art]}
+        )
+
+        assert match_map == {}
