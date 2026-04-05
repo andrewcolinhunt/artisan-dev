@@ -180,30 +180,29 @@ Including `external_path` in the hash ensures per-worker artifacts get
 distinct `artifact_id`s from consolidated artifacts (same structure data,
 different file location).
 
-**Materialization:**
+**Materialization: skipped by default.**
+
+External-content types skip per-artifact materialization (see
+`2-external-content-artifacts.md`). Many artifacts point to the same
+silent file — extracting each individually would mean N redundant file
+reads and N tiny output files, which is the wrong interface for
+downstream operations.
+
+Instead, operations consume SilentStructureArtifacts with
+`InputSpec(materialize=False)` and read from `external_path` directly:
 
 ```python
-def _materialize_content(self, directory: Path) -> Path:
-    """Extract this structure from the silent file by tag."""
-    if self.external_path is None or self.decoy_tag is None:
-        msg = "Cannot materialize: artifact not hydrated"
-        raise ValueError(msg)
-
-    import silent_tools
-
-    silent_index = silent_tools.get_silent_index(self.external_path)
-    with open(self.external_path) as sf:
-        lines = silent_tools.get_silent_structure_file_open(
-            sf, silent_index, self.decoy_tag,
-        )
-
-    path = directory / f"{self.decoy_tag}.silent"
-    path.write_text(
-        silent_tools.silent_header(silent_index) + "".join(lines),
-    )
-    self.materialized_path = path
-    return path
+def preprocess(self, inputs: PreprocessInput) -> dict:
+    structures = inputs.input_artifacts["structures"]
+    # All artifacts share one file (post-consolidation)
+    silent_file = structures[0].external_path
+    tags = [s.decoy_tag for s in structures]
+    return {"silent_file": silent_file, "tags": tags}
 ```
+
+On NFS, `external_path` is a local path. On cloud, it's an S3/GCS URI —
+the operation downloads the file once via `fsspec.open()`, then passes
+it to `silent_tools`. One download regardless of how many structures.
 
 ### ConsolidateSilentFiles
 
