@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
-import re
+
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -400,11 +400,9 @@ class FailingTransformer(OperationDefinition):
         else:
             input_files = [Path(f) for f in dataset_input]
 
-        for input_path in input_files:
+        for index, input_path in enumerate(input_files):
             input_path = Path(input_path)
             stem = input_path.stem
-            match = re.search(r"dataset_(\d+)", stem)
-            index = int(match.group(1)) if match else -1
 
             if self.params.fail_on_all:
                 raise ValueError(f"Intentional failure on {stem}")
