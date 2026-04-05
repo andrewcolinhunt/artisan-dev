@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from artisan.execution.executors.curator import _handle_artifact_result
