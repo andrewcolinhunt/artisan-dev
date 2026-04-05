@@ -105,6 +105,50 @@ internally by sandbox creation.
 
 ## Design
 
+### Path `/` operator replacement
+
+The codebase uses the `Path /` operator and `Path.parent` on config
+fields. With `str` fields, these break — and `Path()` wrapping is
+wrong for S3/GCS URIs. Doc 01 introduces `uri_join()` and
+`uri_parent()` in `utils/path.py` (backed by `posixpath`) for this
+purpose.
+
+Migration pattern:
+
+```python
+# Before (Path fields)
+config.delta_root / TablePath.EXECUTIONS
+config.delta_root.parent / "logs" / "failures"
+config.staging_root / "_dispatch"
+
+# After (str fields)
+uri_join(config.delta_root, TablePath.EXECUTIONS)
+uri_join(uri_parent(config.delta_root), "logs", "failures")
+uri_join(config.staging_root, "_dispatch")
+```
+
+Sites in `step_executor.py` that need this migration:
+- `config.delta_root / TablePath.EXECUTIONS` — `check_cache_for_batch`
+- `config.delta_root.parent / "logs" / "failures"` — `_create_runtime_environment`
+- `config.delta_root.parent / "logs" / "slurm"` — SLURM log path derivation
+- `config.staging_root / "_dispatch"` — dispatch directory
+
+### Staging scope: cloud-capable vs always-local
+
+`delta_root` and `staging_root` are cloud-capable — after this PR,
+they accept S3/GCS URIs. `working_root` and `failure_logs_root` are
+always local (sandbox and log directories on the machine running the
+executor). Consumers of always-local fields wrap with `Path()`:
+
+```python
+# Cloud-capable — use uri_join, fs.*, storage_options
+uri_join(runtime_env.delta_root, TablePath.EXECUTIONS)
+
+# Always-local — wrap with Path() for filesystem operations
+sandbox_base = Path(runtime_env.working_root)
+log_dir = Path(runtime_env.failure_logs_root)
+```
+
 ### RuntimeEnvironment renames
 
 ```python
@@ -203,7 +247,9 @@ def _create_runtime_environment(
         working_root=(                       # was working_root_path=
             None if is_curator else config.working_root
         ),
-        failure_logs_root=...,
+        failure_logs_root=uri_join(          # was config.delta_root.parent / "logs" / "failures"
+            uri_parent(config.delta_root), "logs", "failures"
+        ),
         storage=config.storage,
         # ... other fields ...
     )
@@ -252,41 +298,48 @@ the existing `storage_options`.
 |------|--------|
 | `schemas/execution/runtime_environment.py` | Rename `delta_root_path` → `delta_root`, `staging_root_path` → `staging_root`, `working_root_path` → `working_root`. Change types from `Path` to `str`. |
 | `schemas/orchestration/pipeline_config.py` | Change `delta_root`, `staging_root`, `working_root` types from `Path` to `str`. |
-| `orchestration/engine/step_executor.py` | Update all field references. Pass `str` to storage classes. |
+| `schemas/execution/execution_context.py` | `staging_root: str` (was `Path`). |
+| `orchestration/engine/step_executor.py` | Update all field references. Replace `config.delta_root / ...` with `uri_join(config.delta_root, ...)`. Replace `config.delta_root.parent / ...` with `uri_join(uri_parent(config.delta_root), ...)`. Update `check_cache_for_batch` and `_compact_step_tables` (`delta_root: str`, `staging_root: str`). |
 | `orchestration/pipeline_manager.py` | Update `config.delta_root` usage (already correct name, now `str`). |
-| `execution/executors/creator.py` | `runtime_env.delta_root` replaces `.delta_root_path`. `Path(runtime_env.working_root)` for sandbox. |
+| `execution/executors/creator.py` | `runtime_env.delta_root` replaces `.delta_root_path`. `Path(runtime_env.working_root)` for sandbox (always-local). |
 | `execution/executors/curator.py` | Same pattern. |
 | `execution/executors/composite.py` | Same pattern. |
 | `execution/context/builder.py` | `delta_root: str` and `staging_root: str` parameters. |
 | `composites/base/composite_context.py` | Update field references. |
 | `orchestration/engine/inputs.py` | `delta_root: str`, add `fs` parameter for `.exists()` guards. |
 | `orchestration/engine/step_tracker.py` | `delta_root: str`, `fs` for `.exists()`. (Already has `storage_options` from doc 03.) |
+| `orchestration/engine/dispatch.py` | `failure_logs_root` handling uses `Path()` wrapper for local ops. `staging_root: str` parameters on `_save_units`, `_patch_worker_logs`, `_find_staging_dir`. |
 | `storage/cache/cache_lookup.py` | Path parameters → `str`. Add `fs` for `.exists()`. |
-| `orchestration/engine/dispatch.py` | `failure_logs_root` handling uses `Path()` wrapper for local ops. |
+| `storage/io/staging_verification.py` | `staging_root: str` parameter. |
+| `execution/staging/parquet_writer.py` | `_create_staging_path` receives `staging_root: str` (from `ExecutionContext`). |
 | `execution/staging/recorder.py` | `failure_logs_root` handling uses `Path()` wrapper. |
-| `orchestration/backends/base.py` | `capture_logs` signature: `staging_root: str`, `failure_logs_root: str | None`. |
+| `orchestration/backends/base.py` | `capture_logs` signature: `staging_root: str`, `failure_logs_root: str \| None`. |
 | `orchestration/backends/local.py` | Update `capture_logs` signature. |
 | `orchestration/backends/slurm.py` | Update `capture_logs` signature. |
 | `orchestration/backends/slurm_intra.py` | Update `capture_logs` signature. |
-| `visualization/inspect.py` | `delta_root` parameter accepts `str` (already does `Path | str`). Remove `Path()` coercion, add `fs` for `.exists()`. |
+| `visualization/inspect.py` | `delta_root` parameter accepts `str` (already does `Path \| str`). Remove `Path()` coercion, add `fs` for `.exists()`. |
 | `visualization/timing.py` | Same pattern. |
 | `visualization/graph/macro.py` | Same pattern. |
 | `visualization/graph/micro.py` | Same pattern. |
+| `visualization/graph/stepper.py` | `delta_root: str`. Replace `delta_root.parent / "images"` with `uri_join(uri_parent(delta_root), "images")`. |
 | `operations/curator/interactive_filter.py` | Update delta_root references. |
-| `schemas/execution/execution_context.py` | `staging_root: str` (was `Path`). |
+| `operations/curator/ingest_pipeline_step.py` | `source_delta_root` field type `str \| Path` → `str`. |
+| `utils/tutorial.py` | `TutorialEnv` fields `delta_root`, `staging_root`, `working_root` type `Path` → `str`. |
 
 ### Test files
 
 | File | Change |
 |------|--------|
 | `tests/artisan/execution/test_executor_creator.py` | Update `RuntimeEnvironment` construction: `delta_root=str(path)`, etc. |
-| `tests/artisan/composites/test_composite_context.py` | Same. |
+| `tests/artisan/composites/test_composite_context.py` | Update `RuntimeEnvironment` mock attribute names (`working_root_path` → `working_root`, etc.). |
 | `tests/artisan/orchestration/test_step_executor.py` | Update `PipelineConfig` construction: `delta_root=str(path)`. |
 | `tests/artisan/orchestration/test_pipeline_manager.py` | Same. |
 | `tests/artisan/orchestration/test_signal_handling.py` | Same. |
 | `tests/artisan/orchestration/test_orchestration_api.py` | Same. |
 | `tests/artisan/orchestration/test_pipeline_helpers.py` | Same. |
-| `tests/integration/*.py` | Update all `PipelineConfig` construction to pass `str`. |
+| `tests/artisan/orchestration/backends/test_base.py` | Update `capture_logs` signature in test implementations. |
+| `tests/artisan/execution/test_failure_logs.py` | Update `failure_logs_root=str(tmp_path)`. |
+| `tests/integration/conftest.py` | Update `pipeline_env` and `dual_pipeline_env` fixtures — `dict[str, Path]` values become `str`. This is the single point of update for ~18 integration test files. |
 
 ---
 
@@ -305,12 +358,9 @@ running green.
 
 ## Open Questions
 
-- **Visualization convenience.** After this rename, user-facing
-  visualization functions accept `str`. Users currently pass
-  `Path("./data/delta")`. This still works — Pydantic and the
-  functions already accept `Path | str`. The internal `Path()` coercion
-  is removed, but `str(Path("./data/delta"))` produces a valid local
-  path string. Verify no user-facing API breaks.
+None — the `uri_join`/`uri_parent` utilities (doc 01) resolve the
+`Path /` operator concern, and visualization functions already accept
+`Path | str` so the type change is transparent to users.
 
 ---
 
