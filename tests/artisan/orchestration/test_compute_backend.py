@@ -20,28 +20,22 @@ from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 class TestBackendRouting:
-    """Tests for Backend.LOCAL and Backend.SLURM create_flow routing."""
+    """Tests for Backend.LOCAL and Backend.SLURM create_dispatch_handle routing."""
 
-    @patch("prefect.flow")
-    @patch("prefect.unmapped")
-    def test_local_backend_create_flow_returns_callable(
-        self, _mock_unmapped, mock_flow
-    ):
-        mock_flow.return_value = lambda fn: fn
+    def test_local_backend_returns_dispatch_handle(self):
+        from artisan.orchestration.engine.dispatch_handle import DispatchHandle
+
         resources = ResourceConfig()
         execution = ExecutionConfig()
-        result = Backend.LOCAL.create_flow(
+        handle = Backend.LOCAL.create_dispatch_handle(
             resources, execution, step_number=0, job_name="test_op"
         )
-        assert callable(result)
+        assert isinstance(handle, DispatchHandle)
 
     @patch("prefect_submitit.SlurmTaskRunner")
-    @patch("prefect.flow")
-    @patch("prefect.unmapped")
-    def test_slurm_backend_create_flow_uses_slurm_runner(
-        self, _mock_unmapped, mock_flow, mock_slurm_runner
-    ):
-        mock_flow.return_value = lambda fn: fn
+    def test_slurm_backend_returns_dispatch_handle(self, mock_slurm_runner):
+        from artisan.orchestration.backends.slurm import SlurmDispatchHandle
+
         resources = ResourceConfig(
             cpus=4,
             memory_gb=8,
@@ -51,29 +45,28 @@ class TestBackendRouting:
         )
         execution = ExecutionConfig(units_per_worker=1)
 
-        Backend.SLURM.create_flow(
+        handle = Backend.SLURM.create_dispatch_handle(
             resources, execution, step_number=3, job_name="test_op"
         )
 
+        assert isinstance(handle, SlurmDispatchHandle)
         mock_slurm_runner.assert_called_once()
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["partition"] == "gpu"
         assert call_kwargs["slurm_job_name"] == "s3_test_op"
 
     @patch("prefect_submitit.SlurmTaskRunner")
-    @patch("prefect.flow")
-    @patch("prefect.unmapped")
-    def test_slurm_intra_backend_create_flow_uses_srun_mode(
-        self, _mock_unmapped, mock_flow, mock_slurm_runner
-    ):
-        mock_flow.return_value = lambda fn: fn
+    def test_slurm_intra_backend_returns_dispatch_handle(self, mock_slurm_runner):
+        from artisan.orchestration.backends.slurm import SlurmDispatchHandle
+
         resources = ResourceConfig(cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00")
         execution = ExecutionConfig(units_per_worker=1)
 
-        Backend.SLURM_INTRA.create_flow(
+        handle = Backend.SLURM_INTRA.create_dispatch_handle(
             resources, execution, step_number=1, job_name="test"
         )
 
+        assert isinstance(handle, SlurmDispatchHandle)
         mock_slurm_runner.assert_called_once()
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["execution_mode"] == "srun"
