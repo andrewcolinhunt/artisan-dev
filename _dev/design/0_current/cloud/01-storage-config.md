@@ -34,8 +34,13 @@ Frozen Pydantic `BaseModel` with `delta_root_path: Path`,
 `staging_root_path: Path`, `working_root_path: Path | None`,
 `failure_logs_root: Path | None`, plus flattened backend traits.
 Created per step by `_create_runtime_environment()` in
-`step_executor.py:355` from `PipelineConfig` fields. Serialized to
+`step_executor.py` from `PipelineConfig` fields. Serialized to
 workers via pickle (Prefect). Not persisted to disk or database.
+
+Note: `failure_logs_root` is derived from
+`config.delta_root.parent / "logs" / "failures"` — this uses `Path`
+semantics that won't work with cloud URIs. Doc 04 addresses this
+using the `uri_parent`/`uri_join` utilities introduced below.
 
 `StorageConfig` will be added as a new field with a default that
 preserves current behavior.
@@ -79,19 +84,24 @@ class StorageConfig(BaseModel):
     carries only the protocol and non-sensitive options (region,
     endpoint, bucket).
 
+    ``options`` uses fsspec-style keys natively (``endpoint_url``,
+    ``region``, ``project``). The ``delta_storage_options()`` method
+    translates these to the environment-variable-style keys that
+    delta-rs expects (``AWS_ENDPOINT_URL``, ``AWS_REGION``, etc.).
+
     Args:
         protocol: fsspec protocol identifier. ``"file"`` for local
             filesystem, ``"s3"`` for S3, ``"gcs"`` for Google Cloud
             Storage.
-        options: Non-sensitive fsspec constructor arguments (region,
-            endpoint_url, project). Credentials come from the
-            environment.
+        options: Non-sensitive fsspec constructor arguments. Values
+            may be any type fsspec accepts (str, bool, int).
+            Credentials come from the environment.
     """
 
     model_config = {"frozen": True}
 
     protocol: str = "file"
-    options: dict[str, str] = Field(default_factory=dict)
+    options: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def is_local(self) -> bool:
@@ -109,13 +119,26 @@ class StorageConfig(BaseModel):
     def delta_storage_options(self) -> dict[str, str] | None:
         """Storage options dict for Polars/delta-rs.
 
+        Translates fsspec-style option keys to the
+        environment-variable-style keys that delta-rs expects, and
+        stringifies all values.
+
         Returns:
             Options dict for cloud protocols, None for local (no
             options needed — delta-rs handles local paths natively).
         """
         if self.is_local:
             return None
-        return dict(self.options)
+
+        _DELTA_KEY_MAP: dict[str, str] = {
+            "endpoint_url": "AWS_ENDPOINT_URL",
+            "region": "AWS_REGION",
+            "project": "GOOGLE_SERVICE_ACCOUNT",
+        }
+        return {
+            _DELTA_KEY_MAP.get(k, k): str(v)
+            for k, v in self.options.items()
+        }
 ```
 
 **Why `BaseModel`?** `StorageConfig` is embedded inside
@@ -173,14 +196,53 @@ def _create_runtime_environment(config: PipelineConfig, ...) -> RuntimeEnvironme
     )
 ```
 
+### URI path utilities
+
+Docs 02–04 need to replace `Path /` and `Path.parent` operations
+with equivalents that work for both local paths and cloud URIs
+(`s3://bucket/path`). This PR introduces two thin utilities in
+`utils/path.py`, backed by `posixpath`:
+
+```python
+import posixpath
+
+def uri_join(base: str, *parts: str) -> str:
+    """Join URI/path segments. Works for local paths and cloud URIs."""
+    return posixpath.join(base, *parts)
+
+def uri_parent(uri: str) -> str:
+    """Parent directory of a URI/path. Works for local paths and cloud URIs."""
+    return posixpath.dirname(uri)
+```
+
+Both work because `posixpath` operates on string structure without
+assuming OS conventions, and both local POSIX paths and cloud URIs
+use `/` as the separator:
+
+```python
+uri_join("s3://bucket/delta", "executions")      # → s3://bucket/delta/executions
+uri_join("/data/delta", "executions")             # → /data/delta/executions
+uri_parent("s3://bucket/project/delta")           # → s3://bucket/project
+uri_parent("/data/pipelines/delta")               # → /data/pipelines
+```
+
+Introduced in this PR (not docs 02–04) so they're available from
+the start. Zero new dependencies — `posixpath` is stdlib.
+
 ### fsspec dependency
 
-Add `fsspec` as a direct dependency in `pyproject.toml`. It's already
-a transitive dependency, so install behavior is unchanged.
+Add `fsspec` as a direct dependency in `[tool.pixi.pypi-dependencies]`.
+It's already a transitive dependency (via prefect and dask), so
+install behavior is unchanged.
 
-Cloud filesystem packages are optional extras:
-- `pip install artisan[s3]` → adds `s3fs`
-- `pip install artisan[gcs]` → adds `gcsfs`
+Cloud filesystem packages are optional extras. This requires creating
+a `[project.optional-dependencies]` section (none exists today):
+
+```toml
+[project.optional-dependencies]
+s3 = ["s3fs"]
+gcs = ["gcsfs"]
+```
 
 ---
 
@@ -189,10 +251,13 @@ Cloud filesystem packages are optional extras:
 | File | Change |
 |------|--------|
 | `schemas/execution/storage_config.py` | **New file.** `StorageConfig` Pydantic model. |
+| `schemas/execution/__init__.py` | Re-export `StorageConfig`. |
+| `schemas/__init__.py` | Re-export `StorageConfig`. |
 | `schemas/execution/runtime_environment.py` | Add `storage: StorageConfig` field with default. |
 | `schemas/orchestration/pipeline_config.py` | Add `storage: StorageConfig` field with default. |
 | `orchestration/engine/step_executor.py` | Pass `storage=config.storage` in `_create_runtime_environment`. |
-| `pyproject.toml` | Add `fsspec` as direct dependency. Add `s3` and `gcs` optional extras. |
+| `utils/path.py` | Add `uri_join()` and `uri_parent()` functions. |
+| `pyproject.toml` | Add `fsspec` to `[tool.pixi.pypi-dependencies]`. Create `[project.optional-dependencies]` for `s3`/`gcs` extras. |
 
 ---
 
@@ -200,9 +265,10 @@ Cloud filesystem packages are optional extras:
 
 | Test file | Coverage |
 |-----------|----------|
-| `tests/artisan/schemas/test_storage_config.py` | `StorageConfig` defaults: `is_local` is True, `filesystem()` returns `LocalFileSystem`, `delta_storage_options()` returns None. S3 config: `is_local` is False, `filesystem()` returns `S3FileSystem` (mocked), `delta_storage_options()` returns options dict. Frozen model: mutation raises. Serialization round-trip via Pydantic. |
-| `tests/artisan/schemas/test_runtime_environment.py` | Existing tests pass unchanged (default `StorageConfig` is transparent). New test: `storage` field serializes correctly. |
-| `tests/artisan/schemas/test_pipeline_config.py` | Existing tests pass unchanged. New test: `storage` field is propagated. |
+| `tests/artisan/schemas/test_storage_config.py` | **New file.** `StorageConfig` defaults: `is_local` is True, `filesystem()` returns `LocalFileSystem`, `delta_storage_options()` returns None. S3 config: `is_local` is False, `filesystem()` returns `S3FileSystem` (mocked), `delta_storage_options()` returns translated+stringified options dict. Frozen model: mutation raises. Serialization round-trip via Pydantic. |
+| `tests/artisan/execution/test_executor_creator.py` | Existing `RuntimeEnvironment` tests pass unchanged (default `StorageConfig` is transparent). New test: `storage` field serializes correctly. |
+| `tests/artisan/orchestration/test_orchestration_api.py` | Existing `PipelineConfig` tests pass unchanged. New test: `storage` field is propagated. |
+| `tests/artisan/utils/test_path.py` | `uri_join` and `uri_parent` with local paths and cloud URIs. Edge cases: trailing slashes, protocol prefixes. |
 
 ---
 
