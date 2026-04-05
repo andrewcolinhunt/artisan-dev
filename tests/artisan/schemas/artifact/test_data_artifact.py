@@ -124,8 +124,9 @@ class TestMaterialize:
         artifact = DataArtifact.draft(
             content=content, original_name="out.csv", step_number=0
         )
+        artifact.finalize()
         path = artifact.materialize_to(tmp_path)
-        assert path == tmp_path / "out.csv"
+        assert path == tmp_path / f"{artifact.artifact_id}.csv"
         assert path.read_bytes() == content
         assert artifact.materialized_path == path
 
@@ -137,6 +138,7 @@ class TestMaterializeFormat:
         artifact = DataArtifact.draft(
             content=content, original_name="out.csv", step_number=0
         )
+        artifact.finalize()
         with pytest.raises(ValueError, match="does not support format conversion"):
             artifact.materialize_to(tmp_path, format=".tsv")
 
