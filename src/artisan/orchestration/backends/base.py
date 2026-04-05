@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
@@ -95,7 +96,7 @@ class BackendBase(ABC):
         step_number: int,
         job_name: str,
         log_folder: Path | None = None,
-    ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
+    ) -> Callable[[str, RuntimeEnvironment], list[UnitResult]]:
         """Build a configured Prefect flow for this backend.
 
         Args:
@@ -106,14 +107,14 @@ class BackendBase(ABC):
             log_folder: Directory for scheduler log files (e.g. submitit logs).
 
         Returns:
-            Callable that takes (units_path, runtime_env) and returns result dicts.
+            Callable that takes (units_path, runtime_env) and returns UnitResults.
         """
         ...
 
     @abstractmethod
     def capture_logs(
         self,
-        results: list[dict],
+        results: list[UnitResult],
         staging_root: Path,
         failure_logs_root: Path | None,
         operation_name: str,
@@ -121,7 +122,7 @@ class BackendBase(ABC):
         """Post-dispatch: capture backend-specific worker logs into results.
 
         Args:
-            results: Result dicts from dispatch (may contain worker_log key).
+            results: Unit results from dispatch.
             staging_root: Root staging directory.
             failure_logs_root: Root directory for failure log files.
             operation_name: Operation name for log directory structure.
@@ -140,7 +141,7 @@ class BackendBase(ABC):
     def _build_prefect_flow(
         self,
         task_runner: Any,
-    ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
+    ) -> Callable[[str, RuntimeEnvironment], list[UnitResult]]:
         """Build a Prefect flow that maps execute_unit_task over units.
 
         Units are loaded from a pickle file on disk to avoid exceeding
@@ -164,7 +165,7 @@ class BackendBase(ABC):
         def step_flow(
             units_path: str,
             runtime_env: RuntimeEnvironment,
-        ) -> list[dict]:
+        ) -> list[UnitResult]:
             units = _load_units(Path(units_path))
             futures = execute_unit_task.map(units, runtime_env=unmapped(runtime_env))
             return _collect_results(futures)

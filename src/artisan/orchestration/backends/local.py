@@ -5,7 +5,6 @@ from __future__ import annotations
 import multiprocessing
 import signal
 import warnings
-from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from artisan.orchestration.backends.base import (
 )
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.utils.spawn import suppress_main_reimport
 
@@ -84,7 +84,7 @@ class LocalBackend(BackendBase):
         step_number: int,
         job_name: str,
         log_folder: Path | None = None,
-    ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
+    ) -> Callable[[str, RuntimeEnvironment], list[UnitResult]]:
         """Build a local ProcessPool flow.
 
         GPU operations default to sequential execution (max_workers=1) to
@@ -104,7 +104,7 @@ class LocalBackend(BackendBase):
 
     def capture_logs(
         self,
-        results: list[dict],
+        results: list[UnitResult],
         staging_root: Path,
         failure_logs_root: Path | None,
         operation_name: str,
