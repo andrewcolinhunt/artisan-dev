@@ -16,7 +16,6 @@ from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
-
 # ---------------------------------------------------------------------------
 # Test operations
 # ---------------------------------------------------------------------------
@@ -192,9 +191,7 @@ class TestPostStepNumbering:
         # Post_step is step 1
         assert future.step_number == 1
         # Next step should get step 2
-        future2 = pipeline.submit(
-            DownstreamOp, inputs={"data": future.output("data")}
-        )
+        future2 = pipeline.submit(DownstreamOp, inputs={"data": future.output("data")})
         assert future2.step_number == 2
 
     @patch(_EXECUTE_STEP, side_effect=_mock_execute_step)
@@ -205,9 +202,7 @@ class TestPostStepNumbering:
             delta_root=tmp_path / "delta",
             staging_root=tmp_path / "staging",
         )
-        future = pipeline.submit(
-            ProducerOp, post_step=ConsumerOp, name="my_step"
-        )
+        future = pipeline.submit(ProducerOp, post_step=ConsumerOp, name="my_step")
         assert future.step_name == "my_step.post"
 
 
@@ -255,16 +250,12 @@ class TestPostStepCaching:
         staging = tmp_path / "staging"
 
         # First run populates cache
-        p1 = PipelineManager.create(
-            name="test", delta_root=delta, staging_root=staging
-        )
+        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
         p1.run(ProducerOp, post_step=ConsumerOp)
         first_call_count = mock_exec.call_count
 
         # Second run — both steps should be cached
-        p2 = PipelineManager.create(
-            name="test", delta_root=delta, staging_root=staging
-        )
+        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
         result = p2.run(ProducerOp, post_step=ConsumerOp)
         assert result.success is True
         # No new execute_step calls (both cached)
@@ -277,17 +268,13 @@ class TestPostStepCaching:
         staging = tmp_path / "staging"
 
         # First run: just the producer (no post_step) — populates cache
-        p1 = PipelineManager.create(
-            name="test", delta_root=delta, staging_root=staging
-        )
+        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
         p1.run(ProducerOp)
         first_call_count = mock_exec.call_count
 
         # Second run: same producer but with post_step. Producer is cached,
         # but ConsumerOp as post_step is new.
-        p2 = PipelineManager.create(
-            name="test", delta_root=delta, staging_root=staging
-        )
+        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
         result = p2.run(ProducerOp, post_step=ConsumerOp)
         assert result.success is True
         # One new execute_step call (only the post_step)
