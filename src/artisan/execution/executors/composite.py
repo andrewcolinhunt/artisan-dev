@@ -133,6 +133,7 @@ def run_composite(
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=composite_transport.step_run_id,
+            files_root=runtime_env.files_root_path,
         )
 
         from artisan.utils.hashing import serialize_params
