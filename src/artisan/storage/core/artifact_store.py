@@ -26,15 +26,18 @@ class ArtifactStore:
         base_path (Path): Root directory for Delta Lake tables.
     """
 
-    def __init__(self, base_path: Path | str):
+    def __init__(self, base_path: Path | str, *, files_root: Path | None = None):
         """Initialize with the Delta Lake root directory.
 
         Args:
             base_path: Root directory containing artifact and framework
                 Delta tables (e.g. ``file_refs/``, ``data/``,
                 ``artifact_index/``).
+            files_root: Root directory for Artisan-managed external files.
+                None when external file storage is not configured.
         """
         self.base_path = Path(base_path)
+        self.files_root = files_root
         self._provenance: ProvenanceStore | None = None
 
     @property
