@@ -2,30 +2,12 @@
 
 ## Top Priorities
 
-how does materialization work with a silent file containing multiple artifacts?
 
-make a plan design skill. should always use the implement design skill.
-write design, should find the codebase conventions somewhere and make sure we stick to them. 
-
-
-
-In the very first tutorial. Potentially the summary table needs to be presented earlier. I had legit no idea what was happening till the summary (like what is output('asdf', 'asdf')
-I understand now but that was the only moment where I was very confused
-But idk, maybe that's fine for the first one. It's a balance of what to tell people
-
-
-
-- slurm tutorial, how do you exclude nodes? should also show where the slurm logs end up.
-
-- we should really fix the naming convention bit so that lineage is derived from artifact id instead of the name
 
 - in docs, add comparison to ray, dask, flyte
 evaluate in comparison to ray data
 MLflow, DVC, Neptune, Weights & Biases, and Sacred all offer similar provenance/artifact tracking.
 
-update claude code workflow to follow design principles better.
-- evaluate desing doc to make sure that we follow dry and other codebase conventions more precisely
-- create an implementation skill?
 
 ---
 
