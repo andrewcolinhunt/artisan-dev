@@ -166,13 +166,14 @@ for dispatching work to workers, wrapped behind a `BackendBase` abstraction.
 Understanding this relationship clarifies every comparison above.
 
 ```
-PipelineManager                          (Artisan: step sequencing, caching, provenance)
+PipelineManager                                (Artisan: step sequencing, caching, provenance)
   └─ execute_step()
-       └─ BackendBase.create_flow()      (Artisan: backend abstraction)
-            └─ @flow(task_runner=...)     (Prefect: parallel dispatch + observability)
-                 └─ execute_unit_task.map(units)
-                      ├─ run_creator_flow()    (Artisan: single operation lifecycle)
-                      └─ run_composite()        (Artisan: composite operations lifecycle)
+       └─ BackendBase.create_dispatch_handle() (Artisan: backend abstraction)
+            └─ DispatchHandle.run()            (handle owns dispatch lifecycle + cancellation)
+                 └─ @flow(task_runner=...)      (Prefect: parallel dispatch + observability)
+                      └─ execute_unit_task.map(units)
+                           ├─ run_creator_flow()    (Artisan: single operation lifecycle)
+                           └─ run_composite()        (Artisan: composite operations lifecycle)
 ```
 
 Three built-in backends control which Prefect `task_runner` is used:
@@ -187,7 +188,7 @@ Three built-in backends control which Prefect `task_runner` is used:
 |---|---|
 | Pipeline definition, step sequencing | Artisan (`PipelineManager`) |
 | Input resolution, cache lookup | Artisan (orchestration layer) |
-| Backend selection and flow creation | Artisan (`BackendBase`) |
+| Backend selection and dispatch handle creation | Artisan (`BackendBase`) |
 | Parallel dispatch to workers | Prefect (via backend-selected `task_runner`) |
 | Operation lifecycle (preprocess/execute/postprocess) | Artisan (execution layer) |
 | Composite routing (single ops vs. composed composites) | Artisan (`execute_unit_task`) |
@@ -199,7 +200,7 @@ Workers run the same execution code regardless of backend — Prefect is the
 transport, not the brain. Curator operations bypass Prefect dispatch and
 execute locally in a subprocess on the orchestrator. Custom backends can be
 created by subclassing
-`BackendBase` and implementing `create_flow()` and `capture_logs()`.
+`BackendBase` and implementing `create_dispatch_handle()` and `capture_logs()`.
 
 ---
 
