@@ -23,8 +23,6 @@ But idk, maybe that's fine for the first one. It's a balance of what to tell peo
 evaluate in comparison to ray data
 MLflow, DVC, Neptune, Weights & Biases, and Sacred all offer similar provenance/artifact tracking.
 
-- how is materialization handled for files that are external files, only references stored in the delta lake?
-
 update claude code workflow to follow design principles better.
 - evaluate desing doc to make sure that we follow dry and other codebase conventions more precisely
 - create an implementation skill?
