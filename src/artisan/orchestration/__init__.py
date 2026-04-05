@@ -27,6 +27,15 @@ Example:
 
 from __future__ import annotations
 
+import os as _os
+
+# Suppress Prefect's verbose flow-run logging before any Prefect import
+# triggers its dict-config. Must happen here because backend modules
+# import Prefect at class-definition time (ProcessPoolTaskRunner).
+# Users override via PREFECT_LOGGING_LEVEL=INFO in their environment;
+# configure_logging(suppress_noise=False) also undoes this.
+_os.environ.setdefault("PREFECT_LOGGING_LEVEL", "CRITICAL")
+
 from artisan.orchestration.backends import Backend, BackendBase
 from artisan.orchestration.pipeline_manager import PipelineManager
 

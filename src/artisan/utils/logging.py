@@ -142,3 +142,7 @@ def configure_logging(
         os.environ.setdefault("PREFECT_LOGGING_LEVEL", "CRITICAL")
         for name in _NOISY_LOGGERS:
             logging.getLogger(name).setLevel(logging.CRITICAL)
+    else:
+        os.environ.pop("PREFECT_LOGGING_LEVEL", None)
+        for name in _NOISY_LOGGERS:
+            logging.getLogger(name).setLevel(logging.INFO)
