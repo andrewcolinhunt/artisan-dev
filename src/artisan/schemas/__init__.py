@@ -22,6 +22,7 @@ from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.execution_record import ExecutionRecord
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.environment_spec import (
     ApptainerEnvironmentSpec,
     DockerEnvironmentSpec,
@@ -84,4 +85,5 @@ __all__ = [
     "SourceTargetPair",
     "StepResult",
     "ToolSpec",
+    "UnitResult",
 ]

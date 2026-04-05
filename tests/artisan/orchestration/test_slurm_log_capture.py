@@ -13,6 +13,13 @@ from artisan.orchestration.engine.dispatch import (
     _find_staging_dir,
     _patch_worker_logs,
 )
+from artisan.schemas.execution.unit_result import UnitResult
+
+
+def _result(**overrides: object) -> UnitResult:
+    """Build a UnitResult with sensible defaults."""
+    defaults = dict(success=True, error=None, item_count=1, execution_run_ids=[])
+    return UnitResult(**{**defaults, **overrides})
 
 
 class TestCaptureSlurrmLogs:
@@ -22,49 +29,47 @@ class TestCaptureSlurrmLogs:
         """SLURM future with .logs() populates worker_log in result."""
         future = MagicMock()
         future.logs.return_value = ("stdout data", "stderr data")
-        future.slurm_job_id = "12345"
-        result: dict = {"success": True}
+        result = _result()
 
-        _capture_slurm_logs(future, result)
+        new_result = _capture_slurm_logs(future, result)
 
-        assert "worker_log" in result
-        assert "stdout data" in result["worker_log"]
-        assert "stderr data" in result["worker_log"]
-        assert result["slurm_job_id"] == "12345"
+        assert new_result.worker_log is not None
+        assert "stdout data" in new_result.worker_log
+        assert "stderr data" in new_result.worker_log
 
     def test_handles_log_failure(self) -> None:
         """Exception from .logs() is swallowed; result still intact."""
         future = MagicMock()
         future.logs.side_effect = FileNotFoundError("cleaned up")
-        result: dict = {"success": True, "error": None}
+        result = _result()
 
-        _capture_slurm_logs(future, result)
+        new_result = _capture_slurm_logs(future, result)
 
-        assert "worker_log" not in result
-        assert result["success"] is True
+        assert new_result.worker_log is None
+        assert new_result.success is True
 
     def test_skips_non_slurm_futures(self) -> None:
         """Future without .logs() is silently skipped."""
         future = MagicMock(spec=[])  # No attributes at all
-        result: dict = {"success": True}
+        result = _result()
 
-        _capture_slurm_logs(future, result)
+        new_result = _capture_slurm_logs(future, result)
 
-        assert "worker_log" not in result
+        assert new_result.worker_log is None
 
     def test_batched_item_future(self) -> None:
         """SlurmBatchedItemFuture uses .slurm_job_future.logs()."""
         parent_future = MagicMock()
         parent_future.logs.return_value = ("batch stdout", "")
-        parent_future.slurm_job_id = "99999_0"
 
         future = MagicMock(spec=["slurm_job_future"])
         future.slurm_job_future = parent_future
 
-        result: dict = {"success": True}
-        _capture_slurm_logs(future, result)
+        result = _result()
+        new_result = _capture_slurm_logs(future, result)
 
-        assert "batch stdout" in result["worker_log"]
+        assert new_result.worker_log is not None
+        assert "batch stdout" in new_result.worker_log
 
 
 class TestCollectResultsSlurmLogs:
@@ -73,35 +78,24 @@ class TestCollectResultsSlurmLogs:
     def test_collect_results_captures_slurm_logs(self) -> None:
         """Results include worker_log when futures have .logs()."""
         future = MagicMock()
-        future.result.return_value = {
-            "success": True,
-            "error": None,
-            "item_count": 1,
-            "execution_run_ids": ["run1"],
-        }
+        future.result.return_value = _result(execution_run_ids=["run1"])
         future.logs.return_value = ("worker output", "")
-        future.slurm_job_id = "12345"
 
         results = _collect_results([future])
 
         assert len(results) == 1
-        assert "worker_log" in results[0]
-        assert "worker output" in results[0]["worker_log"]
+        assert results[0].worker_log is not None
+        assert "worker output" in results[0].worker_log
 
     def test_collect_results_skips_non_slurm(self) -> None:
         """Local futures without .logs() work fine."""
         future = MagicMock(spec=["result"])
-        future.result.return_value = {
-            "success": True,
-            "error": None,
-            "item_count": 1,
-            "execution_run_ids": ["run1"],
-        }
+        future.result.return_value = _result(execution_run_ids=["run1"])
 
         results = _collect_results([future])
 
         assert len(results) == 1
-        assert "worker_log" not in results[0]
+        assert results[0].worker_log is None
 
 
 class TestPatchWorkerLogs:
@@ -118,11 +112,10 @@ class TestPatchWorkerLogs:
         ).write_parquet(parquet_path)
 
         results = [
-            {
-                "success": True,
-                "execution_run_ids": ["abcdef123456"],
-                "worker_log": "slurm output here",
-            }
+            _result(
+                execution_run_ids=["abcdef123456"],
+                worker_log="slurm output here",
+            )
         ]
         _patch_worker_logs(results, tmp_path)
 
@@ -133,23 +126,17 @@ class TestPatchWorkerLogs:
     def test_no_error_when_file_missing(self, tmp_path: Path) -> None:
         """Missing parquet file doesn't cause error."""
         results = [
-            {
-                "success": True,
-                "execution_run_ids": ["nonexistent"],
-                "worker_log": "some log",
-            }
+            _result(
+                execution_run_ids=["nonexistent"],
+                worker_log="some log",
+            )
         ]
         # Should not raise
         _patch_worker_logs(results, tmp_path)
 
     def test_skips_results_without_worker_log(self, tmp_path: Path) -> None:
-        """Results without worker_log key are skipped."""
-        results = [
-            {
-                "success": True,
-                "execution_run_ids": ["run1"],
-            }
-        ]
+        """Results without worker_log are skipped."""
+        results = [_result(execution_run_ids=["run1"])]
         _patch_worker_logs(results, tmp_path)  # no error
 
 

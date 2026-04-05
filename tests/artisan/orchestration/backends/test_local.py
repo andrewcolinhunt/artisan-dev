@@ -9,6 +9,7 @@ import pytest
 
 from artisan.orchestration.backends.local import LocalBackend
 from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
@@ -200,5 +201,7 @@ class TestLocalBackendValidateOperation:
 
 class TestLocalBackendCaptureLogs:
     def test_capture_logs_is_noop(self, local_backend: LocalBackend) -> None:
-        results = [{"success": True}]
+        results = [
+            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
+        ]
         local_backend.capture_logs(results, MagicMock(), None, "test_op")
