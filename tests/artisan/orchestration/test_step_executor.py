@@ -22,6 +22,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import FailurePolicy, GroupByStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, PassthroughResult
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.specs.input_models import PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -449,7 +450,9 @@ class TestCreatorStepPairing:
         )
 
         mock_backend, mock_flow = _make_mock_backend(
-            flow_return_value=[{"success": True, "item_count": 2}],
+            flow_return_value=[
+                UnitResult(success=True, error=None, item_count=2, execution_run_ids=[])
+            ],
         )
 
         resolved = {
@@ -514,7 +517,9 @@ class TestCreatorStepPairing:
         )
 
         mock_backend, mock_flow = _make_mock_backend(
-            flow_return_value=[{"success": True, "item_count": 2}],
+            flow_return_value=[
+                UnitResult(success=True, error=None, item_count=2, execution_run_ids=[])
+            ],
         )
 
         resolved = {"data": [_ID_S1, _ID_S2]}
@@ -565,7 +570,9 @@ class TestCreatorStepPairing:
         )
 
         mock_backend, mock_flow = _make_mock_backend(
-            flow_return_value=[{"success": True, "item_count": 4}],
+            flow_return_value=[
+                UnitResult(success=True, error=None, item_count=4, execution_run_ids=[])
+            ],
         )
 
         # 4 artifacts, batch size 2 -> 2 ExecutionUnits
@@ -871,7 +878,9 @@ class TestStepTimingIntegration:
         )
 
         mock_backend, mock_flow = _make_mock_backend(
-            flow_return_value=[{"success": True, "item_count": 2}],
+            flow_return_value=[
+                UnitResult(success=True, error=None, item_count=2, execution_run_ids=[])
+            ],
         )
 
         mock_resolve.return_value = {"data": [_ID_S1]}
@@ -1071,7 +1080,9 @@ class TestEmptyInputHandling:
         )
 
         mock_backend, mock_flow = _make_mock_backend(
-            flow_return_value=[{"success": True, "item_count": 1}],
+            flow_return_value=[
+                UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
+            ],
         )
 
         mock_resolve.return_value = {}
@@ -1266,7 +1277,9 @@ class TestCommitFailureHandling:
 
         mock_backend, mock_flow = _make_mock_backend(
             flow_return_value=[
-                {"success": True, "item_count": 1, "execution_run_ids": ["a"]}
+                UnitResult(
+                    success=True, error=None, item_count=1, execution_run_ids=["a"]
+                )
             ],
         )
 
@@ -1316,7 +1329,9 @@ class TestStagingTimeoutHandling:
 
         mock_backend, mock_flow = _make_mock_backend(
             flow_return_value=[
-                {"success": True, "item_count": 1, "execution_run_ids": ["a"]}
+                UnitResult(
+                    success=True, error=None, item_count=1, execution_run_ids=["a"]
+                )
             ],
             needs_staging_verification=True,
         )

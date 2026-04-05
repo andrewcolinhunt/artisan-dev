@@ -10,6 +10,7 @@ import pytest
 
 from artisan.orchestration.backends.slurm_intra import SlurmIntraBackend
 from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
@@ -94,7 +95,9 @@ class TestSlurmIntraBackendCaptureLogs:
     @patch("artisan.orchestration.engine.dispatch._patch_worker_logs")
     def test_capture_logs_calls_patch(self, mock_patch: MagicMock) -> None:
         backend = SlurmIntraBackend()
-        results = [{"success": True}]
+        results = [
+            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
+        ]
         backend.capture_logs(results, Path("/staging"), Path("/logs"), "test_op")
         mock_patch.assert_called_once_with(
             results, Path("/staging"), Path("/logs"), "test_op"
