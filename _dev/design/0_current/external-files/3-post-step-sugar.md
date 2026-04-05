@@ -94,9 +94,23 @@ next_step = pipeline.run(
 
 ### Implementation
 
-After dispatching the main step, check for `post_step`. If present,
-recursively call `submit()` with the post_step operation, wiring the main
-step's outputs as inputs. Return the post_step's `StepFuture`.
+Add `post_step` parameter to `submit()` and `run()`. The post_step logic
+is a single exit point at the bottom of `submit()`, after all existing
+paths (dispatch, cache hit, early exit) have assigned `main_future`.
+
+`submit()` currently has multiple early returns that must be refactored to
+assign `main_future` instead of returning directly:
+
+- **Composite routing** — deferred (returns before post_step logic; see
+  Composites section)
+- **Early exit (pipeline stopped/cancelled)** — post_step is skipped
+  (no point consolidating a skipped step). Returns directly.
+- **Cache hit** — assigns `main_future`, falls through to post_step logic.
+  The post_step `submit()` call gets the cached step's `StepFuture`, so
+  the consolidator runs on cached artifacts. If the consolidator is also
+  cached, both skip.
+- **File path promotion failure** — post_step is skipped. Returns directly.
+- **Dispatch** — assigns `main_future`, falls through to post_step logic.
 
 ```python
 def submit(
@@ -106,8 +120,22 @@ def submit(
     ...,
     post_step: type[OperationDefinition] | None = None,
 ) -> StepFuture:
-    # ... existing validation, dispatch ...
-    main_future = self._dispatch_step(...)
+    # ... composite routing (returns directly, deferred) ...
+    # ... validation ...
+
+    early = self._check_early_exit(...)
+    if early is not None:
+        return early  # post_step skipped for stopped/cancelled
+
+    # ... step spec, cache check, file path promotion ...
+    # All paths below assign main_future instead of returning
+
+    if cached is not None:
+        main_future = cached
+    elif file_path_failure:
+        return file_result  # post_step skipped for promotion failure
+    else:
+        main_future = self._dispatch_step(...)
 
     if post_step is not None:
         post_inputs = {
@@ -119,18 +147,24 @@ def submit(
             inputs=post_inputs,
             backend=backend,
             compact=compact,
-            name=f"{step_name}__consolidate",
+            name=f"{step_name}__post",
         )
 
     return main_future
 ```
+
+**`post_step` does not forward overrides** (`params`, `resources`,
+`execution`, `environment`, `tool`). The post_step runs with its own
+defaults. For the current use case (consolidation curators with minimal
+config), this is sufficient. A `post_step_overrides` parameter can be
+added later if needed.
 
 ### Step Numbering
 
 ```
 pipeline.run(RunRosetta, post_step=ConsolidateSilentFiles)
 # -> step 0: RunRosetta (parallel, N files)
-# -> step 1: ConsolidateSilentFiles (curator, 1 consolidated file)
+# -> step 1: ConsolidateSilentFiles (name: "run_rosetta__post")
 # -> returned StepFuture has step_number=1
 ```
 
@@ -142,7 +176,7 @@ Post_step input roles must match the main step's output roles. Validated
 by the existing `_validate_operation_overrides()` in the recursive
 `submit()` call. No new validation code needed.
 
-### Caching
+### Caching and Early-Return Behavior
 
 Both steps cache independently:
 
@@ -151,10 +185,25 @@ Both steps cache independently:
 - Partial cache hits on the main step work correctly -- the consolidator
   always receives all artifacts (cached + fresh)
 
+**Post_step behavior by `submit()` path:**
+
+| Path | Post_step fires? | Rationale |
+|------|-----------------|-----------|
+| Cache hit | Yes | Consolidator runs on cached artifacts |
+| Dispatch | Yes | Normal execution |
+| Pipeline stopped/cancelled | No | Nothing to consolidate |
+| File path promotion failure | No | Main step failed to start |
+| Composite routing | No (deferred) | Composites handle internal steps |
+
+**Error recovery:** If the post_step fails, the main step's results are
+already committed. Re-running the pipeline re-runs only the post_step
+(main step is cached). This is correct and consistent with existing
+step-level caching semantics.
+
 ### Naming
 
 - Main step uses user-provided `name` (or `operation.name`)
-- Post_step gets `f"{step_name}__consolidate"`
+- Post_step gets `f"{step_name}__post"`
 - Both visible in pipeline results
 
 ### Composites
@@ -202,20 +251,10 @@ match main step output roles is enforced by existing validation.
   Showing both is simpler but may confuse users who think they submitted
   one step.
 
-- **Error messages.** If the consolidation step fails, the error references
-  the post_step's step number. The user may not recognize this as "the
-  consolidation after RunRosetta." The `__consolidate` suffix in the step
-  name helps, but is it enough?
-
 - **Composites interaction.** The current design defers composite support.
   This means composites that produce external files use a different API
   (explicit consolidation step in `compose()`) than non-composite steps
   (`post_step` sugar). Is this asymmetry acceptable long-term?
-
-- **Error recovery.** If the post_step fails, the main step's results are
-  already committed. Re-running the pipeline re-runs only the post_step
-  (main step is cached). This is correct behavior, but worth documenting
-  explicitly.
 
 ---
 

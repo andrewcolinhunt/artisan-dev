@@ -117,7 +117,6 @@ class SilentStructureArtifact(Artifact):
     POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
         "artifact_id": pl.String,
         "origin_step_number": pl.Int32,
-        "external_path": pl.String,
         "decoy_tag": pl.String,
         "content_hash": pl.String,
         "sequence": pl.String,
@@ -125,6 +124,7 @@ class SilentStructureArtifact(Artifact):
         "original_name": pl.String,
         "extension": pl.String,
         "metadata": pl.String,
+        "external_path": pl.String,
     }
 
     artifact_type: str = Field(default="silent_structure", frozen=True)
@@ -145,8 +145,12 @@ class SilentStructureArtifact(Artifact):
         description="Rosetta total energy score.",
     )
     original_name: str | None = Field(default=None)
-    extension: str | None = Field(default=".silent")
+    extension: str | None = Field(default=None)
 ```
+
+**Note on `extension`:** Defaults to `None`, not `".silent"`. The artifact
+represents one structure within a silent file, not the file itself. The
+containing file's extension is irrelevant to the individual structure.
 
 **Registration:** Three-line `ArtifactTypeDef` subclass:
 
@@ -180,6 +184,75 @@ Including `external_path` in the hash ensures per-worker artifacts get
 distinct `artifact_id`s from consolidated artifacts (same structure data,
 different file location).
 
+**Required serialization methods:**
+
+```python
+@classmethod
+def draft(
+    cls,
+    decoy_tag: str,
+    content_hash: str,
+    step_number: int,
+    external_path: str,
+    sequence: str | None = None,
+    total_score: float | None = None,
+    original_name: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> SilentStructureArtifact:
+    """Create a draft silent structure artifact."""
+    return cls(
+        artifact_id=None,
+        origin_step_number=step_number,
+        decoy_tag=decoy_tag,
+        content_hash=content_hash,
+        sequence=sequence,
+        total_score=total_score,
+        original_name=original_name,
+        external_path=external_path,
+        metadata=metadata or {},
+    )
+
+def to_row(self) -> dict[str, Any]:
+    """Serialize to a flat dict matching POLARS_SCHEMA columns."""
+    return {
+        "artifact_id": self.artifact_id,
+        "origin_step_number": self.origin_step_number,
+        "decoy_tag": self.decoy_tag,
+        "content_hash": self.content_hash,
+        "sequence": self.sequence,
+        "total_score": self.total_score,
+        "original_name": self.original_name,
+        "extension": self.extension,
+        "metadata": metadata_to_json(self.metadata),
+        "external_path": self.external_path,
+    }
+
+@classmethod
+def from_row(cls, row: dict[str, Any]) -> Self:
+    """Reconstruct from a Parquet row dict."""
+    return cls(
+        artifact_id=row["artifact_id"],
+        origin_step_number=row.get("origin_step_number"),
+        decoy_tag=row.get("decoy_tag"),
+        content_hash=row.get("content_hash"),
+        sequence=row.get("sequence"),
+        total_score=row.get("total_score"),
+        original_name=row.get("original_name"),
+        extension=row.get("extension"),
+        metadata=metadata_from_json(row.get("metadata")),
+        external_path=row.get("external_path"),
+    )
+
+def _materialize_content(self, _directory: Path) -> Path:
+    """Raise with a clear message -- per-artifact materialization is wrong."""
+    msg = (
+        "SilentStructureArtifact does not support per-artifact "
+        "materialization. Use InputSpec(materialize=False) and read "
+        "from external_path directly."
+    )
+    raise NotImplementedError(msg)
+```
+
 **Materialization: skipped by default.**
 
 External-content types skip per-artifact materialization (see
@@ -207,25 +280,55 @@ it to `silent_tools`. One download regardless of how many structures.
 ### ConsolidateSilentFiles
 
 A curator that concatenates per-worker silent files into a single file and
-re-drafts each structure artifact with the consolidated path.
+re-drafts each structure artifact with the consolidated path. Follows the
+existing curator pattern: subclasses `OperationDefinition`, overrides
+`execute_curator()`.
 
 ```python
-class ConsolidateSilentFiles(CuratorDefinition):
+class ConsolidateSilentFiles(OperationDefinition):
     """Concatenate per-worker silent files into one per-step file."""
 
-    name = "consolidate_silent_files"
-    inputs = {"structures": InputSpec(artifact_type="silent_structure")}
-    outputs = {"structures": OutputSpec(artifact_type="silent_structure")}
+    class InputRole(StrEnum):
+        structures = auto()
 
-    def curate(self, context: CuratorContext) -> ArtifactResult:
-        structures = context.input_artifacts["structures"]
-        files_root = context.artifact_store.files_root
-        step_dir = files_root / str(context.step_number)
+    class OutputRole(StrEnum):
+        structures = auto()
+
+    name: ClassVar[str] = "consolidate_silent_files"
+    description: ClassVar[str] = "Consolidate per-worker silent files"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.structures: InputSpec(
+            artifact_type="silent_structure",
+            required=True,
+            description="Per-worker structure artifacts to consolidate",
+        ),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.structures: OutputSpec(
+            artifact_type="silent_structure",
+        ),
+    }
+
+    def execute_curator(
+        self,
+        inputs: dict[str, pl.DataFrame],
+        step_number: int,
+        artifact_store: ArtifactStore,
+    ) -> ArtifactResult:
+        # Hydrate input artifacts (need external_path, decoy_tag, etc.)
+        structure_ids = inputs["structures"]["artifact_id"].to_list()
+        structures = artifact_store.get_artifacts_by_type(
+            structure_ids, "silent_structure",
+        )
+        structure_list = [structures[aid] for aid in structure_ids if aid in structures]
+
+        files_root = artifact_store.files_root
+        step_dir = files_root / str(step_number)
         step_dir.mkdir(parents=True, exist_ok=True)
 
         # Collect unique worker files
         worker_files = sorted({
-            a.external_path for a in structures
+            a.external_path for a in structure_list
             if a.external_path is not None
         })
 
@@ -235,27 +338,42 @@ class ConsolidateSilentFiles(CuratorDefinition):
 
         # Re-draft each structure pointing to the consolidated file
         drafts = []
-        for artifact in structures:
+        lineage_mappings = []
+        for artifact in structure_list:
             draft = SilentStructureArtifact.draft(
                 decoy_tag=artifact.decoy_tag,
                 content_hash=artifact.content_hash,
                 sequence=artifact.sequence,
                 total_score=artifact.total_score,
-                step_number=context.step_number,
+                step_number=step_number,
                 external_path=str(combined_path),
                 original_name=artifact.original_name,
             )
             drafts.append(draft)
+            lineage_mappings.append(
+                LineageMapping(
+                    draft_original_name=draft.original_name,
+                    source_artifact_ids=[artifact.artifact_id],
+                )
+            )
 
         return ArtifactResult(
             artifacts={"structures": drafts},
-            lineage=_build_one_to_one_lineage(structures, drafts),
+            lineage={"structures": lineage_mappings},
         )
 ```
 
-Uses explicit lineage (not stem inference) since the output names match
-input names. This requires the curator explicit lineage bug fix
-(`curator.py:150` must honor `ArtifactResult.lineage`).
+Uses explicit lineage via `ArtifactResult.lineage` — each consolidated
+artifact maps 1:1 to its input via `LineageMapping`. This requires the
+curator explicit lineage bug fix from doc 1 (`curator.py` must honor
+`ArtifactResult.lineage` instead of always running inference).
+
+**How `content_hash` is computed by the creator:** The `RunRosetta`
+creator uses `silent_tools.get_silent_index()` to enumerate structures in
+its output file, then for each structure extracts its lines via
+`silent_tools.get_silent_structure_file_open()` and hashes the joined
+bytes with xxh3_128. This per-structure hash becomes `content_hash` on
+the draft.
 
 ### `silent_tools` Wrapper
 
@@ -364,22 +482,25 @@ All files below are in the protein design repository.
 
 ---
 
+## Decided Questions
+
+- **Decoy tag uniqueness across workers:** Operation responsibility.
+  `RunRosetta` must generate globally unique tags (e.g., prefix with
+  worker ID or use Rosetta's `-out:suffix` flag). This follows the
+  principle that the operation is the expert on its format. The
+  consolidation curator does not detect or rename duplicates — corrupt
+  input is the operation's bug to fix.
+
+- **Consolidated vs original artifacts:** Both sets remain in Delta.
+  Downstream steps connected via `step.output("structures")` (the
+  `StepFuture` from `post_step`) receive only consolidated artifacts.
+  Ad-hoc queries that filter by step number (`origin_step_number ==
+  consolidation_step`) get consolidated artifacts only. Queries without
+  step filtering see both sets — this is intentional and useful for
+  debugging provenance (tracing from consolidated back to per-worker
+  originals).
+
 ## Open Questions
-
-- **Decoy tag uniqueness across workers.** When N workers each produce
-  structures, are decoy tags guaranteed unique across workers? If workers
-  independently generate tags (e.g., `decoy_0001`), catting their files
-  creates duplicates. Options: (a) operation responsibility -- RunRosetta
-  must generate globally unique tags (e.g., prefix with worker ID),
-  (b) consolidation curator detects and renames duplicates,
-  (c) Artisan generates tags. Option (a) is simplest and follows the
-  principle that the operation is the expert on its format.
-
-- **Consolidated vs original artifacts.** After ConsolidateSilentFiles
-  runs, Delta contains both per-worker originals (pointing to worker files)
-  and consolidated versions (pointing to combined file). Are the originals
-  still queryable? Useful? Should they be marked as superseded? This
-  affects storage, query semantics, and provenance graph rendering.
 
 - **Appendable vs immutable-per-step.** The analysis doc (`_dev/analysis/
   external-artifact-storage.md`) discusses silent files as "appendable"
@@ -405,12 +526,14 @@ All files below are in the protein design repository.
 
 These must land before the domain work can begin:
 
-- `2-external-content-artifacts.md` -- `files_root` config, `external_path`
-  promotion
-- `3-post-step-sugar.md` -- `post_step` parameter on submit/run
-- `1-artifact-id-materialization.md` -- Parallel name collision fix
-- Curator explicit lineage bug fix (`curator.py:150` must honor
+- `1-artifact-id-materialization.md` -- Parallel name collision fix +
+  curator explicit lineage bug fix (`curator.py` must honor
   `ArtifactResult.lineage`)
+- `2-external-content-artifacts.md` -- `files_root` config,
+  `external_path` promotion, RuntimeEnvironment propagation. Must include
+  `files_root` threading through the curator executor path so
+  `artifact_store.files_root` is available in `execute_curator()`.
+- `3-post-step-sugar.md` -- `post_step` parameter on submit/run
 
 ---
 
