@@ -48,9 +48,7 @@ class TestSuffixExtraction:
         out = _make_output(output_id, f"{input_id}_scored")
 
         match_map = {f"{input_id}_scored": input_id}
-        derive_human_names(
-            {"data": [out]}, [], {"data": [inp]}, match_map
-        )
+        derive_human_names({"data": [out]}, [], {"data": [inp]}, match_map)
 
         assert out.original_name == "protein_001_scored"
 
@@ -62,9 +60,7 @@ class TestSuffixExtraction:
         out = _make_output(output_id, input_id)
 
         match_map = {input_id: input_id}
-        derive_human_names(
-            {"data": [out]}, [], {"data": [inp]}, match_map
-        )
+        derive_human_names({"data": [out]}, [], {"data": [inp]}, match_map)
 
         assert out.original_name == "sample_42"
 
@@ -104,9 +100,7 @@ class TestUnmatchedOutputsPreserved:
         out = _make_output("z" * 32, "summary_report")
 
         # Empty match map - no filesystem matches
-        derive_human_names(
-            {"data": [out]}, [], {"data": [inp]}, {}
-        )
+        derive_human_names({"data": [out]}, [], {"data": [inp]}, {})
 
         assert out.original_name == "summary_report"
 
@@ -116,9 +110,7 @@ class TestUnmatchedOutputsPreserved:
         out = _make_output("z" * 32, "temp")
         out.original_name = None
 
-        derive_human_names(
-            {"data": [out]}, [], {"data": [inp]}, {"temp": "a" * 32}
-        )
+        derive_human_names({"data": [out]}, [], {"data": [inp]}, {"temp": "a" * 32})
 
         assert out.original_name is None
 

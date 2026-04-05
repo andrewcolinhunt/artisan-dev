@@ -53,5 +53,5 @@ def derive_human_names(
                 continue
 
             # Extract suffix: "abc123_scored" - "abc123" = "_scored"
-            suffix = output_name[len(input_id):]
+            suffix = output_name[len(input_id) :]
             art.original_name = f"{input_name}{suffix}"
