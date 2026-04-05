@@ -8,7 +8,7 @@ with human-readable names derived from input artifact names.
 from __future__ import annotations
 
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.provenance import SourceTargetPair
+from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 
 
 def derive_human_names(

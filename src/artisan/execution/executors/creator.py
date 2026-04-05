@@ -18,6 +18,8 @@ from artisan.execution.inputs.materialization import materialize_inputs
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.capture import capture_lineage_metadata
 from artisan.execution.lineage.enrich import build_artifact_edges_from_dict
+from artisan.execution.lineage.filesystem_match import build_filesystem_match_map
+from artisan.execution.lineage.name_derivation import derive_human_names
 from artisan.execution.lineage.validation import (
     validate_artifacts_match_specs,
     validate_lineage_completeness,
@@ -220,6 +222,10 @@ def run_creator_lifecycle(
     # --- postprocess phase ---
     with phase_timer("postprocess", timings):
         file_outputs = output_snapshot(execute_dir)
+        filesystem_match_map = build_filesystem_match_map(
+            materialized_artifact_ids, file_outputs
+        )
+
         postprocess_input = PostprocessInput(
             file_outputs=file_outputs,
             memory_outputs=raw_result,
@@ -246,6 +252,7 @@ def run_creator_lifecycle(
                 output_specs=operation_class.outputs,
                 group_by=getattr(operation_class, "group_by", None),
                 group_ids=unit.group_ids,
+                filesystem_match_map=filesystem_match_map,
             )
         else:
             validate_lineage_integrity(
@@ -282,6 +289,11 @@ def run_creator_lifecycle(
             execution_run_id,
             built_artifacts,
         )
+
+    # --- name derivation phase ---
+    derive_human_names(
+        finalized_artifacts, edge_pairs, flat_input_artifacts, filesystem_match_map
+    )
 
     # Clean up sandbox
     if (
