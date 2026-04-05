@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import enum
 import threading
 import time
@@ -116,7 +117,13 @@ class DispatchHandle(ABC):
             raise RuntimeError("dispatch() already called")
 
     def _start_background(self, fn: Callable[[], list[UnitResult]]) -> None:
-        """Run *fn* in a daemon thread, storing results for ``collect()``."""
+        """Run *fn* in a daemon thread, storing results for ``collect()``.
+
+        Copies the current ``contextvars`` context so that Prefect's
+        ``SettingsContext`` (set by ``activate_server``) is visible
+        inside the thread.
+        """
+        ctx = contextvars.copy_context()
 
         def _run() -> None:
             try:
@@ -126,5 +133,5 @@ class DispatchHandle(ABC):
             finally:
                 self._done.set()
 
-        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread = threading.Thread(target=lambda: ctx.run(_run), daemon=True)
         self._thread.start()
