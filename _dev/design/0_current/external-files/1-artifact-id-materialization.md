@@ -149,7 +149,8 @@ of the hash. This means:
 
 ### Materialization
 
-One-line change per artifact type. Example for DataArtifact (`data.py:94`):
+One-line change per **embedded** artifact type. Example for DataArtifact
+(`data.py:94`):
 
 ```python
 # Before
@@ -161,6 +162,14 @@ filename = f"{self.artifact_id}{self.extension or '.csv'}"
 
 Artifact IDs are globally unique (xxh3_128 hashes), so no collisions
 regardless of how many workers produced artifacts with the same human name.
+
+**External-content types are excluded.** Artifact types that use
+`external_path` as their content pointer (e.g., SilentStructureArtifact)
+skip materialization entirely — many artifacts point to the same external
+file, so per-artifact materialization is wrong. These types set
+`_default_hydrate = True` (metadata loaded from Delta) but use
+`InputSpec(materialize=False)`. Operations read from `external_path`
+directly. See `2-external-content-artifacts.md` for details.
 
 ### Filesystem Match Map
 

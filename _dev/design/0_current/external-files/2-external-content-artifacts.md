@@ -134,13 +134,11 @@ referenced by artifacts:
 
 For artifact types that opt in, `external_path` becomes the primary content
 location. The opt-in is implicit: if an artifact type has no `content` field
-and implements `_materialize_content()` to read from `external_path`, it is
-an external-content type.
+and uses `external_path` to reference its data, it is an external-content
+type.
 
 No changes to the base `Artifact` class are needed. The field already
-exists, persists, and round-trips. The behavioral change is entirely in
-subclass implementations of `_finalize_content()` and
-`_materialize_content()`.
+exists, persists, and round-trips.
 
 This means:
 
@@ -150,6 +148,42 @@ This means:
 - **Domain external types** (e.g. SilentStructureArtifact): no `content`
   field, `external_path` is functional. New pattern, defined in domain
   repos, auto-registered at import time.
+
+### Materialization Model for External-Content Types
+
+External-content types have a fundamentally different relationship to
+materialization than embedded types. In the embedded model, one artifact =
+one file. In the external-content model, **many artifacts point to the same
+file** with different addressing within it (e.g., 1000 structures in one
+silent file, each with a unique `decoy_tag`).
+
+Per-artifact materialization is wrong for this pattern:
+- Redundant I/O: N artifacts → N reads of the same file
+- Wrong output: N tiny extracted files instead of one file
+- Wrong interface: downstream operations want the file + tag list, not
+  individual extractions
+
+**External-content types skip materialization by default.** They set
+`_default_hydrate = True` (metadata loaded from Delta) and are consumed
+with `InputSpec(materialize=False)`. Operations read from `external_path`
+directly and use addressing fields (`decoy_tag`, byte offset, etc.) to
+access individual units within the file.
+
+```python
+# Operation preprocess for external-content artifacts
+def preprocess(self, inputs: PreprocessInput) -> dict:
+    structures = inputs.input_artifacts["structures"]
+    silent_file = structures[0].external_path  # all share one file
+    tags = [s.decoy_tag for s in structures]
+    return {"silent_file": silent_file, "tags": tags}
+```
+
+**This works on cloud.** `external_path` is a URI — a local path on NFS
+or `s3://bucket/files/combined.silent` on cloud. The framework stores the
+URI; the operation decides how to read it (`open()` for local,
+`fsspec.open()` for cloud). One download per file regardless of how many
+artifacts reference it, which is more efficient than per-artifact
+materialization would be.
 
 ### `files_root` Configuration
 
