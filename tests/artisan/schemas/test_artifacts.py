@@ -434,7 +434,7 @@ class TestExecutionConfigArtifactMaterialize:
     """Tests for ExecutionConfigArtifact materialization."""
 
     def test_materialize_to_writes_json(self, tmp_path):
-        """materialize_to() writes content to disk."""
+        """materialize_to() writes content to disk using artifact_id."""
         artifact = ExecutionConfigArtifact.draft(
             content={"contig": "40-150", "length": "175-275"},
             original_name="5w3x_motif_0_config.json",
@@ -443,7 +443,7 @@ class TestExecutionConfigArtifactMaterialize:
 
         path = artifact.materialize_to(tmp_path)
 
-        assert path == tmp_path / "5w3x_motif_0_config.json"
+        assert path == tmp_path / f"{artifact.artifact_id}.json"
         assert path.exists()
         assert artifact.materialized_path == path
 
@@ -460,14 +460,14 @@ class TestExecutionConfigArtifactMaterialize:
         with pytest.raises(ValueError, match="not hydrated"):
             artifact.materialize_to(tmp_path)
 
-    def test_materialize_uses_artifact_id_when_no_original_name(self, tmp_path):
-        """materialize_to() uses artifact_id.json when original_name is None."""
+    def test_materialize_uses_artifact_id(self, tmp_path):
+        """materialize_to() always uses artifact_id for the filename."""
         content = json.dumps({"contig": "40-150"}).encode("utf-8")
         artifact = ExecutionConfigArtifact(
             artifact_id="a" * 32,
             origin_step_number=1,
             content=content,
-            original_name=None,  # No original name
+            original_name=None,
         )
 
         path = artifact.materialize_to(tmp_path)
