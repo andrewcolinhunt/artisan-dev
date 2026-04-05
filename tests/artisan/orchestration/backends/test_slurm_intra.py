@@ -8,7 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from artisan.orchestration.backends.slurm import SlurmDispatchHandle
 from artisan.orchestration.backends.slurm_intra import SlurmIntraBackend
+from artisan.orchestration.engine.dispatch_handle import DispatchHandle
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
@@ -31,32 +33,29 @@ class TestSlurmIntraBackendTraits:
         assert traits.staging_verification_timeout == 60.0
 
 
-class TestSlurmIntraBackendCreateFlow:
+class TestSlurmIntraBackendCreateDispatchHandle:
     @patch("prefect_submitit.SlurmTaskRunner")
-    @patch("prefect.flow")
-    @patch("prefect.unmapped")
-    def test_create_flow_uses_srun_execution_mode(
-        self,
-        _mock_unmapped: MagicMock,
-        mock_flow: MagicMock,
-        mock_slurm_runner: MagicMock,
-    ) -> None:
-        mock_flow.return_value = lambda fn: fn
+    def test_returns_slurm_dispatch_handle(self, mock_slurm_runner: MagicMock) -> None:
         backend = SlurmIntraBackend()
-
-        resources = ResourceConfig(
-            cpus=4,
-            memory_gb=8,
-            gpus=1,
-            time_limit="02:00:00",
-        )
+        resources = ResourceConfig(cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00")
         execution = ExecutionConfig(units_per_worker=1)
 
-        result = backend.create_flow(
+        handle = backend.create_dispatch_handle(
+            resources, execution, step_number=3, job_name="test_op"
+        )
+        assert isinstance(handle, DispatchHandle)
+        assert isinstance(handle, SlurmDispatchHandle)
+
+    @patch("prefect_submitit.SlurmTaskRunner")
+    def test_uses_srun_execution_mode(self, mock_slurm_runner: MagicMock) -> None:
+        backend = SlurmIntraBackend()
+        resources = ResourceConfig(cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00")
+        execution = ExecutionConfig(units_per_worker=1)
+
+        backend.create_dispatch_handle(
             resources, execution, step_number=3, job_name="test_op"
         )
 
-        assert callable(result)
         mock_slurm_runner.assert_called_once()
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["execution_mode"] == "srun"
@@ -71,21 +70,14 @@ class TestSlurmIntraBackendCreateFlow:
         assert "slurm_gres" not in call_kwargs
 
     @patch("prefect_submitit.SlurmTaskRunner")
-    @patch("prefect.flow")
-    @patch("prefect.unmapped")
-    def test_create_flow_passes_extra_kwargs(
-        self,
-        _mock_unmapped: MagicMock,
-        mock_flow: MagicMock,
-        mock_slurm_runner: MagicMock,
-    ) -> None:
-        mock_flow.return_value = lambda fn: fn
+    def test_passes_extra_kwargs(self, mock_slurm_runner: MagicMock) -> None:
         backend = SlurmIntraBackend()
-
         resources = ResourceConfig(extra={"constraint": "a100"})
         execution = ExecutionConfig()
 
-        backend.create_flow(resources, execution, step_number=1, job_name="test")
+        backend.create_dispatch_handle(
+            resources, execution, step_number=1, job_name="test"
+        )
 
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["constraint"] == "a100"

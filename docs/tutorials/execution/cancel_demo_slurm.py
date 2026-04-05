@@ -2,8 +2,8 @@
 """SLURM pipeline cancellation demo.
 
 Run this script on a SLURM cluster and press Ctrl+C to cancel the
-pipeline. Jobs already running on the cluster are NOT cancelled
-automatically — you must cancel them manually.
+pipeline. In-flight SLURM jobs are automatically cancelled via
+``scancel --name``.
 
 Usage:
     pixi run python docs/tutorials/execution/cancel_demo_slurm.py
@@ -13,18 +13,14 @@ What happens:
       configured duration
     - Press Ctrl+C while jobs are running on the cluster
     - The signal handler fires and sets the cancel event
+    - The dispatch handle calls ``scancel --name`` to kill in-flight jobs
     - Remaining steps are skipped immediately
     - finalize() returns a clean summary
 
 Signal escalation:
-    - First Ctrl+C: graceful cancellation (skip remaining steps)
+    - First Ctrl+C: graceful cancellation (auto-scancel + skip remaining)
     - Second Ctrl+C: restore default signal handlers
     - Third Ctrl+C: force kill (KeyboardInterrupt)
-
-Important: SLURM jobs that are already running on the cluster will
-continue running after cancellation. Check with `squeue -u $USER`
-and cancel manually with `scancel <job_id>`. Auto-scancel is planned
-but not yet implemented.
 
 For array job cancellation testing, see
 _dev/demos/slurm-cancel/demo_slurm_cancel.py which submits a single
