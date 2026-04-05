@@ -294,6 +294,38 @@ def draft(
 ) -> RecordBundleArtifact:
 ```
 
+**`to_row()` / `from_row()`:** Follow the `FileRefArtifact` pattern exactly --
+`to_row()` flattens to a `POLARS_SCHEMA`-shaped dict, `from_row()` reconstructs:
+
+```python
+def to_row(self) -> dict[str, Any]:
+    return {
+        "artifact_id": self.artifact_id,
+        "origin_step_number": self.origin_step_number,
+        "record_id": self.record_id,
+        "content_hash": self.content_hash,
+        "size_bytes": self.size_bytes,
+        "original_name": self.original_name,
+        "extension": self.extension,
+        "metadata": metadata_to_json(self.metadata),
+        "external_path": self.external_path,
+    }
+
+@classmethod
+def from_row(cls, row: dict[str, Any]) -> Self:
+    return cls(
+        artifact_id=row["artifact_id"],
+        origin_step_number=row.get("origin_step_number"),
+        record_id=row.get("record_id"),
+        content_hash=row.get("content_hash"),
+        size_bytes=row.get("size_bytes"),
+        original_name=row.get("original_name"),
+        extension=row.get("extension"),
+        metadata=metadata_from_json(row.get("metadata")),
+        external_path=row.get("external_path"),
+    )
+```
+
 **Registration:**
 
 ```python
@@ -399,6 +431,10 @@ def draft(
 ) -> LargeFileArtifact:
 ```
 
+**`to_row()` / `from_row()`:** Same pattern as `RecordBundleArtifact` (and
+`FileRefArtifact`), mapping `POLARS_SCHEMA` columns. Omit `record_id`; otherwise
+identical.
+
 **Registration:**
 
 ```python
@@ -431,11 +467,17 @@ the appendable bundle pattern.
 ```python
 class RecordBundleGenerator(OperationDefinition):
     name = "record_bundle_generator"
+    description = "Generate JSONL record bundles with random data"
 
     inputs: ClassVar[dict] = {}
+
+    class OutputRole(StrEnum):
+        records = auto()
+
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "records": OutputSpec(
+        OutputRole.records: OutputSpec(
             artifact_type="record_bundle",
+            description="Generated JSONL record bundle",
             infer_lineage_from={"inputs": []},
         ),
     }
@@ -446,6 +488,8 @@ class RecordBundleGenerator(OperationDefinition):
         seed: int | None = None
 
     params: Params = Params()
+    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    execution: ExecutionConfig = ExecutionConfig(job_name="record_bundle_generator")
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         if inputs.files_dir is None:
@@ -508,11 +552,17 @@ one-to-one pattern where each file is too large for Delta.
 ```python
 class LargeFileGenerator(OperationDefinition):
     name = "large_file_generator"
+    description = "Generate large binary files stored externally"
 
     inputs: ClassVar[dict] = {}
+
+    class OutputRole(StrEnum):
+        files = auto()
+
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "files": OutputSpec(
+        OutputRole.files: OutputSpec(
             artifact_type="large_file",
+            description="Generated large binary files",
             infer_lineage_from={"inputs": []},
         ),
     }
@@ -527,6 +577,8 @@ class LargeFileGenerator(OperationDefinition):
         seed: int | None = None
 
     params: Params = Params()
+    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    execution: ExecutionConfig = ExecutionConfig(job_name="large_file_generator")
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         if inputs.files_dir is None:
@@ -581,21 +633,27 @@ file. Natural `post_step` target.
 ```python
 class ConsolidateRecordBundles(OperationDefinition):
     name = "consolidate_record_bundles"
+    description = "Concatenate per-worker JSONL bundles into a single file"
+
+    class InputRole(StrEnum):
+        records = auto()
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "records": InputSpec(
+        InputRole.records: InputSpec(
             artifact_type="record_bundle",
-            materialize=False,
         ),
     }
+
+    class OutputRole(StrEnum):
+        records = auto()
+
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "records": OutputSpec(
+        OutputRole.records: OutputSpec(
             artifact_type="record_bundle",
+            description="Consolidated record bundle",
             infer_lineage_from={"inputs": ["records"]},
         ),
     }
-
-    hydrate_inputs: ClassVar[bool] = True
 
     def execute_curator(
         self,
@@ -603,6 +661,10 @@ class ConsolidateRecordBundles(OperationDefinition):
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> ArtifactResult:
+        if artifact_store.files_root is None:
+            msg = "files_root required for ConsolidateRecordBundles"
+            raise ValueError(msg)
+
         record_ids = inputs["records"]["artifact_id"].to_list()
         artifacts = artifact_store.get_artifacts_by_type(
             record_ids, "record_bundle"
@@ -687,7 +749,7 @@ class ProcessRecordBundle(OperationDefinition):
 ### Content Hashing Helper
 
 Both operations need to hash content for `content_hash`. A thin wrapper
-around the existing `compute_artifact_id`:
+added to `utils/hashing.py` alongside the existing hash functions:
 
 ```python
 def compute_content_hash(content: bytes) -> str:
@@ -715,9 +777,13 @@ This reuses `artisan.utils.hashing.compute_artifact_id` which already wraps
 |------|--------|
 | `src/artisan/schemas/artifact/record_bundle.py` | New: `RecordBundleArtifact` with `POLARS_SCHEMA`, `draft()`, `_finalize_content()`, `_materialize_content()`, `_read_record()`, `to_row()`, `from_row()`, `RecordBundleTypeDef` |
 | `src/artisan/schemas/artifact/large_file.py` | New: `LargeFileArtifact` with `POLARS_SCHEMA`, `draft()`, `_finalize_content()`, `_materialize_content()`, `to_row()`, `from_row()`, `LargeFileTypeDef` |
+| `src/artisan/schemas/artifact/__init__.py` | Add imports for `RecordBundleArtifact` and `LargeFileArtifact` (triggers `ArtifactTypeDef` auto-registration) |
+| `src/artisan/utils/hashing.py` | Add `compute_content_hash()` wrapper |
 | `src/artisan/operations/examples/record_bundle_generator.py` | New: `RecordBundleGenerator` operation |
 | `src/artisan/operations/examples/large_file_generator.py` | New: `LargeFileGenerator` operation |
+| `src/artisan/operations/examples/__init__.py` | Add imports for `RecordBundleGenerator` and `LargeFileGenerator` |
 | `src/artisan/operations/curator/consolidate_record_bundles.py` | New: `ConsolidateRecordBundles` curator |
+| `src/artisan/operations/curator/__init__.py` | Add import for `ConsolidateRecordBundles` |
 
 ---
 
@@ -735,10 +801,6 @@ This reuses `artisan.utils.hashing.compute_artifact_id` which already wraps
 ---
 
 ## Open Questions
-
-- **`random.randbytes()` availability:** `random.Random.randbytes()` was added
-  in Python 3.9. If the project supports older versions, use
-  `rng.getrandbits(8 * n).to_bytes(n, 'big')` instead.
 
 - **Consolidation idempotency:** If the consolidation curator runs twice
   (re-run after failure), it overwrites `combined.jsonl`. The second run
