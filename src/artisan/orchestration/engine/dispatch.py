@@ -16,6 +16,7 @@ from prefect import task
 from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.utils.errors import format_error
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ def _load_units(path: Path) -> list[ExecutionUnit | ExecutionComposite]:
 def execute_unit_task(
     unit: ExecutionUnit | ExecutionComposite,
     runtime_env: RuntimeEnvironment,
-) -> dict:
+) -> UnitResult:
     """Execute a single unit or composite, routing to the appropriate executor.
 
     Args:
@@ -52,8 +53,7 @@ def execute_unit_task(
         runtime_env: Runtime paths and backend configuration.
 
     Returns:
-        Dict with keys ``success``, ``error``, ``item_count``, and
-        ``execution_run_ids``.
+        UnitResult with execution outcome.
     """
     try:
         import os
@@ -67,12 +67,12 @@ def execute_unit_task(
             from artisan.execution.executors.composite import run_composite
 
             result = run_composite(unit, runtime_env, worker_id=worker_id)
-            return {
-                "success": result.success,
-                "error": result.error,
-                "item_count": 1,
-                "execution_run_ids": [result.execution_run_id],
-            }
+            return UnitResult(
+                success=result.success,
+                error=result.error,
+                item_count=1,
+                execution_run_ids=[result.execution_run_id],
+            )
 
         from artisan.execution.executors.curator import (
             is_curator_operation,
@@ -83,35 +83,35 @@ def execute_unit_task(
         if is_curator_operation(unit.operation):
             result = run_curator_flow(unit, runtime_env, worker_id=worker_id)
 
-            return {
-                "success": result.success,
-                "error": result.error,
-                "item_count": len(result.artifact_ids) if result.success else 1,
-                "execution_run_ids": [result.execution_run_id],
-            }
+            return UnitResult(
+                success=result.success,
+                error=result.error,
+                item_count=len(result.artifact_ids) if result.success else 1,
+                execution_run_ids=[result.execution_run_id],
+            )
         # Creator ops return single StagingResult
         from artisan.execution.executors.creator import run_creator_flow
 
         result = run_creator_flow(unit, runtime_env, worker_id=worker_id)
-        return {
-            "success": result.success,
-            "error": result.error,
-            "item_count": unit.get_batch_size() or 1,
-            "execution_run_ids": [result.execution_run_id],
-        }
+        return UnitResult(
+            success=result.success,
+            error=result.error,
+            item_count=unit.get_batch_size() or 1,
+            execution_run_ids=[result.execution_run_id],
+        )
     except KeyboardInterrupt:
         raise RuntimeError("Operation interrupted by SIGINT") from None
     except Exception as exc:
-        return {
-            "success": False,
-            "error": format_error(exc),
-            "item_count": 1,
-            "execution_run_ids": [],
-        }
+        return UnitResult(
+            success=False,
+            error=format_error(exc),
+            item_count=1,
+            execution_run_ids=[],
+        )
 
 
-def _get_one(future: object) -> dict:
-    """Retrieve result from a single future, converting exceptions to failure dicts."""
+def _get_one(future: object) -> UnitResult:
+    """Retrieve result from a single future, converting exceptions to failures."""
     try:
         return future.result()
     except Exception as exc:
@@ -120,15 +120,15 @@ def _get_one(future: object) -> dict:
             type(exc).__name__,
             exc,
         )
-        return {
-            "success": False,
-            "error": format_error(exc),
-            "item_count": 1,
-            "execution_run_ids": [],
-        }
+        return UnitResult(
+            success=False,
+            error=format_error(exc),
+            item_count=1,
+            execution_run_ids=[],
+        )
 
 
-def _collect_results(futures: list) -> list[dict]:
+def _collect_results(futures: list) -> list[UnitResult]:
     """Collect results from Prefect futures in parallel.
 
     Uses a thread pool so that multiple blocking ``f.result()`` calls
@@ -138,7 +138,7 @@ def _collect_results(futures: list) -> list[dict]:
     if not futures:
         return []
 
-    results: list[dict | None] = [None] * len(futures)
+    results: list[UnitResult | None] = [None] * len(futures)
     max_workers = min(len(futures), 32)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         submitted = {pool.submit(_get_one, f): i for i, f in enumerate(futures)}
@@ -148,17 +148,20 @@ def _collect_results(futures: list) -> list[dict]:
 
     logger.info("Collected results from %d futures", len(futures))
 
-    # Best-effort SLURM log capture
-    for future, result in zip(futures, results, strict=False):
+    # Best-effort SLURM log capture (may replace results with worker_log populated)
+    results = [
         _capture_slurm_logs(future, result)
+        for future, result in zip(futures, results, strict=False)
+    ]
 
     return results
 
 
-def _capture_slurm_logs(future: object, result: dict) -> None:
-    """Extract SLURM worker stdout/stderr from a future into the result dict.
+def _capture_slurm_logs(future: object, result: UnitResult) -> UnitResult:
+    """Extract SLURM worker stdout/stderr from a future.
 
-    No-op for non-SLURM futures.
+    Returns the original result unchanged for non-SLURM futures, or a new
+    UnitResult with ``worker_log`` populated when logs are available.
     """
     try:
         # Get the loggable future: direct or via parent batch future
@@ -169,7 +172,7 @@ def _capture_slurm_logs(future: object, result: dict) -> None:
             log_future = future.slurm_job_future
 
         if log_future is None:
-            return
+            return result
 
         stdout, stderr = log_future.logs()
         parts: list[str] = []
@@ -178,20 +181,26 @@ def _capture_slurm_logs(future: object, result: dict) -> None:
         if stderr:
             parts.append(f"--- stderr ---\n{stderr[-100_000:]}")
         if parts:
-            result["worker_log"] = "\n".join(parts)
+            worker_log = "\n".join(parts)
             logger.debug(
                 "SLURM job log: stdout=%d bytes, stderr=%d bytes",
                 len(stdout or ""),
                 len(stderr or ""),
             )
-        if hasattr(log_future, "slurm_job_id"):
-            result["slurm_job_id"] = log_future.slurm_job_id
+            return UnitResult(
+                success=result.success,
+                error=result.error,
+                item_count=result.item_count,
+                execution_run_ids=result.execution_run_ids,
+                worker_log=worker_log,
+            )
+        return result
     except Exception:
-        pass  # Best-effort — log files may be cleaned up
+        return result  # Best-effort — log files may be cleaned up
 
 
 def _patch_worker_logs(
-    results: list[dict],
+    results: list[UnitResult],
     staging_root: Path,
     failure_logs_root: Path | None = None,
     operation_name: str | None = None,
@@ -201,7 +210,7 @@ def _patch_worker_logs(
     Also appends worker stderr to failure log files when present.
 
     Args:
-        results: Result dicts that may contain a ``worker_log`` key.
+        results: Unit results that may contain a ``worker_log``.
         staging_root: Root staging directory.
         failure_logs_root: Directory for failure log files.
         operation_name: Operation name for failure log directory layout.
@@ -209,10 +218,9 @@ def _patch_worker_logs(
     import polars as pl
 
     for result in results:
-        worker_log = result.get("worker_log")
-        if not worker_log:
+        if not result.worker_log:
             continue
-        for run_id in result.get("execution_run_ids", []):
+        for run_id in result.execution_run_ids:
             try:
                 staging_dir = _find_staging_dir(staging_root, run_id)
                 if staging_dir is None:
@@ -221,15 +229,15 @@ def _patch_worker_logs(
                 if not parquet_path.exists():
                     continue
                 df = pl.read_parquet(parquet_path)
-                df = df.with_columns(pl.lit(worker_log).alias("worker_log"))
+                df = df.with_columns(pl.lit(result.worker_log).alias("worker_log"))
                 df.write_parquet(parquet_path, compression="zstd")
             except Exception:
                 logger.debug("Failed to patch worker_log for %s", run_id, exc_info=True)
 
             # Append worker stderr to failure log if it exists
-            if not result.get("success", True) and failure_logs_root and operation_name:
+            if not result.success and failure_logs_root and operation_name:
                 _append_worker_stderr_to_failure_log(
-                    failure_logs_root, run_id, operation_name, worker_log
+                    failure_logs_root, run_id, operation_name, result.worker_log
                 )
 
 
