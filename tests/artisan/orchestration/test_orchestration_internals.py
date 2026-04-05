@@ -16,6 +16,7 @@ from artisan.orchestration.engine.batching import (
 )
 from artisan.orchestration.engine.results import aggregate_results
 from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.batch_config import BatchConfig
 
 
@@ -259,8 +260,8 @@ class TestAggregateResults:
     def test_all_success(self):
         """Test with all successful results."""
         results = [
-            {"success": True, "item_count": 5},
-            {"success": True, "item_count": 3},
+            UnitResult(success=True, error=None, item_count=5, execution_run_ids=[]),
+            UnitResult(success=True, error=None, item_count=3, execution_run_ids=[]),
         ]
         succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
         assert succeeded == 8
@@ -269,8 +270,8 @@ class TestAggregateResults:
     def test_all_failure(self):
         """Test with all failed results."""
         results = [
-            {"success": False, "item_count": 2, "error": "err1"},
-            {"success": False, "item_count": 3, "error": "err2"},
+            UnitResult(success=False, error="err1", item_count=2, execution_run_ids=[]),
+            UnitResult(success=False, error="err2", item_count=3, execution_run_ids=[]),
         ]
         succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
         assert succeeded == 0
@@ -279,9 +280,11 @@ class TestAggregateResults:
     def test_mixed_results_continue(self):
         """Test mixed results with continue policy."""
         results = [
-            {"success": True, "item_count": 4},
-            {"success": False, "item_count": 1, "error": "failed"},
-            {"success": True, "item_count": 2},
+            UnitResult(success=True, error=None, item_count=4, execution_run_ids=[]),
+            UnitResult(
+                success=False, error="failed", item_count=1, execution_run_ids=[]
+            ),
+            UnitResult(success=True, error=None, item_count=2, execution_run_ids=[]),
         ]
         succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
         assert succeeded == 6
@@ -290,8 +293,13 @@ class TestAggregateResults:
     def test_fail_fast_raises_on_failure(self):
         """Test fail_fast policy raises on failure."""
         results = [
-            {"success": True, "item_count": 1},
-            {"success": False, "item_count": 1, "error": "something broke"},
+            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
+            UnitResult(
+                success=False,
+                error="something broke",
+                item_count=1,
+                execution_run_ids=[],
+            ),
         ]
         with pytest.raises(RuntimeError, match="fail_fast policy"):
             aggregate_results(results, FailurePolicy.FAIL_FAST)
@@ -299,19 +307,12 @@ class TestAggregateResults:
     def test_fail_fast_no_failures(self):
         """Test fail_fast policy with all successes."""
         results = [
-            {"success": True, "item_count": 5},
-            {"success": True, "item_count": 5},
+            UnitResult(success=True, error=None, item_count=5, execution_run_ids=[]),
+            UnitResult(success=True, error=None, item_count=5, execution_run_ids=[]),
         ]
         succeeded, failed = aggregate_results(results, FailurePolicy.FAIL_FAST)
         assert succeeded == 10
         assert failed == 0
-
-    def test_default_item_count(self):
-        """Test default item_count when not provided."""
-        results = [{"success": True}, {"success": False, "error": "err"}]
-        succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
-        assert succeeded == 1
-        assert failed == 1
 
     def test_empty_results(self):
         """Test with empty results list."""
