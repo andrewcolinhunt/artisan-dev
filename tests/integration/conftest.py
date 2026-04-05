@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import os
 import re
-
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -410,7 +409,9 @@ class FailingTransformer(OperationDefinition):
             stem = input_path.stem
 
             # Extract index from original_name (e.g. "dataset_1" -> 1)
-            orig_name = original_names[file_idx] if file_idx < len(original_names) else ""
+            orig_name = (
+                original_names[file_idx] if file_idx < len(original_names) else ""
+            )
             match = re.search(r"dataset_(\d+)", orig_name or "")
             index = int(match.group(1)) if match else -1
 

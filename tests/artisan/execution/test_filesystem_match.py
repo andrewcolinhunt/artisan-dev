@@ -146,9 +146,7 @@ class TestAugmentMatchMapFromArtifacts:
         output_art = _make_artifact("x" * 32, f"{input_id}_scored")
 
         match_map = {f"{input_id}_scored": input_id}
-        augment_match_map_from_artifacts(
-            match_map, {input_id}, {"data": [output_art]}
-        )
+        augment_match_map_from_artifacts(match_map, {input_id}, {"data": [output_art]})
 
         assert match_map == {f"{input_id}_scored": input_id}
 
@@ -157,9 +155,7 @@ class TestAugmentMatchMapFromArtifacts:
         output_art = _make_artifact("x" * 32, "summary_report")
 
         match_map: dict[str, str] = {}
-        augment_match_map_from_artifacts(
-            match_map, {"a" * 32}, {"data": [output_art]}
-        )
+        augment_match_map_from_artifacts(match_map, {"a" * 32}, {"data": [output_art]})
 
         assert match_map == {}
 
@@ -169,8 +165,6 @@ class TestAugmentMatchMapFromArtifacts:
         output_art.original_name = None
 
         match_map: dict[str, str] = {}
-        augment_match_map_from_artifacts(
-            match_map, {"a" * 32}, {"data": [output_art]}
-        )
+        augment_match_map_from_artifacts(match_map, {"a" * 32}, {"data": [output_art]})
 
         assert match_map == {}
