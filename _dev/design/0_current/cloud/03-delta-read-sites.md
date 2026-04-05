@@ -31,7 +31,11 @@ For local runs, `storage_options` is `None` (from
 passing it — zero behavior change.
 
 Depends on doc 01 (StorageConfig provides `delta_storage_options()`).
-Independent of doc 02 (no overlap in files changed).
+Minimal overlap with doc 02 — `step_executor.py` is touched by both,
+but in different call sites (doc 02 touches `_commit_and_compact` and
+runtime environment plumbing; this doc touches `resolve_inputs` and
+`cache_lookup` call sites). Whichever ships second will have
+mechanical merge conflicts.
 
 ---
 
@@ -74,13 +78,15 @@ for the interactive filter UI.
 Four files with a combined 13 `scan_delta` calls:
 
 - `inspect.py` (7): `inspect_pipeline`, `inspect_step`,
-  `inspect_metrics`, `inspect_data`, `inspect_provenance`,
-  `inspect_content`. Accept `delta_root: Path | str`.
-- `timing.py` (2): `load_timing_data`. Accepts `delta_root: Path | str`.
-- `graph/macro.py` (1): `macro_provenance_graph`. Accepts
-  `delta_root: Path | str`.
-- `graph/micro.py` (3): `_load_delta`, `micro_provenance_graph`.
-  Accept `delta_root: Path | str`.
+  `inspect_metrics`, `inspect_data`. Accept `delta_root: Path | str`.
+- `timing.py` (2): `PipelineTimings.from_delta()` classmethod.
+  Accepts `delta_root: Path | str`.
+- `graph/macro.py` (1): `_load_completed_steps` (private helper
+  called by `build_macro_graph`). Accepts `delta_root: Path | str`.
+- `graph/micro.py` (3): `_scan_or_empty` (private helper wrapping
+  `scan_delta`, called by `_load_executions`, `_load_artifact_index`,
+  `_load_execution_edges`, `_load_artifact_edges`). Public API is
+  `build_micro_graph`. Accept `delta_root: Path | str`.
 
 All visualization functions are user-facing analysis tools that take
 `delta_root` directly.
@@ -125,8 +131,13 @@ df.write_delta(
 )
 ```
 
-`PipelineManager` passes `storage_options=config.storage.delta_storage_options()`
-when constructing `StepTracker`.
+`StepTracker` is constructed in 4 places — all need
+`storage_options=config.storage.delta_storage_options()`:
+
+- `PipelineManager.__init__`
+- `PipelineManager.resume()` classmethod
+- `PipelineManager.list_runs()` classmethod
+- `InteractiveFilter.commit()`
 
 ### resolve_output_reference / resolve_inputs
 
@@ -207,12 +218,12 @@ yet (the rename hasn't happened).
 | `orchestration/engine/step_tracker.py` | `__init__` gains `storage_options`. 4 `scan_delta` + 2 `write_delta` calls updated. |
 | `orchestration/engine/inputs.py` | `resolve_output_reference` and `resolve_inputs` gain `storage_options`. 2 `scan_delta` calls updated. |
 | `storage/cache/cache_lookup.py` | `cache_lookup` gains `storage_options`. 3 `scan_delta` calls updated. |
-| `operations/curator/interactive_filter.py` | 3 `scan_delta` calls updated. `storage_options` threaded through class. |
-| `visualization/inspect.py` | 7 `scan_delta` calls updated across 6 functions. |
-| `visualization/timing.py` | 2 `scan_delta` calls updated. |
-| `visualization/graph/macro.py` | 1 `scan_delta` call updated. |
-| `visualization/graph/micro.py` | 3 `scan_delta` calls updated. |
-| `orchestration/pipeline_manager.py` | Pass `storage_options` when constructing `StepTracker`. |
+| `operations/curator/interactive_filter.py` | 3 `scan_delta` calls updated. `storage_options` threaded through class. `StepTracker` construction in `commit()` passes `storage_options`. |
+| `visualization/inspect.py` | 7 `scan_delta` calls updated across `inspect_pipeline`, `inspect_step`, `inspect_metrics`, `inspect_data`. |
+| `visualization/timing.py` | 2 `scan_delta` calls updated in `PipelineTimings.from_delta()`. |
+| `visualization/graph/macro.py` | 1 `scan_delta` call updated in `_load_completed_steps`. |
+| `visualization/graph/micro.py` | 3 `scan_delta` calls updated in `_scan_or_empty` helper (propagates to 4 callers: `_load_executions`, `_load_artifact_index`, `_load_execution_edges`, `_load_artifact_edges`). |
+| `orchestration/pipeline_manager.py` | Pass `storage_options` when constructing `StepTracker` in `__init__`, `resume()`, and `list_runs()`. |
 | `orchestration/engine/step_executor.py` | Pass `storage_options` to `resolve_inputs`, `cache_lookup`. |
 
 ---
@@ -236,5 +247,5 @@ without modification.
 
 - `cloud-storage-design.md` — full storage design (this is Phase 3)
 - `01-storage-config.md` — provides `StorageConfig.delta_storage_options()`
-- `02-storage-layer.md` — migrates the storage classes (independent, no file overlap)
+- `02-storage-layer.md` — migrates the storage classes (minimal overlap in `step_executor.py`)
 - `04-runtime-env-rename.md` — the rename that makes cloud URIs actually flow through
