@@ -43,6 +43,27 @@ class TestArtifactStorePrepare:
         assert df["artifact_type"][0] == "metric"
 
 
+class TestArtifactStoreFilesRoot:
+    """Tests for the files_root parameter on ArtifactStore."""
+
+    def test_files_root_defaults_to_none(self, tmp_path):
+        """ArtifactStore without files_root has None."""
+        store = ArtifactStore(tmp_path)
+        assert store.files_root is None
+
+    def test_files_root_accepts_path(self, tmp_path):
+        """ArtifactStore stores the provided files_root."""
+        files_root = tmp_path / "files"
+        store = ArtifactStore(tmp_path, files_root=files_root)
+        assert store.files_root == files_root
+
+    def test_backward_compatible_positional(self, tmp_path):
+        """Existing positional-only callers still work."""
+        store = ArtifactStore(tmp_path)
+        assert store.base_path == tmp_path
+        assert store.files_root is None
+
+
 class TestArtifactStoreReadWithDelta:
     """Tests for artifact reading (requires Delta Lake)."""
 
