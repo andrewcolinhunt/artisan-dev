@@ -147,24 +147,31 @@ def submit(
             inputs=post_inputs,
             backend=backend,
             compact=compact,
-            name=f"{step_name}__post",
+            skip_cache=skip_cache,
+            failure_policy=failure_policy,
+            name=f"{step_name}.post",
         )
 
     return main_future
 ```
 
-**`post_step` does not forward overrides** (`params`, `resources`,
-`execution`, `environment`, `tool`). The post_step runs with its own
-defaults. For the current use case (consolidation curators with minimal
-config), this is sufficient. A `post_step_overrides` parameter can be
-added later if needed.
+**`post_step` forwards behavioral flags** (`skip_cache`, `failure_policy`,
+`backend`, `compact`) but **does not forward overrides** (`params`,
+`resources`, `execution`, `environment`, `tool`). The post_step runs with
+its own operation defaults. For the current use case (consolidation
+curators with minimal config), this is sufficient. A
+`post_step_overrides` parameter can be added later if needed.
+
+**Chaining:** If the post_step operation itself is passed a `post_step`,
+the recursive call chains naturally — each consumes an additional step
+number. This is supported but not a primary use case.
 
 ### Step Numbering
 
 ```
 pipeline.run(RunRosetta, post_step=ConsolidateSilentFiles)
 # -> step 0: RunRosetta (parallel, N files)
-# -> step 1: ConsolidateSilentFiles (name: "run_rosetta__post")
+# -> step 1: ConsolidateSilentFiles (name: "run_rosetta.post")
 # -> returned StepFuture has step_number=1
 ```
 
@@ -203,7 +210,8 @@ step-level caching semantics.
 ### Naming
 
 - Main step uses user-provided `name` (or `operation.name`)
-- Post_step gets `f"{step_name}__post"`
+- Post_step gets `f"{step_name}.post"` (`.` separator matches composite
+  naming in `ExpandedCompositeContext`)
 - Both visible in pipeline results
 
 ### Composites
@@ -216,8 +224,15 @@ Composites that need consolidation can use explicit steps in `compose()`.
 
 `post_step` accepts any `OperationDefinition` subclass, not just
 consolidation curators. It's a general mechanism for "run this after that,
-present as one logical step." The convention that post_step input roles
-match main step output roles is enforced by existing validation.
+present as one logical step."
+
+**Role matching constraint:** The post_step's input roles must match the
+main step's output roles. This is enforced by existing validation in the
+recursive `submit()` call. Post_step operations must either declare input
+roles that match the main step's output roles, or use
+`runtime_defined_inputs = True` to accept arbitrary roles. Generic
+curators like `Filter` (which expects `"passthrough"`) cannot be used as
+post_steps without matching role names.
 
 ---
 

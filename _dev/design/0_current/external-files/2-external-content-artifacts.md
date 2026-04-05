@@ -324,10 +324,10 @@ repositories.
 
 | Test file | Coverage |
 |-----------|----------|
-| `tests/artisan/schemas/orchestration/test_pipeline_config.py` | `files_root` default derivation from `delta_root`, explicit override, frozen model behavior |
+| `tests/artisan/schemas/test_pipeline_config.py` | `files_root` default derivation from `delta_root`, explicit override, frozen model behavior |
 | `tests/artisan/storage/test_artifact_store.py` | Add tests: ArtifactStore accepts and exposes `files_root`, `None` default |
 | `tests/artisan/orchestration/test_pipeline_manager.py` | `files_root` threaded through `create()` to ArtifactStore |
-| `tests/artisan/schemas/execution/test_runtime_environment.py` | `files_root_path` field present, propagated from PipelineConfig |
+| `tests/artisan/schemas/test_runtime_environment.py` | `files_root_path` field present, propagated from PipelineConfig |
 
 ---
 

@@ -353,7 +353,8 @@ class ConsolidateSilentFiles(OperationDefinition):
             lineage_mappings.append(
                 LineageMapping(
                     draft_original_name=draft.original_name,
-                    source_artifact_ids=[artifact.artifact_id],
+                    source_artifact_id=artifact.artifact_id,
+                    source_role="structures",
                 )
             )
 
@@ -440,12 +441,14 @@ from protein_design.operations import ConsolidateSilentFiles
 pipeline = PipelineManager.create(
     name="protein_design",
     delta_root=Path("/data/pipeline/delta"),
+    staging_root=Path("/data/pipeline/staging"),
     files_root=Path("/data/pipeline/files"),
 )
 
+# prev_step is a StepFuture from an earlier pipeline step
 step = pipeline.run(
     RunRosetta,
-    inputs={"reference": structures.output("data")},
+    inputs={"reference": prev_step.output("data")},
     post_step=ConsolidateSilentFiles,
 )
 
