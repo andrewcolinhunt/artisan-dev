@@ -163,11 +163,12 @@ Per-artifact materialization is wrong for this pattern:
 - Wrong interface: downstream operations want the file + tag list, not
   individual extractions
 
-**External-content types skip materialization by default.** They set
-`_default_hydrate = True` (metadata loaded from Delta) and are consumed
-with `InputSpec(materialize=False)`. Operations read from `external_path`
-directly and use addressing fields (`decoy_tag`, byte offset, etc.) to
-access individual units within the file.
+**External-content types skip materialization by default.** They inherit
+the base class default `_default_hydrate = True` (metadata loaded from
+Delta) and are consumed with `InputSpec(materialize=False)`. Operations
+read from `external_path` directly and use addressing fields
+(`decoy_tag`, byte offset, etc.) to access individual units within the
+file.
 
 ```python
 # Operation preprocess for external-content artifacts
@@ -188,6 +189,13 @@ materialization would be.
 ### `files_root` Configuration
 
 A new field on `PipelineConfig` for Artisan-managed external file storage.
+
+**Why a config field, not derived at point of use:** `logs/` and `images/`
+are derived from `delta_root.parent` in consuming code (e.g.,
+`config.delta_root.parent / "logs"`). `files_root` differs because users
+may want external files on different storage than Delta (e.g., cheap bulk
+NFS vs fast SSD for Delta). Making it a config field with a default
+enables this override without changing the common case.
 
 ```python
 class PipelineConfig(BaseModel):
@@ -294,12 +302,21 @@ def _finalize_content(self) -> bytes | None:
 | File | Change |
 |------|--------|
 | `src/artisan/schemas/orchestration/pipeline_config.py` | Add `files_root` field with default from `delta_root.parent / "files"` |
-| `src/artisan/storage/core/artifact_store.py` | Accept and expose `files_root` |
-| `src/artisan/orchestration/pipeline_manager.py` | Pass `files_root` to ArtifactStore, accept in `create()` |
+| `src/artisan/schemas/execution/runtime_environment.py` | Add `files_root_path: Path | None` field (workers need this to write per-worker output files to `files_root/{step}/workers/`) |
+| `src/artisan/storage/core/artifact_store.py` | Add optional `files_root: Path | None = None` parameter to `__init__()`. Backward compatible — existing call sites pass nothing and get `None`. |
+| `src/artisan/orchestration/pipeline_manager.py` | Pass `files_root` to ArtifactStore, accept in `create()`, propagate to RuntimeEnvironment |
+| `src/artisan/orchestration/engine/step_executor.py` | Pass `files_root` when constructing ArtifactStore (two call sites) |
+| `src/artisan/execution/executors/curator.py` | Pass `files_root` from `runtime_env.files_root_path` to ArtifactStore |
+| `src/artisan/execution/executors/composite.py` | Pass `files_root` from `runtime_env.files_root_path` to ArtifactStore |
+| `src/artisan/execution/context/builder.py` | Pass `files_root` to ArtifactStore |
 
-No changes to the base `Artifact` class, storage layer, or staging/commit
-code. The behavioral changes (external-content artifact types) are defined
-in domain repositories.
+`ArtifactStore.__init__` takes `files_root` as optional with default
+`None`, so call sites that don't need it (interactive_filter,
+ingest_pipeline_step, tests, docs) are unchanged.
+
+No changes to the base `Artifact` class or staging/commit code. The
+behavioral changes (external-content artifact types) are defined in domain
+repositories.
 
 ---
 
@@ -308,8 +325,9 @@ in domain repositories.
 | Test file | Coverage |
 |-----------|----------|
 | `tests/artisan/schemas/orchestration/test_pipeline_config.py` | `files_root` default derivation from `delta_root`, explicit override, frozen model behavior |
-| `tests/artisan/storage/test_files_root.py` | `ArtifactStore` exposes `files_root`, directory creation |
+| `tests/artisan/storage/test_artifact_store.py` | Add tests: ArtifactStore accepts and exposes `files_root`, `None` default |
 | `tests/artisan/orchestration/test_pipeline_manager.py` | `files_root` threaded through `create()` to ArtifactStore |
+| `tests/artisan/schemas/execution/test_runtime_environment.py` | `files_root_path` field present, propagated from PipelineConfig |
 
 ---
 
@@ -333,10 +351,6 @@ in domain repositories.
   and `delta_root` is on local SSD, are there atomicity concerns? The
   commit phase writes to Delta (local) and expects external files (NFS) to
   be stable.
-
-- **Worker access to `files_root`:** Need to verify `RuntimeEnvironment`
-  propagation path for `files_root`. SLURM workers on different
-  partitions/clusters may lack the NFS mount.
 
 ---
 

@@ -149,8 +149,9 @@ of the hash. This means:
 
 ### Materialization
 
-One-line change per **embedded** artifact type. Example for DataArtifact
-(`data.py:94`):
+Change per **embedded** artifact type:
+
+**DataArtifact** (`data.py` `_materialize_content()`):
 
 ```python
 # Before
@@ -160,18 +161,61 @@ filename = f"{self.original_name}{self.extension or '.csv'}"
 filename = f"{self.artifact_id}{self.extension or '.csv'}"
 ```
 
+**MetricArtifact** (`metric.py` `_materialize_content()`): Currently has
+a conditional that falls back to `artifact_id` when `original_name` is
+None. Simplify to always use `artifact_id`:
+
+```python
+# Before
+if self.original_name:
+    filename = f"{self.original_name}{self.extension or '.json'}"
+else:
+    filename = f"{self.artifact_id}.json"
+
+# After
+filename = f"{self.artifact_id}{self.extension or '.json'}"
+```
+
+**ExecutionConfigArtifact** (`execution_config.py` `materialize_to()`):
+This type overrides `materialize_to()` directly (not
+`_materialize_content()`) because it handles `resolved_paths` for config
+reference resolution. The change site is different:
+
+```python
+# Before
+stem = self.original_name or self.artifact_id
+
+# After
+stem = self.artifact_id
+```
+
+**FileRefArtifact is excluded.** It uses `Path(self.path).name` for
+materialization — the original filesystem filename, not `original_name`.
+The collision problem does not apply because each FileRefArtifact points
+to a distinct user-managed file with a distinct path.
+
 Artifact IDs are globally unique (xxh3_128 hashes), so no collisions
 regardless of how many workers produced artifacts with the same human name.
 
 **External-content types are excluded.** Artifact types that use
 `external_path` as their content pointer (e.g., SilentStructureArtifact)
 skip materialization entirely — many artifacts point to the same external
-file, so per-artifact materialization is wrong. These types set
-`_default_hydrate = True` (metadata loaded from Delta) but use
-`InputSpec(materialize=False)`. Operations read from `external_path`
-directly. See `2-external-content-artifacts.md` for details.
+file, so per-artifact materialization is wrong. These types inherit the
+base class default `_default_hydrate = True` (metadata loaded from Delta)
+and are consumed with `InputSpec(materialize=False)`. Operations read from
+`external_path` directly. See `2-external-content-artifacts.md` for
+details.
 
 ### Filesystem Match Map
+
+The `materialize_inputs()` function currently returns
+`dict[str, list[Artifact]]`. Add the materialized artifact IDs as a
+second return value:
+
+```python
+def materialize_inputs(...) -> tuple[dict[str, list[Artifact]], set[str]]:
+    """Returns (role_artifacts, materialized_artifact_ids)."""
+```
 
 After `output_snapshot()` scans the execute directory, the framework builds
 a match map from the filesystem — no dependency on `original_name`:
@@ -352,10 +396,9 @@ output filenames work exactly as they do today.
 | File | Change |
 |------|--------|
 | `src/artisan/schemas/artifact/data.py` | `_materialize_content()` uses `artifact_id` for filename |
-| `src/artisan/schemas/artifact/metric.py` | Same |
-| `src/artisan/schemas/artifact/execution_config.py` | Same |
-| `src/artisan/schemas/artifact/file_ref.py` | Same (or keep path-based materialization for user-managed files) |
-| `src/artisan/execution/inputs/materialization.py` | Track materialized artifact_ids, return them alongside artifacts |
+| `src/artisan/schemas/artifact/metric.py` | `_materialize_content()` simplified to always use `artifact_id` (remove `original_name` conditional) |
+| `src/artisan/schemas/artifact/execution_config.py` | `materialize_to()` uses `artifact_id` for stem (different method — handles `resolved_paths`) |
+| `src/artisan/execution/inputs/materialization.py` | Return `tuple[dict[str, list[Artifact]], set[str]]` — artifact_ids of materialized inputs |
 | `src/artisan/execution/lineage/capture.py` | Accept filesystem match map, use it before falling back to stem matching |
 | `src/artisan/execution/lineage/filesystem_match.py` | New: `build_filesystem_match_map()` |
 | `src/artisan/execution/lineage/name_derivation.py` | New: `derive_human_names()` |
@@ -368,9 +411,9 @@ output filenames work exactly as they do today.
 
 | Test file | Coverage |
 |-----------|----------|
-| `tests/artisan/schemas/artifact/test_artifact_id_materialization.py` | All artifact types materialize with artifact_id filename; no collisions with duplicate original_name; extension preserved |
-| `tests/artisan/execution/lineage/test_filesystem_match.py` | Prefix matching, no-match fallback, multiple inputs, edge cases (no suffix, extension-only) |
-| `tests/artisan/execution/lineage/test_name_derivation.py` | Suffix extraction, human name derivation, unmatched outputs preserved, empty suffix case |
+| `tests/artisan/schemas/artifact/test_artifact_id_materialization.py` | DataArtifact, MetricArtifact, ExecutionConfigArtifact materialize with artifact_id filename; no collisions with duplicate original_name; extension preserved; FileRefArtifact excluded (still uses path-based) |
+| `tests/artisan/execution/test_filesystem_match.py` | Prefix matching, no-match fallback, multiple inputs, edge cases (no suffix, extension-only) |
+| `tests/artisan/execution/test_name_derivation.py` | Suffix extraction, human name derivation, unmatched outputs preserved, empty suffix case |
 | `tests/artisan/execution/test_creator_lifecycle.py` | End-to-end: materialization → match map → lineage → name derivation → correct original_name in staged artifacts |
 | `tests/artisan/execution/test_curator_explicit_lineage.py` | Curator honors ArtifactResult.lineage, falls back to stem inference when None |
 
