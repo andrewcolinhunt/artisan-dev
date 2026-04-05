@@ -305,6 +305,7 @@ def run_curator_flow(
                 compute_backend_name=runtime_env.compute_backend_name,
                 shared_filesystem=runtime_env.shared_filesystem,
                 step_run_id=unit.step_run_id,
+                files_root=runtime_env.files_root_path,
             )
 
             # Build DataFrames with artifact_id column per role

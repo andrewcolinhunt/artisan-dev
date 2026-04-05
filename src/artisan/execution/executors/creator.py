@@ -163,6 +163,7 @@ def run_creator_lifecycle(
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=unit.step_run_id,
+            files_root=runtime_env.files_root_path,
         )
         artifact_store = execution_context.artifact_store
 
@@ -477,6 +478,7 @@ def _build_execution_context(
         compute_backend_name=runtime_env.compute_backend_name,
         shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=unit.step_run_id,
+        files_root=runtime_env.files_root_path,
     )
 
 
