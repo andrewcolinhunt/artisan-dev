@@ -10,11 +10,14 @@ from pathlib import Path
 
 from prefect.task_runners import ProcessPoolTaskRunner
 
+from artisan.execution.models.execution_composite import ExecutionComposite
+from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.orchestration.backends.base import (
     BackendBase,
     OrchestratorTraits,
     WorkerTraits,
 )
+from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _HandleState
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
@@ -62,6 +65,54 @@ class SIGINTSafeProcessPoolTaskRunner(ProcessPoolTaskRunner):
             self._spawn_guard.__exit__(None, None, None)
 
 
+class LocalDispatchHandle(DispatchHandle):
+    """Dispatch handle for local ProcessPool execution.
+
+    Units are passed to workers in-memory via multiprocessing pickle
+    serialization — no intermediate pickle file is written.
+
+    Args:
+        task_runner: Configured ProcessPool task runner.
+    """
+
+    def __init__(self, task_runner: SIGINTSafeProcessPoolTaskRunner) -> None:
+        super().__init__()
+        self._task_runner = task_runner
+
+    def dispatch(
+        self,
+        units: list[ExecutionUnit | ExecutionComposite],
+        runtime_env: RuntimeEnvironment,
+    ) -> None:
+        """Start local ProcessPool execution in a background thread."""
+        self._assert_idle()
+        self._state = _HandleState.DISPATCHED
+
+        task_runner = self._task_runner
+
+        def _flow_fn() -> list[UnitResult]:
+            from prefect import flow, unmapped
+
+            from artisan.orchestration.engine.dispatch import (
+                _collect_results,
+                execute_unit_task,
+            )
+
+            @flow(task_runner=task_runner)
+            def step_flow() -> list[UnitResult]:
+                futures = execute_unit_task.map(
+                    units, runtime_env=unmapped(runtime_env)
+                )
+                return _collect_results(futures)
+
+            return step_flow()
+
+        self._start_background(_flow_fn)
+
+    def cancel(self) -> None:
+        """No-op — local ProcessPool workers cannot be interrupted."""
+
+
 class LocalBackend(BackendBase):
     """ProcessPool execution on the orchestrator machine.
 
@@ -77,15 +128,16 @@ class LocalBackend(BackendBase):
     def __init__(self, default_max_workers: int = 4) -> None:
         self._default_max_workers = default_max_workers
 
-    def create_flow(
+    def create_dispatch_handle(
         self,
         resources: ResourceConfig,
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
         log_folder: Path | None = None,
-    ) -> Callable[[str, RuntimeEnvironment], list[UnitResult]]:
-        """Build a local ProcessPool flow.
+        staging_root: Path | None = None,
+    ) -> DispatchHandle:
+        """Build a local ProcessPool dispatch handle.
 
         GPU operations default to sequential execution (max_workers=1) to
         avoid GPU memory contention and CUDA context conflicts. CPU
@@ -98,7 +150,7 @@ class LocalBackend(BackendBase):
         else:
             max_workers = self._default_max_workers
 
-        return self._build_prefect_flow(
+        return LocalDispatchHandle(
             SIGINTSafeProcessPoolTaskRunner(max_workers=max_workers)
         )
 

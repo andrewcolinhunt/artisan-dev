@@ -10,7 +10,6 @@ These tests verify the step executor behavior for:
 
 from __future__ import annotations
 
-import pickle
 import resource
 from enum import StrEnum, auto
 from typing import ClassVar
@@ -383,9 +382,8 @@ def _make_mock_backend(
 ):
     """Create a mock backend for step executor tests.
 
-    The mock flow captures deserialized units from the pickle file
-    (via _captured_units attribute) before the dispatch cleanup
-    removes them.
+    Returns a mock backend with a mock dispatch handle.  The handle's
+    ``run()`` returns *flow_return_value* (or raises *flow_side_effect*).
     """
     from unittest.mock import MagicMock
 
@@ -398,24 +396,20 @@ def _make_mock_backend(
     )
     mock_backend.orchestrator_traits.staging_verification_timeout = 60.0
 
-    mock_flow = MagicMock()
-    mock_flow._captured_units = None
+    mock_handle = MagicMock()
+    mock_handle._captured_units = None
     return_value = flow_return_value if flow_return_value is not None else []
 
-    def _capture_and_return(**kwargs):
-        # Read pickle file before finally-block cleanup deletes it
-        units_path = kwargs.get("units_path")
-        if units_path:
-            with open(units_path, "rb") as f:
-                mock_flow._captured_units = pickle.load(f)
+    def _capture_and_run(units, runtime_env, **kwargs):
+        mock_handle._captured_units = units
         if flow_side_effect is not None:
             raise flow_side_effect
         return return_value
 
-    mock_flow.side_effect = _capture_and_return
+    mock_handle.run.side_effect = _capture_and_run
 
-    mock_backend.create_flow.return_value = mock_flow
-    return mock_backend, mock_flow
+    mock_backend.create_dispatch_handle.return_value = mock_handle
+    return mock_backend, mock_handle
 
 
 # =============================================================================
@@ -449,7 +443,7 @@ class TestCreatorStepPairing:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(success=True, error=None, item_count=2, execution_run_ids=[])
             ],
@@ -487,7 +481,7 @@ class TestCreatorStepPairing:
         assert call_args[0][1] == GroupByStrategy.ZIP
 
         # backend flow receives units_path; verify captured units
-        dispatched_units = mock_flow._captured_units
+        dispatched_units = mock_handle._captured_units
         assert len(dispatched_units) > 0
         # With batch size 1 (default), 2 items -> 2 units
         for unit in dispatched_units:
@@ -516,7 +510,7 @@ class TestCreatorStepPairing:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(success=True, error=None, item_count=2, execution_run_ids=[])
             ],
@@ -541,7 +535,7 @@ class TestCreatorStepPairing:
         mock_group_inputs.assert_not_called()
 
         # backend flow receives units_path; verify captured units
-        dispatched_units = mock_flow._captured_units
+        dispatched_units = mock_handle._captured_units
         for unit in dispatched_units:
             assert unit.group_ids is None
 
@@ -569,7 +563,7 @@ class TestCreatorStepPairing:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(success=True, error=None, item_count=4, execution_run_ids=[])
             ],
@@ -604,7 +598,7 @@ class TestCreatorStepPairing:
             compact=False,
         )
 
-        dispatched_units = mock_flow._captured_units
+        dispatched_units = mock_handle._captured_units
         assert len(dispatched_units) == 2
 
         # First batch: group_ids[0:2]
@@ -877,7 +871,7 @@ class TestStepTimingIntegration:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(success=True, error=None, item_count=2, execution_run_ids=[])
             ],
@@ -1000,7 +994,7 @@ class TestEmptyInputHandling:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend()
+        mock_backend, mock_handle = _make_mock_backend()
 
         mock_resolve.return_value = {"data": []}
 
@@ -1015,7 +1009,7 @@ class TestEmptyInputHandling:
             compact=False,
         )
 
-        mock_backend.create_flow.assert_not_called()
+        mock_backend.create_dispatch_handle.assert_not_called()
         assert result.metadata["skipped"] is True
         assert result.metadata["skip_reason"] == "empty_inputs"
         assert result.succeeded_count == 0
@@ -1079,7 +1073,7 @@ class TestEmptyInputHandling:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
             ],
@@ -1099,7 +1093,7 @@ class TestEmptyInputHandling:
             compact=False,
         )
 
-        mock_flow.assert_called_once()
+        mock_handle.run.assert_called_once()
         assert result.metadata.get("skipped") is not True
 
     def test_all_inputs_empty_with_partial_roles(self):
@@ -1148,7 +1142,7 @@ class TestDispatchFailureHandling:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_side_effect=ConnectionError("Network down"),
         )
 
@@ -1232,7 +1226,7 @@ class TestDispatchFailureHandling:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_side_effect=RuntimeError("fail_fast: step failed"),
         )
 
@@ -1275,7 +1269,7 @@ class TestCommitFailureHandling:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(
                     success=True, error=None, item_count=1, execution_run_ids=["a"]
@@ -1327,7 +1321,7 @@ class TestStagingTimeoutHandling:
             working_root=tmp_path / "working",
         )
 
-        mock_backend, mock_flow = _make_mock_backend(
+        mock_backend, mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(
                     success=True, error=None, item_count=1, execution_run_ids=["a"]

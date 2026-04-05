@@ -12,8 +12,8 @@ from artisan.orchestration.backends.base import (
     OrchestratorTraits,
     WorkerTraits,
 )
+from artisan.orchestration.engine.dispatch_handle import DispatchHandle
 from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 
@@ -39,27 +39,35 @@ class SlurmIntraBackend(BackendBase):
         staging_verification_timeout=60.0,
     )
 
-    def create_flow(
+    def create_dispatch_handle(
         self,
         resources: ResourceConfig,
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
-    ) -> Callable[[str, RuntimeEnvironment], list[UnitResult]]:
-        """Build a Prefect flow that dispatches units via srun.
+        log_folder: Path | None = None,
+        staging_root: Path | None = None,
+    ) -> DispatchHandle:
+        """Build a dispatch handle that uses srun within an existing allocation.
 
         Args:
             resources: Hardware resource allocation.
             execution: Batching and scheduling configuration.
             step_number: Pipeline step number (for naming).
             job_name: Human-readable name for logging.
+            log_folder: Directory for SLURM log files.
+            staging_root: Root directory for staging files.
 
         Returns:
-            Callable that takes (units_path, runtime_env) and returns UnitResults.
+            Configured SlurmDispatchHandle using srun execution mode.
         """
         from prefect_submitit import SlurmTaskRunner
 
+        from artisan.orchestration.backends.slurm import SlurmDispatchHandle
+
         slurm_kwargs: dict[str, Any] = dict(resources.extra)
+        if log_folder is not None:
+            slurm_kwargs["log_folder"] = str(log_folder)
 
         # Pass gpus directly as gpus_per_node rather than routing through
         # slurm_gres. The SrunBackend builds --gres=gpu:N from gpus_per_node.
@@ -74,7 +82,12 @@ class SlurmIntraBackend(BackendBase):
             units_per_worker=execution.units_per_worker,
             **slurm_kwargs,
         )
-        return self._build_prefect_flow(task_runner)
+        return SlurmDispatchHandle(
+            task_runner=task_runner,
+            job_name=f"s{step_number}_srun",
+            staging_root=staging_root,
+            step_number=step_number,
+        )
 
     def capture_logs(
         self,

@@ -8,13 +8,12 @@ namespace, not with ``BackendBase`` directly.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from artisan.orchestration.engine.dispatch_handle import DispatchHandle
 from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 
@@ -89,15 +88,16 @@ class BackendBase(ABC):
                 )
 
     @abstractmethod
-    def create_flow(
+    def create_dispatch_handle(
         self,
         resources: ResourceConfig,
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
         log_folder: Path | None = None,
-    ) -> Callable[[str, RuntimeEnvironment], list[UnitResult]]:
-        """Build a configured Prefect flow for this backend.
+        staging_root: Path | None = None,
+    ) -> DispatchHandle:
+        """Build a configured dispatch handle for this backend.
 
         Args:
             resources: Hardware resource allocation.
@@ -105,9 +105,10 @@ class BackendBase(ABC):
             step_number: Pipeline step number (for naming).
             job_name: Human-readable name for logging and scheduler labels.
             log_folder: Directory for scheduler log files (e.g. submitit logs).
+            staging_root: Root directory for staging files (shared-FS backends).
 
         Returns:
-            Callable that takes (units_path, runtime_env) and returns UnitResults.
+            Configured dispatch handle.
         """
         ...
 
@@ -137,37 +138,3 @@ class BackendBase(ABC):
         Args:
             operation: Operation to validate.
         """
-
-    def _build_prefect_flow(
-        self,
-        task_runner: Any,
-    ) -> Callable[[str, RuntimeEnvironment], list[UnitResult]]:
-        """Build a Prefect flow that maps execute_unit_task over units.
-
-        Units are loaded from a pickle file on disk to avoid exceeding
-        PostgreSQL's JSONB size limit for Prefect flow parameters.
-
-        Args:
-            task_runner: Prefect TaskRunner instance.
-
-        Returns:
-            Flow callable accepting (units_path, runtime_env).
-        """
-        from prefect import flow, unmapped
-
-        from artisan.orchestration.engine.dispatch import (
-            _collect_results,
-            _load_units,
-            execute_unit_task,
-        )
-
-        @flow(task_runner=task_runner)
-        def step_flow(
-            units_path: str,
-            runtime_env: RuntimeEnvironment,
-        ) -> list[UnitResult]:
-            units = _load_units(Path(units_path))
-            futures = execute_unit_task.map(units, runtime_env=unmapped(runtime_env))
-            return _collect_results(futures)
-
-        return step_flow

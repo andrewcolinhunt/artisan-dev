@@ -385,11 +385,12 @@ initializer), so only the orchestrator handles the signal. In Jupyter
 notebooks, signal handlers are not installed -- use `pipeline.cancel()`
 directly.
 
-### SLURM limitations
+### SLURM cancellation
 
-On SLURM, cancellation stops the orchestrator from dispatching new steps, but
-jobs already running on the cluster continue. You must cancel them manually
-with `scancel`. Auto-scancel is planned but not yet implemented.
+On SLURM, the dispatch handle calls `scancel --name` automatically when
+cancellation is triggered, killing in-flight jobs by their SLURM job name.
+This works even before job IDs are returned, because the job name is set
+at submission time. No manual `scancel` is needed.
 
 ### Cache interaction
 
