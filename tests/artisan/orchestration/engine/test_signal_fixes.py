@@ -16,7 +16,6 @@ class TestCreatorBrokenProcessPool:
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.utils.hashing.compute_execution_spec_id")
-    @patch("artisan.orchestration.engine.step_executor._save_units")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     @patch("artisan.orchestration.engine.step_executor.get_batch_config")
     @patch(
@@ -27,7 +26,6 @@ class TestCreatorBrokenProcessPool:
         mock_batches,
         mock_batch_config,
         mock_resolve,
-        mock_save_units,
         mock_spec_id,
         mock_cache,
         mock_eu_cls,
@@ -40,7 +38,6 @@ class TestCreatorBrokenProcessPool:
         mock_op.outputs = {}
         mock_op.group_by = None
         mock_resolve.return_value = {"data": ["id1", "id2"]}
-        mock_save_units.return_value = "/fake/units.json"
 
         # Each batch yields (inputs_dict, group_ids)
         mock_batches.return_value = [
@@ -54,8 +51,9 @@ class TestCreatorBrokenProcessPool:
         mock_eu_cls.return_value = mock_unit
 
         mock_backend = MagicMock()
-        mock_flow = MagicMock(side_effect=BrokenProcessPool("pool broken"))
-        mock_backend.create_flow.return_value = mock_flow
+        mock_handle = MagicMock()
+        mock_handle.run.side_effect = BrokenProcessPool("pool broken")
+        mock_backend.create_dispatch_handle.return_value = mock_handle
 
         config = MagicMock()
         config.delta_root = MagicMock()

@@ -59,7 +59,7 @@ class TestInitSubclassValidation:
                 worker_traits = WorkerTraits()
                 orchestrator_traits = OrchestratorTraits()
 
-                def create_flow(self, operation, step_number):
+                def create_dispatch_handle(self, *a, **kw):
                     pass
 
                 def capture_logs(self, results, staging_root, failure_logs_root, op):
@@ -72,7 +72,7 @@ class TestInitSubclassValidation:
                 name = "bad"
                 orchestrator_traits = OrchestratorTraits()
 
-                def create_flow(self, operation, step_number):
+                def create_dispatch_handle(self, *a, **kw):
                     pass
 
                 def capture_logs(self, results, staging_root, failure_logs_root, op):
@@ -85,20 +85,22 @@ class TestInitSubclassValidation:
                 name = "bad"
                 worker_traits = WorkerTraits()
 
-                def create_flow(self, operation, step_number):
+                def create_dispatch_handle(self, *a, **kw):
                     pass
 
                 def capture_logs(self, results, staging_root, failure_logs_root, op):
                     pass
 
     def test_valid_subclass_succeeds(self) -> None:
+        from unittest.mock import MagicMock
+
         class GoodBackend(BackendBase):
             name = "good"
             worker_traits = WorkerTraits()
             orchestrator_traits = OrchestratorTraits()
 
-            def create_flow(self, operation, step_number):
-                return lambda units_path, env: []
+            def create_dispatch_handle(self, *a, **kw):
+                return MagicMock()
 
             def capture_logs(self, results, staging_root, failure_logs_root, op):
                 pass
