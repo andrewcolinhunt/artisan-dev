@@ -2,6 +2,8 @@
 
 ## Top Priorities
 
+how does materialization work with a silent file containing multiple artifacts?
+
 make a plan design skill. should always use the implement design skill.
 write design, should find the codebase conventions somewhere and make sure we stick to them. 
 
