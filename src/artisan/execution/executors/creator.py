@@ -181,7 +181,7 @@ def run_creator_lifecycle(
                 input_specs,
                 default_hydrate,
             )
-        input_artifacts = materialize_inputs(
+        input_artifacts, materialized_artifact_ids = materialize_inputs(
             input_artifacts,
             input_specs,
             materialized_dir,
