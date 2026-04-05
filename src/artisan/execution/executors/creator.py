@@ -18,7 +18,10 @@ from artisan.execution.inputs.materialization import materialize_inputs
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.capture import capture_lineage_metadata
 from artisan.execution.lineage.enrich import build_artifact_edges_from_dict
-from artisan.execution.lineage.filesystem_match import build_filesystem_match_map
+from artisan.execution.lineage.filesystem_match import (
+    augment_match_map_from_artifacts,
+    build_filesystem_match_map,
+)
 from artisan.execution.lineage.name_derivation import derive_human_names
 from artisan.execution.lineage.validation import (
     validate_artifacts_match_specs,
@@ -241,6 +244,11 @@ def run_creator_lifecycle(
 
         finalized_artifacts = finalize_artifacts(op_result.artifacts)
         validate_artifacts_match_specs(finalized_artifacts, operation_class.outputs)
+
+        # Augment match map with artifact names from memory-based outputs
+        augment_match_map_from_artifacts(
+            filesystem_match_map, materialized_artifact_ids, finalized_artifacts
+        )
 
     # --- lineage phase ---
     with phase_timer("lineage", timings):
