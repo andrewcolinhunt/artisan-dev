@@ -12,6 +12,7 @@ import os
 import socket
 import urllib.request
 from dataclasses import dataclass
+from typing import Any
 
 from prefect_submitit.server.discovery import (
     health_check,
@@ -20,6 +21,8 @@ from prefect_submitit.server.discovery import (
 )
 
 logger = logging.getLogger(__name__)
+
+_active_settings_ctx: Any = None
 
 ENV_VAR = "PREFECT_SUBMITIT_SERVER"
 _OLD_ENV_VAR = "ARTISAN_PREFECT_SERVER"
@@ -273,12 +276,18 @@ def activate_server(info: PrefectServerInfo) -> None:
     try:
         from prefect.context import SettingsContext
 
+        global _active_settings_ctx
+        if _active_settings_ctx is not None:
+            _active_settings_ctx.__exit__(None, None, None)
+            _active_settings_ctx = None
+
         ctx = SettingsContext.get()
         if ctx is not None:
             new_api = ctx.settings.api.model_copy(update={"url": info.url})
             new_settings = ctx.settings.model_copy(update={"api": new_api})
             new_ctx = SettingsContext(profile=ctx.profile, settings=new_settings)
             new_ctx.__enter__()
+            _active_settings_ctx = new_ctx
     except Exception:
         pass  # Prefect not imported yet or API changed; env var still set
 

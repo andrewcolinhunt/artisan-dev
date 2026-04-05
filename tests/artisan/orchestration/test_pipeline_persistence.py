@@ -178,4 +178,4 @@ class TestPersistence:
         summary = pipeline.finalize()
         assert summary["total_steps"] == 1
         assert summary["overall_success"] is True
-        assert pipeline._executor._shutdown
+        assert pipeline._executor is None

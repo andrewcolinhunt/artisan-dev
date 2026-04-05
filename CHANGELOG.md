@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2a5] - 2026-04-03
+
+### Fixed
+
+- Process/thread leak from unfinalized `PipelineManager` instances —
+  `ThreadPoolExecutor` threads now cleaned up via `__del__`, context manager
+  (`with PipelineManager.create(...) as pipeline:`), and `atexit` handler
+- `finalize()` is now idempotent — safe to call multiple times, returns cached
+  summary on subsequent calls
+- `activate_server()` no longer stacks Prefect `SettingsContext` objects — exits
+  the previous context before entering a new one
+- Added missing `finalize()` calls to 7 pipelines across 4 tutorial notebooks
+  (`02-resume-and-caching`, `04-error-visibility`, `07-slurm-execution`,
+  `10-slurm-intra-execution`)
+
 ## [0.1.2a4] - 2026-04-03
 
 ### Added
@@ -134,7 +149,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Caching and resume support
 - Jupyter Book 2 documentation site
 
-[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a4...HEAD
+[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a5...HEAD
+[0.1.2a5]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a4...v0.1.2a5
 [0.1.2a4]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a3...v0.1.2a4
 [0.1.2a3]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a2...v0.1.2a3
 [0.1.2a2]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a1...v0.1.2a2
