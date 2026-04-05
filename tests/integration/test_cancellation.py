@@ -162,3 +162,42 @@ def test_cancel_idempotent(pipeline_env: dict[str, Path]):
 
     summary = pipeline.finalize()
     assert "pipeline_name" in summary
+
+
+def test_cancel_event_reaches_dispatch_handle(pipeline_env: dict[str, Path]):
+    """cancel() during a running step flows through handle.run(cancel_event).
+
+    Submits a slow Wait step (30s), cancels after 1s, and verifies the
+    pipeline finishes quickly — proving the cancel_event reached the
+    dispatch handle's run() poll loop rather than blocking for 30s.
+    """
+    import threading
+    import time
+
+    from artisan.operations.examples import Wait
+
+    pipeline = PipelineManager.create(
+        name="test_cancel_reaches_handle",
+        delta_root=pipeline_env["delta_root"],
+        staging_root=pipeline_env["staging_root"],
+        working_root=pipeline_env["working_root"],
+    )
+
+    def _cancel_after_delay():
+        time.sleep(1.0)
+        pipeline.cancel()
+
+    threading.Thread(target=_cancel_after_delay, daemon=True).start()
+
+    start = time.monotonic()
+    future = pipeline.submit(
+        Wait,
+        params={"duration": 30},
+        backend=Backend.LOCAL,
+    )
+    summary = pipeline.finalize()
+    elapsed = time.monotonic() - start
+
+    # Should finish much faster than 30s — cancel interrupted the wait
+    assert elapsed < 15.0
+    assert "pipeline_name" in summary

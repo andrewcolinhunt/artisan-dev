@@ -77,20 +77,15 @@ class TestSIGINTSafeProcessPoolTaskRunner:
 
         assert issubclass(SIGINTSafeProcessPoolTaskRunner, ProcessPoolTaskRunner)
 
-    @patch("prefect.flow")
-    @patch("prefect.unmapped")
-    def test_create_flow_uses_sigint_safe_runner(self, _unmapped, mock_flow):
-        """LocalBackend.create_flow uses SIGINTSafeProcessPoolTaskRunner."""
+    def test_create_dispatch_handle_uses_sigint_safe_runner(self):
+        """LocalBackend.create_dispatch_handle uses SIGINTSafeProcessPoolTaskRunner."""
         from artisan.orchestration.backends.local import LocalBackend
         from artisan.schemas.execution.execution_config import ExecutionConfig
         from artisan.schemas.operation_config.resource_config import ResourceConfig
 
-        mock_flow.return_value = lambda fn: fn
         backend = LocalBackend(default_max_workers=2)
-        backend.create_flow(
+        handle = backend.create_dispatch_handle(
             ResourceConfig(), ExecutionConfig(), step_number=0, job_name="test"
         )
 
-        call_kwargs = mock_flow.call_args[1]
-        task_runner = call_kwargs["task_runner"]
-        assert isinstance(task_runner, SIGINTSafeProcessPoolTaskRunner)
+        assert isinstance(handle._task_runner, SIGINTSafeProcessPoolTaskRunner)
