@@ -19,6 +19,7 @@ def capture_lineage_metadata(
     output_specs: dict[str, OutputSpec],
     group_by: GroupByStrategy | None = None,
     group_ids: list[str] | None = None,
+    filesystem_match_map: dict[str, str] | None = None,
 ) -> dict[str, list[LineageMapping]]:
     """Capture lineage metadata from infer_lineage_from configuration.
 
@@ -36,6 +37,9 @@ def capture_lineage_metadata(
         group_ids: Per-index group ID list from framework pairing.
             Must be provided when group_by is set. Length must match
             the primary input role length.
+        filesystem_match_map: Optional dict mapping output filename stems
+            to input artifact_ids. When an output stem has an entry,
+            the mapped input_id is used directly instead of stem matching.
 
     Returns:
         Dict mapping output role to list of LineageMapping entries.
@@ -95,12 +99,27 @@ def capture_lineage_metadata(
                 if art.artifact_id is not None:
                     primary_id_to_idx[art.artifact_id] = idx
 
+        # Build artifact_id -> role lookup for filesystem match map resolution
+        id_to_role: dict[str, str] = {}
+        if filesystem_match_map:
+            for cand_name, cand_id, cand_role in candidates:
+                id_to_role[cand_id] = cand_role
+
         role_mappings: list[LineageMapping] = []
         for artifact in artifacts:
             original_name = getattr(artifact, "original_name", None)
             if original_name is None:
                 continue
-            matched = _match_by_stem_indexed(original_name, stem_index)
+
+            # Try filesystem match map first, fall back to stem matching
+            matched: tuple[str, str] | None = None
+            if filesystem_match_map and original_name in filesystem_match_map:
+                fs_input_id = filesystem_match_map[original_name]
+                fs_role = id_to_role.get(fs_input_id)
+                if fs_role is not None:
+                    matched = (fs_input_id, fs_role)
+            if matched is None:
+                matched = _match_by_stem_indexed(original_name, stem_index)
             if not matched:
                 continue
 
