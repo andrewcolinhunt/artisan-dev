@@ -896,9 +896,7 @@ class PipelineManager:
             **(
                 {"working_root": Path(working_root)} if working_root is not None else {}
             ),
-            **(
-                {"files_root": Path(files_root)} if files_root is not None else {}
-            ),
+            **({"files_root": Path(files_root)} if files_root is not None else {}),
             failure_policy=failure_policy,
             cache_policy=cache_policy,
             default_backend=resolved.name,
