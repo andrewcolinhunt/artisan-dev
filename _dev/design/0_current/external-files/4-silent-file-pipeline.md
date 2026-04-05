@@ -30,9 +30,9 @@ This design defines the domain-specific artifact type
 Artisan framework features:
 
 - `external_path` as functional content pointer (see
-  `external-content-artifacts.md`)
-- `files_root` configuration (see `external-content-artifacts.md`)
-- `post_step` pipeline sugar (see `post-step-sugar.md`)
+  `2-external-content-artifacts.md`)
+- `files_root` configuration (see `2-external-content-artifacts.md`)
+- `post_step` pipeline sugar (see `3-post-step-sugar.md`)
 
 ---
 
@@ -406,10 +406,10 @@ All files below are in the protein design repository.
 
 These must land before the domain work can begin:
 
-- `external-content-artifacts.md` -- `files_root` config, `external_path`
+- `2-external-content-artifacts.md` -- `files_root` config, `external_path`
   promotion
-- `post-step-sugar.md` -- `post_step` parameter on submit/run
-- `artifact-id-materialization.md` -- Parallel name collision fix
+- `3-post-step-sugar.md` -- `post_step` parameter on submit/run
+- `1-artifact-id-materialization.md` -- Parallel name collision fix
 - Curator explicit lineage bug fix (`curator.py:150` must honor
   `ArtifactResult.lineage`)
 
@@ -419,9 +419,9 @@ These must land before the domain work can begin:
 
 - `_dev/analysis/external-artifact-storage.md` -- Initial analysis and
   bcov conversation about silent file format
-- `external-content-artifacts.md` -- Artisan framework: external file
+- `2-external-content-artifacts.md` -- Artisan framework: external file
   infrastructure
-- `post-step-sugar.md` -- Artisan framework: post-step consolidation
+- `3-post-step-sugar.md` -- Artisan framework: post-step consolidation
   mechanism
-- `artifact-id-materialization.md` -- Artisan framework: parallel name
+- `1-artifact-id-materialization.md` -- Artisan framework: parallel name
   collision fix

@@ -221,7 +221,7 @@ match main step output roles is enforced by existing validation.
 
 ## Related Docs
 
-- `external-content-artifacts.md` -- `files_root` infrastructure that
+- `2-external-content-artifacts.md` -- `files_root` infrastructure that
   consolidation curators write to
-- `silent-file-pipeline.md` -- Domain-specific consolidation curator
+- `4-silent-file-pipeline.md` -- Domain-specific consolidation curator
   (protein design repo) that motivates this mechanism

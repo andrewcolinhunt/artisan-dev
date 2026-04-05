@@ -308,8 +308,8 @@ in domain repositories.
 
 ## Related Docs
 
-- `artifact-id-materialization.md` -- Parallel name collision fix
+- `1-artifact-id-materialization.md` -- Parallel name collision fix
   (independent, but motivated by the same use case)
-- `post-step-sugar.md` -- Post-step consolidation mechanism
-- `silent-file-pipeline.md` -- Domain-specific implementation (protein
+- `3-post-step-sugar.md` -- Post-step consolidation mechanism
+- `4-silent-file-pipeline.md` -- Domain-specific implementation (protein
   design repo) that builds on this design

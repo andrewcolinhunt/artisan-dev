@@ -326,5 +326,6 @@ type's `POLARS_SCHEMA`/`to_row`/`from_row`.
 
 ## Related Docs
 
-- `_dev/design/0_current/silent-file-artifacts.md` — parent design that
-  motivated this work (external content artifacts, post_step, files_root)
+- `2-external-content-artifacts.md` — External content artifact pattern
+- `3-post-step-sugar.md` — Post-step consolidation mechanism
+- `4-silent-file-pipeline.md` — Domain-specific silent file pipeline
