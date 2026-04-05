@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 
 from enum import StrEnum
 from pathlib import Path
@@ -380,11 +381,13 @@ class FailingTransformer(OperationDefinition):
     execution: ExecutionConfig = ExecutionConfig(job_name="failing_transformer")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract materialized paths from input artifacts."""
-        return {
-            role: [a.materialized_path for a in artifacts]
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        """Extract materialized paths and original names from input artifacts."""
+        prepared = {}
+        for role, artifacts in inputs.input_artifacts.items():
+            prepared[role] = [a.materialized_path for a in artifacts]
+            # Pass original names for index extraction (filenames are artifact_ids)
+            prepared[f"{role}_names"] = [a.original_name for a in artifacts]
+        return prepared
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Transform CSV (prepend marker line) with controllable failure injection."""
@@ -400,9 +403,16 @@ class FailingTransformer(OperationDefinition):
         else:
             input_files = [Path(f) for f in dataset_input]
 
-        for index, input_path in enumerate(input_files):
+        # Use original names to extract dataset index for failure injection
+        original_names = inputs.inputs.get("dataset_names", [])
+        for file_idx, input_path in enumerate(input_files):
             input_path = Path(input_path)
             stem = input_path.stem
+
+            # Extract index from original_name (e.g. "dataset_1" -> 1)
+            orig_name = original_names[file_idx] if file_idx < len(original_names) else ""
+            match = re.search(r"dataset_(\d+)", orig_name or "")
+            index = int(match.group(1)) if match else -1
 
             if self.params.fail_on_all:
                 raise ValueError(f"Intentional failure on {stem}")
