@@ -668,6 +668,7 @@ def _execute_curator_step(
                 compute_backend_name=runtime_env.compute_backend_name,
                 shared_filesystem=runtime_env.shared_filesystem,
                 step_run_id=step_run_id,
+                files_root=runtime_env.files_root_path,
             )
             staging_result = record_execution_failure(
                 execution_context=execution_context,
