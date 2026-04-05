@@ -35,7 +35,6 @@ from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
 )
-from artisan.orchestration.engine.dispatch import _save_units
 from artisan.orchestration.engine.inputs import resolve_inputs
 from artisan.orchestration.engine.results import (
     aggregate_results,
@@ -945,18 +944,16 @@ def _execute_creator_step(
             if units_to_dispatch:
                 try:
                     backend.validate_operation(operation)
-                    units_path = _save_units(
-                        units_to_dispatch, config.staging_root, step_number
-                    )
-                    step_flow = backend.create_flow(
+                    handle = backend.create_dispatch_handle(
                         operation.resources,
                         operation.execution,
                         step_number,
                         job_name=operation.execution.job_name or operation.name,
                         log_folder=config.delta_root.parent / "logs" / "slurm",
+                        staging_root=config.staging_root,
                     )
-                    results = step_flow(
-                        units_path=str(units_path), runtime_env=runtime_env
+                    results = handle.run(
+                        units_to_dispatch, runtime_env, cancel_event=cancel_event
                     )
                     succeeded, failed = aggregate_results(results, failure_policy)
                 except BrokenProcessPool:
@@ -1124,17 +1121,15 @@ def execute_composite_step(
             failed = 0
 
             try:
-                units_path = _save_units(
-                    [composite_transport], config.staging_root, step_number
-                )
-                step_flow = backend.create_flow(
+                handle = backend.create_dispatch_handle(
                     composite_resources,
                     composite_execution,
                     step_number,
                     job_name=composite_execution.job_name or "composite",
                     log_folder=config.delta_root.parent / "logs" / "slurm",
+                    staging_root=config.staging_root,
                 )
-                results = step_flow(units_path=str(units_path), runtime_env=runtime_env)
+                results = handle.run([composite_transport], runtime_env)
                 succeeded, failed = aggregate_results(results, failure_policy)
             except RuntimeError:
                 raise
