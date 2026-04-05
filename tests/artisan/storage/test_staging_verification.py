@@ -249,20 +249,24 @@ class TestAwaitStagingFiles:
 class TestWorkerResultsHelpers:
     """Tests for extract_execution_run_ids helpers in worker_results.py."""
 
-    def test_extract_execution_run_ids_from_dicts(self):
-        """Extract execution_run_ids from worker result dicts.
-
-        Tests the new list format: "execution_run_ids" (list[str]).
-        """
+    def test_extract_execution_run_ids_from_results(self):
+        """Extract execution_run_ids from UnitResult instances."""
         from artisan.orchestration.engine.results import (
             extract_execution_run_ids,
         )
+        from artisan.schemas.execution.unit_result import UnitResult
 
         results = [
-            {"success": True, "execution_run_ids": ["id1"]},
-            {"success": True, "execution_run_ids": ["id2", "id3"]},  # Multiple IDs
-            {"success": False, "execution_run_ids": [None]},  # Failed, None in list
-            {"success": True},  # Missing key
+            UnitResult(
+                success=True, error=None, item_count=1, execution_run_ids=["id1"]
+            ),
+            UnitResult(
+                success=True, error=None, item_count=1, execution_run_ids=["id2", "id3"]
+            ),
+            UnitResult(
+                success=False, error="fail", item_count=1, execution_run_ids=[None]
+            ),
+            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
         ]
 
         ids = extract_execution_run_ids(results)

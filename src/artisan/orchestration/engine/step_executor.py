@@ -43,6 +43,7 @@ from artisan.orchestration.engine.results import (
 )
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
 from artisan.storage.cache.cache_lookup import CacheHit, cache_lookup
@@ -313,7 +314,7 @@ def _handle_dispatch_exception(
 
 def _verify_staging_if_needed(
     backend: BackendBase,
-    results: list[dict[str, Any]],
+    results: list[UnitResult],
     config: PipelineConfig,
     step_number: int,
     operation_name: str,
@@ -621,16 +622,16 @@ def _execute_curator_step(
         try:
             staging_result = _run_curator_in_subprocess(unit, runtime_env, cancel_event)
             results = [
-                {
-                    "success": staging_result.success,
-                    "error": staging_result.error,
-                    "item_count": (
+                UnitResult(
+                    success=staging_result.success,
+                    error=staging_result.error,
+                    item_count=(
                         len(staging_result.artifact_ids)
                         if staging_result.success
                         else 1
                     ),
-                    "execution_run_ids": [staging_result.execution_run_id],
-                }
+                    execution_run_ids=[staging_result.execution_run_id],
+                )
             ]
             succeeded, failed = aggregate_results(results, failure_policy)
 
@@ -676,12 +677,12 @@ def _execute_curator_step(
                 failure_logs_root=runtime_env.failure_logs_root,
             )
             results = [
-                {
-                    "success": False,
-                    "error": error_msg,
-                    "item_count": 1,
-                    "execution_run_ids": [synthetic_run_id],
-                }
+                UnitResult(
+                    success=False,
+                    error=error_msg,
+                    item_count=1,
+                    execution_run_ids=[synthetic_run_id],
+                )
             ]
             succeeded, failed = 0, 1
         except RuntimeError:

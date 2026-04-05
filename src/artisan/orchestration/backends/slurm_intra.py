@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from artisan.orchestration.backends.base import (
 )
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
@@ -45,7 +45,7 @@ class SlurmIntraBackend(BackendBase):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
-    ) -> Callable[[str, RuntimeEnvironment], list[dict]]:
+    ) -> Callable[[str, RuntimeEnvironment], list[UnitResult]]:
         """Build a Prefect flow that dispatches units via srun.
 
         Args:
@@ -55,7 +55,7 @@ class SlurmIntraBackend(BackendBase):
             job_name: Human-readable name for logging.
 
         Returns:
-            Callable that takes (units_path, runtime_env) and returns result dicts.
+            Callable that takes (units_path, runtime_env) and returns UnitResults.
         """
         from prefect_submitit import SlurmTaskRunner
 
@@ -78,7 +78,7 @@ class SlurmIntraBackend(BackendBase):
 
     def capture_logs(
         self,
-        results: list[dict],
+        results: list[UnitResult],
         staging_root: Path,
         failure_logs_root: Path | None,
         operation_name: str,
