@@ -364,6 +364,7 @@ def _create_runtime_environment(
         delta_root_path=config.delta_root,
         staging_root_path=config.staging_root,
         working_root_path=None if is_curator else config.working_root,
+        files_root_path=config.files_root,
         failure_logs_root=config.delta_root.parent / "logs" / "failures",
         preserve_staging=config.preserve_staging,
         preserve_working=config.preserve_working,
@@ -549,7 +550,9 @@ def _execute_curator_step(
         if operation.group_by is not None:
             from artisan.storage.core.artifact_store import ArtifactStore
 
-            artifact_store = ArtifactStore(config.delta_root)
+            artifact_store = ArtifactStore(
+                config.delta_root, files_root=config.files_root
+            )
             paired_inputs, group_ids = group_inputs(
                 resolved_inputs, operation.group_by, artifact_store
             )
@@ -841,7 +844,9 @@ def _execute_creator_step(
         if operation.group_by is not None:
             from artisan.storage.core.artifact_store import ArtifactStore
 
-            artifact_store = ArtifactStore(config.delta_root)
+            artifact_store = ArtifactStore(
+                config.delta_root, files_root=config.files_root
+            )
             paired_inputs, group_ids = group_inputs(
                 resolved_inputs, operation.group_by, artifact_store
             )
