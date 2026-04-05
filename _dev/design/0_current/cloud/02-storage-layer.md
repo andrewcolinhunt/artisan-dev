@@ -42,9 +42,13 @@ Uses `Path.exists()`, `Path.iterdir()`, `Path.rglob()`,
 `shutil.rmtree()`, `pl.read_parquet(path)`. Has
 `_invalidate_nfs_cache()` using `os.listdir()`.
 
+Also has `list_batch_ids()` which uses `d.is_dir()` and `d.name`
+(Path methods).
+
 Changes: accept `fs: AbstractFileSystem`, replace path ops with
-`fs.exists()`, `fs.ls()`, `fs.glob()`, `fs.rm()`. NFS cache
-invalidation becomes a no-op for non-local filesystems.
+`fs.exists()`, `fs.ls()`, `fs.glob()`, `fs.rm()`. `list_batch_ids()`
+uses `fs.ls(detail=False)` and extracts names from URI strings.
+NFS cache invalidation becomes a no-op for non-local filesystems.
 
 ### `DeltaCommitter` (`storage/io/commit.py:58`)
 
@@ -54,10 +58,19 @@ Constructor accepts `delta_base_path: Path | str` and
 `pl.scan_delta(str(path))`, `df.write_delta(str(path))`,
 `DeltaTable(str(path))`.
 
+Also has `commit_batch()` which uses
+`self.staging_manager.staging_dir / batch_id` and
+`batch_dir / f"{table_name}.parquet"` (Path `/` operators), plus
+`pl.read_parquet(parquet_path)`. And `recover_staged()` which uses
+`self.staging_manager.staging_dir.exists()` directly as a `Path`
+attribute.
+
 Changes: accept `fs: AbstractFileSystem`,
 `storage_options: dict | None`, and receive a `StagingManager`
 instead of creating one internally. Pass `storage_options` to all
-delta-rs calls. Use `fs.exists()` for table guards.
+delta-rs calls. Use `fs.exists()` for table guards. `commit_batch()`
+and `recover_staged()` use `fs.*` calls instead of direct Path
+access on `staging_manager.staging_dir`.
 
 ### `ArtifactStore` (`storage/core/artifact_store.py:22`)
 
@@ -89,12 +102,56 @@ Calls `shard_path()` then `Path.mkdir()`. Returns `Path`.
 
 Changes: call `shard_uri()` then `fs.makedirs()`. Return `str`.
 
+### Internal `_stage_*` functions (`execution/staging/parquet_writer.py`)
+
+Seven functions take `staging_path: Path` and use
+`staging_path / "filename.parquet"` for writes:
+
+- `_stage_artifacts` — `staging_path / table_name`, `df.write_parquet()`
+- `_stage_execution` — `staging_path / "executions.parquet"`
+- `_stage_artifacts_by_type` — `staging_path / type_table`
+- `_stage_artifact_index` — `staging_path / "artifact_index.parquet"`
+- `_stage_artifact_edges` — `staging_path / "artifact_edges.parquet"`
+- `_stage_execution_edges` — `staging_path / "execution_edges.parquet"`
+- `_write_execution_record` — `staging_path / "execution_record.parquet"`
+
+All use the `Path /` operator and `df.write_parquet(path)`.
+
+Changes: `staging_path` becomes `str`. Path joins use
+`f"{staging_path}/{filename}"`. Writes use
+`with fs.open(uri, "wb") as f: df.write_parquet(f)`. Each function
+gains an `fs: AbstractFileSystem` parameter.
+
+### `StagingResult` (`execution/staging/parquet_writer.py`)
+
+`StagingResult.staging_path: Path | None` is the return type from
+`record_execution_success` and `record_execution_failure`. Flows up
+through every executor.
+
+Changes: `staging_path: str | None`. All executor return paths
+updated accordingly.
+
+### `ExecutionContext.staging_root` (`schemas/execution/execution_context.py`)
+
+Frozen dataclass with `staging_root: Path`. Consumed by
+`recorder.py` to call `_create_staging_path`. Constructed by
+`builder.py`.
+
+Changes: `staging_root: str`. Builder passes `str` from
+`RuntimeEnvironment.staging_root_path`.
+
 ### `_sync_staging_to_nfs()` (`execution/staging/parquet_writer.py:27`)
 
-NFS-specific `os.fsync()` calls. Gated on `shared_filesystem` trait.
+NFS-specific `os.fsync()` calls. Gated on `shared_filesystem` trait
+(a backend property meaning "workers and orchestrator share a mount").
 
-Changes: gate on `StorageConfig.is_local` instead — cloud
-filesystems don't have NFS cache coherency issues.
+Changes: **keep `shared_filesystem` as the gating mechanism.** Cloud
+backends set `shared_filesystem=False`, so fsync is naturally
+skipped. `StorageConfig.is_local` is not the right signal —
+`is_local` means "local filesystem" which includes non-NFS setups
+where fsync is unnecessary but harmless, while missing a hypothetical
+cloud+NFS-staging hybrid. The existing `shared_filesystem` flag
+correctly captures the deployment topology.
 
 ### Executor callers (`execution/executors/creator.py`, `curator.py`, `composite.py`)
 
@@ -252,12 +309,12 @@ def _create_staging_path(
     return staging_uri
 ```
 
-`_sync_staging_to_nfs()` is gated on `StorageConfig.is_local`:
+`_sync_staging_to_nfs()` keeps the existing `shared_filesystem` gate
+— no change to the gating logic. The only change is that the path
+argument becomes `str`:
 
 ```python
-def _sync_staging_if_needed(staging_uri: str, storage: StorageConfig) -> None:
-    if not storage.is_local:
-        return
+if shared_filesystem:
     _sync_staging_to_nfs(Path(staging_uri))
 ```
 
@@ -289,19 +346,24 @@ orchestrator, per execution on the worker.
 
 | File | Change |
 |------|--------|
-| `storage/io/staging.py` | `StagingArea` and `StagingManager` accept `fs` parameter, replace all `Path` ops with `fs.*` calls. Return `str` instead of `Path`. |
-| `storage/io/commit.py` | `DeltaCommitter` accepts `fs`, `storage_options`, and `StagingManager`. Pass `storage_options` to all delta-rs calls. Use `fs.exists()`. |
+| `storage/io/staging.py` | `StagingArea` and `StagingManager` accept `fs` parameter, replace all `Path` ops with `fs.*` calls. Return `str` instead of `Path`. `list_batch_ids()` uses `fs.ls()`. |
+| `storage/io/commit.py` | `DeltaCommitter` accepts `fs`, `storage_options`, and `StagingManager`. Pass `storage_options` to all delta-rs calls. Use `fs.exists()`. `commit_batch()` and `recover_staged()` use `fs.*` instead of Path ops on `staging_manager.staging_dir`. |
 | `storage/core/artifact_store.py` | `ArtifactStore` accepts `fs`, `storage_options`. Pass `storage_options` to `pl.scan_delta()`. Use `fs.exists()`. Thread to `ProvenanceStore`. |
 | `storage/core/provenance_store.py` | `ProvenanceStore` accepts `fs`, `storage_options`. Same pattern as `ArtifactStore`. |
+| `storage/io/staging_verification.py` | Imports `shard_path` — update to `shard_uri`. Extensive `Path` ops (`Path.parts`, `os.listdir`, `open(path, "rb")`) — migrate to `fs.*` or scope-out with rationale (NFS-specific utility). |
 | `utils/path.py` | Add `shard_uri()` (string-based). Keep `shard_path()` as deprecated alias. |
-| `execution/staging/parquet_writer.py` | `_create_staging_path` accepts `fs`, uses `shard_uri`. `_sync_staging_to_nfs` gated on `StorageConfig.is_local`. All staging writes use `fs.open()`. |
+| `execution/staging/parquet_writer.py` | `_create_staging_path` accepts `fs`, uses `shard_uri`. Seven `_stage_*` functions gain `fs` parameter, replace `staging_path / filename` with `f"{staging_path}/{filename}"`, and write via `fs.open()`. `_sync_staging_to_nfs` keeps `shared_filesystem` gate (no change). `StagingResult.staging_path` changes from `Path \| None` to `str \| None`. |
+| `schemas/execution/execution_context.py` | `staging_root: str` (was `Path`). |
 | `execution/staging/recorder.py` | Pass `fs` through to parquet_writer calls. Failure log writes stay local (`Path`). |
 | `execution/context/builder.py` | `_build_execution_context` accepts `fs`, `storage_options`, passes to `ArtifactStore`. |
 | `execution/executors/creator.py` | Create `fs` from `runtime_env.storage`, pass to builder and parquet_writer. |
 | `execution/executors/curator.py` | Same — create `fs`, pass through. |
 | `execution/executors/composite.py` | Same — create `fs`, pass through. |
 | `composites/base/composite_context.py` | Create `fs` from `runtime_env.storage`, pass to storage classes. |
-| `orchestration/engine/step_executor.py` | Create `fs` and `StagingManager` for `DeltaCommitter`. Pass `storage_options`. |
+| `orchestration/engine/step_executor.py` | Create `fs` and `StagingManager` for `DeltaCommitter`. Pass `storage_options`. Also update 2 `ArtifactStore()` constructions for group_by pairing. |
+| `orchestration/pipeline_manager.py` | 2 `DeltaCommitter()` construction sites — pass `fs`, `storage_options`, and `StagingManager`. |
+| `operations/curator/interactive_filter.py` | `ArtifactStore()` and `DeltaCommitter()` construction — pass `fs` and `storage_options`. |
+| `operations/curator/ingest_pipeline_step.py` | `ArtifactStore()` construction from external `source_root` — needs `fs` and `storage_options` (or its own `StorageConfig`). |
 
 ---
 
@@ -309,12 +371,12 @@ orchestrator, per execution on the worker.
 
 | Test file | Coverage |
 |-----------|----------|
-| `tests/artisan/storage/test_staging.py` | `StagingArea` and `StagingManager` with `MemoryFileSystem`: write/read round-trip, glob discovery, cleanup, append-by-concat, empty DataFrame no-op. Existing `tmp_path` tests updated to pass `LocalFileSystem`. |
-| `tests/artisan/storage/test_commit.py` | `DeltaCommitter` with `LocalFileSystem` (Delta Lake needs real files). Verify `storage_options` passed to `write_delta`. Receives `StagingManager` instead of creating one. |
-| `tests/artisan/storage/test_artifact_store.py` | `ArtifactStore` with `LocalFileSystem`. Verify `storage_options` passed to `scan_delta`. |
-| `tests/artisan/storage/test_provenance_store.py` | Same pattern — `fs` and `storage_options` threaded through. |
+| `tests/artisan/storage/test_staging.py` | `StagingArea` and `StagingManager` with `MemoryFileSystem`: write/read round-trip, glob discovery, cleanup, append-by-concat, empty DataFrame no-op. `list_batch_ids()` with `fs.ls()`. Existing `tmp_path` tests updated to pass `LocalFileSystem`. |
+| `tests/artisan/storage/test_commit.py` | `DeltaCommitter` with `LocalFileSystem` (Delta Lake needs real files — delta-rs does its own I/O, bypassing fsspec). Verify `storage_options` passed to `write_delta`. Receives `StagingManager` instead of creating one. `commit_batch()` and `recover_staged()` use `fs.*` not Path. |
+| `tests/artisan/storage/test_artifact_store.py` | `ArtifactStore` with `LocalFileSystem` (delta-rs needs real files). Verify `storage_options` passed to `scan_delta`. |
+| `tests/artisan/storage/test_provenance_store.py` | Same pattern — `fs` and `storage_options` threaded through. `LocalFileSystem` required. |
 | `tests/artisan/utils/test_path.py` | `shard_uri` produces correct string paths. Same test cases as existing `shard_path` tests. |
-| `tests/artisan/execution/test_parquet_writer.py` | `_create_staging_path` with `MemoryFileSystem`. `_sync_staging_if_needed` is no-op when `is_local` is False. |
+| `tests/artisan/execution/test_parquet_writer.py` | `_create_staging_path` with `MemoryFileSystem`. Internal `_stage_*` functions with `MemoryFileSystem` — verify `fs.open()` writes. `_sync_staging_to_nfs` gating unchanged (still uses `shared_filesystem`). `StagingResult.staging_path` is `str`. |
 
 New `memory_fs` fixture:
 
