@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -22,15 +23,15 @@ def _csv_bytes(text: str) -> bytes:
 
 
 class _TestOp(OperationDefinition):
-    """Minimal operation for testing."""
+    """Minimal curator operation for testing."""
 
-    name: str = "test_curator_op"
+    name: ClassVar[str] = "test_curator_op"
 
-    class InputRole:
-        DATA = "data"
+    class InputRole(StrEnum):
+        data = auto()
 
-    class OutputRole:
-        DATA = "data"
+    class OutputRole(StrEnum):
+        data = auto()
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         "data": InputSpec(artifact_type="data"),
@@ -41,6 +42,10 @@ class _TestOp(OperationDefinition):
             infer_lineage_from={"inputs": ["data"]},
         ),
     }
+
+    def execute_curator(self, inputs, step_number, artifact_store):
+        """Not called directly in these tests."""
+        return ArtifactResult(success=True)
 
 
 def _make_data(artifact_id: str, name: str) -> DataArtifact:
