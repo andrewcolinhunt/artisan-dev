@@ -181,16 +181,16 @@ consolidation curator reads from all `workers/*/` subdirectories.
 **Backward compatible:** `files_dir` defaults to `None`. Existing operations
 ignore it. `ExecuteInput` is frozen, so the new field is safe.
 
-### `RecordBundleArtifact`
+### `AppendableArtifact`
 
 JSONL-based appendable bundle. Each artifact represents one record within
 a shared JSONL file.
 
 ```python
-class RecordBundleArtifact(Artifact):
+class AppendableArtifact(Artifact):
     """Artifact representing one record in a JSONL bundle file.
 
-    Many RecordBundleArtifacts share the same external_path (the JSONL
+    Many AppendableArtifacts share the same external_path (the JSONL
     file). Each is addressed by record_id within the file.
     """
 
@@ -206,7 +206,7 @@ class RecordBundleArtifact(Artifact):
         "external_path": pl.String,
     }
 
-    artifact_type: str = Field(default="record_bundle", frozen=True)
+    artifact_type: str = Field(default="appendable", frozen=True)
     record_id: str | None = Field(
         default=None,
         description="Unique identifier for this record within the bundle.",
@@ -291,7 +291,7 @@ def draft(
     external_path: str,
     original_name: str | None = None,
     metadata: dict[str, Any] | None = None,
-) -> RecordBundleArtifact:
+) -> AppendableArtifact:
 ```
 
 **`to_row()` / `from_row()`:** Follow the `FileRefArtifact` pattern exactly --
@@ -329,10 +329,10 @@ def from_row(cls, row: dict[str, Any]) -> Self:
 **Registration:**
 
 ```python
-class RecordBundleTypeDef(ArtifactTypeDef):
-    key = "record_bundle"
-    table_path = "artifacts/record_bundles"
-    model = RecordBundleArtifact
+class AppendableTypeDef(ArtifactTypeDef):
+    key = "appendable"
+    table_path = "artifacts/appendables"
+    model = AppendableArtifact
 ```
 
 ### `LargeFileArtifact`
@@ -431,7 +431,7 @@ def draft(
 ) -> LargeFileArtifact:
 ```
 
-**`to_row()` / `from_row()`:** Same pattern as `RecordBundleArtifact` (and
+**`to_row()` / `from_row()`:** Same pattern as `AppendableArtifact` (and
 `FileRefArtifact`), mapping `POLARS_SCHEMA` columns. Omit `record_id`; otherwise
 identical.
 
@@ -446,7 +446,7 @@ class LargeFileTypeDef(ArtifactTypeDef):
 
 ### Comparison to `FileRefArtifact`
 
-| | FileRefArtifact | RecordBundleArtifact | LargeFileArtifact |
+| | FileRefArtifact | AppendableArtifact | LargeFileArtifact |
 |---|---|---|---|
 | **Who creates the file** | User, before pipeline | Operation, during pipeline | Operation, during pipeline |
 | **Where it lives** | Arbitrary user path | `files_root/{step}/` | `files_root/{step}/` |
@@ -459,15 +459,15 @@ class LargeFileTypeDef(ArtifactTypeDef):
 
 ### Example Operations
 
-#### `RecordBundleGenerator`
+#### `AppendableGenerator`
 
 Generative creator that produces a JSONL file with N records. Demonstrates
 the appendable bundle pattern.
 
 ```python
-class RecordBundleGenerator(OperationDefinition):
-    name = "record_bundle_generator"
-    description = "Generate JSONL record bundles with random data"
+class AppendableGenerator(OperationDefinition):
+    name = "appendable_generator"
+    description = "Generate appendable JSONL files with random data"
 
     inputs: ClassVar[dict] = {}
 
@@ -476,8 +476,8 @@ class RecordBundleGenerator(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.records: OutputSpec(
-            artifact_type="record_bundle",
-            description="Generated JSONL record bundle",
+            artifact_type="appendable",
+            description="Generated JSONL records",
             infer_lineage_from={"inputs": []},
         ),
     }
@@ -489,11 +489,11 @@ class RecordBundleGenerator(OperationDefinition):
 
     params: Params = Params()
     resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="record_bundle_generator")
+    execution: ExecutionConfig = ExecutionConfig(job_name="appendable_generator")
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         if inputs.files_dir is None:
-            msg = "files_dir required for RecordBundleGenerator"
+            msg = "files_dir required for AppendableGenerator"
             raise ValueError(msg)
 
         rng = random.Random(self.params.seed)
@@ -527,7 +527,7 @@ class RecordBundleGenerator(OperationDefinition):
         records = inputs.memory_outputs["records"]
 
         drafts = [
-            RecordBundleArtifact.draft(
+            AppendableArtifact.draft(
                 record_id=rec["record_id"],
                 content_hash=rec["content_hash"],
                 size_bytes=rec["size_bytes"],
@@ -625,14 +625,14 @@ class LargeFileGenerator(OperationDefinition):
         )
 ```
 
-#### `ConsolidateRecordBundles`
+#### `ConsolidateAppendables`
 
 Curator that concatenates per-worker JSONL files into a single combined
 file. Natural `post_step` target.
 
 ```python
-class ConsolidateRecordBundles(OperationDefinition):
-    name = "consolidate_record_bundles"
+class ConsolidateAppendables(OperationDefinition):
+    name = "consolidate_appendables"
     description = "Concatenate per-worker JSONL bundles into a single file"
 
     class InputRole(StrEnum):
@@ -640,7 +640,7 @@ class ConsolidateRecordBundles(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.records: InputSpec(
-            artifact_type="record_bundle",
+            artifact_type="appendable",
         ),
     }
 
@@ -649,8 +649,8 @@ class ConsolidateRecordBundles(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.records: OutputSpec(
-            artifact_type="record_bundle",
-            description="Consolidated record bundle",
+            artifact_type="appendable",
+            description="Consolidated appendable artifacts",
             infer_lineage_from={"inputs": ["records"]},
         ),
     }
@@ -662,12 +662,12 @@ class ConsolidateRecordBundles(OperationDefinition):
         artifact_store: ArtifactStore,
     ) -> ArtifactResult:
         if artifact_store.files_root is None:
-            msg = "files_root required for ConsolidateRecordBundles"
+            msg = "files_root required for ConsolidateAppendables"
             raise ValueError(msg)
 
         record_ids = inputs["records"]["artifact_id"].to_list()
         artifacts = artifact_store.get_artifacts_by_type(
-            record_ids, "record_bundle"
+            record_ids, "appendable"
         )
 
         # Find distinct worker files
@@ -689,10 +689,10 @@ class ConsolidateRecordBundles(OperationDefinition):
                     out.write(f.read())
 
         # Create new artifacts pointing to combined file
-        drafts: list[RecordBundleArtifact] = []
+        drafts: list[AppendableArtifact] = []
         for art in artifacts.values():
             drafts.append(
-                RecordBundleArtifact.draft(
+                AppendableArtifact.draft(
                     record_id=art.record_id,
                     content_hash=art.content_hash,
                     size_bytes=art.size_bytes,
@@ -717,9 +717,9 @@ the per-worker artifacts via the curator's `infer_lineage_from` configuration.
 
 ```python
 step = pipeline.run(
-    RecordBundleGenerator,
+    AppendableGenerator,
     params={"count": 100},
-    post_step=ConsolidateRecordBundles,
+    post_step=ConsolidateAppendables,
 )
 # step.output("records") -> consolidated artifacts
 ```
@@ -730,10 +730,10 @@ Operations that consume external-content artifacts use
 `InputSpec(materialize=False)` and read from `external_path` directly:
 
 ```python
-class ProcessRecordBundle(OperationDefinition):
+class ProcessAppendable(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {
         "records": InputSpec(
-            artifact_type="record_bundle",
+            artifact_type="appendable",
             materialize=False,
         ),
     }
@@ -775,15 +775,15 @@ This reuses `artisan.utils.hashing.compute_artifact_id` which already wraps
 
 | File | Change |
 |------|--------|
-| `src/artisan/schemas/artifact/record_bundle.py` | New: `RecordBundleArtifact` with `POLARS_SCHEMA`, `draft()`, `_finalize_content()`, `_materialize_content()`, `_read_record()`, `to_row()`, `from_row()`, `RecordBundleTypeDef` |
+| `src/artisan/schemas/artifact/appendable.py` | New: `AppendableArtifact` with `POLARS_SCHEMA`, `draft()`, `_finalize_content()`, `_materialize_content()`, `_read_record()`, `to_row()`, `from_row()`, `AppendableTypeDef` |
 | `src/artisan/schemas/artifact/large_file.py` | New: `LargeFileArtifact` with `POLARS_SCHEMA`, `draft()`, `_finalize_content()`, `_materialize_content()`, `to_row()`, `from_row()`, `LargeFileTypeDef` |
-| `src/artisan/schemas/artifact/__init__.py` | Add imports for `RecordBundleArtifact` and `LargeFileArtifact` (triggers `ArtifactTypeDef` auto-registration) |
+| `src/artisan/schemas/artifact/__init__.py` | Add imports for `AppendableArtifact` and `LargeFileArtifact` (triggers `ArtifactTypeDef` auto-registration) |
 | `src/artisan/utils/hashing.py` | Add `compute_content_hash()` wrapper |
-| `src/artisan/operations/examples/record_bundle_generator.py` | New: `RecordBundleGenerator` operation |
+| `src/artisan/operations/examples/appendable_generator.py` | New: `AppendableGenerator` operation |
 | `src/artisan/operations/examples/large_file_generator.py` | New: `LargeFileGenerator` operation |
-| `src/artisan/operations/examples/__init__.py` | Add imports for `RecordBundleGenerator` and `LargeFileGenerator` |
-| `src/artisan/operations/curator/consolidate_record_bundles.py` | New: `ConsolidateRecordBundles` curator |
-| `src/artisan/operations/curator/__init__.py` | Add import for `ConsolidateRecordBundles` |
+| `src/artisan/operations/examples/__init__.py` | Add imports for `AppendableGenerator` and `LargeFileGenerator` |
+| `src/artisan/operations/curator/consolidate_appendables.py` | New: `ConsolidateAppendables` curator |
+| `src/artisan/operations/curator/__init__.py` | Add import for `ConsolidateAppendables` |
 
 ---
 
@@ -791,12 +791,12 @@ This reuses `artisan.utils.hashing.compute_artifact_id` which already wraps
 
 | Test file | Coverage |
 |-----------|----------|
-| `tests/artisan/schemas/artifact/test_record_bundle.py` | Schema round-trip, `_finalize_content()` includes `external_path`, `draft()` factory, `_read_record()` extraction, `_materialize_content()` writes JSON, distinct `artifact_id` for same record at different paths |
+| `tests/artisan/schemas/artifact/test_appendable.py` | Schema round-trip, `_finalize_content()` includes `external_path`, `draft()` factory, `_read_record()` extraction, `_materialize_content()` writes JSON, distinct `artifact_id` for same record at different paths |
 | `tests/artisan/schemas/artifact/test_large_file.py` | Schema round-trip, `_finalize_content()` includes `external_path`, `draft()` factory, `_materialize_content()` copies file, distinct `artifact_id` for same content at different paths |
 | `tests/artisan/execution/test_files_dir_threading.py` | `ExecuteInput.files_dir` default None, creator executor constructs per-worker directory, directory created under `files_root/{step}/workers/{run_id}` |
-| `tests/artisan/operations/test_record_bundle_generator.py` | Generates JSONL with correct record count, records have `record_id` and `content_hash`, artifacts share `external_path`, `files_dir` is used |
+| `tests/artisan/operations/test_appendable_generator.py` | Generates JSONL with correct record count, records have `record_id` and `content_hash`, artifacts share `external_path`, `files_dir` is used |
 | `tests/artisan/operations/test_large_file_generator.py` | Generates binary files of specified size, artifacts have correct `content_hash` and `size_bytes`, one file per artifact |
-| `tests/artisan/operations/test_consolidate_record_bundles.py` | Concatenates multiple worker JSONL files, new artifacts point to combined file, new artifact IDs (external_path changed), record count preserved |
+| `tests/artisan/operations/test_consolidate_appendables.py` | Concatenates multiple worker JSONL files, new artifacts point to combined file, new artifact IDs (external_path changed), record count preserved |
 
 ---
 
@@ -820,5 +820,5 @@ This reuses `artisan.utils.hashing.compute_artifact_id` which already wraps
   this convention.
 - `2-external-content-artifacts.md` -- `files_root` infrastructure that these
   types build on.
-- `3-post-step-sugar.md` -- `ConsolidateRecordBundles` is the natural
+- `3-post-step-sugar.md` -- `ConsolidateAppendables` is the natural
   `post_step` target.

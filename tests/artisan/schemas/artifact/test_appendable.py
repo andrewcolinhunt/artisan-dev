@@ -1,4 +1,4 @@
-"""Tests for RecordBundleArtifact."""
+"""Tests for AppendableArtifact."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from artisan.schemas.artifact.record_bundle import RecordBundleArtifact
+from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.hashing import compute_content_hash
@@ -20,10 +20,10 @@ def _make_jsonl(path: Path, records: list[dict]) -> None:
             f.write(json.dumps(rec, sort_keys=True) + "\n")
 
 
-def _draft(external_path: str = "/tmp/test.jsonl") -> RecordBundleArtifact:
+def _draft(external_path: str = "/tmp/test.jsonl") -> AppendableArtifact:
     """Create a standard draft for reuse across tests."""
     line = json.dumps({"record_id": "rec_000000", "values": {"x": 1.0}}, sort_keys=True)
-    return RecordBundleArtifact.draft(
+    return AppendableArtifact.draft(
         record_id="rec_000000",
         content_hash=compute_content_hash(line.encode()),
         size_bytes=len(line.encode()),
@@ -34,7 +34,7 @@ def _draft(external_path: str = "/tmp/test.jsonl") -> RecordBundleArtifact:
 
 
 class TestDraft:
-    """Tests for RecordBundleArtifact.draft() factory."""
+    """Tests for AppendableArtifact.draft() factory."""
 
     def test_draft_sets_record_id(self) -> None:
         art = _draft()
@@ -83,14 +83,14 @@ class TestFinalize:
     def test_different_record_id_different_artifact_id(self) -> None:
         line_a = json.dumps({"record_id": "a", "values": {}}, sort_keys=True)
         line_b = json.dumps({"record_id": "b", "values": {}}, sort_keys=True)
-        art_a = RecordBundleArtifact.draft(
+        art_a = AppendableArtifact.draft(
             record_id="a",
             content_hash=compute_content_hash(line_a.encode()),
             size_bytes=len(line_a.encode()),
             step_number=0,
             external_path="/tmp/same.jsonl",
         )
-        art_b = RecordBundleArtifact.draft(
+        art_b = AppendableArtifact.draft(
             record_id="b",
             content_hash=compute_content_hash(line_b.encode()),
             size_bytes=len(line_b.encode()),
@@ -117,7 +117,7 @@ class TestSerialization:
         art = _draft()
         art.finalize()
         row = art.to_row()
-        restored = RecordBundleArtifact.from_row(row)
+        restored = AppendableArtifact.from_row(row)
         assert restored.artifact_id == art.artifact_id
         assert restored.record_id == art.record_id
         assert restored.content_hash == art.content_hash
@@ -131,14 +131,14 @@ class TestSerialization:
         art = _draft()
         art.finalize()
         row = art.to_row()
-        assert set(row.keys()) == set(RecordBundleArtifact.POLARS_SCHEMA.keys())
+        assert set(row.keys()) == set(AppendableArtifact.POLARS_SCHEMA.keys())
 
     def test_from_row_handles_none_metadata(self) -> None:
         art = _draft()
         art.finalize()
         row = art.to_row()
         row["metadata"] = None
-        restored = RecordBundleArtifact.from_row(row)
+        restored = AppendableArtifact.from_row(row)
         assert restored.metadata == {}
 
 
@@ -165,9 +165,9 @@ class TestMaterialize:
         assert data["values"]["x"] == 1.0
 
     def test_materialize_raises_without_external_path(self, tmp_path: Path) -> None:
-        art = RecordBundleArtifact(
+        art = AppendableArtifact(
             artifact_id="a" * 32,
-            artifact_type="record_bundle",
+            artifact_type="appendable",
             origin_step_number=0,
             record_id="rec_000000",
             content_hash="b" * 32,
@@ -179,9 +179,9 @@ class TestMaterialize:
         jsonl_path = tmp_path / "bundle.jsonl"
         _make_jsonl(jsonl_path, [{"record_id": "other", "values": {}}])
 
-        art = RecordBundleArtifact(
+        art = AppendableArtifact(
             artifact_id="a" * 32,
-            artifact_type="record_bundle",
+            artifact_type="appendable",
             origin_step_number=0,
             record_id="not_found",
             content_hash="b" * 32,
@@ -194,8 +194,8 @@ class TestMaterialize:
 class TestTypeRegistration:
     """Tests for artifact type registry integration."""
 
-    def test_record_bundle_type_registered(self) -> None:
-        assert ArtifactTypes.is_registered("record_bundle")
+    def test_appendable_type_registered(self) -> None:
+        assert ArtifactTypes.is_registered("appendable")
 
-    def test_get_model_returns_record_bundle_artifact(self) -> None:
-        assert ArtifactTypeDef.get_model("record_bundle") is RecordBundleArtifact
+    def test_get_model_returns_appendable_artifact(self) -> None:
+        assert ArtifactTypeDef.get_model("appendable") is AppendableArtifact
