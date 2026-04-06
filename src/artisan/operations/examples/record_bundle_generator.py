@@ -27,9 +27,10 @@ from artisan.utils.hashing import compute_content_hash
 class RecordBundleGenerator(OperationDefinition):
     """Generate JSONL record bundles with random data.
 
-    Produces a single JSONL file with N records, each containing a
-    record_id and a dict of random float values. Each record becomes
-    a separate RecordBundleArtifact sharing the same external_path.
+    Produces one or more JSONL files with N total records, each containing
+    a record_id and a dict of random float values. Each record becomes
+    a separate RecordBundleArtifact. When ``num_files > 1``, records are
+    split across files (simulating multi-worker output).
 
     Output Roles:
         records (record_bundle) -- Generated JSONL record bundle
@@ -55,6 +56,9 @@ class RecordBundleGenerator(OperationDefinition):
         """Algorithm parameters for RecordBundleGenerator."""
 
         count: int = Field(default=10, ge=1, description="Number of records to generate")
+        num_files: int = Field(
+            default=1, ge=1, description="Number of JSONL files to split records across"
+        )
         fields_per_record: int = Field(
             default=5, ge=1, description="Number of float fields per record"
         )
@@ -67,40 +71,51 @@ class RecordBundleGenerator(OperationDefinition):
     execution: ExecutionConfig = ExecutionConfig(job_name="record_bundle_generator")
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Write a JSONL file with random records to files_dir."""
+        """Write JSONL file(s) with random records to files_dir."""
         if inputs.files_dir is None:
             msg = "files_dir required for RecordBundleGenerator"
             raise ValueError(msg)
 
         rng = random.Random(self.params.seed)
-        output_path = inputs.files_dir / "records.jsonl"
+        num_files = self.params.num_files
+
+        # Generate all records
+        all_records: list[dict[str, Any]] = []
+        for i in range(self.params.count):
+            all_records.append({
+                "record_id": f"rec_{i:06d}",
+                "values": {
+                    f"field_{j}": round(rng.gauss(0, 1), 6)
+                    for j in range(self.params.fields_per_record)
+                },
+            })
+
+        # Split records across files (remainder goes to early files)
+        base, remainder = divmod(self.params.count, num_files)
         records_meta: list[dict[str, Any]] = []
+        offset = 0
 
-        with output_path.open("w") as f:
-            for i in range(self.params.count):
-                record = {
-                    "record_id": f"rec_{i:06d}",
-                    "values": {
-                        f"field_{j}": round(rng.gauss(0, 1), 6)
-                        for j in range(self.params.fields_per_record)
-                    },
-                }
-                line = json.dumps(record, sort_keys=True)
-                f.write(line + "\n")
-                records_meta.append({
-                    "record_id": record["record_id"],
-                    "content_hash": compute_content_hash(line.encode()),
-                    "size_bytes": len(line.encode()),
-                })
+        for file_idx in range(num_files):
+            chunk_size = base + (1 if file_idx < remainder else 0)
+            chunk = all_records[offset : offset + chunk_size]
+            offset += chunk_size
 
-        return {
-            "output_path": str(output_path),
-            "records": records_meta,
-        }
+            file_path = inputs.files_dir / f"records_{file_idx}.jsonl"
+            with file_path.open("w") as f:
+                for record in chunk:
+                    line = json.dumps(record, sort_keys=True)
+                    f.write(line + "\n")
+                    records_meta.append({
+                        "record_id": record["record_id"],
+                        "content_hash": compute_content_hash(line.encode()),
+                        "size_bytes": len(line.encode()),
+                        "output_path": str(file_path),
+                    })
+
+        return {"records": records_meta}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Create RecordBundleArtifact drafts from execute metadata."""
-        output_path = inputs.memory_outputs["output_path"]
         records = inputs.memory_outputs["records"]
 
         drafts = [
@@ -109,7 +124,7 @@ class RecordBundleGenerator(OperationDefinition):
                 content_hash=rec["content_hash"],
                 size_bytes=rec["size_bytes"],
                 step_number=inputs.step_number,
-                external_path=output_path,
+                external_path=rec["output_path"],
                 original_name=rec["record_id"],
             )
             for rec in records
