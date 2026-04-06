@@ -19,7 +19,10 @@ from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput, PreprocessInput
+from artisan.schemas.specs.input_models import (
+    ExecuteInput,
+    PostprocessInput,
+)
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
