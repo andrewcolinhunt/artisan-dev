@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from artisan.operations.curator.consolidate_record_bundles import (
-    ConsolidateRecordBundles,
+from artisan.operations.curator.consolidate_appendables import (
+    ConsolidateAppendables,
 )
 from artisan.operations.curator.filter import Filter
 from artisan.operations.curator.ingest_data import IngestData
@@ -13,7 +13,7 @@ from artisan.operations.curator.interactive_filter import InteractiveFilter
 from artisan.operations.curator.merge import Merge
 
 __all__ = [
-    "ConsolidateRecordBundles",
+    "ConsolidateAppendables",
     "Filter",
     "IngestData",
     "IngestFiles",

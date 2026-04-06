@@ -459,7 +459,7 @@ def _build_details(artifact_type: str, row: dict[str, Any]) -> str:
             return _format_size(size)
         return "-"
 
-    elif artifact_type == "record_bundle":
+    elif artifact_type == "appendable":
         record_id = row.get("record_id")
         if record_id is not None:
             return record_id

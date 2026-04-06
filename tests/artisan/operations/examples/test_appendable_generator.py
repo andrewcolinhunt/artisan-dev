@@ -1,4 +1,4 @@
-"""Tests for RecordBundleGenerator operation."""
+"""Tests for AppendableGenerator operation."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from artisan.operations.examples.record_bundle_generator import RecordBundleGenerator
+from artisan.operations.examples.appendable_generator import AppendableGenerator
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.utils.hashing import compute_content_hash
@@ -26,8 +26,8 @@ def _run(
     execute_dir = tmp_path / "execute"
     execute_dir.mkdir(parents=True)
 
-    op = RecordBundleGenerator(
-        params=RecordBundleGenerator.Params(
+    op = AppendableGenerator(
+        params=AppendableGenerator.Params(
             count=count,
             num_files=num_files,
             fields_per_record=fields_per_record,
@@ -50,8 +50,8 @@ def _run(
     return raw, result
 
 
-class TestRecordBundleGenerator:
-    """Tests for the RecordBundleGenerator operation."""
+class TestAppendableGenerator:
+    """Tests for the AppendableGenerator operation."""
 
     def test_generates_correct_record_count(self, tmp_path: Path) -> None:
         raw, result = _run(tmp_path, count=5)
@@ -93,15 +93,15 @@ class TestRecordBundleGenerator:
         assert len(paths) == 1
 
     def test_requires_files_dir(self, tmp_path: Path) -> None:
-        op = RecordBundleGenerator()
+        op = AppendableGenerator()
         ei = ExecuteInput(execute_dir=tmp_path, files_dir=None)
         with pytest.raises(ValueError, match="files_dir required"):
             op.execute(ei)
 
-    def test_artifact_type_is_record_bundle(self, tmp_path: Path) -> None:
+    def test_artifact_type_is_appendable(self, tmp_path: Path) -> None:
         _, result = _run(tmp_path)
         for art in result.artifacts["records"]:
-            assert art.artifact_type == "record_bundle"
+            assert art.artifact_type == "appendable"
 
     def test_content_hash_correct(self, tmp_path: Path) -> None:
         raw, _ = _run(tmp_path, count=1)

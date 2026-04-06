@@ -1,4 +1,4 @@
-"""Tests for ConsolidateRecordBundles curator."""
+"""Tests for ConsolidateAppendables curator."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from unittest.mock import MagicMock
 import polars as pl
 import pytest
 
-from artisan.operations.curator.consolidate_record_bundles import (
-    ConsolidateRecordBundles,
+from artisan.operations.curator.consolidate_appendables import (
+    ConsolidateAppendables,
 )
-from artisan.schemas.artifact.record_bundle import RecordBundleArtifact
+from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.utils.hashing import compute_content_hash
 
 
@@ -21,14 +21,14 @@ def _df(artifact_ids: list[str]) -> pl.DataFrame:
     return pl.DataFrame({"artifact_id": artifact_ids})
 
 
-def _make_bundle_artifact(
+def _make_appendable_artifact(
     record_id: str,
     external_path: str,
     step_number: int = 0,
-) -> RecordBundleArtifact:
-    """Create a finalized RecordBundleArtifact."""
+) -> AppendableArtifact:
+    """Create a finalized AppendableArtifact."""
     line = json.dumps({"record_id": record_id, "values": {"x": 1.0}}, sort_keys=True)
-    art = RecordBundleArtifact.draft(
+    art = AppendableArtifact.draft(
         record_id=record_id,
         content_hash=compute_content_hash(line.encode()),
         size_bytes=len(line.encode()),
@@ -46,8 +46,8 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             f.write(json.dumps(rec, sort_keys=True) + "\n")
 
 
-def _mock_store_with_bundles(
-    artifacts: dict[str, RecordBundleArtifact],
+def _mock_store_with_appendables(
+    artifacts: dict[str, AppendableArtifact],
     files_root: Path | None,
 ) -> MagicMock:
     """Create a mock ArtifactStore with get_artifacts_by_type returning artifacts."""
@@ -69,16 +69,16 @@ class TestConsolidateBasicExecution:
         _write_jsonl(worker_a, [{"record_id": "rec_0", "values": {"x": 1}}])
         _write_jsonl(worker_b, [{"record_id": "rec_1", "values": {"x": 2}}])
 
-        art_0 = _make_bundle_artifact("rec_0", str(worker_a))
-        art_1 = _make_bundle_artifact("rec_1", str(worker_b))
+        art_0 = _make_appendable_artifact("rec_0", str(worker_a))
+        art_1 = _make_appendable_artifact("rec_1", str(worker_b))
         artifacts = {art_0.artifact_id: art_0, art_1.artifact_id: art_1}
 
         files_root = tmp_path / "files"
         files_root.mkdir()
-        store = _mock_store_with_bundles(artifacts, files_root)
+        store = _mock_store_with_appendables(artifacts, files_root)
         inputs = {"records": _df(list(artifacts.keys()))}
 
-        op = ConsolidateRecordBundles()
+        op = ConsolidateAppendables()
         result = op.execute_curator(inputs, step_number=5, artifact_store=store)
 
         combined = files_root / "5" / "combined.jsonl"
@@ -90,15 +90,15 @@ class TestConsolidateBasicExecution:
         worker = tmp_path / "worker.jsonl"
         _write_jsonl(worker, [{"record_id": "rec_0", "values": {}}])
 
-        art = _make_bundle_artifact("rec_0", str(worker))
+        art = _make_appendable_artifact("rec_0", str(worker))
         artifacts = {art.artifact_id: art}
 
         files_root = tmp_path / "files"
         files_root.mkdir()
-        store = _mock_store_with_bundles(artifacts, files_root)
+        store = _mock_store_with_appendables(artifacts, files_root)
         inputs = {"records": _df(list(artifacts.keys()))}
 
-        op = ConsolidateRecordBundles()
+        op = ConsolidateAppendables()
         result = op.execute_curator(inputs, step_number=3, artifact_store=store)
 
         expected_path = str(files_root / "3" / "combined.jsonl")
@@ -115,16 +115,16 @@ class TestConsolidateBasicExecution:
             ],
         )
 
-        art_0 = _make_bundle_artifact("rec_0", str(worker))
-        art_1 = _make_bundle_artifact("rec_1", str(worker))
+        art_0 = _make_appendable_artifact("rec_0", str(worker))
+        art_1 = _make_appendable_artifact("rec_1", str(worker))
         artifacts = {art_0.artifact_id: art_0, art_1.artifact_id: art_1}
 
         files_root = tmp_path / "files"
         files_root.mkdir()
-        store = _mock_store_with_bundles(artifacts, files_root)
+        store = _mock_store_with_appendables(artifacts, files_root)
         inputs = {"records": _df(list(artifacts.keys()))}
 
-        op = ConsolidateRecordBundles()
+        op = ConsolidateAppendables()
         result = op.execute_curator(inputs, step_number=0, artifact_store=store)
 
         assert len(result.artifacts["records"]) == 2
@@ -134,15 +134,15 @@ class TestConsolidateBasicExecution:
         worker = tmp_path / "worker.jsonl"
         _write_jsonl(worker, [{"record_id": "rec_0", "values": {}}])
 
-        art = _make_bundle_artifact("rec_0", str(worker))
+        art = _make_appendable_artifact("rec_0", str(worker))
         artifacts = {art.artifact_id: art}
 
         files_root = tmp_path / "files"
         files_root.mkdir()
-        store = _mock_store_with_bundles(artifacts, files_root)
+        store = _mock_store_with_appendables(artifacts, files_root)
         inputs = {"records": _df(list(artifacts.keys()))}
 
-        op = ConsolidateRecordBundles()
+        op = ConsolidateAppendables()
         result = op.execute_curator(inputs, step_number=1, artifact_store=store)
 
         # Finalize the draft to get an ID, then compare
@@ -158,7 +158,7 @@ class TestConsolidateErrorHandling:
         store = MagicMock()
         store.files_root = None
 
-        op = ConsolidateRecordBundles()
+        op = ConsolidateAppendables()
         with pytest.raises(ValueError, match="files_root required"):
             op.execute_curator(
                 {"records": _df(["abc" * 10 + "ab"])},
@@ -171,20 +171,16 @@ class TestConsolidateClassAttributes:
     """Tests for operation class configuration."""
 
     def test_has_correct_name(self) -> None:
-        assert ConsolidateRecordBundles.name == "consolidate_record_bundles"
+        assert ConsolidateAppendables.name == "consolidate_appendables"
 
     def test_has_records_input_spec(self) -> None:
-        assert "records" in ConsolidateRecordBundles.inputs
-        assert (
-            ConsolidateRecordBundles.inputs["records"].artifact_type == "record_bundle"
-        )
+        assert "records" in ConsolidateAppendables.inputs
+        assert ConsolidateAppendables.inputs["records"].artifact_type == "appendable"
 
     def test_has_records_output_spec(self) -> None:
-        assert "records" in ConsolidateRecordBundles.outputs
-        assert (
-            ConsolidateRecordBundles.outputs["records"].artifact_type == "record_bundle"
-        )
+        assert "records" in ConsolidateAppendables.outputs
+        assert ConsolidateAppendables.outputs["records"].artifact_type == "appendable"
 
     def test_output_lineage_traces_to_input(self) -> None:
-        spec = ConsolidateRecordBundles.outputs["records"]
+        spec = ConsolidateAppendables.outputs["records"]
         assert spec.infer_lineage_from == {"inputs": ["records"]}

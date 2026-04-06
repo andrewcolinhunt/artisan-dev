@@ -1,6 +1,6 @@
-"""Curator that concatenates per-worker JSONL bundles into a single file.
+"""Curator that concatenates per-worker JSONL files into a single file.
 
-Natural post_step target for RecordBundleGenerator: after parallel
+Natural post_step target for AppendableGenerator: after parallel
 workers each produce their own JSONL files, this curator reads them
 all and writes a single combined.jsonl in files_root.
 """
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, ClassVar
 import polars as pl
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.record_bundle import RecordBundleArtifact
+from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -22,30 +22,30 @@ if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
 
 
-class ConsolidateRecordBundles(OperationDefinition):
-    """Concatenate per-worker JSONL bundles into a single file.
+class ConsolidateAppendables(OperationDefinition):
+    """Concatenate per-worker JSONL files into a single file.
 
-    Reads RecordBundleArtifacts from multiple worker files, concatenates
+    Reads AppendableArtifacts from multiple worker files, concatenates
     all JSONL content into one combined file, and produces new artifacts
     pointing to the combined path. Because external_path is included in
     the content hash, consolidated artifacts get new artifact_ids.
 
     Input Roles:
-        records (record_bundle) -- Per-worker record bundle artifacts
+        records (appendable) -- Per-worker appendable artifacts
 
     Output Roles:
-        records (record_bundle) -- Consolidated record bundle artifacts
+        records (appendable) -- Consolidated appendable artifacts
     """
 
-    name = "consolidate_record_bundles"
-    description = "Concatenate per-worker JSONL bundles into a single file"
+    name = "consolidate_appendables"
+    description = "Concatenate per-worker JSONL files into a single file"
 
     class InputRole(StrEnum):
         records = auto()
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.records: InputSpec(
-            artifact_type="record_bundle",
+            artifact_type="appendable",
         ),
     }
 
@@ -54,8 +54,8 @@ class ConsolidateRecordBundles(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.records: OutputSpec(
-            artifact_type="record_bundle",
-            description="Consolidated record bundle",
+            artifact_type="appendable",
+            description="Consolidated appendable artifacts",
             infer_lineage_from={"inputs": ["records"]},
         ),
     }
@@ -68,11 +68,11 @@ class ConsolidateRecordBundles(OperationDefinition):
     ) -> ArtifactResult:
         """Concatenate worker JSONL files and create consolidated artifacts."""
         if artifact_store.files_root is None:
-            msg = "files_root required for ConsolidateRecordBundles"
+            msg = "files_root required for ConsolidateAppendables"
             raise ValueError(msg)
 
         record_ids = inputs["records"]["artifact_id"].to_list()
-        artifacts = artifact_store.get_artifacts_by_type(record_ids, "record_bundle")
+        artifacts = artifact_store.get_artifacts_by_type(record_ids, "appendable")
 
         # Find distinct worker files
         worker_files: set[str] = set()
@@ -89,10 +89,10 @@ class ConsolidateRecordBundles(OperationDefinition):
                     out.write(f.read())
 
         # Create new artifacts pointing to combined file
-        drafts: list[RecordBundleArtifact] = []
+        drafts: list[AppendableArtifact] = []
         for art in artifacts.values():
             drafts.append(
-                RecordBundleArtifact.draft(
+                AppendableArtifact.draft(
                     record_id=art.record_id,
                     content_hash=art.content_hash,
                     size_bytes=art.size_bytes,
