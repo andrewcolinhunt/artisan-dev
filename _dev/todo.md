@@ -2,7 +2,7 @@
 
 ## Top Priorities
 
-
+seems like the artisan skills aren't available in artisan?
 
 - in docs, add comparison to ray, dask, flyte
 evaluate in comparison to ray data
