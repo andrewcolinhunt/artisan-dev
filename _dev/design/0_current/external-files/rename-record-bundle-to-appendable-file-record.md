@@ -1,4 +1,4 @@
-# Design: Rename RecordBundle → AppendableFileRecord
+# Design: Rename RecordBundle → Appendable
 
 **Date:** 2026-04-05
 **Status:** Draft
@@ -8,8 +8,9 @@
 ## Motivation
 
 "RecordBundle" is ambiguous — it sounds like a bundle of records rather than
-one record in an appendable file. "AppendableFileRecord" communicates both
-the file property (appendable) and the artifact granularity (one record).
+one record in an appendable file. "Appendable" communicates the file property
+(appendable/concatenatable) concisely, and the `Artifact` suffix plus the
+`record_id` field convey the per-record granularity.
 
 ---
 
@@ -17,14 +18,14 @@ the file property (appendable) and the artifact granularity (one record).
 
 | Current | New |
 |---------|-----|
-| `RecordBundleArtifact` | `AppendableFileRecordArtifact` |
-| `RecordBundleTypeDef` | `AppendableFileRecordTypeDef` |
-| `RecordBundleGenerator` | `AppendableFileRecordGenerator` |
-| `ConsolidateRecordBundles` | `ConsolidateAppendableFileRecords` |
-| `record_bundle` (artifact type key) | `appendable_file_record` |
-| `artifacts/record_bundles` (table path) | `artifacts/appendable_file_records` |
-| `record_bundle_generator` (operation name) | `appendable_file_record_generator` |
-| `consolidate_record_bundles` (operation name) | `consolidate_appendable_file_records` |
+| `RecordBundleArtifact` | `AppendableArtifact` |
+| `RecordBundleTypeDef` | `AppendableTypeDef` |
+| `RecordBundleGenerator` | `AppendableGenerator` |
+| `ConsolidateRecordBundles` | `ConsolidateAppendables` |
+| `record_bundle` (artifact type key) | `appendable` |
+| `artifacts/record_bundles` (table path) | `artifacts/appendables` |
+| `record_bundle_generator` (operation name) | `appendable_generator` |
+| `consolidate_record_bundles` (operation name) | `consolidate_appendables` |
 
 ---
 
@@ -32,12 +33,12 @@ the file property (appendable) and the artifact granularity (one record).
 
 | Current | New |
 |---------|-----|
-| `src/artisan/schemas/artifact/record_bundle.py` | `…/appendable_file_record.py` |
-| `src/artisan/operations/examples/record_bundle_generator.py` | `…/appendable_file_record_generator.py` |
-| `src/artisan/operations/curator/consolidate_record_bundles.py` | `…/consolidate_appendable_file_records.py` |
-| `tests/artisan/schemas/artifact/test_record_bundle.py` | `…/test_appendable_file_record.py` |
-| `tests/artisan/operations/examples/test_record_bundle_generator.py` | `…/test_appendable_file_record_generator.py` |
-| `tests/artisan/operations/curator/test_consolidate_record_bundles.py` | `…/test_consolidate_appendable_file_records.py` |
+| `src/artisan/schemas/artifact/record_bundle.py` | `…/appendable.py` |
+| `src/artisan/operations/examples/record_bundle_generator.py` | `…/appendable_generator.py` |
+| `src/artisan/operations/curator/consolidate_record_bundles.py` | `…/consolidate_appendables.py` |
+| `tests/artisan/schemas/artifact/test_record_bundle.py` | `…/test_appendable.py` |
+| `tests/artisan/operations/examples/test_record_bundle_generator.py` | `…/test_appendable_generator.py` |
+| `tests/artisan/operations/curator/test_consolidate_record_bundles.py` | `…/test_consolidate_appendables.py` |
 
 ---
 
@@ -45,10 +46,10 @@ the file property (appendable) and the artifact granularity (one record).
 
 ### Source files
 
-- **`src/artisan/schemas/artifact/appendable_file_record.py`** — class names, artifact_type default, docstrings, TypeDef key/table_path/model
-- **`src/artisan/operations/examples/appendable_file_record_generator.py`** — class name, operation name, description, artifact_type strings, imports, error messages, docstrings
-- **`src/artisan/operations/curator/consolidate_appendable_file_records.py`** — class name, operation name, description, artifact_type strings, imports, error messages, docstrings
-- **`src/artisan/visualization/inspect.py`** — `"record_bundle"` → `"appendable_file_record"` in `_build_details()`
+- **`src/artisan/schemas/artifact/appendable.py`** — class names, artifact_type default, docstrings, TypeDef key/table_path/model
+- **`src/artisan/operations/examples/appendable_generator.py`** — class name, operation name, description, artifact_type strings, imports, error messages, docstrings
+- **`src/artisan/operations/curator/consolidate_appendables.py`** — class name, operation name, description, artifact_type strings, imports, error messages, docstrings
+- **`src/artisan/visualization/inspect.py`** — `"record_bundle"` → `"appendable"` in `_build_details()`
 
 ### `__init__.py` re-exports
 
@@ -59,9 +60,9 @@ the file property (appendable) and the artifact granularity (one record).
 
 ### Test files
 
-- **`tests/…/test_appendable_file_record.py`** — imports, class references, type string assertions
-- **`tests/…/test_appendable_file_record_generator.py`** — imports, class references, type string assertions
-- **`tests/…/test_consolidate_appendable_file_records.py`** — imports, class references, operation name assertions
+- **`tests/…/test_appendable.py`** — imports, class references, type string assertions
+- **`tests/…/test_appendable_generator.py`** — imports, class references, type string assertions
+- **`tests/…/test_consolidate_appendables.py`** — imports, class references, operation name assertions
 
 ### Documentation
 
