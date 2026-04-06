@@ -16,6 +16,7 @@ from artisan.utils.hashing import compute_content_hash
 def _run(
     tmp_path: Path,
     count: int = 3,
+    num_files: int = 1,
     fields_per_record: int = 2,
     seed: int | None = 42,
 ) -> tuple[dict, ArtifactResult]:
@@ -28,6 +29,7 @@ def _run(
     op = RecordBundleGenerator(
         params=RecordBundleGenerator.Params(
             count=count,
+            num_files=num_files,
             fields_per_record=fields_per_record,
             seed=seed,
         ),
@@ -58,7 +60,7 @@ class TestRecordBundleGenerator:
 
     def test_jsonl_format_valid(self, tmp_path: Path) -> None:
         raw, _ = _run(tmp_path, count=3)
-        jsonl_path = Path(raw["output_path"])
+        jsonl_path = Path(raw["records"][0]["output_path"])
         lines = jsonl_path.read_text().strip().split("\n")
         assert len(lines) == 3
         for line in lines:
@@ -103,7 +105,43 @@ class TestRecordBundleGenerator:
 
     def test_content_hash_correct(self, tmp_path: Path) -> None:
         raw, _ = _run(tmp_path, count=1)
-        jsonl_path = Path(raw["output_path"])
+        jsonl_path = Path(raw["records"][0]["output_path"])
         line = jsonl_path.read_text().strip()
         expected = compute_content_hash(line.encode())
         assert raw["records"][0]["content_hash"] == expected
+
+
+class TestNumFiles:
+    """Tests for the num_files parameter."""
+
+    def test_splits_records_evenly(self, tmp_path: Path) -> None:
+        raw, result = _run(tmp_path, count=6, num_files=3)
+        paths = {a.external_path for a in result.artifacts["records"]}
+        assert len(paths) == 3
+        for path in paths:
+            lines = Path(path).read_text().strip().split("\n")
+            assert len(lines) == 2
+
+    def test_uneven_split(self, tmp_path: Path) -> None:
+        raw, result = _run(tmp_path, count=7, num_files=3)
+        paths = sorted({a.external_path for a in result.artifacts["records"]})
+        assert len(paths) == 3
+        line_counts = [
+            len(Path(p).read_text().strip().split("\n")) for p in paths
+        ]
+        assert line_counts == [3, 2, 2]
+
+    def test_default_single_file(self, tmp_path: Path) -> None:
+        _, result = _run(tmp_path, count=5)
+        paths = {a.external_path for a in result.artifacts["records"]}
+        assert len(paths) == 1
+
+    def test_all_records_present_across_files(self, tmp_path: Path) -> None:
+        raw, _ = _run(tmp_path, count=10, num_files=3)
+        all_paths = {rec["output_path"] for rec in raw["records"]}
+        all_lines: list[str] = []
+        for path in sorted(all_paths):
+            all_lines.extend(Path(path).read_text().strip().split("\n"))
+        assert len(all_lines) == 10
+        ids = {json.loads(line)["record_id"] for line in all_lines}
+        assert len(ids) == 10
