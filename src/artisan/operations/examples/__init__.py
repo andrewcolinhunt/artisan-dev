@@ -14,7 +14,7 @@ from artisan.operations.examples.data_transformer_config import (
 from artisan.operations.examples.data_transformer_script import DataTransformerScript
 from artisan.operations.examples.large_file_generator import LargeFileGenerator
 from artisan.operations.examples.metric_calculator import MetricCalculator
-from artisan.operations.examples.record_bundle_generator import RecordBundleGenerator
+from artisan.operations.examples.appendable_generator import AppendableGenerator
 from artisan.operations.examples.wait import Wait
 
 __all__ = [
@@ -25,6 +25,6 @@ __all__ = [
     "DataTransformerScript",
     "LargeFileGenerator",
     "MetricCalculator",
-    "RecordBundleGenerator",
+    "AppendableGenerator",
     "Wait",
 ]

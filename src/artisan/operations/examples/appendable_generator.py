@@ -1,8 +1,8 @@
-"""Generate JSONL record bundles with random data.
+"""Generate appendable JSONL files with random data.
 
 Demonstrates the many-to-one external-content pattern: one JSONL file
 contains many independently addressable records, each tracked as a
-separate RecordBundleArtifact in Delta.
+separate AppendableArtifact in Delta.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.record_bundle import RecordBundleArtifact
+from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
@@ -24,20 +24,20 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import compute_content_hash
 
 
-class RecordBundleGenerator(OperationDefinition):
-    """Generate JSONL record bundles with random data.
+class AppendableGenerator(OperationDefinition):
+    """Generate appendable JSONL files with random data.
 
     Produces one or more JSONL files with N total records, each containing
     a record_id and a dict of random float values. Each record becomes
-    a separate RecordBundleArtifact. When ``num_files > 1``, records are
+    a separate AppendableArtifact. When ``num_files > 1``, records are
     split across files (simulating multi-worker output).
 
     Output Roles:
-        records (record_bundle) -- Generated JSONL record bundle
+        records (appendable) -- Generated JSONL records
     """
 
-    name = "record_bundle_generator"
-    description = "Generate JSONL record bundles with random data"
+    name = "appendable_generator"
+    description = "Generate appendable JSONL files with random data"
 
     inputs: ClassVar[dict] = {}
 
@@ -46,14 +46,14 @@ class RecordBundleGenerator(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.records: OutputSpec(
-            artifact_type="record_bundle",
-            description="Generated JSONL record bundle",
+            artifact_type="appendable",
+            description="Generated JSONL records",
             infer_lineage_from={"inputs": []},
         ),
     }
 
     class Params(BaseModel):
-        """Algorithm parameters for RecordBundleGenerator."""
+        """Algorithm parameters for AppendableGenerator."""
 
         count: int = Field(default=10, ge=1, description="Number of records to generate")
         num_files: int = Field(
@@ -68,12 +68,12 @@ class RecordBundleGenerator(OperationDefinition):
 
     params: Params = Params()
     resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="record_bundle_generator")
+    execution: ExecutionConfig = ExecutionConfig(job_name="appendable_generator")
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write JSONL file(s) with random records to files_dir."""
         if inputs.files_dir is None:
-            msg = "files_dir required for RecordBundleGenerator"
+            msg = "files_dir required for AppendableGenerator"
             raise ValueError(msg)
 
         rng = random.Random(self.params.seed)
@@ -115,11 +115,11 @@ class RecordBundleGenerator(OperationDefinition):
         return {"records": records_meta}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Create RecordBundleArtifact drafts from execute metadata."""
+        """Create AppendableArtifact drafts from execute metadata."""
         records = inputs.memory_outputs["records"]
 
         drafts = [
-            RecordBundleArtifact.draft(
+            AppendableArtifact.draft(
                 record_id=rec["record_id"],
                 content_hash=rec["content_hash"],
                 size_bytes=rec["size_bytes"],

@@ -1,7 +1,7 @@
-"""Record-bundle artifact schema for JSONL-based appendable bundles.
+"""Appendable artifact schema for JSONL-based appendable files.
 
 Each artifact represents one record within a shared JSONL file.
-Many RecordBundleArtifacts share the same external_path. The file
+Many AppendableArtifacts share the same external_path. The file
 is appendable: workers write per-worker files, then a consolidation
 curator concatenates them into a single combined file.
 """
@@ -20,10 +20,10 @@ from artisan.schemas.artifact.common import metadata_from_json, metadata_to_json
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 
 
-class RecordBundleArtifact(Artifact):
-    """Artifact representing one record in a JSONL bundle file.
+class AppendableArtifact(Artifact):
+    """Artifact representing one record in an appendable JSONL file.
 
-    Many RecordBundleArtifacts share the same external_path (the JSONL
+    Many AppendableArtifacts share the same external_path (the JSONL
     file). Each is addressed by record_id within the file. Delta stores
     only per-record metadata; record data lives in the JSONL file.
     """
@@ -40,10 +40,10 @@ class RecordBundleArtifact(Artifact):
         "external_path": pl.String,
     }
 
-    artifact_type: str = Field(default="record_bundle", frozen=True)
+    artifact_type: str = Field(default="appendable", frozen=True)
     record_id: str | None = Field(
         default=None,
-        description="Unique identifier for this record within the bundle.",
+        description="Unique identifier for this record within the file.",
     )
     content_hash: str | None = Field(
         default=None,
@@ -83,7 +83,7 @@ class RecordBundleArtifact(Artifact):
         ).encode("utf-8")
 
     def _materialize_content(self, directory: Path) -> Path:
-        """Extract this record from the JSONL bundle and write as JSON.
+        """Extract this record from the JSONL file and write as JSON.
 
         Args:
             directory: Target directory for the output file.
@@ -105,7 +105,7 @@ class RecordBundleArtifact(Artifact):
         return path
 
     def _read_record(self) -> dict[str, Any]:
-        """Read this record from the JSONL bundle by record_id.
+        """Read this record from the JSONL file by record_id.
 
         Returns:
             The parsed JSON record dict.
@@ -131,15 +131,15 @@ class RecordBundleArtifact(Artifact):
         external_path: str,
         original_name: str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> RecordBundleArtifact:
-        """Create a draft record-bundle artifact.
+    ) -> AppendableArtifact:
+        """Create a draft appendable artifact.
 
         Args:
-            record_id: Unique identifier within the bundle.
+            record_id: Unique identifier within the file.
             content_hash: xxh3_128 hash of this record's JSON line.
             size_bytes: Size of this record's JSON line in bytes.
             step_number: Pipeline step number.
-            external_path: Path to the JSONL bundle file.
+            external_path: Path to the JSONL file.
             original_name: Record key for lineage inference.
             metadata: Optional metadata dict.
         """
@@ -189,9 +189,9 @@ class RecordBundleArtifact(Artifact):
         )
 
 
-class RecordBundleTypeDef(ArtifactTypeDef):
-    """Type definition for RecordBundleArtifact."""
+class AppendableTypeDef(ArtifactTypeDef):
+    """Type definition for AppendableArtifact."""
 
-    key = "record_bundle"
-    table_path = "artifacts/record_bundles"
-    model = RecordBundleArtifact
+    key = "appendable"
+    table_path = "artifacts/appendables"
+    model = AppendableArtifact
