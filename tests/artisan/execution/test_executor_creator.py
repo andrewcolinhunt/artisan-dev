@@ -44,7 +44,7 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.path import shard_path
+from artisan.utils.path import shard_uri
 
 
 def compute_artifact_id(content: bytes) -> str:
@@ -378,27 +378,27 @@ class TestGenerateExecutionRunId:
         assert id1 != id2
 
 
-class TestShardPath:
-    """Tests for shard_path helper function."""
+class TestShardUri:
+    """Tests for shard_uri helper function."""
 
     def test_creates_two_level_sharding(self):
-        """shard_path creates two-level sharding."""
-        root = Path("/tmp/staging")
+        """shard_uri creates two-level sharding."""
+        root = "/tmp/staging"
         run_id = "abcdef1234567890abcdef1234567890"
 
-        result = shard_path(root, run_id)
+        result = shard_uri(root, run_id)
 
-        assert result == root / "ab" / "cd" / run_id
+        assert result == f"{root}/ab/cd/{run_id}"
 
     def test_handles_short_hash(self):
-        """shard_path works with shorter hashes."""
-        root = Path("/tmp")
+        """shard_uri works with shorter hashes."""
+        root = "/tmp"
         run_id = "abc"  # Short hash
 
-        result = shard_path(root, run_id)
+        result = shard_uri(root, run_id)
 
         # Uses first 4 chars: ab/c/abc
-        assert result == root / "ab" / "c" / run_id
+        assert result == f"{root}/ab/c/{run_id}"
 
 
 class TestRunExecutionFullLifecycle:
@@ -950,7 +950,7 @@ class TestSandboxPathComputation:
     def test_sandbox_path_sharded_for_custom_root(
         self, delta_root_with_input, working_root, staging_root
     ):
-        """When working_root is user-specified, sandbox uses shard_path layout."""
+        """When working_root is user-specified, sandbox uses sharded layout."""
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(

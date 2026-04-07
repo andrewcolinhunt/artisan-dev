@@ -16,7 +16,6 @@ import artisan.utils.path as path_module
 from artisan.utils.path import (
     find_project_root,
     get_caller_dir,
-    shard_path,
     shard_uri,
     uri_join,
     uri_parent,
@@ -428,30 +427,7 @@ class TestFindProjectRootError:
 
 
 # ===================================================================
-# Existing shard_path tests (regression)
-# ===================================================================
-
-
-class TestShardPath:
-    """Ensure existing shard_path behavior is not broken."""
-
-    def test_basic_sharding(self):
-        result = shard_path(Path("/tmp"), "abcdef1234567890")
-        assert result == Path("/tmp/ab/cd/abcdef1234567890")
-
-    def test_with_step_number(self):
-        result = shard_path(Path("/tmp"), "abcdef1234567890", step_number=3)
-        assert result == Path("/tmp/3/ab/cd/abcdef1234567890")
-
-    def test_with_step_number_and_operation(self):
-        result = shard_path(
-            Path("/tmp"), "abcdef1234567890", step_number=3, operation_name="tool_c"
-        )
-        assert result == Path("/tmp/3_tool_c/ab/cd/abcdef1234567890")
-
-
-# ===================================================================
-# shard_uri (string-based equivalent)
+# shard_uri
 # ===================================================================
 
 
@@ -479,17 +455,6 @@ class TestShardUri:
     def test_gcs_uri(self):
         result = shard_uri("gcs://bucket/staging", "abcdef1234567890", step_number=1)
         assert result == "gcs://bucket/staging/1/ab/cd/abcdef1234567890"
-
-    def test_matches_shard_path_for_local(self):
-        """shard_uri and shard_path produce equivalent results for local paths."""
-        run_id = "abcdef1234567890"
-        assert shard_uri("/tmp", run_id) == str(shard_path(Path("/tmp"), run_id))
-        assert shard_uri("/tmp", run_id, step_number=3) == str(
-            shard_path(Path("/tmp"), run_id, step_number=3)
-        )
-        assert shard_uri("/tmp", run_id, step_number=3, operation_name="tool_c") == str(
-            shard_path(Path("/tmp"), run_id, step_number=3, operation_name="tool_c")
-        )
 
 
 # ===================================================================
