@@ -275,7 +275,7 @@ gcs = ["gcsfs"]
 | `tests/artisan/schemas/test_storage_config.py` | **New file.** `StorageConfig` defaults: `is_local` is True, `filesystem()` returns `LocalFileSystem`, `delta_storage_options()` returns None. S3 config: `is_local` is False, `filesystem()` returns `S3FileSystem` (mocked), `delta_storage_options()` returns translated+stringified options dict. Frozen model: mutation raises. Serialization round-trip via Pydantic. |
 | `tests/artisan/execution/test_executor_creator.py` | Existing `RuntimeEnvironment` tests pass unchanged (default `StorageConfig` is transparent). New test: `storage` field serializes correctly. |
 | `tests/artisan/orchestration/test_orchestration_api.py` | Existing `PipelineConfig` tests pass unchanged. New test: `storage` field is propagated. |
-| `tests/artisan/utils/test_path.py` | `uri_join` and `uri_parent` with local paths and cloud URIs. Edge cases: trailing slashes, protocol prefixes. |
+| `tests/artisan/utils/test_path.py` | `uri_join` and `uri_parent` with local paths and cloud URIs. Edge cases: trailing slashes, protocol prefixes, bare bucket URIs (`uri_parent("s3://bucket")` → verify behavior). |
 
 ---
 

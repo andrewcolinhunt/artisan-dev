@@ -195,7 +195,8 @@ class RuntimeEnvironment(BaseModel):
     files_root: str | None = Field(
         None,
         description="Root directory for Artisan-managed external files. "
-        "Always a local path.",
+        "Local path for local deployments; must be set explicitly "
+        "for cloud deployments.",
     )
 
     storage: StorageConfig = Field(
@@ -222,8 +223,12 @@ class PipelineConfig(BaseModel):
 
     @model_validator(mode="after")
     def _default_files_root(self) -> PipelineConfig:
-        """Derive files_root from delta_root when not explicitly set."""
-        if self.files_root is None:
+        """Derive files_root from delta_root when not explicitly set.
+
+        Only derives for local delta_root values. Cloud deployments
+        must set files_root explicitly.
+        """
+        if self.files_root is None and self.storage.is_local:
             # Was: self.delta_root.parent / "files" (Path semantics)
             object.__setattr__(
                 self, "files_root", uri_join(uri_parent(self.delta_root), "files")
@@ -233,6 +238,15 @@ class PipelineConfig(BaseModel):
 
 `PipelineConfig` already uses the target field names (`delta_root`,
 not `delta_root_path`), so only the types change from `Path` to `str`.
+
+**`files_root` and cloud deployments:** The auto-derivation validator
+only fires for local `delta_root` values (guarded by
+`self.storage.is_local`). For cloud deployments where `delta_root` is
+an S3/GCS URI, users must set `files_root` explicitly — either to a
+local path (if file artifacts are only needed on the orchestrator) or
+to a cloud URI (if workers also need access). Leaving it unset for
+cloud produces `files_root=None`, which disables file artifact
+features.
 
 ### Consumer update pattern
 
@@ -254,12 +268,15 @@ Every consumer that uses `runtime_env.staging_root_path` in string
 contexts (passing to `StagingManager`, path arithmetic) switches to
 `runtime_env.staging_root`.
 
-### `working_root`, `failure_logs_root`, and `files_root` — local path handling
+### `working_root`, `failure_logs_root`, and `files_root` — path handling
 
-These paths are always local. `files_root` stores Artisan-managed
-external files on the local filesystem — it's derived from
-`delta_root` via the `_default_files_root` validator but only used
-locally by executors. Consumers that need `Path` operations wrap them:
+`working_root` and `failure_logs_root` are always local paths (sandbox
+and log directories on the machine running the executor). `files_root`
+is local for local deployments (auto-derived from `delta_root` by the
+`_default_files_root` validator) and must be explicitly set for cloud
+deployments (the validator skips auto-derivation when
+`storage.is_local` is False). Consumers of always-local fields wrap
+with `Path()`:
 
 ```python
 # Sandbox creation (always local)
@@ -361,7 +378,7 @@ the existing `storage_options`.
 | `visualization/graph/stepper.py` | `delta_root: str`. Replace `delta_root.parent / "images"` with `uri_join(uri_parent(delta_root), "images")`. |
 | `operations/curator/interactive_filter.py` | Update delta_root references. |
 | `operations/curator/ingest_pipeline_step.py` | `source_delta_root` field type `Path` → `str`. |
-| `utils/tutorial.py` | `TutorialEnv` fields `delta_root`, `staging_root`, `working_root` type `Path` → `str`. |
+| `utils/tutorial.py` | `TutorialEnv` (a `NamedTuple`) fields `runs_dir`, `delta_root`, `staging_root`, `working_root` type `Path` → `str`. |
 
 ### Test files
 
@@ -400,8 +417,10 @@ running green.
 ## Open Questions
 
 None — the `uri_join`/`uri_parent` utilities (doc 01) resolve the
-`Path /` operator concern, and visualization functions already accept
-`Path | str` so the type change is transparent to users.
+`Path /` operator concern, visualization functions already accept
+`Path | str` so the type change is transparent to users, and the
+`files_root` auto-derivation is guarded by `storage.is_local` to
+prevent accidental cloud URI generation (see PipelineConfig section).
 
 ---
 
