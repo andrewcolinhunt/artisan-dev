@@ -25,12 +25,12 @@ branches that produce PRs.**
 
 ### Current state
 
-- `_dev/` is tracked on `ach/dev` (72 files, 1.7MB, mostly markdown)
+- `_dev/` is tracked on `ach/dev` (~60 files, ~1.6MB, mostly markdown)
 - `CLAUDE.local.md` is tracked on `ach/dev` at project root
 - `pyproject.toml` excludes `_dev/` from mypy, ruff, and codespell
 - `.gitignore` does **not** exclude `_dev/` or `CLAUDE.local.md`
 - No CI workflows reference `_dev/`
-- Some `_dev/` scripts import from `artisan` (troubleshooting scripts)
+- Some `_dev/` files import from `artisan` (troubleshooting scripts, demo notebook)
 - Feature branches branch from `ach/dev`, inheriting all dev files
 
 ### Approaches considered
@@ -60,9 +60,9 @@ artisan-dev/              ← parent repo (public-facing)
 ├── CLAUDE.md             ← public, tracked in parent
 └── _dev/                 ← nested repo (private, ignored by parent)
     ├── .git/
-    ├── design/
     ├── analysis/
-    ├── archive/
+    ├── demos/
+    ├── design/
     ├── releases/
     ├── troubleshooting/
     ├── todo.md
@@ -116,7 +116,6 @@ to see (they document that these paths are intentionally excluded).
 
 | Before | After |
 |--------|-------|
-| Branch features from `ach/dev` | Branch features from `main`/`release/*` |
 | `_dev/` tracked on `ach/dev` | `_dev/` is its own repo, always on disk |
 | `CLAUDE.local.md` tracked on `ach/dev` | Symlink to `_dev/CLAUDE.local.md` |
 | `-clean` branches strip dev files | No `-clean` branches needed |
@@ -136,16 +135,16 @@ to see (they document that these paths are intentionally excluded).
 
 ### Migration steps
 
-**Parent repo (on `ach/dev`):**
-- Remove `_dev/` and `CLAUDE.local.md` from git tracking:
+**Untrack dev files from parent repo (on `ach/dev`):**
+- Remove `_dev/` and `CLAUDE.local.md` from git tracking (keeps files on disk):
   `git rm -r --cached _dev/ CLAUDE.local.md`
 - Add `_dev/` and `CLAUDE.local.md` to `.gitignore`
 - Commit: `chore: move _dev/ to nested repo, gitignore dev-only files`
-- Create symlink: `ln -s _dev/CLAUDE.local.md CLAUDE.local.md`
 
-**Nested repo (inside `_dev/`):**
+**Initialize nested repo and relocate `CLAUDE.local.md`:**
 - `cd _dev && git init`
-- Move `CLAUDE.local.md` from project root into `_dev/`
+- Move `CLAUDE.local.md` into `_dev/`: `mv ../CLAUDE.local.md .`
+- Create symlink at project root: `ln -s _dev/CLAUDE.local.md ../CLAUDE.local.md`
 - `git add . && git commit -m "init: migrate dev files to nested repo"`
 - Create private remote repo and push
 
@@ -176,7 +175,7 @@ repo starts fresh from the current state.
 | Forgetting to commit/push `_dev/` separately | Add a reminder to the workflow skill; could add a pre-push hook |
 | IDE confusion with nested repos | VS Code handles nested repos well (shows both in source control). JetBrains may need config. |
 | Symlink not working on Windows | Not a current concern (macOS dev environment). If needed later, copy instead of symlink. |
-| `_dev/` scripts that import `artisan` | Still work — they run from the parent repo's environment, `_dev/` being a nested repo doesn't affect Python imports |
+| `_dev/` files that import `artisan` (scripts, notebooks) | Still work — they run from the parent repo's environment, `_dev/` being a nested repo doesn't affect Python imports |
 | New contributor setup | Document in `CLAUDE.local.md` (which they'd create from a template anyway) |
 
 ## Open Questions
@@ -184,10 +183,12 @@ repo starts fresh from the current state.
 - **Remote repo name:** `artisan-dev-notes` (new repo) vs a branch in
   `artisan-dev`? Separate repo is cleaner but one more thing to manage.
 - **Should `ach/dev` continue to exist?** With dev files in a nested
-  repo and features branching from clean targets, `ach/dev` may no
-  longer serve a purpose. It could become just `main` with the nested
-  `_dev/` overlay. Or it could remain as an integration branch for
-  testing before PRs.
+  repo, `ach/dev`'s main differentiator (carrying dev-only files) is
+  gone. It could become just `main` with the nested `_dev/` overlay, or
+  remain as an integration branch. This decision determines whether
+  features branch from `ach/dev` or `main`, and drives the content of
+  the `CLAUDE.local.md` and `dev-branch-workflow` skill updates. Resolve
+  before implementing the "Workflow files to update" scope items.
 
 ## Testing
 
