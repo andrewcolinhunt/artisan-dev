@@ -59,9 +59,16 @@ def run_composite(
         # Create artifact store for curator hydration
         from artisan.storage.core.artifact_store import ArtifactStore
 
+        fs = runtime_env.storage.filesystem()
+        storage_options = runtime_env.storage.delta_storage_options()
+
         artifact_store = ArtifactStore(
-            runtime_env.delta_root_path,
-            files_root=runtime_env.files_root_path,
+            str(runtime_env.delta_root_path),
+            fs=fs,
+            storage_options=storage_options,
+            files_root=str(runtime_env.files_root_path)
+            if runtime_env.files_root_path
+            else None,
         )
 
         # Create collapsed context
@@ -126,14 +133,18 @@ def run_composite(
             step_number=composite_transport.step_number,
             timestamp_start=timestamp_start,
             worker_id=worker_id,
-            delta_root_path=runtime_env.delta_root_path,
-            staging_root_path=runtime_env.staging_root_path,
+            delta_root_path=str(runtime_env.delta_root_path),
+            staging_root_path=str(runtime_env.staging_root_path),
+            fs=fs,
+            storage_options=storage_options,
             operation=composite,
             sandbox_path=working_root / "dummy",
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=composite_transport.step_run_id,
-            files_root=runtime_env.files_root_path,
+            files_root=str(runtime_env.files_root_path)
+            if runtime_env.files_root_path
+            else None,
         )
 
         from artisan.utils.hashing import serialize_params

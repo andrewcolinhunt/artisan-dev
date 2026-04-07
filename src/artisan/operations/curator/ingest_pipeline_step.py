@@ -77,6 +77,8 @@ class IngestPipelineStep(OperationDefinition):
         Returns:
             ArtifactResult with imported artifacts keyed by type.
         """
+        from fsspec.implementations.local import LocalFileSystem
+
         source_root = Path(self.source_delta_root)
         if not source_root.exists():
             return ArtifactResult(
@@ -84,7 +86,10 @@ class IngestPipelineStep(OperationDefinition):
                 error=f"Source delta root does not exist: {source_root}",
             )
 
-        source_store = ArtifactStore(source_root)
+        source_store = ArtifactStore(
+            str(source_root),
+            fs=LocalFileSystem(),
+        )
         types_to_import = self._resolve_types(source_store)
 
         if not types_to_import:

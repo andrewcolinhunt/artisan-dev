@@ -12,9 +12,13 @@ from artisan.execution.staging.recorder import record_execution_failure
 
 def _make_execution_context(tmp_path: Path) -> MagicMock:
     """Create a mock ExecutionContext with required attributes."""
+    from fsspec.implementations.local import LocalFileSystem
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
     ctx = MagicMock()
-    ctx.staging_root = tmp_path / "staging"
-    ctx.staging_root.mkdir(parents=True, exist_ok=True)
+    ctx.staging_root = str(staging_dir)
+    ctx.fs = LocalFileSystem()
     ctx.execution_run_id = "a" * 32
     ctx.execution_spec_id = "b" * 32
     ctx.operation_name = "test_op"
