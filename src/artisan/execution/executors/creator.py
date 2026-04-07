@@ -150,6 +150,17 @@ def run_creator_lifecycle(
         materialized_dir = sandbox_path / "materialized_inputs"
         materialized_dir.mkdir(parents=True, exist_ok=True)
 
+        if runtime_env.files_root_path is not None:
+            files_dir: Path | None = (
+                runtime_env.files_root_path
+                / str(unit.step_number)
+                / "workers"
+                / execution_run_id
+            )
+            files_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            files_dir = None
+
         execution_context = build_creator_execution_context(
             execution_run_id=execution_run_id,
             execution_spec_id=unit.execution_spec_id,
@@ -206,6 +217,7 @@ def run_creator_lifecycle(
             inputs=prepared_inputs,
             execute_dir=execute_dir,
             log_path=log_path,
+            files_dir=files_dir,
         )
 
     # --- execute phase ---

@@ -26,6 +26,21 @@ def compute_artifact_id(content: bytes) -> str:
     return xxhash.xxh3_128(content).hexdigest()
 
 
+def compute_content_hash(content: bytes) -> str:
+    """Compute xxh3_128 hash of content bytes.
+
+    Convenience wrapper around ``compute_artifact_id`` for operations
+    that need to hash file or record content.
+
+    Args:
+        content: Raw bytes to hash.
+
+    Returns:
+        32-character hexadecimal hash string.
+    """
+    return compute_artifact_id(content)
+
+
 def digest_utf8(s: str) -> str:
     """Compute xxh3_128 hex digest of a UTF-8 string.
 
