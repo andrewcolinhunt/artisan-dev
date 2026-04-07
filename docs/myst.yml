@@ -57,6 +57,8 @@ project:
             - file: tutorials/execution/08-pipeline-cancellation.ipynb
             - file: tutorials/execution/09-skip-cache.ipynb
             - file: tutorials/execution/10-slurm-intra-execution.ipynb
+            - file: tutorials/execution/11-external-file-storage.ipynb
+            - file: tutorials/execution/12-post-step-consolidation.ipynb
         - title: Analysis
           children:
             - file: tutorials/analysis/01-provenance-graphs.ipynb

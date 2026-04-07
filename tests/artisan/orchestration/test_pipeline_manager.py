@@ -1893,3 +1893,34 @@ class TestCheckEarlyExit:
         result = pipeline._check_early_exit("step", outputs, None)
         assert result is not None
         assert result.result().metadata["skip_reason"] == "cancelled"
+
+
+# =============================================================================
+# FilesRoot threading
+# =============================================================================
+
+
+class TestFilesRootThreading:
+    """Tests for files_root propagation through PipelineManager."""
+
+    def test_config_gets_default_files_root(self, tmp_path):
+        """PipelineManager config derives files_root from delta_root."""
+        config = PipelineConfig(
+            name="test",
+            delta_root=tmp_path / "pipeline" / "delta",
+            staging_root=tmp_path / "staging",
+        )
+        pipeline = PipelineManager(config)
+        assert pipeline.config.files_root == tmp_path / "pipeline" / "files"
+
+    def test_config_gets_explicit_files_root(self, tmp_path):
+        """PipelineManager config preserves explicit files_root."""
+        custom_files = tmp_path / "bulk" / "files"
+        config = PipelineConfig(
+            name="test",
+            delta_root=tmp_path / "delta",
+            staging_root=tmp_path / "staging",
+            files_root=custom_files,
+        )
+        pipeline = PipelineManager(config)
+        assert pipeline.config.files_root == custom_files

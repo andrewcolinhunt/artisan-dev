@@ -18,7 +18,7 @@ def materialize_inputs(
     input_specs: dict[str, InputSpec],
     directory: Path,
     artifact_store: ArtifactStore,
-) -> dict[str, list[Artifact]]:
+) -> tuple[dict[str, list[Artifact]], set[str]]:
     """Materialize input artifacts to disk with dependency-aware ordering.
 
     Non-config artifacts are materialized first so that config artifacts
@@ -31,7 +31,8 @@ def materialize_inputs(
         artifact_store: Store for hydrating config-referenced artifacts.
 
     Returns:
-        The same artifacts dict (files are written as a side effect).
+        Tuple of (artifacts dict, set of artifact_ids that were materialized).
+        The artifacts dict is the same input dict (files written as side effect).
     """
     non_configs: list[tuple[Artifact, str | None]] = []
     configs: list[ExecutionConfigArtifact] = []
@@ -65,6 +66,7 @@ def materialize_inputs(
             if ref_artifact is not None:
                 non_configs.append((ref_artifact, None))
 
+    materialized_ids: set[str] = set()
     resolved_paths: dict[str, Path] = {}
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
@@ -72,8 +74,11 @@ def materialize_inputs(
         materialized = artifact.materialize_to(directory, format=fmt)
         if isinstance(materialized, Path):
             resolved_paths[artifact.artifact_id] = materialized
+            materialized_ids.add(artifact.artifact_id)
 
     for config in configs:
         config.materialize_to(directory, resolved_paths=resolved_paths)
+        if config.artifact_id is not None:
+            materialized_ids.add(config.artifact_id)
 
-    return artifacts
+    return artifacts, materialized_ids

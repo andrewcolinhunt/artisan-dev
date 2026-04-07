@@ -22,7 +22,10 @@ from artisan.execution.lineage.enrich import (
     build_artifact_edges_from_dict,
     build_config_reference_edges,
 )
-from artisan.execution.lineage.validation import validate_artifacts_match_specs
+from artisan.execution.lineage.validation import (
+    validate_artifacts_match_specs,
+    validate_lineage_integrity,
+)
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.staging.parquet_writer import StagingResult
 from artisan.execution.staging.recorder import (
@@ -145,15 +148,19 @@ def _handle_artifact_result(
             if artifact.artifact_id is not None:
                 built_artifacts[artifact.artifact_id] = artifact
 
-    # Standard lineage inference via OutputSpec.infer_lineage_from
+    # Honor explicit lineage from the curator result, mirroring the creator pattern
     output_specs = getattr(operation, "outputs", {})
-    lineage = capture_lineage_metadata(
-        finalized,
-        input_artifacts,
-        output_specs,
-        group_by=getattr(type(operation), "group_by", None),
-        group_ids=unit.group_ids,
-    )
+    if result.lineage is None:
+        lineage = capture_lineage_metadata(
+            finalized,
+            input_artifacts,
+            output_specs,
+            group_by=getattr(type(operation), "group_by", None),
+            group_ids=unit.group_ids,
+        )
+    else:
+        validate_lineage_integrity(result.lineage, input_artifacts, finalized)
+        lineage = result.lineage
     pairs = build_edges(lineage, finalized, input_artifacts, output_specs)
     if pairs:
         artifact_edges.extend(
@@ -281,7 +288,10 @@ def run_curator_flow(
     try:
         # --- setup phase ---
         with phase_timer("setup", timings):
-            artifact_store = ArtifactStore(runtime_env.delta_root_path)
+            artifact_store = ArtifactStore(
+                runtime_env.delta_root_path,
+                files_root=runtime_env.files_root_path,
+            )
 
             execution_context = build_curator_execution_context(
                 execution_run_id=execution_run_id,
@@ -295,6 +305,7 @@ def run_curator_flow(
                 compute_backend_name=runtime_env.compute_backend_name,
                 shared_filesystem=runtime_env.shared_filesystem,
                 step_run_id=unit.step_run_id,
+                files_root=runtime_env.files_root_path,
             )
 
             # Build DataFrames with artifact_id column per role

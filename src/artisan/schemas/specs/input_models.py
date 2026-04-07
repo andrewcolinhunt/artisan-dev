@@ -91,12 +91,17 @@ class ExecuteInput:
         log_path: Path where external tool output should be written.
             Provided by the framework for automatic capture.
         metadata: Escape hatch for additional data from the engine.
+        files_dir: Directory within files_root for external file output.
+            Set when the pipeline has files_root configured. Operations
+            that produce Artisan-managed external files write here instead
+            of execute_dir. None when files_root is not configured.
     """
 
     execute_dir: Path
     inputs: dict[str, Any] = field(default_factory=dict)
     log_path: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    files_dir: Path | None = None
 
 
 @dataclass

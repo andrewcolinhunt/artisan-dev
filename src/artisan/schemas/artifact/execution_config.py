@@ -153,7 +153,7 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
 
-        stem = self.original_name or self.artifact_id
+        stem = self.artifact_id
         ext = self.extension or ".json"
         config_path = directory / f"{stem}{ext}"
 

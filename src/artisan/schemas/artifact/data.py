@@ -83,15 +83,15 @@ class DataArtifact(Artifact):
             Path to the written file.
 
         Raises:
-            ValueError: If content is None or original_name is not set.
+            ValueError: If content is None or artifact_id is not set.
         """
         if self.content is None:
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
-        if self.original_name is None:
-            msg = "Cannot materialize: original_name not set"
+        if self.artifact_id is None:
+            msg = "Cannot materialize: artifact not finalized (no artifact_id)"
             raise ValueError(msg)
-        filename = f"{self.original_name}{self.extension or '.csv'}"
+        filename = f"{self.artifact_id}{self.extension or '.csv'}"
         path = directory / filename
         path.write_bytes(self.content)
         self.materialized_path = path
