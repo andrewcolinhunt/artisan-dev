@@ -7,7 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.2a5] - 2026-04-03
+## [0.1.2a5] - 2026-04-06
+
+### Added
+
+- `LargeFileArtifact` — external-content artifact for large files (model
+  weights, embeddings, HDF5) stored outside Delta Lake
+- `AppendableArtifact` — external-content artifact representing one record
+  within a shared JSONL file, supporting per-worker writes and consolidation
+- `ConsolidateAppendables` curator operation for merging per-worker JSONL files
+- `AppendableGenerator` and `LargeFileGenerator` example operations
+- `files_root` parameter on `PipelineManager.create()` — threads through
+  `PipelineConfig`, `RuntimeEnvironment`, `ArtifactStore`, and all executor
+  layers for external-content artifact storage
+- `files_dir` threaded to creator operations via `ExecuteInput`
+- `post_step` parameter on `submit()` and `run()` for post-step consolidation
+- `DispatchHandle` abstract base class — lifecycle handle for in-flight backend
+  work with `dispatch()` / `is_done()` / `collect()` / `cancel()` semantics
+- `UnitResult` dataclass — typed dispatch results replacing `list[dict]`
+- Artifact-ID materialization — inputs materialize as `{artifact_id}{extension}`
+  instead of `{original_name}{extension}`, eliminating name collisions
+- Filesystem match map (`build_filesystem_match_map`) for linking output files
+  back to source inputs via artifact-ID prefix matching
+- Human-readable name derivation (`derive_human_names`) restores original names
+  after lineage is established
+- `num_files` parameter on `RecordBundleGenerator` for multi-file output
+- External file storage tutorial (`11-external-file-storage`)
+- Post-step consolidation tutorial (`12-post-step-consolidation`)
+
+### Changed
+
+- Orchestration layer migrated from `dict` to `UnitResult` throughout dispatch,
+  result aggregation, and backend log capture
+- Updated cancellation docs for auto-scancel and `DispatchHandle`
+- Updated execution flow concepts page
+- Re-ran first-pipeline tutorial with clean Prefect logging output
 
 ### Fixed
 
@@ -18,9 +52,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summary on subsequent calls
 - `activate_server()` no longer stacks Prefect `SettingsContext` objects — exits
   the previous context before entering a new one
+- Prefect logging suppressed before import triggers dict-config
+- `_handle_artifact_result` now honors `ArtifactResult.lineage` instead of
+  silently dropping it
+- `contextvars` propagation to dispatch handle background threads
 - Added missing `finalize()` calls to 7 pipelines across 4 tutorial notebooks
   (`02-resume-and-caching`, `04-error-visibility`, `07-slurm-execution`,
   `10-slurm-intra-execution`)
+
+### Refactored
+
+- Renamed `RecordBundle` to `Appendable` across the codebase
 
 ## [0.1.2a4] - 2026-04-03
 
