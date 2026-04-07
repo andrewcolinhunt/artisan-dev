@@ -176,6 +176,39 @@ def shard_path(
     return root / execution_run_id[:2] / execution_run_id[2:4] / execution_run_id
 
 
+def shard_uri(
+    root: str,
+    execution_run_id: str,
+    step_number: int | None = None,
+    operation_name: str | None = None,
+) -> str:
+    """Create sharded URI from execution_run_id, optionally partitioned by step.
+
+    String-based equivalent of :func:`shard_path` for use with fsspec URIs.
+    Works with local paths and cloud URIs (s3://, gcs://).
+
+    Args:
+        root: Base URI or path string.
+        execution_run_id: 32-character hex hash.
+        step_number: Optional pipeline step number for partitioning.
+        operation_name: Optional operation name. When provided together with
+            step_number, the step directory becomes ``{step_number}_{operation_name}``.
+
+    Returns:
+        Sharded URI string.
+    """
+    prefix = execution_run_id[:2]
+    shard = execution_run_id[2:4]
+    if step_number is not None:
+        step_segment = (
+            step_dir_name(step_number, operation_name)
+            if operation_name
+            else str(step_number)
+        )
+        return f"{root}/{step_segment}/{prefix}/{shard}/{execution_run_id}"
+    return f"{root}/{prefix}/{shard}/{execution_run_id}"
+
+
 # ---------------------------------------------------------------------------
 # URI-safe path operations
 # ---------------------------------------------------------------------------
