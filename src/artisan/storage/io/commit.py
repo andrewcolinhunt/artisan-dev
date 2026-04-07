@@ -333,9 +333,7 @@ class DeltaCommitter:
     # Helper methods
     # -------------------------------------------------------------------------
 
-    def _deduplicate_artifacts(
-        self, df: pl.DataFrame, table_path: str
-    ) -> pl.DataFrame:
+    def _deduplicate_artifacts(self, df: pl.DataFrame, table_path: str) -> pl.DataFrame:
         """Remove rows whose artifact_id already exists in Delta."""
         if not self._fs.exists(table_path):
             return df

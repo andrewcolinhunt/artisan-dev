@@ -123,9 +123,9 @@ class ProvenanceStore:
         if not self._fs.exists(index_path):
             return {}
 
-        query = pl.scan_delta(
-            index_path, storage_options=self._storage_options
-        ).select(["artifact_id", value_column])
+        query = pl.scan_delta(index_path, storage_options=self._storage_options).select(
+            ["artifact_id", value_column]
+        )
         if artifact_ids is not None:
             query = query.filter(pl.col("artifact_id").is_in(list(artifact_ids)))
         result = query.collect()
@@ -478,12 +478,10 @@ class ProvenanceStore:
         edge_select = (
             [*base_cols, "target_artifact_type"] if include_target_type else base_cols
         )
-        edges = pl.scan_delta(
-            prov_path, storage_options=self._storage_options
-        ).select(edge_select)
-        index = pl.scan_delta(
-            index_path, storage_options=self._storage_options
-        ).select(
+        edges = pl.scan_delta(prov_path, storage_options=self._storage_options).select(
+            edge_select
+        )
+        index = pl.scan_delta(index_path, storage_options=self._storage_options).select(
             ["artifact_id", "origin_step_number"]
         )
 
