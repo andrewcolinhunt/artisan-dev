@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 from artisan.schemas.enums import CachePolicy, FailurePolicy
+from artisan.schemas.execution.storage_config import StorageConfig
 
 
 class PipelineConfig(BaseModel):
@@ -62,6 +63,10 @@ class PipelineConfig(BaseModel):
             "Root path for Artisan-managed external files. "
             "Defaults to delta_root.parent / 'files'."
         ),
+    )
+    storage: StorageConfig = Field(
+        default_factory=StorageConfig,
+        description="Storage backend configuration.",
     )
 
     model_config = {"frozen": True}
