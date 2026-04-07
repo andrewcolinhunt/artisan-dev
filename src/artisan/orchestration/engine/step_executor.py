@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from fsspec import AbstractFileSystem
+
 from artisan.execution.context.builder import build_curator_execution_context
 from artisan.execution.executors.curator import (
     _get_params,
@@ -126,21 +128,32 @@ def instantiate_operation(
 def check_cache_for_batch(
     execution_spec_id: str,
     delta_root: Path,
+    config: PipelineConfig | None = None,
 ) -> CacheHit | None:
     """Check if an ExecutionUnit can be skipped due to cache hit.
 
     Args:
         execution_spec_id: Deterministic hash for the batch.
         delta_root: Root path for Delta Lake tables.
+        config: Pipeline config for storage backend. When None,
+            uses local filesystem defaults.
 
     Returns:
         CacheHit if a successful execution exists, None otherwise.
     """
-    executions_path = delta_root / TablePath.EXECUTIONS
-    execution_edges_path = delta_root / TablePath.EXECUTION_EDGES
+    from artisan.schemas.execution.storage_config import StorageConfig
+
+    storage = config.storage if config is not None else StorageConfig()
+    fs = storage.filesystem()
+    storage_options = storage.delta_storage_options()
+
+    executions_path = str(delta_root / TablePath.EXECUTIONS)
+    execution_edges_path = str(delta_root / TablePath.EXECUTION_EDGES)
     result = cache_lookup(
         executions_path,
         execution_spec_id,
+        fs=fs,
+        storage_options=storage_options,
         execution_edges_path=execution_edges_path,
     )
     return result if isinstance(result, CacheHit) else None
@@ -261,8 +274,17 @@ def _commit_and_compact(
         if has_work:
             try:
                 from artisan.storage.io.commit import DeltaCommitter
+                from artisan.storage.io.staging import StagingManager
 
-                committer = DeltaCommitter(config.delta_root, config.staging_root)
+                fs = config.storage.filesystem()
+                storage_options = config.storage.delta_storage_options()
+                staging_manager = StagingManager(str(config.staging_root), fs)
+                committer = DeltaCommitter(
+                    str(config.delta_root),
+                    staging_manager,
+                    fs=fs,
+                    storage_options=storage_options,
+                )
                 committer.commit_all_tables(
                     cleanup_staging=not runtime_env.preserve_staging,
                     step_number=step_number,
@@ -274,7 +296,14 @@ def _commit_and_compact(
 
     with phase_timer("compact", timings):
         if has_work and compact:
-            _compact_step_tables(config.delta_root, config.staging_root)
+            fs = config.storage.filesystem()
+            storage_options = config.storage.delta_storage_options()
+            _compact_step_tables(
+                config.delta_root,
+                config.staging_root,
+                fs=fs,
+                storage_options=storage_options,
+            )
 
     return commit_error
 
@@ -551,8 +580,13 @@ def _execute_curator_step(
         if operation.group_by is not None:
             from artisan.storage.core.artifact_store import ArtifactStore
 
+            _fs = config.storage.filesystem()
+            _so = config.storage.delta_storage_options()
             artifact_store = ArtifactStore(
-                config.delta_root, files_root=config.files_root
+                str(config.delta_root),
+                fs=_fs,
+                storage_options=_so,
+                files_root=str(config.files_root) if config.files_root else None,
             )
             paired_inputs, group_ids = group_inputs(
                 resolved_inputs, operation.group_by, artifact_store
@@ -580,7 +614,11 @@ def _execute_curator_step(
                 config_overrides=config_overrides,
             )
             if not skip_cache:
-                cache_result = check_cache_for_batch(spec_id, config.delta_root)
+                cache_result = check_cache_for_batch(
+                    spec_id,
+                    config.delta_root,
+                    config=config,
+                )
                 if cache_result is not None:
                     logger.info(
                         "Step %d (%s) CACHED — skipping execution",
@@ -657,19 +695,25 @@ def _execute_curator_step(
             logger.error("Step %d (%s): %s", step_number, operation.name, error_msg)
 
             synthetic_run_id = f"killed-{unit.execution_spec_id[:24]}"
+            kill_fs = runtime_env.storage.filesystem()
+            kill_so = runtime_env.storage.delta_storage_options()
             execution_context = build_curator_execution_context(
                 execution_run_id=synthetic_run_id,
                 execution_spec_id=unit.execution_spec_id,
                 step_number=unit.step_number,
                 timestamp_start=timestamp_start,
                 worker_id=0,
-                delta_root_path=runtime_env.delta_root_path,
-                staging_root_path=runtime_env.staging_root_path,
+                delta_root_path=str(runtime_env.delta_root_path),
+                staging_root_path=str(runtime_env.staging_root_path),
+                fs=kill_fs,
+                storage_options=kill_so,
                 operation=unit.operation,
                 compute_backend_name=runtime_env.compute_backend_name,
                 shared_filesystem=runtime_env.shared_filesystem,
                 step_run_id=step_run_id,
-                files_root=runtime_env.files_root_path,
+                files_root=str(runtime_env.files_root_path)
+                if runtime_env.files_root_path
+                else None,
             )
             staging_result = record_execution_failure(
                 execution_context=execution_context,
@@ -846,8 +890,13 @@ def _execute_creator_step(
         if operation.group_by is not None:
             from artisan.storage.core.artifact_store import ArtifactStore
 
+            _fs = config.storage.filesystem()
+            _so = config.storage.delta_storage_options()
             artifact_store = ArtifactStore(
-                config.delta_root, files_root=config.files_root
+                str(config.delta_root),
+                fs=_fs,
+                storage_options=_so,
+                files_root=str(config.files_root) if config.files_root else None,
             )
             paired_inputs, group_ids = group_inputs(
                 resolved_inputs, operation.group_by, artifact_store
@@ -889,7 +938,7 @@ def _execute_creator_step(
             cache_result = (
                 None
                 if skip_cache
-                else check_cache_for_batch(spec_id, config.delta_root)
+                else check_cache_for_batch(spec_id, config.delta_root, config=config)
             )
 
             if cache_result is not None:
@@ -1179,6 +1228,9 @@ def _compact_step_tables(
     delta_root: Path,
     staging_root: Path,
     tables: list[str] | None = None,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> None:
     """Compact Delta Lake tables to merge small parquet files.
 
@@ -1186,10 +1238,24 @@ def _compact_step_tables(
         delta_root: Root path for Delta Lake tables.
         staging_root: Root staging directory (for DeltaCommitter init).
         tables: Specific tables to compact. If None, compact all.
+        fs: Filesystem implementation. Uses local filesystem if None.
+        storage_options: Delta-rs storage options.
     """
     from artisan.storage.io.commit import DeltaCommitter
+    from artisan.storage.io.staging import StagingManager
 
-    committer = DeltaCommitter(delta_root, staging_root)
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
+
+    staging_manager = StagingManager(str(staging_root), fs)
+    committer = DeltaCommitter(
+        str(delta_root),
+        staging_manager,
+        fs=fs,
+        storage_options=storage_options,
+    )
 
     if tables is None:
         from artisan.schemas.artifact.registry import ArtifactTypeDef

@@ -418,9 +418,9 @@ class TestRunExecutionFullLifecycle:
 
         assert result.success is True
         assert result.staging_path is not None
-        assert result.staging_path.exists()
-        assert (result.staging_path / "metrics.parquet").exists()
-        assert (result.staging_path / "executions.parquet").exists()
+        assert Path(result.staging_path).exists()
+        assert (Path(result.staging_path) / "metrics.parquet").exists()
+        assert (Path(result.staging_path) / "executions.parquet").exists()
         # Verify execution_run_id was generated
         assert len(result.execution_run_id) == 32
 
@@ -447,8 +447,11 @@ class TestRunExecutionFullLifecycle:
 
         assert result.success is True
         # Check that metrics were staged
-        if result.staging_path and (result.staging_path / "metrics.parquet").exists():
-            df = pl.read_parquet(result.staging_path / "metrics.parquet")
+        if (
+            result.staging_path
+            and (Path(result.staging_path) / "metrics.parquet").exists()
+        ):
+            df = pl.read_parquet(Path(result.staging_path) / "metrics.parquet")
             assert len(df) == 3  # 3 generated metrics
             assert len(result.artifact_ids) == 3
 
@@ -502,7 +505,7 @@ class TestRunExecutionFailureHandling:
 
         # Staging still happens, but with error
         assert result.staging_path is not None
-        df = pl.read_parquet(result.staging_path / "executions.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "executions.parquet")
         assert df["success"][0] is False
         assert df["error"][0] == "Intentional failure"
 
@@ -527,7 +530,7 @@ class TestRunExecutionFailureHandling:
 
         result = run_creator_flow(unit, config)
 
-        df = pl.read_parquet(result.staging_path / "executions.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "executions.parquet")
         assert df["success"][0] is False
         assert "Intentional exception" in df["error"][0]
 
@@ -608,9 +611,9 @@ class TestRunExecutionMetricOutputs:
         result = run_creator_flow(unit, config)
 
         assert result.success is True
-        assert (result.staging_path / "metrics.parquet").exists()
+        assert (Path(result.staging_path) / "metrics.parquet").exists()
 
-        df = pl.read_parquet(result.staging_path / "metrics.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "metrics.parquet")
         # Each memory output key creates a separate MetricArtifact (score, confidence)
         assert len(df) == 2
 
@@ -640,7 +643,7 @@ class TestRunExecutionStagedOutput:
         result = run_creator_flow(unit, config)
 
         # Check execution_edges.parquet has the input/output rows
-        df = pl.read_parquet(result.staging_path / "execution_edges.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "execution_edges.parquet")
 
         # Check inputs
         inputs = df.filter(pl.col("direction") == "input")
@@ -676,7 +679,7 @@ class TestRunExecutionStagedOutput:
 
         result = run_creator_flow(unit, config)
 
-        df = pl.read_parquet(result.staging_path / "index.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "index.parquet")
 
         # Should have one entry for the copied metric
         assert len(df) == 1

@@ -231,7 +231,17 @@ def _promote_file_paths_to_store(
     )
 
     # Commit directly to Delta Lake (pre-dispatch)
-    committer = DeltaCommitter(config.delta_root, config.staging_root)
+    from artisan.storage.io.staging import StagingManager
+
+    fs = config.storage.filesystem()
+    storage_options = config.storage.delta_storage_options()
+    staging_manager = StagingManager(str(config.staging_root), fs)
+    committer = DeltaCommitter(
+        str(config.delta_root),
+        staging_manager,
+        fs=fs,
+        storage_options=storage_options,
+    )
     committer.commit_dataframe(file_ref_df, "artifacts/file_refs")
     committer.commit_dataframe(index_df, TablePath.ARTIFACT_INDEX)
 
@@ -530,8 +540,17 @@ class PipelineManager:
 
         if config.recover_staging:
             from artisan.storage.io.commit import DeltaCommitter
+            from artisan.storage.io.staging import StagingManager
 
-            committer = DeltaCommitter(config.delta_root, config.staging_root)
+            fs = config.storage.filesystem()
+            storage_options = config.storage.delta_storage_options()
+            staging_manager = StagingManager(str(config.staging_root), fs)
+            committer = DeltaCommitter(
+                str(config.delta_root),
+                staging_manager,
+                fs=fs,
+                storage_options=storage_options,
+            )
             committer.recover_staged(preserve_staging=config.preserve_staging)
 
         self._start_time: float = time.time()

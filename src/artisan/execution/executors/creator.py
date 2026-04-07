@@ -161,20 +161,27 @@ def run_creator_lifecycle(
         else:
             files_dir = None
 
+        fs = runtime_env.storage.filesystem()
+        storage_options = runtime_env.storage.delta_storage_options()
+
         execution_context = build_creator_execution_context(
             execution_run_id=execution_run_id,
             execution_spec_id=unit.execution_spec_id,
             step_number=unit.step_number,
             timestamp_start=timestamp_start,
             worker_id=worker_id,
-            delta_root_path=runtime_env.delta_root_path,
-            staging_root_path=runtime_env.staging_root_path,
+            delta_root_path=str(runtime_env.delta_root_path),
+            staging_root_path=str(runtime_env.staging_root_path),
+            fs=fs,
+            storage_options=storage_options,
             operation=operation,
             sandbox_path=sandbox_path,
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=unit.step_run_id,
-            files_root=runtime_env.files_root_path,
+            files_root=str(runtime_env.files_root_path)
+            if runtime_env.files_root_path
+            else None,
         )
         artifact_store = execution_context.artifact_store
 
@@ -477,20 +484,26 @@ def _build_execution_context(
     if working_root is None:
         msg = "RuntimeEnvironment.working_root_path must be set"
         raise ValueError(msg)
+    fs = runtime_env.storage.filesystem()
+    storage_options = runtime_env.storage.delta_storage_options()
     return build_creator_execution_context(
         execution_run_id=execution_run_id,
         execution_spec_id=unit.execution_spec_id,
         step_number=unit.step_number,
         timestamp_start=timestamp_start,
         worker_id=worker_id,
-        delta_root_path=runtime_env.delta_root_path,
-        staging_root_path=runtime_env.staging_root_path,
+        delta_root_path=str(runtime_env.delta_root_path),
+        staging_root_path=str(runtime_env.staging_root_path),
+        fs=fs,
+        storage_options=storage_options,
         operation=operation,
         sandbox_path=working_root / "dummy",
         compute_backend_name=runtime_env.compute_backend_name,
         shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=unit.step_run_id,
-        files_root=runtime_env.files_root_path,
+        files_root=str(runtime_env.files_root_path)
+        if runtime_env.files_root_path
+        else None,
     )
 
 
