@@ -57,17 +57,18 @@ This follows a `~/git/notes/<project>/` pattern that scales across
 repos.
 
 ```
-~/git/notes/                  ← notes directory (one repo or many)
-└── artisan/                  ← dev files for this project
-    ├── .git/
-    ├── analysis/
-    ├── archive/
-    ├── design/
-    ├── releases/
-    ├── troubleshooting/
-    ├── todo.md
-    ├── scratch.md
-    └── CLAUDE.local.md
+~/git/notes/                  ← single notes repo
+├── .git/
+├── artisan/                  ← dev files for artisan
+│   ├── analysis/
+│   ├── archive/
+│   ├── design/
+│   ├── releases/
+│   ├── troubleshooting/
+│   ├── todo.md
+│   ├── scratch.md
+│   └── CLAUDE.local.md
+└── other-project/            ← future projects follow the same pattern
 
 ~/git/artisan-dev/            ← parent repo (public-facing)
 ├── .gitignore                ← contains "_dev" and "CLAUDE.local.md"
@@ -128,9 +129,83 @@ _dev
 CLAUDE.local.md
 ```
 
+**`.git/info/exclude` additions (defense-in-depth):**
+```
+_dev
+CLAUDE.local.md
+```
+
+This is a local-only backup that survives `.gitignore` edits. Takes
+2 seconds to add, prevents the one scenario where `.gitignore` entries
+get accidentally removed.
+
 **`pyproject.toml`** — no changes needed. The `_dev/` exclusions in
 mypy, ruff, and codespell are already present and remain correct (they
 exclude the directory from linting regardless of git tracking status).
+
+### Structural enforcement
+
+The workflow is enforced by four layers, from filesystem up:
+
+**Filesystem** — `.gitignore` + `.git/info/exclude` prevent staging.
+This is the primary defense. Git will not track ignored files unless
+explicitly forced with `git add -f`.
+
+**`post-commit` hook (parent repo)** — after committing parent work,
+checks if the notes repo has uncommitted changes and prints a
+reminder. This is the right moment: you just finished a unit of work
+in the parent, now commit the notes that go with it.
+
+```bash
+#!/bin/bash
+NOTES_DIR="$HOME/git/notes"
+if [ -d "$NOTES_DIR/.git" ]; then
+    STATUS=$(git -C "$NOTES_DIR" status --porcelain 2>/dev/null)
+    if [ -n "$STATUS" ]; then
+        echo ""
+        echo "NOTE: ~/git/notes/ has uncommitted changes"
+    fi
+fi
+```
+
+**`post-checkout` hook (parent repo)** — after branch switches or
+worktree creation, warns if the `_dev` symlink is missing or broken.
+Catches the `git clean -fdx` case.
+
+```bash
+#!/bin/bash
+if [ ! -L "_dev" ] || [ ! -e "_dev" ]; then
+    echo ""
+    echo "WARNING: _dev symlink missing or broken"
+    echo "  Run: ln -s ~/git/notes/artisan _dev"
+fi
+if [ ! -L "CLAUDE.local.md" ] || [ ! -e "CLAUDE.local.md" ]; then
+    echo ""
+    echo "WARNING: CLAUDE.local.md symlink missing or broken"
+    echo "  Run: ln -s _dev/CLAUDE.local.md CLAUDE.local.md"
+fi
+```
+
+**`git notes-save` alias** — one command to commit and push the notes
+repo. Reduces friction, which is the main lever for getting notes
+committed regularly.
+
+```bash
+git config --global alias.notes-save \
+  '!cd ~/git/notes && git add -A && git commit -m "sync: $(date +%Y-%m-%d)" && git push'
+```
+
+### What was considered and rejected
+
+| Idea | Why not |
+|------|---------|
+| `pre-commit` hook blocking `_dev/` files | `.gitignore` + `.git/info/exclude` already prevent staging; this only fires on `git add -f`, a deliberate override |
+| `pre-push` hook | Backup for a backup — unnecessary |
+| Claude Code `PostToolUse` hook | Fires on every `_dev/` edit, noisy; CLAUDE.local.md already provides context |
+| Claude Code `SessionStart`/`Stop` hooks | Duplicates what git hooks do at better moments |
+| Launchd auto-commit | Maintenance overhead (breaks on macOS upgrades) for marginal benefit on a notes repo |
+| Notes repo git hooks | Adds complexity to what should be the simple repo |
+| Health-check script | Run once after setup, never again |
 
 ### Branch workflow after migration
 
@@ -176,12 +251,13 @@ are also clean. No `-clean` branches needed.
 - Remove `_dev/` and `CLAUDE.local.md` from git tracking (keeps files
   on disk): `git rm -r --cached _dev/ CLAUDE.local.md`
 - Add `_dev` and `CLAUDE.local.md` to `.gitignore`
+- Add `_dev` and `CLAUDE.local.md` to `.git/info/exclude`
 - Commit: `chore: move dev files to external notes repo`
 
 **Create external notes repo:**
 - `mkdir -p ~/git/notes`
 - `mv _dev ~/git/notes/artisan`
-- `cd ~/git/notes/artisan && git init`
+- `cd ~/git/notes && git init`
 - `mv` the `CLAUDE.local.md` from parent root into
   `~/git/notes/artisan/` (if not already there from the `_dev/` move)
 - `git add . && git commit -m "init: migrate dev files from artisan-dev"`
@@ -191,6 +267,11 @@ are also clean. No `-clean` branches needed.
 - `ln -s ~/git/notes/artisan _dev`
 - `ln -s _dev/CLAUDE.local.md CLAUDE.local.md`
 - Verify both are ignored by parent git (`git status` shows clean)
+
+**Install hooks and alias:**
+- Add `post-commit` and `post-checkout` hooks to parent repo's
+  `.git/hooks/` (scripts shown above)
+- `git config --global alias.notes-save '!cd ~/git/notes && git add -A && git commit -m "sync: $(date +%Y-%m-%d)" && git push'`
 
 **Workflow and config files to update:**
 - `CLAUDE.local.md` — remove references to `ach/dev-clean`, stripping,
@@ -208,7 +289,7 @@ are also clean. No `-clean` branches needed.
 
 ### What to do with existing `ach/dev` history
 
-The `_dev/` files have history on `ach/dev`. The nested repo starts
+The `_dev/` files have history on `ach/dev`. The notes repo starts
 fresh from the current state. Old history is preserved in `ach/dev`
 if needed (`git log --follow -- _dev/`). Don't rewrite history.
 
@@ -216,13 +297,16 @@ if needed (`git log --follow -- _dev/`). Don't rewrite history.
 
 | Risk | Mitigation |
 |------|-----------|
-| Forgetting to commit/push notes repo separately | Add reminder to workflow skill; could add a pre-push hook |
-| Symlink is machine-specific | Each dev sets up their own symlink; documented in setup instructions |
+| Forgetting to commit notes | `post-commit` hook reminds at the right moment; `git notes-save` alias reduces friction |
+| Symlink is machine-specific | Each dev sets up their own; documented in setup instructions |
+| Symlink broken after `git clean -fdx` | `post-checkout` hook warns; symlink recreated with one command; target is safe |
 | IDE confusion with symlinked directory | VS Code follows directory symlinks transparently |
 | macOS symlink resolution | macOS resolves chained symlinks natively; no known issues |
 | `_dev/` scripts that import `artisan` | Still work — they run from the parent repo's pixi environment |
-| `git clean -fdx` in parent | Removes the symlink, not the target. Recreate with `ln -s` |
-| Docker/rsync not following symlinks | Not a current concern; if needed, use `-L` flag |
+| `.gitignore` entry accidentally removed | `.git/info/exclude` has the same entries as backup |
+| `git stash` in parent | Safe — ignored files are not stashed |
+| `git worktree add` | New worktree won't have symlink; `post-checkout` hook warns |
+| Fresh clone | Clean, no dev files; run setup to create symlinks |
 
 ## Testing
 
@@ -233,5 +317,7 @@ if needed (`git log --follow -- _dev/`). Don't rewrite history.
 - Verify `pyproject.toml` exclusions still apply
 - Verify `_dev` does not appear in `git status` on parent repo
 - Verify `git clean -fdx` removes symlink but not target
+- Verify `post-commit` hook fires and detects notes changes
+- Verify `post-checkout` hook detects missing symlink
 - Create a test feature branch from `ach/dev` and confirm zero dev files
 - Run full validation suite after migration
