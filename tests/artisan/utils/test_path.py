@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import artisan.utils.path as path_module
-from artisan.utils.path import find_project_root, get_caller_dir, shard_path
+from artisan.utils.path import find_project_root, get_caller_dir, shard_path, uri_join, uri_parent
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -441,3 +441,60 @@ class TestShardPath:
             Path("/tmp"), "abcdef1234567890", step_number=3, operation_name="tool_c"
         )
         assert result == Path("/tmp/3_tool_c/ab/cd/abcdef1234567890")
+
+
+# ===================================================================
+# uri_join
+# ===================================================================
+
+
+class TestUriJoin:
+    """URI-safe path joining for local and cloud URIs."""
+
+    def test_local_path(self):
+        assert uri_join("/data/delta", "executions") == "/data/delta/executions"
+
+    def test_local_path_multiple_parts(self):
+        assert uri_join("/data", "delta", "executions") == "/data/delta/executions"
+
+    def test_s3_uri(self):
+        assert uri_join("s3://bucket/delta", "executions") == "s3://bucket/delta/executions"
+
+    def test_gcs_uri(self):
+        assert uri_join("gcs://bucket/delta", "executions") == "gcs://bucket/delta/executions"
+
+    def test_trailing_slash_on_base(self):
+        assert uri_join("/data/delta/", "executions") == "/data/delta/executions"
+
+    def test_absolute_part_replaces_base(self):
+        """posixpath.join behavior: absolute part resets the path."""
+        assert uri_join("/data/delta", "/other") == "/other"
+
+
+# ===================================================================
+# uri_parent
+# ===================================================================
+
+
+class TestUriParent:
+    """URI-safe parent directory for local and cloud URIs."""
+
+    def test_local_path(self):
+        assert uri_parent("/data/pipelines/delta") == "/data/pipelines"
+
+    def test_s3_uri(self):
+        assert uri_parent("s3://bucket/project/delta") == "s3://bucket/project"
+
+    def test_gcs_uri(self):
+        assert uri_parent("gcs://bucket/project/delta") == "gcs://bucket/project"
+
+    def test_trailing_slash(self):
+        assert uri_parent("/data/delta/") == "/data/delta"
+
+    def test_root_path(self):
+        assert uri_parent("/") == "/"
+
+    def test_bare_s3_bucket(self):
+        # posixpath treats // as separator, so s3://bucket → s3:
+        # In practice, URIs always have a path component (s3://bucket/key)
+        assert uri_parent("s3://bucket") == "s3:"
