@@ -10,11 +10,10 @@ from __future__ import annotations
 import json
 
 import polars as pl
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
-from fsspec.implementations.local import LocalFileSystem
-
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
 
