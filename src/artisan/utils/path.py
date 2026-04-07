@@ -131,51 +131,6 @@ def step_dir_name(step_number: int, operation_name: str) -> str:
     return f"{step_number}_{operation_name}"
 
 
-def shard_path(
-    root: Path,
-    execution_run_id: str,
-    step_number: int | None = None,
-    operation_name: str | None = None,
-) -> Path:
-    """Create sharded path from execution_run_id, optionally partitioned by step_number.
-
-    Uses first 4 characters for 2-level sharding to distribute files
-    across directories and avoid filesystem bottlenecks on HPC systems.
-
-    Args:
-        root: Base directory.
-        execution_run_id: 32-character hex hash.
-        step_number: Optional pipeline step number for partitioning.
-        operation_name: Optional operation name. When provided together with
-            step_number, the step directory becomes ``{step_number}_{operation_name}``.
-
-    Returns:
-        If step_number is None: root/ab/cd/execution_run_id
-        If step_number is provided: root/{step_dir}/ab/cd/execution_run_id
-
-    Example:
-        >>> shard_path(Path("/tmp"), "abcdef1234567890...")
-        Path("/tmp/ab/cd/abcdef1234567890...")
-        >>> shard_path(Path("/tmp"), "abcdef1234567890...", step_number=3)
-        Path("/tmp/3/ab/cd/abcdef1234567890...")
-        >>> shard_path(Path("/tmp"), "abcdef1234567890...", step_number=3, operation_name="tool_c")
-        Path("/tmp/3_tool_c/ab/cd/abcdef1234567890...")
-    """
-    if step_number is not None:
-        if operation_name is not None:
-            step_segment = step_dir_name(step_number, operation_name)
-        else:
-            step_segment = str(step_number)
-        return (
-            root
-            / step_segment
-            / execution_run_id[:2]
-            / execution_run_id[2:4]
-            / execution_run_id
-        )
-    return root / execution_run_id[:2] / execution_run_id[2:4] / execution_run_id
-
-
 def shard_uri(
     root: str,
     execution_run_id: str,
@@ -184,7 +139,6 @@ def shard_uri(
 ) -> str:
     """Create sharded URI from execution_run_id, optionally partitioned by step.
 
-    String-based equivalent of :func:`shard_path` for use with fsspec URIs.
     Works with local paths and cloud URIs (s3://, gcs://).
 
     Args:
