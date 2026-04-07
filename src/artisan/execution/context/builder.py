@@ -24,9 +24,10 @@ def _build_execution_context(
     compute_backend_name: str = "local",
     shared_filesystem: bool = False,
     step_run_id: str | None = None,
+    files_root: Path | None = None,
 ) -> ExecutionContext:
     """Build an execution context (shared by creator and curator paths)."""
-    artifact_store = ArtifactStore(delta_root_path)
+    artifact_store = ArtifactStore(delta_root_path, files_root=files_root)
     return ExecutionContext(
         execution_run_id=execution_run_id,
         execution_spec_id=execution_spec_id,
@@ -58,6 +59,7 @@ def build_creator_execution_context(
     compute_backend_name: str = "local",
     shared_filesystem: bool = False,
     step_run_id: str | None = None,
+    files_root: Path | None = None,
 ) -> ExecutionContext:
     """Build an execution context for a creator operation.
 
@@ -77,6 +79,7 @@ def build_creator_execution_context(
         compute_backend_name=compute_backend_name,
         shared_filesystem=shared_filesystem,
         step_run_id=step_run_id,
+        files_root=files_root,
     )
 
 
@@ -93,6 +96,7 @@ def build_curator_execution_context(
     compute_backend_name: str = "local",
     shared_filesystem: bool = False,
     step_run_id: str | None = None,
+    files_root: Path | None = None,
 ) -> ExecutionContext:
     """Build an execution context for a curator operation.
 
@@ -112,4 +116,5 @@ def build_curator_execution_context(
         compute_backend_name=compute_backend_name,
         shared_filesystem=shared_filesystem,
         step_run_id=step_run_id,
+        files_root=files_root,
     )
