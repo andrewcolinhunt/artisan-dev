@@ -58,7 +58,7 @@ class MetricArtifact(JsonContentMixin, Artifact):
         description="File extension (.json typically). None for ID-only artifacts.",
     )
 
-    def _materialize_content(self, directory: Path) -> Path:
+    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
         """Write metric JSON to a file in the given directory.
 
         Args:

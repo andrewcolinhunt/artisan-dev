@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 from artisan.execution.inputs.materialization import materialize_inputs
 from artisan.schemas.artifact.base import Artifact
@@ -36,7 +36,7 @@ class TestMaterializeAsForwarded:
 
         _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
 
-        artifact.materialize_to.assert_called_once_with(tmp_path, format=".csv")
+        artifact.materialize_to.assert_called_once_with(tmp_path, format=".csv", fs=ANY)
         assert "a" * 32 in materialized_ids
 
     def test_no_materialize_as_passes_none(self, tmp_path: Path):
@@ -52,7 +52,7 @@ class TestMaterializeAsForwarded:
 
         _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
 
-        artifact.materialize_to.assert_called_once_with(tmp_path, format=None)
+        artifact.materialize_to.assert_called_once_with(tmp_path, format=None, fs=ANY)
         assert "b" * 32 in materialized_ids
 
     def test_config_referenced_artifacts_get_none_format(self, tmp_path: Path):
@@ -78,6 +78,8 @@ class TestMaterializeAsForwarded:
 
         _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
 
-        ref_artifact.materialize_to.assert_called_once_with(tmp_path, format=None)
+        ref_artifact.materialize_to.assert_called_once_with(
+            tmp_path, format=None, fs=ANY
+        )
         assert config.artifact_id in materialized_ids
         assert "c" * 32 in materialized_ids

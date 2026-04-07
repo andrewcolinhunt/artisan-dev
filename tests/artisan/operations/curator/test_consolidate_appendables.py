@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from fsspec.implementations.local import LocalFileSystem
+
 import polars as pl
 import pytest
 
@@ -52,7 +54,8 @@ def _mock_store_with_appendables(
 ) -> MagicMock:
     """Create a mock ArtifactStore with get_artifacts_by_type returning artifacts."""
     store = MagicMock()
-    store.files_root = files_root
+    store.files_root = str(files_root) if files_root else None
+    store._fs = LocalFileSystem()
     store.get_artifacts_by_type.return_value = artifacts
     return store
 
@@ -101,7 +104,7 @@ class TestConsolidateBasicExecution:
         op = ConsolidateAppendables()
         result = op.execute_curator(inputs, step_number=3, artifact_store=store)
 
-        expected_path = str(files_root / "3" / "combined.jsonl")
+        expected_path = f"{files_root}/3/combined.jsonl"
         for draft in result.artifacts["records"]:
             assert draft.external_path == expected_path
 

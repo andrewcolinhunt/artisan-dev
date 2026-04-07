@@ -101,7 +101,9 @@ class Artifact(BaseModel):
         """
         return self.origin_step_number is not None
 
-    def materialize_to(self, directory: Path, *, format: str | None = None) -> Path:
+    def materialize_to(
+        self, directory: Path, *, format: str | None = None, fs: Any = None
+    ) -> Path:
         """Write content to disk and set materialized_path.
 
         Rejects format conversion by default; subclasses that support
@@ -110,6 +112,8 @@ class Artifact(BaseModel):
         Args:
             directory: Directory to write files into.
             format: Not supported by default; raises if provided.
+            fs: Optional fsspec filesystem for reading source files
+                from cloud storage. None uses local stdlib.
 
         Returns:
             Path to the written file.
@@ -123,15 +127,16 @@ class Artifact(BaseModel):
                 f"format conversion (got {format!r})"
             )
             raise ValueError(msg)
-        return self._materialize_content(directory)
+        return self._materialize_content(directory, fs=fs)
 
-    def _materialize_content(self, _directory: Path) -> Path:
+    def _materialize_content(self, _directory: Path, *, fs: Any = None) -> Path:
         """Write artifact content to disk.
 
         Subclasses must implement this to write their content.
 
         Args:
             _directory: Target directory for output files.
+            fs: Optional fsspec filesystem for reading source files.
 
         Raises:
             NotImplementedError: Subclass must implement.
