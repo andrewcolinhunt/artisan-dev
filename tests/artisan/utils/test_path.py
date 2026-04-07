@@ -13,7 +13,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import artisan.utils.path as path_module
-from artisan.utils.path import find_project_root, get_caller_dir, shard_path, uri_join, uri_parent
+from artisan.utils.path import (
+    find_project_root,
+    get_caller_dir,
+    shard_path,
+    uri_join,
+    uri_parent,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -458,10 +464,16 @@ class TestUriJoin:
         assert uri_join("/data", "delta", "executions") == "/data/delta/executions"
 
     def test_s3_uri(self):
-        assert uri_join("s3://bucket/delta", "executions") == "s3://bucket/delta/executions"
+        assert (
+            uri_join("s3://bucket/delta", "executions")
+            == "s3://bucket/delta/executions"
+        )
 
     def test_gcs_uri(self):
-        assert uri_join("gcs://bucket/delta", "executions") == "gcs://bucket/delta/executions"
+        assert (
+            uri_join("gcs://bucket/delta", "executions")
+            == "gcs://bucket/delta/executions"
+        )
 
     def test_trailing_slash_on_base(self):
         assert uri_join("/data/delta/", "executions") == "/data/delta/executions"
