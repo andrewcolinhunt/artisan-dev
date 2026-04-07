@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -55,7 +54,7 @@ class Artifact(BaseModel):
         default=None,
         description="Path to external content on disk.",
     )
-    materialized_path: Path | None = Field(
+    materialized_path: str | None = Field(
         default=None,
         exclude=True,
         description="Temporary path where content was written for execution.",
@@ -102,8 +101,8 @@ class Artifact(BaseModel):
         return self.origin_step_number is not None
 
     def materialize_to(
-        self, directory: Path, *, format: str | None = None, fs: Any = None
-    ) -> Path:
+        self, directory: str, *, format: str | None = None, fs: Any = None
+    ) -> str:
         """Write content to disk and set materialized_path.
 
         Rejects format conversion by default; subclasses that support
@@ -129,7 +128,7 @@ class Artifact(BaseModel):
             raise ValueError(msg)
         return self._materialize_content(directory, fs=fs)
 
-    def _materialize_content(self, _directory: Path, *, fs: Any = None) -> Path:
+    def _materialize_content(self, _directory: str, *, fs: Any = None) -> str:
         """Write artifact content to disk.
 
         Subclasses must implement this to write their content.

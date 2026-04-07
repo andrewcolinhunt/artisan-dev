@@ -9,7 +9,7 @@ curator concatenates them into a single combined file.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from typing import Any, ClassVar, Self
 
 import polars as pl
@@ -82,7 +82,7 @@ class AppendableArtifact(Artifact):
             sort_keys=True,
         ).encode("utf-8")
 
-    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
+    def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Extract this record from the JSONL file and write as JSON.
 
         Args:
@@ -100,8 +100,9 @@ class AppendableArtifact(Artifact):
             raise ValueError(msg)
         record = self._read_record(fs=fs)
         filename = f"{self.artifact_id}.json"
-        path = directory / filename
-        path.write_text(json.dumps(record, indent=2))
+        path = os.path.join(directory, filename)
+        with open(path, "w") as f:
+            f.write(json.dumps(record, indent=2))
         self.materialized_path = path
         return path
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from artisan.schemas.artifact.base import Artifact
@@ -16,7 +15,7 @@ if TYPE_CHECKING:
 def materialize_inputs(
     artifacts: dict[str, list[Artifact]],
     input_specs: dict[str, InputSpec],
-    directory: Path,
+    directory: str,
     artifact_store: ArtifactStore,
 ) -> tuple[dict[str, list[Artifact]], set[str]]:
     """Materialize input artifacts to disk with dependency-aware ordering.
@@ -70,12 +69,12 @@ def materialize_inputs(
     fs = artifact_store._fs if hasattr(artifact_store, "_fs") else None
 
     materialized_ids: set[str] = set()
-    resolved_paths: dict[str, Path] = {}
+    resolved_paths: dict[str, str] = {}
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
             continue
         materialized = artifact.materialize_to(directory, format=fmt, fs=fs)
-        if isinstance(materialized, Path):
+        if isinstance(materialized, str):
             resolved_paths[artifact.artifact_id] = materialized
             materialized_ids.add(artifact.artifact_id)
 

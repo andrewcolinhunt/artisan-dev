@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from enum import StrEnum, auto
 from typing import Any, ClassVar
@@ -57,14 +58,15 @@ class Wait(OperationDefinition):
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Sleep for the configured duration."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         start = time.perf_counter()
         time.sleep(self.params.duration)
         elapsed = time.perf_counter() - start
 
-        marker = output_dir / "wait_marker.csv"
-        marker.write_text(f"requested,actual\n{self.params.duration},{elapsed:.4f}\n")
+        marker = os.path.join(output_dir, "wait_marker.csv")
+        with open(marker, "w") as f:
+            f.write(f"requested,actual\n{self.params.duration},{elapsed:.4f}\n")
 
         return {"elapsed": elapsed}
 
@@ -72,11 +74,13 @@ class Wait(OperationDefinition):
         """Build a DataArtifact from the marker file."""
         drafts: list[DataArtifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
+            if file_path.endswith(".csv"):
+                with open(file_path, "rb") as f:
+                    content = f.read()
                 drafts.append(
                     DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )

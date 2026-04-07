@@ -16,8 +16,8 @@ class TestPreprocessInput:
 
     def test_create_minimal(self, tmp_path: Path):
         """Create with only required field."""
-        inp = PreprocessInput(preprocess_dir=tmp_path)
-        assert inp.preprocess_dir == tmp_path
+        inp = PreprocessInput(preprocess_dir=str(tmp_path))
+        assert inp.preprocess_dir == str(tmp_path)
         assert inp.input_artifacts == {}
         assert inp.metadata == {}
 
@@ -31,27 +31,27 @@ class TestPreprocessInput:
             original_name="input.json",
             step_number=0,
         )
-        artifact.materialized_path = input_file
+        artifact.materialized_path = str(input_file)
 
         inp = PreprocessInput(
-            preprocess_dir=tmp_path,
+            preprocess_dir=str(tmp_path),
             input_artifacts={"metric": [artifact]},
         )
         assert "metric" in inp.input_artifacts
         assert len(inp.input_artifacts["metric"]) == 1
-        assert inp.input_artifacts["metric"][0].materialized_path == input_file
+        assert inp.input_artifacts["metric"][0].materialized_path == str(input_file)
 
     def test_create_with_metadata(self, tmp_path: Path):
         """Create with metadata."""
         inp = PreprocessInput(
-            preprocess_dir=tmp_path,
+            preprocess_dir=str(tmp_path),
             metadata={"extra": "data"},
         )
         assert inp.metadata["extra"] == "data"
 
     def test_not_frozen(self, tmp_path: Path):
         """PreprocessInput is mutable (not frozen)."""
-        inp = PreprocessInput(preprocess_dir=tmp_path)
+        inp = PreprocessInput(preprocess_dir=str(tmp_path))
         # Should not raise - dataclass is not frozen
         inp.input_artifacts = {"new": []}
         assert inp.input_artifacts == {"new": []}
@@ -62,18 +62,18 @@ class TestExecuteInput:
 
     def test_create_minimal(self, tmp_path: Path):
         """Create with only required field."""
-        inp = ExecuteInput(execute_dir=tmp_path)
-        assert inp.execute_dir == tmp_path
+        inp = ExecuteInput(execute_dir=str(tmp_path))
+        assert inp.execute_dir == str(tmp_path)
         assert inp.inputs == {}
         assert inp.metadata == {}
 
     def test_create_with_prepared_inputs(self, tmp_path: Path):
         """Create with inputs from preprocess."""
-        config_path = tmp_path / "config.json"
-        config_path.touch()
+        config_path = str(tmp_path / "config.json")
+        Path(config_path).touch()
 
         inp = ExecuteInput(
-            execute_dir=tmp_path,
+            execute_dir=str(tmp_path),
             inputs={"config": config_path, "count": 5},
         )
         assert inp.inputs["config"] == config_path
@@ -82,7 +82,7 @@ class TestExecuteInput:
     def test_create_with_metadata(self, tmp_path: Path):
         """Create with metadata escape hatch."""
         inp = ExecuteInput(
-            execute_dir=tmp_path,
+            execute_dir=str(tmp_path),
             inputs={"data": "value"},
             metadata={"timeout": 300, "retry": True},
         )
@@ -91,7 +91,7 @@ class TestExecuteInput:
 
     def test_frozen(self, tmp_path: Path):
         """ExecuteInput is immutable (frozen dataclass)."""
-        inp = ExecuteInput(execute_dir=tmp_path)
+        inp = ExecuteInput(execute_dir=str(tmp_path))
         with pytest.raises(dataclasses.FrozenInstanceError):
             inp.inputs = {"new": "value"}
 
@@ -101,8 +101,8 @@ class TestPostprocessInput:
 
     def test_create_minimal(self, tmp_path: Path):
         """Create with required fields."""
-        inp = PostprocessInput(step_number=0, postprocess_dir=tmp_path)
-        assert inp.postprocess_dir == tmp_path
+        inp = PostprocessInput(step_number=0, postprocess_dir=str(tmp_path))
+        assert inp.postprocess_dir == str(tmp_path)
         assert inp.step_number == 0
         assert inp.file_outputs == []
         assert inp.memory_outputs is None
@@ -113,7 +113,7 @@ class TestPostprocessInput:
         """Create with dict as memory outputs."""
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             memory_outputs={"status": "success", "metrics": {"accuracy": 1.5}},
         )
         assert inp.memory_outputs["status"] == "success"
@@ -125,24 +125,27 @@ class TestPostprocessInput:
         for mem in [0, "result", [1, 2, 3], {"nested": {"data": True}}]:
             inp = PostprocessInput(
                 step_number=0,
-                postprocess_dir=tmp_path,
+                postprocess_dir=str(tmp_path),
                 memory_outputs=mem,
             )
             assert inp.memory_outputs == mem
 
     def test_create_with_file_outputs(self, tmp_path: Path):
         """Create with files from execute_dir."""
-        output_files = [tmp_path / "output1.dat", tmp_path / "output2.dat"]
+        output_files = [
+            str(tmp_path / "output1.dat"),
+            str(tmp_path / "output2.dat"),
+        ]
         for f in output_files:
-            f.touch()
+            Path(f).touch()
 
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             file_outputs=output_files,
         )
         assert len(inp.file_outputs) == 2
-        assert tmp_path / "output1.dat" in inp.file_outputs
+        assert str(tmp_path / "output1.dat") in inp.file_outputs
 
     def test_create_with_input_artifacts(self, tmp_path: Path):
         """Create with input artifacts for naming and lineage."""
@@ -151,11 +154,11 @@ class TestPostprocessInput:
             original_name="input.json",
             step_number=0,
         )
-        artifact.materialized_path = tmp_path / "input.json"
+        artifact.materialized_path = str(tmp_path / "input.json")
 
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             input_artifacts={"metric": [artifact]},
         )
         assert len(inp.input_artifacts["metric"]) == 1
@@ -164,11 +167,11 @@ class TestPostprocessInput:
     def test_step_number_required(self, tmp_path: Path):
         """step_number is required."""
         with pytest.raises(TypeError):
-            PostprocessInput(postprocess_dir=tmp_path)
+            PostprocessInput(postprocess_dir=str(tmp_path))
 
     def test_not_frozen(self, tmp_path: Path):
         """PostprocessInput is mutable (not frozen)."""
-        inp = PostprocessInput(step_number=0, postprocess_dir=tmp_path)
+        inp = PostprocessInput(step_number=0, postprocess_dir=str(tmp_path))
         # Should not raise - dataclass is not frozen
         inp.memory_outputs = "new_result"
         assert inp.memory_outputs == "new_result"
@@ -192,7 +195,7 @@ class TestPreprocessInputGrouped:
         c1, c2 = _make_artifact("c1.json"), _make_artifact("c2.json")
 
         inp = PreprocessInput(
-            preprocess_dir=tmp_path,
+            preprocess_dir=str(tmp_path),
             input_artifacts={"data": [s1, s2], "config": [c1, c2]},
         )
         groups = list(inp.grouped())
@@ -207,7 +210,7 @@ class TestPreprocessInputGrouped:
         m1 = _make_artifact("m1.json")
 
         inp = PreprocessInput(
-            preprocess_dir=tmp_path,
+            preprocess_dir=str(tmp_path),
             input_artifacts={
                 "data": [s1],
                 "config": [c1],
@@ -224,7 +227,7 @@ class TestPreprocessInputGrouped:
         c1 = _make_artifact("c1.json")
 
         inp = PreprocessInput(
-            preprocess_dir=tmp_path,
+            preprocess_dir=str(tmp_path),
             input_artifacts={"data": [s1, s2], "config": [c1]},
         )
         with pytest.raises(ValueError, match="zip"):
@@ -232,7 +235,7 @@ class TestPreprocessInputGrouped:
 
     def test_grouped_empty_inputs(self, tmp_path: Path):
         """Yields nothing when input_artifacts is empty."""
-        inp = PreprocessInput(preprocess_dir=tmp_path, input_artifacts={})
+        inp = PreprocessInput(preprocess_dir=str(tmp_path), input_artifacts={})
         groups = list(inp.grouped())
         assert groups == []
 
@@ -241,7 +244,7 @@ class TestPreprocessInputGrouped:
         s1, s2 = _make_artifact("s1.dat"), _make_artifact("s2.dat")
 
         inp = PreprocessInput(
-            preprocess_dir=tmp_path,
+            preprocess_dir=str(tmp_path),
             input_artifacts={"data": [s1, s2]},
         )
         groups = list(inp.grouped())
@@ -260,7 +263,7 @@ class TestPostprocessInputGrouped:
 
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             input_artifacts={"data": [s1, s2], "config": [c1, c2]},
         )
         groups = list(inp.grouped())
@@ -276,7 +279,7 @@ class TestPostprocessInputGrouped:
 
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             input_artifacts={
                 "data": [s1],
                 "config": [c1],
@@ -294,7 +297,7 @@ class TestPostprocessInputGrouped:
 
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             input_artifacts={"data": [s1, s2], "config": [c1]},
         )
         with pytest.raises(ValueError, match="zip"):
@@ -304,7 +307,7 @@ class TestPostprocessInputGrouped:
         """Yields nothing when input_artifacts is empty."""
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             input_artifacts={},
         )
         groups = list(inp.grouped())
@@ -316,7 +319,7 @@ class TestPostprocessInputGrouped:
 
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             input_artifacts={"data": [s1, s2]},
         )
         groups = list(inp.grouped())
@@ -373,7 +376,7 @@ class TestAssociatedArtifacts:
         ).finalize()
 
         inp = PreprocessInput(
-            preprocess_dir=tmp_path,
+            preprocess_dir=str(tmp_path),
             input_artifacts={"metric": [metric]},
             _associated={
                 (metric.artifact_id, "config"): [assoc],
@@ -407,7 +410,7 @@ class TestAssociatedArtifacts:
 
         inp = PostprocessInput(
             step_number=1,
-            postprocess_dir=tmp_path,
+            postprocess_dir=str(tmp_path),
             input_artifacts={"metric": [metric]},
             _associated={
                 (metric.artifact_id, "config"): [assoc],

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from artisan.schemas.artifact.base import Artifact
@@ -68,7 +67,7 @@ class PreprocessInput(_InputArtifactsMixin):
         ...     process(artifact.materialized_path)
     """
 
-    preprocess_dir: Path
+    preprocess_dir: str
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     _associated: dict[tuple[str, str], list[Artifact]] = field(
@@ -97,11 +96,11 @@ class ExecuteInput:
             of execute_dir. None when files_root is not configured.
     """
 
-    execute_dir: Path
+    execute_dir: str
     inputs: dict[str, Any] = field(default_factory=dict)
-    log_path: Path | None = None
+    log_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    files_dir: Path | None = None
+    files_dir: str | None = None
 
 
 @dataclass
@@ -127,8 +126,8 @@ class PostprocessInput(_InputArtifactsMixin):
     """
 
     step_number: int
-    postprocess_dir: Path
-    file_outputs: list[Path] = field(default_factory=list)
+    postprocess_dir: str
+    file_outputs: list[str] = field(default_factory=list)
     memory_outputs: Any = None
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)

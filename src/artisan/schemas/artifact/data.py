@@ -9,7 +9,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from pathlib import Path
+import os
 from typing import Any, ClassVar, Self
 
 import polars as pl
@@ -73,7 +73,7 @@ class DataArtifact(Artifact):
         description="Number of data rows (excluding header).",
     )
 
-    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
+    def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Write CSV content to a file in the given directory.
 
         Args:
@@ -92,8 +92,9 @@ class DataArtifact(Artifact):
             msg = "Cannot materialize: artifact not finalized (no artifact_id)"
             raise ValueError(msg)
         filename = f"{self.artifact_id}{self.extension or '.csv'}"
-        path = directory / filename
-        path.write_bytes(self.content)
+        path = os.path.join(directory, filename)
+        with open(path, "wb") as f:
+            f.write(self.content)
         self.materialized_path = path
         return path
 

@@ -9,6 +9,7 @@ Public API:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_OUTPUT_CHARS = 500_000
 
 
-def _read_tool_output(log_path: Path | None) -> str | None:
+def _read_tool_output(log_path: str | None) -> str | None:
     """Read tool output from a log file.
 
     Args:
@@ -37,10 +38,11 @@ def _read_tool_output(log_path: Path | None) -> str | None:
         File content as string, or None if path is None or file doesn't exist.
         Truncated to last 500K chars if longer.
     """
-    if log_path is None or not log_path.exists():
+    if log_path is None or not os.path.exists(log_path):
         return None
     try:
-        content = log_path.read_text(errors="replace")
+        with open(log_path, errors="replace") as f:
+            content = f.read()
     except OSError:
         return None
     if len(content) > _MAX_TOOL_OUTPUT_CHARS:
@@ -203,9 +205,11 @@ def _write_failure_log(
     if failure_logs_root is None:
         return
     try:
-        log_dir = failure_logs_root / f"step_{step_number}_{operation_name}"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / f"{execution_run_id}.log"
+        log_dir = os.path.join(
+            str(failure_logs_root), f"step_{step_number}_{operation_name}"
+        )
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, f"{execution_run_id}.log")
 
         sections = [
             "=== Execution Failure Log ===",
@@ -223,7 +227,8 @@ def _write_failure_log(
             tail = "\n".join(tool_output.splitlines()[-100:])
             sections.extend(["", "=== Tool Output (last 100 lines) ===", tail])
 
-        log_path.write_text("\n".join(sections))
+        with open(log_file, "w") as f:
+            f.write("\n".join(sections))
     except Exception:
         logger.debug(
             "Failed to write failure log for %s", execution_run_id, exc_info=True

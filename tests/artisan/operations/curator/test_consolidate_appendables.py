@@ -6,10 +6,9 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from fsspec.implementations.local import LocalFileSystem
-
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator.consolidate_appendables import (
     ConsolidateAppendables,

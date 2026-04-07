@@ -7,6 +7,7 @@ binary column. Delta stores only metadata (hash, size, name).
 
 from __future__ import annotations
 
+import os
 import random
 from enum import StrEnum, auto
 from typing import Any, ClassVar
@@ -78,11 +79,12 @@ class LargeFileGenerator(OperationDefinition):
 
         for i in range(self.params.count):
             filename = f"output_{i:05d}.bin"
-            output_path = inputs.files_dir / filename
+            output_path = os.path.join(inputs.files_dir, filename)
             data = rng.randbytes(self.params.file_size_bytes)
-            output_path.write_bytes(data)
+            with open(output_path, "wb") as f:
+                f.write(data)
             files_meta.append({
-                "path": str(output_path),
+                "path": output_path,
                 "content_hash": compute_content_hash(data),
                 "size_bytes": len(data),
                 "original_name": f"output_{i:05d}",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -21,10 +22,10 @@ def _run(
     seed: int | None = 42,
 ) -> tuple[dict, ArtifactResult]:
     """Run execute + postprocess and return both results."""
-    files_dir = tmp_path / "files"
-    files_dir.mkdir(parents=True)
-    execute_dir = tmp_path / "execute"
-    execute_dir.mkdir(parents=True)
+    files_dir = str(tmp_path / "files")
+    os.makedirs(files_dir, exist_ok=True)
+    execute_dir = str(tmp_path / "execute")
+    os.makedirs(execute_dir, exist_ok=True)
 
     op = AppendableGenerator(
         params=AppendableGenerator.Params(
@@ -43,7 +44,7 @@ def _run(
 
     post_input = PostprocessInput(
         step_number=0,
-        postprocess_dir=tmp_path / "post",
+        postprocess_dir=str(tmp_path / "post"),
         memory_outputs=raw,
     )
     result = op.postprocess(post_input)
@@ -60,8 +61,9 @@ class TestAppendableGenerator:
 
     def test_jsonl_format_valid(self, tmp_path: Path) -> None:
         raw, _ = _run(tmp_path, count=3)
-        jsonl_path = Path(raw["records"][0]["output_path"])
-        lines = jsonl_path.read_text().strip().split("\n")
+        jsonl_path = raw["records"][0]["output_path"]
+        with open(jsonl_path) as fh:
+            lines = fh.read().strip().split("\n")
         assert len(lines) == 3
         for line in lines:
             record = json.loads(line)
@@ -94,7 +96,7 @@ class TestAppendableGenerator:
 
     def test_requires_files_dir(self, tmp_path: Path) -> None:
         op = AppendableGenerator()
-        ei = ExecuteInput(execute_dir=tmp_path, files_dir=None)
+        ei = ExecuteInput(execute_dir=str(tmp_path), files_dir=None)
         with pytest.raises(ValueError, match="files_dir required"):
             op.execute(ei)
 
@@ -105,8 +107,9 @@ class TestAppendableGenerator:
 
     def test_content_hash_correct(self, tmp_path: Path) -> None:
         raw, _ = _run(tmp_path, count=1)
-        jsonl_path = Path(raw["records"][0]["output_path"])
-        line = jsonl_path.read_text().strip()
+        jsonl_path = raw["records"][0]["output_path"]
+        with open(jsonl_path) as fh:
+            line = fh.read().strip()
         expected = compute_content_hash(line.encode())
         assert raw["records"][0]["content_hash"] == expected
 
@@ -119,16 +122,18 @@ class TestNumFiles:
         paths = {a.external_path for a in result.artifacts["records"]}
         assert len(paths) == 3
         for path in paths:
-            lines = Path(path).read_text().strip().split("\n")
+            with open(path) as fh:
+                lines = fh.read().strip().split("\n")
             assert len(lines) == 2
 
     def test_uneven_split(self, tmp_path: Path) -> None:
         raw, result = _run(tmp_path, count=7, num_files=3)
         paths = sorted({a.external_path for a in result.artifacts["records"]})
         assert len(paths) == 3
-        line_counts = [
-            len(Path(p).read_text().strip().split("\n")) for p in paths
-        ]
+        line_counts = []
+        for p in paths:
+            with open(p) as fh:
+                line_counts.append(len(fh.read().strip().split("\n")))
         assert line_counts == [3, 2, 2]
 
     def test_default_single_file(self, tmp_path: Path) -> None:
@@ -141,7 +146,8 @@ class TestNumFiles:
         all_paths = {rec["output_path"] for rec in raw["records"]}
         all_lines: list[str] = []
         for path in sorted(all_paths):
-            all_lines.extend(Path(path).read_text().strip().split("\n"))
+            with open(path) as fh:
+                all_lines.extend(fh.read().strip().split("\n"))
         assert len(all_lines) == 10
         ids = {json.loads(line)["record_id"] for line in all_lines}
         assert len(ids) == 10

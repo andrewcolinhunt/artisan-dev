@@ -10,6 +10,7 @@ Reference: v4 design - artifact-centric execution model
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from enum import StrEnum, auto
 from pathlib import Path
@@ -114,10 +115,13 @@ class MetricCopyTestOp(OperationDefinition):
         )
 
         # Read content and write with suffix
-        content = json.loads(source_path.read_text())
+        with open(source_path) as fh:
+            content = json.loads(fh.read())
         content["copied"] = True
-        output_path = inputs.execute_dir / f"{source_path.stem}{self.suffix}.json"
-        output_path.write_text(json.dumps(content))
+        stem = os.path.splitext(os.path.basename(source_path))[0]
+        output_path = os.path.join(inputs.execute_dir, f"{stem}{self.suffix}.json")
+        with open(output_path, "w") as fh:
+            fh.write(json.dumps(content))
 
         return {"copied": True}
 
@@ -125,11 +129,13 @@ class MetricCopyTestOp(OperationDefinition):
         """v4: Create draft MetricArtifacts from file_outputs."""
         drafts: list[MetricArtifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".json":
+            if file_path.endswith(".json"):
+                with open(file_path) as fh:
+                    content = json.loads(fh.read())
                 drafts.append(
                     MetricArtifact.draft(
-                        content=json.loads(file_path.read_text()),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )
@@ -163,8 +169,9 @@ class GenerativeTestOp(OperationDefinition):
     def execute(self, inputs: ExecuteInput) -> dict:
         for i in range(self.count):
             content = json.dumps({"value": i})
-            output_path = inputs.execute_dir / f"generated_{i:03d}.json"
-            output_path.write_text(content)
+            output_path = os.path.join(inputs.execute_dir, f"generated_{i:03d}.json")
+            with open(output_path, "w") as fh:
+                fh.write(content)
 
         return {"generated": self.count}
 
@@ -172,11 +179,13 @@ class GenerativeTestOp(OperationDefinition):
         """v4: Create draft MetricArtifacts from file_outputs."""
         drafts: list[MetricArtifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".json":
+            if file_path.endswith(".json"):
+                with open(file_path) as fh:
+                    content = json.loads(fh.read())
                 drafts.append(
                     MetricArtifact.draft(
-                        content=json.loads(file_path.read_text()),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from pathlib import Path
 
 from conftest import run_operation_lifecycle
@@ -19,8 +20,8 @@ def _write_input(tmp_path: Path, name: str = "input.csv", **kwargs) -> Path:
     return path
 
 
-def _read_csv(path: Path) -> list[dict]:
-    with path.open() as f:
+def _read_csv(path) -> list[dict]:
+    with open(path) as f:
         return list(csv.DictReader(f))
 
 
@@ -40,8 +41,9 @@ class TestDataTransformer:
 
         # Read the output file
         out_content = outputs[0].content
-        out_path = tmp_path / "check.csv"
-        out_path.write_bytes(out_content)
+        out_path = str(tmp_path / "check.csv")
+        with open(out_path, "wb") as fh:
+            fh.write(out_content)
         transformed = _read_csv(out_path)
 
         for orig, trans in zip(originals, transformed):
@@ -58,8 +60,9 @@ class TestDataTransformer:
         )
         assert result.success
         originals = _read_csv(path)
-        out_path = tmp_path / "check.csv"
-        out_path.write_bytes(result.artifacts["dataset"][0].content)
+        out_path = str(tmp_path / "check.csv")
+        with open(out_path, "wb") as fh:
+            fh.write(result.artifacts["dataset"][0].content)
         transformed = _read_csv(out_path)
 
         for orig, trans in zip(originals, transformed):
@@ -118,8 +121,9 @@ class TestDataTransformer:
         )
         # With scale=1 and noise=0, numeric values should be unchanged
         originals = _read_csv(path)
-        out_path = tmp_path / "check.csv"
-        out_path.write_bytes(result.artifacts["dataset"][0].content)
+        out_path = str(tmp_path / "check.csv")
+        with open(out_path, "wb") as fh:
+            fh.write(result.artifacts["dataset"][0].content)
         transformed = _read_csv(out_path)
 
         for orig, trans in zip(originals, transformed):

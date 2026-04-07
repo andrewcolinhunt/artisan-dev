@@ -9,6 +9,7 @@ FileRefArtifact is excluded (uses path-based materialization).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -33,10 +34,11 @@ class TestDataArtifactMaterialization:
         )
         artifact.finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        path = artifact.materialize_to(str(tmp_path))
 
-        assert path.name == f"{artifact.artifact_id}.csv"
-        assert path.read_bytes() == content
+        assert os.path.basename(path) == f"{artifact.artifact_id}.csv"
+        with open(path, "rb") as f:
+            assert f.read() == content
 
     def test_materialize_preserves_extension(self, tmp_path: Path):
         content = _csv_bytes("a\tb\n1\t2\n")
@@ -45,9 +47,9 @@ class TestDataArtifactMaterialization:
         )
         artifact.finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        path = artifact.materialize_to(str(tmp_path))
 
-        assert path.name == f"{artifact.artifact_id}.tsv"
+        assert os.path.basename(path) == f"{artifact.artifact_id}.tsv"
 
     def test_materialize_default_csv_extension(self, tmp_path: Path):
         """When extension is None, defaults to .csv."""
@@ -61,9 +63,9 @@ class TestDataArtifactMaterialization:
         )
         artifact.finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        path = artifact.materialize_to(str(tmp_path))
 
-        assert path.name == f"{artifact.artifact_id}.csv"
+        assert os.path.basename(path) == f"{artifact.artifact_id}.csv"
 
     def test_materialize_requires_finalized(self, tmp_path: Path):
         """Draft artifacts cannot be materialized (no artifact_id)."""
@@ -71,7 +73,7 @@ class TestDataArtifactMaterialization:
             content=_csv_bytes("a\n1\n"), original_name="test.csv", step_number=0
         )
         with pytest.raises(ValueError, match="not finalized"):
-            artifact.materialize_to(tmp_path)
+            artifact.materialize_to(str(tmp_path))
 
     def test_no_collision_with_duplicate_original_name(self, tmp_path: Path):
         """Two artifacts with same original_name get different filenames."""
@@ -84,11 +86,11 @@ class TestDataArtifactMaterialization:
         a.finalize()
         b.finalize()
 
-        path_a = a.materialize_to(tmp_path)
-        path_b = b.materialize_to(tmp_path)
+        path_a = a.materialize_to(str(tmp_path))
+        path_b = b.materialize_to(str(tmp_path))
 
         assert path_a != path_b
-        assert path_a.exists() and path_b.exists()
+        assert os.path.exists(path_a) and os.path.exists(path_b)
 
 
 class TestMetricArtifactMaterialization:
@@ -102,10 +104,11 @@ class TestMetricArtifactMaterialization:
         )
         artifact.finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        path = artifact.materialize_to(str(tmp_path))
 
-        assert path.name == f"{artifact.artifact_id}.json"
-        parsed = json.loads(path.read_bytes())
+        assert os.path.basename(path) == f"{artifact.artifact_id}.json"
+        with open(path, "rb") as f:
+            parsed = json.loads(f.read())
         assert parsed["score"] == 0.95
 
     def test_materialize_preserves_extension(self, tmp_path: Path):
@@ -116,9 +119,9 @@ class TestMetricArtifactMaterialization:
         )
         artifact.finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        path = artifact.materialize_to(str(tmp_path))
 
-        assert path.name == f"{artifact.artifact_id}.jsonl"
+        assert os.path.basename(path) == f"{artifact.artifact_id}.jsonl"
 
     def test_materialize_requires_finalized(self, tmp_path: Path):
         """Draft MetricArtifact cannot be materialized."""
@@ -128,7 +131,7 @@ class TestMetricArtifactMaterialization:
             step_number=0,
         )
         with pytest.raises(ValueError, match="not finalized"):
-            artifact.materialize_to(tmp_path)
+            artifact.materialize_to(str(tmp_path))
 
     def test_no_collision_with_duplicate_original_name(self, tmp_path: Path):
         """Two metrics with same original_name get different filenames."""
@@ -141,11 +144,11 @@ class TestMetricArtifactMaterialization:
         a.finalize()
         b.finalize()
 
-        path_a = a.materialize_to(tmp_path)
-        path_b = b.materialize_to(tmp_path)
+        path_a = a.materialize_to(str(tmp_path))
+        path_b = b.materialize_to(str(tmp_path))
 
         assert path_a != path_b
-        assert path_a.exists() and path_b.exists()
+        assert os.path.exists(path_a) and os.path.exists(path_b)
 
 
 class TestExecutionConfigArtifactMaterialization:
@@ -159,9 +162,9 @@ class TestExecutionConfigArtifactMaterialization:
         )
         artifact.finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        path = artifact.materialize_to(str(tmp_path))
 
-        assert path.name == f"{artifact.artifact_id}.json"
+        assert os.path.basename(path) == f"{artifact.artifact_id}.json"
 
     def test_materialize_preserves_extension(self, tmp_path: Path):
         artifact = ExecutionConfigArtifact.draft(
@@ -171,9 +174,9 @@ class TestExecutionConfigArtifactMaterialization:
         )
         artifact.finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        path = artifact.materialize_to(str(tmp_path))
 
-        assert path.name == f"{artifact.artifact_id}.yaml"
+        assert os.path.basename(path) == f"{artifact.artifact_id}.yaml"
 
 
 class TestFileRefArtifactExcluded:
@@ -195,7 +198,7 @@ class TestFileRefArtifactExcluded:
 
         output_dir = tmp_path / "output"
         output_dir.mkdir()
-        path = artifact.materialize_to(output_dir)
+        path = artifact.materialize_to(str(output_dir))
 
-        # FileRefArtifact uses Path(self.path).name, not artifact_id
-        assert path.name == "my_file.dat"
+        # FileRefArtifact uses os.path.basename(self.path), not artifact_id
+        assert os.path.basename(path) == "my_file.dat"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import signal
 import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -35,8 +34,8 @@ class TestToCLIValue:
     def test_bool_false(self):
         assert to_cli_value(False) == "false"
 
-    def test_path_converts_to_string(self):
-        assert to_cli_value(Path("/tmp/out")) == "/tmp/out"
+    def test_string_passes_through(self):
+        assert to_cli_value("/tmp/out") == "/tmp/out"
 
     def test_list_json_serializes(self):
         assert to_cli_value([1, 2, 3]) == "[1, 2, 3]"
@@ -73,8 +72,8 @@ class TestFormatArgs:
         result = format_args({"batch-size": 16, "verbose": True, "seed": 42})
         assert result == ["--batch-size", "16", "--verbose", "--seed", "42"]
 
-    def test_with_path(self):
-        result = format_args({"output": Path("/tmp/out")})
+    def test_with_string_path(self):
+        result = format_args({"output": "/tmp/out"})
         assert result == ["--output", "/tmp/out"]
 
 
