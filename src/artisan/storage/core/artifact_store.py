@@ -8,35 +8,46 @@ preparation for the artifact_index.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.provenance_store import ProvenanceStore
 from artisan.storage.core.table_schemas import get_schema
+from artisan.utils.path import uri_join
 
 
 class ArtifactStore:
     """Query and prepare artifacts stored in Delta Lake tables.
 
     Attributes:
-        base_path (Path): Root directory for Delta Lake tables.
+        base_path: Root URI/path for Delta Lake tables.
     """
 
-    def __init__(self, base_path: Path | str, *, files_root: Path | None = None):
+    def __init__(
+        self,
+        base_path: str,
+        *,
+        fs: AbstractFileSystem,
+        storage_options: dict[str, str] | None = None,
+        files_root: str | None = None,
+    ):
         """Initialize with the Delta Lake root directory.
 
         Args:
-            base_path: Root directory containing artifact and framework
+            base_path: Root URI/path containing artifact and framework
                 Delta tables (e.g. ``file_refs/``, ``data/``,
                 ``artifact_index/``).
-            files_root: Root directory for Artisan-managed external files.
+            fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
+            storage_options: Credentials/config passed to delta-rs calls.
+            files_root: Root URI/path for Artisan-managed external files.
                 None when external file storage is not configured.
         """
-        self.base_path = Path(base_path)
+        self.base_path = base_path
+        self._fs = fs
+        self._storage_options = storage_options or {}
         self.files_root = files_root
         self._provenance: ProvenanceStore | None = None
 
@@ -44,12 +55,14 @@ class ArtifactStore:
     def provenance(self) -> ProvenanceStore:
         """Lazy-initialized provenance store for graph queries."""
         if self._provenance is None:
-            self._provenance = ProvenanceStore(self.base_path)
+            self._provenance = ProvenanceStore(
+                self.base_path, fs=self._fs, storage_options=self._storage_options
+            )
         return self._provenance
 
-    def _table_path(self, table: TablePath) -> Path:
-        """Resolve the filesystem path for a Delta table."""
-        return self.base_path / table
+    def _table_path(self, table: TablePath) -> str:
+        """Resolve the URI for a Delta table."""
+        return uri_join(self.base_path, table)
 
     # -------------------------------------------------------------------------
     # Read operations
@@ -89,13 +102,13 @@ class ArtifactStore:
 
         # Full hydration - load from storage
         table_path_str = ArtifactTypeDef.get_table_path(artifact_type)
-        table_path = self.base_path / table_path_str
+        table_path = uri_join(self.base_path, table_path_str)
 
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return None
 
         result = (
-            pl.scan_delta(str(table_path))
+            pl.scan_delta(table_path, storage_options=self._storage_options)
             .filter(pl.col("artifact_id") == artifact_id)
             .limit(1)
             .collect()
@@ -128,13 +141,13 @@ class ArtifactStore:
             return {}
 
         table_path_str = ArtifactTypeDef.get_table_path(artifact_type)
-        table_path = self.base_path / table_path_str
+        table_path = uri_join(self.base_path, table_path_str)
 
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return {}
 
         result = (
-            pl.scan_delta(str(table_path))
+            pl.scan_delta(table_path, storage_options=self._storage_options)
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .collect()
         )
@@ -168,11 +181,11 @@ class ArtifactStore:
             Artifact type string, or None if not in the index.
         """
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
+        if not self._fs.exists(index_path):
             return None
 
         result = (
-            pl.scan_delta(str(index_path))
+            pl.scan_delta(index_path, storage_options=self._storage_options)
             .filter(pl.col("artifact_id") == artifact_id)
             .select("artifact_type")
             .limit(1)
@@ -327,13 +340,13 @@ class ArtifactStore:
             return empty
 
         table_path_str = ArtifactTypeDef.get_table_path("metric")
-        table_path = self.base_path / table_path_str
+        table_path = uri_join(self.base_path, table_path_str)
 
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return empty
 
         result = (
-            pl.scan_delta(str(table_path))
+            pl.scan_delta(table_path, storage_options=self._storage_options)
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(["artifact_id", "content"])
             .collect()

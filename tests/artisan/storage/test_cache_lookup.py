@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.enums import CacheValidationReason
 from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
@@ -18,7 +19,7 @@ from artisan.storage.core.table_schemas import (
 
 
 @pytest.fixture
-def executions_path(tmp_path: Path) -> Path:
+def executions_path(tmp_path: Path) -> str:
     """Create executions and execution_edges tables with test data."""
     records_path = tmp_path / "orchestration/executions"
     provenance_path = tmp_path / "provenance/execution_edges"
@@ -59,12 +60,12 @@ def executions_path(tmp_path: Path) -> Path:
     prov_df = pl.DataFrame(provenance_data, schema=EXECUTION_EDGES_SCHEMA)
     prov_df.write_delta(str(provenance_path), mode="overwrite")
 
-    return records_path
+    return str(records_path)
 
 
-def test_cache_hit(executions_path: Path) -> None:
+def test_cache_hit(executions_path: str) -> None:
     """Cache hit returns inputs/outputs from successful execution."""
-    result = cache_lookup(executions_path, "spec_success")
+    result = cache_lookup(executions_path, "spec_success", LocalFileSystem())
 
     assert isinstance(result, CacheHit)
     assert result.execution_spec_id == "spec_success"
@@ -74,23 +75,23 @@ def test_cache_hit(executions_path: Path) -> None:
 
 def test_cache_miss_no_execution(tmp_path: Path) -> None:
     """Cache miss when no execution exists."""
-    result = cache_lookup(tmp_path / "nonexistent", "any_spec")
+    result = cache_lookup(str(tmp_path / "nonexistent"), "any_spec", LocalFileSystem())
 
     assert isinstance(result, CacheMiss)
     assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
 
 
-def test_cache_miss_failed_execution(executions_path: Path) -> None:
+def test_cache_miss_failed_execution(executions_path: str) -> None:
     """Cache miss when execution exists but failed."""
-    result = cache_lookup(executions_path, "spec_failed")
+    result = cache_lookup(executions_path, "spec_failed", LocalFileSystem())
 
     assert isinstance(result, CacheMiss)
     assert result.reason == CacheValidationReason.EXECUTION_FAILED
 
 
-def test_cache_miss_unknown_spec_id(executions_path: Path) -> None:
+def test_cache_miss_unknown_spec_id(executions_path: str) -> None:
     """Cache miss when spec_id not found in existing table."""
-    result = cache_lookup(executions_path, "nonexistent_spec")
+    result = cache_lookup(executions_path, "nonexistent_spec", LocalFileSystem())
 
     assert isinstance(result, CacheMiss)
     assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
@@ -139,14 +140,14 @@ def test_cache_lookup_returns_most_recent_on_multiple_successes(
     prov_df = pl.DataFrame(provenance_data, schema=EXECUTION_EDGES_SCHEMA)
     prov_df.write_delta(str(provenance_path), mode="overwrite")
 
-    result = cache_lookup(records_path, "same_spec")
+    result = cache_lookup(str(records_path), "same_spec", LocalFileSystem())
 
     assert isinstance(result, CacheHit)
     assert result.execution_run_id == "run_new"
 
 
 def test_cache_hit_enables_output_reference_resolution(
-    executions_path: Path,
+    executions_path: str,
 ) -> None:
     """Cache hit provides outputs for OutputReference resolution.
 
@@ -158,7 +159,7 @@ def test_cache_hit_enables_output_reference_resolution(
     - Cache hit returns inputs/outputs with role -> artifact_id mappings
     - No new ExecutionRecord needed - artifacts exist from original execution
     """
-    result = cache_lookup(executions_path, "spec_success")
+    result = cache_lookup(executions_path, "spec_success", LocalFileSystem())
 
     assert isinstance(result, CacheHit)
 
@@ -184,7 +185,7 @@ def test_cache_miss_reasons_for_different_scenarios(tmp_path: Path) -> None:
     3. Record execution
     """
     # Non-existent table -> NO_PREVIOUS_EXECUTION
-    result = cache_lookup(tmp_path / "nonexistent", "any_spec")
+    result = cache_lookup(str(tmp_path / "nonexistent"), "any_spec", LocalFileSystem())
     assert isinstance(result, CacheMiss)
     assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
 
