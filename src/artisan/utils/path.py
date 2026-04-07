@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import posixpath
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -173,3 +174,37 @@ def shard_path(
             / execution_run_id
         )
     return root / execution_run_id[:2] / execution_run_id[2:4] / execution_run_id
+
+
+# ---------------------------------------------------------------------------
+# URI-safe path operations
+# ---------------------------------------------------------------------------
+
+
+def uri_join(base: str, *parts: str) -> str:
+    """Join URI/path segments. Works for local paths and cloud URIs.
+
+    Uses ``posixpath.join`` which operates on string structure without
+    assuming OS conventions. Both local POSIX paths and cloud URIs
+    (``s3://``, ``gcs://``) use ``/`` as the separator.
+
+    Args:
+        base: Base URI or path.
+        *parts: Segments to append.
+
+    Returns:
+        Joined URI string.
+    """
+    return posixpath.join(base, *parts)
+
+
+def uri_parent(uri: str) -> str:
+    """Parent directory of a URI/path. Works for local paths and cloud URIs.
+
+    Args:
+        uri: URI or path string.
+
+    Returns:
+        Parent directory URI string.
+    """
+    return posixpath.dirname(uri)
