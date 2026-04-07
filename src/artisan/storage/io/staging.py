@@ -17,12 +17,11 @@ Staging directory layout::
 from __future__ import annotations
 
 import logging
-import os
-import shutil
+import posixpath
 import uuid
-from pathlib import Path
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.utils.path import step_dir_name
 
@@ -33,47 +32,47 @@ class StagingArea:
     """Per-worker staging area for writing Parquet files.
 
     Attributes:
-        staging_dir (Path): Root staging directory.
-        batch_id (str): Unique identifier for this batch of writes.
+        staging_dir: Root staging URI/path.
+        batch_id: Unique identifier for this batch of writes.
     """
 
     def __init__(
         self,
-        staging_dir: Path | str,
+        staging_dir: str,
+        fs: AbstractFileSystem,
         batch_id: str | None = None,
         worker_id: int = 0,
     ):
         """Initialize a staging area for one batch of writes.
 
         Args:
-            staging_dir: Root directory for staging files.
+            staging_dir: Root URI/path for staging files.
+            fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
             batch_id: Unique batch identifier. Generated from
                 ``worker_id`` and a UUID fragment when None.
             worker_id: Numeric worker identifier embedded in the
                 auto-generated ``batch_id``.
         """
-        self.staging_dir = Path(staging_dir)
+        self.staging_dir = staging_dir
+        self._fs = fs
         self.worker_id = worker_id
 
         if batch_id is None:
-            # Generate unique batch ID including worker and timestamp
             self.batch_id = f"w{worker_id}_{uuid.uuid4().hex[:12]}"
         else:
             self.batch_id = batch_id
 
-        # Create batch directory
-        self._batch_dir = self.staging_dir / self.batch_id
-        self._batch_dir.mkdir(parents=True, exist_ok=True)
+        self._batch_dir = f"{staging_dir}/{self.batch_id}"
+        self._fs.makedirs(self._batch_dir, exist_ok=True)
 
-        # Track what has been staged
         self._staged_tables: set[str] = set()
 
     @property
-    def batch_dir(self) -> Path:
-        """Batch-specific staging directory."""
+    def batch_dir(self) -> str:
+        """Batch-specific staging URI/path."""
         return self._batch_dir
 
-    def stage_dataframe(self, df: pl.DataFrame, table_name: str) -> Path:
+    def stage_dataframe(self, df: pl.DataFrame, table_name: str) -> str:
         """Write a DataFrame to a staged Parquet file.
 
         If a file for ``table_name`` was already staged in this batch,
@@ -81,30 +80,30 @@ class StagingArea:
 
         Args:
             df: Data to stage. An empty DataFrame is a no-op that
-                returns the expected path without writing.
+                returns the expected URI without writing.
             table_name: Target Delta table name (used as the filename
                 stem, e.g. ``"data"`` becomes ``data.parquet``).
 
         Returns:
-            Path to the staged Parquet file.
+            URI of the staged Parquet file.
         """
+        parquet_uri = f"{self._batch_dir}/{table_name}.parquet"
+
         if df.is_empty():
-            return self._batch_dir / f"{table_name}.parquet"
+            return parquet_uri
 
-        parquet_path = self._batch_dir / f"{table_name}.parquet"
-
-        # If we already staged this table, append by reading existing and concat
-        # Note: rechunk=True ensures contiguous memory after concat (behavior
-        # changed in Polars v0.20.26 where rechunk=False became the default)
-        if table_name in self._staged_tables and parquet_path.exists():
-            existing = pl.read_parquet(parquet_path)
+        # Append by concat if we already staged this table
+        # rechunk=True ensures contiguous memory (default changed in Polars v0.20.26)
+        if table_name in self._staged_tables and self._fs.exists(parquet_uri):
+            with self._fs.open(parquet_uri, "rb") as f:
+                existing = pl.read_parquet(f)
             df = pl.concat([existing, df], rechunk=True)
 
-        # Use zstd compression for good compression ratio and performance
-        df.write_parquet(parquet_path, compression="zstd")
+        with self._fs.open(parquet_uri, "wb") as f:
+            df.write_parquet(f, compression="zstd")
         self._staged_tables.add(table_name)
 
-        return parquet_path
+        return parquet_uri
 
     def stage_artifacts(self, artifacts_by_table: dict[str, pl.DataFrame]) -> None:
         """Stage multiple artifact DataFrames in one call.
@@ -117,22 +116,22 @@ class StagingArea:
             if not df.is_empty():
                 self.stage_dataframe(df, table_name)
 
-    def get_staged_file(self, table_name: str) -> Path | None:
-        """Return the path to a previously staged Parquet file.
+    def get_staged_file(self, table_name: str) -> str | None:
+        """Return the URI of a previously staged Parquet file.
 
         Args:
             table_name: Delta table name to look up.
 
         Returns:
-            Path to the staged file, or None if nothing was staged
+            URI of the staged file, or None if nothing was staged
             for this table or the file no longer exists.
         """
         if table_name not in self._staged_tables:
             return None
 
-        parquet_path = self._batch_dir / f"{table_name}.parquet"
-        if parquet_path.exists():
-            return parquet_path
+        parquet_uri = f"{self._batch_dir}/{table_name}.parquet"
+        if self._fs.exists(parquet_uri):
+            return parquet_uri
 
         return None
 
@@ -142,8 +141,8 @@ class StagingArea:
 
     def cleanup(self) -> None:
         """Remove this batch's staging directory and reset state."""
-        if self._batch_dir.exists():
-            shutil.rmtree(self._batch_dir)
+        if self._fs.exists(self._batch_dir):
+            self._fs.rm(self._batch_dir, recursive=True)
         self._staged_tables.clear()
 
     def __enter__(self) -> StagingArea:
@@ -163,44 +162,38 @@ class StagingManager:
     """Discover and read staged Parquet files from multiple workers.
 
     Attributes:
-        staging_dir (Path): Root staging directory containing worker
+        staging_dir: Root staging URI/path containing worker
             batch subdirectories.
     """
 
-    def __init__(self, staging_dir: Path | str):
+    def __init__(self, staging_dir: str, fs: AbstractFileSystem):
         """Initialize with the root staging directory.
 
         Args:
-            staging_dir: Directory containing per-worker batch
-                subdirectories.
+            staging_dir: URI/path containing per-worker batch subdirectories.
+            fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
         """
-        self.staging_dir = Path(staging_dir)
+        self.staging_dir = staging_dir
+        self._fs = fs
 
     def list_batch_ids(self) -> list[str]:
         """Return batch IDs present in the staging directory."""
-        if not self.staging_dir.exists():
+        if not self._fs.exists(self.staging_dir):
             return []
 
+        entries = self._fs.ls(self.staging_dir, detail=False)
         return [
-            d.name
-            for d in self.staging_dir.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
+            posixpath.basename(e.rstrip("/"))
+            for e in entries
+            if self._fs.isdir(e) and not posixpath.basename(e.rstrip("/")).startswith(".")
         ]
-
-    @staticmethod
-    def _invalidate_nfs_cache(directory: Path) -> None:
-        """Force NFS to refresh its directory entry cache."""
-        try:
-            os.listdir(directory)
-        except (FileNotFoundError, PermissionError, OSError):
-            pass
 
     def get_staged_files_for_table(
         self,
         table_name: str,
         step_number: int | None = None,
         operation_name: str | None = None,
-    ) -> list[Path]:
+    ) -> list[str]:
         """Collect staged Parquet files for a table across all batches.
 
         Supports both flat (``{batch_id}/{table}.parquet``) and sharded
@@ -214,27 +207,22 @@ class StagingManager:
                 alongside ``step_number``.
 
         Returns:
-            Paths to matching Parquet files. Empty list when the
+            URIs of matching Parquet files. Empty list when the
             staging directory does not exist.
         """
-        # Invalidate NFS directory cache so rglob() sees files from workers
-        self._invalidate_nfs_cache(self.staging_dir)
-
-        if not self.staging_dir.exists():
+        if not self._fs.exists(self.staging_dir):
             return []
 
         if step_number is not None:
             if operation_name is not None:
-                step_dir = self.staging_dir / step_dir_name(step_number, operation_name)
+                step_dir = f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
             else:
-                step_dir = self.staging_dir / str(step_number)
-            self._invalidate_nfs_cache(step_dir)
-            if not step_dir.exists():
+                step_dir = f"{self.staging_dir}/{step_number}"
+            if not self._fs.exists(step_dir):
                 return []
-            return list(step_dir.rglob(f"{table_name}.parquet"))
+            return self._fs.glob(f"{step_dir}/**/{table_name}.parquet")
 
-        # Backward compatible: search all directories
-        return list(self.staging_dir.rglob(f"{table_name}.parquet"))
+        return self._fs.glob(f"{self.staging_dir}/**/{table_name}.parquet")
 
     def read_all_staged_for_table(
         self,
@@ -262,15 +250,15 @@ class StagingManager:
         if not files:
             return None
 
-        # rechunk=True ensures contiguous memory (default changed in Polars v0.20.26)
         dfs = []
-        for f in files:
+        for uri in files:
             try:
-                dfs.append(pl.read_parquet(f))
+                with self._fs.open(uri, "rb") as f:
+                    dfs.append(pl.read_parquet(f))
             except Exception as exc:
                 logger.warning(
                     "Skipping corrupted staging file %s: %s: %s",
-                    f,
+                    uri,
                     type(exc).__name__,
                     exc,
                 )
@@ -284,9 +272,9 @@ class StagingManager:
         Args:
             batch_id: Batch directory to delete. No-op if missing.
         """
-        batch_dir = self.staging_dir / batch_id
-        if batch_dir.exists():
-            shutil.rmtree(batch_dir)
+        batch_dir = f"{self.staging_dir}/{batch_id}"
+        if self._fs.exists(batch_dir):
+            self._fs.rm(batch_dir, recursive=True)
 
     def cleanup_step(self, step_number: int, operation_name: str | None = None) -> None:
         """Remove all staging directories for a given step.
@@ -297,11 +285,11 @@ class StagingManager:
                 the step directory uses the ``{number}_{name}`` format.
         """
         if operation_name is not None:
-            step_dir = self.staging_dir / step_dir_name(step_number, operation_name)
+            step_dir = f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
         else:
-            step_dir = self.staging_dir / str(step_number)
-        if step_dir.exists():
-            shutil.rmtree(step_dir)
+            step_dir = f"{self.staging_dir}/{step_number}"
+        if self._fs.exists(step_dir):
+            self._fs.rm(step_dir, recursive=True)
 
     def cleanup_all(self) -> None:
         """Remove every batch directory under the staging root."""
