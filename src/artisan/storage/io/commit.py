@@ -9,10 +9,10 @@ compaction/vacuum.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import polars as pl
 from deltalake import DeltaTable, WriterProperties
+from fsspec import AbstractFileSystem
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ from artisan.storage.core.table_schemas import (
     NON_PARTITIONED_TABLES,
 )
 from artisan.storage.io.staging import StagingManager
+from artisan.utils.path import uri_join
 
 # Default writer properties for Delta Lake writes
 # Using zstd compression for good compression ratio and performance
@@ -36,7 +37,7 @@ def _to_str(table: str) -> str:
 
 def _table_name_from_path(table_path: str) -> str:
     """Extract table name (last segment) from a table path string."""
-    return Path(table_path).name
+    return table_path.rsplit("/", 1)[-1]
 
 
 def _get_commit_order() -> list[str]:
@@ -59,24 +60,34 @@ class DeltaCommitter:
     """Commit staged Parquet files to Delta Lake tables.
 
     Attributes:
-        delta_base_path (Path): Root directory for Delta Lake tables.
-        staging_manager (StagingManager): Manages staged Parquet files.
+        delta_base_path: Root URI/path for Delta Lake tables.
+        staging_manager: Manages staged Parquet files.
     """
 
-    def __init__(self, delta_base_path: Path | str, staging_dir: Path | str):
-        """Initialize with Delta Lake root and staging directories.
+    def __init__(
+        self,
+        delta_base_path: str,
+        staging_manager: StagingManager,
+        *,
+        fs: AbstractFileSystem,
+        storage_options: dict[str, str] | None = None,
+    ):
+        """Initialize with Delta Lake root and a staging manager.
 
         Args:
-            delta_base_path: Root directory for Delta Lake tables.
-            staging_dir: Root directory containing worker-staged
-                Parquet files.
+            delta_base_path: Root URI/path for Delta Lake tables.
+            staging_manager: Pre-constructed staging manager instance.
+            fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
+            storage_options: Credentials/config passed to delta-rs calls.
         """
-        self.delta_base_path = Path(delta_base_path)
-        self.staging_manager = StagingManager(staging_dir)
+        self.delta_base_path = delta_base_path
+        self.staging_manager = staging_manager
+        self._fs = fs
+        self._storage_options = storage_options or {}
 
-    def _table_path(self, table: str) -> Path:
-        """Resolve the filesystem path for a Delta table."""
-        return self.delta_base_path / table
+    def _table_path(self, table: str) -> str:
+        """Resolve the URI for a Delta table."""
+        return uri_join(self.delta_base_path, table)
 
     def _is_non_partitioned(self, table: str) -> bool:
         """Check if a table should not be partitioned."""
@@ -151,25 +162,25 @@ class DeltaCommitter:
                 return 0
 
         # Write to Delta Lake with zstd compression
-        if table_path.exists():
-            # Append to existing table (schema_mode=merge for column evolution)
+        if self._fs.exists(table_path):
             staged_df.write_delta(
-                str(table_path),
+                table_path,
                 mode="append",
                 delta_write_options={
                     "writer_properties": DEFAULT_WRITER_PROPERTIES,
                     "schema_mode": "merge",
                 },
+                storage_options=self._storage_options,
             )
         else:
-            # Create new table with partitioning
             write_opts = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
             if partition_by:
                 write_opts["partition_by"] = partition_by
             staged_df.write_delta(
-                str(table_path),
+                table_path,
                 mode="overwrite",
                 delta_write_options=write_opts,
+                storage_options=self._storage_options,
             )
 
         return staged_df.shape[0]
@@ -258,7 +269,7 @@ class DeltaCommitter:
             Mapping of table name to rows committed. Empty dict when
             no leftover staging files are found.
         """
-        if not self.staging_manager.staging_dir.exists():
+        if not self._fs.exists(self.staging_manager.staging_dir):
             return {}
 
         probe = self.staging_manager.get_staged_files_for_table("executions")
@@ -297,16 +308,17 @@ class DeltaCommitter:
             rows are omitted.
         """
         results = {}
-        batch_dir = self.staging_manager.staging_dir / batch_id
+        batch_dir = f"{self.staging_manager.staging_dir}/{batch_id}"
 
-        if not batch_dir.exists():
+        if not self._fs.exists(batch_dir):
             return results
 
         for table in _get_commit_order():
             table_name = _table_name_from_path(_to_str(table))
-            parquet_path = batch_dir / f"{table_name}.parquet"
-            if parquet_path.exists():
-                df = pl.read_parquet(parquet_path)
+            parquet_uri = f"{batch_dir}/{table_name}.parquet"
+            if self._fs.exists(parquet_uri):
+                with self._fs.open(parquet_uri, "rb") as f:
+                    df = pl.read_parquet(f)
                 if not df.is_empty():
                     rows = self.commit_dataframe(df, table)
                     if rows > 0:
@@ -322,13 +334,17 @@ class DeltaCommitter:
     # -------------------------------------------------------------------------
 
     def _deduplicate_artifacts(
-        self, df: pl.DataFrame, table_path: Path
+        self, df: pl.DataFrame, table_path: str
     ) -> pl.DataFrame:
         """Remove rows whose artifact_id already exists in Delta."""
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return df
 
-        existing_ids = pl.scan_delta(str(table_path)).select("artifact_id").collect()
+        existing_ids = (
+            pl.scan_delta(table_path, storage_options=self._storage_options)
+            .select("artifact_id")
+            .collect()
+        )
 
         if existing_ids.is_empty():
             return df
@@ -365,23 +381,25 @@ class DeltaCommitter:
             ["origin_step_number"] if not self._is_non_partitioned(table) else None
         )
 
-        if table_path.exists():
+        if self._fs.exists(table_path):
             df.write_delta(
-                str(table_path),
+                table_path,
                 mode="append",
                 delta_write_options={
                     "writer_properties": DEFAULT_WRITER_PROPERTIES,
                     "schema_mode": "merge",
                 },
+                storage_options=self._storage_options,
             )
         else:
             write_opts = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
             if partition_by:
                 write_opts["partition_by"] = partition_by
             df.write_delta(
-                str(table_path),
+                table_path,
                 mode="overwrite",
                 delta_write_options=write_opts,
+                storage_options=self._storage_options,
             )
 
         return df.shape[0]
@@ -399,7 +417,7 @@ class DeltaCommitter:
         # Initialize framework tables
         for table, schema in FRAMEWORK_SCHEMAS.items():
             table_path = self._table_path(_to_str(table))
-            if not table_path.exists():
+            if not self._fs.exists(table_path):
                 empty_df = pl.DataFrame(schema=schema)
                 if self._is_non_partitioned(table):
                     partition_by = None
@@ -409,24 +427,26 @@ class DeltaCommitter:
                 if partition_by:
                     write_opts["partition_by"] = partition_by
                 empty_df.write_delta(
-                    str(table_path),
+                    table_path,
                     mode="overwrite",
                     delta_write_options=write_opts,
+                    storage_options=self._storage_options,
                 )
 
         # Initialize artifact content tables from registry
         for type_def in ArtifactTypeDef.get_all().values():
             table_path = self._table_path(type_def.table_path)
-            if not table_path.exists():
+            if not self._fs.exists(table_path):
                 empty_df = pl.DataFrame(schema=type_def.polars_schema())
                 write_opts = {
                     "writer_properties": DEFAULT_WRITER_PROPERTIES,
                     "partition_by": ["origin_step_number"],
                 }
                 empty_df.write_delta(
-                    str(table_path),
+                    table_path,
                     mode="overwrite",
                     delta_write_options=write_opts,
+                    storage_options=self._storage_options,
                 )
 
     def compact_table(
@@ -448,10 +468,10 @@ class DeltaCommitter:
             Dict with ``files_added`` and ``files_removed`` counts.
         """
         table_path = self._table_path(_to_str(table))
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return {"files_added": 0, "files_removed": 0}
 
-        dt = DeltaTable(str(table_path))
+        dt = DeltaTable(table_path, storage_options=self._storage_options)
 
         partition_filters = None
         if step_number is not None and not self._is_non_partitioned(table):
@@ -527,8 +547,8 @@ class DeltaCommitter:
                 Defaults to 168 (7 days).
         """
         table_path = self._table_path(_to_str(table))
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return
 
-        dt = DeltaTable(str(table_path))
+        dt = DeltaTable(table_path, storage_options=self._storage_options)
         dt.vacuum(retention_hours=retention_hours, enforce_retention_duration=False)
