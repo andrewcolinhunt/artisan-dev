@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -125,9 +126,11 @@ class TestMaterialize:
             content=content, original_name="out.csv", step_number=0
         )
         artifact.finalize()
-        path = artifact.materialize_to(tmp_path)
-        assert path == tmp_path / f"{artifact.artifact_id}.csv"
-        assert path.read_bytes() == content
+        path = artifact.materialize_to(str(tmp_path))
+        expected = os.path.join(str(tmp_path), f"{artifact.artifact_id}.csv")
+        assert path == expected
+        with open(path, "rb") as f:
+            assert f.read() == content
         assert artifact.materialized_path == path
 
 
@@ -140,7 +143,7 @@ class TestMaterializeFormat:
         )
         artifact.finalize()
         with pytest.raises(ValueError, match="does not support format conversion"):
-            artifact.materialize_to(tmp_path, format=".tsv")
+            artifact.materialize_to(str(tmp_path), format=".tsv")
 
 
 class TestTypeRegistration:

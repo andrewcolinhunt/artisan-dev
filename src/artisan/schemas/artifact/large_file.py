@@ -9,8 +9,8 @@ embedding matrices, simulation outputs, HDF5 datasets.
 from __future__ import annotations
 
 import json
+import os
 import shutil
-from pathlib import Path
 from typing import Any, ClassVar, Self
 
 import polars as pl
@@ -76,7 +76,7 @@ class LargeFileArtifact(Artifact):
             sort_keys=True,
         ).encode("utf-8")
 
-    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
+    def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Copy the file from external_path to the target directory.
 
         Uses artifact_id as filename (per Design 1 convention).
@@ -95,11 +95,11 @@ class LargeFileArtifact(Artifact):
             msg = "Cannot materialize: external_path not set"
             raise ValueError(msg)
         filename = f"{self.artifact_id}{self.extension or ''}"
-        dest = directory / filename
+        dest = os.path.join(directory, filename)
         if fs is not None:
-            fs.get(self.external_path, str(dest))
+            fs.get(self.external_path, dest)
         else:
-            shutil.copy2(self.external_path, str(dest))
+            shutil.copy2(self.external_path, dest)
         self.materialized_path = dest
         return dest
 

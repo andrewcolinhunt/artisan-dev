@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -135,10 +136,11 @@ class TestMaterialize:
 
         out_dir = tmp_path / "output"
         out_dir.mkdir()
-        result_path = art.materialize_to(out_dir)
+        result_path = art.materialize_to(str(out_dir))
 
-        assert result_path.exists()
-        assert result_path.read_bytes() == data
+        assert os.path.exists(result_path)
+        with open(result_path, "rb") as f:
+            assert f.read() == data
 
     def test_materialize_uses_artifact_id_filename(self, tmp_path: Path) -> None:
         source = tmp_path / "source.bin"
@@ -155,9 +157,9 @@ class TestMaterialize:
 
         out_dir = tmp_path / "output"
         out_dir.mkdir()
-        result_path = art.materialize_to(out_dir)
+        result_path = art.materialize_to(str(out_dir))
 
-        assert result_path.name == f"{art.artifact_id}.bin"
+        assert os.path.basename(result_path) == f"{art.artifact_id}.bin"
 
     def test_materialize_raises_without_external_path(self, tmp_path: Path) -> None:
         art = LargeFileArtifact(
@@ -167,7 +169,7 @@ class TestMaterialize:
             content_hash="b" * 32,
         )
         with pytest.raises(ValueError, match="external_path not set"):
-            art.materialize_to(tmp_path)
+            art.materialize_to(str(tmp_path))
 
 
 class TestTypeRegistration:

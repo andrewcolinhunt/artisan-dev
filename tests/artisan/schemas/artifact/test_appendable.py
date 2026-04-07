@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -157,10 +158,11 @@ class TestMaterialize:
         art.finalize()
         out_dir = tmp_path / "output"
         out_dir.mkdir(parents=True)
-        result_path = art.materialize_to(out_dir)
+        result_path = art.materialize_to(str(out_dir))
 
-        assert result_path.exists()
-        data = json.loads(result_path.read_text())
+        assert os.path.exists(result_path)
+        with open(result_path) as f:
+            data = json.loads(f.read())
         assert data["record_id"] == "rec_000000"
         assert data["values"]["x"] == 1.0
 
@@ -173,7 +175,7 @@ class TestMaterialize:
             content_hash="b" * 32,
         )
         with pytest.raises(ValueError, match="external_path not set"):
-            art.materialize_to(tmp_path)
+            art.materialize_to(str(tmp_path))
 
     def test_materialize_raises_for_missing_record(self, tmp_path: Path) -> None:
         jsonl_path = tmp_path / "bundle.jsonl"
@@ -188,7 +190,7 @@ class TestMaterialize:
             external_path=str(jsonl_path),
         )
         with pytest.raises(ValueError, match="not_found"):
-            art.materialize_to(tmp_path / "out")
+            art.materialize_to(str(tmp_path / "out"))
 
 
 class TestTypeRegistration:

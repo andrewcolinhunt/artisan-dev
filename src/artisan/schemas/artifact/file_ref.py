@@ -7,7 +7,7 @@ without embedding the file bytes in Delta Lake storage.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from typing import Any, ClassVar, Self
 
 import polars as pl
@@ -86,10 +86,11 @@ class FileRefArtifact(Artifact):
                 with fs.open(self.path, "rb") as f:
                     self._cached_content = f.read()
             else:
-                self._cached_content = Path(self.path).read_bytes()
+                with open(self.path, "rb") as fh:
+                    self._cached_content = fh.read()
         return self._cached_content
 
-    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
+    def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Copy the referenced file into the given directory.
 
         Args:
@@ -105,10 +106,11 @@ class FileRefArtifact(Artifact):
         if self.path is None:
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
-        path = directory / Path(self.path).name
-        path.write_bytes(self.read_content(fs=fs))
-        self.materialized_path = path
-        return path
+        dest = os.path.join(directory, os.path.basename(self.path))
+        with open(dest, "wb") as f:
+            f.write(self.read_content(fs=fs))
+        self.materialized_path = dest
+        return dest
 
     @classmethod
     def draft(

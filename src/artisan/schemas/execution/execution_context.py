@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fsspec import AbstractFileSystem
@@ -52,7 +51,7 @@ class ExecutionContext:
     fs: AbstractFileSystem
     operation_name: str
     operation: OperationDefinition
-    sandbox_path: Path | None  # None for curator operations
+    sandbox_path: str | None  # None for curator operations
     compute_backend: str = "local"
     shared_filesystem: bool = False
     step_run_id: str | None = None

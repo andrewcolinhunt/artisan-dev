@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,10 @@ def _run(
     seed: int | None = 42,
 ) -> tuple[dict, ArtifactResult]:
     """Run execute + postprocess and return both results."""
-    files_dir = tmp_path / "files"
-    files_dir.mkdir(parents=True)
-    execute_dir = tmp_path / "execute"
-    execute_dir.mkdir(parents=True)
+    files_dir = str(tmp_path / "files")
+    os.makedirs(files_dir, exist_ok=True)
+    execute_dir = str(tmp_path / "execute")
+    os.makedirs(execute_dir, exist_ok=True)
 
     op = LargeFileGenerator(
         params=LargeFileGenerator.Params(
@@ -40,7 +41,7 @@ def _run(
 
     post_input = PostprocessInput(
         step_number=0,
-        postprocess_dir=tmp_path / "post",
+        postprocess_dir=str(tmp_path / "post"),
         memory_outputs=raw,
     )
     result = op.postprocess(post_input)
@@ -57,8 +58,8 @@ class TestLargeFileGenerator:
 
     def test_file_size_matches_param(self, tmp_path: Path) -> None:
         raw, _ = _run(tmp_path, count=1, file_size_bytes=500)
-        file_path = Path(raw["files"][0]["path"])
-        assert file_path.stat().st_size == 500
+        file_path = raw["files"][0]["path"]
+        assert os.path.getsize(file_path) == 500
 
     def test_reproducible_with_seed(self, tmp_path: Path) -> None:
         _, r1 = _run(tmp_path / "a", seed=99)
@@ -81,7 +82,7 @@ class TestLargeFileGenerator:
 
     def test_requires_files_dir(self, tmp_path: Path) -> None:
         op = LargeFileGenerator()
-        ei = ExecuteInput(execute_dir=tmp_path, files_dir=None)
+        ei = ExecuteInput(execute_dir=str(tmp_path), files_dir=None)
         with pytest.raises(ValueError, match="files_dir required"):
             op.execute(ei)
 
@@ -92,7 +93,8 @@ class TestLargeFileGenerator:
 
     def test_content_hash_correct(self, tmp_path: Path) -> None:
         raw, _ = _run(tmp_path, count=1, file_size_bytes=100)
-        file_path = Path(raw["files"][0]["path"])
-        data = file_path.read_bytes()
+        file_path = raw["files"][0]["path"]
+        with open(file_path, "rb") as fh:
+            data = fh.read()
         expected = compute_content_hash(data)
         assert raw["files"][0]["content_hash"] == expected

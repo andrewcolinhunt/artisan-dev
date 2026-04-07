@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from typing import Any, ClassVar, Self
 
 import polars as pl
@@ -121,12 +121,12 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
 
     def materialize_to(
         self,
-        directory: Path,
-        resolved_paths: dict[str, Path] | None = None,
+        directory: str,
+        resolved_paths: dict[str, str] | None = None,
         *,
         format: str | None = None,
         fs: Any = None,
-    ) -> Path:
+    ) -> str:
         """Write config JSON to disk, resolving artifact references.
 
         When ``resolved_paths`` is provided, ``{"$artifact": id}``
@@ -156,7 +156,7 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
 
         stem = self.artifact_id
         ext = self.extension or ".json"
-        config_path = directory / f"{stem}{ext}"
+        config_path = os.path.join(directory, f"{stem}{ext}")
 
         ref_ids = self.get_artifact_references()
         if ref_ids and resolved_paths is not None:
@@ -164,11 +164,13 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
             if missing:
                 msg = f"Missing paths for referenced artifacts: {missing}"
                 raise ValueError(msg)
-            id_to_path = {ref_id: str(resolved_paths[ref_id]) for ref_id in ref_ids}
+            id_to_path = {ref_id: resolved_paths[ref_id] for ref_id in ref_ids}
             resolved = substitute_references(self.values, id_to_path)
-            config_path.write_text(json.dumps(resolved, indent=2))
+            with open(config_path, "w") as f:
+                f.write(json.dumps(resolved, indent=2))
         else:
-            config_path.write_bytes(self.content)
+            with open(config_path, "wb") as f:
+                f.write(self.content)
 
         self.materialized_path = config_path
         return config_path
