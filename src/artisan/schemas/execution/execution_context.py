@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from fsspec import AbstractFileSystem
+
 if TYPE_CHECKING:
     from artisan.operations.base.operation_definition import OperationDefinition
     from artisan.storage.core.artifact_store import ArtifactStore
@@ -30,7 +32,8 @@ class ExecutionContext:
         timestamp_start: Execution start time (UTC).
         worker_id: Worker identifier for distributed execution.
         artifact_store: ArtifactStore instance for artifact lookups.
-        staging_root: Root path for staging Parquet files.
+        staging_root: Root URI/path for staging Parquet files.
+        fs: Filesystem implementation for staging I/O.
         operation_name: Operation name string.
         operation: Fully configured OperationDefinition instance.
         sandbox_path: Creator sandbox directory. None for curators.
@@ -45,7 +48,8 @@ class ExecutionContext:
     timestamp_start: datetime
     worker_id: int
     artifact_store: ArtifactStore
-    staging_root: Path
+    staging_root: str
+    fs: AbstractFileSystem
     operation_name: str
     operation: OperationDefinition
     sandbox_path: Path | None  # None for curator operations

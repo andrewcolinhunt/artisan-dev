@@ -126,17 +126,20 @@ def record_execution_success(
         _stage_execution,
     )
 
+    fs = execution_context.fs
     staging_path = _create_staging_path(
         execution_context.staging_root,
         execution_context.execution_run_id,
         execution_context.step_number,
-        operation_name=execution_context.operation_name,
+        execution_context.operation_name,
+        fs,
     )
     artifact_ids = _stage_artifacts(
         artifacts,
         lineage_edges,
         execution_context.step_number,
         staging_path,
+        fs,
     )
     output_ids = {
         role: [a.artifact_id for a in arts] for role, arts in artifacts.items()
@@ -153,6 +156,7 @@ def record_execution_success(
         step_number=execution_context.step_number,
         execution_edges=execution_edges,
         staging_path=staging_path,
+        fs=fs,
         success=True,
         error=None,
         timestamp_start=execution_context.timestamp_start,
@@ -261,11 +265,13 @@ def record_execution_failure(
     )
 
     try:
+        fs = execution_context.fs
         staging_path = _create_staging_path(
             execution_context.staging_root,
             execution_context.execution_run_id,
             execution_context.step_number,
-            operation_name=execution_context.operation_name,
+            execution_context.operation_name,
+            fs,
         )
         execution_edges = build_execution_edges(
             execution_run_id=execution_context.execution_run_id,
@@ -279,6 +285,7 @@ def record_execution_failure(
             step_number=execution_context.step_number,
             execution_edges=execution_edges,
             staging_path=staging_path,
+            fs=fs,
             success=False,
             error=error,
             timestamp_start=execution_context.timestamp_start,
