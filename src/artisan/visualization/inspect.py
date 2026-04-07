@@ -453,10 +453,16 @@ def _build_details(artifact_type: str, row: dict[str, Any]) -> str:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return "-"
 
-    elif artifact_type == "file_ref":
+    elif artifact_type == "file_ref" or artifact_type == "large_file":
         size = row.get("size_bytes")
         if size is not None:
             return _format_size(size)
+        return "-"
+
+    elif artifact_type == "appendable":
+        record_id = row.get("record_id")
+        if record_id is not None:
+            return record_id
         return "-"
 
     else:
