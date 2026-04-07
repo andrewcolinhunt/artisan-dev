@@ -82,11 +82,12 @@ class AppendableArtifact(Artifact):
             sort_keys=True,
         ).encode("utf-8")
 
-    def _materialize_content(self, directory: Path) -> Path:
+    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
         """Extract this record from the JSONL file and write as JSON.
 
         Args:
             directory: Target directory for the output file.
+            fs: Optional fsspec filesystem for reading source from cloud.
 
         Returns:
             Path to the written JSON file.
@@ -97,15 +98,18 @@ class AppendableArtifact(Artifact):
         if self.external_path is None:
             msg = "Cannot materialize: external_path not set"
             raise ValueError(msg)
-        record = self._read_record()
+        record = self._read_record(fs=fs)
         filename = f"{self.artifact_id}.json"
         path = directory / filename
         path.write_text(json.dumps(record, indent=2))
         self.materialized_path = path
         return path
 
-    def _read_record(self) -> dict[str, Any]:
+    def _read_record(self, *, fs: Any = None) -> dict[str, Any]:
         """Read this record from the JSONL file by record_id.
+
+        Args:
+            fs: Optional fsspec filesystem for reading from cloud storage.
 
         Returns:
             The parsed JSON record dict.
@@ -113,7 +117,11 @@ class AppendableArtifact(Artifact):
         Raises:
             ValueError: If record_id is not found in the file.
         """
-        with open(self.external_path) as f:
+        if fs is not None:
+            opener = fs.open(self.external_path, "r")
+        else:
+            opener = open(self.external_path)
+        with opener as f:
             for line in f:
                 record = json.loads(line)
                 if record.get("record_id") == self.record_id:

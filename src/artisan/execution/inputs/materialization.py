@@ -66,12 +66,15 @@ def materialize_inputs(
             if ref_artifact is not None:
                 non_configs.append((ref_artifact, None))
 
+    # Get fs from artifact_store for cloud-capable source reads
+    fs = artifact_store._fs if hasattr(artifact_store, "_fs") else None
+
     materialized_ids: set[str] = set()
     resolved_paths: dict[str, Path] = {}
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
             continue
-        materialized = artifact.materialize_to(directory, format=fmt)
+        materialized = artifact.materialize_to(directory, format=fmt, fs=fs)
         if isinstance(materialized, Path):
             resolved_paths[artifact.artifact_id] = materialized
             materialized_ids.add(artifact.artifact_id)

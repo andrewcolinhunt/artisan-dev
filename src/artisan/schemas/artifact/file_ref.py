@@ -68,8 +68,12 @@ class FileRefArtifact(Artifact):
 
     _cached_content: bytes | None = PrivateAttr(default=None)
 
-    def read_content(self) -> bytes:
+    def read_content(self, *, fs: Any = None) -> bytes:
         """Read and cache file content from the original path.
+
+        Args:
+            fs: Optional fsspec filesystem for reading from cloud storage.
+                None reads from local filesystem.
 
         Raises:
             ValueError: If path is None (not hydrated).
@@ -78,14 +82,19 @@ class FileRefArtifact(Artifact):
             if self.path is None:
                 msg = "Cannot read content: artifact not hydrated"
                 raise ValueError(msg)
-            self._cached_content = Path(self.path).read_bytes()
+            if fs is not None:
+                with fs.open(self.path, "rb") as f:
+                    self._cached_content = f.read()
+            else:
+                self._cached_content = Path(self.path).read_bytes()
         return self._cached_content
 
-    def _materialize_content(self, directory: Path) -> Path:
+    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
         """Copy the referenced file into the given directory.
 
         Args:
             directory: Target directory for the output file.
+            fs: Optional fsspec filesystem for reading source from cloud.
 
         Returns:
             Path to the written file.
@@ -97,7 +106,7 @@ class FileRefArtifact(Artifact):
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
         path = directory / Path(self.path).name
-        path.write_bytes(self.read_content())
+        path.write_bytes(self.read_content(fs=fs))
         self.materialized_path = path
         return path
 

@@ -76,13 +76,14 @@ class LargeFileArtifact(Artifact):
             sort_keys=True,
         ).encode("utf-8")
 
-    def _materialize_content(self, directory: Path) -> Path:
+    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
         """Copy the file from external_path to the target directory.
 
         Uses artifact_id as filename (per Design 1 convention).
 
         Args:
             directory: Target directory for the output file.
+            fs: Optional fsspec filesystem for reading source from cloud.
 
         Returns:
             Path to the copied file.
@@ -93,10 +94,12 @@ class LargeFileArtifact(Artifact):
         if self.external_path is None:
             msg = "Cannot materialize: external_path not set"
             raise ValueError(msg)
-        source = Path(self.external_path)
         filename = f"{self.artifact_id}{self.extension or ''}"
         dest = directory / filename
-        shutil.copy2(str(source), str(dest))
+        if fs is not None:
+            fs.get(self.external_path, str(dest))
+        else:
+            shutil.copy2(self.external_path, str(dest))
         self.materialized_path = dest
         return dest
 

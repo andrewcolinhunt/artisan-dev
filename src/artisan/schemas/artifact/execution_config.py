@@ -125,6 +125,7 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
         resolved_paths: dict[str, Path] | None = None,
         *,
         format: str | None = None,
+        fs: Any = None,
     ) -> Path:
         """Write config JSON to disk, resolving artifact references.
 

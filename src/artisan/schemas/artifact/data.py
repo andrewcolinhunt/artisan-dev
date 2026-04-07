@@ -73,7 +73,7 @@ class DataArtifact(Artifact):
         description="Number of data rows (excluding header).",
     )
 
-    def _materialize_content(self, directory: Path) -> Path:
+    def _materialize_content(self, directory: Path, *, fs: Any = None) -> Path:
         """Write CSV content to a file in the given directory.
 
         Args:
