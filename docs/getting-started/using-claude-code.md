@@ -40,15 +40,51 @@ context is built in.
 
 ## Artisan skills
 
-The repo ships with framework-specific skills (slash commands) that Claude Code
-auto-discovers from the `skills/` directory at the repo root.
+The repo ships with framework-specific skills (slash commands) that teach Claude
+Code how to write Artisan code that follows project conventions.
 
 | Skill | Description |
 |-------|-------------|
 | `/write-operation` | Scaffold or review an `OperationDefinition` subclass |
 | `/write-composite` | Scaffold or review a `CompositeDefinition` subclass |
 | `/write-pipeline` | Scaffold a pipeline script composing operations |
-| `/write-docs` | Write or edit documentation pages, tutorials, and guides |
+
+### How skills are discovered
+
+Skill definitions live in `skills/` at the repo root — this is the canonical
+source of truth. Claude Code discovers project-level skills from
+`.claude/skills/`, so the repo maintains symlinks:
+
+```
+.claude/skills/write-operation  →  ../../skills/write-operation
+.claude/skills/write-composite  →  ../../skills/write-composite
+.claude/skills/write-pipeline   →  ../../skills/write-pipeline
+```
+
+### Downstream repos
+
+Repos that depend on Artisan can inherit these skills via the Claude Code
+marketplace. Artisan publishes a plugin through `.claude-plugin/marketplace.json`.
+A downstream repo enables it by adding to `.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "artisan": {
+      "source": {
+        "source": "github",
+        "repo": "your-org/artisan"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "artisan@artisan": true
+  }
+}
+```
+
+Skills appear as `/artisan:write-operation`, etc. Claude Code prompts
+contributors to trust the marketplace on first launch.
 
 ---
 
