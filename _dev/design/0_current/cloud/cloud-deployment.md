@@ -132,6 +132,13 @@ location), cache keys (based on artifact IDs + params, not paths),
 failure policies, provenance capture, composite execution, and the
 `PipelineManager` API (`pipeline.run()`, `pipeline.submit()`).
 
+**`files_root` for cloud deployments:** The `files_root` path (for
+Artisan-managed external files) is auto-derived from `delta_root` for
+local deployments only. Cloud deployments must set `files_root`
+explicitly — either to a local path or a cloud URI, depending on
+whether workers need file artifact access. See `04-runtime-env-rename.md`
+for details.
+
 ### Dispatch: DispatchHandle
 
 **Designed in:** `dispatch-handle.md`
@@ -190,11 +197,13 @@ is available when images align.
 
 ### Backend Traits: No Expansion
 
-The existing two traits are sufficient:
+The existing `WorkerTraits` fields are sufficient:
 
 - `worker_id_env_var: str | None` — how workers identify themselves
 - `shared_filesystem: bool` — drives NFS-specific behavior (staging
   verification, fsync)
+- `compute_backend_name: str` — identifies the backend for logging
+  and diagnostics
 
 Cloud backends set `shared_filesystem=False`. Storage credentials
 are handled by the environment (IAM roles, service accounts), not by
@@ -237,7 +246,7 @@ each independently shippable and testable:
   change, `create_dispatch_handle` signature migration, and
   `PipelineManager.create()`/`.resume()` internal `Path()` wrapping)
 
-44 `scan_delta` calls, 8 `write_delta` calls across 13 source files.
+44 `scan_delta` calls, 8 `write_delta` calls across 11 source files.
 
 ### Phase 3: Kubernetes Backend
 
@@ -245,6 +254,14 @@ First cloud backend. K8s Jobs with either NFS PVC
 (`shared_filesystem=True`) or S3 (`shared_filesystem=False`). Closest to
 SLURM — validates the dispatch abstraction with a familiar execution
 model. Worker image specified in operation's `docker.image` field.
+
+**Known gap for Phases 3–5:** Failure log persistence. Workers
+currently write failure logs to a local/shared filesystem that the
+orchestrator reads via `capture_logs()`. Cloud workers run in
+ephemeral containers — their local filesystem is lost on termination.
+Each cloud backend design must address how failure logs are collected
+(e.g., writing to S3 staging, returning logs through the dispatch
+handle, or streaming to a log aggregator).
 
 ### Phase 4: Modal Backend
 

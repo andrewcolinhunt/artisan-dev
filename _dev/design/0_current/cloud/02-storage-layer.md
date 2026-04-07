@@ -92,7 +92,8 @@ switches from `Path().name` to string splitting.
 
 ### `ArtifactStore` (`storage/core/artifact_store.py:22`)
 
-Constructor accepts `base_path: Path | str`, coerces to `Path`.
+Constructor accepts `base_path: Path | str` and keyword-only
+`files_root: Path | None = None`. Coerces `base_path` to `Path`.
 Uses `Path.exists()` as table guard, `pl.scan_delta(str(path))` for
 all reads. Creates `ProvenanceStore(self.base_path)` lazily.
 
@@ -120,10 +121,11 @@ Calls `shard_path()` then `Path.mkdir()`. Returns `Path`.
 
 Changes: call `shard_uri()` then `fs.makedirs()`. Return `str`.
 
-### Internal `_stage_*` functions (`execution/staging/parquet_writer.py`)
+### Internal staging functions (`execution/staging/parquet_writer.py`)
 
-Seven functions take `staging_path: Path` and use
-`staging_path / "filename.parquet"` for writes:
+Six `_stage_*` functions plus `_write_execution_record` take
+`staging_path: Path` and use `staging_path / "filename.parquet"` for
+writes:
 
 - `_stage_artifacts` — `staging_path / table_name`, `df.write_parquet()`
 - `_stage_execution` — `staging_path / "executions.parquet"`
@@ -180,8 +182,8 @@ creates `fs` from `StorageConfig` and threads it through.
 ### `_build_execution_context` (`execution/context/builder.py`)
 
 Accepts `delta_root_path: Path` and `staging_root_path: Path`, creates
-`ArtifactStore(delta_root_path)`. Needs to pass `fs` and
-`storage_options` through.
+`ArtifactStore(delta_root_path, files_root=files_root)`. Needs to
+pass `fs` and `storage_options` through.
 
 ---
 
@@ -335,9 +337,11 @@ def shard_uri(
     return f"{root}/{execution_run_id[:2]}/{execution_run_id[2:4]}/{execution_run_id}"
 ```
 
-Pure string concatenation. No I/O. `shard_path()` is kept as a
-deprecated alias during this PR to avoid touching downstream call sites
-that are renamed in doc 04.
+Pure string concatenation. No I/O. `shard_path()` is renamed to
+`shard_uri()` and all call sites are updated in this PR:
+`parquet_writer.py`, `staging_verification.py`, and their tests.
+No deprecated alias — per project conventions, renames delete the
+old name completely.
 
 ### parquet_writer changes
 
@@ -405,8 +409,8 @@ never see the storage abstraction.
 | `storage/core/artifact_store.py` | `ArtifactStore` accepts `fs`, `storage_options`. Pass `storage_options` to `pl.scan_delta()`. Use `fs.exists()`. Thread to `ProvenanceStore`. |
 | `storage/core/provenance_store.py` | `ProvenanceStore` accepts `fs`, `storage_options`. Same pattern as `ArtifactStore`. |
 | `storage/io/staging_verification.py` | Imports `shard_path` — update to `shard_uri`. No other changes — this module is NFS-specific and entirely gated on `shared_filesystem`. Cloud backends skip verification, so the internal `Path` ops (`Path.parts`, `os.listdir`, `open(path, "rb")`) remain local-only. |
-| `utils/path.py` | Add `shard_uri()` (string-based). Keep `shard_path()` as deprecated alias. |
-| `execution/staging/parquet_writer.py` | `_create_staging_path` accepts `fs`, uses `shard_uri`. Seven `_stage_*` functions gain `fs` parameter, replace `staging_path / filename` with `f"{staging_path}/{filename}"`, and write via `fs.open()`. `_sync_staging_to_nfs` keeps `shared_filesystem` gate (no change). `StagingResult.staging_path` changes from `Path \| None` to `str \| None`. |
+| `utils/path.py` | Rename `shard_path()` to `shard_uri()` (string-based). Remove old name. |
+| `execution/staging/parquet_writer.py` | `_create_staging_path` accepts `fs`, uses `shard_uri`. Six `_stage_*` functions plus `_write_execution_record` gain `fs` parameter, replace `staging_path / filename` with `f"{staging_path}/{filename}"`, and write via `fs.open()`. `_sync_staging_to_nfs` keeps `shared_filesystem` gate (no change). `StagingResult.staging_path` changes from `Path \| None` to `str \| None`. |
 | `schemas/execution/execution_context.py` | `staging_root: str` (was `Path`). Owned by this doc — doc 04 does not touch this file. |
 | `execution/staging/recorder.py` | Pass `fs` through to parquet_writer calls. Failure log writes stay local (`Path`). |
 | `execution/context/builder.py` | `_build_execution_context` accepts `fs`, `storage_options`, passes to `ArtifactStore`. |
