@@ -7,6 +7,7 @@ then tests each pattern end-to-end.
 from __future__ import annotations
 
 import csv
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -78,7 +79,7 @@ class DualInputLineage(OperationDefinition):
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         primary_files = inputs.inputs.get("primary", [])
         if isinstance(primary_files, (str, Path)):
@@ -86,14 +87,13 @@ class DualInputLineage(OperationDefinition):
 
         for pf in primary_files:
             pf = Path(pf)
-            # Read CSV and add a marker column to produce unique content
-            with pf.open() as fh:
+            with open(pf) as fh:
                 reader = csv.DictReader(fh)
                 headers = list(reader.fieldnames or []) + ["lineage_marker"]
                 rows = list(reader)
 
-            out_path = output_dir / f"{pf.stem}_0.csv"
-            with out_path.open("w", newline="") as fh:
+            out_path = os.path.join(output_dir, f"{pf.stem}_0.csv")
+            with open(out_path, "w", newline="") as fh:
                 writer = csv.DictWriter(fh, fieldnames=headers)
                 writer.writeheader()
                 for row in rows:
@@ -103,15 +103,18 @@ class DualInputLineage(OperationDefinition):
         return {}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = [
-            DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
-                step_number=inputs.step_number,
-            )
-            for f in inputs.file_outputs
-            if f.suffix == ".csv"
-        ]
+        drafts = []
+        for f in inputs.file_outputs:
+            if f.endswith(".csv"):
+                with open(f, "rb") as fh:
+                    content = fh.read()
+                drafts.append(
+                    DataArtifact.draft(
+                        content=content,
+                        original_name=os.path.basename(f),
+                        step_number=inputs.step_number,
+                    )
+                )
         return ArtifactResult(success=True, artifacts={"result": drafts})
 
 
@@ -154,22 +157,20 @@ class AssociatedMetricConsumer(OperationDefinition):
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         count = inputs.inputs.get("count", 0)
         for i in range(count):
             assoc_count = inputs.inputs.get(f"primary_{i}_assoc_count", 0)
             primary_path = Path(inputs.inputs[f"primary_{i}_path"])
 
-            # Use {stem}_0.csv naming for lineage inference
-            # Add assoc_count as a column to produce unique content
-            with primary_path.open() as fh:
+            with open(primary_path) as fh:
                 reader = csv.DictReader(fh)
                 headers = list(reader.fieldnames or []) + ["assoc_count"]
                 rows = list(reader)
 
-            out_path = output_dir / f"{primary_path.stem}_0.csv"
-            with out_path.open("w", newline="") as fh:
+            out_path = os.path.join(output_dir, f"{primary_path.stem}_0.csv")
+            with open(out_path, "w", newline="") as fh:
                 writer = csv.DictWriter(fh, fieldnames=headers)
                 writer.writeheader()
                 for row in rows:
@@ -179,15 +180,18 @@ class AssociatedMetricConsumer(OperationDefinition):
         return {}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = [
-            DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
-                step_number=inputs.step_number,
-            )
-            for f in inputs.file_outputs
-            if f.suffix == ".csv"
-        ]
+        drafts = []
+        for f in inputs.file_outputs:
+            if f.endswith(".csv"):
+                with open(f, "rb") as fh:
+                    content = fh.read()
+                drafts.append(
+                    DataArtifact.draft(
+                        content=content,
+                        original_name=os.path.basename(f),
+                        step_number=inputs.step_number,
+                    )
+                )
         return ArtifactResult(success=True, artifacts={"result": drafts})
 
 

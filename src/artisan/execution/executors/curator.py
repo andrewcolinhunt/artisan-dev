@@ -236,6 +236,7 @@ def _handle_passthrough_result(
         step_number=execution_context.step_number,
         execution_edges=execution_edges,
         staging_path=staging_path,
+        fs=execution_context.fs,
         success=True,
         error=None,
         timestamp_start=execution_context.timestamp_start,
