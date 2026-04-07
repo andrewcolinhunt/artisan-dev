@@ -20,6 +20,10 @@ classifiers = [
 ]
 dependencies = []  # All dependencies managed by Pixi
 
+[project.optional-dependencies]
+s3 = ["s3fs"]
+gcs = ["gcsfs"]
+
 [project.urls]
 Homepage = "https://github.com/dexterity-systems/artisan"
 Repository = "https://github.com/dexterity-systems/artisan"
@@ -79,6 +83,7 @@ rootutils = ">=1.0"
 rich = "*"
 beartype = "*"
 pydantic = "*"
+fsspec = "*"
 
 # Workflow orchestration
 prefect = { version = ">=3.6,<4.0", extras = ["dask"] }
