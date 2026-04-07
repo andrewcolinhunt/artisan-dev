@@ -18,6 +18,11 @@ from artisan.execution.inputs.materialization import materialize_inputs
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.capture import capture_lineage_metadata
 from artisan.execution.lineage.enrich import build_artifact_edges_from_dict
+from artisan.execution.lineage.filesystem_match import (
+    augment_match_map_from_artifacts,
+    build_filesystem_match_map,
+)
+from artisan.execution.lineage.name_derivation import derive_human_names
 from artisan.execution.lineage.validation import (
     validate_artifacts_match_specs,
     validate_lineage_completeness,
@@ -145,6 +150,17 @@ def run_creator_lifecycle(
         materialized_dir = sandbox_path / "materialized_inputs"
         materialized_dir.mkdir(parents=True, exist_ok=True)
 
+        if runtime_env.files_root_path is not None:
+            files_dir: Path | None = (
+                runtime_env.files_root_path
+                / str(unit.step_number)
+                / "workers"
+                / execution_run_id
+            )
+            files_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            files_dir = None
+
         execution_context = build_creator_execution_context(
             execution_run_id=execution_run_id,
             execution_spec_id=unit.execution_spec_id,
@@ -158,6 +174,7 @@ def run_creator_lifecycle(
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=unit.step_run_id,
+            files_root=runtime_env.files_root_path,
         )
         artifact_store = execution_context.artifact_store
 
@@ -181,7 +198,7 @@ def run_creator_lifecycle(
                 input_specs,
                 default_hydrate,
             )
-        input_artifacts = materialize_inputs(
+        input_artifacts, materialized_artifact_ids = materialize_inputs(
             input_artifacts,
             input_specs,
             materialized_dir,
@@ -200,6 +217,7 @@ def run_creator_lifecycle(
             inputs=prepared_inputs,
             execute_dir=execute_dir,
             log_path=log_path,
+            files_dir=files_dir,
         )
 
     # --- execute phase ---
@@ -220,6 +238,10 @@ def run_creator_lifecycle(
     # --- postprocess phase ---
     with phase_timer("postprocess", timings):
         file_outputs = output_snapshot(execute_dir)
+        filesystem_match_map = build_filesystem_match_map(
+            materialized_artifact_ids, file_outputs
+        )
+
         postprocess_input = PostprocessInput(
             file_outputs=file_outputs,
             memory_outputs=raw_result,
@@ -236,6 +258,11 @@ def run_creator_lifecycle(
         finalized_artifacts = finalize_artifacts(op_result.artifacts)
         validate_artifacts_match_specs(finalized_artifacts, operation_class.outputs)
 
+        # Augment match map with artifact names from memory-based outputs
+        augment_match_map_from_artifacts(
+            filesystem_match_map, materialized_artifact_ids, finalized_artifacts
+        )
+
     # --- lineage phase ---
     with phase_timer("lineage", timings):
         flat_input_artifacts = _extract_artifacts_from_input(input_artifacts)
@@ -246,6 +273,7 @@ def run_creator_lifecycle(
                 output_specs=operation_class.outputs,
                 group_by=getattr(operation_class, "group_by", None),
                 group_ids=unit.group_ids,
+                filesystem_match_map=filesystem_match_map,
             )
         else:
             validate_lineage_integrity(
@@ -282,6 +310,11 @@ def run_creator_lifecycle(
             execution_run_id,
             built_artifacts,
         )
+
+    # --- name derivation phase ---
+    derive_human_names(
+        finalized_artifacts, edge_pairs, flat_input_artifacts, filesystem_match_map
+    )
 
     # Clean up sandbox
     if (
@@ -457,6 +490,7 @@ def _build_execution_context(
         compute_backend_name=runtime_env.compute_backend_name,
         shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=unit.step_run_id,
+        files_root=runtime_env.files_root_path,
     )
 
 

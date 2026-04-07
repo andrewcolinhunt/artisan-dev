@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 
@@ -56,5 +56,19 @@ class PipelineConfig(BaseModel):
         default=False,
         description="Bypass all cache lookups (step-level and execution-level).",
     )
+    files_root: Path | None = Field(
+        default=None,
+        description=(
+            "Root path for Artisan-managed external files. "
+            "Defaults to delta_root.parent / 'files'."
+        ),
+    )
 
     model_config = {"frozen": True}
+
+    @model_validator(mode="after")
+    def _default_files_root(self) -> PipelineConfig:
+        """Derive files_root from delta_root when not explicitly set."""
+        if self.files_root is None:
+            object.__setattr__(self, "files_root", self.delta_root.parent / "files")
+        return self

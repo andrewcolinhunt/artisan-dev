@@ -68,15 +68,15 @@ class MetricArtifact(JsonContentMixin, Artifact):
             Path to the written file.
 
         Raises:
-            ValueError: If content is None.
+            ValueError: If content is None or artifact_id is not set.
         """
         if self.content is None:
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
-        if self.original_name:
-            filename = f"{self.original_name}{self.extension or '.json'}"
-        else:
-            filename = f"{self.artifact_id}.json"
+        if self.artifact_id is None:
+            msg = "Cannot materialize: artifact not finalized (no artifact_id)"
+            raise ValueError(msg)
+        filename = f"{self.artifact_id}{self.extension or '.json'}"
         path = directory / filename
         path.write_bytes(self.content)
         self.materialized_path = path

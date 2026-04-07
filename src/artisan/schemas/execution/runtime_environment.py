@@ -40,6 +40,9 @@ class RuntimeEnvironment(BaseModel):
             None for curator operations (no sandbox needed).
         staging_root_path: Where to write staged Parquet files.
             Workers write here; orchestrator commits to Delta Lake.
+        files_root_path: Root directory for Artisan-managed external files.
+            Operations write per-worker output files to
+            files_root/{step}/workers/. None when not configured.
         preserve_staging: Debug flag - don't cleanup staging after commit.
         preserve_working: Debug flag - don't cleanup sandbox after execution.
 
@@ -77,6 +80,15 @@ class RuntimeEnvironment(BaseModel):
         description=(
             "Where to write staged Parquet files. "
             "Workers write here; orchestrator commits to Delta Lake"
+        ),
+    )
+
+    files_root_path: Path | None = Field(
+        None,
+        description=(
+            "Root directory for Artisan-managed external files. "
+            "Operations write per-worker output files to "
+            "files_root/{step}/workers/. None when not configured."
         ),
     )
 
