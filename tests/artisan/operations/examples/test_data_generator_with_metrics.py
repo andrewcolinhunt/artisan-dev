@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import csv
+import glob
 import io
 import json
+import os
 from pathlib import Path
 from statistics import mean
 
@@ -19,11 +21,14 @@ class TestDataGeneratorWithMetrics:
                 count=count, rows_per_file=rows, seed=seed
             )
         )
-        execute_dir = output_dir / "execute"
-        execute_dir.mkdir(parents=True)
+        execute_dir = str(output_dir / "execute")
+        os.makedirs(execute_dir, exist_ok=True)
 
         result = op.execute(ExecuteInput(inputs={}, execute_dir=execute_dir))
-        files = sorted(f for f in execute_dir.glob("**/*.csv") if f.is_file())
+        files = sorted(
+            f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
+            if os.path.isfile(f)
+        )
 
         post_result = op.postprocess(
             PostprocessInput(
@@ -31,7 +36,7 @@ class TestDataGeneratorWithMetrics:
                 memory_outputs=result,
                 input_artifacts={},
                 step_number=1,
-                postprocess_dir=output_dir / "postprocess",
+                postprocess_dir=str(output_dir / "postprocess"),
             )
         )
         return result, files, post_result
@@ -52,7 +57,7 @@ class TestDataGeneratorWithMetrics:
         _, files, post_result = self._run(tmp_path, count=1, rows=5, seed=42)
 
         # Read the generated CSV and compute expected stats
-        with files[0].open() as f:
+        with open(files[0]) as f:
             reader = csv.DictReader(f)
             xs = []
             for row in reader:

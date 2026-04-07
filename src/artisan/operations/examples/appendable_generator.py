@@ -8,6 +8,7 @@ separate AppendableArtifact in Delta.
 from __future__ import annotations
 
 import json
+import os
 import random
 from enum import StrEnum, auto
 from typing import Any, ClassVar
@@ -100,8 +101,8 @@ class AppendableGenerator(OperationDefinition):
             chunk = all_records[offset : offset + chunk_size]
             offset += chunk_size
 
-            file_path = inputs.files_dir / f"records_{file_idx}.jsonl"
-            with file_path.open("w") as f:
+            file_path = os.path.join(inputs.files_dir, f"records_{file_idx}.jsonl")
+            with open(file_path, "w") as f:
                 for record in chunk:
                     line = json.dumps(record, sort_keys=True)
                     f.write(line + "\n")
@@ -109,7 +110,7 @@ class AppendableGenerator(OperationDefinition):
                         "record_id": record["record_id"],
                         "content_hash": compute_content_hash(line.encode()),
                         "size_bytes": len(line.encode()),
-                        "output_path": str(file_path),
+                        "output_path": file_path,
                     })
 
         return {"records": records_meta}

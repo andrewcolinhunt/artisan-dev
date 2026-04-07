@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 from fsspec import AbstractFileSystem
 
@@ -24,7 +23,7 @@ def _build_execution_context(
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
     operation: OperationDefinition,
-    sandbox_path: Path | None,
+    sandbox_path: str | None,
     compute_backend_name: str = "local",
     shared_filesystem: bool = False,
     step_run_id: str | None = None,
@@ -67,7 +66,7 @@ def build_creator_execution_context(
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
     operation: OperationDefinition,
-    sandbox_path: Path,
+    sandbox_path: str,
     compute_backend_name: str = "local",
     shared_filesystem: bool = False,
     step_run_id: str | None = None,

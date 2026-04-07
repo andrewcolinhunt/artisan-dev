@@ -28,15 +28,20 @@ class TestMaterializeAsForwarded:
         artifact = MagicMock(spec=Artifact)
         artifact.is_hydrated = True
         artifact.artifact_id = "a" * 32
-        artifact.materialize_to.return_value = tmp_path / "out.csv"
+        artifact.materialize_to.return_value = str(tmp_path / "out.csv")
 
         specs = {"data": InputSpec(materialize=True, materialize_as=".csv")}
         artifacts = {"data": [artifact]}
         mock_store = MagicMock()
 
-        _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
+        directory = str(tmp_path)
+        _, materialized_ids = materialize_inputs(
+            artifacts, specs, directory, mock_store
+        )
 
-        artifact.materialize_to.assert_called_once_with(tmp_path, format=".csv", fs=ANY)
+        artifact.materialize_to.assert_called_once_with(
+            directory, format=".csv", fs=ANY
+        )
         assert "a" * 32 in materialized_ids
 
     def test_no_materialize_as_passes_none(self, tmp_path: Path):
@@ -44,15 +49,18 @@ class TestMaterializeAsForwarded:
         artifact = MagicMock(spec=Artifact)
         artifact.is_hydrated = True
         artifact.artifact_id = "b" * 32
-        artifact.materialize_to.return_value = tmp_path / "out.json"
+        artifact.materialize_to.return_value = str(tmp_path / "out.json")
 
         specs = {"metric": InputSpec(materialize=True)}
         artifacts = {"metric": [artifact]}
         mock_store = MagicMock()
 
-        _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
+        directory = str(tmp_path)
+        _, materialized_ids = materialize_inputs(
+            artifacts, specs, directory, mock_store
+        )
 
-        artifact.materialize_to.assert_called_once_with(tmp_path, format=None, fs=ANY)
+        artifact.materialize_to.assert_called_once_with(directory, format=None, fs=ANY)
         assert "b" * 32 in materialized_ids
 
     def test_config_referenced_artifacts_get_none_format(self, tmp_path: Path):
@@ -68,7 +76,7 @@ class TestMaterializeAsForwarded:
         ref_artifact = MagicMock(spec=Artifact)
         ref_artifact.is_hydrated = True
         ref_artifact.artifact_id = "c" * 32
-        ref_artifact.materialize_to.return_value = tmp_path / "ref.dat"
+        ref_artifact.materialize_to.return_value = str(tmp_path / "ref.dat")
 
         mock_store = MagicMock()
         mock_store.get_artifact.return_value = ref_artifact
@@ -76,10 +84,13 @@ class TestMaterializeAsForwarded:
         specs = {"config": InputSpec(materialize=True)}
         artifacts = {"config": [config]}
 
-        _, materialized_ids = materialize_inputs(artifacts, specs, tmp_path, mock_store)
+        directory = str(tmp_path)
+        _, materialized_ids = materialize_inputs(
+            artifacts, specs, directory, mock_store
+        )
 
         ref_artifact.materialize_to.assert_called_once_with(
-            tmp_path, format=None, fs=ANY
+            directory, format=None, fs=ANY
         )
         assert config.artifact_id in materialized_ids
         assert "c" * 32 in materialized_ids

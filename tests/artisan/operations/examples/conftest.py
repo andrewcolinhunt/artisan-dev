@@ -6,6 +6,8 @@ Infers artifact types from operation input specs.
 
 from __future__ import annotations
 
+import glob
+import os
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +32,7 @@ __all__ = [
 def _create_mock_artifact(
     content: bytes,
     name: str,
-    path: Path,
+    path: str,
     artifact_type: str,
     step_number: int = 0,
 ) -> Artifact:
@@ -59,18 +61,26 @@ def _resolve_input_artifacts(
             raise ValueError(msg)
 
         if isinstance(value, (str, Path)):
-            path = Path(value)
-            content = path.read_bytes() if path.exists() else b""
+            path = str(value)
+            if os.path.exists(path):
+                with open(path, "rb") as fh:
+                    content = fh.read()
+            else:
+                content = b""
             input_artifacts[key] = [
-                _create_mock_artifact(content, path.name, path, artifact_type)
+                _create_mock_artifact(content, os.path.basename(path), path, artifact_type)
             ]
         elif isinstance(value, list) and value and isinstance(value[0], (str, Path)):
             artifacts = []
             for p in value:
-                path = Path(p)
-                content = path.read_bytes() if path.exists() else b""
+                path = str(p)
+                if os.path.exists(path):
+                    with open(path, "rb") as fh:
+                        content = fh.read()
+                else:
+                    content = b""
                 artifacts.append(
-                    _create_mock_artifact(content, path.name, path, artifact_type)
+                    _create_mock_artifact(content, os.path.basename(path), path, artifact_type)
                 )
             input_artifacts[key] = artifacts
 
@@ -81,19 +91,17 @@ def _setup_dirs(
     output_dir: Path,
     preprocess_dir: Path | None,
     postprocess_dir: Path | None,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[str, str, str, str]:
     """Create standard lifecycle directories."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if preprocess_dir is None:
-        preprocess_dir = output_dir / "preprocess"
-    preprocess_dir.mkdir(parents=True, exist_ok=True)
-    if postprocess_dir is None:
-        postprocess_dir = output_dir / "postprocess"
-    postprocess_dir.mkdir(parents=True, exist_ok=True)
-    execute_dir = output_dir / "execute"
-    execute_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir, preprocess_dir, postprocess_dir, execute_dir
+    out = str(output_dir)
+    os.makedirs(out, exist_ok=True)
+    pre = str(preprocess_dir) if preprocess_dir is not None else os.path.join(out, "preprocess")
+    os.makedirs(pre, exist_ok=True)
+    post = str(postprocess_dir) if postprocess_dir is not None else os.path.join(out, "postprocess")
+    os.makedirs(post, exist_ok=True)
+    exe = os.path.join(out, "execute")
+    os.makedirs(exe, exist_ok=True)
+    return out, pre, post, exe
 
 
 def run_operation_lifecycle(
@@ -104,7 +112,7 @@ def run_operation_lifecycle(
     postprocess_dir: Path | None = None,
 ) -> ArtifactResult:
     """Run the full operation lifecycle: preprocess -> execute -> postprocess."""
-    output_dir, preprocess_dir, postprocess_dir, execute_dir = _setup_dirs(
+    output_dir_str, preprocess_dir_str, postprocess_dir_str, execute_dir_str = _setup_dirs(
         output_dir, preprocess_dir, postprocess_dir
     )
 
@@ -112,24 +120,27 @@ def run_operation_lifecycle(
 
     preprocess_input = PreprocessInput(
         input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir,
+        preprocess_dir=preprocess_dir_str,
     )
     prepared_inputs = operation.preprocess(preprocess_input)
 
     execute_input = ExecuteInput(
         inputs=prepared_inputs,
-        execute_dir=execute_dir,
+        execute_dir=execute_dir_str,
     )
     raw_result = operation.execute(execute_input)
 
-    new_files = [f for f in execute_dir.glob("**/*") if f.is_file()]
+    new_files = [
+        p for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
+        if os.path.isfile(p)
+    ]
 
     postprocess_input = PostprocessInput(
         file_outputs=new_files,
         memory_outputs=raw_result,
         input_artifacts=input_artifacts,
         step_number=1,
-        postprocess_dir=postprocess_dir,
+        postprocess_dir=postprocess_dir_str,
     )
     return operation.postprocess(postprocess_input)
 
@@ -142,7 +153,7 @@ def run_operation_lifecycle_with_exception(
     postprocess_dir: Path | None = None,
 ) -> ArtifactResult:
     """Run lifecycle catching execute exceptions (matching executor behavior)."""
-    output_dir, preprocess_dir, postprocess_dir, execute_dir = _setup_dirs(
+    output_dir_str, preprocess_dir_str, postprocess_dir_str, execute_dir_str = _setup_dirs(
         output_dir, preprocess_dir, postprocess_dir
     )
 
@@ -150,27 +161,30 @@ def run_operation_lifecycle_with_exception(
 
     preprocess_input = PreprocessInput(
         input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir,
+        preprocess_dir=preprocess_dir_str,
     )
     prepared_inputs = operation.preprocess(preprocess_input)
 
     execute_input = ExecuteInput(
         inputs=prepared_inputs,
-        execute_dir=execute_dir,
+        execute_dir=execute_dir_str,
     )
     try:
         raw_result = operation.execute(execute_input)
     except Exception as e:
         return ArtifactResult(success=False, error=str(e))
 
-    new_files = [f for f in execute_dir.glob("**/*") if f.is_file()]
+    new_files = [
+        p for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
+        if os.path.isfile(p)
+    ]
 
     postprocess_input = PostprocessInput(
         file_outputs=new_files,
         memory_outputs=raw_result,
         input_artifacts=input_artifacts,
         step_number=1,
-        postprocess_dir=postprocess_dir,
+        postprocess_dir=postprocess_dir_str,
     )
     return operation.postprocess(postprocess_input)
 
@@ -183,30 +197,33 @@ def run_inmemory_operation_lifecycle(
     postprocess_dir: Path | None = None,
 ) -> ArtifactResult:
     """Run lifecycle for in-memory operations (materialize=False)."""
-    output_dir, preprocess_dir, postprocess_dir, execute_dir = _setup_dirs(
+    output_dir_str, preprocess_dir_str, postprocess_dir_str, execute_dir_str = _setup_dirs(
         output_dir, preprocess_dir, postprocess_dir
     )
 
     preprocess_input = PreprocessInput(
         input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir,
+        preprocess_dir=preprocess_dir_str,
     )
     prepared_inputs = operation.preprocess(preprocess_input)
 
     execute_input = ExecuteInput(
         inputs=prepared_inputs,
-        execute_dir=execute_dir,
+        execute_dir=execute_dir_str,
     )
     raw_result = operation.execute(execute_input)
 
-    new_files = [f for f in execute_dir.glob("**/*") if f.is_file()]
+    new_files = [
+        p for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
+        if os.path.isfile(p)
+    ]
 
     postprocess_input = PostprocessInput(
         file_outputs=new_files,
         memory_outputs=raw_result,
         input_artifacts=input_artifacts,
         step_number=1,
-        postprocess_dir=postprocess_dir,
+        postprocess_dir=postprocess_dir_str,
     )
     return operation.postprocess(postprocess_input)
 
@@ -219,32 +236,35 @@ def run_inmemory_operation_lifecycle_with_exception(
     postprocess_dir: Path | None = None,
 ) -> ArtifactResult:
     """Run in-memory lifecycle catching execute exceptions."""
-    output_dir, preprocess_dir, postprocess_dir, execute_dir = _setup_dirs(
+    output_dir_str, preprocess_dir_str, postprocess_dir_str, execute_dir_str = _setup_dirs(
         output_dir, preprocess_dir, postprocess_dir
     )
 
     preprocess_input = PreprocessInput(
         input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir,
+        preprocess_dir=preprocess_dir_str,
     )
     prepared_inputs = operation.preprocess(preprocess_input)
 
     execute_input = ExecuteInput(
         inputs=prepared_inputs,
-        execute_dir=execute_dir,
+        execute_dir=execute_dir_str,
     )
     try:
         raw_result = operation.execute(execute_input)
     except Exception as e:
         return ArtifactResult(success=False, error=str(e))
 
-    new_files = [f for f in execute_dir.glob("**/*") if f.is_file()]
+    new_files = [
+        p for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
+        if os.path.isfile(p)
+    ]
 
     postprocess_input = PostprocessInput(
         file_outputs=new_files,
         memory_outputs=raw_result,
         input_artifacts=input_artifacts,
         step_number=1,
-        postprocess_dir=postprocess_dir,
+        postprocess_dir=postprocess_dir_str,
     )
     return operation.postprocess(postprocess_input)

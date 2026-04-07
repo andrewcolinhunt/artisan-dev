@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import glob
 import json
+import os
 from pathlib import Path
 
 from fixtures.csv import make_csv
@@ -30,8 +32,9 @@ def _setup_grouped_inputs(
 
     # Create and materialize a data artifact
     csv_content = make_csv(rows=3, seed=1)
-    data_path = input_dir / "dataset_00000.csv"
-    data_path.write_bytes(csv_content)
+    data_path = str(input_dir / "dataset_00000.csv")
+    with open(data_path, "wb") as fh:
+        fh.write(csv_content)
 
     data_artifact = DataArtifact.draft(
         content=csv_content,
@@ -43,7 +46,7 @@ def _setup_grouped_inputs(
 
     # Create config referencing the data artifact
     config_content = {
-        "input": str(data_path),  # Already resolved
+        "input": data_path,
         "scale_factor": scale_factor,
         "noise_amplitude": noise_amplitude,
         "seed": seed,
@@ -56,8 +59,9 @@ def _setup_grouped_inputs(
     config_artifact.finalize()
 
     # Materialize config
-    config_path = input_dir / "dataset_00000_config_0.json"
-    config_path.write_text(json.dumps(config_content, indent=2))
+    config_path = str(input_dir / "dataset_00000_config_0.json")
+    with open(config_path, "w") as fh:
+        fh.write(json.dumps(config_content, indent=2))
     config_artifact = config_artifact.model_copy(update={"materialized_path": config_path})
 
     return data_artifact, config_artifact
@@ -70,20 +74,23 @@ class TestDataTransformerScript:
         )
         op = DataTransformerScript()
 
-        execute_dir = tmp_path / "execute"
-        execute_dir.mkdir()
+        execute_dir = str(tmp_path / "execute")
+        os.makedirs(execute_dir, exist_ok=True)
 
         input_artifacts = {"dataset": [data_art], "config": [config_art]}
 
         prepared = op.preprocess(
             PreprocessInput(
                 input_artifacts=input_artifacts,
-                preprocess_dir=tmp_path / "pre",
+                preprocess_dir=str(tmp_path / "pre"),
             )
         )
         op.execute(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
 
-        output_files = [f for f in execute_dir.glob("**/*.csv") if f.is_file()]
+        output_files = [
+            f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
+            if os.path.isfile(f)
+        ]
         assert len(output_files) == 1
 
         result = op.postprocess(
@@ -92,7 +99,7 @@ class TestDataTransformerScript:
                 memory_outputs=None,
                 input_artifacts=input_artifacts,
                 step_number=1,
-                postprocess_dir=tmp_path / "post",
+                postprocess_dir=str(tmp_path / "post"),
             )
         )
         assert result.success
@@ -104,26 +111,29 @@ class TestDataTransformerScript:
         )
         op = DataTransformerScript()
 
-        execute_dir = tmp_path / "execute"
-        execute_dir.mkdir()
+        execute_dir = str(tmp_path / "execute")
+        os.makedirs(execute_dir, exist_ok=True)
 
         input_artifacts = {"dataset": [data_art], "config": [config_art]}
 
         prepared = op.preprocess(
             PreprocessInput(
                 input_artifacts=input_artifacts,
-                preprocess_dir=tmp_path / "pre",
+                preprocess_dir=str(tmp_path / "pre"),
             )
         )
         op.execute(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
 
-        output_files = [f for f in execute_dir.glob("**/*.csv") if f.is_file()]
+        output_files = [
+            f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
+            if os.path.isfile(f)
+        ]
         assert len(output_files) == 1
 
         # Verify scale was applied
-        with data_art.materialized_path.open() as f:
+        with open(data_art.materialized_path) as f:
             original = list(csv.DictReader(f))
-        with output_files[0].open() as f:
+        with open(output_files[0]) as f:
             transformed = list(csv.DictReader(f))
 
         for orig, trans in zip(original, transformed):
@@ -133,19 +143,22 @@ class TestDataTransformerScript:
         data_art, config_art = _setup_grouped_inputs(tmp_path)
         op = DataTransformerScript()
 
-        execute_dir = tmp_path / "execute"
-        execute_dir.mkdir()
+        execute_dir = str(tmp_path / "execute")
+        os.makedirs(execute_dir, exist_ok=True)
 
         input_artifacts = {"dataset": [data_art], "config": [config_art]}
 
         prepared = op.preprocess(
             PreprocessInput(
                 input_artifacts=input_artifacts,
-                preprocess_dir=tmp_path / "pre",
+                preprocess_dir=str(tmp_path / "pre"),
             )
         )
         op.execute(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
 
-        output_files = [f for f in execute_dir.glob("**/*.csv") if f.is_file()]
+        output_files = [
+            f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
+            if os.path.isfile(f)
+        ]
         # Output should use config original_name as basename
-        assert output_files[0].name == "dataset_00000_config_0_variant_0.csv"
+        assert os.path.basename(output_files[0]) == "dataset_00000_config_0_variant_0.csv"

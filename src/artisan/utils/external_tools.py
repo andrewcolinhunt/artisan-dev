@@ -16,7 +16,6 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 _tool_logger = logging.getLogger("artisan.tools")
@@ -105,8 +104,6 @@ def to_cli_value(value: Any) -> str:
         'true'
         >>> to_cli_value(False)
         'false'
-        >>> to_cli_value(Path("/tmp/out"))
-        '/tmp/out'
         >>> to_cli_value([1, 2, 3])
         '[1, 2, 3]'
         >>> to_cli_value({"key": "value"})
@@ -116,8 +113,6 @@ def to_cli_value(value: Any) -> str:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, Path):
-        return str(value)
     if isinstance(value, list | tuple | dict):
         return json.dumps(value)
     return str(value)
@@ -186,10 +181,10 @@ def _kill_process_group(process: subprocess.Popen, timeout: float = 3.0) -> None
 def run_command(
     environment: Any,
     cmd: list[str],
-    cwd: Path | None = None,
+    cwd: str | None = None,
     timeout: float | None = None,
     stream_output: bool = False,
-    log_path: Path | None = None,
+    log_path: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Execute a command in the given environment.
 
@@ -243,9 +238,9 @@ def run_command(
 
 def _run_with_streaming(
     cmd: Command,
-    cwd: Path | None,
+    cwd: str | None,
     timeout: float | None,
-    log_path: Path | None,
+    log_path: str | None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run command with real-time output streaming.
@@ -262,7 +257,7 @@ def _run_with_streaming(
     """
     from contextlib import nullcontext
 
-    log_context = log_path.open("w") if log_path else nullcontext()
+    log_context = open(log_path, "w") if log_path else nullcontext()
 
     with log_context as log_file:
         process = subprocess.Popen(
@@ -308,7 +303,7 @@ def _run_with_streaming(
 
 def _run_captured(
     cmd: Command,
-    cwd: Path | None,
+    cwd: str | None,
     timeout: float | None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
