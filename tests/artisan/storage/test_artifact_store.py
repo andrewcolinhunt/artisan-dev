@@ -6,12 +6,11 @@ from datetime import UTC, datetime
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
-from fsspec.implementations.local import LocalFileSystem
-
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
@@ -56,7 +55,9 @@ class TestArtifactStoreFilesRoot:
     def test_files_root_accepts_path(self, tmp_path):
         """ArtifactStore stores the provided files_root."""
         files_root = tmp_path / "files"
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem(), files_root=str(files_root))
+        store = ArtifactStore(
+            str(tmp_path), fs=LocalFileSystem(), files_root=str(files_root)
+        )
         assert store.files_root == str(files_root)
 
     def test_backward_compatible_positional(self, tmp_path):

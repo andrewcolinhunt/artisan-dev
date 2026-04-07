@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
-
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.storage.core.provenance_store import ProvenanceStore

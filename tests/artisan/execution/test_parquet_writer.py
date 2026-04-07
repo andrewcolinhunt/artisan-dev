@@ -266,7 +266,9 @@ class TestMetadataSerialization:
         ).finalize()
 
         artifacts = {"metric": [artifact]}
-        _stage_artifact_index(artifacts, step_number=1, staging_path=str(tmp_path), fs=fs)
+        _stage_artifact_index(
+            artifacts, step_number=1, staging_path=str(tmp_path), fs=fs
+        )
 
         df = pl.read_parquet(tmp_path / "index.parquet")
         stored_metadata = json.loads(df["metadata"][0])

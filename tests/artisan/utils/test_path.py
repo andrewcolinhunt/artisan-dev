@@ -487,9 +487,7 @@ class TestShardUri:
         assert shard_uri("/tmp", run_id, step_number=3) == str(
             shard_path(Path("/tmp"), run_id, step_number=3)
         )
-        assert shard_uri(
-            "/tmp", run_id, step_number=3, operation_name="tool_c"
-        ) == str(
+        assert shard_uri("/tmp", run_id, step_number=3, operation_name="tool_c") == str(
             shard_path(Path("/tmp"), run_id, step_number=3, operation_name="tool_c")
         )
 

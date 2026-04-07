@@ -185,7 +185,8 @@ class StagingManager:
         return [
             posixpath.basename(e.rstrip("/"))
             for e in entries
-            if self._fs.isdir(e) and not posixpath.basename(e.rstrip("/")).startswith(".")
+            if self._fs.isdir(e)
+            and not posixpath.basename(e.rstrip("/")).startswith(".")
         ]
 
     def get_staged_files_for_table(
@@ -215,7 +216,9 @@ class StagingManager:
 
         if step_number is not None:
             if operation_name is not None:
-                step_dir = f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
+                step_dir = (
+                    f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
+                )
             else:
                 step_dir = f"{self.staging_dir}/{step_number}"
             if not self._fs.exists(step_dir):
@@ -285,7 +288,9 @@ class StagingManager:
                 the step directory uses the ``{number}_{name}`` format.
         """
         if operation_name is not None:
-            step_dir = f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
+            step_dir = (
+                f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
+            )
         else:
             step_dir = f"{self.staging_dir}/{step_number}"
         if self._fs.exists(step_dir):
