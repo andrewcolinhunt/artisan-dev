@@ -11,18 +11,20 @@ global lookup across all prior executions.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import CacheValidationReason, TablePath
 from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
+from artisan.utils.path import uri_join, uri_parent
 
 
 def cache_lookup(
-    executions_path: Path | str,
+    executions_path: str,
     execution_spec_id: str,
-    execution_edges_path: Path | str | None = None,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str] | None = None,
+    execution_edges_path: str | None = None,
 ) -> CacheHit | CacheMiss:
     """Look up a cached execution by its deterministic spec ID.
 
@@ -31,10 +33,12 @@ def cache_lookup(
     so the caller can skip re-execution.
 
     Args:
-        executions_path: Path to the executions Delta table.
+        executions_path: URI/path to the executions Delta table.
         execution_spec_id: Deterministic ID computed from operation,
             inputs, and merged params.
-        execution_edges_path: Path to the execution_edges Delta table.
+        fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
+        storage_options: Credentials/config passed to delta-rs calls.
+        execution_edges_path: URI/path to the execution_edges Delta table.
             If None, inferred from ``executions_path`` by navigating two
             levels up to the delta root.
 
@@ -43,9 +47,9 @@ def cache_lookup(
         successful match exists, or ``CacheMiss`` with a reason of
         ``NO_PREVIOUS_EXECUTION`` or ``EXECUTION_FAILED``.
     """
-    records_path = Path(executions_path)
+    storage_options = storage_options or {}
 
-    if not records_path.exists():
+    if not fs.exists(executions_path):
         return CacheMiss(
             execution_spec_id,
             reason=CacheValidationReason.NO_PREVIOUS_EXECUTION,
@@ -55,14 +59,14 @@ def cache_lookup(
     if execution_edges_path is None:
         # Infer delta_root from the executions table path
         # (delta_root / "orchestration/executions" -> delta_root)
-        delta_root = records_path.parent.parent
-        provenance_path = delta_root / TablePath.EXECUTION_EDGES
+        delta_root = uri_parent(uri_parent(executions_path))
+        provenance_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
     else:
-        provenance_path = Path(execution_edges_path)
+        provenance_path = execution_edges_path
 
     # Query for successful execution with this spec_id
     result = (
-        pl.scan_delta(str(records_path))
+        pl.scan_delta(executions_path, storage_options=storage_options)
         .filter(pl.col("execution_spec_id") == execution_spec_id)
         .filter(pl.col("success") == True)  # noqa: E712
         .sort("timestamp_start", descending=True)  # Most recent first
@@ -73,7 +77,7 @@ def cache_lookup(
     if result.is_empty():
         # Check if there's a failed execution (for better error message)
         any_exec = (
-            pl.scan_delta(str(records_path))
+            pl.scan_delta(executions_path, storage_options=storage_options)
             .filter(pl.col("execution_spec_id") == execution_spec_id)
             .limit(1)
             .collect()
@@ -92,9 +96,9 @@ def cache_lookup(
     inputs: list[dict] = []
     outputs: list[dict] = []
 
-    if provenance_path.exists():
+    if fs.exists(provenance_path):
         provenance_df = (
-            pl.scan_delta(str(provenance_path))
+            pl.scan_delta(provenance_path, storage_options=storage_options)
             .filter(pl.col("execution_run_id") == execution_run_id)
             .collect()
         )

@@ -6,12 +6,13 @@ focused class: edge loading, step/type maps, ancestor/descendant lookups.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.utils.path import uri_join
 
 
 class ProvenanceStore:
@@ -22,20 +23,30 @@ class ProvenanceStore:
     tables. Use ``ArtifactStore.provenance`` for the standard access path.
 
     Attributes:
-        base_path (Path): Root directory for Delta Lake tables.
+        base_path: Root URI/path for Delta Lake tables.
     """
 
-    def __init__(self, base_path: Path | str):
+    def __init__(
+        self,
+        base_path: str,
+        *,
+        fs: AbstractFileSystem,
+        storage_options: dict[str, str] | None = None,
+    ):
         """Initialize with the Delta Lake root directory.
 
         Args:
-            base_path: Root directory containing Delta tables.
+            base_path: Root URI/path containing Delta tables.
+            fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
+            storage_options: Credentials/config passed to delta-rs calls.
         """
-        self.base_path = Path(base_path)
+        self.base_path = base_path
+        self._fs = fs
+        self._storage_options = storage_options or {}
 
-    def _table_path(self, table: TablePath) -> Path:
-        """Resolve the filesystem path for a Delta table."""
-        return self.base_path / table
+    def _table_path(self, table: TablePath) -> str:
+        """Resolve the URI for a Delta table."""
+        return uri_join(self.base_path, table)
 
     # -------------------------------------------------------------------------
     # Backward / forward maps (dict-based, full scan)
@@ -54,11 +65,11 @@ class ProvenanceStore:
             Adjacency mapping. Empty dict if table does not exist or is empty.
         """
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
+        if not self._fs.exists(prov_path):
             return {}
 
         result = (
-            pl.scan_delta(str(prov_path))
+            pl.scan_delta(prov_path, storage_options=self._storage_options)
             .select(["source_artifact_id", "target_artifact_id"])
             .collect()
         )
@@ -109,10 +120,12 @@ class ProvenanceStore:
             does not exist or query returns no rows.
         """
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
+        if not self._fs.exists(index_path):
             return {}
 
-        query = pl.scan_delta(str(index_path)).select(["artifact_id", value_column])
+        query = pl.scan_delta(
+            index_path, storage_options=self._storage_options
+        ).select(["artifact_id", value_column])
         if artifact_ids is not None:
             query = query.filter(pl.col("artifact_id").is_in(list(artifact_ids)))
         result = query.collect()
@@ -172,11 +185,11 @@ class ProvenanceStore:
             artifact_edges table is missing.
         """
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
+        if not self._fs.exists(prov_path):
             return []
 
         result = (
-            pl.scan_delta(str(prov_path))
+            pl.scan_delta(prov_path, storage_options=self._storage_options)
             .filter(pl.col("target_artifact_id") == artifact_id)
             .select("source_artifact_id")
             .collect()
@@ -212,10 +225,10 @@ class ProvenanceStore:
             return {}
 
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
+        if not self._fs.exists(prov_path):
             return {}
 
-        query = pl.scan_delta(str(prov_path)).filter(
+        query = pl.scan_delta(prov_path, storage_options=self._storage_options).filter(
             pl.col("source_artifact_id").is_in(list(source_artifact_ids))
         )
 
@@ -262,10 +275,10 @@ class ProvenanceStore:
             return empty
 
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
+        if not self._fs.exists(prov_path):
             return empty
 
-        query = pl.scan_delta(str(prov_path)).filter(
+        query = pl.scan_delta(prov_path, storage_options=self._storage_options).filter(
             pl.col("source_artifact_id").is_in(source_ids)
         )
 
@@ -290,11 +303,11 @@ class ProvenanceStore:
             Origin step number, or None if the artifact is not indexed.
         """
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
+        if not self._fs.exists(index_path):
             return None
 
         result = (
-            pl.scan_delta(str(index_path))
+            pl.scan_delta(index_path, storage_options=self._storage_options)
             .filter(pl.col("artifact_id") == artifact_id)
             .select("origin_step_number")
             .limit(1)
@@ -321,11 +334,11 @@ class ProvenanceStore:
             return None
 
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
+        if not self._fs.exists(index_path):
             return None
 
         result = (
-            pl.scan_delta(str(index_path))
+            pl.scan_delta(index_path, storage_options=self._storage_options)
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(
                 pl.col("origin_step_number").min().alias("step_min"),
@@ -358,10 +371,10 @@ class ProvenanceStore:
             table does not exist.
         """
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
+        if not self._fs.exists(index_path):
             return set()
 
-        query = pl.scan_delta(str(index_path)).filter(
+        query = pl.scan_delta(index_path, storage_options=self._storage_options).filter(
             pl.col("artifact_type") == artifact_type
         )
         if step_numbers is not None:
@@ -384,8 +397,10 @@ class ProvenanceStore:
             dict if neither table exists.
         """
         steps_path = self._table_path(TablePath.STEPS)
-        if steps_path.exists():
-            lf = pl.scan_delta(str(steps_path)).filter(pl.col("status") == "completed")
+        if self._fs.exists(steps_path):
+            lf = pl.scan_delta(
+                steps_path, storage_options=self._storage_options
+            ).filter(pl.col("status") == "completed")
             if pipeline_run_id:
                 lf = lf.filter(pl.col("pipeline_run_id") == pipeline_run_id)
 
@@ -405,9 +420,9 @@ class ProvenanceStore:
                 )
 
         records_path = self._table_path(TablePath.EXECUTIONS)
-        if records_path.exists():
+        if self._fs.exists(records_path):
             df = (
-                pl.scan_delta(str(records_path))
+                pl.scan_delta(records_path, storage_options=self._storage_options)
                 .filter(pl.col("success") == True)  # noqa: E712
                 .select(["origin_step_number", "operation_name"])
                 .unique(subset=["origin_step_number"], keep="first")
@@ -457,14 +472,18 @@ class ProvenanceStore:
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)
 
-        if not prov_path.exists() or not index_path.exists():
+        if not self._fs.exists(prov_path) or not self._fs.exists(index_path):
             return empty
 
         edge_select = (
             [*base_cols, "target_artifact_type"] if include_target_type else base_cols
         )
-        edges = pl.scan_delta(str(prov_path)).select(edge_select)
-        index = pl.scan_delta(str(index_path)).select(
+        edges = pl.scan_delta(
+            prov_path, storage_options=self._storage_options
+        ).select(edge_select)
+        index = pl.scan_delta(
+            index_path, storage_options=self._storage_options
+        ).select(
             ["artifact_id", "origin_step_number"]
         )
 
@@ -509,11 +528,11 @@ class ProvenanceStore:
             Empty list if no ancestors exist or tables are missing.
         """
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
+        if not self._fs.exists(prov_path):
             return []
 
         edges = (
-            pl.scan_delta(str(prov_path))
+            pl.scan_delta(prov_path, storage_options=self._storage_options)
             .select(["source_artifact_id", "target_artifact_id"])
             .collect()
         )
@@ -568,14 +587,18 @@ class ProvenanceStore:
             Empty list if no descendants exist or tables are missing.
         """
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not prov_path.exists():
+        if not self._fs.exists(prov_path):
             return []
 
         select_cols = ["source_artifact_id", "target_artifact_id"]
         if descendant_type is not None:
             select_cols.append("target_artifact_type")
 
-        edges = pl.scan_delta(str(prov_path)).select(select_cols).collect()
+        edges = (
+            pl.scan_delta(prov_path, storage_options=self._storage_options)
+            .select(select_cols)
+            .collect()
+        )
         if edges.is_empty():
             return []
 
