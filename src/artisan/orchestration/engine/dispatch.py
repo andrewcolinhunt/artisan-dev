@@ -285,7 +285,7 @@ def _find_staging_dir(staging_root: Path, execution_run_id: str) -> Path | None:
     Searches shard subdirectories using the first two characters of the
     run ID as the prefix.
     """
-    # The shard_path uses the first 2 chars of the run_id as prefix
+    # The shard_uri uses the first 2 chars of the run_id as prefix
     prefix = execution_run_id[:2]
     # Search through step directories
     for step_dir in staging_root.iterdir():

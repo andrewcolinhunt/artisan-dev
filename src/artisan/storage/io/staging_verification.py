@@ -13,7 +13,7 @@ import os
 import time
 from pathlib import Path
 
-from artisan.utils.path import shard_path
+from artisan.utils.path import shard_uri
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +79,13 @@ def compute_expected_staging_paths(
         One staging directory path per run ID, in the same order.
     """
     return [
-        shard_path(
-            staging_root,
-            run_id,
-            step_number=step_number,
-            operation_name=operation_name,
+        Path(
+            shard_uri(
+                str(staging_root),
+                run_id,
+                step_number=step_number,
+                operation_name=operation_name,
+            )
         )
         for run_id in execution_run_ids
     ]

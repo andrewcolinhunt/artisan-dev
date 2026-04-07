@@ -47,7 +47,7 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.utils.errors import format_error
-from artisan.utils.path import shard_path
+from artisan.utils.path import shard_uri
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
@@ -136,13 +136,11 @@ def run_creator_lifecycle(
         if working_root_str == tempfile.gettempdir():
             sandbox_path_str = os.path.join(working_root_str, execution_run_id)
         else:
-            sandbox_path_str = str(
-                shard_path(
-                    working_root,
-                    execution_run_id,
-                    unit.step_number,
-                    operation_name=operation.name,
-                )
+            sandbox_path_str = shard_uri(
+                working_root_str,
+                execution_run_id,
+                unit.step_number,
+                operation_name=operation.name,
             )
 
         sandbox_path_str, preprocess_dir, execute_dir, postprocess_dir = create_sandbox(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -13,7 +14,7 @@ from artisan.storage.io.staging_verification import (
     verify_file_exists_nfs,
     verify_staging_directory,
 )
-from artisan.utils.path import shard_path
+from artisan.utils.path import shard_uri
 
 
 class TestVerifyFileExistsNfs:
@@ -67,9 +68,9 @@ class TestComputeExpectedStagingPaths:
         paths = compute_expected_staging_paths(tmp_path, execution_run_ids)
 
         assert len(paths) == 2
-        # Verify sharding matches shard_path()
-        assert paths[0] == shard_path(tmp_path, execution_run_ids[0])
-        assert paths[1] == shard_path(tmp_path, execution_run_ids[1])
+        # Verify sharding matches shard_uri()
+        assert paths[0] == Path(shard_uri(str(tmp_path), execution_run_ids[0]))
+        assert paths[1] == Path(shard_uri(str(tmp_path), execution_run_ids[1]))
         # Verify structure: root/ab/cd/full_id
         assert paths[0] == tmp_path / "ab" / "cd" / execution_run_ids[0]
         assert paths[1] == tmp_path / "12" / "34" / execution_run_ids[1]
@@ -134,7 +135,7 @@ class TestAwaitStagingFiles:
         execution_run_id = "abcdef1234567890abcdef1234567890"
 
         # Create staging directory with required file
-        staging_dir = shard_path(tmp_path, execution_run_id)
+        staging_dir = Path(shard_uri(str(tmp_path), execution_run_id))
         staging_dir.mkdir(parents=True)
         (staging_dir / REQUIRED_STAGING_FILE).write_bytes(b"data")
 
@@ -152,7 +153,7 @@ class TestAwaitStagingFiles:
     def test_files_appear_after_delay_succeeds(self, tmp_path):
         """Succeeds when files appear during polling."""
         execution_run_id = "abcdef1234567890abcdef1234567890"
-        staging_dir = shard_path(tmp_path, execution_run_id)
+        staging_dir = Path(shard_uri(str(tmp_path), execution_run_id))
 
         def create_file_after_delay():
             """Simulate file appearing after a short delay."""
@@ -207,7 +208,7 @@ class TestAwaitStagingFiles:
         ]
 
         # Create only the first file
-        staging_dir = shard_path(tmp_path, execution_run_ids[0])
+        staging_dir = Path(shard_uri(str(tmp_path), execution_run_ids[0]))
         staging_dir.mkdir(parents=True)
         (staging_dir / REQUIRED_STAGING_FILE).write_bytes(b"data")
 
@@ -234,7 +235,7 @@ class TestAwaitStagingFiles:
 
         # Create all staging directories with required files
         for run_id in execution_run_ids:
-            staging_dir = shard_path(tmp_path, run_id)
+            staging_dir = Path(shard_uri(str(tmp_path), run_id))
             staging_dir.mkdir(parents=True)
             (staging_dir / REQUIRED_STAGING_FILE).write_bytes(b"data")
 
