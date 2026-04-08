@@ -42,6 +42,7 @@ from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import compute_artifact_id, compute_step_spec_id, digest_utf8
 from artisan.utils.json import artisan_json_default as _set_default
+from artisan.utils.path import uri_join, uri_parent
 
 if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
@@ -235,9 +236,9 @@ def _promote_file_paths_to_store(
 
     fs = config.storage.filesystem()
     storage_options = config.storage.delta_storage_options()
-    staging_manager = StagingManager(str(config.staging_root), fs)
+    staging_manager = StagingManager(config.staging_root, fs)
     committer = DeltaCommitter(
-        str(config.delta_root),
+        config.delta_root,
         staging_manager,
         fs=fs,
         storage_options=storage_options,
@@ -500,8 +501,8 @@ class PipelineManager:
 
         pipeline = PipelineManager.create(
             name="my_pipeline",
-            delta_root=Path("/data/delta"),
-            staging_root=Path("/data/staging"),
+            delta_root="/data/delta",
+            staging_root="/data/staging",
         )
 
         step0 = pipeline.run(IngestData, inputs=files)
@@ -534,7 +535,7 @@ class PipelineManager:
         if configure_logging:
             from artisan.utils.logging import configure_logging as _configure
 
-            _configure(logs_root=config.delta_root.parent / "logs")
+            _configure(logs_root=uri_join(uri_parent(config.delta_root), "logs"))
 
         self._config = config
 
@@ -544,9 +545,9 @@ class PipelineManager:
 
             fs = config.storage.filesystem()
             storage_options = config.storage.delta_storage_options()
-            staging_manager = StagingManager(str(config.staging_root), fs)
+            staging_manager = StagingManager(config.staging_root, fs)
             committer = DeltaCommitter(
-                str(config.delta_root),
+                config.delta_root,
                 staging_manager,
                 fs=fs,
                 storage_options=storage_options,
@@ -564,6 +565,7 @@ class PipelineManager:
             config.delta_root,
             config.pipeline_run_id,
             storage_options=config.storage.delta_storage_options(),
+            fs=config.storage.filesystem(),
         )
         self._stopped: bool = False
         self._cancel_event = threading.Event()
@@ -856,10 +858,10 @@ class PipelineManager:
     def create(
         cls,
         name: str,
-        delta_root: Path | str,
-        staging_root: Path | str,
-        working_root: Path | str | None = None,
-        files_root: Path | str | None = None,
+        delta_root: str,
+        staging_root: str,
+        working_root: str | None = None,
+        files_root: str | None = None,
         failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
         cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
         backend: str | BackendBase = "local",
@@ -914,12 +916,10 @@ class PipelineManager:
         config = PipelineConfig(
             name=name,
             pipeline_run_id=pipeline_run_id,
-            delta_root=Path(delta_root),
-            staging_root=Path(staging_root),
-            **(
-                {"working_root": Path(working_root)} if working_root is not None else {}
-            ),
-            **({"files_root": Path(files_root)} if files_root is not None else {}),
+            delta_root=delta_root,
+            staging_root=staging_root,
+            **({"working_root": working_root} if working_root is not None else {}),
+            **({"files_root": files_root} if files_root is not None else {}),
             failure_policy=failure_policy,
             cache_policy=cache_policy,
             default_backend=resolved.name,
@@ -937,11 +937,11 @@ class PipelineManager:
     @classmethod
     def resume(
         cls,
-        delta_root: Path | str,
-        staging_root: Path | str,
+        delta_root: str,
+        staging_root: str,
         pipeline_run_id: str | None = None,
         name: str | None = None,
-        working_root: Path | str | None = None,
+        working_root: str | None = None,
         prefect_server: str | None = None,
         **kwargs: Any,
     ) -> PipelineManager:
@@ -973,13 +973,13 @@ class PipelineManager:
         server_info = discover_server(prefect_server)
         activate_server(server_info)
 
-        delta_root = Path(delta_root)
         from artisan.schemas.execution.storage_config import StorageConfig
 
         storage = kwargs.get("storage") or StorageConfig()
         tracker = StepTracker(
             delta_root,
             storage_options=storage.delta_storage_options(),
+            fs=storage.filesystem(),
         )
         completed_steps = tracker.load_completed_steps(pipeline_run_id)
 
@@ -994,11 +994,11 @@ class PipelineManager:
             name=name or _extract_name_from_run_id(run_id),
             pipeline_run_id=run_id,
             delta_root=delta_root,
-            staging_root=Path(staging_root),
+            staging_root=staging_root,
             **kwargs,
         )
         if working_root is not None:
-            config_kwargs["working_root"] = Path(working_root)
+            config_kwargs["working_root"] = working_root
         config = PipelineConfig(**config_kwargs)
 
         instance = cls(config)
@@ -1023,7 +1023,7 @@ class PipelineManager:
     @classmethod
     def list_runs(
         cls,
-        delta_root: Path | str,
+        delta_root: str,
         storage_options: dict[str, str] | None = None,
     ) -> pl.DataFrame:
         """List all pipeline runs in the delta root.
@@ -1036,7 +1036,14 @@ class PipelineManager:
             DataFrame with pipeline_run_id, step_count, last_status,
             started_at, ended_at — one row per run.
         """
-        tracker = StepTracker(Path(delta_root), storage_options=storage_options)
+        from artisan.schemas.execution.storage_config import StorageConfig
+
+        storage = StorageConfig()
+        tracker = StepTracker(
+            delta_root,
+            storage_options=storage_options,
+            fs=storage.filesystem(),
+        )
         return tracker.list_runs()
 
     # =========================================================================

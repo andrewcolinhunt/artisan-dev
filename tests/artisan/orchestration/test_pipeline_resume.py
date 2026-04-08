@@ -81,15 +81,17 @@ class TestResume:
         staging = tmp_path / "staging"
 
         # Run 2 steps
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         run_id = p1.config.pipeline_run_id
         p1.run(IngestMockOp, inputs=None)
         p1.run(MockOp, inputs={"data": p1[0].output("file")})
 
         # Resume
         p2 = PipelineManager.resume(
-            delta_root=delta,
-            staging_root=staging,
+            delta_root=str(delta),
+            staging_root=str(staging),
             pipeline_run_id=run_id,
         )
         assert p2.current_step == 2
@@ -106,13 +108,15 @@ class TestResume:
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         run_id = p1.config.pipeline_run_id
         p1.run(IngestMockOp, inputs=None)
 
         p2 = PipelineManager.resume(
-            delta_root=delta,
-            staging_root=staging,
+            delta_root=str(delta),
+            staging_root=str(staging),
             pipeline_run_id=run_id,
         )
         ref = p2[0].output("file")
@@ -129,18 +133,22 @@ class TestResume:
         staging = tmp_path / "staging"
 
         # Run 1 — Ingest only
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         p1.run(IngestMockOp, inputs=None)
         run1_id = p1.config.pipeline_run_id
 
         # Run 2 — Ingest + MockOp (different steps, so not all cache hits)
-        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p2 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         p2.run(IngestMockOp, inputs=None)  # cache hit from run 1
         p2.run(MockOp, inputs={"data": p2[0].output("file")})
         run2_id = p2.config.pipeline_run_id
 
         # Resume without specifying run_id — should pick run 2 (most recent completed)
-        p3 = PipelineManager.resume(delta_root=delta, staging_root=staging)
+        p3 = PipelineManager.resume(delta_root=str(delta), staging_root=str(staging))
         assert p3.config.pipeline_run_id == run2_id
         assert p3.current_step == 2
 
@@ -148,8 +156,8 @@ class TestResume:
         """ValueError on empty table."""
         with pytest.raises(ValueError, match="No completed steps found"):
             PipelineManager.resume(
-                delta_root=tmp_path / "delta",
-                staging_root=tmp_path / "staging",
+                delta_root=str(tmp_path / "delta"),
+                staging_root=str(tmp_path / "staging"),
             )
 
 
@@ -165,14 +173,16 @@ class TestListRuns:
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         p1.run(IngestMockOp, inputs=None)
 
-        runs = PipelineManager.list_runs(delta)
+        runs = PipelineManager.list_runs(str(delta))
         assert len(runs) == 1
         assert "pipeline_run_id" in runs.columns
 
     def test_list_runs_empty(self, tmp_path):
         """Empty table returns empty DataFrame."""
-        runs = PipelineManager.list_runs(tmp_path / "delta")
+        runs = PipelineManager.list_runs(str(tmp_path / "delta"))
         assert len(runs) == 0

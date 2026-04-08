@@ -331,9 +331,9 @@ def runtime_env(delta_root_with_input, working_root, staging_root):
     """Create RuntimeEnvironment with configured dependencies."""
     delta_path, _ = delta_root_with_input
     return RuntimeEnvironment(
-        delta_root_path=delta_path,
-        working_root_path=working_root,
-        staging_root_path=staging_root,
+        delta_root=str(delta_path),
+        working_root=str(working_root),
+        staging_root=str(staging_root),
     )
 
 
@@ -411,9 +411,9 @@ class TestRunExecutionFullLifecycle:
         delta_path, input_artifact_id = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -440,9 +440,9 @@ class TestRunExecutionFullLifecycle:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -471,9 +471,9 @@ class TestRunExecutionFullLifecycle:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -498,9 +498,9 @@ class TestRunExecutionFailureHandling:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -525,9 +525,9 @@ class TestRunExecutionFailureHandling:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -550,9 +550,9 @@ class TestRunExecutionFailureHandling:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -574,11 +574,11 @@ class TestRunExecutionFailureHandling:
         """Setup failure (no working_root) returns StagingResult(success=False)."""
         delta_path, _ = delta_root_with_input
 
-        # No working_root_path — forces setup to fail
+        # No working_root — forces setup to fail
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=None,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=None,
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -592,7 +592,7 @@ class TestRunExecutionFailureHandling:
 
         assert result.success is False
         assert result.error is not None
-        assert "working_root_path" in result.error
+        assert "working_root" in result.error
 
 
 class TestRunExecutionMetricOutputs:
@@ -605,9 +605,9 @@ class TestRunExecutionMetricOutputs:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -637,9 +637,9 @@ class TestRunExecutionStagedOutput:
         delta_path, input_artifact_id = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -674,9 +674,9 @@ class TestRunExecutionStagedOutput:
         delta_path, input_artifact_id = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -702,22 +702,22 @@ class TestRuntimeEnvironment:
     def test_config_is_frozen(self, tmp_path):
         """RuntimeEnvironment should be immutable."""
         env = RuntimeEnvironment(
-            delta_root_path=tmp_path / "delta",
-            working_root_path=tmp_path / "working",
-            staging_root_path=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            working_root=str(tmp_path / "working"),
+            staging_root=str(tmp_path / "staging"),
         )
 
         # Should raise ValidationError when trying to modify
         with pytest.raises(Exception):  # pydantic.ValidationError
-            env.delta_root_path = tmp_path / "other"
+            env.delta_root = str(tmp_path / "other")
 
     def test_config_requires_all_paths(self, tmp_path):
         """RuntimeEnvironment requires all three paths."""
         with pytest.raises(Exception):  # pydantic.ValidationError
             RuntimeEnvironment(
-                delta_root_path=tmp_path / "delta",
-                working_root_path=tmp_path / "working",
-                # missing staging_root_path
+                delta_root=str(tmp_path / "delta"),
+                working_root=str(tmp_path / "working"),
+                # missing staging_root
             )
 
 
@@ -815,9 +815,9 @@ class TestRunCreatorLifecycle:
         delta_path, input_artifact_id = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -848,9 +848,9 @@ class TestRunCreatorLifecycle:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -874,9 +874,9 @@ class TestRunCreatorLifecycle:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -896,9 +896,9 @@ class TestRunCreatorLifecycle:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
         )
 
         unit = ExecutionUnit(
@@ -927,9 +927,9 @@ class TestSandboxPathComputation:
         monkeypatch.setattr(tempfile_mod, "tempdir", str(fake_tmp))
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=Path(tempfile_mod.gettempdir()),
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=tempfile_mod.gettempdir(),
+            staging_root=str(staging_root),
             preserve_working=True,
         )
 
@@ -954,9 +954,9 @@ class TestSandboxPathComputation:
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
             preserve_working=True,
         )
 

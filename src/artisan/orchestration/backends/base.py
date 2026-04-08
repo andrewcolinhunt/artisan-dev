@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, ClassVar
 
 from artisan.orchestration.engine.dispatch_handle import DispatchHandle
@@ -94,8 +93,8 @@ class BackendBase(ABC):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
-        log_folder: Path | None = None,
-        staging_root: Path | None = None,
+        log_folder: str | None = None,
+        staging_root: str | None = None,
     ) -> DispatchHandle:
         """Build a configured dispatch handle for this backend.
 
@@ -116,8 +115,8 @@ class BackendBase(ABC):
     def capture_logs(
         self,
         results: list[UnitResult],
-        staging_root: Path,
-        failure_logs_root: Path | None,
+        staging_root: str,
+        failure_logs_root: str | None,
         operation_name: str,
     ) -> None:
         """Post-dispatch: capture backend-specific worker logs into results.

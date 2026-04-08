@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from artisan.utils.path import uri_join, uri_parent
 from artisan.visualization.graph.micro import (
     get_max_step_number,
     render_micro_graph_steps,
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 
 def display_provenance_stepper(
-    delta_root: Path,
+    delta_root: str,
     output_dir: Path | None = None,
 ) -> ipywidgets.VBox:
     """Display an interactive widget to step through provenance graph evolution.
@@ -48,11 +49,9 @@ def display_provenance_stepper(
         )
         raise ImportError(msg) from e
 
-    delta_root = Path(delta_root)
-
     # Default output_dir to runs/images alongside runs/delta
     if output_dir is None:
-        output_dir = delta_root.parent / "images"
+        output_dir = Path(uri_join(uri_parent(delta_root), "images"))
     else:
         output_dir = Path(output_dir)
 

@@ -12,9 +12,9 @@ from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 def _make_pipeline(tmp_path) -> PipelineManager:
     config = PipelineConfig(
         name="test",
-        delta_root=tmp_path / "delta",
-        staging_root=tmp_path / "staging",
-        working_root=tmp_path / "working",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        working_root=str(tmp_path / "working"),
     )
     return PipelineManager(config)
 

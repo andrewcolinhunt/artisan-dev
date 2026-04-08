@@ -16,12 +16,13 @@ Usage:
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from typing import Any
 
 import polars as pl
 
 from artisan.schemas.enums import TablePath
+from artisan.utils.path import uri_join
 
 
 class PipelineTimings:
@@ -57,7 +58,7 @@ class PipelineTimings:
     @classmethod
     def from_delta(
         cls,
-        delta_root: Path,
+        delta_root: str,
         pipeline_run_id: str | None = None,
         storage_options: dict[str, str] | None = None,
     ) -> PipelineTimings:
@@ -76,15 +77,15 @@ class PipelineTimings:
             FileNotFoundError: If steps table doesn't exist.
             ValueError: If no completed steps found.
         """
-        steps_path = delta_root / TablePath.STEPS
-        if not steps_path.exists():
+        steps_path = uri_join(delta_root, TablePath.STEPS)
+        if not os.path.exists(steps_path):
             msg = f"steps table not found at {steps_path}"
             raise FileNotFoundError(msg)
 
         # Read completed steps
-        scanner = pl.scan_delta(
-            str(steps_path), storage_options=storage_options
-        ).filter(pl.col("status") == "completed")
+        scanner = pl.scan_delta(steps_path, storage_options=storage_options).filter(
+            pl.col("status") == "completed"
+        )
         if pipeline_run_id is not None:
             scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
 
@@ -112,11 +113,11 @@ class PipelineTimings:
             steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
 
         # Read executions if available
-        exec_path = delta_root / TablePath.EXECUTIONS
+        exec_path = uri_join(delta_root, TablePath.EXECUTIONS)
         exec_df = None
-        if exec_path.exists():
+        if os.path.exists(exec_path):
             exec_scanner = pl.scan_delta(
-                str(exec_path), storage_options=storage_options
+                exec_path, storage_options=storage_options
             ).filter(
                 pl.col("success") == True  # noqa: E712
             )

@@ -40,9 +40,9 @@ def _art(aid: str = "a" * 32) -> MetricArtifact:
 
 def _make_runtime_env() -> MagicMock:
     env = MagicMock()
-    env.working_root_path = MagicMock()
-    env.delta_root_path = MagicMock()
-    env.staging_root_path = MagicMock()
+    env.working_root = MagicMock()
+    env.delta_root = MagicMock()
+    env.staging_root = MagicMock()
     env.compute_backend_name = "local"
     env.shared_filesystem = True
     env.preserve_working = False

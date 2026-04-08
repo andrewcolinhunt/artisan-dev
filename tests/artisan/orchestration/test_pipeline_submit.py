@@ -93,8 +93,8 @@ class TestSubmit:
         """submit() returns StepFuture, not StepResult."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         assert isinstance(future, StepFuture)
@@ -109,11 +109,15 @@ class TestSubmit:
         staging = tmp_path / "staging"
 
         # First run to populate cache
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         p1.run(IngestMockOp, inputs=None)
 
         # Second run — cache hit
-        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p2 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         future = p2.submit(IngestMockOp, inputs=None)
         assert future.done is True
 
@@ -125,8 +129,8 @@ class TestSubmit:
         """output() returns immediately even when step not done."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         ref = future.output("file")
@@ -141,8 +145,8 @@ class TestSubmit:
         """Status transitions to 'completed'."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         # Wait for completion
@@ -157,8 +161,8 @@ class TestSubmit:
         """result() blocks and returns StepResult."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         result = future.result()
@@ -173,8 +177,8 @@ class TestSubmit:
         """TimeoutError on result()."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         with pytest.raises(TimeoutError):
@@ -190,8 +194,8 @@ class TestSubmit:
         """Failed step returns StepResult(success=False) instead of raising."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         result = future.result()
@@ -208,8 +212,8 @@ class TestSubmit:
         """run() returns same StepResult as submit().result()."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         result = pipeline.run(IngestMockOp, inputs=None)
         assert isinstance(result, StepResult)
@@ -223,8 +227,8 @@ class TestSubmit:
         """submit() followed by run() works."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         result2 = pipeline.run(MockOp, inputs={"data": future.output("file")})
@@ -239,8 +243,8 @@ class TestSubmit:
         """submit() blocks on upstream future completion."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future0 = pipeline.submit(IngestMockOp, inputs=None)
         # This should wait for future0 internally via _wait_for_predecessors

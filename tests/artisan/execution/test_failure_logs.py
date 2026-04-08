@@ -13,7 +13,7 @@ class TestWriteFailureLog:
     def test_creates_file(self, tmp_path: Path) -> None:
         """Failure log file is created at expected path."""
         _write_failure_log(
-            failure_logs_root=tmp_path,
+            failure_logs_root=str(tmp_path),
             execution_run_id="run123",
             operation_name="tool_a",
             step_number=2,
@@ -26,7 +26,7 @@ class TestWriteFailureLog:
     def test_contains_error(self, tmp_path: Path) -> None:
         """Error string appears in log content."""
         _write_failure_log(
-            failure_logs_root=tmp_path,
+            failure_logs_root=str(tmp_path),
             execution_run_id="run456",
             operation_name="tool_b",
             step_number=3,
@@ -41,7 +41,7 @@ class TestWriteFailureLog:
         """Tool output section present when tool_output is provided."""
         lines = [f"line {i}" for i in range(200)]
         _write_failure_log(
-            failure_logs_root=tmp_path,
+            failure_logs_root=str(tmp_path),
             execution_run_id="run789",
             operation_name="tool_c",
             step_number=1,
@@ -57,7 +57,7 @@ class TestWriteFailureLog:
     def test_no_tool_output(self, tmp_path: Path) -> None:
         """Log file works without tool_output."""
         _write_failure_log(
-            failure_logs_root=tmp_path,
+            failure_logs_root=str(tmp_path),
             execution_run_id="run_no_tool",
             operation_name="tool_a",
             step_number=0,
@@ -83,7 +83,7 @@ class TestWriteFailureLog:
     def test_directory_structure(self, tmp_path: Path) -> None:
         """Log files are organized under step_{N}_{op}/ subdirectories."""
         _write_failure_log(
-            failure_logs_root=tmp_path,
+            failure_logs_root=str(tmp_path),
             execution_run_id="run_a",
             operation_name="tool_a",
             step_number=5,
@@ -91,7 +91,7 @@ class TestWriteFailureLog:
             error="Error A",
         )
         _write_failure_log(
-            failure_logs_root=tmp_path,
+            failure_logs_root=str(tmp_path),
             execution_run_id="run_b",
             operation_name="tool_a",
             step_number=5,
@@ -106,7 +106,7 @@ class TestWriteFailureLog:
     def test_header_fields(self, tmp_path: Path) -> None:
         """Log header contains run_id, operation, step, backend."""
         _write_failure_log(
-            failure_logs_root=tmp_path,
+            failure_logs_root=str(tmp_path),
             execution_run_id="header_test",
             operation_name="tool_b",
             step_number=7,

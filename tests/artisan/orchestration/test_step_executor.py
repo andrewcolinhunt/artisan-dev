@@ -156,9 +156,9 @@ class TestFilePathPromotion:
 
         config = PipelineConfig(
             name="test_pipeline",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
         (tmp_path / "delta").mkdir(parents=True)
         (tmp_path / "staging").mkdir(parents=True)
@@ -180,9 +180,9 @@ class TestFilePathPromotion:
 
         config = PipelineConfig(
             name="test_pipeline",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
         (tmp_path / "delta").mkdir(parents=True)
         (tmp_path / "staging").mkdir(parents=True)
@@ -206,9 +206,9 @@ class TestFilePathPromotion:
 
         config = PipelineConfig(
             name="test_pipeline",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
         (tmp_path / "delta").mkdir(parents=True)
         (tmp_path / "staging").mkdir(parents=True)
@@ -438,9 +438,9 @@ class TestCreatorStepPairing:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -505,9 +505,9 @@ class TestCreatorStepPairing:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -558,9 +558,9 @@ class TestCreatorStepPairing:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -639,9 +639,9 @@ class TestCuratorStepPairing:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         resolved = {
@@ -700,9 +700,9 @@ class TestCuratorStepPairing:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         resolved = {"data": [_ID_S1, _ID_S2]}
@@ -748,9 +748,9 @@ class TestCuratorStepPairing:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         resolved = {
@@ -866,9 +866,9 @@ class TestStepTimingIntegration:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -927,9 +927,9 @@ class TestStepTimingIntegration:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_resolve.return_value = {"data": [_ID_S1]}
@@ -989,9 +989,9 @@ class TestEmptyInputHandling:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend()
@@ -1029,9 +1029,9 @@ class TestEmptyInputHandling:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_resolve.return_value = {"data": []}
@@ -1068,9 +1068,9 @@ class TestEmptyInputHandling:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -1137,9 +1137,9 @@ class TestDispatchFailureHandling:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -1184,9 +1184,9 @@ class TestDispatchFailureHandling:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_resolve.return_value = {"data": [_ID_S1]}
@@ -1221,9 +1221,9 @@ class TestDispatchFailureHandling:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -1264,9 +1264,9 @@ class TestCommitFailureHandling:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -1316,9 +1316,9 @@ class TestStagingTimeoutHandling:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -1360,9 +1360,9 @@ class TestFileValidationBatch:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
         (tmp_path / "delta").mkdir(parents=True)
         (tmp_path / "staging").mkdir(parents=True)
@@ -1411,9 +1411,9 @@ class TestFilterStepLogging:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         # 3 passthrough artifacts, 5 metric artifacts
@@ -1485,9 +1485,9 @@ class TestFilterStepLogging:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         passthrough_ids = [_ID_S1, _ID_S2]
@@ -1555,9 +1555,9 @@ class TestCuratorStepSpecId:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_resolve.return_value = {"data": [_ID_S1]}
@@ -1601,9 +1601,9 @@ class TestCuratorStepSpecId:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_resolve.return_value = {"data": [_ID_S1]}
@@ -1691,9 +1691,9 @@ class TestCuratorSubprocessIsolation:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_resolve.return_value = {"data": [_ID_S1, _ID_S2]}
@@ -1775,9 +1775,9 @@ class TestCuratorSubprocessIsolation:
 
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
 
         mock_resolve.return_value = {"data": [_ID_S1]}

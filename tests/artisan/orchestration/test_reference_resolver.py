@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import polars as pl
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.orchestration.engine.inputs import (
     resolve_output_reference,
@@ -120,7 +121,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
 
         assert len(result) == 2
         assert "a" * 32 in result
@@ -148,7 +149,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="metrics")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
 
         assert len(result) == 1
         assert result[0] == "m" * 32
@@ -193,7 +194,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
 
         # Should be deduplicated
         assert len(result) == 1
@@ -239,13 +240,13 @@ class TestResolveOutputReferenceNewSchema:
 
         # Get step 0 output
         ref0 = OutputReference(source_step=0, role="data")
-        result0 = resolve_output_reference(ref0, tmp_path)
+        result0 = resolve_output_reference(ref0, str(tmp_path), fs=LocalFileSystem())
         assert len(result0) == 1
         assert result0[0] == "a" * 32
 
         # Get step 1 output
         ref1 = OutputReference(source_step=1, role="data")
-        result1 = resolve_output_reference(ref1, tmp_path)
+        result1 = resolve_output_reference(ref1, str(tmp_path), fs=LocalFileSystem())
         assert len(result1) == 1
         assert result1[0] == "b" * 32
 
@@ -288,7 +289,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
 
         # Should only get the successful execution's output
         assert len(result) == 1
@@ -322,7 +323,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
 
         assert result == sorted(result)
         assert result[0] == "a" * 32
@@ -332,7 +333,7 @@ class TestResolveOutputReferenceNewSchema:
         """Test that missing executions table returns empty list."""
         ref = OutputReference(source_step=0, role="data")
 
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
     def test_no_successful_executions_raises(self, tmp_path):
@@ -356,7 +357,7 @@ class TestResolveOutputReferenceNewSchema:
 
         ref = OutputReference(source_step=0, role="data")
 
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
     def test_no_outputs_for_role_returns_empty(self, tmp_path):
@@ -375,7 +376,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="metrics")  # Requesting metrics
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
     def test_successful_execution_zero_output_edges_returns_empty(self, tmp_path):
@@ -399,7 +400,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
     def test_multiple_executions_aggregated(self, tmp_path):
@@ -446,7 +447,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
 
         # Should get all three outputs
         assert len(result) == 3
@@ -462,7 +463,7 @@ class TestResolveOutputReferenceNewSchema:
 
         ref = OutputReference(source_step=0, role="data")
 
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
     def test_ignores_input_direction(self, tmp_path):
@@ -489,7 +490,7 @@ class TestResolveOutputReferenceNewSchema:
         _write_tables(tmp_path, records_df, execution_edges)
 
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
 
         assert len(result) == 1
         assert result[0] == "o" * 32

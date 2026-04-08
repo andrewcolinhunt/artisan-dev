@@ -11,6 +11,7 @@ For the finer-grained artifact-level view, see ``artisan.visualization.graph.mic
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -18,6 +19,7 @@ import graphviz
 import polars as pl
 
 from artisan.schemas.enums import TablePath
+from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
     PASSTHROUGH_STYLE,
@@ -32,12 +34,12 @@ from artisan.visualization.graph._styles import (
 
 
 def _load_completed_steps(
-    delta_root: Path,
+    delta_root: str,
     storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Return completed steps, deduplicated by step_number (keeps last)."""
-    table_path = delta_root / TablePath.STEPS
-    if not table_path.exists():
+    table_path = uri_join(delta_root, TablePath.STEPS)
+    if not os.path.exists(table_path):
         return pl.DataFrame(
             schema={
                 "step_number": pl.Int32,
@@ -49,7 +51,7 @@ def _load_completed_steps(
         )
 
     df = (
-        pl.scan_delta(str(table_path), storage_options=storage_options)
+        pl.scan_delta(table_path, storage_options=storage_options)
         .filter(pl.col("status") == "completed")
         .select(
             [
@@ -114,7 +116,7 @@ def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str]]:
 
 
 def build_macro_graph(
-    delta_root: Path,
+    delta_root: str,
     storage_options: dict[str, str] | None = None,
 ) -> graphviz.Digraph:
     """Create a step-level pipeline graph from the steps table.
@@ -132,7 +134,6 @@ def build_macro_graph(
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    delta_root = Path(delta_root)
     steps_df = _load_completed_steps(delta_root, storage_options=storage_options)
 
     graph = graphviz.Digraph("pipeline", format="svg")
@@ -245,7 +246,7 @@ def build_macro_graph(
 
 
 def render_macro_graph(
-    delta_root: Path,
+    delta_root: str,
     output_path: Path,
     format: Literal["svg", "png"] = "svg",
     storage_options: dict[str, str] | None = None,
