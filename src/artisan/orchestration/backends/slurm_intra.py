@@ -94,11 +94,14 @@ class SlurmIntraBackend(BackendBase):
         staging_root: str,
         failure_logs_root: str | None,
         operation_name: str,
+        step_number: int,
     ) -> None:
         """Write srun worker stderr into staged parquet files."""
         from artisan.orchestration.engine.dispatch import _patch_worker_logs
 
-        _patch_worker_logs(results, staging_root, failure_logs_root, operation_name)
+        _patch_worker_logs(
+            results, staging_root, failure_logs_root, operation_name, step_number
+        )
 
     def validate_operation(self, operation: Any) -> None:
         """Warn if not inside a SLURM allocation.

@@ -135,4 +135,4 @@ class TestLocalBackendCaptureLogs:
         results = [
             UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
         ]
-        local_backend.capture_logs(results, MagicMock(), None, "test_op")
+        local_backend.capture_logs(results, MagicMock(), None, "test_op", 1)

@@ -164,11 +164,13 @@ class TestCreatorLifecycleFilesDir:
                     captured = art
                     break
 
-        # The operation captured files_dir — verify the directory was created
-        step_workers = files_root / "3" / "workers"
-        assert step_workers.exists()
-        worker_dirs = list(step_workers.iterdir())
-        assert len(worker_dirs) == 1
+        # The operation captured files_dir — verify the sharded directory was created
+        step_dir = files_root / "3_files_dir_capture"
+        assert step_dir.exists()
+        [prefix_dir] = list(step_dir.iterdir())
+        [shard_dir] = list(prefix_dir.iterdir())
+        [run_dir] = list(shard_dir.iterdir())
+        assert run_dir.is_dir()
 
     def test_files_dir_none_when_files_root_unset(
         self, delta_root: Path, working_root: Path, staging_root: Path
@@ -194,7 +196,7 @@ class TestCreatorLifecycleFilesDir:
     def test_files_dir_path_structure(
         self, delta_root: Path, working_root: Path, staging_root: Path, tmp_path: Path
     ) -> None:
-        """Verify path follows files_root/{step}/workers/{run_id} convention."""
+        """Verify path follows shard_uri layout."""
         files_root = tmp_path / "files"
         files_root.mkdir()
 
@@ -213,11 +215,10 @@ class TestCreatorLifecycleFilesDir:
 
         run_creator_lifecycle(unit, env)
 
-        # Check structure: files_root/7/workers/<run_id>/
-        step_dir = files_root / "7"
+        # Check structure: files_root/7_files_dir_capture/{prefix}/{shard}/{run_id}/
+        step_dir = files_root / "7_files_dir_capture"
         assert step_dir.exists()
-        workers_dir = step_dir / "workers"
-        assert workers_dir.exists()
-        run_dirs = list(workers_dir.iterdir())
-        assert len(run_dirs) == 1
-        assert run_dirs[0].is_dir()
+        [prefix_dir] = list(step_dir.iterdir())
+        [shard_dir] = list(prefix_dir.iterdir())
+        [run_dir] = list(shard_dir.iterdir())
+        assert run_dir.is_dir()
