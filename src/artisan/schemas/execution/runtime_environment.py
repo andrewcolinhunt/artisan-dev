@@ -10,6 +10,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from artisan.schemas.execution.storage_config import StorageConfig
+
 
 class RuntimeEnvironment(BaseModel):
     """Runtime environment configuration.
@@ -123,6 +125,12 @@ class RuntimeEnvironment(BaseModel):
     compute_backend_name: str = Field(
         "local",
         description="Backend name for provenance records.",
+    )
+
+    # Storage backend
+    storage: StorageConfig = Field(
+        default_factory=StorageConfig,
+        description="Storage backend configuration for fsspec and delta-rs.",
     )
 
     model_config = {"frozen": True}  # Config should be immutable
