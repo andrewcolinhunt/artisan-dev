@@ -10,6 +10,7 @@ import pytest
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
+from artisan.orchestration.post_step_future import PostStepFuture
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.orchestration.step_result import StepResult
@@ -195,20 +196,19 @@ _EXECUTE_STEP = "artisan.orchestration.pipeline_manager.execute_step"
 
 
 class TestPostStepFutureIdentity:
-    """Returned StepFuture points to the post_step, not the main step."""
+    """Returned PostStepFuture wraps the main and post steps."""
 
     @patch(_EXECUTE_STEP, side_effect=_mock_execute_step)
     def test_submit_returns_post_step_future(self, mock_exec, tmp_path):
-        """submit() with post_step returns StepFuture for the post_step."""
+        """submit() with post_step returns PostStepFuture."""
         pipeline = PipelineManager.create(
             name="test",
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(ProducerOp, post_step=ConsumerOp)
-        assert isinstance(future, StepFuture)
-        # Post_step is step 1 (main step is step 0)
-        assert future.step_number == 1
+        assert isinstance(future, PostStepFuture)
+        assert future.post_future.step_number == 1
         assert future.step_name == "Producer.post"
 
     @patch(_EXECUTE_STEP, side_effect=_mock_execute_step)
@@ -237,8 +237,7 @@ class TestPostStepNumbering:
             staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(ProducerOp, post_step=ConsumerOp)
-        # Post_step is step 1
-        assert future.step_number == 1
+        assert future.post_future.step_number == 1
         # Next step should get step 2
         future2 = pipeline.submit(DownstreamOp, inputs={"data": future.output("data")})
         assert future2.step_number == 2
@@ -351,8 +350,23 @@ class TestPostStepRoleFiltering:
         )
         # MultiOutputProducerOp outputs {data, metrics}; ConsumerOp accepts {data}
         future = pipeline.submit(MultiOutputProducerOp, post_step=ConsumerOp)
-        assert isinstance(future, StepFuture)
+        assert isinstance(future, PostStepFuture)
         assert future.step_name == "MultiOutputProducer.post"
+
+    @patch(_EXECUTE_STEP, side_effect=_mock_execute_step)
+    def test_superset_outputs_accessible_via_compound_future(self, mock_exec, tmp_path):
+        """Compound future routes shared roles to post-step, rest to main."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        )
+        future = pipeline.submit(MultiOutputProducerOp, post_step=ConsumerOp)
+        # "data" comes from the post-step (step 1)
+        assert future.output("data").source_step == 1
+        # "metrics" comes from the main step (step 0)
+        assert future.output("metrics").source_step == 0
+        assert future.output_roles == frozenset({"data", "metrics"})
 
     @patch(_EXECUTE_STEP, side_effect=_mock_execute_step)
     def test_disjoint_roles_raises_missing_required(self, mock_exec, tmp_path):
@@ -363,7 +377,7 @@ class TestPostStepRoleFiltering:
             staging_root=str(tmp_path / "staging"),
         )
         # ProducerOp outputs {data}; MismatchedConsumerOp requires {metrics}
-        # After filtering: post_inputs is empty → missing required role
+        # After filtering: post_inputs is empty -> missing required role
         with pytest.raises(ValueError, match="Missing required input"):
             pipeline.submit(ProducerOp, post_step=MismatchedConsumerOp)
 
