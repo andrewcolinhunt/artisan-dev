@@ -55,12 +55,12 @@ class TestCheckCache:
 
     def test_check_cache_empty(self, tmp_path):
         """No table returns None."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         assert tracker.check_cache("nonexistent", CachePolicy.ALL_SUCCEEDED) is None
 
     def test_check_cache_no_completed(self, tmp_path):
         """Running/failed rows return None."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         record = _make_start_record(step_spec_id="spec_a")
         tracker.record_step_start(record)
         # Only a 'running' row exists
@@ -68,7 +68,7 @@ class TestCheckCache:
 
     def test_check_cache_hit(self, tmp_path):
         """Completed row returns correct StepResult."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         record = _make_start_record(step_spec_id="spec_b")
         result = _make_step_result()
         tracker.record_step_start(record)
@@ -86,7 +86,7 @@ class TestCheckCache:
 
     def test_check_cache_most_recent(self, tmp_path):
         """Multiple completed rows for same spec_id returns latest."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         record = _make_start_record(step_spec_id="spec_c")
 
         # First completion with 3 succeeded
@@ -108,7 +108,7 @@ class TestRecordOperations:
 
     def test_record_start_creates_table(self, tmp_path):
         """First write creates delta table."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         assert not (tmp_path / "orchestration/steps").exists()
 
         record = _make_start_record()
@@ -117,7 +117,7 @@ class TestRecordOperations:
 
     def test_record_start_appends(self, tmp_path):
         """Second write appends to existing table."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         record1 = _make_start_record(step_number=0, step_run_id="run_a")
         record2 = _make_start_record(step_number=1, step_run_id="run_b")
         tracker.record_step_start(record1)
@@ -130,7 +130,7 @@ class TestRecordOperations:
 
     def test_record_completed(self, tmp_path):
         """Completed row has correct status, counts, duration."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         record = _make_start_record()
         result = _make_step_result(succeeded_count=8, failed_count=2)
         tracker.record_step_start(record)
@@ -149,7 +149,7 @@ class TestRecordOperations:
 
     def test_record_failed(self, tmp_path):
         """Failed row has correct status and error message."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         record = _make_start_record()
         tracker.record_step_start(record)
         tracker.record_step_failed(record, "Something went wrong")
@@ -168,7 +168,7 @@ class TestLoadCompletedSteps:
 
     def test_load_completed_ordered(self, tmp_path):
         """Returns steps in step_number order."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
 
         # Write steps out of order
         for step_num in [2, 0, 1]:
@@ -191,14 +191,14 @@ class TestLoadCompletedSteps:
     def test_load_completed_most_recent_run(self, tmp_path):
         """None run_id returns latest run."""
         # Run 1
-        tracker1 = StepTracker(tmp_path, "run_old")
+        tracker1 = StepTracker(str(tmp_path), "run_old")
         record1 = _make_start_record(step_run_id="old_r", step_spec_id="old_s")
         result1 = _make_step_result()
         tracker1.record_step_start(record1)
         tracker1.record_step_completed(record1, result1)
 
         # Run 2 (more recent)
-        tracker2 = StepTracker(tmp_path, "run_new")
+        tracker2 = StepTracker(str(tmp_path), "run_new")
         record2 = _make_start_record(
             step_run_id="new_r", step_spec_id="new_s", step_name="ToolC"
         )
@@ -207,7 +207,7 @@ class TestLoadCompletedSteps:
         tracker2.record_step_completed(record2, result2)
 
         # Load without specifying run_id
-        tracker = StepTracker(tmp_path)
+        tracker = StepTracker(str(tmp_path))
         steps = tracker.load_completed_steps()
         assert len(steps) == 1
         assert steps[0].step_name == "ToolC"
@@ -215,7 +215,7 @@ class TestLoadCompletedSteps:
 
     def test_load_completed_empty(self, tmp_path):
         """No rows returns empty list."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         assert tracker.load_completed_steps() == []
 
 
@@ -224,7 +224,7 @@ class TestSkippedStatus:
 
     def test_check_cache_skipped_not_cached(self, tmp_path):
         """Skipped rows are excluded from cache lookups."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         record = _make_start_record(step_spec_id="spec_skip")
         result = _make_step_result(succeeded_count=0)
         tracker.record_step_start(record)
@@ -235,7 +235,7 @@ class TestSkippedStatus:
 
     def test_load_completed_includes_skipped(self, tmp_path):
         """load_completed_steps() returns both completed and skipped steps."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
 
         # Step 0: completed
         record0 = _make_start_record(
@@ -278,7 +278,7 @@ class TestListRuns:
         """Summary DataFrame with correct columns."""
         # Write two runs
         for run_id in ["run_a", "run_b"]:
-            tracker = StepTracker(tmp_path, run_id)
+            tracker = StepTracker(str(tmp_path), run_id)
             record = _make_start_record(
                 step_run_id=f"{run_id}_r", step_spec_id=f"{run_id}_s"
             )
@@ -286,7 +286,7 @@ class TestListRuns:
             tracker.record_step_start(record)
             tracker.record_step_completed(record, result)
 
-        tracker = StepTracker(tmp_path)
+        tracker = StepTracker(str(tmp_path))
         runs = tracker.list_runs()
         assert len(runs) == 2
         assert "pipeline_run_id" in runs.columns
@@ -297,7 +297,7 @@ class TestListRuns:
 
     def test_list_runs_empty(self, tmp_path):
         """No table returns empty DataFrame."""
-        tracker = StepTracker(tmp_path)
+        tracker = StepTracker(str(tmp_path))
         runs = tracker.list_runs()
         assert len(runs) == 0
         assert "pipeline_run_id" in runs.columns
@@ -335,7 +335,7 @@ class TestCacheCorrectness:
 
     def test_cache_miss_when_dispatch_error(self, tmp_path):
         """Both policies reject steps with dispatch errors."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         self._write_completed_step(
             tracker,
             metadata={"dispatch_error": "ConnectionError: timeout"},
@@ -345,7 +345,7 @@ class TestCacheCorrectness:
 
     def test_cache_miss_when_commit_error(self, tmp_path):
         """Both policies reject steps with commit errors."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         self._write_completed_step(
             tracker,
             metadata={"commit_error": "DeltaError: conflict"},
@@ -355,13 +355,13 @@ class TestCacheCorrectness:
 
     def test_cache_miss_when_failures_all_succeeded(self, tmp_path):
         """ALL_SUCCEEDED rejects steps with execution failures."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         self._write_completed_step(tracker, succeeded=3, failed=2)
         assert tracker.check_cache("spec_001", CachePolicy.ALL_SUCCEEDED) is None
 
     def test_cache_hit_when_failures_step_completed(self, tmp_path):
         """STEP_COMPLETED accepts steps with execution failures."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         self._write_completed_step(tracker, succeeded=3, failed=2)
         cached = tracker.check_cache("spec_001", CachePolicy.STEP_COMPLETED)
         assert cached is not None
@@ -370,7 +370,7 @@ class TestCacheCorrectness:
 
     def test_cache_hit_clean_step(self, tmp_path):
         """Both policies accept clean steps (no errors, no failures)."""
-        tracker = StepTracker(tmp_path, "run_1")
+        tracker = StepTracker(str(tmp_path), "run_1")
         self._write_completed_step(tracker, succeeded=5, failed=0)
         assert tracker.check_cache("spec_001", CachePolicy.ALL_SUCCEEDED) is not None
         assert tracker.check_cache("spec_001", CachePolicy.STEP_COMPLETED) is not None

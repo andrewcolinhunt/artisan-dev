@@ -252,7 +252,7 @@ def build_macro_graph(
 
 def render_macro_graph(
     delta_root: str,
-    output_path: str | Path,
+    output_path: str,
     format: Literal["svg", "png"] = "svg",
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,

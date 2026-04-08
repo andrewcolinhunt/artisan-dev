@@ -64,7 +64,7 @@ def apply_default_layout(graph: graphviz.Digraph) -> None:
 
 def render_graph(
     graph: graphviz.Digraph,
-    output_path: str | Path,
+    output_path: str,
     format: Literal["svg", "png"] = "svg",
 ) -> str:
     """Render a Graphviz digraph to a file.

@@ -8,6 +8,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 import xxhash
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -135,7 +136,7 @@ def artifact_store_with_metric(tmp_path, metric_artifact):
         ],
     )
 
-    return ArtifactStore(base_path)
+    return ArtifactStore(str(base_path), fs=LocalFileSystem())
 
 
 @pytest.fixture
@@ -168,7 +169,7 @@ def artifact_store_with_file_ref(tmp_path, file_ref_artifact):
         ],
     )
 
-    return ArtifactStore(base_path)
+    return ArtifactStore(str(base_path), fs=LocalFileSystem())
 
 
 @pytest.fixture
@@ -222,4 +223,4 @@ def artifact_store_with_all_types(
         ],
     )
 
-    return ArtifactStore(base_path)
+    return ArtifactStore(str(base_path), fs=LocalFileSystem())
