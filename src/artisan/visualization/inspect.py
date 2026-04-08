@@ -33,12 +33,14 @@ def inspect_pipeline(
     delta_root: Path | str,
     *,
     pipeline_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Pipeline-level overview — one row per step.
 
     Args:
         delta_root: Path to Delta Lake root.
         pipeline_run_id: Filter to a specific run. Latest if None.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         DataFrame with columns: step, operation, status, produced, duration.
@@ -53,7 +55,7 @@ def inspect_pipeline(
         raise FileNotFoundError(msg)
 
     # Load completed, skipped, and cancelled steps
-    scanner = pl.scan_delta(str(steps_path)).filter(
+    scanner = pl.scan_delta(str(steps_path), storage_options=storage_options).filter(
         pl.col("status").is_in(["completed", "skipped", "cancelled"])
     )
     if pipeline_run_id is not None:
@@ -96,7 +98,9 @@ def inspect_pipeline(
     index_path = delta_root / TablePath.ARTIFACT_INDEX
     index_counts: dict[int, dict[str, int]] = {}
     if index_path.exists():
-        idx_df = pl.scan_delta(str(index_path)).collect()
+        idx_df = pl.scan_delta(
+            str(index_path), storage_options=storage_options
+        ).collect()
         if not idx_df.is_empty():
             grouped = (
                 idx_df.group_by("origin_step_number", "artifact_type")
@@ -170,12 +174,15 @@ def inspect_pipeline(
 def inspect_step(
     delta_root: Path | str,
     step_number: int,
+    *,
+    storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """One-row-per-artifact summary for a given step.
 
     Args:
         delta_root: Path to Delta Lake root.
         step_number: Step number to inspect.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         DataFrame with columns: name, artifact_type, step, details.
@@ -196,7 +203,7 @@ def inspect_step(
         return empty
 
     idx_df = (
-        pl.scan_delta(str(index_path))
+        pl.scan_delta(str(index_path), storage_options=storage_options)
         .filter(pl.col("origin_step_number") == step_number)
         .collect()
     )
@@ -221,7 +228,7 @@ def inspect_step(
             continue
 
         df = (
-            pl.scan_delta(str(table_path))
+            pl.scan_delta(str(table_path), storage_options=storage_options)
             .filter(pl.col("origin_step_number") == step_number)
             .collect()
         )
@@ -253,6 +260,7 @@ def inspect_metrics(
     step_number: int | None = None,
     *,
     round_digits: int = 3,
+    storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Parse metric artifacts into a human-readable table.
 
@@ -260,6 +268,7 @@ def inspect_metrics(
         delta_root: Path to Delta Lake root.
         step_number: Filter to a specific step. All metric steps if None.
         round_digits: Decimal places for float rounding.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         DataFrame with columns: name, step, {metric_key_1}, {metric_key_2}, ...
@@ -273,7 +282,7 @@ def inspect_metrics(
         msg = f"Metrics table not found at {table_path}"
         raise FileNotFoundError(msg)
 
-    scanner = pl.scan_delta(str(table_path))
+    scanner = pl.scan_delta(str(table_path), storage_options=storage_options)
     if step_number is not None:
         scanner = scanner.filter(pl.col("origin_step_number") == step_number)
 
@@ -329,6 +338,8 @@ def inspect_data(
     delta_root: Path | str,
     name: str | None = None,
     step_number: int | None = None,
+    *,
+    storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Read DataArtifact CSV content as a Polars DataFrame.
 
@@ -336,6 +347,7 @@ def inspect_data(
         delta_root: Path to Delta Lake root.
         name: Filter by original_name. Takes the first match.
         step_number: Filter by step number.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         DataFrame with the actual CSV data content.
@@ -350,7 +362,7 @@ def inspect_data(
         msg = f"Data table not found at {table_path}"
         raise FileNotFoundError(msg)
 
-    scanner = pl.scan_delta(str(table_path))
+    scanner = pl.scan_delta(str(table_path), storage_options=storage_options)
     if name is not None:
         scanner = scanner.filter(pl.col("original_name") == name)
     if step_number is not None:
@@ -361,7 +373,7 @@ def inspect_data(
     if df.is_empty():
         # Build a helpful error message
         all_names = (
-            pl.scan_delta(str(table_path))
+            pl.scan_delta(str(table_path), storage_options=storage_options)
             .select("original_name")
             .collect()["original_name"]
             .to_list()

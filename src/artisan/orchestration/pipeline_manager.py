@@ -560,7 +560,11 @@ class PipelineManager:
         self._step_registry: dict[str, list[_StepEntry]] = {}
         self._step_spec_ids: dict[int, str] = {}
         self._step_run_ids: dict[int, str] = {}
-        self._step_tracker = StepTracker(config.delta_root, config.pipeline_run_id)
+        self._step_tracker = StepTracker(
+            config.delta_root,
+            config.pipeline_run_id,
+            storage_options=config.storage.delta_storage_options(),
+        )
         self._stopped: bool = False
         self._cancel_event = threading.Event()
         self._prev_sigint: Any = None
@@ -970,7 +974,13 @@ class PipelineManager:
         activate_server(server_info)
 
         delta_root = Path(delta_root)
-        tracker = StepTracker(delta_root)
+        from artisan.schemas.execution.storage_config import StorageConfig
+
+        storage = kwargs.get("storage") or StorageConfig()
+        tracker = StepTracker(
+            delta_root,
+            storage_options=storage.delta_storage_options(),
+        )
         completed_steps = tracker.load_completed_steps(pipeline_run_id)
 
         if not completed_steps:
@@ -1011,14 +1021,22 @@ class PipelineManager:
         return instance
 
     @classmethod
-    def list_runs(cls, delta_root: Path | str) -> pl.DataFrame:
+    def list_runs(
+        cls,
+        delta_root: Path | str,
+        storage_options: dict[str, str] | None = None,
+    ) -> pl.DataFrame:
         """List all pipeline runs in the delta root.
+
+        Args:
+            delta_root: Root path for Delta Lake tables.
+            storage_options: Delta-rs storage options for cloud backends.
 
         Returns:
             DataFrame with pipeline_run_id, step_count, last_status,
             started_at, ended_at — one row per run.
         """
-        tracker = StepTracker(Path(delta_root))
+        tracker = StepTracker(Path(delta_root), storage_options=storage_options)
         return tracker.list_runs()
 
     # =========================================================================
