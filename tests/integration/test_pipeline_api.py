@@ -6,8 +6,6 @@ finalize() ordering, and pipeline state inspection with real operations.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 pytestmark = pytest.mark.slow
@@ -26,7 +24,7 @@ class TestPipelineDunderMethods:
     """Integration tests for __len__, __iter__, __getitem__, __bool__,
     __contains__, __str__, __repr__ with real pipeline execution."""
 
-    def test_len_tracks_completed_steps(self, pipeline_env: dict[str, Path]):
+    def test_len_tracks_completed_steps(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_len",
             delta_root=pipeline_env["delta_root"],
@@ -45,7 +43,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_iter_yields_step_results(self, pipeline_env: dict[str, Path]):
+    def test_iter_yields_step_results(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_iter",
             delta_root=pipeline_env["delta_root"],
@@ -71,7 +69,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_getitem_by_index(self, pipeline_env: dict[str, Path]):
+    def test_getitem_by_index(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_getitem",
             delta_root=pipeline_env["delta_root"],
@@ -93,7 +91,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_getitem_slice(self, pipeline_env: dict[str, Path]):
+    def test_getitem_slice(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_slice",
             delta_root=pipeline_env["delta_root"],
@@ -118,7 +116,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_bool_true_when_all_succeed(self, pipeline_env: dict[str, Path]):
+    def test_bool_true_when_all_succeed(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_bool_true",
             delta_root=pipeline_env["delta_root"],
@@ -135,7 +133,7 @@ class TestPipelineDunderMethods:
         assert pipeline
         pipeline.finalize()
 
-    def test_bool_false_when_empty(self, pipeline_env: dict[str, Path]):
+    def test_bool_false_when_empty(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_bool_false",
             delta_root=pipeline_env["delta_root"],
@@ -146,7 +144,7 @@ class TestPipelineDunderMethods:
         assert not pipeline
         pipeline.finalize()
 
-    def test_contains_by_step_name(self, pipeline_env: dict[str, Path]):
+    def test_contains_by_step_name(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_contains",
             delta_root=pipeline_env["delta_root"],
@@ -166,7 +164,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_str_and_repr(self, pipeline_env: dict[str, Path]):
+    def test_str_and_repr(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_str_repr",
             delta_root=pipeline_env["delta_root"],
@@ -197,7 +195,7 @@ class TestPipelineDunderMethods:
 class TestOutputNameLookup:
     """Integration tests for pipeline.output(name, role)."""
 
-    def test_output_with_custom_name(self, pipeline_env: dict[str, Path]):
+    def test_output_with_custom_name(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_output_name",
             delta_root=pipeline_env["delta_root"],
@@ -219,7 +217,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_with_default_name(self, pipeline_env: dict[str, Path]):
+    def test_output_with_default_name(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_output_default",
             delta_root=pipeline_env["delta_root"],
@@ -238,7 +236,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_unknown_name_raises(self, pipeline_env: dict[str, Path]):
+    def test_output_unknown_name_raises(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_output_unknown",
             delta_root=pipeline_env["delta_root"],
@@ -251,7 +249,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_unknown_role_raises(self, pipeline_env: dict[str, Path]):
+    def test_output_unknown_role_raises(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_output_bad_role",
             delta_root=pipeline_env["delta_root"],
@@ -270,7 +268,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_step_number_disambiguation(self, pipeline_env: dict[str, Path]):
+    def test_output_step_number_disambiguation(self, pipeline_env: dict[str, str]):
         """Two steps with the same name: step_number selects the right one."""
         pipeline = PipelineManager.create(
             name="test_output_disambig",
@@ -302,7 +300,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_wires_to_downstream(self, pipeline_env: dict[str, Path]):
+    def test_output_wires_to_downstream(self, pipeline_env: dict[str, str]):
         """pipeline.output() reference can be used to wire downstream steps."""
         pipeline = PipelineManager.create(
             name="test_output_wiring",
@@ -340,7 +338,7 @@ class TestOutputNameLookup:
 class TestStepFutureProperties:
     """Integration tests for StepFuture.output, .status, .done."""
 
-    def test_step_future_output_before_completion(self, pipeline_env: dict[str, Path]):
+    def test_step_future_output_before_completion(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_future_output",
             delta_root=pipeline_env["delta_root"],
@@ -362,7 +360,7 @@ class TestStepFutureProperties:
         future.result(timeout=30)
         pipeline.finalize()
 
-    def test_step_future_done_and_status(self, pipeline_env: dict[str, Path]):
+    def test_step_future_done_and_status(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_future_status",
             delta_root=pipeline_env["delta_root"],
@@ -383,7 +381,7 @@ class TestStepFutureProperties:
 
         pipeline.finalize()
 
-    def test_step_future_chain(self, pipeline_env: dict[str, Path]):
+    def test_step_future_chain(self, pipeline_env: dict[str, str]):
         """submit() output can wire to subsequent submit() via StepFuture.output()."""
         pipeline = PipelineManager.create(
             name="test_future_chain",
@@ -421,7 +419,7 @@ class TestStepFutureProperties:
 class TestFinalizeOrdering:
     """Tests that finalize() returns steps sorted by step_number."""
 
-    def test_finalize_steps_sorted(self, pipeline_env: dict[str, Path]):
+    def test_finalize_steps_sorted(self, pipeline_env: dict[str, str]):
         """finalize() summary has steps in step_number order."""
         pipeline = PipelineManager.create(
             name="test_finalize_sort",
@@ -456,7 +454,7 @@ class TestFinalizeOrdering:
 class TestPipelineProperties:
     """Integration tests for config and current_step properties."""
 
-    def test_config_property(self, pipeline_env: dict[str, Path]):
+    def test_config_property(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_config_prop",
             delta_root=pipeline_env["delta_root"],
@@ -469,7 +467,7 @@ class TestPipelineProperties:
 
         pipeline.finalize()
 
-    def test_current_step_increments(self, pipeline_env: dict[str, Path]):
+    def test_current_step_increments(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_step_counter",
             delta_root=pipeline_env["delta_root"],
@@ -504,7 +502,7 @@ class TestPipelineProperties:
 class TestCustomStepName:
     """Integration tests for the name= parameter on run()."""
 
-    def test_custom_name_propagates(self, pipeline_env: dict[str, Path]):
+    def test_custom_name_propagates(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_custom_name",
             delta_root=pipeline_env["delta_root"],

@@ -7,7 +7,6 @@ store) and ExecutionConfigArtifact with $artifact references.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -32,7 +31,7 @@ from .conftest import (
 
 
 def test_ingest_pipeline_step_basic(
-    dual_pipeline_env: dict[str, dict[str, Path]],
+    dual_pipeline_env: dict[str, dict[str, str]],
 ):
     """IngestPipelineStep imports artifacts from another pipeline."""
     env_a = dual_pipeline_env["a"]
@@ -73,7 +72,7 @@ def test_ingest_pipeline_step_basic(
     step0b = pb.run(
         IngestPipelineStep,
         params={
-            "source_delta_root": str(env_a["delta_root"]),
+            "source_delta_root": env_a["delta_root"],
             "source_step": 1,
         },
         backend=Backend.LOCAL,
@@ -92,7 +91,7 @@ def test_ingest_pipeline_step_basic(
 
 
 def test_ingest_pipeline_step_type_filter(
-    dual_pipeline_env: dict[str, dict[str, Path]],
+    dual_pipeline_env: dict[str, dict[str, str]],
 ):
     """IngestPipelineStep with artifact_type filter imports only matching type."""
     env_a = dual_pipeline_env["a"]
@@ -127,7 +126,7 @@ def test_ingest_pipeline_step_type_filter(
     step0b = pb.run(
         IngestPipelineStep,
         params={
-            "source_delta_root": str(env_a["delta_root"]),
+            "source_delta_root": env_a["delta_root"],
             "source_step": 1,
             "artifact_type": "metric",
         },
@@ -142,7 +141,7 @@ def test_ingest_pipeline_step_type_filter(
     assert count_artifacts_by_type(env_b["delta_root"], "data") == 0
 
 
-def test_execution_config_artifact_references(pipeline_env: dict[str, Path]):
+def test_execution_config_artifact_references(pipeline_env: dict[str, str]):
     """DataTransformerConfig embeds $artifact references to input artifact IDs."""
     delta_root = pipeline_env["delta_root"]
 

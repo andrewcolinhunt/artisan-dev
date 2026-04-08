@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import io
 import json
-import os
 from typing import Any
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
@@ -35,6 +35,7 @@ def inspect_pipeline(
     *,
     pipeline_run_id: str | None = None,
     storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Pipeline-level overview — one row per step.
 
@@ -49,8 +50,12 @@ def inspect_pipeline(
     Raises:
         FileNotFoundError: If steps table doesn't exist.
     """
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
     steps_path = uri_join(delta_root, TablePath.STEPS)
-    if not os.path.exists(steps_path):
+    if not fs.exists(steps_path):
         msg = f"Steps table not found at {steps_path}"
         raise FileNotFoundError(msg)
 
@@ -97,7 +102,7 @@ def inspect_pipeline(
     # Load artifact index for counts
     index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
     index_counts: dict[int, dict[str, int]] = {}
-    if os.path.exists(index_path):
+    if fs.exists(index_path):
         idx_df = pl.scan_delta(index_path, storage_options=storage_options).collect()
         if not idx_df.is_empty():
             grouped = (
@@ -174,6 +179,7 @@ def inspect_step(
     step_number: int,
     *,
     storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """One-row-per-artifact summary for a given step.
 
@@ -194,9 +200,13 @@ def inspect_step(
         }
     )
 
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
     # Get artifact IDs at this step from index
     index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
-    if not os.path.exists(index_path):
+    if not fs.exists(index_path):
         return empty
 
     idx_df = (
@@ -221,7 +231,7 @@ def inspect_step(
         except KeyError:
             continue
 
-        if not os.path.exists(table_path):
+        if not fs.exists(table_path):
             continue
 
         df = (
@@ -258,6 +268,7 @@ def inspect_metrics(
     *,
     round_digits: int = 3,
     storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Parse metric artifacts into a human-readable table.
 
@@ -273,8 +284,12 @@ def inspect_metrics(
     Raises:
         FileNotFoundError: If metrics table doesn't exist.
     """
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
     table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("metric"))
-    if not os.path.exists(table_path):
+    if not fs.exists(table_path):
         msg = f"Metrics table not found at {table_path}"
         raise FileNotFoundError(msg)
 
@@ -336,6 +351,7 @@ def inspect_data(
     step_number: int | None = None,
     *,
     storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Read DataArtifact CSV content as a Polars DataFrame.
 
@@ -352,8 +368,12 @@ def inspect_data(
         FileNotFoundError: If data table doesn't exist.
         ValueError: If no matching artifacts found or content is None.
     """
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
     table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("data"))
-    if not os.path.exists(table_path):
+    if not fs.exists(table_path):
         msg = f"Data table not found at {table_path}"
         raise FileNotFoundError(msg)
 

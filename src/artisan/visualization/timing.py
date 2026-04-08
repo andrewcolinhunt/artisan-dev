@@ -16,10 +16,10 @@ Usage:
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
 from artisan.utils.path import uri_join
@@ -61,6 +61,7 @@ class PipelineTimings:
         delta_root: str,
         pipeline_run_id: str | None = None,
         storage_options: dict[str, str] | None = None,
+        fs: AbstractFileSystem | None = None,
     ) -> PipelineTimings:
         """Load timing data from steps and executions delta tables.
 
@@ -77,8 +78,12 @@ class PipelineTimings:
             FileNotFoundError: If steps table doesn't exist.
             ValueError: If no completed steps found.
         """
+        if fs is None:
+            from fsspec.implementations.local import LocalFileSystem
+
+            fs = LocalFileSystem()
         steps_path = uri_join(delta_root, TablePath.STEPS)
-        if not os.path.exists(steps_path):
+        if not fs.exists(steps_path):
             msg = f"steps table not found at {steps_path}"
             raise FileNotFoundError(msg)
 
@@ -115,7 +120,7 @@ class PipelineTimings:
         # Read executions if available
         exec_path = uri_join(delta_root, TablePath.EXECUTIONS)
         exec_df = None
-        if os.path.exists(exec_path):
+        if fs.exists(exec_path):
             exec_scanner = pl.scan_delta(
                 exec_path, storage_options=storage_options
             ).filter(

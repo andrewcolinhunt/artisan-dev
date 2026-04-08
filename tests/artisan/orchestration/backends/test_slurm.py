@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from artisan.orchestration.backends.slurm import SlurmBackend, SlurmDispatchHandle
@@ -59,7 +58,7 @@ class TestSlurmBackendCreateDispatchHandle:
             execution,
             step_number=3,
             job_name="test_op",
-            log_folder=Path("/runs/pipeline/logs/slurm"),
+            log_folder="/runs/pipeline/logs/slurm",
         )
 
         mock_slurm_runner.assert_called_once()
@@ -92,7 +91,7 @@ class TestSlurmDispatchHandleCancel:
         handle = SlurmDispatchHandle(
             task_runner=MagicMock(),
             job_name="s3_test_op",
-            staging_root=Path("/staging"),
+            staging_root="/staging",
             step_number=3,
         )
         handle.cancel()
@@ -107,7 +106,7 @@ class TestSlurmDispatchHandleCancel:
         handle = SlurmDispatchHandle(
             task_runner=MagicMock(),
             job_name="s1_op",
-            staging_root=Path("/staging"),
+            staging_root="/staging",
             step_number=1,
         )
         handle.cancel()
@@ -120,7 +119,7 @@ class TestSlurmDispatchHandleCancel:
         handle = SlurmDispatchHandle(
             task_runner=MagicMock(),
             job_name="s1_op",
-            staging_root=Path("/staging"),
+            staging_root="/staging",
             step_number=1,
         )
         handle.cancel()  # Should not raise
@@ -133,7 +132,5 @@ class TestSlurmBackendCaptureLogs:
         results = [
             UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
         ]
-        backend.capture_logs(results, Path("/staging"), Path("/logs"), "test_op")
-        mock_patch.assert_called_once_with(
-            results, Path("/staging"), Path("/logs"), "test_op"
-        )
+        backend.capture_logs(results, "/staging", "/logs", "test_op")
+        mock_patch.assert_called_once_with(results, "/staging", "/logs", "test_op")

@@ -66,7 +66,7 @@ class SlurmIntraBackend(BackendBase):
 
         slurm_kwargs: dict[str, Any] = dict(resources.extra)
         if log_folder is not None:
-            slurm_kwargs["log_folder"] = str(log_folder)
+            slurm_kwargs["log_folder"] = log_folder
 
         # Pass gpus directly as gpus_per_node rather than routing through
         # slurm_gres. The SrunBackend builds --gres=gpu:N from gpus_per_node.

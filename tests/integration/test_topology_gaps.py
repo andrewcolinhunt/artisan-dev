@@ -8,7 +8,6 @@ diamond DAG, composite-then-downstream, and passthrough_failures downstream.
 from __future__ import annotations
 
 from enum import StrEnum
-from pathlib import Path
 from typing import ClassVar
 
 import polars as pl
@@ -63,7 +62,7 @@ class _GenerateAndTransform(CompositeDefinition):
         ctx.output("dataset", transformed.output("dataset"))
 
 
-def test_filter_then_creator(pipeline_env: dict[str, Path]) -> None:
+def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
     """Downstream creator receives only filter-passed artifacts with correct provenance."""
     delta_root = pipeline_env["delta_root"]
 
@@ -151,7 +150,7 @@ def test_filter_then_creator(pipeline_env: dict[str, Path]) -> None:
         assert any(s in step1_outputs for s in sources)
 
 
-def test_empty_filter_cascade(pipeline_env: dict[str, Path]) -> None:
+def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
     """Impossible filter causes skip cascade with correct skip reasons."""
     delta_root = pipeline_env["delta_root"]
 
@@ -217,7 +216,7 @@ def test_empty_filter_cascade(pipeline_env: dict[str, Path]) -> None:
     assert count_artifacts_by_step(delta_root, 3) == 0
 
 
-def test_iterative_refinement(pipeline_env: dict[str, Path]) -> None:
+def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
     """Multi-round refine loop with OutputReference reassignment."""
     delta_root = pipeline_env["delta_root"]
 
@@ -307,7 +306,7 @@ def test_iterative_refinement(pipeline_env: dict[str, Path]) -> None:
         assert visited & gen_outputs
 
 
-def test_diamond_dag(pipeline_env: dict[str, Path]) -> None:
+def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
     """Diamond: gen -> two branches -> merge -> downstream."""
     delta_root = pipeline_env["delta_root"]
 
@@ -400,7 +399,7 @@ def test_diamond_dag(pipeline_env: dict[str, Path]) -> None:
     assert source_data_ids & branch_b_ids
 
 
-def test_composite_then_downstream(pipeline_env: dict[str, Path]) -> None:
+def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
     """Composite output consumed by a regular downstream step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -446,7 +445,7 @@ def test_composite_then_downstream(pipeline_env: dict[str, Path]) -> None:
         assert any(s in composite_ids for s in sources)
 
 
-def test_passthrough_failures_downstream(pipeline_env: dict[str, Path]) -> None:
+def test_passthrough_failures_downstream(pipeline_env: dict[str, str]) -> None:
     """passthrough_failures=True passes all artifacts to downstream."""
     delta_root = pipeline_env["delta_root"]
 

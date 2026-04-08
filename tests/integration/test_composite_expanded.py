@@ -7,7 +7,6 @@ operation becomes its own pipeline step.
 from __future__ import annotations
 
 from enum import StrEnum
-from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -96,7 +95,7 @@ class TransformComposite(CompositeDefinition):
 # ---------------------------------------------------------------------------
 
 
-def test_expand_basic(pipeline_env: dict[str, Path]):
+def test_expand_basic(pipeline_env: dict[str, str]):
     """Expanded composite: each internal op becomes its own step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -123,7 +122,7 @@ def test_expand_basic(pipeline_env: dict[str, Path]):
     pipeline.finalize()
 
 
-def test_expand_with_upstream(pipeline_env: dict[str, Path]):
+def test_expand_with_upstream(pipeline_env: dict[str, str]):
     """Expanded composite receiving input from upstream step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -153,7 +152,7 @@ def test_expand_with_upstream(pipeline_env: dict[str, Path]):
     pipeline.finalize()
 
 
-def test_expand_to_downstream(pipeline_env: dict[str, Path]):
+def test_expand_to_downstream(pipeline_env: dict[str, str]):
     """Expanded composite output wired to downstream operation."""
     delta_root = pipeline_env["delta_root"]
 
@@ -177,7 +176,7 @@ def test_expand_to_downstream(pipeline_env: dict[str, Path]):
     pipeline.finalize()
 
 
-def test_expand_step_naming(pipeline_env: dict[str, Path]):
+def test_expand_step_naming(pipeline_env: dict[str, str]):
     """Expanded composite steps are named with composite prefix."""
     delta_root = pipeline_env["delta_root"]
 

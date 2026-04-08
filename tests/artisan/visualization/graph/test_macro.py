@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import graphviz
@@ -421,19 +422,20 @@ class TestRenderMacroGraph:
     def test_renders_svg(self, simple_pipeline: Path, tmp_path: Path) -> None:
         """Renders graph to an SVG file."""
         output_path = tmp_path / "output" / "macro"
-        result = render_macro_graph(simple_pipeline, output_path, format="svg")
+        result = render_macro_graph(str(simple_pipeline), output_path, format="svg")
 
-        assert result.exists()
-        assert result.suffix == ".svg"
+        assert os.path.exists(result)
+        assert result.endswith(".svg")
 
     def test_renders_png(self, simple_pipeline: Path, tmp_path: Path) -> None:
         """Renders graph to a PNG file."""
         output_path = tmp_path / "output" / "macro"
-        result = render_macro_graph(simple_pipeline, output_path, format="png")
+        result = render_macro_graph(str(simple_pipeline), output_path, format="png")
 
-        assert result.exists()
-        assert result.suffix == ".png"
-        content = result.read_bytes()
+        assert os.path.exists(result)
+        assert result.endswith(".png")
+        with open(result, "rb") as f:
+            content = f.read()
         assert content[:8] == b"\x89PNG\r\n\x1a\n"
 
     def test_creates_output_directory(
@@ -441,13 +443,13 @@ class TestRenderMacroGraph:
     ) -> None:
         """Creates parent directories if they don't exist."""
         output_path = tmp_path / "nested" / "deep" / "macro"
-        result = render_macro_graph(simple_pipeline, output_path)
+        result = render_macro_graph(str(simple_pipeline), output_path)
 
-        assert result.exists()
-        assert result.parent.exists()
+        assert os.path.exists(result)
+        assert os.path.exists(os.path.dirname(result))
 
-    def test_returns_path(self, simple_pipeline: Path, tmp_path: Path) -> None:
-        """Returns a Path object."""
+    def test_returns_str(self, simple_pipeline: Path, tmp_path: Path) -> None:
+        """Returns a str path."""
         output_path = tmp_path / "macro"
-        result = render_macro_graph(simple_pipeline, output_path)
-        assert isinstance(result, Path)
+        result = render_macro_graph(str(simple_pipeline), output_path)
+        assert isinstance(result, str)
