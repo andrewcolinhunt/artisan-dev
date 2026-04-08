@@ -47,6 +47,7 @@ from artisan.utils.path import uri_join, uri_parent
 
 if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
+    from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
 
 # Validation helpers accept both OperationDefinition and CompositeDefinition,
 # which share ClassVars (name, inputs, outputs) but have no common base.
@@ -1821,7 +1822,7 @@ class PipelineManager:
         environment: str | dict[str, Any] | None = None,  # noqa: ARG002
         tool: dict[str, Any] | None = None,  # noqa: ARG002
         name: str | None = None,
-    ) -> Any:
+    ) -> ExpandedCompositeResult:
         """Expand a composite into individual pipeline steps.
 
         Each internal operation becomes its own pipeline step with
