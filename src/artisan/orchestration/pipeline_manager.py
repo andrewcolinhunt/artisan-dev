@@ -10,6 +10,7 @@ import contextlib
 import contextvars
 import json
 import logging
+import os
 import signal
 import threading
 import time
@@ -18,7 +19,6 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import uuid4
 
@@ -169,11 +169,10 @@ def _promote_file_paths_to_store(
     valid_paths: list[str] = []
     invalid_paths: list[str] = []
     for path_str in file_paths:
-        p = Path(path_str)
-        if not p.exists():
-            invalid_paths.append(f"Not found: {p}")
-        elif not p.is_file():
-            invalid_paths.append(f"Not a file: {p}")
+        if not os.path.exists(path_str):
+            invalid_paths.append(f"Not found: {path_str}")
+        elif not os.path.isfile(path_str):
+            invalid_paths.append(f"Not a file: {path_str}")
         else:
             valid_paths.append(path_str)
 
@@ -191,19 +190,21 @@ def _promote_file_paths_to_store(
     # Create FileRefArtifacts and finalize
     file_ref_artifacts: list[FileRefArtifact] = []
     for path_str in valid_paths:
-        path = Path(path_str)
-        content = path.read_bytes()
+        with open(path_str, "rb") as f:
+            content = f.read()
         content_hash = compute_artifact_id(content)
         size_bytes = len(content)
+        basename = os.path.basename(path_str)
+        name_part, ext_part = os.path.splitext(basename)
         artifact = cast(
             FileRefArtifact,
             FileRefArtifact.draft(
-                path=str(path.absolute()),
+                path=os.path.abspath(path_str),
                 content_hash=content_hash,
                 size_bytes=size_bytes,
                 step_number=step_number,
-                original_name=strip_extensions(path.name),
-                extension=path.suffix,
+                original_name=strip_extensions(basename),
+                extension=ext_part,
             ).finalize(),
         )
         file_ref_artifacts.append(artifact)
