@@ -151,11 +151,11 @@ def run_creator_lifecycle(
         os.makedirs(materialized_dir, exist_ok=True)
 
         if runtime_env.files_root is not None:
-            files_dir: str | None = os.path.join(
+            files_dir: str | None = shard_uri(
                 runtime_env.files_root,
-                str(unit.step_number),
-                "workers",
                 execution_run_id,
+                unit.step_number,
+                operation_name=operation.name,
             )
             os.makedirs(files_dir, exist_ok=True)
         else:
