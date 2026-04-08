@@ -330,17 +330,28 @@ providing readable output without requiring a full TUI framework.
 **The problem.** Writing operations and pipelines requires knowing framework
 conventions, base classes, and patterns. New contributors face a steep ramp-up.
 
-**Why a plugin.** The plugin is defined at the repo root using the inline
-marketplace pattern (`.claude-plugin/marketplace.json` with `"source": "./"`).
-Skills live in `skills/` at the repo root and are distributed via the Claude Code
-marketplace — no `--plugin-dir` flag needed.
+**Why a plugin.** Artisan ships a Claude Code plugin so that both the framework
+repo and downstream repos get framework-aware skills. The plugin is defined using
+the inline marketplace pattern (`.claude-plugin/marketplace.json` with
+`"source": "./"`).
 
-**What's included.** Four skills in `skills/`:
+**What's included.** Three skills in `skills/`:
 
 - `write-operation` — scaffold or review an `OperationDefinition` subclass
 - `write-composite` — scaffold or review a `CompositeDefinition` subclass
 - `write-pipeline` — scaffold a pipeline script composing operations
-- `write-docs` — write or edit documentation pages, tutorials, and guides
+
+**Two discovery paths.** Skill definitions live in `skills/` at the repo root —
+this is the single source of truth.
+
+- **In this repo:** Claude Code discovers project-level skills from
+  `.claude/skills/`, which contains symlinks back to `skills/`.
+- **In downstream repos:** Claude Code fetches skills via the marketplace. A
+  downstream repo adds the marketplace and plugin to `.claude/settings.json`
+  (see [Using Claude Code](../getting-started/using-claude-code.md) for setup).
+
+This dual-path design keeps one copy of each skill definition while serving both
+local development and cross-repo distribution.
 
 **The trade-off.** Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 Skills need updating when framework APIs change.
