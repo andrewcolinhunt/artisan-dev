@@ -161,9 +161,7 @@ class TestDelegation:
             post_cf=post_cf,
         )
         assert psf.done is False
-        post_cf.set_result(
-            StepResult(step_name="Step1", step_number=1, success=True)
-        )
+        post_cf.set_result(StepResult(step_name="Step1", step_number=1, success=True))
         assert psf.done is True
 
     def test_status_delegates_to_post_future(self):
@@ -175,9 +173,7 @@ class TestDelegation:
             post_cf=post_cf,
         )
         assert psf.status == "running"
-        post_cf.set_result(
-            StepResult(step_name="Step1", step_number=1, success=True)
-        )
+        post_cf.set_result(StepResult(step_name="Step1", step_number=1, success=True))
         assert psf.status == "completed"
 
     def test_step_name_delegates_to_post_future(self):
