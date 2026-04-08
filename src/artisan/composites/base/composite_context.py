@@ -433,15 +433,15 @@ class CollapsedCompositeContext(CompositeContext):
         from artisan.storage.io.commit import DeltaCommitter
         from artisan.storage.io.staging import StagingManager
 
-        staging_root = self._runtime_env.staging_root_path
-        delta_root = self._runtime_env.delta_root_path
+        staging_root = self._runtime_env.staging_root
+        delta_root = self._runtime_env.delta_root
         if staging_root and delta_root:
             try:
                 fs = self._runtime_env.storage.filesystem()
                 storage_options = self._runtime_env.storage.delta_storage_options()
-                staging_manager = StagingManager(str(staging_root), fs)
+                staging_manager = StagingManager(staging_root, fs)
                 committer = DeltaCommitter(
-                    str(delta_root),
+                    delta_root,
                     staging_manager,
                     fs=fs,
                     storage_options=storage_options,

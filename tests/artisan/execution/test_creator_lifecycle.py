@@ -156,9 +156,9 @@ class TestCreatorLifecycleNameDerivation:
         staging.mkdir()
 
         config = RuntimeEnvironment(
-            delta_root_path=delta_path,
-            working_root_path=working,
-            staging_root_path=staging,
+            delta_root=str(delta_path),
+            working_root=str(working),
+            staging_root=str(staging),
         )
         unit = ExecutionUnit(
             operation=_SuffixOp(suffix="_scored"),
@@ -237,9 +237,9 @@ class TestCreatorLifecycleNameDerivation:
         staging.mkdir()
 
         config = RuntimeEnvironment(
-            delta_root_path=base,
-            working_root_path=working,
-            staging_root_path=staging,
+            delta_root=str(base),
+            working_root=str(working),
+            staging_root=str(staging),
         )
         unit = ExecutionUnit(
             operation=_SuffixOp(suffix="_processed"),

@@ -47,14 +47,14 @@ def _prefect_harness():
 
 
 @pytest.fixture
-def pipeline_env(tmp_path: Path) -> dict[str, Path]:
+def pipeline_env(tmp_path: Path) -> dict[str, str]:
     """Create isolated pipeline environment with Delta Lake directories.
 
     Args:
         tmp_path: Pytest-provided temporary directory.
 
     Returns:
-        Dictionary with delta_root, staging_root, and working_root paths.
+        Dictionary with delta_root, staging_root, and working_root as strings.
     """
     delta_root = tmp_path / "delta"
     staging_root = tmp_path / "staging"
@@ -65,9 +65,9 @@ def pipeline_env(tmp_path: Path) -> dict[str, Path]:
     working_root.mkdir()
 
     return {
-        "delta_root": delta_root,
-        "staging_root": staging_root,
-        "working_root": working_root,
+        "delta_root": str(delta_root),
+        "staging_root": str(staging_root),
+        "working_root": str(working_root),
     }
 
 
@@ -96,7 +96,7 @@ def sample_csv_files(tmp_path: Path) -> list[Path]:
 # =============================================================================
 
 
-def read_table(delta_root: Path, table_name: str) -> pl.DataFrame:
+def read_table(delta_root: str, table_name: str) -> pl.DataFrame:
     """Read a Delta Lake table, return empty DataFrame if not exists.
 
     Args:
@@ -106,13 +106,13 @@ def read_table(delta_root: Path, table_name: str) -> pl.DataFrame:
     Returns:
         Polars DataFrame with table contents, or empty DataFrame.
     """
-    table_path = delta_root / table_name
-    if not table_path.exists():
+    table_path = os.path.join(delta_root, table_name)
+    if not os.path.exists(table_path):
         return pl.DataFrame()
-    return pl.read_delta(str(table_path))
+    return pl.read_delta(table_path)
 
 
-def count_artifacts_by_step(delta_root: Path, step_number: int) -> int:
+def count_artifacts_by_step(delta_root: str, step_number: int) -> int:
     """Count artifacts produced by a specific step.
 
     Queries: artifact_index WHERE origin_step_number = step_number
@@ -130,7 +130,7 @@ def count_artifacts_by_step(delta_root: Path, step_number: int) -> int:
     return df_index.filter(pl.col("origin_step_number") == step_number).height
 
 
-def count_artifacts_by_type(delta_root: Path, artifact_type: str) -> int:
+def count_artifacts_by_type(delta_root: str, artifact_type: str) -> int:
     """Count artifacts of a specific type.
 
     Queries: artifact_index WHERE artifact_type = artifact_type
@@ -148,7 +148,7 @@ def count_artifacts_by_type(delta_root: Path, artifact_type: str) -> int:
     return df_index.filter(pl.col("artifact_type") == artifact_type).height
 
 
-def get_execution_outputs(delta_root: Path, step_number: int, role: str) -> list[str]:
+def get_execution_outputs(delta_root: str, step_number: int, role: str) -> list[str]:
     """Get output artifact IDs for a step/role.
 
     Steps:
@@ -181,7 +181,7 @@ def get_execution_outputs(delta_root: Path, step_number: int, role: str) -> list
     )["artifact_id"].to_list()
 
 
-def get_execution_inputs(delta_root: Path, step_number: int, role: str) -> list[str]:
+def get_execution_inputs(delta_root: str, step_number: int, role: str) -> list[str]:
     """Get input artifact IDs for a step/role.
 
     Same as get_execution_outputs but with direction = 'input'.
@@ -211,7 +211,7 @@ def get_execution_inputs(delta_root: Path, step_number: int, role: str) -> list[
     )["artifact_id"].to_list()
 
 
-def count_executions_by_step(delta_root: Path, step_number: int) -> int:
+def count_executions_by_step(delta_root: str, step_number: int) -> int:
     """Count execution records for a specific step.
 
     Queries: executions WHERE origin_step_number = step_number
@@ -230,7 +230,7 @@ def count_executions_by_step(delta_root: Path, step_number: int) -> int:
     return df_exec.filter(pl.col("origin_step_number") == step_number).height
 
 
-def get_artifact_edges(delta_root: Path, source_id: str) -> list[str]:
+def get_artifact_edges(delta_root: str, source_id: str) -> list[str]:
     """Get target artifact IDs linked from a source artifact.
 
     Args:
@@ -248,7 +248,7 @@ def get_artifact_edges(delta_root: Path, source_id: str) -> list[str]:
     ].to_list()
 
 
-def get_step_status(delta_root: Path, step_number: int) -> str | None:
+def get_step_status(delta_root: str, step_number: int) -> str | None:
     """Get the latest status for a step.
 
     Args:
@@ -269,7 +269,7 @@ def get_step_status(delta_root: Path, step_number: int) -> str | None:
     return filtered["status"][0]
 
 
-def get_failed_executions(delta_root: Path, step_number: int) -> int:
+def get_failed_executions(delta_root: str, step_number: int) -> int:
     """Count failed executions for a step.
 
     Args:
@@ -287,7 +287,7 @@ def get_failed_executions(delta_root: Path, step_number: int) -> int:
     ).height
 
 
-def get_successful_executions(delta_root: Path, step_number: int) -> int:
+def get_successful_executions(delta_root: str, step_number: int) -> int:
     """Count successful executions for a step.
 
     Args:
@@ -306,7 +306,7 @@ def get_successful_executions(delta_root: Path, step_number: int) -> int:
 
 
 @pytest.fixture
-def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, Path]]:
+def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, str]]:
     """Create two isolated pipeline environments for cross-pipeline tests.
 
     Args:
@@ -314,7 +314,7 @@ def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, Path]]:
 
     Returns:
         Dict with keys "a" and "b", each containing delta_root,
-        staging_root, and working_root paths.
+        staging_root, and working_root as strings.
     """
     envs = {}
     for label in ("a", "b"):
@@ -326,9 +326,9 @@ def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, Path]]:
         staging.mkdir()
         working.mkdir()
         envs[label] = {
-            "delta_root": delta,
-            "staging_root": staging,
-            "working_root": working,
+            "delta_root": str(delta),
+            "staging_root": str(staging),
+            "working_root": str(working),
         }
     return envs
 

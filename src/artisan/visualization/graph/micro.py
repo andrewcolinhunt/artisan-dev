@@ -11,6 +11,7 @@ For a higher-level step-based view, see ``artisan.visualization.graph.macro``.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +20,7 @@ import polars as pl
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
     apply_default_layout,
@@ -32,25 +34,25 @@ from artisan.visualization.graph._styles import (
 
 
 def _scan_or_empty(
-    delta_root: Path,
+    delta_root: str,
     table: TablePath,
     columns: list[str],
     empty_schema: dict[str, pl.DataType],
     storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Scan a Delta table, returning an empty DataFrame if it doesn't exist."""
-    table_path = delta_root / table
-    if not table_path.exists():
+    table_path = uri_join(delta_root, table)
+    if not os.path.exists(table_path):
         return pl.DataFrame(schema=empty_schema)
     return (
-        pl.scan_delta(str(table_path), storage_options=storage_options)
+        pl.scan_delta(table_path, storage_options=storage_options)
         .select(columns)
         .collect()
     )
 
 
 def _load_executions(
-    delta_root: Path,
+    delta_root: str,
     storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Return execution records from the executions Delta table."""
@@ -68,7 +70,7 @@ def _load_executions(
 
 
 def _load_artifact_index(
-    delta_root: Path,
+    delta_root: str,
     storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Return artifact index records from the artifact_index Delta table."""
@@ -86,7 +88,7 @@ def _load_artifact_index(
 
 
 def _load_artifact_labels(
-    delta_root: Path,
+    delta_root: str,
     storage_options: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Map artifact IDs to human-readable labels from type-specific tables.
@@ -99,14 +101,14 @@ def _load_artifact_labels(
 
     for _key, typedef in ArtifactTypeDef.get_all().items():
         schema = typedef.model.POLARS_SCHEMA
-        table_path = delta_root / typedef.table_path
+        table_path = uri_join(delta_root, typedef.table_path)
 
-        if not table_path.exists():
+        if not os.path.exists(table_path):
             continue
 
         if "original_name" in schema:
             df = (
-                pl.scan_delta(str(table_path), storage_options=storage_options)
+                pl.scan_delta(table_path, storage_options=storage_options)
                 .select(["artifact_id", "original_name"])
                 .collect()
             )
@@ -116,7 +118,7 @@ def _load_artifact_labels(
                     labels[row["artifact_id"]] = Path(name).stem
         elif "path" in schema:
             df = (
-                pl.scan_delta(str(table_path), storage_options=storage_options)
+                pl.scan_delta(table_path, storage_options=storage_options)
                 .select(["artifact_id", "path"])
                 .collect()
             )
@@ -129,7 +131,7 @@ def _load_artifact_labels(
 
 
 def _load_execution_edges(
-    delta_root: Path,
+    delta_root: str,
     storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Return execution-to-artifact provenance edges."""
@@ -147,7 +149,7 @@ def _load_execution_edges(
 
 
 def _load_artifact_edges(
-    delta_root: Path,
+    delta_root: str,
     storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Return artifact-to-artifact lineage edges."""
@@ -186,7 +188,7 @@ def _build_artifact_labels(
 
 
 def build_micro_graph(
-    delta_root: Path,
+    delta_root: str,
     max_step: int | None = None,
     storage_options: dict[str, str] | None = None,
 ) -> graphviz.Digraph:
@@ -210,8 +212,6 @@ def build_micro_graph(
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    delta_root = Path(delta_root)
-
     # Load all data
     executions = _load_executions(delta_root, storage_options=storage_options)
     artifact_index = _load_artifact_index(delta_root, storage_options=storage_options)
@@ -427,7 +427,7 @@ def build_micro_graph(
 
 
 def render_micro_graph(
-    delta_root: Path,
+    delta_root: str,
     output_path: Path,
     format: Literal["svg", "png"] = "svg",
     max_step: int | None = None,
@@ -452,7 +452,7 @@ def render_micro_graph(
 
 
 def get_max_step_number(
-    delta_root: Path,
+    delta_root: str,
     storage_options: dict[str, str] | None = None,
 ) -> int | None:
     """Return the highest step number present in the executions table.
@@ -471,7 +471,7 @@ def get_max_step_number(
 
 
 def render_micro_graph_steps(
-    delta_root: Path,
+    delta_root: str,
     output_dir: Path,
     format: Literal["svg", "png"] = "svg",
     storage_options: dict[str, str] | None = None,
@@ -490,7 +490,6 @@ def render_micro_graph_steps(
     Returns:
         List of paths to rendered files, in step order.
     """
-    delta_root = Path(delta_root)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
