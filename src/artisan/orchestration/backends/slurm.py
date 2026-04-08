@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from artisan.execution.models.execution_composite import ExecutionComposite
@@ -41,7 +40,7 @@ class SlurmDispatchHandle(DispatchHandle):
         self,
         task_runner: Any,
         job_name: str,
-        staging_root: Path | None,
+        staging_root: str | None,
         step_number: int,
     ) -> None:
         super().__init__()
@@ -120,8 +119,8 @@ class SlurmBackend(BackendBase):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
-        log_folder: Path | None = None,
-        staging_root: Path | None = None,
+        log_folder: str | None = None,
+        staging_root: str | None = None,
     ) -> DispatchHandle:
         """Build a SLURM dispatch handle for job array submission."""
         from prefect_submitit import SlurmTaskRunner
@@ -130,7 +129,7 @@ class SlurmBackend(BackendBase):
         if resources.gpus > 0:
             slurm_kwargs["slurm_gres"] = f"gpu:{resources.gpus}"
         if log_folder is not None:
-            slurm_kwargs["log_folder"] = str(log_folder)
+            slurm_kwargs["log_folder"] = log_folder
 
         slurm_job_name = f"s{step_number}_{job_name}"
         task_runner = SlurmTaskRunner(
@@ -153,8 +152,8 @@ class SlurmBackend(BackendBase):
     def capture_logs(
         self,
         results: list[UnitResult],
-        staging_root: Path,
-        failure_logs_root: Path | None,
+        staging_root: str,
+        failure_logs_root: str | None,
         operation_name: str,
     ) -> None:
         """Write SLURM worker stdout/stderr into staged parquet files."""

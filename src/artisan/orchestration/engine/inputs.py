@@ -7,20 +7,23 @@ translate lazy step-output references into sorted artifact ID lists.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 logger = logging.getLogger(__name__)
 
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.utils.path import uri_join
 
 
 def resolve_output_reference(
     ref: OutputReference,
-    delta_root: Path,
+    delta_root: str,
+    fs: AbstractFileSystem,
     step_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> list[str]:
     """Resolve an OutputReference to concrete artifact IDs.
 
@@ -31,8 +34,10 @@ def resolve_output_reference(
 
     Args:
         ref: OutputReference containing source_step and role.
-        delta_root: Root path for Delta Lake tables.
+        delta_root: Root URI for Delta Lake tables.
+        fs: Filesystem implementation for path operations.
         step_run_id: If provided, scope results to this step run only.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Sorted list of artifact IDs. Empty list if no outputs match the
@@ -41,13 +46,13 @@ def resolve_output_reference(
 
     Example:
         >>> ref = OutputReference(source_step=0, role="data")
-        >>> ids = resolve_output_reference(ref, Path("/data/delta"))
+        >>> ids = resolve_output_reference(ref, "/data/delta", fs)
         >>> # Returns: ["abc123...", "def456...", "ghi789..."] (sorted)
     """
-    executions_path = delta_root / TablePath.EXECUTIONS
-    execution_edges_path = delta_root / TablePath.EXECUTION_EDGES
+    executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
+    execution_edges_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
 
-    if not executions_path.exists():
+    if not fs.exists(executions_path):
         logger.warning(
             "No executions table found for step %d — returning empty inputs.",
             ref.source_step,
@@ -56,7 +61,7 @@ def resolve_output_reference(
 
     # Query successful executions for the source step
     query = (
-        pl.scan_delta(str(executions_path))
+        pl.scan_delta(executions_path, storage_options=storage_options)
         .filter(pl.col("origin_step_number") == ref.source_step)
         .filter(pl.col("success") == True)  # noqa: E712
     )
@@ -75,7 +80,7 @@ def resolve_output_reference(
     execution_run_ids = records_result["execution_run_id"].to_list()
 
     # Query execution_edges for outputs matching role
-    if not execution_edges_path.exists():
+    if not fs.exists(execution_edges_path):
         logger.warning(
             "No execution edges table found for step %d — returning empty inputs.",
             ref.source_step,
@@ -83,7 +88,7 @@ def resolve_output_reference(
         return []
 
     provenance_result = (
-        pl.scan_delta(str(execution_edges_path))
+        pl.scan_delta(execution_edges_path, storage_options=storage_options)
         .filter(pl.col("execution_run_id").is_in(execution_run_ids))
         .filter(pl.col("direction") == "output")
         .filter(pl.col("role") == ref.role)
@@ -109,8 +114,10 @@ def resolve_output_reference(
 
 def resolve_inputs(
     inputs: (dict[str, OutputReference | list[str]] | list[OutputReference] | None),
-    delta_root: Path,
+    delta_root: str,
+    fs: AbstractFileSystem,
     step_run_ids: dict[int, str] | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """Resolve all inputs to concrete artifact IDs.
 
@@ -125,7 +132,9 @@ def resolve_inputs(
 
     Args:
         inputs: Input specification in any supported format.
-        delta_root: Root path for Delta Lake tables.
+        delta_root: Root URI for Delta Lake tables.
+        fs: Filesystem implementation for path operations.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Dict mapping role names to lists of artifact IDs.
@@ -159,7 +168,9 @@ def resolve_inputs(
         first_item = inputs[0]
         if isinstance(first_item, OutputReference):
             # List of OutputReferences - convert to dict with auto-generated keys
-            return _resolve_list_inputs(inputs, delta_root, step_run_ids)
+            return _resolve_list_inputs(
+                inputs, delta_root, fs, step_run_ids, storage_options
+            )
         # File paths are handled in _execute_curator_step, not here
         raise ValueError(
             "Raw file paths must be handled by _execute_curator_step(). "
@@ -172,7 +183,7 @@ def resolve_inputs(
         if isinstance(value, OutputReference):
             sri = step_run_ids.get(value.source_step) if step_run_ids else None
             resolved[role] = resolve_output_reference(
-                value, delta_root, step_run_id=sri
+                value, delta_root, fs, step_run_id=sri, storage_options=storage_options
             )
         elif isinstance(value, list):
             # Already artifact IDs - validate format
@@ -194,8 +205,10 @@ def resolve_inputs(
 
 def _resolve_list_inputs(
     refs: list[OutputReference],
-    delta_root: Path,
+    delta_root: str,
+    fs: AbstractFileSystem,
     step_run_ids: dict[int, str] | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """Flatten a list of OutputReferences into a single ``_merged_streams`` role.
 
@@ -211,7 +224,9 @@ def _resolve_list_inputs(
                 f"got {type(ref).__name__} at index {i}"
             )
         sri = step_run_ids.get(ref.source_step) if step_run_ids else None
-        artifact_ids = resolve_output_reference(ref, delta_root, step_run_id=sri)
+        artifact_ids = resolve_output_reference(
+            ref, delta_root, fs, step_run_id=sri, storage_options=storage_options
+        )
         all_artifact_ids.extend(artifact_ids)
 
     # Sort all artifact IDs for determinism

@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import os
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -181,7 +180,7 @@ def record_execution_success(
 
 
 def _write_failure_log(
-    failure_logs_root: Path | None,
+    failure_logs_root: str | None,
     execution_run_id: str,
     operation_name: str,
     step_number: int,
@@ -243,7 +242,7 @@ def record_execution_failure(
     params: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
     tool_output: str | None = None,
-    failure_logs_root: Path | None = None,
+    failure_logs_root: str | None = None,
 ) -> StagingResult:
     """Stage an execution record for a failed run and write a failure log.
 

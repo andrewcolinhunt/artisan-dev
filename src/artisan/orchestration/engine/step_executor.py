@@ -10,13 +10,11 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import resource
-import shutil
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from fsspec import AbstractFileSystem
@@ -50,6 +48,7 @@ from artisan.schemas.orchestration.step_result import StepResult, StepResultBuil
 from artisan.storage.cache.cache_lookup import CacheHit, cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
 from artisan.utils.hashing import serialize_params
+from artisan.utils.path import uri_join, uri_parent
 from artisan.utils.spawn import suppress_main_reimport
 from artisan.utils.timing import phase_timer
 
@@ -127,14 +126,14 @@ def instantiate_operation(
 
 def check_cache_for_batch(
     execution_spec_id: str,
-    delta_root: Path,
+    delta_root: str,
     config: PipelineConfig | None = None,
 ) -> CacheHit | None:
     """Check if an ExecutionUnit can be skipped due to cache hit.
 
     Args:
         execution_spec_id: Deterministic hash for the batch.
-        delta_root: Root path for Delta Lake tables.
+        delta_root: Root URI for Delta Lake tables.
         config: Pipeline config for storage backend. When None,
             uses local filesystem defaults.
 
@@ -147,8 +146,8 @@ def check_cache_for_batch(
     fs = storage.filesystem()
     storage_options = storage.delta_storage_options()
 
-    executions_path = str(delta_root / TablePath.EXECUTIONS)
-    execution_edges_path = str(delta_root / TablePath.EXECUTION_EDGES)
+    executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
+    execution_edges_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
     result = cache_lookup(
         executions_path,
         execution_spec_id,
@@ -278,9 +277,9 @@ def _commit_and_compact(
 
                 fs = config.storage.filesystem()
                 storage_options = config.storage.delta_storage_options()
-                staging_manager = StagingManager(str(config.staging_root), fs)
+                staging_manager = StagingManager(config.staging_root, fs)
                 committer = DeltaCommitter(
-                    str(config.delta_root),
+                    config.delta_root,
                     staging_manager,
                     fs=fs,
                     storage_options=storage_options,
@@ -390,11 +389,11 @@ def _create_runtime_environment(
     is_curator = is_curator_operation(operation)
 
     return RuntimeEnvironment(
-        delta_root_path=config.delta_root,
-        staging_root_path=config.staging_root,
-        working_root_path=None if is_curator else config.working_root,
-        files_root_path=config.files_root,
-        failure_logs_root=config.delta_root.parent / "logs" / "failures",
+        delta_root=config.delta_root,
+        staging_root=config.staging_root,
+        working_root=None if is_curator else config.working_root,
+        files_root=config.files_root,
+        failure_logs_root=uri_join(uri_parent(config.delta_root), "logs", "failures"),
         preserve_staging=config.preserve_staging,
         preserve_working=config.preserve_working,
         worker_id_env_var=backend.worker_traits.worker_id_env_var if backend else None,
@@ -559,7 +558,11 @@ def _execute_curator_step(
     # --- resolve_inputs phase ---
     with phase_timer("resolve_inputs", timings):
         resolved_inputs = resolve_inputs(
-            inputs, config.delta_root, step_run_ids=step_run_ids
+            inputs,
+            config.delta_root,
+            step_run_ids=step_run_ids,
+            storage_options=config.storage.delta_storage_options(),
+            fs=config.storage.filesystem(),
         )
         total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
         if total_artifacts > 0:
@@ -583,10 +586,10 @@ def _execute_curator_step(
             _fs = config.storage.filesystem()
             _so = config.storage.delta_storage_options()
             artifact_store = ArtifactStore(
-                str(config.delta_root),
+                config.delta_root,
                 fs=_fs,
                 storage_options=_so,
-                files_root=str(config.files_root) if config.files_root else None,
+                files_root=config.files_root,
             )
             paired_inputs, group_ids = group_inputs(
                 resolved_inputs, operation.group_by, artifact_store
@@ -703,17 +706,15 @@ def _execute_curator_step(
                 step_number=unit.step_number,
                 timestamp_start=timestamp_start,
                 worker_id=0,
-                delta_root_path=str(runtime_env.delta_root_path),
-                staging_root_path=str(runtime_env.staging_root_path),
+                delta_root=runtime_env.delta_root,
+                staging_root=runtime_env.staging_root,
                 fs=kill_fs,
                 storage_options=kill_so,
                 operation=unit.operation,
                 compute_backend_name=runtime_env.compute_backend_name,
                 shared_filesystem=runtime_env.shared_filesystem,
                 step_run_id=step_run_id,
-                files_root=str(runtime_env.files_root_path)
-                if runtime_env.files_root_path
-                else None,
+                files_root=runtime_env.files_root,
             )
             staging_result = record_execution_failure(
                 execution_context=execution_context,
@@ -803,7 +804,7 @@ def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
     ]
 
     try:
-        with Path("/proc/meminfo").open() as f:
+        with open("/proc/meminfo") as f:
             meminfo = {}
             for line in f:
                 key, _, value = line.partition(":")
@@ -869,7 +870,11 @@ def _execute_creator_step(
     with phase_timer("resolve_inputs", timings):
         # Resolve inputs to artifact IDs
         resolved_inputs = resolve_inputs(
-            inputs, config.delta_root, step_run_ids=step_run_ids
+            inputs,
+            config.delta_root,
+            step_run_ids=step_run_ids,
+            storage_options=config.storage.delta_storage_options(),
+            fs=config.storage.filesystem(),
         )
 
         skip_result = _skip_for_empty_inputs(
@@ -893,10 +898,10 @@ def _execute_creator_step(
             _fs = config.storage.filesystem()
             _so = config.storage.delta_storage_options()
             artifact_store = ArtifactStore(
-                str(config.delta_root),
+                config.delta_root,
                 fs=_fs,
                 storage_options=_so,
-                files_root=str(config.files_root) if config.files_root else None,
+                files_root=config.files_root,
             )
             paired_inputs, group_ids = group_inputs(
                 resolved_inputs, operation.group_by, artifact_store
@@ -986,7 +991,8 @@ def _execute_creator_step(
     if cancel_event is not None and cancel_event.is_set():
         return _cancelled_result(operation, step_number, failure_policy)
 
-    dispatch_dir = config.staging_root / "_dispatch"
+    dispatch_dir = uri_join(config.staging_root, "_dispatch")
+    fs_cleanup = config.storage.filesystem()
     try:
         # --- execute phase ---
         dispatch_error: str | None = None
@@ -1005,7 +1011,9 @@ def _execute_creator_step(
                         operation.execution,
                         step_number,
                         job_name=operation.execution.job_name or operation.name,
-                        log_folder=config.delta_root.parent / "logs" / "slurm",
+                        log_folder=uri_join(
+                            uri_parent(config.delta_root), "logs", "slurm"
+                        ),
                         staging_root=config.staging_root,
                     )
                     results = handle.run(
@@ -1068,8 +1076,11 @@ def _execute_creator_step(
             compact=compact,
         )
     finally:
-        if dispatch_dir.exists():
-            shutil.rmtree(dispatch_dir, ignore_errors=True)
+        try:
+            if fs_cleanup.exists(dispatch_dir):
+                fs_cleanup.rm(dispatch_dir, recursive=True)
+        except Exception:
+            pass
 
     _finalize_timings(timings, total_start, step_number, "Creator")
 
@@ -1131,7 +1142,11 @@ def execute_composite_step(
     # --- resolve_inputs phase ---
     with phase_timer("resolve_inputs", timings):
         resolved_inputs = resolve_inputs(
-            inputs, config.delta_root, step_run_ids=step_run_ids
+            inputs,
+            config.delta_root,
+            step_run_ids=step_run_ids,
+            storage_options=config.storage.delta_storage_options(),
+            fs=config.storage.filesystem(),
         )
 
         instance = instantiate_operation(composite_class, params)
@@ -1168,7 +1183,8 @@ def execute_composite_step(
 
     # --- execute phase ---
     dispatch_error: str | None = None
-    dispatch_dir = config.staging_root / "_dispatch"
+    dispatch_dir = uri_join(config.staging_root, "_dispatch")
+    fs_cleanup = config.storage.filesystem()
     try:
         with phase_timer("execute", timings):
             runtime_env = _create_runtime_environment(config, instance, backend)
@@ -1182,7 +1198,7 @@ def execute_composite_step(
                     composite_execution,
                     step_number,
                     job_name=composite_execution.job_name or "composite",
-                    log_folder=config.delta_root.parent / "logs" / "slurm",
+                    log_folder=uri_join(uri_parent(config.delta_root), "logs", "slurm"),
                     staging_root=config.staging_root,
                 )
                 results = handle.run([composite_transport], runtime_env)
@@ -1208,8 +1224,11 @@ def execute_composite_step(
             compact=compact,
         )
     finally:
-        if dispatch_dir.exists():
-            shutil.rmtree(dispatch_dir, ignore_errors=True)
+        try:
+            if fs_cleanup.exists(dispatch_dir):
+                fs_cleanup.rm(dispatch_dir, recursive=True)
+        except Exception:
+            pass
 
     _finalize_timings(timings, total_start, step_number, "Composite")
 
@@ -1225,8 +1244,8 @@ def execute_composite_step(
 
 
 def _compact_step_tables(
-    delta_root: Path,
-    staging_root: Path,
+    delta_root: str,
+    staging_root: str,
     tables: list[str] | None = None,
     *,
     fs: AbstractFileSystem | None = None,
@@ -1235,8 +1254,8 @@ def _compact_step_tables(
     """Compact Delta Lake tables to merge small parquet files.
 
     Args:
-        delta_root: Root path for Delta Lake tables.
-        staging_root: Root staging directory (for DeltaCommitter init).
+        delta_root: Root URI for Delta Lake tables.
+        staging_root: Root URI for staging directory (for DeltaCommitter init).
         tables: Specific tables to compact. If None, compact all.
         fs: Filesystem implementation. Uses local filesystem if None.
         storage_options: Delta-rs storage options.
@@ -1249,9 +1268,9 @@ def _compact_step_tables(
 
         fs = LocalFileSystem()
 
-    staging_manager = StagingManager(str(staging_root), fs)
+    staging_manager = StagingManager(staging_root, fs)
     committer = DeltaCommitter(
-        str(delta_root),
+        delta_root,
         staging_manager,
         fs=fs,
         storage_options=storage_options,
@@ -1268,7 +1287,7 @@ def _compact_step_tables(
         ]
 
     for table in tables:
-        table_name = Path(table).name
+        table_name = table.rsplit("/", 1)[-1]
         try:
             committer.compact_table(table)
         except Exception as exc:

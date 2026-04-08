@@ -1,12 +1,10 @@
 """Runtime environment configuration for worker processes.
 
-``RuntimeEnvironment`` specifies WHERE execution happens (paths, debug
+``RuntimeEnvironment`` specifies WHERE execution happens (URIs, debug
 flags), separate from WHAT executes (ExecutionUnit).
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -22,84 +20,60 @@ class RuntimeEnvironment(BaseModel):
 
     The separation of concerns:
     - ExecutionUnit: What to compute (operation, inputs, params, step_number)
-    - RuntimeEnvironment: Where to compute (paths, debug flags)
+    - RuntimeEnvironment: Where to compute (URIs/paths, debug flags)
 
-    For curator operations, working_root_path is None since they
+    For curator operations, working_root is None since they
     don't require sandboxing or materialization.
 
-    Path semantics:
-    - delta_root_path: Read-only access to Delta Lake tables
-    - working_root_path: Read-write scratch space (cleaned after execution)
-    - staging_root_path: Write-only output for staged Parquet files
-
-    Attributes:
-        delta_root_path: Root directory for Delta Lake tables.
-            Contains: data/, metrics/, configs/, file_refs/,
-            artifact_index/, executions/
-        working_root_path: Base directory for execution sandboxes.
-            Resolved from $TMPDIR (via tempfile.gettempdir()) by default.
-            Each execution creates a sharded subdirectory.
-            None for curator operations (no sandbox needed).
-        staging_root_path: Where to write staged Parquet files.
-            Workers write here; orchestrator commits to Delta Lake.
-        files_root_path: Root directory for Artisan-managed external files.
-            Operations write per-worker output files to
-            files_root/{step}/workers/. None when not configured.
-        preserve_staging: Debug flag - don't cleanup staging after commit.
-        preserve_working: Debug flag - don't cleanup sandbox after execution.
+    Field semantics:
+    - delta_root, staging_root, files_root: Cloud-capable — local path or
+      s3://bucket/... URI. Use uri_join(), fs.* for I/O.
+    - working_root, failure_logs_root: Always local paths. Use os.* for I/O.
 
     Example:
         >>> env = RuntimeEnvironment(
-        ...     delta_root_path=Path("/data/delta"),
-        ...     working_root_path=Path("/tmp"),
-        ...     staging_root_path=Path("/data/staging"),
+        ...     delta_root="/data/delta",
+        ...     staging_root="/data/staging",
+        ...     working_root="/tmp",
         ... )
-        >>> # RuntimeEnvironment is typically created once per worker process
-        >>> # and reused for many ExecutionUnits
     """
 
-    delta_root_path: Path = Field(
+    delta_root: str = Field(
         ...,
         description=(
-            "Root directory for Delta Lake tables. "
-            "Contains data/, metrics/, configs/, file_refs/, "
-            "artifact_index/, executions/"
+            "Root URI for Delta Lake tables. " "Local path or s3://bucket/delta."
         ),
     )
 
-    working_root_path: Path | None = Field(
+    working_root: str | None = Field(
         None,
         description=(
             "Base directory for execution sandboxes. "
-            "Each execution creates a sharded subdirectory. "
-            "Defaults to $TMPDIR via tempfile.gettempdir(). "
+            "Always a local path. "
             "None for curator operations (no sandbox needed)."
         ),
     )
 
-    staging_root_path: Path = Field(
+    staging_root: str = Field(
         ...,
         description=(
-            "Where to write staged Parquet files. "
-            "Workers write here; orchestrator commits to Delta Lake"
+            "Root URI for staged Parquet files. " "Local path or s3://bucket/staging."
         ),
     )
 
-    files_root_path: Path | None = Field(
+    files_root: str | None = Field(
         None,
         description=(
-            "Root directory for Artisan-managed external files. "
-            "Operations write per-worker output files to "
-            "files_root/{step}/workers/. None when not configured."
+            "Root for Artisan-managed external files. "
+            "Local path or cloud URI. "
+            "None when not configured."
         ),
     )
 
-    failure_logs_root: Path | None = Field(
+    failure_logs_root: str | None = Field(
         None,
         description=(
-            "Where to write human-readable failure log files. "
-            "Each failed execution writes a .log file under "
-            "step_{N}_{op}/ for easy debugging."
+            "Where to write human-readable failure log files. " "Always a local path."
         ),
     )
 

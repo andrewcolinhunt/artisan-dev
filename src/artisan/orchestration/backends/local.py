@@ -6,7 +6,6 @@ import multiprocessing
 import signal
 import warnings
 from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
 
 from prefect.task_runners import ProcessPoolTaskRunner
 
@@ -134,8 +133,8 @@ class LocalBackend(BackendBase):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
-        log_folder: Path | None = None,
-        staging_root: Path | None = None,
+        log_folder: str | None = None,
+        staging_root: str | None = None,
     ) -> DispatchHandle:
         """Build a local ProcessPool dispatch handle.
 
@@ -157,8 +156,8 @@ class LocalBackend(BackendBase):
     def capture_logs(
         self,
         results: list[UnitResult],
-        staging_root: Path,
-        failure_logs_root: Path | None,
+        staging_root: str,
+        failure_logs_root: str | None,
         operation_name: str,
     ) -> None:
         """No-op — local logs are in the orchestrator's stdout."""

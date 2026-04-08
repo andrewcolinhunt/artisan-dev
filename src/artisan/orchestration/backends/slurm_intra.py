@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import warnings
-from pathlib import Path
 from typing import Any
 
 from artisan.orchestration.backends.base import (
@@ -45,8 +44,8 @@ class SlurmIntraBackend(BackendBase):
         execution: ExecutionConfig,
         step_number: int,
         job_name: str,
-        log_folder: Path | None = None,
-        staging_root: Path | None = None,
+        log_folder: str | None = None,
+        staging_root: str | None = None,
     ) -> DispatchHandle:
         """Build a dispatch handle that uses srun within an existing allocation.
 
@@ -67,7 +66,7 @@ class SlurmIntraBackend(BackendBase):
 
         slurm_kwargs: dict[str, Any] = dict(resources.extra)
         if log_folder is not None:
-            slurm_kwargs["log_folder"] = str(log_folder)
+            slurm_kwargs["log_folder"] = log_folder
 
         # Pass gpus directly as gpus_per_node rather than routing through
         # slurm_gres. The SrunBackend builds --gres=gpu:N from gpus_per_node.
@@ -92,8 +91,8 @@ class SlurmIntraBackend(BackendBase):
     def capture_logs(
         self,
         results: list[UnitResult],
-        staging_root: Path,
-        failure_logs_root: Path | None,
+        staging_root: str,
+        failure_logs_root: str | None,
         operation_name: str,
     ) -> None:
         """Write srun worker stderr into staged parquet files."""

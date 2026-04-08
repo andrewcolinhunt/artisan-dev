@@ -200,7 +200,7 @@ class AssociatedMetricConsumer(OperationDefinition):
 # =============================================================================
 
 
-def test_lineage_grouping(pipeline_env: dict[str, Path]):
+def test_lineage_grouping(pipeline_env: dict[str, str]):
     """LINEAGE grouping: match by shared ancestry."""
     delta_root = pipeline_env["delta_root"]
 
@@ -251,7 +251,7 @@ def test_lineage_grouping(pipeline_env: dict[str, Path]):
     assert count_executions_by_step(delta_root, 3) == 2
 
 
-def test_with_associated(pipeline_env: dict[str, Path]):
+def test_with_associated(pipeline_env: dict[str, str]):
     """with_associated resolves associated metrics for each input artifact."""
     delta_root = pipeline_env["delta_root"]
 

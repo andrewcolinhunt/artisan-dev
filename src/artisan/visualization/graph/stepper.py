@@ -6,9 +6,12 @@ one step at a time, showing the cumulative graph build-up.
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import TYPE_CHECKING
 
+from fsspec import AbstractFileSystem
+
+from artisan.utils.path import uri_join, uri_parent
 from artisan.visualization.graph.micro import (
     get_max_step_number,
     render_micro_graph_steps,
@@ -19,8 +22,10 @@ if TYPE_CHECKING:
 
 
 def display_provenance_stepper(
-    delta_root: Path,
-    output_dir: Path | None = None,
+    delta_root: str,
+    output_dir: str | Path | None = None,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> ipywidgets.VBox:
     """Display an interactive widget to step through provenance graph evolution.
 
@@ -48,23 +53,28 @@ def display_provenance_stepper(
         )
         raise ImportError(msg) from e
 
-    delta_root = Path(delta_root)
-
     # Default output_dir to runs/images alongside runs/delta
     if output_dir is None:
-        output_dir = delta_root.parent / "images"
+        output_dir = uri_join(uri_parent(delta_root), "images")
     else:
-        output_dir = Path(output_dir)
+        output_dir = str(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
 
     # Get max step to check if there's anything to show
-    max_step = get_max_step_number(delta_root)
+    max_step = get_max_step_number(delta_root, storage_options=storage_options, fs=fs)
     if max_step is None:
         # No executions, show empty message
         label = widgets.Label(value="No pipeline steps to display.")
         return widgets.VBox([label])
 
     # Render all steps upfront
-    rendered_paths = render_micro_graph_steps(delta_root, output_dir, format="svg")
+    rendered_paths = render_micro_graph_steps(
+        delta_root,
+        output_dir,
+        format="svg",
+        storage_options=storage_options,
+        fs=fs,
+    )
 
     if not rendered_paths:
         label = widgets.Label(value="No pipeline steps to display.")

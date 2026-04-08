@@ -6,8 +6,6 @@ partial failures to verify cache hit/miss behavior.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 pytestmark = pytest.mark.slow
@@ -24,7 +22,7 @@ from .conftest import (
 )
 
 
-def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, Path]):
+def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
     """Two identical runs produce same artifact IDs with no new executions."""
     delta_root = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -93,7 +91,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, Path]):
     assert exec_count2 == exec_count1, "Cache hit should not create new executions"
 
 
-def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, Path]):
+def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, str]):
     """ALL_SUCCEEDED: partial failure causes re-execution on second run."""
     delta_root = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -153,7 +151,7 @@ def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, Path])
     ), "ALL_SUCCEEDED: partial failure should not be cached"
 
 
-def test_step_completed_partial_failure_cached(pipeline_env: dict[str, Path]):
+def test_step_completed_partial_failure_cached(pipeline_env: dict[str, str]):
     """STEP_COMPLETED: partial failure IS cached (step completed regardless)."""
     delta_root = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]

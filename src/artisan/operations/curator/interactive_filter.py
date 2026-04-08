@@ -11,7 +11,6 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -36,6 +35,7 @@ from artisan.storage.core.table_schemas import (
 from artisan.utils.dataframes import encode_metric_value
 from artisan.utils.dicts import flatten_dict
 from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.path import uri_join
 
 
 @dataclass
@@ -73,18 +73,18 @@ class InteractiveFilter:
 
     def __init__(
         self,
-        delta_root: str | Path,
+        delta_root: str,
         *,
         fs: AbstractFileSystem | None = None,
         storage_options: dict[str, str] | None = None,
     ) -> None:
         from fsspec.implementations.local import LocalFileSystem
 
-        self._delta_root = Path(delta_root)
+        self._delta_root = delta_root
         self._fs = fs if fs is not None else LocalFileSystem()
         self._storage_options = storage_options
         self._store = ArtifactStore(
-            str(self._delta_root),
+            self._delta_root,
             fs=self._fs,
             storage_options=self._storage_options,
         )
@@ -125,14 +125,14 @@ class InteractiveFilter:
         Raises:
             ValueError: If no artifacts found or no metrics found.
         """
-        index_path = self._delta_root / TablePath.ARTIFACT_INDEX
-        if not index_path.exists():
+        index_path = uri_join(self._delta_root, TablePath.ARTIFACT_INDEX)
+        if not self._fs.exists(index_path):
             msg = f"Artifact index not found at {index_path}"
             raise ValueError(msg)
 
         # Load primary artifact IDs
         all_index = (
-            pl.scan_delta(str(index_path))
+            pl.scan_delta(index_path, storage_options=self._storage_options)
             .select(["artifact_id", "artifact_type", "origin_step_number"])
             .collect()
         )
@@ -283,11 +283,11 @@ class InteractiveFilter:
 
     def _detect_pipeline_run_id(self) -> str | None:
         """Try to detect the pipeline_run_id from the steps table."""
-        steps_path = self._delta_root / TablePath.STEPS
-        if not steps_path.exists():
+        steps_path = uri_join(self._delta_root, TablePath.STEPS)
+        if not self._fs.exists(steps_path):
             return None
         result = (
-            pl.scan_delta(str(steps_path))
+            pl.scan_delta(steps_path, storage_options=self._storage_options)
             .sort("timestamp", descending=True)
             .limit(1)
             .select("pipeline_run_id")
@@ -608,7 +608,12 @@ class InteractiveFilter:
 
         from artisan.orchestration.engine.step_tracker import StepTracker
 
-        tracker = StepTracker(self._delta_root, pipeline_run_id)
+        tracker = StepTracker(
+            self._delta_root,
+            pipeline_run_id,
+            storage_options=self._storage_options,
+            fs=self._fs,
+        )
         tracker.record_step_start(start_record)
 
         # Build v4 diagnostics
@@ -641,9 +646,9 @@ class InteractiveFilter:
         from artisan.storage.io.commit import DeltaCommitter
         from artisan.storage.io.staging import StagingManager
 
-        staging_manager = StagingManager(str(self._delta_root), self._fs)
+        staging_manager = StagingManager(self._delta_root, self._fs)
         committer = DeltaCommitter(
-            str(self._delta_root),
+            self._delta_root,
             staging_manager,
             fs=self._fs,
             storage_options=self._storage_options,
@@ -773,12 +778,12 @@ class InteractiveFilter:
 
     def _next_step_number(self) -> int:
         """Determine the next step number from the steps table."""
-        steps_path = self._delta_root / TablePath.STEPS
-        if not steps_path.exists():
+        steps_path = uri_join(self._delta_root, TablePath.STEPS)
+        if not self._fs.exists(steps_path):
             return 0
 
         result = (
-            pl.scan_delta(str(steps_path))
+            pl.scan_delta(steps_path, storage_options=self._storage_options)
             .select(pl.col("step_number").max().alias("max_step"))
             .collect()
         )

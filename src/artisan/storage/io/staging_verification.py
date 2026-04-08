@@ -61,11 +61,11 @@ def verify_file_exists_nfs(path: Path) -> bool:
 
 
 def compute_expected_staging_paths(
-    staging_root: Path,
+    staging_root: str,
     execution_run_ids: list[str],
     step_number: int | None = None,
     operation_name: str | None = None,
-) -> list[Path]:
+) -> list[str]:
     """Compute the expected staging directory for each execution run ID.
 
     Args:
@@ -79,13 +79,11 @@ def compute_expected_staging_paths(
         One staging directory path per run ID, in the same order.
     """
     return [
-        Path(
-            shard_uri(
-                str(staging_root),
-                run_id,
-                step_number=step_number,
-                operation_name=operation_name,
-            )
+        shard_uri(
+            staging_root,
+            run_id,
+            step_number=step_number,
+            operation_name=operation_name,
         )
         for run_id in execution_run_ids
     ]
@@ -113,7 +111,7 @@ def verify_staging_directory(staging_dir: Path) -> tuple[bool, list[str]]:
 
 
 def await_staging_files(
-    staging_root: Path,
+    staging_root: str,
     execution_run_ids: list[str],
     timeout_seconds: float = 60.0,
     poll_interval_seconds: float = 1.0,
@@ -163,7 +161,7 @@ def await_staging_files(
         # Check all paths using open() for close-to-open consistency
         missing: dict[str, str] = {}
         for run_id, path in id_to_path.items():
-            success, issues = verify_staging_directory(path)
+            success, issues = verify_staging_directory(Path(path))
             if not success:
                 missing[run_id] = issues[0] if issues else "unknown issue"
 

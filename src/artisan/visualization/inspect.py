@@ -15,14 +15,15 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 from typing import Any
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.utils.dicts import flatten_dict
+from artisan.utils.path import uri_join
 
 # ======================================================================
 # Public API
@@ -30,15 +31,18 @@ from artisan.utils.dicts import flatten_dict
 
 
 def inspect_pipeline(
-    delta_root: Path | str,
+    delta_root: str,
     *,
     pipeline_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Pipeline-level overview — one row per step.
 
     Args:
         delta_root: Path to Delta Lake root.
         pipeline_run_id: Filter to a specific run. Latest if None.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         DataFrame with columns: step, operation, status, produced, duration.
@@ -46,14 +50,17 @@ def inspect_pipeline(
     Raises:
         FileNotFoundError: If steps table doesn't exist.
     """
-    delta_root = Path(delta_root)
-    steps_path = delta_root / TablePath.STEPS
-    if not steps_path.exists():
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
+    steps_path = uri_join(delta_root, TablePath.STEPS)
+    if not fs.exists(steps_path):
         msg = f"Steps table not found at {steps_path}"
         raise FileNotFoundError(msg)
 
     # Load completed, skipped, and cancelled steps
-    scanner = pl.scan_delta(str(steps_path)).filter(
+    scanner = pl.scan_delta(steps_path, storage_options=storage_options).filter(
         pl.col("status").is_in(["completed", "skipped", "cancelled"])
     )
     if pipeline_run_id is not None:
@@ -93,10 +100,10 @@ def inspect_pipeline(
     steps_df = steps_df.unique(subset=["step_number"], keep="last").sort("step_number")
 
     # Load artifact index for counts
-    index_path = delta_root / TablePath.ARTIFACT_INDEX
+    index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
     index_counts: dict[int, dict[str, int]] = {}
-    if index_path.exists():
-        idx_df = pl.scan_delta(str(index_path)).collect()
+    if fs.exists(index_path):
+        idx_df = pl.scan_delta(index_path, storage_options=storage_options).collect()
         if not idx_df.is_empty():
             grouped = (
                 idx_df.group_by("origin_step_number", "artifact_type")
@@ -168,19 +175,22 @@ def inspect_pipeline(
 
 
 def inspect_step(
-    delta_root: Path | str,
+    delta_root: str,
     step_number: int,
+    *,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """One-row-per-artifact summary for a given step.
 
     Args:
         delta_root: Path to Delta Lake root.
         step_number: Step number to inspect.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         DataFrame with columns: name, artifact_type, step, details.
     """
-    delta_root = Path(delta_root)
     empty = pl.DataFrame(
         schema={
             "name": pl.String,
@@ -190,13 +200,17 @@ def inspect_step(
         }
     )
 
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
     # Get artifact IDs at this step from index
-    index_path = delta_root / TablePath.ARTIFACT_INDEX
-    if not index_path.exists():
+    index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
+    if not fs.exists(index_path):
         return empty
 
     idx_df = (
-        pl.scan_delta(str(index_path))
+        pl.scan_delta(index_path, storage_options=storage_options)
         .filter(pl.col("origin_step_number") == step_number)
         .collect()
     )
@@ -213,15 +227,15 @@ def inspect_step(
         art_ids = set(group_row["artifact_id"])
 
         try:
-            table_path = delta_root / ArtifactTypeDef.get_table_path(art_type)
+            table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path(art_type))
         except KeyError:
             continue
 
-        if not table_path.exists():
+        if not fs.exists(table_path):
             continue
 
         df = (
-            pl.scan_delta(str(table_path))
+            pl.scan_delta(table_path, storage_options=storage_options)
             .filter(pl.col("origin_step_number") == step_number)
             .collect()
         )
@@ -249,10 +263,12 @@ def inspect_step(
 
 
 def inspect_metrics(
-    delta_root: Path | str,
+    delta_root: str,
     step_number: int | None = None,
     *,
     round_digits: int = 3,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Parse metric artifacts into a human-readable table.
 
@@ -260,6 +276,7 @@ def inspect_metrics(
         delta_root: Path to Delta Lake root.
         step_number: Filter to a specific step. All metric steps if None.
         round_digits: Decimal places for float rounding.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         DataFrame with columns: name, step, {metric_key_1}, {metric_key_2}, ...
@@ -267,13 +284,16 @@ def inspect_metrics(
     Raises:
         FileNotFoundError: If metrics table doesn't exist.
     """
-    delta_root = Path(delta_root)
-    table_path = delta_root / ArtifactTypeDef.get_table_path("metric")
-    if not table_path.exists():
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
+    table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("metric"))
+    if not fs.exists(table_path):
         msg = f"Metrics table not found at {table_path}"
         raise FileNotFoundError(msg)
 
-    scanner = pl.scan_delta(str(table_path))
+    scanner = pl.scan_delta(table_path, storage_options=storage_options)
     if step_number is not None:
         scanner = scanner.filter(pl.col("origin_step_number") == step_number)
 
@@ -326,9 +346,12 @@ def inspect_metrics(
 
 
 def inspect_data(
-    delta_root: Path | str,
+    delta_root: str,
     name: str | None = None,
     step_number: int | None = None,
+    *,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Read DataArtifact CSV content as a Polars DataFrame.
 
@@ -336,6 +359,7 @@ def inspect_data(
         delta_root: Path to Delta Lake root.
         name: Filter by original_name. Takes the first match.
         step_number: Filter by step number.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         DataFrame with the actual CSV data content.
@@ -344,13 +368,16 @@ def inspect_data(
         FileNotFoundError: If data table doesn't exist.
         ValueError: If no matching artifacts found or content is None.
     """
-    delta_root = Path(delta_root)
-    table_path = delta_root / ArtifactTypeDef.get_table_path("data")
-    if not table_path.exists():
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
+    table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("data"))
+    if not fs.exists(table_path):
         msg = f"Data table not found at {table_path}"
         raise FileNotFoundError(msg)
 
-    scanner = pl.scan_delta(str(table_path))
+    scanner = pl.scan_delta(table_path, storage_options=storage_options)
     if name is not None:
         scanner = scanner.filter(pl.col("original_name") == name)
     if step_number is not None:
@@ -361,7 +388,7 @@ def inspect_data(
     if df.is_empty():
         # Build a helpful error message
         all_names = (
-            pl.scan_delta(str(table_path))
+            pl.scan_delta(table_path, storage_options=storage_options)
             .select("original_name")
             .collect()["original_name"]
             .to_list()

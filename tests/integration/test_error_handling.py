@@ -6,8 +6,6 @@ and verifies pipeline resume after a failed run.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 pytestmark = pytest.mark.slow
@@ -24,7 +22,7 @@ from .conftest import (
 )
 
 
-def test_fail_fast_policy(pipeline_env: dict[str, Path]):
+def test_fail_fast_policy(pipeline_env: dict[str, str]):
     """FAIL_FAST: step fails immediately, step status is 'failed'."""
     delta_root = pipeline_env["delta_root"]
 
@@ -59,7 +57,7 @@ def test_fail_fast_policy(pipeline_env: dict[str, Path]):
     assert result["overall_success"] is False
 
 
-def test_continue_policy(pipeline_env: dict[str, Path]):
+def test_continue_policy(pipeline_env: dict[str, str]):
     """CONTINUE: partial failures proceed, successful artifacts persisted."""
     delta_root = pipeline_env["delta_root"]
 
@@ -109,7 +107,7 @@ def test_continue_policy(pipeline_env: dict[str, Path]):
     assert result["overall_success"] is False
 
 
-def test_all_executions_fail_continue(pipeline_env: dict[str, Path]):
+def test_all_executions_fail_continue(pipeline_env: dict[str, str]):
     """CONTINUE with all failures: step completes, downstream skipped."""
     delta_root = pipeline_env["delta_root"]
 
@@ -150,7 +148,7 @@ def test_all_executions_fail_continue(pipeline_env: dict[str, Path]):
     assert result is not None
 
 
-def test_resume_from_failed_pipeline(pipeline_env: dict[str, Path]):
+def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
     """Resume re-executes failed steps while reusing cached successful steps."""
     delta_root = pipeline_env["delta_root"]
     staging_root = pipeline_env["staging_root"]

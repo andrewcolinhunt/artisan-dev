@@ -8,16 +8,17 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 
 import polars as pl
 from deltalake import WriterProperties
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import CachePolicy, TablePath
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.orchestration.step_state import StepState
 from artisan.storage.core.table_schemas import STEPS_SCHEMA
+from artisan.utils.path import uri_join
 
 WRITER_PROPS = WriterProperties(compression="ZSTD")
 
@@ -25,15 +26,29 @@ WRITER_PROPS = WriterProperties(compression="ZSTD")
 class StepTracker:
     """Read and write step-level state to the steps delta table."""
 
-    def __init__(self, delta_root: Path, pipeline_run_id: str = "") -> None:
+    def __init__(
+        self,
+        delta_root: str,
+        pipeline_run_id: str = "",
+        storage_options: dict[str, str] | None = None,
+        fs: AbstractFileSystem | None = None,
+    ) -> None:
         """Initialize with a delta root and optional run identifier.
 
         Args:
-            delta_root: Root path for Delta Lake tables.
+            delta_root: Root URI for Delta Lake tables.
             pipeline_run_id: Run identifier for this pipeline session.
+            storage_options: Delta-rs storage options for cloud backends.
+            fs: Filesystem implementation for path operations.
         """
-        self._steps_path = delta_root / TablePath.STEPS
+        if fs is None:
+            from fsspec.implementations.local import LocalFileSystem
+
+            fs = LocalFileSystem()
+        self._fs = fs
+        self._steps_path = uri_join(delta_root, TablePath.STEPS)
         self._pipeline_run_id = pipeline_run_id
+        self._storage_options = storage_options
 
     def check_cache(
         self,
@@ -49,11 +64,11 @@ class StepTracker:
         Returns:
             StepResult if a completed step exists, None otherwise.
         """
-        if not self._steps_path.exists():
+        if not self._fs.exists(self._steps_path):
             return None
 
         query = (
-            pl.scan_delta(str(self._steps_path))
+            pl.scan_delta(self._steps_path, storage_options=self._storage_options)
             .filter(pl.col("step_spec_id") == step_spec_id)
             .filter(pl.col("status") == "completed")
             .filter(pl.col("dispatch_error").is_null())
@@ -210,19 +225,19 @@ class StepTracker:
         Returns:
             List of StepState objects ordered by step_number.
         """
-        if not self._steps_path.exists():
+        if not self._fs.exists(self._steps_path):
             return []
 
-        lf = pl.scan_delta(str(self._steps_path)).filter(
-            pl.col("status").is_in(["completed", "skipped"])
-        )
+        lf = pl.scan_delta(
+            self._steps_path, storage_options=self._storage_options
+        ).filter(pl.col("status").is_in(["completed", "skipped"]))
 
         if pipeline_run_id is not None:
             lf = lf.filter(pl.col("pipeline_run_id") == pipeline_run_id)
         else:
             # Find the most recent pipeline_run_id
             latest = (
-                pl.scan_delta(str(self._steps_path))
+                pl.scan_delta(self._steps_path, storage_options=self._storage_options)
                 .filter(pl.col("status").is_in(["completed", "skipped"]))
                 .sort("timestamp", descending=True)
                 .limit(1)
@@ -278,7 +293,7 @@ class StepTracker:
             min_timestamp, max_timestamp — one row per run.
             Empty DataFrame if no table exists.
         """
-        if not self._steps_path.exists():
+        if not self._fs.exists(self._steps_path):
             return pl.DataFrame(
                 schema={
                     "pipeline_run_id": pl.String,
@@ -290,7 +305,7 @@ class StepTracker:
             )
 
         return (
-            pl.scan_delta(str(self._steps_path))
+            pl.scan_delta(self._steps_path, storage_options=self._storage_options)
             .sort("timestamp")
             .group_by("pipeline_run_id")
             .agg(
@@ -305,16 +320,18 @@ class StepTracker:
 
     def _write_row(self, df: pl.DataFrame) -> None:
         """Append a single-row DataFrame to the steps delta table."""
-        if self._steps_path.exists():
+        if self._fs.exists(self._steps_path):
             df.write_delta(
-                str(self._steps_path),
+                self._steps_path,
                 mode="append",
+                storage_options=self._storage_options,
                 delta_write_options={"writer_properties": WRITER_PROPS},
             )
         else:
             df.write_delta(
-                str(self._steps_path),
+                self._steps_path,
                 mode="overwrite",
+                storage_options=self._storage_options,
                 delta_write_options={"writer_properties": WRITER_PROPS},
             )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock
 
 from artisan.orchestration.engine.dispatch import (
@@ -86,7 +87,7 @@ class TestSaveLoadUnits:
     def test_round_trip(self, tmp_path):
         """Save then load returns identical units."""
         units = self._make_units(3)
-        path = _save_units(units, tmp_path, step_number=1)
+        path = _save_units(units, str(tmp_path), step_number=1)
         loaded = _load_units(path)
 
         assert len(loaded) == len(units)
@@ -100,14 +101,14 @@ class TestSaveLoadUnits:
         dispatch_dir = tmp_path / "_dispatch"
         assert not dispatch_dir.exists()
 
-        _save_units(units, tmp_path, step_number=0)
+        _save_units(units, str(tmp_path), step_number=0)
 
         assert dispatch_dir.is_dir()
 
     def test_file_naming(self, tmp_path):
         """Path matches staging_root/_dispatch/step_{n}_units.pkl."""
         units = self._make_units(1)
-        path = _save_units(units, tmp_path, step_number=5)
+        path = _save_units(units, str(tmp_path), step_number=5)
 
-        assert path == tmp_path / "_dispatch" / "step_5_units.pkl"
-        assert path.exists()
+        assert path == os.path.join(str(tmp_path), "_dispatch", "step_5_units.pkl")
+        assert os.path.exists(path)

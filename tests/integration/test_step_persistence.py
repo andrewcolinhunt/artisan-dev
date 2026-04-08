@@ -10,8 +10,6 @@ Tests the full steps Delta Lake table lifecycle with real operations:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import pytest
 
@@ -28,7 +26,7 @@ from .conftest import read_table
 # =============================================================================
 
 
-def test_cache_hit(pipeline_env: dict[str, Path]) -> None:
+def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     """Second identical run skips execution via cache."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -81,7 +79,7 @@ def test_cache_hit(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_cache_miss_different_params(pipeline_env: dict[str, Path]) -> None:
+def test_cache_miss_different_params(pipeline_env: dict[str, str]) -> None:
     """Different params cause re-execution."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -124,7 +122,7 @@ def test_cache_miss_different_params(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_upstream_invalidation(pipeline_env: dict[str, Path]) -> None:
+def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
     """Changed upstream params invalidate downstream cache."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -196,7 +194,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_resume(pipeline_env: dict[str, Path]) -> None:
+def test_resume(pipeline_env: dict[str, str]) -> None:
     """Resume reconstructs pipeline state from delta."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -248,7 +246,7 @@ def test_resume(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_async_submit(pipeline_env: dict[str, Path]) -> None:
+def test_async_submit(pipeline_env: dict[str, str]) -> None:
     """submit() returns StepFuture that resolves to StepResult."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -285,7 +283,7 @@ def test_async_submit(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_list_runs(pipeline_env: dict[str, Path]) -> None:
+def test_list_runs(pipeline_env: dict[str, str]) -> None:
     """list_runs() returns DataFrame with completed runs."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]

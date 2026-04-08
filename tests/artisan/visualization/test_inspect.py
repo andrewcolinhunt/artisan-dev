@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -687,3 +688,27 @@ def test_flatten_dict_nested() -> None:
 def test_flatten_dict_deeply_nested() -> None:
     result = _flatten_dict({"a": {"b": {"c": 3}}})
     assert result == {"a.b.c": 3}
+
+
+# ======================================================================
+# storage_options forwarding tests
+# ======================================================================
+
+
+def test_inspect_pipeline_forwards_storage_options(tmp_path: Path) -> None:
+    """inspect_pipeline forwards storage_options to pl.scan_delta."""
+    delta_root = tmp_path / "delta"
+    _write_steps(
+        delta_root,
+        [_step_row(step_number=0, step_name="data_generator")],
+    )
+    opts = {"key": "val"}
+
+    with patch(
+        "artisan.visualization.inspect.pl.scan_delta",
+        wraps=pl.scan_delta,
+    ) as mock_scan:
+        inspect_pipeline(delta_root, storage_options=opts)
+        mock_scan.assert_called()
+        _, kwargs = mock_scan.call_args_list[0]
+        assert kwargs.get("storage_options") == opts

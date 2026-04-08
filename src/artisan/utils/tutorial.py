@@ -6,6 +6,7 @@ in a single call.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import NamedTuple
@@ -16,16 +17,16 @@ from artisan.utils.path import get_caller_dir
 class TutorialEnv(NamedTuple):
     """Paths returned by tutorial_setup()."""
 
-    runs_dir: Path
-    delta_root: Path
-    staging_root: Path
-    working_root: Path
+    runs_dir: str
+    delta_root: str
+    staging_root: str
+    working_root: str
 
 
 def tutorial_setup(
     name: str,
     *,
-    base_dir: Path | None = None,
+    base_dir: str | Path | None = None,
     clean: bool = True,
 ) -> TutorialEnv:
     """Set up a tutorial environment with standard directory layout.
@@ -39,17 +40,17 @@ def tutorial_setup(
         TutorialEnv with runs_dir, delta_root, staging_root, working_root.
     """
     base_dir = base_dir or get_caller_dir(stack_level=2)
-    runs_dir = base_dir / "runs" / name
+    runs_dir = os.path.join(str(base_dir), "runs", name)
 
-    if clean and runs_dir.exists():
+    if clean and os.path.exists(runs_dir):
         shutil.rmtree(runs_dir)
 
-    delta_root = runs_dir / "delta"
-    staging_root = runs_dir / "staging"
-    working_root = runs_dir / "working"
+    delta_root = os.path.join(runs_dir, "delta")
+    staging_root = os.path.join(runs_dir, "staging")
+    working_root = os.path.join(runs_dir, "working")
 
     for d in [delta_root, staging_root, working_root]:
-        d.mkdir(parents=True, exist_ok=True)
+        os.makedirs(d, exist_ok=True)
 
     return TutorialEnv(
         runs_dir=runs_dir,

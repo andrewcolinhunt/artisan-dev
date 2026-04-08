@@ -25,9 +25,10 @@ from artisan.utils.json import artisan_json_default
 from artisan.utils.path import shard_uri
 
 
-def _sync_staging_to_nfs(staging_path: Path) -> None:
+def _sync_staging_to_nfs(staging_path: str) -> None:
     """Flush staged files and directory metadata to NFS."""
-    for path in staging_path.iterdir():
+    staging_dir = Path(staging_path)
+    for path in staging_dir.iterdir():
         if path.is_file():
             fd = os.open(path, os.O_RDONLY)
             try:
@@ -35,7 +36,7 @@ def _sync_staging_to_nfs(staging_path: Path) -> None:
             finally:
                 os.close(fd)
 
-    fd = os.open(staging_path, os.O_RDONLY | os.O_DIRECTORY)
+    fd = os.open(staging_dir, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
     finally:
@@ -147,7 +148,7 @@ def _stage_execution(
         step_run_id=step_run_id,
     )
     if shared_filesystem:
-        _sync_staging_to_nfs(Path(staging_path))
+        _sync_staging_to_nfs(staging_path)
 
 
 def _stage_artifacts_by_type(

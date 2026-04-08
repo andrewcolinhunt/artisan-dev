@@ -150,15 +150,13 @@ class TestBuildInputSpec:
 
     def test_output_refs(self):
         """Dict OutputReferences mapped to upstream spec_ids."""
-        from pathlib import Path
-
         from artisan.orchestration.pipeline_manager import PipelineManager
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
+            delta_root="/tmp/delta",
+            staging_root="/tmp/staging",
         )
         pm = PipelineManager(config)
         pm._step_spec_ids[0] = "upstream_spec_abc"
@@ -169,15 +167,13 @@ class TestBuildInputSpec:
 
     def test_file_paths(self):
         """File paths produce _file_paths key with hash."""
-        from pathlib import Path
-
         from artisan.orchestration.pipeline_manager import PipelineManager
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
+            delta_root="/tmp/delta",
+            staging_root="/tmp/staging",
         )
         pm = PipelineManager(config)
 
@@ -193,15 +189,13 @@ class TestBuildInputSpec:
 
     def test_merged_streams(self):
         """List of OutputReferences produce _merged_streams key."""
-        from pathlib import Path
-
         from artisan.orchestration.pipeline_manager import PipelineManager
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
+            delta_root="/tmp/delta",
+            staging_root="/tmp/staging",
         )
         pm = PipelineManager(config)
         pm._step_spec_ids[0] = "spec_a"
@@ -216,30 +210,26 @@ class TestBuildInputSpec:
 
     def test_none_inputs(self):
         """None returns empty dict."""
-        from pathlib import Path
-
         from artisan.orchestration.pipeline_manager import PipelineManager
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
+            delta_root="/tmp/delta",
+            staging_root="/tmp/staging",
         )
         pm = PipelineManager(config)
         assert pm._build_input_spec(None) == {}
 
     def test_literal_ids(self):
         """Dict with literal artifact ID lists."""
-        from pathlib import Path
-
         from artisan.orchestration.pipeline_manager import PipelineManager
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
+            delta_root="/tmp/delta",
+            staging_root="/tmp/staging",
         )
         pm = PipelineManager(config)
 

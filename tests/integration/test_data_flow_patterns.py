@@ -88,7 +88,7 @@ def linear_chain_pipeline(
     return pipeline.finalize()
 
 
-def test_linear_chain(pipeline_env: dict[str, Path]):
+def test_linear_chain(pipeline_env: dict[str, str]):
     """Test 1: Linear chain data flow.
 
     Verifies:
@@ -182,7 +182,7 @@ def fan_out_execution_pipeline(
     return pipeline.finalize()
 
 
-def test_fan_out_execution(pipeline_env: dict[str, Path]):
+def test_fan_out_execution(pipeline_env: dict[str, str]):
     """Test 2: Fan-out at execution level.
 
     Verifies:
@@ -256,7 +256,7 @@ def fan_out_data_pipeline(
     return pipeline.finalize()
 
 
-def test_fan_out_data(pipeline_env: dict[str, Path]):
+def test_fan_out_data(pipeline_env: dict[str, str]):
     """Test 3: Fan-out at data level.
 
     Verifies:
@@ -335,7 +335,7 @@ def fan_in_merge_pipeline(
     return pipeline.finalize()
 
 
-def test_fan_in_merge(pipeline_env: dict[str, Path]):
+def test_fan_in_merge(pipeline_env: dict[str, str]):
     """Test 4: Fan-in via Merge curator.
 
     Verifies:
@@ -434,7 +434,7 @@ def passthrough_pipeline(
     return pipeline.finalize()
 
 
-def test_passthrough(pipeline_env: dict[str, Path]):
+def test_passthrough(pipeline_env: dict[str, str]):
     """Test 6: Passthrough identity preservation.
 
     Verifies:
@@ -511,7 +511,7 @@ def batch_processing_pipeline(
     return pipeline.finalize()
 
 
-def test_batch_processing(pipeline_env: dict[str, Path]):
+def test_batch_processing(pipeline_env: dict[str, str]):
     """Test 7: Batch execution unit creation.
 
     Verifies:
@@ -694,7 +694,7 @@ def comprehensive_pipeline(
     return pipeline.finalize()
 
 
-def test_comprehensive(pipeline_env: dict[str, Path], sample_csv_files: list[Path]):
+def test_comprehensive(pipeline_env: dict[str, str], sample_csv_files: list[Path]):
     """Test 8: Comprehensive multi-pattern pipeline.
 
     Verifies:
