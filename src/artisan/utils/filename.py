@@ -6,7 +6,7 @@ primarily used for lineage inference and file matching.
 
 from __future__ import annotations
 
-from pathlib import Path
+import posixpath
 
 
 def strip_extensions(
@@ -51,21 +51,21 @@ def strip_extensions(
                 return name[:i]
         return name
 
-    file_path = Path(filename)
+    # Extract basename
+    name = posixpath.basename(filename)
 
     if strip_all:
-        # Remove all extensions by repeatedly taking stem
-        name = file_path.name
+        # Remove all extensions by repeatedly stripping
         while "." in name:
-            stem = Path(name).stem
+            stem, _ = posixpath.splitext(name)
             # Prevent infinite loop for dotfiles like .gitignore
-            # where stem == name (no extension to strip)
+            # where splitext returns the name unchanged
             if stem == name:
                 break
             name = stem
     else:
-        # Remove only final extension (standard Path.stem behavior)
-        name = file_path.stem
+        # Remove only final extension
+        name, _ = posixpath.splitext(name)
 
     # Remove specified suffixes in order
     if suffixes_to_strip:

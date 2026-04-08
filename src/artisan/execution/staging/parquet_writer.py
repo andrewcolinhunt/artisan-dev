@@ -11,7 +11,6 @@ import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -27,16 +26,16 @@ from artisan.utils.path import shard_uri
 
 def _sync_staging_to_nfs(staging_path: str) -> None:
     """Flush staged files and directory metadata to NFS."""
-    staging_dir = Path(staging_path)
-    for path in staging_dir.iterdir():
-        if path.is_file():
-            fd = os.open(path, os.O_RDONLY)
+    for entry in os.listdir(staging_path):
+        entry_path = os.path.join(staging_path, entry)
+        if os.path.isfile(entry_path):
+            fd = os.open(entry_path, os.O_RDONLY)
             try:
                 os.fsync(fd)
             finally:
                 os.close(fd)
 
-    fd = os.open(staging_dir, os.O_RDONLY | os.O_DIRECTORY)
+    fd = os.open(staging_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
     finally:

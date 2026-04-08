@@ -459,7 +459,7 @@ def build_micro_graph(
 
 def render_micro_graph(
     delta_root: str,
-    output_path: str | Path,
+    output_path: str,
     format: Literal["svg", "png"] = "svg",
     max_step: int | None = None,
     storage_options: dict[str, str] | None = None,
@@ -507,7 +507,7 @@ def get_max_step_number(
 
 def render_micro_graph_steps(
     delta_root: str,
-    output_dir: str | Path,
+    output_dir: str,
     format: Literal["svg", "png"] = "svg",
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,

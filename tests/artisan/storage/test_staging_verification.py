@@ -25,7 +25,7 @@ class TestVerifyFileExistsNfs:
         test_file = tmp_path / "test.txt"
         test_file.write_text("content")
 
-        result = verify_file_exists_nfs(test_file)
+        result = verify_file_exists_nfs(str(test_file))
 
         assert result is True
 
@@ -33,7 +33,7 @@ class TestVerifyFileExistsNfs:
         """Returns False for non-existent file."""
         nonexistent = tmp_path / "does_not_exist.txt"
 
-        result = verify_file_exists_nfs(nonexistent)
+        result = verify_file_exists_nfs(str(nonexistent))
 
         assert result is False
 
@@ -41,7 +41,7 @@ class TestVerifyFileExistsNfs:
         """Returns False when parent directory doesn't exist."""
         nonexistent = tmp_path / "missing_parent" / "file.txt"
 
-        result = verify_file_exists_nfs(nonexistent)
+        result = verify_file_exists_nfs(str(nonexistent))
 
         assert result is False
 
@@ -50,7 +50,7 @@ class TestVerifyFileExistsNfs:
         test_file = tmp_path / "empty.txt"
         test_file.write_bytes(b"")
 
-        result = verify_file_exists_nfs(test_file)
+        result = verify_file_exists_nfs(str(test_file))
 
         assert result is True
 
@@ -91,7 +91,7 @@ class TestVerifyStagingDirectory:
         staging_dir.mkdir(parents=True)
         (staging_dir / REQUIRED_STAGING_FILE).write_bytes(b"data")
 
-        success, missing = verify_staging_directory(staging_dir)
+        success, missing = verify_staging_directory(str(staging_dir))
 
         assert success is True
         assert missing == []
@@ -102,7 +102,7 @@ class TestVerifyStagingDirectory:
         staging_dir.mkdir(parents=True)
         # Directory exists but no executions.parquet
 
-        success, missing = verify_staging_directory(staging_dir)
+        success, missing = verify_staging_directory(str(staging_dir))
 
         assert success is False
         assert REQUIRED_STAGING_FILE in missing
@@ -111,7 +111,7 @@ class TestVerifyStagingDirectory:
         """Returns (False, [reason]) when directory doesn't exist."""
         nonexistent_dir = tmp_path / "does_not_exist"
 
-        success, missing = verify_staging_directory(nonexistent_dir)
+        success, missing = verify_staging_directory(str(nonexistent_dir))
 
         assert success is False
         assert len(missing) == 1
@@ -125,7 +125,7 @@ class TestAwaitStagingFiles:
         """No-op when execution_run_ids is empty."""
         # Should not raise, should return quickly
         await_staging_files(
-            staging_root=tmp_path,
+            staging_root=str(tmp_path),
             execution_run_ids=[],
             timeout_seconds=1.0,
         )
@@ -141,7 +141,7 @@ class TestAwaitStagingFiles:
 
         start = time.monotonic()
         await_staging_files(
-            staging_root=tmp_path,
+            staging_root=str(tmp_path),
             execution_run_ids=[execution_run_id],
             timeout_seconds=10.0,
         )
@@ -170,7 +170,7 @@ class TestAwaitStagingFiles:
         try:
             # Should succeed after file appears
             await_staging_files(
-                staging_root=tmp_path,
+                staging_root=str(tmp_path),
                 execution_run_ids=[execution_run_id],
                 timeout_seconds=5.0,
                 poll_interval_seconds=0.2,
@@ -187,7 +187,7 @@ class TestAwaitStagingFiles:
 
         with pytest.raises(TimeoutError) as exc_info:
             await_staging_files(
-                staging_root=tmp_path,
+                staging_root=str(tmp_path),
                 execution_run_ids=execution_run_ids,
                 timeout_seconds=0.5,
                 poll_interval_seconds=0.1,
@@ -214,7 +214,7 @@ class TestAwaitStagingFiles:
 
         with pytest.raises(TimeoutError) as exc_info:
             await_staging_files(
-                staging_root=tmp_path,
+                staging_root=str(tmp_path),
                 execution_run_ids=execution_run_ids,
                 timeout_seconds=0.5,
                 poll_interval_seconds=0.1,
@@ -241,7 +241,7 @@ class TestAwaitStagingFiles:
 
         # Should succeed without timeout
         await_staging_files(
-            staging_root=tmp_path,
+            staging_root=str(tmp_path),
             execution_run_ids=execution_run_ids,
             timeout_seconds=5.0,
         )
