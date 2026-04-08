@@ -6,7 +6,6 @@ Exercises pipeline.run(CompositeDefinition) with creators and intermediates mode
 from __future__ import annotations
 
 from enum import StrEnum
-from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -110,7 +109,7 @@ class NestedComposite(CompositeDefinition):
 # ---------------------------------------------------------------------------
 
 
-def test_composite_creators_only(pipeline_env: dict[str, Path]):
+def test_composite_creators_only(pipeline_env: dict[str, str]):
     """Basic collapsed composite with two creator operations."""
     delta_root = pipeline_env["delta_root"]
 
@@ -133,7 +132,7 @@ def test_composite_creators_only(pipeline_env: dict[str, Path]):
     assert ref.role == "dataset"
 
 
-def test_composite_with_upstream(pipeline_env: dict[str, Path]):
+def test_composite_with_upstream(pipeline_env: dict[str, str]):
     """Composite receiving input from an upstream pipeline step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -162,7 +161,7 @@ def test_composite_with_upstream(pipeline_env: dict[str, Path]):
     assert ref.source_step == 1
 
 
-def test_composite_to_downstream(pipeline_env: dict[str, Path]):
+def test_composite_to_downstream(pipeline_env: dict[str, str]):
     """Composite output wired to a downstream operation."""
     delta_root = pipeline_env["delta_root"]
 
@@ -190,7 +189,7 @@ def test_composite_to_downstream(pipeline_env: dict[str, Path]):
     assert metrics_step.success is True
 
 
-def test_composite_nested(pipeline_env: dict[str, Path]):
+def test_composite_nested(pipeline_env: dict[str, str]):
     """Nested composite: composite inside a composite."""
     delta_root = pipeline_env["delta_root"]
 

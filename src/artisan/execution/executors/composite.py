@@ -7,6 +7,7 @@ operations within a single pipeline step.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 
 from artisan.composites.base.composite_context import CollapsedCompositeContext
@@ -63,12 +64,10 @@ def run_composite(
         storage_options = runtime_env.storage.delta_storage_options()
 
         artifact_store = ArtifactStore(
-            str(runtime_env.delta_root_path),
+            runtime_env.delta_root,
             fs=fs,
             storage_options=storage_options,
-            files_root=str(runtime_env.files_root_path)
-            if runtime_env.files_root_path
-            else None,
+            files_root=runtime_env.files_root,
         )
 
         # Create collapsed context
@@ -122,9 +121,9 @@ def run_composite(
         # Build execution context for recording
         from artisan.execution.context.builder import build_creator_execution_context
 
-        working_root = runtime_env.working_root_path
+        working_root = runtime_env.working_root
         if working_root is None:
-            msg = "RuntimeEnvironment.working_root_path must be set"
+            msg = "RuntimeEnvironment.working_root must be set"
             raise ValueError(msg)
 
         execution_context = build_creator_execution_context(
@@ -133,18 +132,16 @@ def run_composite(
             step_number=composite_transport.step_number,
             timestamp_start=timestamp_start,
             worker_id=worker_id,
-            delta_root_path=str(runtime_env.delta_root_path),
-            staging_root_path=str(runtime_env.staging_root_path),
+            delta_root=runtime_env.delta_root,
+            staging_root=runtime_env.staging_root,
             fs=fs,
             storage_options=storage_options,
             operation=composite,
-            sandbox_path=working_root / "dummy",
+            sandbox_path=os.path.join(working_root, "dummy"),
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=composite_transport.step_run_id,
-            files_root=str(runtime_env.files_root_path)
-            if runtime_env.files_root_path
-            else None,
+            files_root=runtime_env.files_root,
         )
 
         from artisan.utils.hashing import serialize_params

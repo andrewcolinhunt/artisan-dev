@@ -6,8 +6,6 @@ criteria that select metrics from a specific step.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 pytestmark = pytest.mark.slow
@@ -27,7 +25,7 @@ from .conftest import (
 )
 
 
-def test_multi_criterion_filter(pipeline_env: dict[str, Path]):
+def test_multi_criterion_filter(pipeline_env: dict[str, str]):
     """Filter with multiple AND criteria narrows the artifact set."""
     delta_root = pipeline_env["delta_root"]
 
@@ -75,7 +73,7 @@ def test_multi_criterion_filter(pipeline_env: dict[str, Path]):
     assert 0 <= len(passthrough_ids) <= 5
 
 
-def test_filter_passthrough_failures(pipeline_env: dict[str, Path]):
+def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
     """passthrough_failures=True passes all artifacts regardless of criteria."""
     delta_root = pipeline_env["delta_root"]
 
@@ -120,7 +118,7 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, Path]):
     assert len(passthrough_ids) == 3
 
 
-def test_step_targeted_criterion(pipeline_env: dict[str, Path]):
+def test_step_targeted_criterion(pipeline_env: dict[str, str]):
     """Filter criterion with step_number targets metrics from a specific step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -191,7 +189,7 @@ def test_step_targeted_criterion(pipeline_env: dict[str, Path]):
 
 
 def test_multi_source_filter_with_colliding_field_names(
-    pipeline_env: dict[str, Path],
+    pipeline_env: dict[str, str],
 ):
     """Filter across two metric sources where field names collide at
     different nesting levels (top-level row_count vs summary.row_count).

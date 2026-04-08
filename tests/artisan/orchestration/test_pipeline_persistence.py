@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import patch
@@ -91,14 +92,14 @@ class TestPersistence:
         """steps table has rows after run()."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         pipeline.run(IngestMockOp, inputs=None)
 
-        steps_path = tmp_path / "delta" / "orchestration/steps"
-        assert steps_path.exists()
-        df = pl.read_delta(str(steps_path))
+        steps_path = str(tmp_path / "delta" / "orchestration/steps")
+        assert os.path.exists(steps_path)
+        df = pl.read_delta(steps_path)
         # Should have running + completed rows
         assert len(df) == 2
         statuses = set(df["status"].to_list())
@@ -115,12 +116,16 @@ class TestPersistence:
         staging = tmp_path / "staging"
 
         # First run
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         p1.run(IngestMockOp, inputs=None)
         assert mock_exec.call_count == 1
 
         # Second run — same operation, same step position, same params
-        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p2 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         result = p2.run(IngestMockOp, inputs=None)
         # execute_step NOT called again
         assert mock_exec.call_count == 1
@@ -137,13 +142,17 @@ class TestPersistence:
         staging = tmp_path / "staging"
 
         # First run: Ingest -> MockOp
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         step0 = p1.run(IngestMockOp, inputs=None)
         p1.run(MockOp, inputs={"data": step0.output("file")})
         assert mock_exec.call_count == 2
 
         # Second run with different params on step 0
-        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p2 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         step0b = p2.run(IngestMockOp, inputs=None, params={"seed": 99})
         p2.run(MockOp, inputs={"data": step0b.output("file")})
         # Step 0 should re-execute (different params), step 1 also (upstream changed)
@@ -157,8 +166,8 @@ class TestPersistence:
         """pipeline_run_id is non-empty and contains pipeline name."""
         pipeline = PipelineManager.create(
             name="example_pipeline",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         assert pipeline.config.pipeline_run_id != ""
         assert "example_pipeline" in pipeline.config.pipeline_run_id
@@ -171,8 +180,8 @@ class TestPersistence:
         """Finalize waits for futures and shuts down executor."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         pipeline.run(IngestMockOp, inputs=None)
         summary = pipeline.finalize()

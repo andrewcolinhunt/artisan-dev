@@ -74,9 +74,9 @@ def _make_pipeline(tmp_path) -> PipelineManager:
     """Create a minimal PipelineManager without Prefect."""
     config = PipelineConfig(
         name="test",
-        delta_root=tmp_path / "delta",
-        staging_root=tmp_path / "staging",
-        working_root=tmp_path / "working",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        working_root=str(tmp_path / "working"),
     )
     return PipelineManager(config)
 
@@ -233,9 +233,9 @@ class TestPipelineCleanup:
         mock_tracker_cls.return_value = MagicMock()
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
         with PipelineManager(config) as pipeline:
             assert not pipeline._finalized
@@ -247,9 +247,9 @@ class TestPipelineCleanup:
         mock_tracker_cls.return_value = MagicMock()
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
-            working_root=tmp_path / "working",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
         with PipelineManager(config) as pipeline:
             summary = pipeline.finalize()
@@ -1907,19 +1907,19 @@ class TestFilesRootThreading:
         """PipelineManager config derives files_root from delta_root."""
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "pipeline" / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "pipeline" / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         pipeline = PipelineManager(config)
-        assert pipeline.config.files_root == tmp_path / "pipeline" / "files"
+        assert pipeline.config.files_root == str(tmp_path / "pipeline" / "files")
 
     def test_config_gets_explicit_files_root(self, tmp_path):
         """PipelineManager config preserves explicit files_root."""
-        custom_files = tmp_path / "bulk" / "files"
+        custom_files = str(tmp_path / "bulk" / "files")
         config = PipelineConfig(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
             files_root=custom_files,
         )
         pipeline = PipelineManager(config)

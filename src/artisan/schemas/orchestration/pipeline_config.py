@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.utils.path import uri_join, uri_parent
 
 
 class PipelineConfig(BaseModel):
@@ -23,11 +23,11 @@ class PipelineConfig(BaseModel):
         default="",
         description="Unique identifier for this pipeline run session.",
     )
-    delta_root: Path = Field(..., description="Root path for Delta Lake tables.")
-    staging_root: Path = Field(..., description="Root path for worker staging files.")
-    working_root: Path = Field(
-        default_factory=lambda: Path(tempfile.gettempdir()),
-        description="Root path for worker sandboxes.",
+    delta_root: str = Field(..., description="Root URI for Delta Lake tables.")
+    staging_root: str = Field(..., description="Root URI for worker staging files.")
+    working_root: str = Field(
+        default_factory=tempfile.gettempdir,
+        description="Root path for worker sandboxes. Always local.",
     )
     failure_policy: FailurePolicy = Field(
         default=FailurePolicy.CONTINUE,
@@ -57,11 +57,12 @@ class PipelineConfig(BaseModel):
         default=False,
         description="Bypass all cache lookups (step-level and execution-level).",
     )
-    files_root: Path | None = Field(
+    files_root: str | None = Field(
         default=None,
         description=(
-            "Root path for Artisan-managed external files. "
-            "Defaults to delta_root.parent / 'files'."
+            "Root for Artisan-managed external files. "
+            "Auto-derived for local deployments; must be set "
+            "explicitly for cloud deployments."
         ),
     )
     storage: StorageConfig = Field(
@@ -73,7 +74,13 @@ class PipelineConfig(BaseModel):
 
     @model_validator(mode="after")
     def _default_files_root(self) -> PipelineConfig:
-        """Derive files_root from delta_root when not explicitly set."""
-        if self.files_root is None:
-            object.__setattr__(self, "files_root", self.delta_root.parent / "files")
+        """Derive files_root from delta_root when not explicitly set.
+
+        Only derives for local delta_root values. Cloud deployments
+        must set files_root explicitly.
+        """
+        if self.files_root is None and self.storage.is_local:
+            object.__setattr__(
+                self, "files_root", uri_join(uri_parent(self.delta_root), "files")
+            )
         return self

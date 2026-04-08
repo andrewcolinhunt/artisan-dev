@@ -101,7 +101,7 @@ class TestSlurmDispatchHandleCancelFlow:
             handle = SlurmDispatchHandle(
                 task_runner=MagicMock(),
                 job_name="s0_test_op",
-                staging_root=Path("/staging"),
+                staging_root="/staging",
                 step_number=0,
             )
 
@@ -137,7 +137,7 @@ class TestSlurmDispatchHandleCancelFlow:
             handle = SlurmDispatchHandle(
                 task_runner=MagicMock(),
                 job_name="s1_my_op",
-                staging_root=Path("/staging"),
+                staging_root="/staging",
                 step_number=1,
             )
 
@@ -169,7 +169,7 @@ class TestSlurmDispatchHandleCancelBeforeDispatch:
         handle = SlurmDispatchHandle(
             task_runner=MagicMock(),
             job_name="s2_early",
-            staging_root=Path("/staging"),
+            staging_root="/staging",
             step_number=2,
         )
 

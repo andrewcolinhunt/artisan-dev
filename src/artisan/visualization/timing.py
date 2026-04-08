@@ -16,12 +16,13 @@ Usage:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.utils.path import uri_join
 
 
 class PipelineTimings:
@@ -57,8 +58,10 @@ class PipelineTimings:
     @classmethod
     def from_delta(
         cls,
-        delta_root: Path,
+        delta_root: str,
         pipeline_run_id: str | None = None,
+        storage_options: dict[str, str] | None = None,
+        fs: AbstractFileSystem | None = None,
     ) -> PipelineTimings:
         """Load timing data from steps and executions delta tables.
 
@@ -66,6 +69,7 @@ class PipelineTimings:
             delta_root: Path to the delta lake root directory.
             pipeline_run_id: Pipeline run ID to filter by. If None, uses the
                 latest pipeline run.
+            storage_options: Delta-rs storage options for cloud backends.
 
         Returns:
             PipelineTimings instance.
@@ -74,13 +78,19 @@ class PipelineTimings:
             FileNotFoundError: If steps table doesn't exist.
             ValueError: If no completed steps found.
         """
-        steps_path = delta_root / TablePath.STEPS
-        if not steps_path.exists():
+        if fs is None:
+            from fsspec.implementations.local import LocalFileSystem
+
+            fs = LocalFileSystem()
+        steps_path = uri_join(delta_root, TablePath.STEPS)
+        if not fs.exists(steps_path):
             msg = f"steps table not found at {steps_path}"
             raise FileNotFoundError(msg)
 
         # Read completed steps
-        scanner = pl.scan_delta(str(steps_path)).filter(pl.col("status") == "completed")
+        scanner = pl.scan_delta(steps_path, storage_options=storage_options).filter(
+            pl.col("status") == "completed"
+        )
         if pipeline_run_id is not None:
             scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
 
@@ -108,10 +118,12 @@ class PipelineTimings:
             steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
 
         # Read executions if available
-        exec_path = delta_root / TablePath.EXECUTIONS
+        exec_path = uri_join(delta_root, TablePath.EXECUTIONS)
         exec_df = None
-        if exec_path.exists():
-            exec_scanner = pl.scan_delta(str(exec_path)).filter(
+        if fs.exists(exec_path):
+            exec_scanner = pl.scan_delta(
+                exec_path, storage_options=storage_options
+            ).filter(
                 pl.col("success") == True  # noqa: E712
             )
             exec_df = (

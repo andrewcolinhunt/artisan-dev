@@ -6,7 +6,6 @@ current pipeline, with no cross-pipeline provenance edges.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import ClassVar
 
 import polars as pl
@@ -16,6 +15,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -42,7 +42,7 @@ class IngestPipelineStep(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {}
 
     # ---------- Parameters ----------
-    source_delta_root: Path = Field(
+    source_delta_root: str = Field(
         ..., description="Path to the source pipeline's delta_root"
     )
     source_step: int = Field(
@@ -52,6 +52,11 @@ class IngestPipelineStep(OperationDefinition):
         default=None,
         description="Optional filter: import only this artifact type. "
         "If None, imports all types found at the source step.",
+    )
+    source_storage: StorageConfig = Field(
+        default_factory=StorageConfig,
+        description="Storage config for the source pipeline. "
+        "Default (local) works for local/NFS source pipelines.",
     )
 
     # ---------- Resources ----------
@@ -77,18 +82,18 @@ class IngestPipelineStep(OperationDefinition):
         Returns:
             ArtifactResult with imported artifacts keyed by type.
         """
-        from fsspec.implementations.local import LocalFileSystem
+        fs = self.source_storage.filesystem()
 
-        source_root = Path(self.source_delta_root)
-        if not source_root.exists():
+        if not fs.exists(self.source_delta_root):
             return ArtifactResult(
                 success=False,
-                error=f"Source delta root does not exist: {source_root}",
+                error=f"Source delta root does not exist: {self.source_delta_root}",
             )
 
         source_store = ArtifactStore(
-            str(source_root),
-            fs=LocalFileSystem(),
+            self.source_delta_root,
+            fs=fs,
+            storage_options=self.source_storage.delta_storage_options(),
         )
         types_to_import = self._resolve_types(source_store)
 

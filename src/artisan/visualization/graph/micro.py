@@ -11,14 +11,16 @@ For a higher-level step-based view, see ``artisan.visualization.graph.macro``.
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import Literal
 
 import graphviz
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
     apply_default_layout,
@@ -32,19 +34,33 @@ from artisan.visualization.graph._styles import (
 
 
 def _scan_or_empty(
-    delta_root: Path,
+    delta_root: str,
     table: TablePath,
     columns: list[str],
     empty_schema: dict[str, pl.DataType],
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Scan a Delta table, returning an empty DataFrame if it doesn't exist."""
-    table_path = delta_root / table
-    if not table_path.exists():
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
+    table_path = uri_join(delta_root, table)
+    if not fs.exists(table_path):
         return pl.DataFrame(schema=empty_schema)
-    return pl.scan_delta(str(table_path)).select(columns).collect()
+    return (
+        pl.scan_delta(table_path, storage_options=storage_options)
+        .select(columns)
+        .collect()
+    )
 
 
-def _load_executions(delta_root: Path) -> pl.DataFrame:
+def _load_executions(
+    delta_root: str,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> pl.DataFrame:
     """Return execution records from the executions Delta table."""
     return _scan_or_empty(
         delta_root,
@@ -55,10 +71,16 @@ def _load_executions(delta_root: Path) -> pl.DataFrame:
             "operation_name": pl.String,
             "origin_step_number": pl.Int32,
         },
+        storage_options=storage_options,
+        fs=fs,
     )
 
 
-def _load_artifact_index(delta_root: Path) -> pl.DataFrame:
+def _load_artifact_index(
+    delta_root: str,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> pl.DataFrame:
     """Return artifact index records from the artifact_index Delta table."""
     return _scan_or_empty(
         delta_root,
@@ -69,48 +91,68 @@ def _load_artifact_index(delta_root: Path) -> pl.DataFrame:
             "artifact_type": pl.String,
             "origin_step_number": pl.Int32,
         },
+        storage_options=storage_options,
+        fs=fs,
     )
 
 
-def _load_artifact_labels(delta_root: Path) -> dict[str, str]:
+def _load_artifact_labels(
+    delta_root: str,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> dict[str, str]:
     """Map artifact IDs to human-readable labels from type-specific tables.
 
     Iterates registered ArtifactTypeDefs, loading ``original_name`` (or
     ``path``) from each type's table when available and returning the
     stem as the display label.
     """
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
     labels: dict[str, str] = {}
 
     for _key, typedef in ArtifactTypeDef.get_all().items():
         schema = typedef.model.POLARS_SCHEMA
-        table_path = delta_root / typedef.table_path
+        table_path = uri_join(delta_root, typedef.table_path)
 
-        if not table_path.exists():
+        if not fs.exists(table_path):
             continue
 
         if "original_name" in schema:
             df = (
-                pl.scan_delta(str(table_path))
+                pl.scan_delta(table_path, storage_options=storage_options)
                 .select(["artifact_id", "original_name"])
                 .collect()
             )
             for row in df.iter_rows(named=True):
                 name = row["original_name"]
                 if name:
-                    labels[row["artifact_id"]] = Path(name).stem
+                    labels[row["artifact_id"]] = os.path.splitext(
+                        os.path.basename(name)
+                    )[0]
         elif "path" in schema:
             df = (
-                pl.scan_delta(str(table_path)).select(["artifact_id", "path"]).collect()
+                pl.scan_delta(table_path, storage_options=storage_options)
+                .select(["artifact_id", "path"])
+                .collect()
             )
             for row in df.iter_rows(named=True):
                 path = row["path"]
                 if path:
-                    labels[row["artifact_id"]] = Path(path).stem
+                    labels[row["artifact_id"]] = os.path.splitext(
+                        os.path.basename(path)
+                    )[0]
 
     return labels
 
 
-def _load_execution_edges(delta_root: Path) -> pl.DataFrame:
+def _load_execution_edges(
+    delta_root: str,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> pl.DataFrame:
     """Return execution-to-artifact provenance edges."""
     return _scan_or_empty(
         delta_root,
@@ -121,10 +163,16 @@ def _load_execution_edges(delta_root: Path) -> pl.DataFrame:
             "direction": pl.String,
             "artifact_id": pl.String,
         },
+        storage_options=storage_options,
+        fs=fs,
     )
 
 
-def _load_artifact_edges(delta_root: Path) -> pl.DataFrame:
+def _load_artifact_edges(
+    delta_root: str,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> pl.DataFrame:
     """Return artifact-to-artifact lineage edges."""
     return _scan_or_empty(
         delta_root,
@@ -134,6 +182,8 @@ def _load_artifact_edges(delta_root: Path) -> pl.DataFrame:
             "source_artifact_id": pl.String,
             "target_artifact_id": pl.String,
         },
+        storage_options=storage_options,
+        fs=fs,
     )
 
 
@@ -160,8 +210,10 @@ def _build_artifact_labels(
 
 
 def build_micro_graph(
-    delta_root: Path,
+    delta_root: str,
     max_step: int | None = None,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> graphviz.Digraph:
     """Build a Graphviz Digraph from Delta Lake provenance tables.
 
@@ -178,18 +230,25 @@ def build_micro_graph(
         delta_root: Path to Delta Lake root directory.
         max_step: If provided, only include steps 0 through max_step (inclusive).
             Useful for step-by-step visualization of pipeline execution.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    delta_root = Path(delta_root)
-
     # Load all data
-    executions = _load_executions(delta_root)
-    artifact_index = _load_artifact_index(delta_root)
-    name_labels = _load_artifact_labels(delta_root)
-    exec_edges = _load_execution_edges(delta_root)
-    artifact_edges = _load_artifact_edges(delta_root)
+    executions = _load_executions(delta_root, storage_options=storage_options, fs=fs)
+    artifact_index = _load_artifact_index(
+        delta_root, storage_options=storage_options, fs=fs
+    )
+    name_labels = _load_artifact_labels(
+        delta_root, storage_options=storage_options, fs=fs
+    )
+    exec_edges = _load_execution_edges(
+        delta_root, storage_options=storage_options, fs=fs
+    )
+    artifact_edges = _load_artifact_edges(
+        delta_root, storage_options=storage_options, fs=fs
+    )
 
     # Filter by max_step if provided
     if max_step is not None:
@@ -399,11 +458,13 @@ def build_micro_graph(
 
 
 def render_micro_graph(
-    delta_root: Path,
-    output_path: Path,
+    delta_root: str,
+    output_path: str | Path,
     format: Literal["svg", "png"] = "svg",
     max_step: int | None = None,
-) -> Path:
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> str:
     """Build and render the micro (artifact-level) provenance graph to a file.
 
     Args:
@@ -411,34 +472,46 @@ def render_micro_graph(
         output_path: Output file path (without extension).
         format: Output format ("svg" or "png").
         max_step: If provided, only include steps 0 through max_step (inclusive).
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
 
     Returns:
         Path to the rendered file.
     """
-    graph = build_micro_graph(delta_root, max_step=max_step)
+    graph = build_micro_graph(
+        delta_root, max_step=max_step, storage_options=storage_options, fs=fs
+    )
     return render_graph(graph, output_path, format)
 
 
-def get_max_step_number(delta_root: Path) -> int | None:
+def get_max_step_number(
+    delta_root: str,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> int | None:
     """Return the highest step number present in the executions table.
 
     Args:
         delta_root: Path to Delta Lake root directory.
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
 
     Returns:
         Maximum step number, or None if no executions exist.
     """
-    executions = _load_executions(delta_root)
+    executions = _load_executions(delta_root, storage_options=storage_options, fs=fs)
     if executions.is_empty():
         return None
     return executions["origin_step_number"].max()
 
 
 def render_micro_graph_steps(
-    delta_root: Path,
-    output_dir: Path,
+    delta_root: str,
+    output_dir: str | Path,
     format: Literal["svg", "png"] = "svg",
-) -> list[Path]:
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> list[str]:
     """Render provenance graphs for each step (cumulative).
 
     Generates one image per step, where step N shows all nodes and edges
@@ -448,25 +521,31 @@ def render_micro_graph_steps(
         delta_root: Path to Delta Lake root directory.
         output_dir: Directory to write step images (step_00.svg, step_01.svg, ...).
         format: Output format ("svg" or "png").
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
 
     Returns:
         List of paths to rendered files, in step order.
     """
-    delta_root = Path(delta_root)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = str(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
 
-    max_step = get_max_step_number(delta_root)
+    max_step = get_max_step_number(delta_root, storage_options=storage_options, fs=fs)
     if max_step is None:
         return []
 
-    rendered_paths: list[Path] = []
+    rendered_paths: list[str] = []
     for step in range(max_step + 1):
         # Zero-pad step number for correct sorting
         filename = f"step_{step:02d}"
-        output_path = output_dir / filename
+        output_path = os.path.join(output_dir, filename)
         rendered = render_micro_graph(
-            delta_root, output_path, format=format, max_step=step
+            delta_root,
+            output_path,
+            format=format,
+            max_step=step,
+            storage_options=storage_options,
+            fs=fs,
         )
         rendered_paths.append(rendered)
 
