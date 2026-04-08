@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 
 import polars as pl
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
@@ -73,7 +74,7 @@ class TestLoadProvenanceEdgesDf:
             ],
         )
 
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.load_provenance_edges_df(step_min=1, step_max=2)
 
         assert len(result) == 1
@@ -116,7 +117,7 @@ class TestLoadProvenanceEdgesDf:
             ],
         )
 
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.load_provenance_edges_df(step_min=1, step_max=3)
 
         assert result.is_empty()
@@ -124,7 +125,7 @@ class TestLoadProvenanceEdgesDf:
 
     def test_empty_when_no_tables(self, tmp_path):
         """Returns empty DataFrame when tables don't exist."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.load_provenance_edges_df(step_min=0, step_max=10)
 
         assert result.is_empty()
@@ -152,7 +153,7 @@ class TestLoadMetricsDf:
             ],
         )
 
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.load_metrics_df(["m1"])
 
         assert len(result) == 1
@@ -185,7 +186,7 @@ class TestLoadMetricsDf:
             ],
         )
 
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.load_metrics_df(["m1"])
 
         assert len(result) == 1
@@ -193,7 +194,7 @@ class TestLoadMetricsDf:
 
     def test_empty_when_no_ids(self, tmp_path):
         """Returns empty DataFrame for empty ID list."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.load_metrics_df([])
 
         assert result.is_empty()
@@ -201,7 +202,7 @@ class TestLoadMetricsDf:
 
     def test_empty_when_no_table(self, tmp_path):
         """Returns empty DataFrame when metrics table doesn't exist."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.load_metrics_df(["m1"])
 
         assert result.is_empty()

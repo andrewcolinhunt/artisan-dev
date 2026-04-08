@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
@@ -118,7 +119,7 @@ class DataTransformerScript(OperationDefinition):
 
             args = format_args({
                 "config": config_path,
-                "output-dir": str(execute_dir),
+                "output-dir": execute_dir,
                 "output-basename": design_name,
             })
             run_command(
@@ -133,11 +134,13 @@ class DataTransformerScript(OperationDefinition):
         """Build DataArtifact drafts from script-produced CSV files."""
         drafts = []
         for f in inputs.file_outputs:
-            if f.suffix != ".csv":
+            if not f.endswith(".csv"):
                 continue
+            with open(f, "rb") as fh:
+                content = fh.read()
             draft = DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
+                content=content,
+                original_name=os.path.basename(f),
                 step_number=inputs.step_number,
             )
             drafts.append(draft)

@@ -10,6 +10,7 @@ Reference: v4 design - artifact-centric execution model
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from enum import StrEnum, auto
 from pathlib import Path
@@ -43,7 +44,7 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.path import shard_path
+from artisan.utils.path import shard_uri
 
 
 def compute_artifact_id(content: bytes) -> str:
@@ -114,10 +115,13 @@ class MetricCopyTestOp(OperationDefinition):
         )
 
         # Read content and write with suffix
-        content = json.loads(source_path.read_text())
+        with open(source_path) as fh:
+            content = json.loads(fh.read())
         content["copied"] = True
-        output_path = inputs.execute_dir / f"{source_path.stem}{self.suffix}.json"
-        output_path.write_text(json.dumps(content))
+        stem = os.path.splitext(os.path.basename(source_path))[0]
+        output_path = os.path.join(inputs.execute_dir, f"{stem}{self.suffix}.json")
+        with open(output_path, "w") as fh:
+            fh.write(json.dumps(content))
 
         return {"copied": True}
 
@@ -125,11 +129,13 @@ class MetricCopyTestOp(OperationDefinition):
         """v4: Create draft MetricArtifacts from file_outputs."""
         drafts: list[MetricArtifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".json":
+            if file_path.endswith(".json"):
+                with open(file_path) as fh:
+                    content = json.loads(fh.read())
                 drafts.append(
                     MetricArtifact.draft(
-                        content=json.loads(file_path.read_text()),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )
@@ -163,8 +169,9 @@ class GenerativeTestOp(OperationDefinition):
     def execute(self, inputs: ExecuteInput) -> dict:
         for i in range(self.count):
             content = json.dumps({"value": i})
-            output_path = inputs.execute_dir / f"generated_{i:03d}.json"
-            output_path.write_text(content)
+            output_path = os.path.join(inputs.execute_dir, f"generated_{i:03d}.json")
+            with open(output_path, "w") as fh:
+                fh.write(content)
 
         return {"generated": self.count}
 
@@ -172,11 +179,13 @@ class GenerativeTestOp(OperationDefinition):
         """v4: Create draft MetricArtifacts from file_outputs."""
         drafts: list[MetricArtifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".json":
+            if file_path.endswith(".json"):
+                with open(file_path) as fh:
+                    content = json.loads(fh.read())
                 drafts.append(
                     MetricArtifact.draft(
-                        content=json.loads(file_path.read_text()),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )
@@ -369,27 +378,27 @@ class TestGenerateExecutionRunId:
         assert id1 != id2
 
 
-class TestShardPath:
-    """Tests for shard_path helper function."""
+class TestShardUri:
+    """Tests for shard_uri helper function."""
 
     def test_creates_two_level_sharding(self):
-        """shard_path creates two-level sharding."""
-        root = Path("/tmp/staging")
+        """shard_uri creates two-level sharding."""
+        root = "/tmp/staging"
         run_id = "abcdef1234567890abcdef1234567890"
 
-        result = shard_path(root, run_id)
+        result = shard_uri(root, run_id)
 
-        assert result == root / "ab" / "cd" / run_id
+        assert result == f"{root}/ab/cd/{run_id}"
 
     def test_handles_short_hash(self):
-        """shard_path works with shorter hashes."""
-        root = Path("/tmp")
+        """shard_uri works with shorter hashes."""
+        root = "/tmp"
         run_id = "abc"  # Short hash
 
-        result = shard_path(root, run_id)
+        result = shard_uri(root, run_id)
 
         # Uses first 4 chars: ab/c/abc
-        assert result == root / "ab" / "c" / run_id
+        assert result == f"{root}/ab/c/{run_id}"
 
 
 class TestRunExecutionFullLifecycle:
@@ -418,9 +427,9 @@ class TestRunExecutionFullLifecycle:
 
         assert result.success is True
         assert result.staging_path is not None
-        assert result.staging_path.exists()
-        assert (result.staging_path / "metrics.parquet").exists()
-        assert (result.staging_path / "executions.parquet").exists()
+        assert Path(result.staging_path).exists()
+        assert (Path(result.staging_path) / "metrics.parquet").exists()
+        assert (Path(result.staging_path) / "executions.parquet").exists()
         # Verify execution_run_id was generated
         assert len(result.execution_run_id) == 32
 
@@ -447,8 +456,11 @@ class TestRunExecutionFullLifecycle:
 
         assert result.success is True
         # Check that metrics were staged
-        if result.staging_path and (result.staging_path / "metrics.parquet").exists():
-            df = pl.read_parquet(result.staging_path / "metrics.parquet")
+        if (
+            result.staging_path
+            and (Path(result.staging_path) / "metrics.parquet").exists()
+        ):
+            df = pl.read_parquet(Path(result.staging_path) / "metrics.parquet")
             assert len(df) == 3  # 3 generated metrics
             assert len(result.artifact_ids) == 3
 
@@ -502,7 +514,7 @@ class TestRunExecutionFailureHandling:
 
         # Staging still happens, but with error
         assert result.staging_path is not None
-        df = pl.read_parquet(result.staging_path / "executions.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "executions.parquet")
         assert df["success"][0] is False
         assert df["error"][0] == "Intentional failure"
 
@@ -527,7 +539,7 @@ class TestRunExecutionFailureHandling:
 
         result = run_creator_flow(unit, config)
 
-        df = pl.read_parquet(result.staging_path / "executions.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "executions.parquet")
         assert df["success"][0] is False
         assert "Intentional exception" in df["error"][0]
 
@@ -608,9 +620,9 @@ class TestRunExecutionMetricOutputs:
         result = run_creator_flow(unit, config)
 
         assert result.success is True
-        assert (result.staging_path / "metrics.parquet").exists()
+        assert (Path(result.staging_path) / "metrics.parquet").exists()
 
-        df = pl.read_parquet(result.staging_path / "metrics.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "metrics.parquet")
         # Each memory output key creates a separate MetricArtifact (score, confidence)
         assert len(df) == 2
 
@@ -640,7 +652,7 @@ class TestRunExecutionStagedOutput:
         result = run_creator_flow(unit, config)
 
         # Check execution_edges.parquet has the input/output rows
-        df = pl.read_parquet(result.staging_path / "execution_edges.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "execution_edges.parquet")
 
         # Check inputs
         inputs = df.filter(pl.col("direction") == "input")
@@ -676,7 +688,7 @@ class TestRunExecutionStagedOutput:
 
         result = run_creator_flow(unit, config)
 
-        df = pl.read_parquet(result.staging_path / "index.parquet")
+        df = pl.read_parquet(Path(result.staging_path) / "index.parquet")
 
         # Should have one entry for the copied metric
         assert len(df) == 1
@@ -938,7 +950,7 @@ class TestSandboxPathComputation:
     def test_sandbox_path_sharded_for_custom_root(
         self, delta_root_with_input, working_root, staging_root
     ):
-        """When working_root is user-specified, sandbox uses shard_path layout."""
+        """When working_root is user-specified, sandbox uses sharded layout."""
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(

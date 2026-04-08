@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import FrozenInstanceError
 from enum import StrEnum, auto
 from pathlib import Path
@@ -63,20 +64,24 @@ class _FilesDirCapture(OperationDefinition):
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         content = json.dumps({"value": 1})
-        output_path = inputs.execute_dir / "out.json"
-        output_path.write_text(content)
-        return {"files_dir": str(inputs.files_dir) if inputs.files_dir else None}
+        output_path = os.path.join(inputs.execute_dir, "out.json")
+        with open(output_path, "w") as fh:
+            fh.write(content)
+        return {"files_dir": inputs.files_dir if inputs.files_dir else None}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = [
-            MetricArtifact.draft(
-                content=json.loads(fp.read_text()),
-                original_name=fp.name,
-                step_number=inputs.step_number,
-            )
-            for fp in inputs.file_outputs
-            if fp.suffix == ".json"
-        ]
+        drafts = []
+        for fp in inputs.file_outputs:
+            if fp.endswith(".json"):
+                with open(fp) as fh:
+                    parsed = json.loads(fh.read())
+                drafts.append(
+                    MetricArtifact.draft(
+                        content=parsed,
+                        original_name=os.path.basename(fp),
+                        step_number=inputs.step_number,
+                    )
+                )
         return ArtifactResult(success=True, artifacts={"output": drafts})
 
 
@@ -89,18 +94,18 @@ class TestExecuteInputFilesDir:
     """Tests for the files_dir field on ExecuteInput."""
 
     def test_defaults_to_none(self, tmp_path: Path) -> None:
-        ei = ExecuteInput(execute_dir=tmp_path)
+        ei = ExecuteInput(execute_dir=str(tmp_path))
         assert ei.files_dir is None
 
     def test_accepts_path(self, tmp_path: Path) -> None:
-        files_dir = tmp_path / "files"
-        ei = ExecuteInput(execute_dir=tmp_path, files_dir=files_dir)
+        files_dir = str(tmp_path / "files")
+        ei = ExecuteInput(execute_dir=str(tmp_path), files_dir=files_dir)
         assert ei.files_dir == files_dir
 
     def test_frozen(self, tmp_path: Path) -> None:
-        ei = ExecuteInput(execute_dir=tmp_path)
+        ei = ExecuteInput(execute_dir=str(tmp_path))
         with pytest.raises(FrozenInstanceError):
-            ei.files_dir = tmp_path  # type: ignore[misc]
+            ei.files_dir = str(tmp_path)  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ Verifies: materialization with artifact_id filenames -> filesystem match map
 from __future__ import annotations
 
 import json
+import os
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
@@ -84,20 +85,25 @@ class _SuffixOp(OperationDefinition):
     def execute(self, inputs: ExecuteInput) -> dict:
         source_paths = inputs.inputs["source"]
         for path in source_paths:
-            content = json.loads(path.read_text())
+            with open(path) as fh:
+                content = json.loads(fh.read())
             content["scored"] = True
-            out = inputs.execute_dir / f"{path.stem}{self.suffix}.json"
-            out.write_text(json.dumps(content))
+            stem = os.path.splitext(os.path.basename(path))[0]
+            out = os.path.join(inputs.execute_dir, f"{stem}{self.suffix}.json")
+            with open(out, "w") as fh:
+                fh.write(json.dumps(content))
         return {}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         drafts = []
         for fp in inputs.file_outputs:
-            if fp.suffix == ".json":
+            if fp.endswith(".json"):
+                with open(fp) as fh:
+                    content = json.loads(fh.read())
                 drafts.append(
                     MetricArtifact.draft(
-                        content=json.loads(fp.read_text()),
-                        original_name=fp.name,
+                        content=content,
+                        original_name=os.path.basename(fp),
                         step_number=inputs.step_number,
                     )
                 )

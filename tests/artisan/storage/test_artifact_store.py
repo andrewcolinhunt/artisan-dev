@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -28,7 +29,7 @@ class TestArtifactStorePrepare:
     @pytest.fixture
     def store(self, tmp_path):
         """Create an ArtifactStore with temporary base path."""
-        return ArtifactStore(tmp_path)
+        return ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
     def test_prepare_artifact_index_entry(self, store):
         """Prepare artifact_index entry returns correct DataFrame."""
@@ -48,19 +49,21 @@ class TestArtifactStoreFilesRoot:
 
     def test_files_root_defaults_to_none(self, tmp_path):
         """ArtifactStore without files_root has None."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.files_root is None
 
     def test_files_root_accepts_path(self, tmp_path):
         """ArtifactStore stores the provided files_root."""
         files_root = tmp_path / "files"
-        store = ArtifactStore(tmp_path, files_root=files_root)
-        assert store.files_root == files_root
+        store = ArtifactStore(
+            str(tmp_path), fs=LocalFileSystem(), files_root=str(files_root)
+        )
+        assert store.files_root == str(files_root)
 
     def test_backward_compatible_positional(self, tmp_path):
         """Existing positional-only callers still work."""
-        store = ArtifactStore(tmp_path)
-        assert store.base_path == tmp_path
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        assert store.base_path == str(tmp_path)
         assert store.files_root is None
 
 
@@ -70,7 +73,7 @@ class TestArtifactStoreReadWithDelta:
     @pytest.fixture
     def store_with_data(self, tmp_path):
         """Create an ArtifactStore and populate with test data."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         # Create metrics table with test data
         metrics_path = tmp_path / "artifacts/metrics"
@@ -139,7 +142,7 @@ class TestBulkLoadMethods:
         Also: A -> D (A has two children: B and D).
         Step numbers: A=0, B=1, C=2, D=1
         """
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         # Create artifact_index
         index_path = tmp_path / "artifacts/index"
@@ -188,7 +191,7 @@ class TestBulkLoadMethods:
 
     def test_load_provenance_map_empty_table(self, tmp_path):
         """Returns empty dict when no provenance table exists."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.load_provenance_map() == {}
 
     def test_load_step_number_map_all(self, store_with_provenance):
@@ -211,7 +214,7 @@ class TestBulkLoadMethods:
 
     def test_load_step_number_map_empty_table(self, tmp_path):
         """Returns empty dict when no index table exists."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.load_step_number_map() == {}
 
     def test_load_step_number_map_nonexistent_ids(self, store_with_provenance):
@@ -226,7 +229,7 @@ class TestGetArtifactsByType:
     @pytest.fixture
     def store_with_metrics(self, tmp_path):
         """Create an ArtifactStore with metrics table."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         metrics_path = tmp_path / "artifacts/metrics"
         metrics_data = {
@@ -278,13 +281,13 @@ class TestGetArtifactsByType:
 
     def test_bulk_load_no_table(self, tmp_path):
         """Missing table returns empty dict."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.get_artifacts_by_type(["a" * 32], ArtifactTypes.METRIC)
         assert result == {}
 
     def test_bulk_load_configs(self, tmp_path):
         """Works for config type too (not just metrics)."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         configs_path = tmp_path / "artifacts/configs"
         configs_data = {
@@ -313,7 +316,7 @@ class TestArtifactStoreProvenanceQueries:
         Creates a simple chain: A -> B -> C
         Step numbers: A=0, B=1, C=2
         """
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         # Create artifact_index with test data
         index_path = tmp_path / "artifacts/index"
@@ -366,7 +369,7 @@ class TestArtifactStoreProvenanceQueries:
 
     def test_get_ancestor_artifact_ids_no_table(self, tmp_path):
         """Missing provenance table returns empty list."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.get_ancestor_artifact_ids("a" * 32)
         assert result == []
 
@@ -382,7 +385,7 @@ class TestArtifactStoreProvenanceQueries:
 
     def test_get_artifact_step_number_no_table(self, tmp_path):
         """Missing artifact_index table returns None."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.get_artifact_step_number("a" * 32) is None
 
 
@@ -396,7 +399,7 @@ class TestMetricOriginalNamePersistence:
     @pytest.fixture
     def store_with_metrics(self, tmp_path):
         """Create an ArtifactStore with metric data including original_name."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         # Create metrics table with test data
         metrics_path = tmp_path / "artifacts/metrics"
@@ -453,7 +456,7 @@ class TestExecutionConfigArtifactRoundTrip:
         """Create store with configs table."""
         import json
 
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         # Create artifact_index
         index_path = tmp_path / "artifacts/index"
@@ -535,7 +538,7 @@ class TestGetDescendantArtifactIds:
         Graph: A -> B, A -> D, B -> C
         Types: A=data, B=data, C=metric, D=metric
         """
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         prov_path = tmp_path / "provenance/artifact_edges"
         prov_data = {
@@ -588,7 +591,7 @@ class TestGetDescendantArtifactIds:
 
     def test_missing_table(self, tmp_path):
         """Missing provenance table returns empty dict."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.get_descendant_artifact_ids({"a" * 32})
         assert result == {}
 
@@ -599,7 +602,7 @@ class TestLoadArtifactTypeMap:
     @pytest.fixture
     def store_with_index(self, tmp_path):
         """Create store with artifact_index containing mixed types."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         index_path = tmp_path / "artifacts/index"
         pl.DataFrame(
             {
@@ -634,7 +637,7 @@ class TestLoadArtifactTypeMap:
 
     def test_empty_index(self, tmp_path):
         """Missing index returns empty dict."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.load_artifact_type_map() == {}
 
     def test_nonexistent_ids(self, store_with_index):
@@ -649,7 +652,7 @@ class TestLoadArtifactIdsByType:
     @pytest.fixture
     def store_with_index(self, tmp_path):
         """Create store with artifact_index containing mixed types and steps."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         index_path = tmp_path / "artifacts/index"
         pl.DataFrame(
             {
@@ -688,7 +691,7 @@ class TestLoadArtifactIdsByType:
 
     def test_missing_index(self, tmp_path):
         """Missing index returns empty set."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.load_artifact_ids_by_type(ArtifactTypes.DATA)
         assert result == set()
 
@@ -699,7 +702,7 @@ class TestLoadForwardProvenanceMap:
     @pytest.fixture
     def store_with_provenance(self, tmp_path):
         """Create store with provenance: A -> B, A -> D, B -> C."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         prov_path = tmp_path / "provenance/artifact_edges"
         pl.DataFrame(
             {
@@ -725,7 +728,7 @@ class TestLoadForwardProvenanceMap:
 
     def test_missing_table(self, tmp_path):
         """Missing provenance table returns empty dict."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.load_forward_provenance_map() == {}
 
 
@@ -735,7 +738,7 @@ class TestLoadStepNameMap:
     @pytest.fixture
     def store_with_steps(self, tmp_path):
         """Create store with steps table."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         ts = datetime(2025, 1, 1, tzinfo=UTC)
         steps_path = tmp_path / "orchestration/steps"
         pl.DataFrame(
@@ -775,12 +778,12 @@ class TestLoadStepNameMap:
 
     def test_missing_tables(self, tmp_path):
         """Missing tables returns empty dict."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.load_step_name_map() == {}
 
     def test_fallback_to_executions(self, tmp_path):
         """Falls back to executions when steps table is missing."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         ts = datetime(2025, 1, 1, tzinfo=UTC)
         records_path = tmp_path / "orchestration/executions"
         pl.DataFrame(
@@ -820,7 +823,7 @@ class TestGetAssociated:
         """
         import json
 
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
 
         # Create provenance edges: S1 -> M1, S1 -> M2, S2 -> M3
         prov_path = tmp_path / "provenance/artifact_edges"
@@ -913,6 +916,6 @@ class TestGetAssociated:
 
     def test_missing_provenance_table(self, tmp_path):
         """Missing provenance table returns empty dict."""
-        store = ArtifactStore(tmp_path)
+        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.get_associated({"a" * 32}, "metric")
         assert result == {}

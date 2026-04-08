@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 
 from artisan.execution.lineage.filesystem_match import (
     augment_match_map_from_artifacts,
@@ -17,7 +17,7 @@ class TestPrefixMatching:
     def test_exact_match(self):
         """Output stem that equals an input artifact_id matches."""
         ids = {"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"}
-        outputs = [Path("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.csv")]
+        outputs = ["a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4.csv"]
 
         result = build_filesystem_match_map(ids, outputs)
 
@@ -29,7 +29,7 @@ class TestPrefixMatching:
         """Output stem that starts with artifact_id + suffix matches."""
         input_id = "a" * 32
         ids = {input_id}
-        outputs = [Path(f"{input_id}_scored.csv")]
+        outputs = [f"{input_id}_scored.csv"]
 
         result = build_filesystem_match_map(ids, outputs)
 
@@ -41,8 +41,8 @@ class TestPrefixMatching:
         id_b = "b" * 32
         ids = {id_a, id_b}
         outputs = [
-            Path(f"{id_a}_processed.csv"),
-            Path(f"{id_b}_processed.csv"),
+            f"{id_a}_processed.csv",
+            f"{id_b}_processed.csv",
         ]
 
         result = build_filesystem_match_map(ids, outputs)
@@ -59,7 +59,7 @@ class TestNoMatchFallback:
     def test_unrelated_output(self):
         """Output with no matching prefix is not in the map."""
         ids = {"a" * 32}
-        outputs = [Path("summary_report.csv")]
+        outputs = ["summary_report.csv"]
 
         result = build_filesystem_match_map(ids, outputs)
 
@@ -67,7 +67,7 @@ class TestNoMatchFallback:
 
     def test_empty_inputs(self):
         """No materialized inputs means empty match map."""
-        result = build_filesystem_match_map(set(), [Path("output.csv")])
+        result = build_filesystem_match_map(set(), ["output.csv"])
 
         assert result == {}
 
@@ -85,7 +85,7 @@ class TestEdgeCases:
         """Output stem exactly equals input artifact_id (no suffix)."""
         input_id = "c" * 32
         ids = {input_id}
-        outputs = [Path(f"{input_id}.json")]
+        outputs = [f"{input_id}.json"]
 
         result = build_filesystem_match_map(ids, outputs)
 
@@ -95,7 +95,7 @@ class TestEdgeCases:
         """Compound extensions are stripped before matching."""
         input_id = "d" * 32
         ids = {input_id}
-        outputs = [Path(f"{input_id}_result.tar.gz")]
+        outputs = [f"{input_id}_result.tar.gz"]
 
         result = build_filesystem_match_map(ids, outputs)
 
@@ -105,7 +105,7 @@ class TestEdgeCases:
         """Output files in subdirectories still match on filename."""
         input_id = "e" * 32
         ids = {input_id}
-        outputs = [Path("subdir") / f"{input_id}_out.csv"]
+        outputs = [os.path.join("subdir", f"{input_id}_out.csv")]
 
         result = build_filesystem_match_map(ids, outputs)
 

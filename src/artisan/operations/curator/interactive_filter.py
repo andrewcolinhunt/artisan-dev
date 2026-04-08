@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.operations.curator.filter import (
     Criterion,
@@ -70,9 +71,23 @@ class InteractiveFilter:
         delta_root: Root directory of the Delta Lake store.
     """
 
-    def __init__(self, delta_root: str | Path) -> None:
+    def __init__(
+        self,
+        delta_root: str | Path,
+        *,
+        fs: AbstractFileSystem | None = None,
+        storage_options: dict[str, str] | None = None,
+    ) -> None:
+        from fsspec.implementations.local import LocalFileSystem
+
         self._delta_root = Path(delta_root)
-        self._store = ArtifactStore(self._delta_root)
+        self._fs = fs if fs is not None else LocalFileSystem()
+        self._storage_options = storage_options
+        self._store = ArtifactStore(
+            str(self._delta_root),
+            fs=self._fs,
+            storage_options=self._storage_options,
+        )
         self._wide_df: pl.DataFrame | None = None
         self._tidy_df: pl.DataFrame | None = None
         self._criteria: list[Criterion] = []
@@ -624,8 +639,15 @@ class InteractiveFilter:
         )
 
         from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.staging import StagingManager
 
-        committer = DeltaCommitter(self._delta_root, self._delta_root)
+        staging_manager = StagingManager(str(self._delta_root), self._fs)
+        committer = DeltaCommitter(
+            str(self._delta_root),
+            staging_manager,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        )
         committer.commit_dataframe(exec_row, TablePath.EXECUTIONS, deduplicate=False)
 
         # Write execution edges

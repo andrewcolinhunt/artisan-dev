@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum, auto
+from pathlib import Path
 from typing import Any, ClassVar
 
 import polars as pl
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.staging.recorder import (
     build_execution_edges,
@@ -23,6 +25,12 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+
+
+def _local_fs() -> LocalFileSystem:
+    """Create a local filesystem instance for test construction."""
+    return LocalFileSystem()
+
 
 # =============================================================================
 # Test Fixtures: Mock Operations
@@ -270,8 +278,9 @@ class TestRecordExecutionSuccess:
             step_number=1,
             timestamp_start=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
             worker_id=0,
-            artifact_store=ArtifactStore(delta_root),
-            staging_root=staging_root,
+            artifact_store=ArtifactStore(str(delta_root), fs=_local_fs()),
+            staging_root=str(staging_root),
+            fs=_local_fs(),
             operation_name="test_op",
             operation=MockCreatorOp(),
             sandbox_path=None,
@@ -289,8 +298,8 @@ class TestRecordExecutionSuccess:
 
         assert result.success is True
         assert result.staging_path is not None
-        assert result.staging_path.exists()
-        assert (result.staging_path / "executions.parquet").exists()
+        assert Path(result.staging_path).exists()
+        assert (Path(result.staging_path) / "executions.parquet").exists()
 
     def test_records_input_provenance(self, tmp_path):
         """Records input provenance for debugging."""
@@ -310,8 +319,9 @@ class TestRecordExecutionSuccess:
             step_number=1,
             timestamp_start=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
             worker_id=0,
-            artifact_store=ArtifactStore(delta_root),
-            staging_root=staging_root,
+            artifact_store=ArtifactStore(str(delta_root), fs=_local_fs()),
+            staging_root=str(staging_root),
+            fs=_local_fs(),
             operation_name="test_op",
             operation=MockCreatorOp(),
             sandbox_path=None,
@@ -327,7 +337,7 @@ class TestRecordExecutionSuccess:
         )
 
         # Verify input provenance was recorded
-        prov_path = result.staging_path / "execution_edges.parquet"
+        prov_path = Path(result.staging_path) / "execution_edges.parquet"
         assert prov_path.exists()
         df = pl.read_parquet(prov_path)
         assert len(df) == 1
@@ -355,8 +365,9 @@ class TestRecordExecutionFailure:
             step_number=1,
             timestamp_start=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
             worker_id=0,
-            artifact_store=ArtifactStore(delta_root),
-            staging_root=staging_root,
+            artifact_store=ArtifactStore(str(delta_root), fs=_local_fs()),
+            staging_root=str(staging_root),
+            fs=_local_fs(),
             operation_name="test_op",
             operation=MockCreatorOp(),
             sandbox_path=None,
@@ -376,7 +387,7 @@ class TestRecordExecutionFailure:
         assert result.artifact_ids == []
 
         # Verify error was recorded
-        exec_path = result.staging_path / "executions.parquet"
+        exec_path = Path(result.staging_path) / "executions.parquet"
         df = pl.read_parquet(exec_path)
         assert df["success"][0] is False
         assert df["error"][0] == "Test error message"
@@ -399,8 +410,9 @@ class TestRecordExecutionFailure:
             step_number=1,
             timestamp_start=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
             worker_id=0,
-            artifact_store=ArtifactStore(delta_root),
-            staging_root=staging_root,
+            artifact_store=ArtifactStore(str(delta_root), fs=_local_fs()),
+            staging_root=str(staging_root),
+            fs=_local_fs(),
             operation_name="test_op",
             operation=MockCreatorOp(),
             sandbox_path=None,
@@ -415,7 +427,7 @@ class TestRecordExecutionFailure:
         )
 
         # Verify input provenance was recorded
-        prov_path = result.staging_path / "execution_edges.parquet"
+        prov_path = Path(result.staging_path) / "execution_edges.parquet"
         assert prov_path.exists()
         df = pl.read_parquet(prov_path)
         assert len(df) == 2  # Both inputs recorded

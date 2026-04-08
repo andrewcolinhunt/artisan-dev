@@ -16,7 +16,7 @@ import artisan.utils.path as path_module
 from artisan.utils.path import (
     find_project_root,
     get_caller_dir,
-    shard_path,
+    shard_uri,
     uri_join,
     uri_parent,
 )
@@ -427,26 +427,34 @@ class TestFindProjectRootError:
 
 
 # ===================================================================
-# Existing shard_path tests (regression)
+# shard_uri
 # ===================================================================
 
 
-class TestShardPath:
-    """Ensure existing shard_path behavior is not broken."""
+class TestShardUri:
+    """String-based sharding for fsspec URIs."""
 
     def test_basic_sharding(self):
-        result = shard_path(Path("/tmp"), "abcdef1234567890")
-        assert result == Path("/tmp/ab/cd/abcdef1234567890")
+        result = shard_uri("/tmp", "abcdef1234567890")
+        assert result == "/tmp/ab/cd/abcdef1234567890"
 
     def test_with_step_number(self):
-        result = shard_path(Path("/tmp"), "abcdef1234567890", step_number=3)
-        assert result == Path("/tmp/3/ab/cd/abcdef1234567890")
+        result = shard_uri("/tmp", "abcdef1234567890", step_number=3)
+        assert result == "/tmp/3/ab/cd/abcdef1234567890"
 
     def test_with_step_number_and_operation(self):
-        result = shard_path(
-            Path("/tmp"), "abcdef1234567890", step_number=3, operation_name="tool_c"
+        result = shard_uri(
+            "/tmp", "abcdef1234567890", step_number=3, operation_name="tool_c"
         )
-        assert result == Path("/tmp/3_tool_c/ab/cd/abcdef1234567890")
+        assert result == "/tmp/3_tool_c/ab/cd/abcdef1234567890"
+
+    def test_s3_uri(self):
+        result = shard_uri("s3://bucket/staging", "abcdef1234567890")
+        assert result == "s3://bucket/staging/ab/cd/abcdef1234567890"
+
+    def test_gcs_uri(self):
+        result = shard_uri("gcs://bucket/staging", "abcdef1234567890", step_number=1)
+        assert result == "gcs://bucket/staging/1/ab/cd/abcdef1234567890"
 
 
 # ===================================================================

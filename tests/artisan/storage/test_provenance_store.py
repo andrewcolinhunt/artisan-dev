@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.storage.core.provenance_store import ProvenanceStore
 from artisan.storage.core.table_schemas import (
@@ -63,7 +64,7 @@ class TestGetAncestorIds:
 
     @pytest.fixture
     def store(self, tmp_path):
-        return ProvenanceStore(tmp_path)
+        return ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
 
     def test_no_edges_table(self, store):
         """Returns empty list when artifact_edges table is missing."""
@@ -71,7 +72,7 @@ class TestGetAncestorIds:
 
     def test_linear_chain(self, tmp_path):
         """A -> B -> C: ancestors of C are [A, B]."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -93,7 +94,7 @@ class TestGetAncestorIds:
 
     def test_no_ancestors(self, tmp_path):
         """Root node has no ancestors."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges([(A, B, "data")])
         _write_delta(tmp_path / "provenance/artifact_edges", edges)
 
@@ -101,7 +102,7 @@ class TestGetAncestorIds:
 
     def test_diamond_graph(self, tmp_path):
         """A -> B, A -> C, B -> D, C -> D: ancestors of D are [A, B, C]."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -126,7 +127,7 @@ class TestGetAncestorIds:
 
     def test_ancestor_type_filter(self, tmp_path):
         """Filter ancestors by type returns only matching types."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges(
             [
                 (A, B, "metric"),
@@ -156,7 +157,7 @@ class TestGetAncestorIds:
 
     def test_unknown_artifact(self, tmp_path):
         """Artifact not in any edge returns empty list."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges([(A, B, "data")])
         _write_delta(tmp_path / "provenance/artifact_edges", edges)
 
@@ -168,7 +169,7 @@ class TestGetDescendantIds:
 
     @pytest.fixture
     def store(self, tmp_path):
-        return ProvenanceStore(tmp_path)
+        return ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
 
     def test_no_edges_table(self, store):
         """Returns empty list when artifact_edges table is missing."""
@@ -176,7 +177,7 @@ class TestGetDescendantIds:
 
     def test_linear_chain(self, tmp_path):
         """A -> B -> C: descendants of A are [B, C]."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -190,7 +191,7 @@ class TestGetDescendantIds:
 
     def test_no_descendants(self, tmp_path):
         """Leaf node has no descendants."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges([(A, B, "data")])
         _write_delta(tmp_path / "provenance/artifact_edges", edges)
 
@@ -198,7 +199,7 @@ class TestGetDescendantIds:
 
     def test_branching_graph(self, tmp_path):
         """A -> B, A -> C, B -> D: descendants of A are [B, C, D]."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -213,7 +214,7 @@ class TestGetDescendantIds:
 
     def test_descendant_type_filter(self, tmp_path):
         """Filter descendants by type returns only matching types."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -233,7 +234,7 @@ class TestGetDescendantIds:
 
     def test_unknown_artifact(self, tmp_path):
         """Artifact not in any edge returns empty list."""
-        store = ProvenanceStore(tmp_path)
+        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
         edges = _make_edges([(A, B, "data")])
         _write_delta(tmp_path / "provenance/artifact_edges", edges)
 
