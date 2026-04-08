@@ -220,6 +220,7 @@ def _handle_passthrough_result(
         execution_context.execution_run_id,
         execution_context.step_number,
         operation_name=execution_context.operation_name,
+        fs=execution_context.fs,
     )
     execution_edges = build_execution_edges(
         execution_run_id=execution_context.execution_run_id,
@@ -235,6 +236,7 @@ def _handle_passthrough_result(
         step_number=execution_context.step_number,
         execution_edges=execution_edges,
         staging_path=staging_path,
+        fs=execution_context.fs,
         success=True,
         error=None,
         timestamp_start=execution_context.timestamp_start,
@@ -288,9 +290,16 @@ def run_curator_flow(
     try:
         # --- setup phase ---
         with phase_timer("setup", timings):
+            fs = runtime_env.storage.filesystem()
+            storage_options = runtime_env.storage.delta_storage_options()
+
             artifact_store = ArtifactStore(
-                runtime_env.delta_root_path,
-                files_root=runtime_env.files_root_path,
+                str(runtime_env.delta_root_path),
+                fs=fs,
+                storage_options=storage_options,
+                files_root=str(runtime_env.files_root_path)
+                if runtime_env.files_root_path
+                else None,
             )
 
             execution_context = build_curator_execution_context(
@@ -299,13 +308,17 @@ def run_curator_flow(
                 step_number=unit.step_number,
                 timestamp_start=timestamp_start,
                 worker_id=worker_id,
-                delta_root_path=runtime_env.delta_root_path,
-                staging_root_path=runtime_env.staging_root_path,
+                delta_root_path=str(runtime_env.delta_root_path),
+                staging_root_path=str(runtime_env.staging_root_path),
+                fs=fs,
+                storage_options=storage_options,
                 operation=operation,
                 compute_backend_name=runtime_env.compute_backend_name,
                 shared_filesystem=runtime_env.shared_filesystem,
                 step_run_id=unit.step_run_id,
-                files_root=runtime_env.files_root_path,
+                files_root=str(runtime_env.files_root_path)
+                if runtime_env.files_root_path
+                else None,
             )
 
             # Build DataFrames with artifact_id column per role

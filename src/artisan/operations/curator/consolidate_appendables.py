@@ -71,6 +71,7 @@ class ConsolidateAppendables(OperationDefinition):
             msg = "files_root required for ConsolidateAppendables"
             raise ValueError(msg)
 
+        fs = artifact_store._fs
         record_ids = inputs["records"]["artifact_id"].to_list()
         artifacts = artifact_store.get_artifacts_by_type(record_ids, "appendable")
 
@@ -81,11 +82,12 @@ class ConsolidateAppendables(OperationDefinition):
                 worker_files.add(art.external_path)
 
         # Concatenate into combined file
-        combined_path = artifact_store.files_root / str(step_number) / "combined.jsonl"
-        combined_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(combined_path, "w") as out:
+        combined_uri = f"{artifact_store.files_root}/{step_number}/combined.jsonl"
+        combined_dir = f"{artifact_store.files_root}/{step_number}"
+        fs.makedirs(combined_dir, exist_ok=True)
+        with fs.open(combined_uri, "w") as out:
             for worker_file in sorted(worker_files):
-                with open(worker_file) as f:
+                with fs.open(worker_file, "r") as f:
                     out.write(f.read())
 
         # Create new artifacts pointing to combined file
@@ -97,7 +99,7 @@ class ConsolidateAppendables(OperationDefinition):
                     content_hash=art.content_hash,
                     size_bytes=art.size_bytes,
                     step_number=step_number,
-                    external_path=str(combined_path),
+                    external_path=combined_uri,
                     original_name=art.original_name,
                 )
             )

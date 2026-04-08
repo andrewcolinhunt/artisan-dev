@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.staging.parquet_writer import (
     StagingResult,
@@ -34,6 +35,12 @@ def staging_root(tmp_path):
     return staging
 
 
+@pytest.fixture
+def local_fs():
+    """Local filesystem for fsspec-based staging functions."""
+    return LocalFileSystem()
+
+
 class TestStagingResult:
     """Tests for StagingResult dataclass."""
 
@@ -41,14 +48,15 @@ class TestStagingResult:
         """StagingResult with success=True."""
         result = StagingResult(
             success=True,
-            staging_path=tmp_path,
+            staging_path=str(tmp_path),
             execution_run_id="a" * 32,
             artifact_ids=["b" * 32, "c" * 32],
         )
 
         assert result.success is True
         assert result.error is None
-        assert result.staging_path == tmp_path
+        assert result.staging_path == str(tmp_path)
+        assert isinstance(result.staging_path, str)
         assert len(result.artifact_ids) == 2
 
     def test_staging_result_failure(self):
@@ -95,6 +103,7 @@ class TestStageArtifactEdges:
 
     def test_creates_parquet_file(self, tmp_path):
         """Test that provenance edges are written to Parquet."""
+        fs = LocalFileSystem()
         edges = [
             ArtifactProvenanceEdge(
                 execution_run_id="e" * 32,
@@ -107,7 +116,7 @@ class TestStageArtifactEdges:
             )
         ]
 
-        _stage_artifact_edges(edges, tmp_path)
+        _stage_artifact_edges(edges, str(tmp_path), fs)
 
         parquet_path = tmp_path / "artifact_edges.parquet"
         assert parquet_path.exists()
@@ -119,13 +128,15 @@ class TestStageArtifactEdges:
 
     def test_empty_edges_no_file(self, tmp_path):
         """Test that empty edges list creates no file."""
-        _stage_artifact_edges([], tmp_path)
+        fs = LocalFileSystem()
+        _stage_artifact_edges([], str(tmp_path), fs)
 
         parquet_path = tmp_path / "artifact_edges.parquet"
         assert not parquet_path.exists()
 
     def test_multiple_edges(self, tmp_path):
         """Test staging multiple provenance edges."""
+        fs = LocalFileSystem()
         edges = [
             ArtifactProvenanceEdge(
                 execution_run_id="e" * 32,
@@ -147,14 +158,15 @@ class TestStageArtifactEdges:
             ),
         ]
 
-        _stage_artifact_edges(edges, tmp_path)
+        _stage_artifact_edges(edges, str(tmp_path), fs)
 
         df = pl.read_parquet(tmp_path / "artifact_edges.parquet")
         assert len(df) == 2
         assert set(df["source_role"].to_list()) == {"input_struct", "output_struct"}
 
     def test_schema_columns(self, tmp_path):
-        """Test that all expected columns are present (7 fields in v3 schema)."""
+        """Test that all expected columns are present."""
+        fs = LocalFileSystem()
         edges = [
             ArtifactProvenanceEdge(
                 execution_run_id="e" * 32,
@@ -167,7 +179,7 @@ class TestStageArtifactEdges:
             )
         ]
 
-        _stage_artifact_edges(edges, tmp_path)
+        _stage_artifact_edges(edges, str(tmp_path), fs)
 
         df = pl.read_parquet(tmp_path / "artifact_edges.parquet")
         expected_columns = [
@@ -179,7 +191,6 @@ class TestStageArtifactEdges:
             "source_role",
             "target_role",
         ]
-        assert len(expected_columns) == 7  # v3 schema has 7 fields
         for col in expected_columns:
             assert col in df.columns
 
@@ -193,6 +204,7 @@ class TestMetadataSerialization:
 
     def test_stage_metrics_preserves_extra_metadata(self, tmp_path):
         """Verify metric artifact metadata is serialized correctly."""
+        fs = LocalFileSystem()
         artifact = MetricArtifact.draft(
             content={"value": 1.0},
             original_name="test.json",
@@ -201,7 +213,7 @@ class TestMetadataSerialization:
         ).finalize()
 
         artifacts = {"metric": [artifact]}
-        _stage_artifacts_by_type(artifacts, tmp_path)
+        _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
         df = pl.read_parquet(tmp_path / "metrics.parquet")
         assert len(df) == 1
@@ -212,6 +224,7 @@ class TestMetadataSerialization:
 
     def test_stage_metrics_empty_metadata(self, tmp_path):
         """Verify empty metadata serializes as '{}'."""
+        fs = LocalFileSystem()
         artifact = MetricArtifact.draft(
             content={"value": 1.0},
             original_name="test.json",
@@ -219,7 +232,7 @@ class TestMetadataSerialization:
         ).finalize()
 
         artifacts = {"metric": [artifact]}
-        _stage_artifacts_by_type(artifacts, tmp_path)
+        _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
         df = pl.read_parquet(tmp_path / "metrics.parquet")
         stored_metadata = json.loads(df["metadata"][0])
@@ -227,6 +240,7 @@ class TestMetadataSerialization:
 
     def test_stage_metrics_preserves_metadata(self, tmp_path):
         """Verify metric artifact metadata is serialized correctly."""
+        fs = LocalFileSystem()
         artifact = MetricArtifact.draft(
             content={"score": 0.95},
             original_name="metrics.json",
@@ -235,7 +249,7 @@ class TestMetadataSerialization:
         ).finalize()
 
         artifacts = {"metrics": [artifact]}
-        _stage_artifacts_by_type(artifacts, tmp_path)
+        _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
         df = pl.read_parquet(tmp_path / "metrics.parquet")
         stored_metadata = json.loads(df["metadata"][0])
@@ -243,6 +257,7 @@ class TestMetadataSerialization:
 
     def test_stage_artifact_index_preserves_metadata(self, tmp_path):
         """Verify artifact index metadata is serialized correctly."""
+        fs = LocalFileSystem()
         artifact = MetricArtifact.draft(
             content={"value": 1.0},
             original_name="test.json",
@@ -251,7 +266,9 @@ class TestMetadataSerialization:
         ).finalize()
 
         artifacts = {"metric": [artifact]}
-        _stage_artifact_index(artifacts, step_number=1, staging_path=tmp_path)
+        _stage_artifact_index(
+            artifacts, step_number=1, staging_path=str(tmp_path), fs=fs
+        )
 
         df = pl.read_parquet(tmp_path / "index.parquet")
         stored_metadata = json.loads(df["metadata"][0])
@@ -267,6 +284,7 @@ class TestMetricOriginalNameStaging:
 
     def test_stage_metrics_preserves_original_name(self, tmp_path):
         """Verify metric original_name is staged to Parquet."""
+        fs = LocalFileSystem()
         artifact = MetricArtifact.draft(
             content={"score": 0.95},
             original_name="sample_001_metrics.json",
@@ -274,7 +292,7 @@ class TestMetricOriginalNameStaging:
         ).finalize()
 
         artifacts = {"metrics": [artifact]}
-        _stage_artifacts_by_type(artifacts, tmp_path)
+        _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
         df = pl.read_parquet(tmp_path / "metrics.parquet")
         assert len(df) == 1
@@ -286,6 +304,7 @@ class TestStageExecutionConfigs:
 
     def test_stage_configs_writes_parquet(self, tmp_path):
         """_stage_configs writes parquet file with correct data."""
+        fs = LocalFileSystem()
         artifact = ExecutionConfigArtifact.draft(
             content={"contig": "40-150", "length": "175-275"},
             original_name="5w3x_motif_0_config.json",
@@ -293,7 +312,7 @@ class TestStageExecutionConfigs:
         ).finalize()
 
         artifacts = {"config": [artifact]}
-        _stage_artifacts_by_type(artifacts, tmp_path)
+        _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
         # Verify file exists
         parquet_path = tmp_path / "configs.parquet"
@@ -307,6 +326,7 @@ class TestStageExecutionConfigs:
 
     def test_stage_artifacts_by_type_routes_metrics(self, tmp_path):
         """_stage_artifacts_by_type writes metrics to metrics.parquet."""
+        fs = LocalFileSystem()
         metric = MetricArtifact.draft(
             content={"value": 1.0},
             original_name="test.json",
@@ -314,7 +334,7 @@ class TestStageExecutionConfigs:
         ).finalize()
 
         artifacts = {"metric": [metric]}
-        _stage_artifacts_by_type(artifacts, tmp_path)
+        _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
         # Metric should be written to metrics.parquet, not configs.parquet
         assert (tmp_path / "metrics.parquet").exists()
@@ -322,6 +342,7 @@ class TestStageExecutionConfigs:
 
     def test_stage_configs_preserves_metadata(self, tmp_path):
         """Verify execution config metadata is serialized correctly."""
+        fs = LocalFileSystem()
         artifact = ExecutionConfigArtifact.draft(
             content={"contig": "40-150"},
             original_name="config.json",
@@ -330,7 +351,7 @@ class TestStageExecutionConfigs:
         ).finalize()
 
         artifacts = {"config": [artifact]}
-        _stage_artifacts_by_type(artifacts, tmp_path)
+        _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
         df = pl.read_parquet(tmp_path / "configs.parquet")
         stored_metadata = json.loads(df["metadata"][0])
@@ -338,6 +359,7 @@ class TestStageExecutionConfigs:
 
     def test_stage_configs_multiple_artifacts(self, tmp_path):
         """_stage_configs handles multiple artifacts from different roles."""
+        fs = LocalFileSystem()
         artifact1 = ExecutionConfigArtifact.draft(
             content={"contig": "40-150"},
             original_name="config_0.json",
@@ -350,7 +372,7 @@ class TestStageExecutionConfigs:
         ).finalize()
 
         artifacts = {"config1": [artifact1], "config2": [artifact2]}
-        _stage_artifacts_by_type(artifacts, tmp_path)
+        _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
         df = pl.read_parquet(tmp_path / "configs.parquet")
         assert df.shape[0] == 2
@@ -364,6 +386,7 @@ class TestStageExecutionRecord:
     """Tests for _write_execution_record result_metadata parameter."""
 
     def _make_record(self, tmp_path, result_metadata=None):
+        fs = LocalFileSystem()
         kwargs = {
             "execution_run_id": "e" * 32,
             "execution_spec_id": "s" * 32,
@@ -374,7 +397,8 @@ class TestStageExecutionRecord:
             "timestamp_start": datetime(2025, 1, 1, tzinfo=UTC),
             "timestamp_end": datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             "worker_id": 0,
-            "staging_path": tmp_path,
+            "staging_path": str(tmp_path),
+            "fs": fs,
         }
         if result_metadata is not None:
             kwargs["result_metadata"] = result_metadata
@@ -400,6 +424,7 @@ class TestStageExecutionRecord:
 
     def test_user_overrides_with_set_values(self, tmp_path):
         """Sets in user_overrides are serialized as sorted lists."""
+        fs = LocalFileSystem()
         _write_execution_record(
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
@@ -410,7 +435,8 @@ class TestStageExecutionRecord:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=tmp_path,
+            staging_path=str(tmp_path),
+            fs=fs,
             user_overrides={"resource_tags": {"bn1", "atp"}},
         )
         df = pl.read_parquet(tmp_path / "executions.parquet")
@@ -421,6 +447,7 @@ class TestStageExecutionRecord:
         """Path objects in params are serialized as strings."""
         from pathlib import Path
 
+        fs = LocalFileSystem()
         _write_execution_record(
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
@@ -431,7 +458,8 @@ class TestStageExecutionRecord:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=tmp_path,
+            staging_path=str(tmp_path),
+            fs=fs,
             params={"input_path": Path("/data/outputs/test.dat")},
         )
         df = pl.read_parquet(tmp_path / "executions.parquet")
@@ -444,6 +472,7 @@ class TestToolOutputColumns:
 
     def test_tool_output_written_to_parquet(self, tmp_path):
         """tool_output value persisted in executions.parquet."""
+        fs = LocalFileSystem()
         _write_execution_record(
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
@@ -454,7 +483,8 @@ class TestToolOutputColumns:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=tmp_path,
+            staging_path=str(tmp_path),
+            fs=fs,
             tool_output="tool stdout content",
         )
         df = pl.read_parquet(tmp_path / "executions.parquet")
@@ -462,6 +492,7 @@ class TestToolOutputColumns:
 
     def test_worker_log_written_to_parquet(self, tmp_path):
         """worker_log value persisted in executions.parquet."""
+        fs = LocalFileSystem()
         _write_execution_record(
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
@@ -472,7 +503,8 @@ class TestToolOutputColumns:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=tmp_path,
+            staging_path=str(tmp_path),
+            fs=fs,
             worker_log="slurm job output",
         )
         df = pl.read_parquet(tmp_path / "executions.parquet")
@@ -480,6 +512,7 @@ class TestToolOutputColumns:
 
     def test_null_when_not_provided(self, tmp_path):
         """Columns are null when not provided."""
+        fs = LocalFileSystem()
         _write_execution_record(
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
@@ -490,7 +523,8 @@ class TestToolOutputColumns:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=tmp_path,
+            staging_path=str(tmp_path),
+            fs=fs,
         )
         df = pl.read_parquet(tmp_path / "executions.parquet")
         assert df["tool_output"][0] is None

@@ -1,6 +1,8 @@
 """Tests for Wait operation."""
 
 import csv
+import glob
+import os
 from pathlib import Path
 
 from artisan.operations.examples import Wait
@@ -10,11 +12,14 @@ from artisan.schemas import ExecuteInput, PostprocessInput
 class TestWait:
     def _run(self, output_dir: Path, duration: float = 0.0):
         op = Wait(params=Wait.Params(duration=duration))
-        execute_dir = output_dir / "execute"
-        execute_dir.mkdir(parents=True)
+        execute_dir = str(output_dir / "execute")
+        os.makedirs(execute_dir, exist_ok=True)
 
         result = op.execute(ExecuteInput(inputs={}, execute_dir=execute_dir))
-        files = sorted(f for f in execute_dir.glob("**/*.csv") if f.is_file())
+        files = sorted(
+            f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
+            if os.path.isfile(f)
+        )
 
         post_result = op.postprocess(
             PostprocessInput(
@@ -22,7 +27,7 @@ class TestWait:
                 memory_outputs=result,
                 input_artifacts={},
                 step_number=1,
-                postprocess_dir=output_dir / "postprocess",
+                postprocess_dir=str(output_dir / "postprocess"),
             )
         )
         return result, files, post_result
@@ -30,11 +35,11 @@ class TestWait:
     def test_produces_marker_file(self, tmp_path: Path):
         _, files, _ = self._run(tmp_path)
         assert len(files) == 1
-        assert files[0].name == "wait_marker.csv"
+        assert os.path.basename(files[0]) == "wait_marker.csv"
 
     def test_csv_content(self, tmp_path: Path):
         _, files, _ = self._run(tmp_path, duration=0.05)
-        with files[0].open() as f:
+        with open(files[0]) as f:
             reader = csv.DictReader(f)
             assert reader.fieldnames == ["requested", "actual"]
             rows = list(reader)

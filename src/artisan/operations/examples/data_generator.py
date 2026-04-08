@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import random
 from enum import StrEnum, auto
 from typing import Any, ClassVar
@@ -80,16 +81,16 @@ class DataGenerator(OperationDefinition):
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write CSV files with columns id, x, y, z, score to execute_dir."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         rng = random.Random(self.params.seed)
         created_files = []
 
         for i in range(self.params.count):
             filename = f"dataset_{i:05d}.csv"
-            filepath = output_dir / filename
+            filepath = os.path.join(output_dir, filename)
 
-            with filepath.open("w", newline="") as f:
+            with open(filepath, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["id", "x", "y", "z", "score"])
                 for row_idx in range(self.params.rows_per_file):
@@ -101,7 +102,7 @@ class DataGenerator(OperationDefinition):
                         round(rng.uniform(0.0, 1.0), 4),
                     ])
 
-            created_files.append(str(filepath))
+            created_files.append(filepath)
 
         return {"created_files": created_files}
 
@@ -112,11 +113,13 @@ class DataGenerator(OperationDefinition):
 
         drafts: list[DataArtifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
+            if file_path.endswith(".csv"):
+                with open(file_path, "rb") as f:
+                    content = f.read()
                 drafts.append(
                     DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )

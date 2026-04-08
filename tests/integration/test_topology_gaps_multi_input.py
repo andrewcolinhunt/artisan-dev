@@ -6,6 +6,7 @@ Tests: co-produced metrics filter, 1:N LINEAGE grouping, resume-and-extend.
 from __future__ import annotations
 
 import csv
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -91,7 +92,7 @@ class DualInputConfigConsumer(OperationDefinition):
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         dataset_files = inputs.inputs.get("dataset", [])
         if isinstance(dataset_files, (str, Path)):
@@ -99,13 +100,13 @@ class DualInputConfigConsumer(OperationDefinition):
 
         for df_path in dataset_files:
             df_path = Path(df_path)
-            with df_path.open() as fh:
+            with open(df_path) as fh:
                 reader = csv.DictReader(fh)
                 headers = list(reader.fieldnames or []) + ["consumed"]
                 rows = list(reader)
 
-            out_path = output_dir / f"{df_path.stem}_0.csv"
-            with out_path.open("w", newline="") as fh:
+            out_path = os.path.join(output_dir, f"{df_path.stem}_0.csv")
+            with open(out_path, "w", newline="") as fh:
                 writer = csv.DictWriter(fh, fieldnames=headers)
                 writer.writeheader()
                 for row in rows:
@@ -115,15 +116,18 @@ class DualInputConfigConsumer(OperationDefinition):
         return {}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = [
-            DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
-                step_number=inputs.step_number,
-            )
-            for f in inputs.file_outputs
-            if f.suffix == ".csv"
-        ]
+        drafts = []
+        for f in inputs.file_outputs:
+            if f.endswith(".csv"):
+                with open(f, "rb") as fh:
+                    content = fh.read()
+                drafts.append(
+                    DataArtifact.draft(
+                        content=content,
+                        original_name=os.path.basename(f),
+                        step_number=inputs.step_number,
+                    )
+                )
         return ArtifactResult(success=True, artifacts={"result": drafts})
 
 

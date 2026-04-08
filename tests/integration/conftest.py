@@ -391,7 +391,7 @@ class FailingTransformer(OperationDefinition):
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Transform CSV (prepend marker line) with controllable failure injection."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:
@@ -421,13 +421,13 @@ class FailingTransformer(OperationDefinition):
                 raise ValueError(f"Intentional failure on index {index}")
 
             # Scale numeric columns by 1.1 to produce different content
-            with input_path.open() as f:
+            with open(input_path) as f:
                 reader = csv.DictReader(f)
                 headers = list(reader.fieldnames or [])
                 rows = list(reader)
 
-            out_path = output_dir / f"{stem}_0.csv"
-            with out_path.open("w", newline="") as f:
+            out_path = os.path.join(output_dir, f"{stem}_0.csv")
+            with open(out_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=headers)
                 writer.writeheader()
                 for row in rows:
@@ -443,11 +443,13 @@ class FailingTransformer(OperationDefinition):
         """Build DataArtifact drafts from output CSV files."""
         drafts: list[DataArtifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
+            if file_path.endswith(".csv"):
+                with open(file_path, "rb") as f:
+                    content = f.read()
                 drafts.append(
                     DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )

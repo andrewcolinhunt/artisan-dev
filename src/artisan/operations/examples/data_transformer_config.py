@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum, auto
-from pathlib import Path
+import os
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -97,7 +97,7 @@ class DataTransformerConfig(OperationDefinition):
         dataset = inputs.input_artifacts["dataset"][0]
         return {
             "dataset_artifact_id": dataset.artifact_id,
-            "dataset_stem": Path(dataset.original_name).stem,
+            "dataset_stem": os.path.splitext(dataset.original_name)[0],
         }
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:

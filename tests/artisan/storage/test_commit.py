@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
@@ -12,35 +13,42 @@ from artisan.storage.core.table_schemas import (
     ARTIFACT_INDEX_SCHEMA,
 )
 from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.staging import StagingArea, StagingManager
 
 METRICS_SCHEMA = MetricArtifact.POLARS_SCHEMA
-from artisan.storage.io.staging import StagingArea
+
+
+@pytest.fixture
+def local_fs():
+    """Local filesystem for Delta tests."""
+    return LocalFileSystem()
 
 
 class TestDeltaCommitter:
     """Tests for DeltaCommitter."""
 
     @pytest.fixture
-    def setup_paths(self, tmp_path):
+    def setup_paths(self, tmp_path, local_fs):
         """Create delta and staging directories."""
         delta_path = tmp_path / "delta"
         staging_path = tmp_path / "staging"
         delta_path.mkdir()
         staging_path.mkdir()
-        return delta_path, staging_path
+        return delta_path, staging_path, local_fs
 
     @pytest.fixture
     def committer(self, setup_paths):
         """Create a DeltaCommitter instance."""
-        delta_path, staging_path = setup_paths
-        return DeltaCommitter(delta_path, staging_path)
+        delta_path, staging_path, fs = setup_paths
+        sm = StagingManager(str(staging_path), fs)
+        return DeltaCommitter(str(delta_path), sm, fs=fs)
 
     def test_commit_table_creates_new_table(self, setup_paths, committer):
         """Commit to non-existent table creates it."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Stage some data
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -63,7 +71,7 @@ class TestDeltaCommitter:
 
     def test_commit_table_appends_to_existing(self, setup_paths, committer):
         """Commit to existing table appends data."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Create initial table
         initial_df = pl.DataFrame(
@@ -81,7 +89,7 @@ class TestDeltaCommitter:
         initial_df.write_delta(str(delta_path / "artifacts/metrics"))
 
         # Stage new data
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         new_df = pl.DataFrame(
             {
                 "artifact_id": ["b" * 32],
@@ -107,7 +115,7 @@ class TestDeltaCommitter:
 
     def test_commit_table_deduplicates(self, setup_paths, committer):
         """Commit skips artifacts with existing IDs."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Create initial table
         initial_df = pl.DataFrame(
@@ -125,7 +133,7 @@ class TestDeltaCommitter:
         initial_df.write_delta(str(delta_path / "artifacts/metrics"))
 
         # Stage duplicate
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         duplicate_df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],  # Same ID
@@ -147,10 +155,10 @@ class TestDeltaCommitter:
 
     def test_commit_all_tables(self, setup_paths, committer):
         """Commit all staged tables at once."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Stage multiple tables
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
 
         metrics_df = pl.DataFrame(
             {
@@ -188,10 +196,10 @@ class TestDeltaCommitter:
 
     def test_commit_all_tables_cleanup(self, setup_paths, committer):
         """Commit all cleans up staging by default."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Stage data
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -214,11 +222,11 @@ class TestDeltaCommitter:
 
     def test_commit_batch_specific(self, setup_paths, committer):
         """Commit only a specific batch."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Stage multiple batches
-        staging1 = StagingArea(staging_path, batch_id="batch1")
-        staging2 = StagingArea(staging_path, batch_id="batch2")
+        staging1 = StagingArea(str(staging_path), fs, batch_id="batch1")
+        staging2 = StagingArea(str(staging_path), fs, batch_id="batch2")
 
         df1 = pl.DataFrame(
             {
@@ -260,7 +268,7 @@ class TestDeltaCommitter:
 
     def test_initialize_tables(self, setup_paths, committer):
         """Initialize creates empty tables with schemas."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         committer.initialize_tables()
 
@@ -285,10 +293,10 @@ class TestDeltaCommitter:
 
     def test_compact_table_returns_stats(self, setup_paths, committer):
         """Compact table returns compaction statistics."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Create table with some data
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -313,7 +321,7 @@ class TestDeltaCommitter:
 
     def test_compact_table_with_zorder(self, setup_paths, committer):
         """Compact table with Z-ORDER clusters data by specified column."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Create table with multiple rows to make Z-ORDER meaningful
         rows = []
@@ -350,13 +358,13 @@ class TestDeltaCommitter:
 
     def test_compact_all_tables_with_zorder(self, setup_paths, committer):
         """Compact all tables applies correct Z-ORDER columns."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Initialize tables to have something to compact
         committer.initialize_tables()
 
         # Add some data to metrics table
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -380,7 +388,7 @@ class TestDeltaCommitter:
 
     def test_compact_all_tables_without_zorder(self, setup_paths, committer):
         """Compact all tables without Z-ORDER performs standard compaction."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Initialize tables
         committer.initialize_tables()
@@ -393,7 +401,7 @@ class TestDeltaCommitter:
 
     def test_compact_table_by_step(self, setup_paths, committer):
         """Compact table with step filter only compacts that partition."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Create table with data in multiple steps
         rows = []
@@ -437,13 +445,13 @@ class TestDeltaCommitter:
 
     def test_compact_all_tables_by_step(self, setup_paths, committer):
         """Compact all tables with step filter."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Initialize tables
         committer.initialize_tables()
 
         # Add data with specific step
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -469,7 +477,7 @@ class TestDeltaCommitter:
         self, setup_paths, committer
     ):
         """Step filter is ignored for artifact_index (not partitioned by origin_step_number)."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Create artifact_index with data
         df = pl.DataFrame(
@@ -503,26 +511,27 @@ class TestArtifactEdgesCommit:
     """Tests for artifact_edges table commits."""
 
     @pytest.fixture
-    def setup_paths(self, tmp_path):
+    def setup_paths(self, tmp_path, local_fs):
         """Create delta and staging directories."""
         delta_path = tmp_path / "delta"
         staging_path = tmp_path / "staging"
         delta_path.mkdir()
         staging_path.mkdir()
-        return delta_path, staging_path
+        return delta_path, staging_path, local_fs
 
     @pytest.fixture
     def committer(self, setup_paths):
         """Create a DeltaCommitter instance."""
-        delta_path, staging_path = setup_paths
-        return DeltaCommitter(delta_path, staging_path)
+        delta_path, staging_path, fs = setup_paths
+        sm = StagingManager(str(staging_path), fs)
+        return DeltaCommitter(str(delta_path), sm, fs=fs)
 
     def test_artifact_edges_in_commit_order(self, setup_paths, committer):
         """artifact_edges is committed in correct order."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Stage artifact_edges data
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         prov_df = pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -548,10 +557,10 @@ class TestArtifactEdgesCommit:
 
     def test_artifact_edges_not_partitioned(self, setup_paths, committer):
         """artifact_edges is NOT partitioned by step number."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Stage artifact_edges data
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         prov_df = pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -580,10 +589,10 @@ class TestArtifactEdgesCommit:
 
     def test_artifact_edges_in_commit_batch(self, setup_paths, committer):
         """artifact_edges works with commit_batch."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Stage artifact_edges data via StagingArea
-        staging = StagingArea(staging_path, batch_id="test_batch")
+        staging = StagingArea(str(staging_path), fs, batch_id="test_batch")
         prov_df = pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -610,7 +619,7 @@ class TestArtifactEdgesCommit:
         self, setup_paths, committer
     ):
         """Step filter is ignored for artifact_edges (not partitioned)."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Create artifact_edges with data
         prov_df = pl.DataFrame(
@@ -648,13 +657,13 @@ class TestArtifactEdgesCommit:
 
     def test_artifact_edges_zorder_config(self, setup_paths, committer):
         """artifact_edges uses source_artifact_id and target_artifact_id for Z-ORDER."""
-        delta_path, staging_path = setup_paths
+        delta_path, staging_path, fs = setup_paths
 
         # Initialize tables
         committer.initialize_tables()
 
         # Stage artifact_edges data
-        staging = StagingArea(staging_path, batch_id="test")
+        staging = StagingArea(str(staging_path), fs, batch_id="test")
         prov_df = pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -683,22 +692,23 @@ class TestRecoverStaged:
     """Tests for DeltaCommitter.recover_staged()."""
 
     @pytest.fixture
-    def setup_paths(self, tmp_path):
+    def setup_paths(self, tmp_path, local_fs):
         """Create delta and staging directories."""
         delta_path = tmp_path / "delta"
         staging_path = tmp_path / "staging"
         delta_path.mkdir()
         staging_path.mkdir()
-        return delta_path, staging_path
+        return delta_path, staging_path, local_fs
 
     @pytest.fixture
     def committer(self, setup_paths):
         """Create a DeltaCommitter instance."""
-        delta_path, staging_path = setup_paths
-        return DeltaCommitter(delta_path, staging_path)
+        delta_path, staging_path, fs = setup_paths
+        sm = StagingManager(str(staging_path), fs)
+        return DeltaCommitter(str(delta_path), sm, fs=fs)
 
     def _stage_mock_execution(
-        self, staging_path, batch_id="crashed_worker", artifact_id="a" * 32
+        self, staging_path, fs, batch_id="crashed_worker", artifact_id="a" * 32
     ):
         """Stage mock execution + artifact data simulating a crashed run."""
         from artisan.storage.core.table_schemas import (
@@ -706,7 +716,7 @@ class TestRecoverStaged:
             EXECUTIONS_SCHEMA,
         )
 
-        staging = StagingArea(staging_path, batch_id=batch_id)
+        staging = StagingArea(str(staging_path), fs, batch_id=batch_id)
 
         # Stage an execution record
         exec_df = pl.DataFrame(
@@ -773,13 +783,14 @@ class TestRecoverStaged:
 
         return staging
 
-    def test_recover_staged_no_staging_dir(self, tmp_path):
+    def test_recover_staged_no_staging_dir(self, tmp_path, local_fs):
         """Returns {} when staging dir doesn't exist."""
         delta_path = tmp_path / "delta"
         delta_path.mkdir()
-        nonexistent = tmp_path / "no_such_staging"
+        nonexistent = str(tmp_path / "no_such_staging")
 
-        committer = DeltaCommitter(delta_path, nonexistent)
+        sm = StagingManager(nonexistent, local_fs)
+        committer = DeltaCommitter(str(delta_path), sm, fs=local_fs)
         result = committer.recover_staged()
 
         assert result == {}
@@ -792,8 +803,8 @@ class TestRecoverStaged:
 
     def test_recover_staged_commits_leftover_files(self, setup_paths, committer):
         """Stages mock data, calls recover_staged, verifies rows in Delta."""
-        delta_path, staging_path = setup_paths
-        self._stage_mock_execution(staging_path)
+        delta_path, staging_path, fs = setup_paths
+        self._stage_mock_execution(staging_path, fs)
 
         results = committer.recover_staged(preserve_staging=True)
 
@@ -812,8 +823,8 @@ class TestRecoverStaged:
 
     def test_recover_staged_idempotent(self, setup_paths, committer):
         """Calling recover_staged twice with preserve_staging produces no duplicates."""
-        delta_path, staging_path = setup_paths
-        self._stage_mock_execution(staging_path)
+        delta_path, staging_path, fs = setup_paths
+        self._stage_mock_execution(staging_path, fs)
 
         results1 = committer.recover_staged(preserve_staging=True)
         results2 = committer.recover_staged(preserve_staging=True)
@@ -830,8 +841,8 @@ class TestRecoverStaged:
 
     def test_recover_staged_cleans_up_staging(self, setup_paths, committer):
         """Staging files removed after recovery (default behavior)."""
-        delta_path, staging_path = setup_paths
-        self._stage_mock_execution(staging_path)
+        delta_path, staging_path, fs = setup_paths
+        self._stage_mock_execution(staging_path, fs)
 
         committer.recover_staged()
 
@@ -841,8 +852,8 @@ class TestRecoverStaged:
 
     def test_recover_staged_preserves_staging(self, setup_paths, committer):
         """With preserve_staging=True, staging files remain after recovery."""
-        delta_path, staging_path = setup_paths
-        self._stage_mock_execution(staging_path)
+        delta_path, staging_path, fs = setup_paths
+        self._stage_mock_execution(staging_path, fs)
 
         committer.recover_staged(preserve_staging=True)
 

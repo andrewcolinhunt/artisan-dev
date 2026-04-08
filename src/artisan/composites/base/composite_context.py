@@ -431,12 +431,21 @@ class CollapsedCompositeContext(CompositeContext):
     def _pre_curator_commit(self) -> None:
         """Commit pending internal artifacts to Delta for curator hydration."""
         from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.staging import StagingManager
 
         staging_root = self._runtime_env.staging_root_path
         delta_root = self._runtime_env.delta_root_path
         if staging_root and delta_root:
             try:
-                committer = DeltaCommitter(delta_root, staging_root)
+                fs = self._runtime_env.storage.filesystem()
+                storage_options = self._runtime_env.storage.delta_storage_options()
+                staging_manager = StagingManager(str(staging_root), fs)
+                committer = DeltaCommitter(
+                    str(delta_root),
+                    staging_manager,
+                    fs=fs,
+                    storage_options=storage_options,
+                )
                 committer.commit_all_tables(
                     cleanup_staging=False,
                     step_number=self._step_number,

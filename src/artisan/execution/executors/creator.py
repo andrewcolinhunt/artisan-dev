@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from artisan.execution.context.builder import build_creator_execution_context
@@ -47,7 +47,7 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.utils.errors import format_error
-from artisan.utils.path import shard_path
+from artisan.utils.path import shard_uri
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
@@ -132,34 +132,38 @@ def run_creator_lifecycle(
             msg = "RuntimeEnvironment.working_root_path must be set to create a sandbox"
             raise ValueError(msg)
 
-        if working_root == Path(tempfile.gettempdir()):
-            sandbox_path = working_root / execution_run_id
+        working_root_str = str(working_root)
+        if working_root_str == tempfile.gettempdir():
+            sandbox_path_str = os.path.join(working_root_str, execution_run_id)
         else:
-            sandbox_path = shard_path(
-                working_root,
+            sandbox_path_str = shard_uri(
+                working_root_str,
                 execution_run_id,
                 unit.step_number,
                 operation_name=operation.name,
             )
 
-        sandbox_path, preprocess_dir, execute_dir, postprocess_dir = create_sandbox(
-            sandbox_path,
+        sandbox_path_str, preprocess_dir, execute_dir, postprocess_dir = create_sandbox(
+            sandbox_path_str
         )
 
-        log_path = sandbox_path / "tool_output.log"
-        materialized_dir = sandbox_path / "materialized_inputs"
-        materialized_dir.mkdir(parents=True, exist_ok=True)
+        log_path = os.path.join(sandbox_path_str, "tool_output.log")
+        materialized_dir = os.path.join(sandbox_path_str, "materialized_inputs")
+        os.makedirs(materialized_dir, exist_ok=True)
 
         if runtime_env.files_root_path is not None:
-            files_dir: Path | None = (
-                runtime_env.files_root_path
-                / str(unit.step_number)
-                / "workers"
-                / execution_run_id
+            files_dir: str | None = os.path.join(
+                str(runtime_env.files_root_path),
+                str(unit.step_number),
+                "workers",
+                execution_run_id,
             )
-            files_dir.mkdir(parents=True, exist_ok=True)
+            os.makedirs(files_dir, exist_ok=True)
         else:
             files_dir = None
+
+        fs = runtime_env.storage.filesystem()
+        storage_options = runtime_env.storage.delta_storage_options()
 
         execution_context = build_creator_execution_context(
             execution_run_id=execution_run_id,
@@ -167,14 +171,18 @@ def run_creator_lifecycle(
             step_number=unit.step_number,
             timestamp_start=timestamp_start,
             worker_id=worker_id,
-            delta_root_path=runtime_env.delta_root_path,
-            staging_root_path=runtime_env.staging_root_path,
+            delta_root_path=str(runtime_env.delta_root_path),
+            staging_root_path=str(runtime_env.staging_root_path),
+            fs=fs,
+            storage_options=storage_options,
             operation=operation,
-            sandbox_path=sandbox_path,
+            sandbox_path=sandbox_path_str,
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=unit.step_run_id,
-            files_root=runtime_env.files_root_path,
+            files_root=str(runtime_env.files_root_path)
+            if runtime_env.files_root_path
+            else None,
         )
         artifact_store = execution_context.artifact_store
 
@@ -318,11 +326,11 @@ def run_creator_lifecycle(
 
     # Clean up sandbox
     if (
-        sandbox_path is not None
+        sandbox_path_str is not None
         and not runtime_env.preserve_working
-        and sandbox_path.exists()
+        and os.path.exists(sandbox_path_str)
     ):
-        shutil.rmtree(sandbox_path, ignore_errors=True)
+        shutil.rmtree(sandbox_path_str, ignore_errors=True)
 
     return LifecycleResult(
         input_artifacts=flat_input_artifacts,
@@ -477,20 +485,26 @@ def _build_execution_context(
     if working_root is None:
         msg = "RuntimeEnvironment.working_root_path must be set"
         raise ValueError(msg)
+    fs = runtime_env.storage.filesystem()
+    storage_options = runtime_env.storage.delta_storage_options()
     return build_creator_execution_context(
         execution_run_id=execution_run_id,
         execution_spec_id=unit.execution_spec_id,
         step_number=unit.step_number,
         timestamp_start=timestamp_start,
         worker_id=worker_id,
-        delta_root_path=runtime_env.delta_root_path,
-        staging_root_path=runtime_env.staging_root_path,
+        delta_root_path=str(runtime_env.delta_root_path),
+        staging_root_path=str(runtime_env.staging_root_path),
+        fs=fs,
+        storage_options=storage_options,
         operation=operation,
-        sandbox_path=working_root / "dummy",
+        sandbox_path=os.path.join(str(working_root), "dummy"),
         compute_backend_name=runtime_env.compute_backend_name,
         shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=unit.step_run_id,
-        files_root=runtime_env.files_root_path,
+        files_root=str(runtime_env.files_root_path)
+        if runtime_env.files_root_path
+        else None,
     )
 
 

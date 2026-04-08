@@ -24,11 +24,16 @@ logger = logging.getLogger(__name__)
 
 def _save_units(
     units: list[ExecutionUnit | ExecutionComposite],
-    staging_root: Path,
+    staging_root: Path | str,
     step_number: int,
 ) -> Path:
-    """Serialize execution units to a pickle file for Prefect dispatch."""
-    path = staging_root / "_dispatch" / f"step_{step_number}_units.pkl"
+    """Serialize execution units to a pickle file for Prefect dispatch.
+
+    Pickle dispatch is always local NFS, so this uses Path
+    rather than fsspec.
+    """
+    root = Path(staging_root) if isinstance(staging_root, str) else staging_root
+    path = root / "_dispatch" / f"step_{step_number}_units.pkl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         pickle.dump(units, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -201,7 +206,7 @@ def _capture_slurm_logs(future: object, result: UnitResult) -> UnitResult:
 
 def _patch_worker_logs(
     results: list[UnitResult],
-    staging_root: Path,
+    staging_root: Path | str,
     failure_logs_root: Path | None = None,
     operation_name: str | None = None,
 ) -> None:
@@ -217,12 +222,13 @@ def _patch_worker_logs(
     """
     import polars as pl
 
+    root = Path(staging_root) if isinstance(staging_root, str) else staging_root
     for result in results:
         if not result.worker_log:
             continue
         for run_id in result.execution_run_ids:
             try:
-                staging_dir = _find_staging_dir(staging_root, run_id)
+                staging_dir = _find_staging_dir(root, run_id)
                 if staging_dir is None:
                     continue
                 parquet_path = staging_dir / "executions.parquet"
@@ -279,7 +285,7 @@ def _find_staging_dir(staging_root: Path, execution_run_id: str) -> Path | None:
     Searches shard subdirectories using the first two characters of the
     run ID as the prefix.
     """
-    # The shard_path uses the first 2 chars of the run_id as prefix
+    # The shard_uri uses the first 2 chars of the run_id as prefix
     prefix = execution_run_id[:2]
     # Search through step directories
     for step_dir in staging_root.iterdir():

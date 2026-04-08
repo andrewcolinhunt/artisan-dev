@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import csv
+import os
 import random
 from enum import StrEnum, auto
-from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -113,36 +113,36 @@ class DataTransformer(OperationDefinition):
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Apply scale factor and noise to numeric columns of input CSVs."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:
             raise ValueError("No dataset input provided")
 
-        if isinstance(dataset_input, (str, Path)):
-            input_files = [Path(dataset_input)]
+        if isinstance(dataset_input, str):
+            input_files = [dataset_input]
         else:
-            input_files = [Path(f) for f in dataset_input]
+            input_files = list(dataset_input)
 
         rng = random.Random(self.params.seed)
         created_files = []
         numeric_cols = {"x", "y", "z", "score"}
 
         for input_path in input_files:
-            if not input_path.exists():
+            if not os.path.exists(input_path):
                 raise FileNotFoundError(f"Input file not found: {input_path}")
 
-            with input_path.open() as f:
+            with open(input_path) as f:
                 reader = csv.DictReader(f)
                 headers = list(reader.fieldnames or [])
                 rows = list(reader)
 
-            stem = input_path.stem
+            stem = os.path.splitext(os.path.basename(input_path))[0]
 
             for variant_idx in range(self.params.variants):
                 suffix = f"_{self.params.output_prefix}" if self.params.output_prefix else ""
-                output_path = output_dir / f"{stem}_{variant_idx}{suffix}.csv"
-                with output_path.open("w", newline="") as f:
+                output_path = os.path.join(output_dir, f"{stem}_{variant_idx}{suffix}.csv")
+                with open(output_path, "w", newline="") as f:
                     writer = csv.DictWriter(f, fieldnames=headers)
                     writer.writeheader()
                     for row in rows:
@@ -159,7 +159,7 @@ class DataTransformer(OperationDefinition):
                                 new_row[col] = round(val, 4)
                         writer.writerow(new_row)
 
-                created_files.append(str(output_path))
+                created_files.append(output_path)
 
         return {"created_files": created_files}
 
@@ -169,11 +169,13 @@ class DataTransformer(OperationDefinition):
 
         drafts: list[DataArtifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
+            if file_path.endswith(".csv"):
+                with open(file_path, "rb") as f:
+                    content = f.read()
                 drafts.append(
                     DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )

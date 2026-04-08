@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import csv
+import os
 import statistics
 from enum import StrEnum, auto
-from pathlib import Path
 from typing import Any, ClassVar
 
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -89,23 +89,23 @@ class MetricCalculator(OperationDefinition):
         if dataset_input is None:
             raise ValueError("No dataset input provided")
 
-        if isinstance(dataset_input, (str, Path)):
-            input_files = [Path(dataset_input)]
+        if isinstance(dataset_input, str):
+            input_files = [dataset_input]
         else:
-            input_files = [Path(f) for f in dataset_input]
+            input_files = list(dataset_input)
 
         calculated_metrics = []
 
         for input_path in input_files:
-            input_path = Path(input_path)
-            if not input_path.exists():
+            if not os.path.exists(input_path):
                 raise FileNotFoundError(f"Input file not found: {input_path}")
 
             metrics = _compute_csv_statistics(input_path)
-            metric_key = f"{input_path.stem}_metrics.json"
+            stem = os.path.splitext(os.path.basename(input_path))[0]
+            metric_key = f"{stem}_metrics.json"
 
             calculated_metrics.append({
-                "input": str(input_path),
+                "input": input_path,
                 "metric_key": metric_key,
                 **metrics,
             })
@@ -142,7 +142,7 @@ class MetricCalculator(OperationDefinition):
         )
 
 
-def _compute_csv_statistics(path: Path) -> dict[str, dict[str, float]]:
+def _compute_csv_statistics(path: str) -> dict[str, dict[str, float]]:
     """Compute distribution statistics from a CSV file.
 
     Focuses on score distribution (min, max, median, range, CV) to complement
@@ -155,7 +155,7 @@ def _compute_csv_statistics(path: Path) -> dict[str, dict[str, float]]:
         Nested dict with ``distribution`` (min, max, median, range) and
         ``summary`` (cv, row_count) groups.
     """
-    with path.open() as f:
+    with open(path) as f:
         reader = csv.DictReader(f)
         scores = [float(row["score"]) for row in reader]
 

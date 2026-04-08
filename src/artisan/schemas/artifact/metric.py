@@ -7,7 +7,7 @@ as content-addressed artifacts.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from typing import Any, ClassVar, Self
 
 import polars as pl
@@ -58,7 +58,7 @@ class MetricArtifact(JsonContentMixin, Artifact):
         description="File extension (.json typically). None for ID-only artifacts.",
     )
 
-    def _materialize_content(self, directory: Path) -> Path:
+    def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Write metric JSON to a file in the given directory.
 
         Args:
@@ -77,8 +77,9 @@ class MetricArtifact(JsonContentMixin, Artifact):
             msg = "Cannot materialize: artifact not finalized (no artifact_id)"
             raise ValueError(msg)
         filename = f"{self.artifact_id}{self.extension or '.json'}"
-        path = directory / filename
-        path.write_bytes(self.content)
+        path = os.path.join(directory, filename)
+        with open(path, "wb") as f:
+            f.write(self.content)
         self.materialized_path = path
         return path
 
