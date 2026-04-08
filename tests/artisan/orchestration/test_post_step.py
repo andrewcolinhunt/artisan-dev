@@ -11,7 +11,6 @@ import pytest
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.post_step_future import PostStepFuture
-from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.input_spec import InputSpec
