@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import shutil
 import socket
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -31,7 +30,7 @@ class EnvironmentSpec(BaseModel):
 
     env: dict[str, str] = Field(default_factory=dict)
 
-    def wrap_command(self, cmd: list[str], _cwd: Path | None = None) -> list[str]:
+    def wrap_command(self, cmd: list[str], _cwd: str | None = None) -> list[str]:
         """Wrap a command for this environment. Base returns unchanged."""
         return cmd
 
@@ -55,13 +54,13 @@ class LocalEnvironmentSpec(EnvironmentSpec):
             directory is prepended to PATH.
     """
 
-    venv_path: Path | None = None
+    venv_path: str | None = None
 
     def prepare_env(self) -> dict[str, str] | None:
         if self.venv_path:
             env = os.environ.copy()
-            env["PATH"] = f"{self.venv_path / 'bin'}:{env.get('PATH', '')}"
-            env["VIRTUAL_ENV"] = str(self.venv_path)
+            env["PATH"] = f"{os.path.join(self.venv_path, 'bin')}:{env.get('PATH', '')}"
+            env["VIRTUAL_ENV"] = self.venv_path
             env.update(self.env)
             return env
         return super().prepare_env()
@@ -71,11 +70,11 @@ def _container_wrap(
     prefix: list[str],
     gpu_args: list[str],
     bind_flag: str,
-    binds: list[tuple[Path, Path]],
+    binds: list[tuple[str, str]],
     env: dict[str, str],
     image: str,
     cmd: list[str],
-    cwd: Path | None,
+    cwd: str | None,
     *,
     gpu: bool,
 ) -> list[str]:
@@ -84,7 +83,8 @@ def _container_wrap(
     if gpu:
         parts.extend(gpu_args)
     if cwd is not None:
-        parts.extend([bind_flag, f"{cwd.parent}:{cwd.parent}"])
+        parent = os.path.dirname(cwd)
+        parts.extend([bind_flag, f"{parent}:{parent}"])
     for host, container in binds:
         parts.extend([bind_flag, f"{host}:{container}"])
     for k, v in env.items():
@@ -109,9 +109,9 @@ class DockerEnvironmentSpec(EnvironmentSpec):
 
     image: str
     gpu: bool = False
-    binds: list[tuple[Path, Path]] = Field(default_factory=list)
+    binds: list[tuple[str, str]] = Field(default_factory=list)
 
-    def wrap_command(self, cmd: list[str], cwd: Path | None = None) -> list[str]:
+    def wrap_command(self, cmd: list[str], cwd: str | None = None) -> list[str]:
         return _container_wrap(
             prefix=["docker", "run", "--rm"],
             gpu_args=["--gpus", "all"],
@@ -139,18 +139,18 @@ class ApptainerEnvironmentSpec(EnvironmentSpec):
         binds: List of (host_path, container_path) bind mounts.
     """
 
-    image: Path
+    image: str
     gpu: bool = False
-    binds: list[tuple[Path, Path]] = Field(default_factory=list)
+    binds: list[tuple[str, str]] = Field(default_factory=list)
 
-    def wrap_command(self, cmd: list[str], cwd: Path | None = None) -> list[str]:
+    def wrap_command(self, cmd: list[str], cwd: str | None = None) -> list[str]:
         return _container_wrap(
             prefix=["apptainer", "exec"],
             gpu_args=["--nv"],
             bind_flag="--bind",
             binds=self.binds,
             env=self.env,
-            image=str(self.image),
+            image=self.image,
             cmd=cmd,
             cwd=cwd,
             gpu=self.gpu,
@@ -160,7 +160,7 @@ class ApptainerEnvironmentSpec(EnvironmentSpec):
         if not shutil.which("apptainer"):
             msg = "Apptainer is not installed or not on PATH"
             raise FileNotFoundError(msg)
-        if not self.image.exists():
+        if not os.path.exists(self.image):
             msg = f"Container image not found: {self.image}"
             raise FileNotFoundError(msg)
 
@@ -174,12 +174,12 @@ class PixiEnvironmentSpec(EnvironmentSpec):
     """
 
     pixi_environment: str = "default"
-    manifest_path: Path | None = None
+    manifest_path: str | None = None
 
-    def wrap_command(self, cmd: list[str], _cwd: Path | None = None) -> list[str]:
+    def wrap_command(self, cmd: list[str], _cwd: str | None = None) -> list[str]:
         parts = ["pixi", "run", "-e", self.pixi_environment]
         if self.manifest_path:
-            parts.extend(["--manifest-path", str(self.manifest_path)])
+            parts.extend(["--manifest-path", self.manifest_path])
         parts.extend(cmd)
         return parts
 

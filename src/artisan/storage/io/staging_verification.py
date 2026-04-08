@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-from pathlib import Path
 
 from artisan.utils.path import shard_uri
 
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 REQUIRED_STAGING_FILE = "executions.parquet"
 
 
-def _invalidate_nfs_dir_cache(path: Path) -> None:
+def _invalidate_nfs_dir_cache(path: str) -> None:
     """Force NFS to refresh directory entry caches along the path.
 
     Walk from root toward ``path``, calling ``os.listdir()`` on each
@@ -30,10 +29,11 @@ def _invalidate_nfs_dir_cache(path: Path) -> None:
     Args:
         path: Target whose ancestor directories need invalidation.
     """
-    # Collect path components from root to target
-    parts = list(path.parts)
-    for i in range(1, len(parts) + 1):
-        ancestor = Path(*parts[:i])
+    normalized = os.path.normpath(path)
+    parts = normalized.split(os.sep)
+    # For absolute paths, parts[0] is '' (from leading /)
+    for i in range(2, len(parts) + 1):
+        ancestor = os.sep + os.path.join(*parts[1:i])
         try:
             os.listdir(ancestor)
         except (FileNotFoundError, PermissionError, OSError):
@@ -42,7 +42,7 @@ def _invalidate_nfs_dir_cache(path: Path) -> None:
             break
 
 
-def verify_file_exists_nfs(path: Path) -> bool:
+def verify_file_exists_nfs(path: str) -> bool:
     """Check file existence using NFS close-to-open consistency.
 
     Invalidate parent directory caches, then ``open()`` and read one
@@ -89,7 +89,7 @@ def compute_expected_staging_paths(
     ]
 
 
-def verify_staging_directory(staging_dir: Path) -> tuple[bool, list[str]]:
+def verify_staging_directory(staging_dir: str) -> tuple[bool, list[str]]:
     """Verify required staging files exist using NFS-safe checks.
 
     Args:
@@ -100,10 +100,10 @@ def verify_staging_directory(staging_dir: Path) -> tuple[bool, list[str]]:
         ``(True, [])`` on success, or ``(False, reasons)`` listing
         which files or directories are missing.
     """
-    required_file = staging_dir / REQUIRED_STAGING_FILE
+    required_file = os.path.join(staging_dir, REQUIRED_STAGING_FILE)
 
     if not verify_file_exists_nfs(required_file):
-        if not staging_dir.exists():
+        if not os.path.exists(staging_dir):
             return False, [f"directory {staging_dir} not found"]
         return False, [REQUIRED_STAGING_FILE]
 
@@ -161,7 +161,7 @@ def await_staging_files(
         # Check all paths using open() for close-to-open consistency
         missing: dict[str, str] = {}
         for run_id, path in id_to_path.items():
-            success, issues = verify_staging_directory(Path(path))
+            success, issues = verify_staging_directory(path)
             if not success:
                 missing[run_id] = issues[0] if issues else "unknown issue"
 
