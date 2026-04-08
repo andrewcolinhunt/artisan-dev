@@ -18,6 +18,7 @@ from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.utils.errors import format_error
+from artisan.utils.path import shard_uri
 
 logger = logging.getLogger(__name__)
 
@@ -206,8 +207,9 @@ def _capture_slurm_logs(future: object, result: UnitResult) -> UnitResult:
 def _patch_worker_logs(
     results: list[UnitResult],
     staging_root: str,
-    failure_logs_root: str | None = None,
-    operation_name: str | None = None,
+    failure_logs_root: str | None,
+    operation_name: str,
+    step_number: int,
 ) -> None:
     """Write SLURM worker logs into staged parquet files before commit.
 
@@ -217,7 +219,8 @@ def _patch_worker_logs(
         results: Unit results that may contain a ``worker_log``.
         staging_root: Root staging directory.
         failure_logs_root: Directory for failure log files.
-        operation_name: Operation name for failure log directory layout.
+        operation_name: Operation name for step directory and failure logs.
+        step_number: Pipeline step number for staging path computation.
     """
     import polars as pl
 
@@ -226,7 +229,9 @@ def _patch_worker_logs(
             continue
         for run_id in result.execution_run_ids:
             try:
-                staging_dir = _find_staging_dir(staging_root, run_id)
+                staging_dir = _find_staging_dir(
+                    staging_root, run_id, step_number, operation_name
+                )
                 if staging_dir is None:
                     continue
                 parquet_path = os.path.join(staging_dir, "executions.parquet")
@@ -278,23 +283,32 @@ def _append_worker_stderr_to_failure_log(
         )
 
 
-def _find_staging_dir(staging_root: str, execution_run_id: str) -> str | None:
+def _find_staging_dir(
+    staging_root: str,
+    execution_run_id: str,
+    step_number: int,
+    operation_name: str,
+) -> str | None:
     """Locate the staging directory for an execution run ID.
 
-    Searches shard subdirectories using the first two characters of the
-    run ID as the prefix.
+    Computes the sharded path directly using shard_uri rather than
+    scanning the filesystem.
+
+    Args:
+        staging_root: Root staging directory.
+        execution_run_id: 32-character hex hash.
+        step_number: Pipeline step number.
+        operation_name: Operation name for step directory naming.
+
+    Returns:
+        Path to the staging directory, or None if it doesn't exist.
     """
-    # The shard_uri uses the first 2 chars of the run_id as prefix
-    prefix = execution_run_id[:2]
-    # Search through step directories
-    for entry in os.listdir(staging_root):
-        step_dir = os.path.join(staging_root, entry)
-        if not os.path.isdir(step_dir):
-            continue
-        shard_dir = os.path.join(step_dir, prefix)
-        if not os.path.isdir(shard_dir):
-            continue
-        candidate = os.path.join(shard_dir, execution_run_id)
-        if os.path.isdir(candidate):
-            return candidate
+    candidate = shard_uri(
+        staging_root,
+        execution_run_id,
+        step_number=step_number,
+        operation_name=operation_name,
+    )
+    if os.path.isdir(candidate):
+        return candidate
     return None
