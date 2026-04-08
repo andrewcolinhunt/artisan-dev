@@ -371,6 +371,7 @@ def _create_runtime_environment(
         worker_id_env_var=backend.worker_traits.worker_id_env_var if backend else None,
         shared_filesystem=backend.worker_traits.shared_filesystem if backend else False,
         compute_backend_name=backend.name if backend else "local",
+        storage=config.storage,
     )
 
 
