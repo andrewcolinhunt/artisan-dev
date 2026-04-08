@@ -130,6 +130,16 @@ class TestExpandedCompositeResult:
         with pytest.raises(ValueError, match="Unknown output role"):
             result.output("nonexistent")
 
+    def test_output_roles(self):
+        """Returns frozenset of declared output role names."""
+        ref_data = OutputReference(source_step=0, role="data")
+        ref_metrics = OutputReference(source_step=1, role="metrics")
+        result = ExpandedCompositeResult(
+            output_map={"data": ref_data, "metrics": ref_metrics},
+            output_types={"data": "data", "metrics": "metric"},
+        )
+        assert result.output_roles == frozenset({"data", "metrics"})
+
     def test_duck_types_with_step_future(self):
         """ExpandedCompositeResult.output() has same signature as StepFuture.output()."""
         out_ref = OutputReference(source_step=0, role="data")
