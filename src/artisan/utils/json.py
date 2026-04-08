@@ -10,6 +10,8 @@ def artisan_json_default(o: Any) -> Any:
     """JSON default handler for set and Path types.
 
     Suitable for use as the ``default`` argument to ``json.dumps``.
+    Operations may pass ``Path`` objects in their params dicts,
+    so this handler converts them to strings during serialization.
     """
     if isinstance(o, set):
         return sorted(o)

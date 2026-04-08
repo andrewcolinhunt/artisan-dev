@@ -6,23 +6,30 @@ the execution environment that wraps it.
 
 from __future__ import annotations
 
+import os
 import shutil
-from pathlib import Path
+from typing import Annotated
 
-from pydantic import BaseModel
+from pydantic import BaseModel, BeforeValidator
+
+
+def _coerce_to_str(v: object) -> str:
+    """Accept Path objects from operations, store as str."""
+    return str(v)
 
 
 class ToolSpec(BaseModel):
     """Declares the binary or script an operation invokes.
 
     Attributes:
-        executable: Path or name of the binary/script. Resolved via PATH
-            if not an absolute path.
+        executable: Name or path of the binary/script. Resolved via PATH
+            if not an absolute path. Accepts Path objects for convenience
+            but stores as str.
         interpreter: Optional interpreter prefix (e.g. "python", "python -u").
         subcommand: Optional subcommand inserted after the executable.
     """
 
-    executable: str | Path
+    executable: Annotated[str, BeforeValidator(_coerce_to_str)]
     interpreter: str | None = None
     subcommand: str | None = None
 
@@ -43,5 +50,5 @@ class ToolSpec(BaseModel):
             FileNotFoundError: If the executable cannot be found.
         """
         exe = str(self.executable)
-        if not Path(exe).exists() and not shutil.which(exe):
+        if not os.path.exists(exe) and not shutil.which(exe):
             raise FileNotFoundError(f"Executable not found: {self.executable}")

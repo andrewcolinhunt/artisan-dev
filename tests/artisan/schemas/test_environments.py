@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from artisan.schemas.operation_config.environment_spec import (
@@ -51,7 +49,7 @@ class TestEnvironments:
     def test_available_multiple(self):
         envs = Environments(
             docker=DockerEnvironmentSpec(image="img:latest"),
-            apptainer=ApptainerEnvironmentSpec(image=Path("/img.sif")),
+            apptainer=ApptainerEnvironmentSpec(image="/img.sif"),
         )
         available = envs.available()
         assert "local" in available
@@ -80,7 +78,7 @@ class TestEnvironments:
     def test_current_returns_correct_subclass(self):
         envs = Environments(
             active="apptainer",
-            apptainer=ApptainerEnvironmentSpec(image=Path("/img.sif")),
+            apptainer=ApptainerEnvironmentSpec(image="/img.sif"),
         )
         current = envs.current()
         assert isinstance(current, ApptainerEnvironmentSpec)

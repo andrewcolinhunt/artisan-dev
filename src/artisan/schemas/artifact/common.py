@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import posixpath
 from typing import Any
 
 from pydantic import BaseModel, PrivateAttr
@@ -31,8 +31,10 @@ def get_compound_extension(filename: str) -> str:
         The compound extension (e.g., '.dat.gz') or single extension (e.g., '.dat').
         Returns empty string if no extension.
     """
-    suffixes = Path(filename).suffixes
-    return "".join(suffixes) if suffixes else ""
+    name = posixpath.basename(filename)
+    # Find first dot that starts an extension (position > 0, not a dotfile)
+    dot = name.find(".", 1)
+    return name[dot:] if dot > 0 else ""
 
 
 class JsonContentMixin(BaseModel):
