@@ -65,15 +65,15 @@ class TestComputeExpectedStagingPaths:
             "12345678901234567890123456789012",
         ]
 
-        paths = compute_expected_staging_paths(tmp_path, execution_run_ids)
+        paths = compute_expected_staging_paths(str(tmp_path), execution_run_ids)
 
         assert len(paths) == 2
         # Verify sharding matches shard_uri()
-        assert paths[0] == Path(shard_uri(str(tmp_path), execution_run_ids[0]))
-        assert paths[1] == Path(shard_uri(str(tmp_path), execution_run_ids[1]))
+        assert paths[0] == shard_uri(str(tmp_path), execution_run_ids[0])
+        assert paths[1] == shard_uri(str(tmp_path), execution_run_ids[1])
         # Verify structure: root/ab/cd/full_id
-        assert paths[0] == tmp_path / "ab" / "cd" / execution_run_ids[0]
-        assert paths[1] == tmp_path / "12" / "34" / execution_run_ids[1]
+        assert paths[0] == str(tmp_path / "ab" / "cd" / execution_run_ids[0])
+        assert paths[1] == str(tmp_path / "12" / "34" / execution_run_ids[1])
 
     def test_empty_list_returns_empty(self, tmp_path):
         """Empty list returns empty list."""

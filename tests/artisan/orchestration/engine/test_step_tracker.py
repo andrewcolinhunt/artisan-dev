@@ -33,7 +33,7 @@ class TestRecordStepCancelled:
     """Tests for record_step_cancelled."""
 
     def test_writes_cancelled_row(self, tmp_path):
-        tracker = StepTracker(tmp_path / "delta", pipeline_run_id="run-1")
+        tracker = StepTracker(str(tmp_path / "delta"), pipeline_run_id="run-1")
         record = _make_start_record()
         tracker.record_step_cancelled(record, reason="user cancelled")
 
@@ -48,7 +48,7 @@ class TestRecordStepCancelled:
         assert row["failed_count"] is None
 
     def test_default_reason(self, tmp_path):
-        tracker = StepTracker(tmp_path / "delta", pipeline_run_id="run-1")
+        tracker = StepTracker(str(tmp_path / "delta"), pipeline_run_id="run-1")
         record = _make_start_record()
         tracker.record_step_cancelled(record)
 
@@ -60,7 +60,7 @@ class TestCancelledExcludedFromCache:
     """check_cache should not return cancelled steps."""
 
     def test_check_cache_excludes_cancelled(self, tmp_path):
-        tracker = StepTracker(tmp_path / "delta", pipeline_run_id="run-1")
+        tracker = StepTracker(str(tmp_path / "delta"), pipeline_run_id="run-1")
         record = _make_start_record(step_spec_id="spec-xyz")
         tracker.record_step_cancelled(record)
 
@@ -71,7 +71,7 @@ class TestCancelledExcludedFromLoadCompleted:
     """load_completed_steps should not include cancelled steps."""
 
     def test_load_completed_excludes_cancelled(self, tmp_path):
-        tracker = StepTracker(tmp_path / "delta", pipeline_run_id="run-1")
+        tracker = StepTracker(str(tmp_path / "delta"), pipeline_run_id="run-1")
         record = _make_start_record(step_spec_id="spec-xyz")
         tracker.record_step_cancelled(record)
 
@@ -86,7 +86,7 @@ class TestStorageOptionsForwarding:
         """check_cache forwards storage_options to pl.scan_delta."""
         opts = {"key": "val"}
         tracker = StepTracker(
-            tmp_path / "delta", pipeline_run_id="run-1", storage_options=opts
+            str(tmp_path / "delta"), pipeline_run_id="run-1", storage_options=opts
         )
         record = _make_start_record()
         tracker.record_step_start(record)
@@ -104,11 +104,11 @@ class TestStorageOptionsForwarding:
         """storage_options is stored and accessible for write_delta calls."""
         opts = {"key": "val"}
         tracker = StepTracker(
-            tmp_path / "delta", pipeline_run_id="run-1", storage_options=opts
+            str(tmp_path / "delta"), pipeline_run_id="run-1", storage_options=opts
         )
         assert tracker._storage_options == opts
 
     def test_none_storage_options_default(self, tmp_path):
         """storage_options defaults to None when not provided."""
-        tracker = StepTracker(tmp_path / "delta", pipeline_run_id="run-1")
+        tracker = StepTracker(str(tmp_path / "delta"), pipeline_run_id="run-1")
         assert tracker._storage_options is None

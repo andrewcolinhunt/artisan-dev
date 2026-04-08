@@ -6,8 +6,6 @@ skip cascade behaviour with real operations.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 pytestmark = pytest.mark.slow
@@ -17,7 +15,7 @@ from artisan.orchestration import PipelineManager
 from artisan.orchestration.backends import Backend
 
 
-def test_cancel_before_any_steps(pipeline_env: dict[str, Path]):
+def test_cancel_before_any_steps(pipeline_env: dict[str, str]):
     """cancel() before running steps causes subsequent steps to skip."""
     pipeline = PipelineManager.create(
         name="test_cancel_before",
@@ -45,7 +43,7 @@ def test_cancel_before_any_steps(pipeline_env: dict[str, Path]):
     assert "overall_success" in summary
 
 
-def test_cancel_skips_downstream_steps(pipeline_env: dict[str, Path]):
+def test_cancel_skips_downstream_steps(pipeline_env: dict[str, str]):
     """Cancelling after step 0 causes step 1 to be skipped."""
     pipeline = PipelineManager.create(
         name="test_cancel_downstream",
@@ -82,7 +80,7 @@ def test_cancel_skips_downstream_steps(pipeline_env: dict[str, Path]):
     assert summary["total_steps"] == 2
 
 
-def test_cancel_during_submit(pipeline_env: dict[str, Path]):
+def test_cancel_during_submit(pipeline_env: dict[str, str]):
     """cancel() after submit() causes the queued step to skip."""
     pipeline = PipelineManager.create(
         name="test_cancel_during",
@@ -121,7 +119,7 @@ def test_cancel_during_submit(pipeline_env: dict[str, Path]):
     assert "pipeline_name" in summary
 
 
-def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, Path]):
+def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, str]):
     """finalize() after cancel returns a valid summary dict."""
     pipeline = PipelineManager.create(
         name="test_finalize_cancel",
@@ -147,7 +145,7 @@ def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, Path]):
     assert len(summary["steps"]) == 1
 
 
-def test_cancel_idempotent(pipeline_env: dict[str, Path]):
+def test_cancel_idempotent(pipeline_env: dict[str, str]):
     """Calling cancel() multiple times is safe."""
     pipeline = PipelineManager.create(
         name="test_cancel_idempotent",
@@ -164,7 +162,7 @@ def test_cancel_idempotent(pipeline_env: dict[str, Path]):
     assert "pipeline_name" in summary
 
 
-def test_cancel_event_reaches_dispatch_handle(pipeline_env: dict[str, Path]):
+def test_cancel_event_reaches_dispatch_handle(pipeline_env: dict[str, str]):
     """cancel() during a running step flows through handle.run(cancel_event).
 
     Submits a slow Wait step (30s), cancels after 1s, and verifies the

@@ -6,7 +6,7 @@ to ensure consistent visual language.
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import Literal
 
 import graphviz
@@ -64,9 +64,9 @@ def apply_default_layout(graph: graphviz.Digraph) -> None:
 
 def render_graph(
     graph: graphviz.Digraph,
-    output_path: Path,
+    output_path: str | Path,
     format: Literal["svg", "png"] = "svg",
-) -> Path:
+) -> str:
     """Render a Graphviz digraph to a file.
 
     Args:
@@ -78,7 +78,9 @@ def render_graph(
         Path to the rendered file.
     """
     graph.format = format
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    rendered_path = graph.render(filename=str(output_path), cleanup=True)
-    return Path(rendered_path)
+    output_path = str(output_path)
+    parent = os.path.dirname(output_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    rendered_path = graph.render(filename=output_path, cleanup=True)
+    return rendered_path

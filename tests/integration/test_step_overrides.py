@@ -6,8 +6,6 @@ and remain isolated between steps.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 pytestmark = pytest.mark.slow
@@ -23,7 +21,7 @@ from .conftest import (
 )
 
 
-def test_param_override_produces_different_outputs(pipeline_env: dict[str, Path]):
+def test_param_override_produces_different_outputs(pipeline_env: dict[str, str]):
     """Different param overrides on the same operation produce different artifacts."""
     delta_root = pipeline_env["delta_root"]
 
@@ -79,7 +77,7 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, Path]
     assert len(step2_ids) == 2
 
 
-def test_execution_override_batching(pipeline_env: dict[str, Path]):
+def test_execution_override_batching(pipeline_env: dict[str, str]):
     """Execution override controls batch size independently per step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -125,7 +123,7 @@ def test_execution_override_batching(pipeline_env: dict[str, Path]):
     assert count_artifacts_by_step(delta_root, 2) == 6
 
 
-def test_override_isolation(pipeline_env: dict[str, Path]):
+def test_override_isolation(pipeline_env: dict[str, str]):
     """Execution override on one step doesn't affect the next step's defaults."""
     delta_root = pipeline_env["delta_root"]
 

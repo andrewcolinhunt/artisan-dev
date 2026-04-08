@@ -10,13 +10,11 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import resource
-import shutil
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from fsspec import AbstractFileSystem
@@ -806,7 +804,7 @@ def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
     ]
 
     try:
-        with Path("/proc/meminfo").open() as f:
+        with open("/proc/meminfo") as f:
             meminfo = {}
             for line in f:
                 key, _, value = line.partition(":")
@@ -993,7 +991,8 @@ def _execute_creator_step(
     if cancel_event is not None and cancel_event.is_set():
         return _cancelled_result(operation, step_number, failure_policy)
 
-    dispatch_dir = Path(uri_join(config.staging_root, "_dispatch"))
+    dispatch_dir = uri_join(config.staging_root, "_dispatch")
+    fs_cleanup = config.storage.filesystem()
     try:
         # --- execute phase ---
         dispatch_error: str | None = None
@@ -1012,8 +1011,8 @@ def _execute_creator_step(
                         operation.execution,
                         step_number,
                         job_name=operation.execution.job_name or operation.name,
-                        log_folder=Path(
-                            uri_join(uri_parent(config.delta_root), "logs", "slurm")
+                        log_folder=uri_join(
+                            uri_parent(config.delta_root), "logs", "slurm"
                         ),
                         staging_root=config.staging_root,
                     )
@@ -1077,8 +1076,11 @@ def _execute_creator_step(
             compact=compact,
         )
     finally:
-        if dispatch_dir.exists():
-            shutil.rmtree(dispatch_dir, ignore_errors=True)
+        try:
+            if fs_cleanup.exists(dispatch_dir):
+                fs_cleanup.rm(dispatch_dir, recursive=True)
+        except Exception:
+            pass
 
     _finalize_timings(timings, total_start, step_number, "Creator")
 
@@ -1143,6 +1145,7 @@ def execute_composite_step(
             inputs,
             config.delta_root,
             step_run_ids=step_run_ids,
+            storage_options=config.storage.delta_storage_options(),
             fs=config.storage.filesystem(),
         )
 
@@ -1180,7 +1183,8 @@ def execute_composite_step(
 
     # --- execute phase ---
     dispatch_error: str | None = None
-    dispatch_dir = Path(uri_join(config.staging_root, "_dispatch"))
+    dispatch_dir = uri_join(config.staging_root, "_dispatch")
+    fs_cleanup = config.storage.filesystem()
     try:
         with phase_timer("execute", timings):
             runtime_env = _create_runtime_environment(config, instance, backend)
@@ -1194,9 +1198,7 @@ def execute_composite_step(
                     composite_execution,
                     step_number,
                     job_name=composite_execution.job_name or "composite",
-                    log_folder=Path(
-                        uri_join(uri_parent(config.delta_root), "logs", "slurm")
-                    ),
+                    log_folder=uri_join(uri_parent(config.delta_root), "logs", "slurm"),
                     staging_root=config.staging_root,
                 )
                 results = handle.run([composite_transport], runtime_env)
@@ -1222,8 +1224,11 @@ def execute_composite_step(
             compact=compact,
         )
     finally:
-        if dispatch_dir.exists():
-            shutil.rmtree(dispatch_dir, ignore_errors=True)
+        try:
+            if fs_cleanup.exists(dispatch_dir):
+                fs_cleanup.rm(dispatch_dir, recursive=True)
+        except Exception:
+            pass
 
     _finalize_timings(timings, total_start, step_number, "Composite")
 
@@ -1282,7 +1287,7 @@ def _compact_step_tables(
         ]
 
     for table in tables:
-        table_name = Path(table).name
+        table_name = table.rsplit("/", 1)[-1]
         try:
             committer.compact_table(table)
         except Exception as exc:

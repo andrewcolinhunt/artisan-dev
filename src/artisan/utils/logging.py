@@ -10,7 +10,6 @@ import logging
 import logging.handlers
 import os
 import sys
-from pathlib import Path
 from typing import ClassVar
 
 from rich.console import Console
@@ -88,7 +87,7 @@ def configure_logging(
     level: str = "INFO",
     suppress_noise: bool = True,
     loggers: tuple[str, ...] = ("artisan",),
-    logs_root: Path | None = None,
+    logs_root: str | None = None,
 ) -> None:
     """Configure logging for artisan execution.
 
@@ -124,9 +123,9 @@ def configure_logging(
                 for h in logger.handlers
             )
         ):
-            logs_root.mkdir(parents=True, exist_ok=True)
+            os.makedirs(logs_root, exist_ok=True)
             file_handler = logging.handlers.RotatingFileHandler(
-                logs_root / "pipeline.log",
+                os.path.join(logs_root, "pipeline.log"),
                 maxBytes=50 * 1024 * 1024,
                 backupCount=3,
             )

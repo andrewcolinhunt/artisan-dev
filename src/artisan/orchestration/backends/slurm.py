@@ -129,7 +129,7 @@ class SlurmBackend(BackendBase):
         if resources.gpus > 0:
             slurm_kwargs["slurm_gres"] = f"gpu:{resources.gpus}"
         if log_folder is not None:
-            slurm_kwargs["log_folder"] = str(log_folder)
+            slurm_kwargs["log_folder"] = log_folder
 
         slurm_job_name = f"s{step_number}_{job_name}"
         task_runner = SlurmTaskRunner(

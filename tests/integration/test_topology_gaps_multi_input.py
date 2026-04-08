@@ -136,7 +136,7 @@ class DualInputConfigConsumer(OperationDefinition):
 # =============================================================================
 
 
-def test_co_produced_metrics_filter(pipeline_env: dict[str, Path]) -> None:
+def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
     """Filter auto-discovers co-produced metrics from same step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -179,7 +179,7 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, Path]) -> None:
     assert set(passthrough_ids) == gen_dataset_ids
 
 
-def test_lineage_grouping_one_to_many(pipeline_env: dict[str, Path]) -> None:
+def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
     """1:N LINEAGE expansion: one dataset fans out to multiple configs."""
     delta_root = pipeline_env["delta_root"]
 
@@ -231,7 +231,7 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, Path]) -> None:
     assert count_artifacts_by_step(delta_root, 2) == 4
 
 
-def test_resume_and_extend(pipeline_env: dict[str, Path]) -> None:
+def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     """Resume a successful pipeline and extend with new steps."""
     delta_root = pipeline_env["delta_root"]
     staging_root = pipeline_env["staging_root"]

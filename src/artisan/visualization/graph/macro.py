@@ -11,12 +11,11 @@ For the finer-grained artifact-level view, see ``artisan.visualization.graph.mic
 from __future__ import annotations
 
 import json
-import os
-from pathlib import Path
 from typing import Literal
 
 import graphviz
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
 from artisan.utils.path import uri_join
@@ -36,10 +35,15 @@ from artisan.visualization.graph._styles import (
 def _load_completed_steps(
     delta_root: str,
     storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Return completed steps, deduplicated by step_number (keeps last)."""
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
     table_path = uri_join(delta_root, TablePath.STEPS)
-    if not os.path.exists(table_path):
+    if not fs.exists(table_path):
         return pl.DataFrame(
             schema={
                 "step_number": pl.Int32,
@@ -118,6 +122,7 @@ def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str]]:
 def build_macro_graph(
     delta_root: str,
     storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> graphviz.Digraph:
     """Create a step-level pipeline graph from the steps table.
 
@@ -134,7 +139,7 @@ def build_macro_graph(
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    steps_df = _load_completed_steps(delta_root, storage_options=storage_options)
+    steps_df = _load_completed_steps(delta_root, storage_options=storage_options, fs=fs)
 
     graph = graphviz.Digraph("pipeline", format="svg")
     apply_default_layout(graph)
@@ -247,10 +252,11 @@ def build_macro_graph(
 
 def render_macro_graph(
     delta_root: str,
-    output_path: Path,
+    output_path: str | Path,
     format: Literal["svg", "png"] = "svg",
     storage_options: dict[str, str] | None = None,
-) -> Path:
+    fs: AbstractFileSystem | None = None,
+) -> str:
     """Build and render the macro (step-level) pipeline graph to a file.
 
     Args:
@@ -258,9 +264,10 @@ def render_macro_graph(
         output_path: Output file path (without extension).
         format: Output format ("svg" or "png").
         storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
 
     Returns:
         Path to the rendered file.
     """
-    graph = build_macro_graph(delta_root, storage_options=storage_options)
+    graph = build_macro_graph(delta_root, storage_options=storage_options, fs=fs)
     return render_graph(graph, output_path, format)

@@ -26,7 +26,7 @@ class TutorialEnv(NamedTuple):
 def tutorial_setup(
     name: str,
     *,
-    base_dir: Path | None = None,
+    base_dir: str | Path | None = None,
     clean: bool = True,
 ) -> TutorialEnv:
     """Set up a tutorial environment with standard directory layout.
