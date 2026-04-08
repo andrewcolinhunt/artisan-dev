@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 def display_provenance_stepper(
     delta_root: str,
-    output_dir: str | Path | None = None,
+    output_dir: str | None = None,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
 ) -> ipywidgets.VBox:

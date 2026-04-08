@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -53,15 +52,15 @@ class TestLocalEnvironmentSpec:
         assert spec.prepare_env() is None
 
     def test_prepare_env_with_venv(self):
-        spec = LocalEnvironmentSpec(venv_path=Path("/envs/.venv"))
+        spec = LocalEnvironmentSpec(venv_path="/envs/.venv")
         env = spec.prepare_env()
         assert env is not None
         assert env["VIRTUAL_ENV"] == "/envs/.venv"
-        assert str(Path("/envs/.venv/bin")) in env["PATH"]
+        assert "/envs/.venv/bin" in env["PATH"]
 
     def test_prepare_env_venv_plus_extra(self):
         spec = LocalEnvironmentSpec(
-            venv_path=Path("/envs/.venv"),
+            venv_path="/envs/.venv",
             env={"CUDA_VISIBLE_DEVICES": "0"},
         )
         env = spec.prepare_env()
@@ -95,14 +94,14 @@ class TestDockerEnvironmentSpec:
 
     def test_wrap_command_with_cwd(self):
         spec = DockerEnvironmentSpec(image="img:latest")
-        result = spec.wrap_command(["cmd"], cwd=Path("/data/sandbox/step0"))
+        result = spec.wrap_command(["cmd"], cwd="/data/sandbox/step0")
         assert "--volume" in result
         assert "/data/sandbox:/data/sandbox" in result
 
     def test_wrap_command_with_binds(self):
         spec = DockerEnvironmentSpec(
             image="img:latest",
-            binds=[(Path("/host/data"), Path("/container/data"))],
+            binds=[("/host/data", "/container/data")],
         )
         result = spec.wrap_command(["cmd"])
         assert "/host/data:/container/data" in result
@@ -127,7 +126,7 @@ class TestDockerEnvironmentSpec:
         spec = DockerEnvironmentSpec(
             image="img:latest",
             gpu=True,
-            binds=[(Path("/a"), Path("/b"))],
+            binds=[("/a", "/b")],
             env={"K": "V"},
         )
         data = spec.model_dump()
@@ -137,32 +136,32 @@ class TestDockerEnvironmentSpec:
 
 class TestApptainerEnvironmentSpec:
     def test_construction(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
-        assert spec.image == Path("/img.sif")
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
+        assert spec.image == "/img.sif"
         assert spec.gpu is False
 
     def test_wrap_command_minimal(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
         result = spec.wrap_command(["samtools", "sort"])
         assert result[:2] == ["apptainer", "exec"]
         assert "/img.sif" in result
         assert result[-2:] == ["samtools", "sort"]
 
     def test_wrap_command_with_gpu(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"), gpu=True)
+        spec = ApptainerEnvironmentSpec(image="/img.sif", gpu=True)
         result = spec.wrap_command(["cmd"])
         assert "--nv" in result
 
     def test_wrap_command_with_cwd(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
-        result = spec.wrap_command(["cmd"], cwd=Path("/data/sandbox/step0"))
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
+        result = spec.wrap_command(["cmd"], cwd="/data/sandbox/step0")
         assert "--bind" in result
         assert "/data/sandbox:/data/sandbox" in result
 
     def test_wrap_command_with_binds_and_env(self):
         spec = ApptainerEnvironmentSpec(
-            image=Path("/img.sif"),
-            binds=[(Path("/host"), Path("/container"))],
+            image="/img.sif",
+            binds=[("/host", "/container")],
             env={"KEY": "val"},
         )
         result = spec.wrap_command(["cmd"])
@@ -171,18 +170,18 @@ class TestApptainerEnvironmentSpec:
 
     @patch("shutil.which", return_value=None)
     def test_validate_not_installed(self, mock_which):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
         with pytest.raises(FileNotFoundError, match="Apptainer"):
             spec.validate_environment()
 
     @patch("shutil.which", return_value="/usr/bin/apptainer")
     def test_validate_missing_image(self, mock_which):
-        spec = ApptainerEnvironmentSpec(image=Path("/nonexistent.sif"))
+        spec = ApptainerEnvironmentSpec(image="/nonexistent.sif")
         with pytest.raises(FileNotFoundError, match="Container image not found"):
             spec.validate_environment()
 
     def test_isinstance(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
         assert isinstance(spec, EnvironmentSpec)
 
 
@@ -199,7 +198,7 @@ class TestPixiEnvironmentSpec:
         assert result[4:] == ["python", "train.py"]
 
     def test_wrap_command_with_manifest(self):
-        spec = PixiEnvironmentSpec(manifest_path=Path("/project/pixi.toml"))
+        spec = PixiEnvironmentSpec(manifest_path="/project/pixi.toml")
         result = spec.wrap_command(["cmd"])
         assert "--manifest-path" in result
         assert "/project/pixi.toml" in result
@@ -230,7 +229,7 @@ class TestMasterPortInjection:
     """MASTER_PORT/MASTER_ADDR auto-injection for GPU container specs."""
 
     def test_apptainer_gpu_injects_master_port(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"), gpu=True)
+        spec = ApptainerEnvironmentSpec(image="/img.sif", gpu=True)
         result = spec.wrap_command(["cmd"])
         env_pairs = {result[i + 1] for i, v in enumerate(result) if v == "--env"}
         master_ports = [p for p in env_pairs if p.startswith("MASTER_PORT=")]
@@ -241,7 +240,7 @@ class TestMasterPortInjection:
 
     def test_apptainer_gpu_respects_explicit_master_port(self):
         spec = ApptainerEnvironmentSpec(
-            image=Path("/img.sif"), gpu=True, env={"MASTER_PORT": "12345"}
+            image="/img.sif", gpu=True, env={"MASTER_PORT": "12345"}
         )
         result = spec.wrap_command(["cmd"])
         env_pairs = [result[i + 1] for i, v in enumerate(result) if v == "--env"]
@@ -249,7 +248,7 @@ class TestMasterPortInjection:
         assert master_ports == ["MASTER_PORT=12345"]
 
     def test_apptainer_no_gpu_no_injection(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"), gpu=False)
+        spec = ApptainerEnvironmentSpec(image="/img.sif", gpu=False)
         result = spec.wrap_command(["cmd"])
         joined = " ".join(result)
         assert "MASTER_PORT" not in joined
