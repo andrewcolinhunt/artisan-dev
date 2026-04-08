@@ -59,6 +59,7 @@ class PipelineTimings:
         cls,
         delta_root: Path,
         pipeline_run_id: str | None = None,
+        storage_options: dict[str, str] | None = None,
     ) -> PipelineTimings:
         """Load timing data from steps and executions delta tables.
 
@@ -66,6 +67,7 @@ class PipelineTimings:
             delta_root: Path to the delta lake root directory.
             pipeline_run_id: Pipeline run ID to filter by. If None, uses the
                 latest pipeline run.
+            storage_options: Delta-rs storage options for cloud backends.
 
         Returns:
             PipelineTimings instance.
@@ -80,7 +82,9 @@ class PipelineTimings:
             raise FileNotFoundError(msg)
 
         # Read completed steps
-        scanner = pl.scan_delta(str(steps_path)).filter(pl.col("status") == "completed")
+        scanner = pl.scan_delta(
+            str(steps_path), storage_options=storage_options
+        ).filter(pl.col("status") == "completed")
         if pipeline_run_id is not None:
             scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
 
@@ -111,7 +115,9 @@ class PipelineTimings:
         exec_path = delta_root / TablePath.EXECUTIONS
         exec_df = None
         if exec_path.exists():
-            exec_scanner = pl.scan_delta(str(exec_path)).filter(
+            exec_scanner = pl.scan_delta(
+                str(exec_path), storage_options=storage_options
+            ).filter(
                 pl.col("success") == True  # noqa: E712
             )
             exec_df = (

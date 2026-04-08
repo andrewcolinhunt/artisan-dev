@@ -559,7 +559,10 @@ def _execute_curator_step(
     # --- resolve_inputs phase ---
     with phase_timer("resolve_inputs", timings):
         resolved_inputs = resolve_inputs(
-            inputs, config.delta_root, step_run_ids=step_run_ids
+            inputs,
+            config.delta_root,
+            step_run_ids=step_run_ids,
+            storage_options=config.storage.delta_storage_options(),
         )
         total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
         if total_artifacts > 0:
@@ -869,7 +872,10 @@ def _execute_creator_step(
     with phase_timer("resolve_inputs", timings):
         # Resolve inputs to artifact IDs
         resolved_inputs = resolve_inputs(
-            inputs, config.delta_root, step_run_ids=step_run_ids
+            inputs,
+            config.delta_root,
+            step_run_ids=step_run_ids,
+            storage_options=config.storage.delta_storage_options(),
         )
 
         skip_result = _skip_for_empty_inputs(

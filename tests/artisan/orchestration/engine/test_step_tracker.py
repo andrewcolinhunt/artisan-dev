@@ -1,6 +1,8 @@
-"""Tests for StepTracker cancelled-step handling."""
+"""Tests for StepTracker cancelled-step handling and storage_options."""
 
 from __future__ import annotations
+
+from unittest.mock import patch
 
 import polars as pl
 
@@ -75,3 +77,38 @@ class TestCancelledExcludedFromLoadCompleted:
 
         steps = tracker.load_completed_steps(pipeline_run_id="run-1")
         assert len(steps) == 0
+
+
+class TestStorageOptionsForwarding:
+    """storage_options should be forwarded to scan_delta and write_delta."""
+
+    def test_scan_delta_receives_storage_options(self, tmp_path):
+        """check_cache forwards storage_options to pl.scan_delta."""
+        opts = {"key": "val"}
+        tracker = StepTracker(
+            tmp_path / "delta", pipeline_run_id="run-1", storage_options=opts
+        )
+        record = _make_start_record()
+        tracker.record_step_start(record)
+
+        with patch(
+            "artisan.orchestration.engine.step_tracker.pl.scan_delta",
+            wraps=pl.scan_delta,
+        ) as mock_scan:
+            tracker.check_cache("spec-abc")
+            mock_scan.assert_called()
+            _, kwargs = mock_scan.call_args
+            assert kwargs.get("storage_options") == opts
+
+    def test_storage_options_stored_on_instance(self, tmp_path):
+        """storage_options is stored and accessible for write_delta calls."""
+        opts = {"key": "val"}
+        tracker = StepTracker(
+            tmp_path / "delta", pipeline_run_id="run-1", storage_options=opts
+        )
+        assert tracker._storage_options == opts
+
+    def test_none_storage_options_default(self, tmp_path):
+        """storage_options defaults to None when not provided."""
+        tracker = StepTracker(tmp_path / "delta", pipeline_run_id="run-1")
+        assert tracker._storage_options is None

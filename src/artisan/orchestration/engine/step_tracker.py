@@ -25,15 +25,22 @@ WRITER_PROPS = WriterProperties(compression="ZSTD")
 class StepTracker:
     """Read and write step-level state to the steps delta table."""
 
-    def __init__(self, delta_root: Path, pipeline_run_id: str = "") -> None:
+    def __init__(
+        self,
+        delta_root: Path,
+        pipeline_run_id: str = "",
+        storage_options: dict[str, str] | None = None,
+    ) -> None:
         """Initialize with a delta root and optional run identifier.
 
         Args:
             delta_root: Root path for Delta Lake tables.
             pipeline_run_id: Run identifier for this pipeline session.
+            storage_options: Delta-rs storage options for cloud backends.
         """
         self._steps_path = delta_root / TablePath.STEPS
         self._pipeline_run_id = pipeline_run_id
+        self._storage_options = storage_options
 
     def check_cache(
         self,
@@ -53,7 +60,7 @@ class StepTracker:
             return None
 
         query = (
-            pl.scan_delta(str(self._steps_path))
+            pl.scan_delta(str(self._steps_path), storage_options=self._storage_options)
             .filter(pl.col("step_spec_id") == step_spec_id)
             .filter(pl.col("status") == "completed")
             .filter(pl.col("dispatch_error").is_null())
@@ -213,16 +220,18 @@ class StepTracker:
         if not self._steps_path.exists():
             return []
 
-        lf = pl.scan_delta(str(self._steps_path)).filter(
-            pl.col("status").is_in(["completed", "skipped"])
-        )
+        lf = pl.scan_delta(
+            str(self._steps_path), storage_options=self._storage_options
+        ).filter(pl.col("status").is_in(["completed", "skipped"]))
 
         if pipeline_run_id is not None:
             lf = lf.filter(pl.col("pipeline_run_id") == pipeline_run_id)
         else:
             # Find the most recent pipeline_run_id
             latest = (
-                pl.scan_delta(str(self._steps_path))
+                pl.scan_delta(
+                    str(self._steps_path), storage_options=self._storage_options
+                )
                 .filter(pl.col("status").is_in(["completed", "skipped"]))
                 .sort("timestamp", descending=True)
                 .limit(1)
@@ -290,7 +299,7 @@ class StepTracker:
             )
 
         return (
-            pl.scan_delta(str(self._steps_path))
+            pl.scan_delta(str(self._steps_path), storage_options=self._storage_options)
             .sort("timestamp")
             .group_by("pipeline_run_id")
             .agg(
@@ -309,12 +318,14 @@ class StepTracker:
             df.write_delta(
                 str(self._steps_path),
                 mode="append",
+                storage_options=self._storage_options,
                 delta_write_options={"writer_properties": WRITER_PROPS},
             )
         else:
             df.write_delta(
                 str(self._steps_path),
                 mode="overwrite",
+                storage_options=self._storage_options,
                 delta_write_options={"writer_properties": WRITER_PROPS},
             )
 

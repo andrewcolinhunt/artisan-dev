@@ -21,6 +21,7 @@ def resolve_output_reference(
     ref: OutputReference,
     delta_root: Path,
     step_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> list[str]:
     """Resolve an OutputReference to concrete artifact IDs.
 
@@ -33,6 +34,7 @@ def resolve_output_reference(
         ref: OutputReference containing source_step and role.
         delta_root: Root path for Delta Lake tables.
         step_run_id: If provided, scope results to this step run only.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Sorted list of artifact IDs. Empty list if no outputs match the
@@ -56,7 +58,7 @@ def resolve_output_reference(
 
     # Query successful executions for the source step
     query = (
-        pl.scan_delta(str(executions_path))
+        pl.scan_delta(str(executions_path), storage_options=storage_options)
         .filter(pl.col("origin_step_number") == ref.source_step)
         .filter(pl.col("success") == True)  # noqa: E712
     )
@@ -83,7 +85,7 @@ def resolve_output_reference(
         return []
 
     provenance_result = (
-        pl.scan_delta(str(execution_edges_path))
+        pl.scan_delta(str(execution_edges_path), storage_options=storage_options)
         .filter(pl.col("execution_run_id").is_in(execution_run_ids))
         .filter(pl.col("direction") == "output")
         .filter(pl.col("role") == ref.role)
@@ -111,6 +113,7 @@ def resolve_inputs(
     inputs: (dict[str, OutputReference | list[str]] | list[OutputReference] | None),
     delta_root: Path,
     step_run_ids: dict[int, str] | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """Resolve all inputs to concrete artifact IDs.
 
@@ -126,6 +129,7 @@ def resolve_inputs(
     Args:
         inputs: Input specification in any supported format.
         delta_root: Root path for Delta Lake tables.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Dict mapping role names to lists of artifact IDs.
@@ -159,7 +163,9 @@ def resolve_inputs(
         first_item = inputs[0]
         if isinstance(first_item, OutputReference):
             # List of OutputReferences - convert to dict with auto-generated keys
-            return _resolve_list_inputs(inputs, delta_root, step_run_ids)
+            return _resolve_list_inputs(
+                inputs, delta_root, step_run_ids, storage_options
+            )
         # File paths are handled in _execute_curator_step, not here
         raise ValueError(
             "Raw file paths must be handled by _execute_curator_step(). "
@@ -172,7 +178,7 @@ def resolve_inputs(
         if isinstance(value, OutputReference):
             sri = step_run_ids.get(value.source_step) if step_run_ids else None
             resolved[role] = resolve_output_reference(
-                value, delta_root, step_run_id=sri
+                value, delta_root, step_run_id=sri, storage_options=storage_options
             )
         elif isinstance(value, list):
             # Already artifact IDs - validate format
@@ -196,6 +202,7 @@ def _resolve_list_inputs(
     refs: list[OutputReference],
     delta_root: Path,
     step_run_ids: dict[int, str] | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """Flatten a list of OutputReferences into a single ``_merged_streams`` role.
 
@@ -211,7 +218,9 @@ def _resolve_list_inputs(
                 f"got {type(ref).__name__} at index {i}"
             )
         sri = step_run_ids.get(ref.source_step) if step_run_ids else None
-        artifact_ids = resolve_output_reference(ref, delta_root, step_run_id=sri)
+        artifact_ids = resolve_output_reference(
+            ref, delta_root, step_run_id=sri, storage_options=storage_options
+        )
         all_artifact_ids.extend(artifact_ids)
 
     # Sort all artifact IDs for determinism
