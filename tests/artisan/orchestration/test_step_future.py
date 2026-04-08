@@ -47,6 +47,20 @@ def _make_future(
     )
 
 
+class TestOutputRoles:
+    """Tests for StepFuture.output_roles property."""
+
+    def test_output_roles_returns_frozenset(self):
+        """Returns the declared output roles."""
+        future = _make_future()
+        assert future.output_roles == frozenset(["data", "metrics"])
+
+    def test_output_roles_empty(self):
+        """Empty frozenset when no outputs declared."""
+        future = _make_future(output_roles=frozenset(), output_types={})
+        assert future.output_roles == frozenset()
+
+
 class TestOutput:
     """Tests for StepFuture.output()."""
 

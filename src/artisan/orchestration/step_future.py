@@ -44,6 +44,11 @@ class StepFuture:
         self._output_types = output_types
         self._future = future
 
+    @property
+    def output_roles(self) -> frozenset[str]:
+        """Available output role names for this step."""
+        return self._output_roles
+
     def output(self, role: str) -> OutputReference:
         """Create a lazy reference to a step output without blocking.
 
