@@ -1746,7 +1746,7 @@ class TestCuratorSubprocessIsolation:
 
         with (
             patch("artisan.orchestration.engine.step_executor.resource") as mock_res,
-            patch("pathlib.Path.open", mock_open(read_data=meminfo_content)),
+            patch("builtins.open", mock_open(read_data=meminfo_content)),
         ):
             mock_res.getrusage.return_value = mock_rusage
             mock_res.RUSAGE_CHILDREN = resource.RUSAGE_CHILDREN

@@ -7,8 +7,6 @@ and input type mismatches — all BEFORE any predecessor wait or execution.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 pytestmark = pytest.mark.slow
@@ -18,7 +16,7 @@ from artisan.orchestration import PipelineManager
 from artisan.orchestration.backends import Backend
 
 
-def test_invalid_params_raises(pipeline_env: dict[str, Path]):
+def test_invalid_params_raises(pipeline_env: dict[str, str]):
     """Unknown param keys raise ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_params",
@@ -38,7 +36,7 @@ def test_invalid_params_raises(pipeline_env: dict[str, Path]):
     assert summary["total_steps"] == 0
 
 
-def test_invalid_resources_raises(pipeline_env: dict[str, Path]):
+def test_invalid_resources_raises(pipeline_env: dict[str, str]):
     """Unknown resource keys raise ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_resources",
@@ -56,7 +54,7 @@ def test_invalid_resources_raises(pipeline_env: dict[str, Path]):
         )
 
 
-def test_invalid_execution_raises(pipeline_env: dict[str, Path]):
+def test_invalid_execution_raises(pipeline_env: dict[str, str]):
     """Unknown execution keys raise ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_execution",
@@ -74,7 +72,7 @@ def test_invalid_execution_raises(pipeline_env: dict[str, Path]):
         )
 
 
-def test_invalid_input_role_raises(pipeline_env: dict[str, Path]):
+def test_invalid_input_role_raises(pipeline_env: dict[str, str]):
     """Unknown input role raises ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_input_role",
@@ -97,7 +95,7 @@ def test_invalid_input_role_raises(pipeline_env: dict[str, Path]):
         )
 
 
-def test_missing_required_input_raises(pipeline_env: dict[str, Path]):
+def test_missing_required_input_raises(pipeline_env: dict[str, str]):
     """Missing required input role raises ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_missing_required",
@@ -114,7 +112,7 @@ def test_missing_required_input_raises(pipeline_env: dict[str, Path]):
         )
 
 
-def test_input_type_mismatch_raises(pipeline_env: dict[str, Path]):
+def test_input_type_mismatch_raises(pipeline_env: dict[str, str]):
     """Type mismatch between upstream output and downstream input raises ValueError."""
     pipeline = PipelineManager.create(
         name="test_type_mismatch",
@@ -146,7 +144,7 @@ def test_input_type_mismatch_raises(pipeline_env: dict[str, Path]):
         )
 
 
-def test_valid_overrides_accepted(pipeline_env: dict[str, Path]):
+def test_valid_overrides_accepted(pipeline_env: dict[str, str]):
     """Valid overrides don't raise and pipeline succeeds."""
     pipeline = PipelineManager.create(
         name="test_valid_overrides",

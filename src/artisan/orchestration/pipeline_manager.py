@@ -884,7 +884,7 @@ class PipelineManager:
             working_root: Root path for worker sandboxes. If None, uses
                 tempfile.gettempdir() (respects $TMPDIR).
             files_root: Root path for Artisan-managed external files. If None,
-                defaults to delta_root.parent / "files".
+                defaults to a sibling "files" directory next to delta_root.
             failure_policy: Default failure handling for steps.
             cache_policy: Controls when completed steps qualify as cache hits.
             backend: Default backend for step execution. Accepts a BackendBase

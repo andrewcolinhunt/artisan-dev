@@ -6,8 +6,6 @@ that produces data artifacts and metrics in a Delta store.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import pytest
 
@@ -29,7 +27,7 @@ from .conftest import (
 )
 
 
-def test_interactive_filter_end_to_end(pipeline_env: dict[str, Path]):
+def test_interactive_filter_end_to_end(pipeline_env: dict[str, str]):
     """Full workflow: pipeline -> InteractiveFilter load/filter/commit."""
     delta_root = pipeline_env["delta_root"]
 
@@ -114,7 +112,7 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, Path]):
     assert diag["total_passed"] == 4
 
 
-def test_interactive_filter_selective_criteria(pipeline_env: dict[str, Path]):
+def test_interactive_filter_selective_criteria(pipeline_env: dict[str, str]):
     """Criteria that filter out some artifacts."""
     delta_root = pipeline_env["delta_root"]
 
@@ -164,7 +162,7 @@ def test_interactive_filter_selective_criteria(pipeline_env: dict[str, Path]):
         assert set(outputs) == set(filtered)
 
 
-def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, Path]):
+def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, str]):
     """Loading with step_numbers restricts primary artifacts."""
     delta_root = pipeline_env["delta_root"]
 
@@ -201,7 +199,7 @@ def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, Path]
     assert len(filt.filtered_ids) == 3
 
 
-def test_interactive_filter_output_reference(pipeline_env: dict[str, Path]):
+def test_interactive_filter_output_reference(pipeline_env: dict[str, str]):
     """Committed step result supports output() for downstream wiring."""
     delta_root = pipeline_env["delta_root"]
 
