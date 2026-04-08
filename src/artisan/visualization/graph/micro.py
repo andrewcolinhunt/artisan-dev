@@ -36,15 +36,23 @@ def _scan_or_empty(
     table: TablePath,
     columns: list[str],
     empty_schema: dict[str, pl.DataType],
+    storage_options: dict[str, str] | None = None,
 ) -> pl.DataFrame:
     """Scan a Delta table, returning an empty DataFrame if it doesn't exist."""
     table_path = delta_root / table
     if not table_path.exists():
         return pl.DataFrame(schema=empty_schema)
-    return pl.scan_delta(str(table_path)).select(columns).collect()
+    return (
+        pl.scan_delta(str(table_path), storage_options=storage_options)
+        .select(columns)
+        .collect()
+    )
 
 
-def _load_executions(delta_root: Path) -> pl.DataFrame:
+def _load_executions(
+    delta_root: Path,
+    storage_options: dict[str, str] | None = None,
+) -> pl.DataFrame:
     """Return execution records from the executions Delta table."""
     return _scan_or_empty(
         delta_root,
@@ -55,10 +63,14 @@ def _load_executions(delta_root: Path) -> pl.DataFrame:
             "operation_name": pl.String,
             "origin_step_number": pl.Int32,
         },
+        storage_options=storage_options,
     )
 
 
-def _load_artifact_index(delta_root: Path) -> pl.DataFrame:
+def _load_artifact_index(
+    delta_root: Path,
+    storage_options: dict[str, str] | None = None,
+) -> pl.DataFrame:
     """Return artifact index records from the artifact_index Delta table."""
     return _scan_or_empty(
         delta_root,
@@ -69,10 +81,14 @@ def _load_artifact_index(delta_root: Path) -> pl.DataFrame:
             "artifact_type": pl.String,
             "origin_step_number": pl.Int32,
         },
+        storage_options=storage_options,
     )
 
 
-def _load_artifact_labels(delta_root: Path) -> dict[str, str]:
+def _load_artifact_labels(
+    delta_root: Path,
+    storage_options: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Map artifact IDs to human-readable labels from type-specific tables.
 
     Iterates registered ArtifactTypeDefs, loading ``original_name`` (or
@@ -90,7 +106,7 @@ def _load_artifact_labels(delta_root: Path) -> dict[str, str]:
 
         if "original_name" in schema:
             df = (
-                pl.scan_delta(str(table_path))
+                pl.scan_delta(str(table_path), storage_options=storage_options)
                 .select(["artifact_id", "original_name"])
                 .collect()
             )
@@ -100,7 +116,9 @@ def _load_artifact_labels(delta_root: Path) -> dict[str, str]:
                     labels[row["artifact_id"]] = Path(name).stem
         elif "path" in schema:
             df = (
-                pl.scan_delta(str(table_path)).select(["artifact_id", "path"]).collect()
+                pl.scan_delta(str(table_path), storage_options=storage_options)
+                .select(["artifact_id", "path"])
+                .collect()
             )
             for row in df.iter_rows(named=True):
                 path = row["path"]
@@ -110,7 +128,10 @@ def _load_artifact_labels(delta_root: Path) -> dict[str, str]:
     return labels
 
 
-def _load_execution_edges(delta_root: Path) -> pl.DataFrame:
+def _load_execution_edges(
+    delta_root: Path,
+    storage_options: dict[str, str] | None = None,
+) -> pl.DataFrame:
     """Return execution-to-artifact provenance edges."""
     return _scan_or_empty(
         delta_root,
@@ -121,10 +142,14 @@ def _load_execution_edges(delta_root: Path) -> pl.DataFrame:
             "direction": pl.String,
             "artifact_id": pl.String,
         },
+        storage_options=storage_options,
     )
 
 
-def _load_artifact_edges(delta_root: Path) -> pl.DataFrame:
+def _load_artifact_edges(
+    delta_root: Path,
+    storage_options: dict[str, str] | None = None,
+) -> pl.DataFrame:
     """Return artifact-to-artifact lineage edges."""
     return _scan_or_empty(
         delta_root,
@@ -134,6 +159,7 @@ def _load_artifact_edges(delta_root: Path) -> pl.DataFrame:
             "source_artifact_id": pl.String,
             "target_artifact_id": pl.String,
         },
+        storage_options=storage_options,
     )
 
 
@@ -162,6 +188,7 @@ def _build_artifact_labels(
 def build_micro_graph(
     delta_root: Path,
     max_step: int | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> graphviz.Digraph:
     """Build a Graphviz Digraph from Delta Lake provenance tables.
 
@@ -178,6 +205,7 @@ def build_micro_graph(
         delta_root: Path to Delta Lake root directory.
         max_step: If provided, only include steps 0 through max_step (inclusive).
             Useful for step-by-step visualization of pipeline execution.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
@@ -185,11 +213,11 @@ def build_micro_graph(
     delta_root = Path(delta_root)
 
     # Load all data
-    executions = _load_executions(delta_root)
-    artifact_index = _load_artifact_index(delta_root)
-    name_labels = _load_artifact_labels(delta_root)
-    exec_edges = _load_execution_edges(delta_root)
-    artifact_edges = _load_artifact_edges(delta_root)
+    executions = _load_executions(delta_root, storage_options=storage_options)
+    artifact_index = _load_artifact_index(delta_root, storage_options=storage_options)
+    name_labels = _load_artifact_labels(delta_root, storage_options=storage_options)
+    exec_edges = _load_execution_edges(delta_root, storage_options=storage_options)
+    artifact_edges = _load_artifact_edges(delta_root, storage_options=storage_options)
 
     # Filter by max_step if provided
     if max_step is not None:
@@ -403,6 +431,7 @@ def render_micro_graph(
     output_path: Path,
     format: Literal["svg", "png"] = "svg",
     max_step: int | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> Path:
     """Build and render the micro (artifact-level) provenance graph to a file.
 
@@ -411,24 +440,31 @@ def render_micro_graph(
         output_path: Output file path (without extension).
         format: Output format ("svg" or "png").
         max_step: If provided, only include steps 0 through max_step (inclusive).
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Path to the rendered file.
     """
-    graph = build_micro_graph(delta_root, max_step=max_step)
+    graph = build_micro_graph(
+        delta_root, max_step=max_step, storage_options=storage_options
+    )
     return render_graph(graph, output_path, format)
 
 
-def get_max_step_number(delta_root: Path) -> int | None:
+def get_max_step_number(
+    delta_root: Path,
+    storage_options: dict[str, str] | None = None,
+) -> int | None:
     """Return the highest step number present in the executions table.
 
     Args:
         delta_root: Path to Delta Lake root directory.
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Maximum step number, or None if no executions exist.
     """
-    executions = _load_executions(delta_root)
+    executions = _load_executions(delta_root, storage_options=storage_options)
     if executions.is_empty():
         return None
     return executions["origin_step_number"].max()
@@ -438,6 +474,7 @@ def render_micro_graph_steps(
     delta_root: Path,
     output_dir: Path,
     format: Literal["svg", "png"] = "svg",
+    storage_options: dict[str, str] | None = None,
 ) -> list[Path]:
     """Render provenance graphs for each step (cumulative).
 
@@ -448,6 +485,7 @@ def render_micro_graph_steps(
         delta_root: Path to Delta Lake root directory.
         output_dir: Directory to write step images (step_00.svg, step_01.svg, ...).
         format: Output format ("svg" or "png").
+        storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         List of paths to rendered files, in step order.
@@ -456,7 +494,7 @@ def render_micro_graph_steps(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    max_step = get_max_step_number(delta_root)
+    max_step = get_max_step_number(delta_root, storage_options=storage_options)
     if max_step is None:
         return []
 
@@ -466,7 +504,11 @@ def render_micro_graph_steps(
         filename = f"step_{step:02d}"
         output_path = output_dir / filename
         rendered = render_micro_graph(
-            delta_root, output_path, format=format, max_step=step
+            delta_root,
+            output_path,
+            format=format,
+            max_step=step,
+            storage_options=storage_options,
         )
         rendered_paths.append(rendered)
 

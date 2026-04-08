@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import polars as pl
 
@@ -66,3 +67,25 @@ class TestResolveOutputReferenceEmptyUpstream:
         ref = OutputReference(source_step=0, role="data")
         result = resolve_output_reference(ref, tmp_path)
         assert result == []
+
+
+class TestStorageOptionsForwarding:
+    """storage_options should be forwarded to scan_delta."""
+
+    def test_scan_delta_receives_storage_options(self, tmp_path):
+        """resolve_output_reference forwards storage_options to pl.scan_delta."""
+        executions_path = tmp_path / TablePath.EXECUTIONS
+        df = _create_executions_df()
+        df.write_delta(str(executions_path))
+
+        opts = {"key": "val"}
+        ref = OutputReference(source_step=0, role="data")
+
+        with patch(
+            "artisan.orchestration.engine.inputs.pl.scan_delta",
+            wraps=pl.scan_delta,
+        ) as mock_scan:
+            resolve_output_reference(ref, tmp_path, storage_options=opts)
+            mock_scan.assert_called()
+            _, kwargs = mock_scan.call_args_list[0]
+            assert kwargs.get("storage_options") == opts

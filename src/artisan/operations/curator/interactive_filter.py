@@ -132,7 +132,7 @@ class InteractiveFilter:
 
         # Load primary artifact IDs
         all_index = (
-            pl.scan_delta(str(index_path))
+            pl.scan_delta(str(index_path), storage_options=self._storage_options)
             .select(["artifact_id", "artifact_type", "origin_step_number"])
             .collect()
         )
@@ -287,7 +287,7 @@ class InteractiveFilter:
         if not steps_path.exists():
             return None
         result = (
-            pl.scan_delta(str(steps_path))
+            pl.scan_delta(str(steps_path), storage_options=self._storage_options)
             .sort("timestamp", descending=True)
             .limit(1)
             .select("pipeline_run_id")
@@ -608,7 +608,9 @@ class InteractiveFilter:
 
         from artisan.orchestration.engine.step_tracker import StepTracker
 
-        tracker = StepTracker(self._delta_root, pipeline_run_id)
+        tracker = StepTracker(
+            self._delta_root, pipeline_run_id, storage_options=self._storage_options
+        )
         tracker.record_step_start(start_record)
 
         # Build v4 diagnostics
@@ -778,7 +780,7 @@ class InteractiveFilter:
             return 0
 
         result = (
-            pl.scan_delta(str(steps_path))
+            pl.scan_delta(str(steps_path), storage_options=self._storage_options)
             .select(pl.col("step_number").max().alias("max_step"))
             .collect()
         )
