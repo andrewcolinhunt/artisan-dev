@@ -32,6 +32,7 @@ from artisan.orchestration.engine.step_executor import (
     instantiate_operation,
 )
 from artisan.orchestration.engine.step_tracker import StepTracker
+from artisan.orchestration.post_step_future import PostStepFuture
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy
@@ -1138,7 +1139,7 @@ class PipelineManager:
         intermediates: str = "discard",
         skip_cache: bool = False,
         post_step: type[OperationDefinition] | None = None,
-    ) -> StepFuture:
+    ) -> StepFuture | PostStepFuture:
         """Submit a pipeline step (non-blocking).
 
         Accepts both OperationDefinition and CompositeDefinition subclasses.
@@ -1159,12 +1160,14 @@ class PipelineManager:
             skip_cache: Bypass cache lookups for this step.
             post_step: Operation to auto-insert after the main step. When
                 provided, the main step's outputs are wired as inputs to the
-                post_step, and the returned StepFuture is from the post_step.
-                Behavioral flags (backend, compact, skip_cache, failure_policy)
-                are forwarded; overrides (params, resources, etc.) are not.
+                post_step, and the returned PostStepFuture routes output()
+                to the correct source step. Behavioral flags (backend,
+                compact, skip_cache, failure_policy) are forwarded; overrides
+                (params, resources, etc.) are not.
 
         Returns:
-            StepFuture with output() for wiring to downstream steps.
+            StepFuture (no post_step) or PostStepFuture (with post_step)
+            for wiring to downstream steps.
 
         Raises:
             ValueError: If any override keys are unrecognized.
@@ -1283,15 +1286,15 @@ class PipelineManager:
             )
 
         # 8. Post-step: if provided, wire main step outputs as post_step
-        #    inputs and recursively submit. Behavioral flags are forwarded;
-        #    overrides (params, resources, etc.) are not.
+        #    inputs and recursively submit. Returns a PostStepFuture that
+        #    routes output() to the correct source step.
         if post_step is not None:
             post_inputs: dict[str, OutputReference] = {
                 role: main_future.output(role)
                 for role in operation.outputs
                 if role in post_step.inputs
             }
-            return self.submit(
+            post_future = self.submit(
                 post_step,
                 inputs=post_inputs,
                 backend=backend,
@@ -1299,6 +1302,28 @@ class PipelineManager:
                 skip_cache=skip_cache,
                 failure_policy=failure_policy,
                 name=f"{step_name}.post",
+            )
+            assert isinstance(post_future, StepFuture)
+
+            # Post-step outputs take precedence; remaining main-op outputs
+            # pass through.
+            output_map: dict[str, OutputReference] = {}
+            output_types: dict[str, str | None] = {}
+
+            for role in operation.outputs:
+                if role not in post_step.outputs:
+                    output_map[role] = main_future.output(role)
+                    output_types[role] = operation.outputs[role].artifact_type
+
+            for role in post_step.outputs:
+                output_map[role] = post_future.output(role)
+                output_types[role] = post_step.outputs[role].artifact_type
+
+            return PostStepFuture(
+                main_future=main_future,
+                post_future=post_future,
+                output_map=output_map,
+                output_types=output_types,
             )
 
         return main_future
