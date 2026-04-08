@@ -108,7 +108,7 @@ def run_creator_lifecycle(
         LifecycleResult with artifacts, edges, and timings.
 
     Raises:
-        ValueError: If working_root_path is not set.
+        ValueError: If working_root is not set.
         Exception: Any failure from preprocess/execute/postprocess/lineage.
     """
     timings: dict[str, Any] = {}
@@ -127,17 +127,16 @@ def run_creator_lifecycle(
 
     # --- setup phase ---
     with phase_timer("setup", timings):
-        working_root = runtime_env.working_root_path
+        working_root = runtime_env.working_root
         if working_root is None:
-            msg = "RuntimeEnvironment.working_root_path must be set to create a sandbox"
+            msg = "RuntimeEnvironment.working_root must be set to create a sandbox"
             raise ValueError(msg)
 
-        working_root_str = str(working_root)
-        if working_root_str == tempfile.gettempdir():
-            sandbox_path_str = os.path.join(working_root_str, execution_run_id)
+        if working_root == tempfile.gettempdir():
+            sandbox_path_str = os.path.join(working_root, execution_run_id)
         else:
             sandbox_path_str = shard_uri(
-                working_root_str,
+                working_root,
                 execution_run_id,
                 unit.step_number,
                 operation_name=operation.name,
@@ -151,9 +150,9 @@ def run_creator_lifecycle(
         materialized_dir = os.path.join(sandbox_path_str, "materialized_inputs")
         os.makedirs(materialized_dir, exist_ok=True)
 
-        if runtime_env.files_root_path is not None:
+        if runtime_env.files_root is not None:
             files_dir: str | None = os.path.join(
-                str(runtime_env.files_root_path),
+                runtime_env.files_root,
                 str(unit.step_number),
                 "workers",
                 execution_run_id,
@@ -171,8 +170,8 @@ def run_creator_lifecycle(
             step_number=unit.step_number,
             timestamp_start=timestamp_start,
             worker_id=worker_id,
-            delta_root_path=str(runtime_env.delta_root_path),
-            staging_root_path=str(runtime_env.staging_root_path),
+            delta_root=runtime_env.delta_root,
+            staging_root=runtime_env.staging_root,
             fs=fs,
             storage_options=storage_options,
             operation=operation,
@@ -180,9 +179,7 @@ def run_creator_lifecycle(
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=unit.step_run_id,
-            files_root=str(runtime_env.files_root_path)
-            if runtime_env.files_root_path
-            else None,
+            files_root=runtime_env.files_root,
         )
         artifact_store = execution_context.artifact_store
 
@@ -480,10 +477,10 @@ def _build_execution_context(
     runtime_env: RuntimeEnvironment,
     operation: Any,
 ) -> Any:
-    """Build an execution context, raising if working_root_path is missing."""
-    working_root = runtime_env.working_root_path
+    """Build an execution context, raising if working_root is missing."""
+    working_root = runtime_env.working_root
     if working_root is None:
-        msg = "RuntimeEnvironment.working_root_path must be set"
+        msg = "RuntimeEnvironment.working_root must be set"
         raise ValueError(msg)
     fs = runtime_env.storage.filesystem()
     storage_options = runtime_env.storage.delta_storage_options()
@@ -493,18 +490,16 @@ def _build_execution_context(
         step_number=unit.step_number,
         timestamp_start=timestamp_start,
         worker_id=worker_id,
-        delta_root_path=str(runtime_env.delta_root_path),
-        staging_root_path=str(runtime_env.staging_root_path),
+        delta_root=runtime_env.delta_root,
+        staging_root=runtime_env.staging_root,
         fs=fs,
         storage_options=storage_options,
         operation=operation,
-        sandbox_path=os.path.join(str(working_root), "dummy"),
+        sandbox_path=os.path.join(working_root, "dummy"),
         compute_backend_name=runtime_env.compute_backend_name,
         shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=unit.step_run_id,
-        files_root=str(runtime_env.files_root_path)
-        if runtime_env.files_root_path
-        else None,
+        files_root=runtime_env.files_root,
     )
 
 

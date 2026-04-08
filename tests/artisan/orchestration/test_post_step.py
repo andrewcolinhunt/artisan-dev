@@ -153,8 +153,8 @@ class TestPostStepFutureIdentity:
         """submit() with post_step returns StepFuture for the post_step."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(ProducerOp, post_step=ConsumerOp)
         assert isinstance(future, StepFuture)
@@ -167,8 +167,8 @@ class TestPostStepFutureIdentity:
         """run() with post_step returns StepResult from the post_step."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         result = pipeline.run(ProducerOp, post_step=ConsumerOp)
         assert isinstance(result, StepResult)
@@ -184,8 +184,8 @@ class TestPostStepNumbering:
         """Main step gets step 0, post_step gets step 1."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(ProducerOp, post_step=ConsumerOp)
         # Post_step is step 1
@@ -199,8 +199,8 @@ class TestPostStepNumbering:
         """Custom name on main step propagates to post_step name."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(ProducerOp, post_step=ConsumerOp, name="my_step")
         assert future.step_name == "my_step.post"
@@ -214,8 +214,8 @@ class TestPostStepDownstreamWiring:
         """output() on the returned future references the post_step number."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(ProducerOp, post_step=ConsumerOp)
         ref = future.output("data")
@@ -228,8 +228,8 @@ class TestPostStepDownstreamWiring:
         """A step wired from post_step output gets correct source_step."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(ProducerOp, post_step=ConsumerOp)
         downstream = pipeline.submit(
@@ -250,12 +250,16 @@ class TestPostStepCaching:
         staging = tmp_path / "staging"
 
         # First run populates cache
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         p1.run(ProducerOp, post_step=ConsumerOp)
         first_call_count = mock_exec.call_count
 
         # Second run — both steps should be cached
-        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p2 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         result = p2.run(ProducerOp, post_step=ConsumerOp)
         assert result.success is True
         # No new execute_step calls (both cached)
@@ -268,13 +272,17 @@ class TestPostStepCaching:
         staging = tmp_path / "staging"
 
         # First run: just the producer (no post_step) — populates cache
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         p1.run(ProducerOp)
         first_call_count = mock_exec.call_count
 
         # Second run: same producer but with post_step. Producer is cached,
         # but ConsumerOp as post_step is new.
-        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p2 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         result = p2.run(ProducerOp, post_step=ConsumerOp)
         assert result.success is True
         # One new execute_step call (only the post_step)
@@ -289,8 +297,8 @@ class TestPostStepRoleMismatch:
         """Post_step with mismatched input roles raises ValueError."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         # ProducerOp outputs "data", MismatchedConsumerOp expects "metrics"
         with pytest.raises(ValueError, match="Unknown input roles"):
@@ -305,8 +313,8 @@ class TestPostStepNone:
         """submit() with post_step=None behaves identically to without it."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(ProducerOp, post_step=None)
         assert future.step_number == 0
@@ -321,8 +329,8 @@ class TestPostStepEarlyExit:
         """When pipeline._stopped is True, post_step is not invoked."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         # Force the pipeline into stopped state
         pipeline._stopped = True
@@ -339,8 +347,8 @@ class TestPostStepEarlyExit:
         """When pipeline is cancelled, post_step is not invoked."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         pipeline._cancel_event.set()
         future = pipeline.submit(ProducerOp, post_step=ConsumerOp)

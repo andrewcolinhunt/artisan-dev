@@ -6,7 +6,7 @@ current pipeline, with no cross-pipeline provenance edges.
 
 from __future__ import annotations
 
-from pathlib import Path
+import os
 from typing import ClassVar
 
 import polars as pl
@@ -42,7 +42,7 @@ class IngestPipelineStep(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {}
 
     # ---------- Parameters ----------
-    source_delta_root: Path = Field(
+    source_delta_root: str = Field(
         ..., description="Path to the source pipeline's delta_root"
     )
     source_step: int = Field(
@@ -79,15 +79,14 @@ class IngestPipelineStep(OperationDefinition):
         """
         from fsspec.implementations.local import LocalFileSystem
 
-        source_root = Path(self.source_delta_root)
-        if not source_root.exists():
+        if not os.path.exists(self.source_delta_root):
             return ArtifactResult(
                 success=False,
-                error=f"Source delta root does not exist: {source_root}",
+                error=f"Source delta root does not exist: {self.source_delta_root}",
             )
 
         source_store = ArtifactStore(
-            str(source_root),
+            self.source_delta_root,
             fs=LocalFileSystem(),
         )
         types_to_import = self._resolve_types(source_store)

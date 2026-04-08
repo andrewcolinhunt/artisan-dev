@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import polars as pl
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.orchestration.engine.inputs import resolve_output_reference
 from artisan.schemas.enums import TablePath
@@ -43,7 +44,7 @@ class TestResolveOutputReferenceEmptyUpstream:
     def test_missing_executions_table_returns_empty(self, tmp_path):
         """When executions table doesn't exist, return [] (not raise)."""
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
     def test_missing_execution_edges_table_returns_empty(self, tmp_path):
@@ -55,7 +56,7 @@ class TestResolveOutputReferenceEmptyUpstream:
 
         # No execution_edges table
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
     def test_no_successful_executions_returns_empty(self, tmp_path):
@@ -65,7 +66,7 @@ class TestResolveOutputReferenceEmptyUpstream:
         df.write_delta(str(executions_path))
 
         ref = OutputReference(source_step=0, role="data")
-        result = resolve_output_reference(ref, tmp_path)
+        result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
 
@@ -85,7 +86,9 @@ class TestStorageOptionsForwarding:
             "artisan.orchestration.engine.inputs.pl.scan_delta",
             wraps=pl.scan_delta,
         ) as mock_scan:
-            resolve_output_reference(ref, tmp_path, storage_options=opts)
+            resolve_output_reference(
+                ref, str(tmp_path), fs=LocalFileSystem(), storage_options=opts
+            )
             mock_scan.assert_called()
             _, kwargs = mock_scan.call_args_list[0]
             assert kwargs.get("storage_options") == opts

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from artisan.utils.tutorial import TutorialEnv, tutorial_setup
@@ -9,9 +10,9 @@ from artisan.utils.tutorial import TutorialEnv, tutorial_setup
 
 def test_creates_directories(tmp_path: Path) -> None:
     env = tutorial_setup("test_tut", base_dir=tmp_path)
-    assert env.delta_root.exists()
-    assert env.staging_root.exists()
-    assert env.working_root.exists()
+    assert os.path.exists(env.delta_root)
+    assert os.path.exists(env.staging_root)
+    assert os.path.exists(env.working_root)
 
 
 def test_cleans_existing(tmp_path: Path) -> None:
@@ -38,14 +39,14 @@ def test_no_clean_preserves_existing(tmp_path: Path) -> None:
 def test_returns_correct_paths(tmp_path: Path) -> None:
     env = tutorial_setup("test_tut", base_dir=tmp_path)
     assert isinstance(env, TutorialEnv)
-    assert env.runs_dir == tmp_path / "runs" / "test_tut"
-    assert env.delta_root == env.runs_dir / "delta"
-    assert env.staging_root == env.runs_dir / "staging"
-    assert env.working_root == env.runs_dir / "working"
+    assert env.runs_dir == os.path.join(str(tmp_path), "runs", "test_tut")
+    assert env.delta_root == os.path.join(env.runs_dir, "delta")
+    assert env.staging_root == os.path.join(env.runs_dir, "staging")
+    assert env.working_root == os.path.join(env.runs_dir, "working")
 
 
 def test_custom_base_dir(tmp_path: Path) -> None:
     custom = tmp_path / "custom_base"
     custom.mkdir()
     env = tutorial_setup("tut", base_dir=custom)
-    assert env.runs_dir == custom / "runs" / "tut"
+    assert env.runs_dir == os.path.join(str(custom), "runs", "tut")

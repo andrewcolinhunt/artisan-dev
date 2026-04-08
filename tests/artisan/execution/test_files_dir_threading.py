@@ -144,10 +144,10 @@ class TestCreatorLifecycleFilesDir:
         files_root.mkdir()
 
         env = RuntimeEnvironment(
-            delta_root_path=delta_root,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
-            files_root_path=files_root,
+            delta_root=str(delta_root),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
+            files_root=str(files_root),
         )
         unit = ExecutionUnit(
             operation=_FilesDirCapture(),
@@ -174,10 +174,10 @@ class TestCreatorLifecycleFilesDir:
         self, delta_root: Path, working_root: Path, staging_root: Path
     ) -> None:
         env = RuntimeEnvironment(
-            delta_root_path=delta_root,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
-            files_root_path=None,
+            delta_root=str(delta_root),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
+            files_root=None,
         )
         unit = ExecutionUnit(
             operation=_FilesDirCapture(),
@@ -199,10 +199,10 @@ class TestCreatorLifecycleFilesDir:
         files_root.mkdir()
 
         env = RuntimeEnvironment(
-            delta_root_path=delta_root,
-            working_root_path=working_root,
-            staging_root_path=staging_root,
-            files_root_path=files_root,
+            delta_root=str(delta_root),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
+            files_root=str(files_root),
         )
         unit = ExecutionUnit(
             operation=_FilesDirCapture(),

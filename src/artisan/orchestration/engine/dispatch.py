@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 def _save_units(
     units: list[ExecutionUnit | ExecutionComposite],
-    staging_root: Path | str,
+    staging_root: str,
     step_number: int,
 ) -> Path:
     """Serialize execution units to a pickle file for Prefect dispatch.
@@ -32,7 +32,7 @@ def _save_units(
     Pickle dispatch is always local NFS, so this uses Path
     rather than fsspec.
     """
-    root = Path(staging_root) if isinstance(staging_root, str) else staging_root
+    root = Path(staging_root)
     path = root / "_dispatch" / f"step_{step_number}_units.pkl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
@@ -206,8 +206,8 @@ def _capture_slurm_logs(future: object, result: UnitResult) -> UnitResult:
 
 def _patch_worker_logs(
     results: list[UnitResult],
-    staging_root: Path | str,
-    failure_logs_root: Path | None = None,
+    staging_root: str,
+    failure_logs_root: str | None = None,
     operation_name: str | None = None,
 ) -> None:
     """Write SLURM worker logs into staged parquet files before commit.
@@ -222,13 +222,12 @@ def _patch_worker_logs(
     """
     import polars as pl
 
-    root = Path(staging_root) if isinstance(staging_root, str) else staging_root
     for result in results:
         if not result.worker_log:
             continue
         for run_id in result.execution_run_ids:
             try:
-                staging_dir = _find_staging_dir(root, run_id)
+                staging_dir = _find_staging_dir(staging_root, run_id)
                 if staging_dir is None:
                     continue
                 parquet_path = staging_dir / "executions.parquet"
@@ -248,13 +247,14 @@ def _patch_worker_logs(
 
 
 def _append_worker_stderr_to_failure_log(
-    failure_logs_root: Path,
+    failure_logs_root: str,
     execution_run_id: str,
     operation_name: str,
     worker_log: str,
 ) -> None:
     """Append worker stderr to an existing failure log file (best-effort)."""
     try:
+        failure_logs_path = Path(failure_logs_root)
         # Extract stderr portion if present
         stderr_marker = "--- stderr ---\n"
         idx = worker_log.find(stderr_marker)
@@ -263,7 +263,7 @@ def _append_worker_stderr_to_failure_log(
             return
 
         # Find the failure log file across step directories
-        for step_dir in failure_logs_root.iterdir():
+        for step_dir in failure_logs_path.iterdir():
             if not step_dir.is_dir():
                 continue
             log_path = step_dir / f"{execution_run_id}.log"
@@ -279,16 +279,17 @@ def _append_worker_stderr_to_failure_log(
         )
 
 
-def _find_staging_dir(staging_root: Path, execution_run_id: str) -> Path | None:
+def _find_staging_dir(staging_root: str, execution_run_id: str) -> Path | None:
     """Locate the staging directory for an execution run ID.
 
     Searches shard subdirectories using the first two characters of the
     run ID as the prefix.
     """
+    root = Path(staging_root)
     # The shard_uri uses the first 2 chars of the run_id as prefix
     prefix = execution_run_id[:2]
     # Search through step directories
-    for step_dir in staging_root.iterdir():
+    for step_dir in root.iterdir():
         if not step_dir.is_dir():
             continue
         shard_dir = step_dir / prefix

@@ -113,7 +113,7 @@ def verify_staging_directory(staging_dir: Path) -> tuple[bool, list[str]]:
 
 
 def await_staging_files(
-    staging_root: Path,
+    staging_root: str,
     execution_run_ids: list[str],
     timeout_seconds: float = 60.0,
     poll_interval_seconds: float = 1.0,
@@ -143,8 +143,9 @@ def await_staging_files(
         logger.debug("No execution_run_ids to verify, skipping staging verification")
         return
 
+    staging_root_path = Path(staging_root)
     expected_paths = compute_expected_staging_paths(
-        staging_root,
+        staging_root_path,
         execution_run_ids,
         step_number=step_number,
         operation_name=operation_name,

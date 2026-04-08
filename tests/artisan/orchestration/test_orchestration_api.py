@@ -11,7 +11,6 @@ Tests for:
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -271,13 +270,13 @@ class TestPipelineConfig:
         """Test minimal PipelineConfig creation."""
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/data/delta"),
-            staging_root=Path("/data/staging"),
+            delta_root="/data/delta",
+            staging_root="/data/staging",
         )
         assert config.name == "test"
-        assert config.delta_root == Path("/data/delta")
-        assert config.staging_root == Path("/data/staging")
-        assert config.working_root == Path(tempfile.gettempdir())  # Default
+        assert config.delta_root == "/data/delta"
+        assert config.staging_root == "/data/staging"
+        assert config.working_root == tempfile.gettempdir()  # Default
         assert config.failure_policy == FailurePolicy.CONTINUE  # Default
         assert config.cache_policy == CachePolicy.ALL_SUCCEEDED  # Default
         assert config.default_backend == "local"  # Default
@@ -286,13 +285,13 @@ class TestPipelineConfig:
         """Test PipelineConfig with all fields."""
         config = PipelineConfig(
             name="full_test",
-            delta_root=Path("/custom/delta"),
-            staging_root=Path("/custom/staging"),
-            working_root=Path("/tmp/work"),
+            delta_root="/custom/delta",
+            staging_root="/custom/staging",
+            working_root="/tmp/work",
             failure_policy="fail_fast",
             default_backend="slurm",
         )
-        assert config.working_root == Path("/tmp/work")
+        assert config.working_root == "/tmp/work"
         assert config.failure_policy == FailurePolicy.FAIL_FAST
         assert config.default_backend == "slurm"
 
@@ -300,8 +299,8 @@ class TestPipelineConfig:
         """Test PipelineConfig has pipeline_run_id with empty default."""
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/data/delta"),
-            staging_root=Path("/data/staging"),
+            delta_root="/data/delta",
+            staging_root="/data/staging",
         )
         assert config.pipeline_run_id == ""
 
@@ -309,8 +308,8 @@ class TestPipelineConfig:
         """Test PipelineConfig accepts custom pipeline_run_id."""
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/data/delta"),
-            staging_root=Path("/data/staging"),
+            delta_root="/data/delta",
+            staging_root="/data/staging",
             pipeline_run_id="my_run_20260215_120000_abcd1234",
         )
         assert config.pipeline_run_id == "my_run_20260215_120000_abcd1234"
@@ -323,11 +322,11 @@ class TestPipelineManager:
         """Test PipelineManager.create() factory method."""
         pipeline = PipelineManager.create(
             name="test_pipeline",
-            delta_root=Path("/data/delta"),
-            staging_root=Path("/data/staging"),
+            delta_root="/data/delta",
+            staging_root="/data/staging",
         )
         assert pipeline.config.name == "test_pipeline"
-        assert pipeline.config.delta_root == Path("/data/delta")
+        assert pipeline.config.delta_root == "/data/delta"
         assert pipeline.current_step == 0
 
     def test_create_with_string_paths(self):
@@ -337,8 +336,8 @@ class TestPipelineManager:
             delta_root="/data/delta",
             staging_root="/data/staging",
         )
-        assert isinstance(pipeline.config.delta_root, Path)
-        assert isinstance(pipeline.config.staging_root, Path)
+        assert isinstance(pipeline.config.delta_root, str)
+        assert isinstance(pipeline.config.staging_root, str)
 
     def test_create_custom_config(self):
         """Test create() with custom configuration."""
@@ -350,7 +349,7 @@ class TestPipelineManager:
             failure_policy="fail_fast",
             backend="slurm",
         )
-        assert pipeline.config.working_root == Path("/tmp/work")
+        assert pipeline.config.working_root == "/tmp/work"
         assert pipeline.config.failure_policy == FailurePolicy.FAIL_FAST
         assert pipeline.config.default_backend == "slurm"
 
@@ -667,8 +666,8 @@ class TestFailurePolicy:
         """Test that Pydantic coerces strings to enum members."""
         config = PipelineConfig(
             name="test",
-            delta_root=Path("/data/delta"),
-            staging_root=Path("/data/staging"),
+            delta_root="/data/delta",
+            staging_root="/data/staging",
             failure_policy="continue",
         )
         assert config.failure_policy == FailurePolicy.CONTINUE
