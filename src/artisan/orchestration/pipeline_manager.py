@@ -1287,7 +1287,9 @@ class PipelineManager:
         #    overrides (params, resources, etc.) are not.
         if post_step is not None:
             post_inputs: dict[str, OutputReference] = {
-                role: main_future.output(role) for role in operation.outputs
+                role: main_future.output(role)
+                for role in operation.outputs
+                if role in post_step.inputs
             }
             return self.submit(
                 post_step,
