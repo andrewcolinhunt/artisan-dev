@@ -167,6 +167,6 @@ docs/
 
 ## Personal Overrides
 
-Create a `CLAUDE.local.md` file (auto-gitignored) for personal workflow
-preferences such as base branch, push behavior, pixi paths, and MCP tool
-configuration. See the project README for a template.
+`CLAUDE.local.md` is typically a symlink into a personal notes repo
+(`_dev/`). Both `CLAUDE.local.md` and `_dev` are gitignored. See the
+project README for details.

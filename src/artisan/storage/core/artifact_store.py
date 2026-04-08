@@ -30,7 +30,7 @@ class ArtifactStore:
         self,
         base_path: str,
         *,
-        fs: AbstractFileSystem,
+        fs: AbstractFileSystem | None = None,
         storage_options: dict[str, str] | None = None,
         files_root: str | None = None,
     ):
@@ -40,11 +40,16 @@ class ArtifactStore:
             base_path: Root URI/path containing artifact and framework
                 Delta tables (e.g. ``file_refs/``, ``data/``,
                 ``artifact_index/``).
-            fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
+            fs: Filesystem implementation (LocalFileSystem, S3FileSystem,
+                etc.). Defaults to ``LocalFileSystem()`` when None.
             storage_options: Credentials/config passed to delta-rs calls.
             files_root: Root URI/path for Artisan-managed external files.
                 None when external file storage is not configured.
         """
+        if fs is None:
+            from fsspec.implementations.local import LocalFileSystem
+
+            fs = LocalFileSystem()
         self.base_path = base_path
         self._fs = fs
         self._storage_options = storage_options or {}
