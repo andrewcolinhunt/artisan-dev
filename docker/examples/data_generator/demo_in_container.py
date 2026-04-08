@@ -12,8 +12,7 @@ import sys
 # Trigger PREFECT_LOGGING_LEVEL=CRITICAL setdefault before Prefect imports.
 # Belt-and-suspenders: the Dockerfile ENV already sets this, but importing
 # the orchestration package ensures it even when run outside Docker.
-import artisan.orchestration  # noqa: F401
-
+import artisan.orchestration  # noqa: F401  # isort: skip
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration.engine.dispatch import execute_unit_task
