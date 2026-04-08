@@ -39,6 +39,26 @@ class ProducerOp(OperationDefinition):
         return ArtifactResult(success=True)
 
 
+class MultiOutputProducerOp(OperationDefinition):
+    """Generative operation that produces 'data' and 'metrics' outputs."""
+
+    class OutputRole(StrEnum):
+        data = auto()
+        metrics = auto()
+
+    name: ClassVar[str] = "MultiOutputProducer"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.data: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.metrics: OutputSpec(artifact_type=ArtifactTypes.METRIC),
+    }
+
+    def execute_curator(self, execute_input):
+        from artisan.schemas.execution.curator_result import ArtifactResult
+
+        return ArtifactResult(success=True)
+
+
 class ConsumerOp(OperationDefinition):
     """Operation that consumes 'data' and produces 'data'."""
 
@@ -83,6 +103,35 @@ class MismatchedConsumerOp(OperationDefinition):
         OutputRole.metrics: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
             infer_lineage_from={"inputs": ["metrics"]},
+        ),
+    }
+
+    def preprocess(self, inputs):
+        return {}
+
+    def execute(self, inputs, output_dir):
+        pass
+
+
+class TwoInputConsumerOp(OperationDefinition):
+    """Operation that requires both 'data' and 'labels' inputs."""
+
+    class InputRole(StrEnum):
+        data = auto()
+        labels = auto()
+
+    class OutputRole(StrEnum):
+        data = auto()
+
+    name: ClassVar[str] = "TwoInputConsumer"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA),
+        InputRole.labels: InputSpec(artifact_type=ArtifactTypes.DATA),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.data: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": ["data"]},
         ),
     }
 
@@ -289,20 +338,47 @@ class TestPostStepCaching:
         assert mock_exec.call_count == first_call_count + 1
 
 
-class TestPostStepRoleMismatch:
-    """Role mismatch between main outputs and post_step inputs."""
+class TestPostStepRoleFiltering:
+    """Post-step inputs are filtered to roles the post-step declares."""
 
     @patch(_EXECUTE_STEP, side_effect=_mock_execute_step)
-    def test_role_mismatch_raises_validation_error(self, mock_exec, tmp_path):
-        """Post_step with mismatched input roles raises ValueError."""
+    def test_superset_outputs_filtered_to_subset_inputs(self, mock_exec, tmp_path):
+        """Extra output roles are silently filtered when post-step needs fewer."""
         pipeline = PipelineManager.create(
             name="test",
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
         )
-        # ProducerOp outputs "data", MismatchedConsumerOp expects "metrics"
-        with pytest.raises(ValueError, match="Unknown input roles"):
+        # MultiOutputProducerOp outputs {data, metrics}; ConsumerOp accepts {data}
+        future = pipeline.submit(MultiOutputProducerOp, post_step=ConsumerOp)
+        assert isinstance(future, StepFuture)
+        assert future.step_name == "MultiOutputProducer.post"
+
+    @patch(_EXECUTE_STEP, side_effect=_mock_execute_step)
+    def test_disjoint_roles_raises_missing_required(self, mock_exec, tmp_path):
+        """Completely disjoint roles raises missing-required error."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        )
+        # ProducerOp outputs {data}; MismatchedConsumerOp requires {metrics}
+        # After filtering: post_inputs is empty → missing required role
+        with pytest.raises(ValueError, match="Missing required input"):
             pipeline.submit(ProducerOp, post_step=MismatchedConsumerOp)
+
+    @patch(_EXECUTE_STEP, side_effect=_mock_execute_step)
+    def test_partial_overlap_missing_required(self, mock_exec, tmp_path):
+        """Partial overlap still raises when a required role is missing."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        )
+        # MultiOutputProducerOp outputs {data, metrics}
+        # TwoInputConsumerOp requires {data, labels} — data matches, labels doesn't
+        with pytest.raises(ValueError, match="Missing required input"):
+            pipeline.submit(MultiOutputProducerOp, post_step=TwoInputConsumerOp)
 
 
 class TestPostStepNone:
