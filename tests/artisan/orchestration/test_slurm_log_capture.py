@@ -149,10 +149,14 @@ class TestFindStagingDir:
         staging_dir = tmp_path / "1_op" / "ab" / "cd" / run_id
         staging_dir.mkdir(parents=True)
 
-        result = _find_staging_dir(str(tmp_path), run_id, step_number=1, operation_name="op")
+        result = _find_staging_dir(
+            str(tmp_path), run_id, step_number=1, operation_name="op"
+        )
         assert result == str(staging_dir)
 
     def test_returns_none_when_missing(self, tmp_path: Path) -> None:
         """Returns None when run_id not found."""
-        result = _find_staging_dir(str(tmp_path), "nonexistent123", step_number=1, operation_name="op")
+        result = _find_staging_dir(
+            str(tmp_path), "nonexistent123", step_number=1, operation_name="op"
+        )
         assert result is None

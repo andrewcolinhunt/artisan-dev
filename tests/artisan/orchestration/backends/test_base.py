@@ -62,7 +62,9 @@ class TestInitSubclassValidation:
                 def create_dispatch_handle(self, *a, **kw):
                     pass
 
-                def capture_logs(self, results, staging_root, failure_logs_root, op, step):
+                def capture_logs(
+                    self, results, staging_root, failure_logs_root, op, step
+                ):
                     pass
 
     def test_missing_worker_traits_raises(self) -> None:
@@ -75,7 +77,9 @@ class TestInitSubclassValidation:
                 def create_dispatch_handle(self, *a, **kw):
                     pass
 
-                def capture_logs(self, results, staging_root, failure_logs_root, op, step):
+                def capture_logs(
+                    self, results, staging_root, failure_logs_root, op, step
+                ):
                     pass
 
     def test_missing_orchestrator_traits_raises(self) -> None:
@@ -88,7 +92,9 @@ class TestInitSubclassValidation:
                 def create_dispatch_handle(self, *a, **kw):
                     pass
 
-                def capture_logs(self, results, staging_root, failure_logs_root, op, step):
+                def capture_logs(
+                    self, results, staging_root, failure_logs_root, op, step
+                ):
                     pass
 
     def test_valid_subclass_succeeds(self) -> None:
