@@ -159,6 +159,7 @@ class LocalBackend(BackendBase):
         staging_root: str,
         failure_logs_root: str | None,
         operation_name: str,
+        step_number: int,
     ) -> None:
         """No-op — local logs are in the orchestrator's stdout."""
 

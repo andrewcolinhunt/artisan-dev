@@ -89,8 +89,8 @@ class TestSlurmIntraBackendCaptureLogs:
         results = [
             UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
         ]
-        backend.capture_logs(results, "/staging", "/logs", "test_op")
-        mock_patch.assert_called_once_with(results, "/staging", "/logs", "test_op")
+        backend.capture_logs(results, "/staging", "/logs", "test_op", 1)
+        mock_patch.assert_called_once_with(results, "/staging", "/logs", "test_op", 1)
 
 
 class TestSlurmIntraBackendValidateOperation:

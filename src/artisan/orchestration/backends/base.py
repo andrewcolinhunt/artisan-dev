@@ -118,6 +118,7 @@ class BackendBase(ABC):
         staging_root: str,
         failure_logs_root: str | None,
         operation_name: str,
+        step_number: int,
     ) -> None:
         """Post-dispatch: capture backend-specific worker logs into results.
 
@@ -126,6 +127,7 @@ class BackendBase(ABC):
             staging_root: Root staging directory.
             failure_logs_root: Root directory for failure log files.
             operation_name: Operation name for log directory structure.
+            step_number: Pipeline step number for staging path computation.
         """
         ...
 

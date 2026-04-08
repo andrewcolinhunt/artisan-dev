@@ -1056,6 +1056,7 @@ def _execute_creator_step(
                     config.staging_root,
                     runtime_env.failure_logs_root,
                     operation.name,
+                    step_number,
                 )
 
         # =====================================================================

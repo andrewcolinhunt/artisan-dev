@@ -103,8 +103,8 @@ class TestPatchWorkerLogs:
 
     def test_patches_staged_parquet(self, tmp_path: Path) -> None:
         """worker_log is written into existing staged parquet."""
-        # Create a staged parquet with expected structure
-        staging_dir = tmp_path / "step_1_op" / "ab" / "abcdef123456"
+        # Create a staged parquet with two-level shard structure
+        staging_dir = tmp_path / "1_op" / "ab" / "cd" / "abcdef123456"
         staging_dir.mkdir(parents=True)
         parquet_path = staging_dir / "executions.parquet"
         pl.DataFrame(
@@ -117,7 +117,7 @@ class TestPatchWorkerLogs:
                 worker_log="slurm output here",
             )
         ]
-        _patch_worker_logs(results, tmp_path)
+        _patch_worker_logs(results, str(tmp_path), None, "op", 1)
 
         df = pl.read_parquet(parquet_path)
         assert "worker_log" in df.columns
@@ -132,27 +132,27 @@ class TestPatchWorkerLogs:
             )
         ]
         # Should not raise
-        _patch_worker_logs(results, tmp_path)
+        _patch_worker_logs(results, str(tmp_path), None, "op", 1)
 
     def test_skips_results_without_worker_log(self, tmp_path: Path) -> None:
         """Results without worker_log are skipped."""
         results = [_result(execution_run_ids=["run1"])]
-        _patch_worker_logs(results, tmp_path)  # no error
+        _patch_worker_logs(results, str(tmp_path), None, "op", 1)  # no error
 
 
 class TestFindStagingDir:
     """Tests for _find_staging_dir helper."""
 
     def test_finds_existing_dir(self, tmp_path: Path) -> None:
-        """Locates staging dir by run_id prefix."""
+        """Locates staging dir via two-level shard path."""
         run_id = "abcdef123456"
-        staging_dir = tmp_path / "step_1_op" / "ab" / run_id
+        staging_dir = tmp_path / "1_op" / "ab" / "cd" / run_id
         staging_dir.mkdir(parents=True)
 
-        result = _find_staging_dir(str(tmp_path), run_id)
+        result = _find_staging_dir(str(tmp_path), run_id, step_number=1, operation_name="op")
         assert result == str(staging_dir)
 
     def test_returns_none_when_missing(self, tmp_path: Path) -> None:
         """Returns None when run_id not found."""
-        result = _find_staging_dir(str(tmp_path), "nonexistent123")
+        result = _find_staging_dir(str(tmp_path), "nonexistent123", step_number=1, operation_name="op")
         assert result is None
