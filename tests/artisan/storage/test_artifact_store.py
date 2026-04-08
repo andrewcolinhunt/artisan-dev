@@ -67,6 +67,22 @@ class TestArtifactStoreFilesRoot:
         assert store.files_root is None
 
 
+class TestArtifactStoreFsDefault:
+    """Tests for the fs parameter defaulting to LocalFileSystem."""
+
+    def test_fs_defaults_to_local(self, tmp_path):
+        """ArtifactStore without fs= uses LocalFileSystem."""
+        store = ArtifactStore(str(tmp_path))
+        assert isinstance(store._fs, LocalFileSystem)
+        assert store.base_path == str(tmp_path)
+
+    def test_fs_explicit_overrides_default(self, tmp_path):
+        """Explicit fs= is used instead of the default."""
+        explicit_fs = LocalFileSystem()
+        store = ArtifactStore(str(tmp_path), fs=explicit_fs)
+        assert store._fs is explicit_fs
+
+
 class TestArtifactStoreReadWithDelta:
     """Tests for artifact reading (requires Delta Lake)."""
 
