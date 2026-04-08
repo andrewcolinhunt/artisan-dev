@@ -7,9 +7,6 @@
 # Produces staged parquet files in /tmp/artisan-demo/ on the host.
 set -euo pipefail
 
-# pixi.lock has linux-64 only; force amd64 for all docker commands.
-export DOCKER_DEFAULT_PLATFORM=linux/amd64
-
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 echo "==> Building base image: artisan-worker:dev"

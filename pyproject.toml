@@ -46,7 +46,7 @@ packages = ["src/artisan"]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = ["linux-64", "osx-arm64"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
 
 # =============================================================================
 # DEFAULT ENVIRONMENT - Core runtime dependencies
@@ -63,6 +63,9 @@ ipykernel = "*"
 
 # Pin packaging for Prefect 3.x compatibility
 packaging = ">=21.3,<25.1"
+
+# Pin importlib-metadata for opentelemetry-api compatibility (via prefect)
+importlib-metadata = ">=6.0,<8.8"
 
 # PostgreSQL for Prefect server (handles concurrency better than SQLite)
 postgresql = ">=16"
