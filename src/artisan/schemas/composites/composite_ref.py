@@ -109,6 +109,11 @@ class ExpandedCompositeResult:
         self._output_map = output_map
         self._output_types = output_types
 
+    @property
+    def output_roles(self) -> frozenset[str]:
+        """Available output role names from this composite expansion."""
+        return frozenset(self._output_map)
+
     def output(self, role: str) -> OutputReference:
         """Get the OutputReference for a composite output role.
 
