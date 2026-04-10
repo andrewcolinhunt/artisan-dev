@@ -21,6 +21,27 @@ class LocalComputeConfig(ComputeConfig):
     """Local compute (default, today's behavior)."""
 
 
+class ModalComputeConfig(ComputeConfig):
+    """Configuration for routing execute() to a Modal container.
+
+    The container image must have artisan installed (transport
+    functions run inside the container).
+
+    Attributes:
+        image: Container image for the Modal function.
+        gpu: GPU type (e.g. "A10G", "A100", "H100").
+        memory_gb: Container memory in GB.
+        timeout: Per-call timeout in seconds.
+        retries: Number of retries on preemption.
+    """
+
+    image: str
+    gpu: str | None = None
+    memory_gb: int = 8
+    timeout: int = 3600
+    retries: int = 3
+
+
 class Compute(BaseModel):
     """Multi-provider compute routing configuration.
 
@@ -37,6 +58,7 @@ class Compute(BaseModel):
     local: LocalComputeConfig = Field(
         default_factory=LocalComputeConfig,
     )
+    modal: ModalComputeConfig | None = None
 
     def current(self) -> ComputeConfig:
         """Return the active provider config.
@@ -54,8 +76,4 @@ class Compute(BaseModel):
 
     def available(self) -> list[str]:
         """Return names of configured providers."""
-        return [
-            name
-            for name in ("local",)  # extend as providers are added
-            if getattr(self, name) is not None
-        ]
+        return [name for name in ("local", "modal") if getattr(self, name) is not None]
