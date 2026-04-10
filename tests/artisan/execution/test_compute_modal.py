@@ -43,7 +43,7 @@ def _make_mock_modal():
 
 
 class TestModalComputeRouter:
-    def test_route_execute_serializes_and_calls_remote(self):
+    def test_route_execute_serializes_and_calls_remote(self, tmp_path):
         """route_execute cloudpickles args and calls fn.remote."""
         mock_modal = _make_mock_modal()
         config = ModalComputeConfig(image="test:latest")
@@ -52,19 +52,23 @@ class TestModalComputeRouter:
         operation = MagicMock()
         operation.environments = Environments()
         operation.execute.return_value = {"result": 42}
-        # Make operation picklable by providing model_copy
-        operation.model_copy = MagicMock(return_value=operation)
+        operation.tool = None
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
 
         execute_input = ExecuteInput(
-            inputs={}, execute_dir="/tmp/test", log_path="/tmp/log"
+            inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log"
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            result = router.route_execute(operation, execute_input, "/tmp/sandbox")
+            result = router.route_execute(operation, execute_input, str(sandbox))
 
         assert result == {"result": 42}
 
-    def test_route_execute_returns_none(self):
+    def test_route_execute_returns_none(self, tmp_path):
         """route_execute passes through None returns."""
         mock_modal = _make_mock_modal()
         config = ModalComputeConfig(image="test:latest")
@@ -73,13 +77,19 @@ class TestModalComputeRouter:
         operation = MagicMock()
         operation.environments = Environments()
         operation.execute.return_value = None
+        operation.tool = None
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
 
         execute_input = ExecuteInput(
-            inputs={}, execute_dir="/tmp/test", log_path="/tmp/log"
+            inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log"
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            result = router.route_execute(operation, execute_input, "/tmp/sandbox")
+            result = router.route_execute(operation, execute_input, str(sandbox))
 
         assert result is None
 
@@ -151,7 +161,7 @@ class TestModalComputeRouter:
 
         assert result is operation  # same object, not a copy
 
-    def test_remote_receives_cloudpickle_bytes(self):
+    def test_remote_receives_cloudpickle_bytes(self, tmp_path):
         """fn.remote receives valid cloudpickle bytes."""
         mock_modal = _make_mock_modal()
         config = ModalComputeConfig(image="test:latest")
@@ -160,21 +170,118 @@ class TestModalComputeRouter:
         operation = MagicMock()
         operation.environments = Environments()
         operation.execute.return_value = "ok"
+        operation.tool = None
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
 
         execute_input = ExecuteInput(
             inputs={"data": ["/tmp/file"]},
-            execute_dir="/tmp/exec",
+            execute_dir=str(execute_dir),
             log_path="/tmp/log",
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
             fn = router._get_or_create_fn()
-            # Call route_execute to trigger the remote call
-            router.route_execute(operation, execute_input, "/tmp/sandbox")
+            router.route_execute(operation, execute_input, str(sandbox))
 
-        # Verify the remote was called with bytes that can be deserialized
         call_kwargs = fn.remote.call_args[1]
-        deserialized_op = cloudpickle.loads(call_kwargs["operation_bytes"])
         deserialized_input = cloudpickle.loads(call_kwargs["execute_input_bytes"])
-        assert deserialized_input.execute_dir == "/tmp/exec"
+        assert deserialized_input.execute_dir == str(execute_dir)
         assert deserialized_input.inputs == {"data": ["/tmp/file"]}
+
+    def test_sandbox_snapshot_passed_to_remote(self, tmp_path):
+        """Sandbox files are snapshotted and passed to fn.remote."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        operation = MagicMock()
+        operation.environments = Environments()
+        operation.execute.return_value = "ok"
+        operation.tool = None
+
+        # Create sandbox with a file in materialized_inputs
+        sandbox = tmp_path / "sandbox"
+        (sandbox / "materialized_inputs").mkdir(parents=True)
+        (sandbox / "materialized_inputs" / "input.txt").write_bytes(b"data")
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+
+        execute_input = ExecuteInput(
+            inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log"
+        )
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            fn = router._get_or_create_fn()
+            router.route_execute(operation, execute_input, str(sandbox))
+
+        call_kwargs = fn.remote.call_args[1]
+        assert call_kwargs["sandbox"] == {"materialized_inputs/input.txt": b"data"}
+
+    def test_tool_files_passed_to_remote(self, tmp_path):
+        """Tool script files are snapshotted and passed to fn.remote."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        # Create a tool script
+        script = tmp_path / "tool.py"
+        script.write_bytes(b"print('tool')")
+
+        operation = MagicMock()
+        operation.environments = Environments()
+        operation.execute.return_value = "ok"
+        operation.tool = MagicMock()
+        operation.tool.executable = str(script)
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+
+        execute_input = ExecuteInput(
+            inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log"
+        )
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            fn = router._get_or_create_fn()
+            router.route_execute(operation, execute_input, str(sandbox))
+
+        call_kwargs = fn.remote.call_args[1]
+        assert call_kwargs["tool_files"] == {str(script): b"print('tool')"}
+
+    def test_output_snapshot_restored_locally(self, tmp_path):
+        """Output files from remote are restored in the sandbox."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        operation = MagicMock()
+        operation.environments = Environments()
+        operation.tool = None
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+
+        # Operation writes a file during execute
+        def write_output(inp):
+            (execute_dir / "result.json").write_bytes(b'{"done": true}')
+            return {"success": True}
+
+        operation.execute.side_effect = write_output
+
+        execute_input = ExecuteInput(
+            inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log"
+        )
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            result = router.route_execute(operation, execute_input, str(sandbox))
+
+        assert result == {"success": True}
+        # The output file should exist (restored from remote snapshot)
+        assert (execute_dir / "result.json").read_bytes() == b'{"done": true}'
