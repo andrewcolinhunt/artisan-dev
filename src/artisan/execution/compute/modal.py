@@ -110,6 +110,7 @@ class ModalComputeRouter(ComputeRouter):
             memory=self._config.memory_gb * 1024,
             timeout=self._config.timeout,
             retries=self._config.retries,
+            serialized=True,
         )
         def _execute_on_modal(
             operation_bytes: bytes,
