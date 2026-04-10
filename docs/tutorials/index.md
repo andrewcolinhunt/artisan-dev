@@ -59,6 +59,8 @@ configuration.
   Dispatch work via srun within an existing SLURM allocation
 - [Compute Routing](execution/13-compute-routing.ipynb) (~15 min) -- Route
   execute() to local or remote compute targets independently of the dispatch backend
+- [Running on Modal](execution/14-modal-execution.ipynb) (~15 min) -- Route
+  operations to Modal containers with GPU, automatic sandbox transport, and tool shipping
 
 ## Analysis
 
