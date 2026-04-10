@@ -34,17 +34,28 @@ def _make_mock_modal():
     mock_app.run.return_value = mock_ctx
 
     # app.function() returns a decorator that wraps the function
-    # and gives it a .remote() method
+    # and gives it a .remote() method. The remote mock returns a
+    # (result, output_snapshot) tuple — matching the real return
+    # signature — without deserializing the cloudpickled bytes
+    # (MagicMock can't survive cloudpickle round-trips).
+    _captured = {}
+
     def function_decorator(**kwargs):
         def decorator(fn):
             wrapped = MagicMock()
             wrapped._original_fn = fn
-            wrapped.remote = MagicMock(side_effect=lambda **kw: fn(**kw))
+            # Default: return (None, {}) — tests override via _captured
+            wrapped.remote = MagicMock(
+                side_effect=lambda **kw: _captured.get("remote_fn", lambda **k: (None, {}))(
+                    **kw
+                )
+            )
             return wrapped
 
         return decorator
 
     mock_app.function = function_decorator
+    mock_modal._captured = _captured
     return mock_modal
 
 
@@ -52,12 +63,12 @@ class TestModalComputeRouter:
     def test_route_execute_serializes_and_calls_remote(self, tmp_path):
         """route_execute cloudpickles args and calls fn.remote."""
         mock_modal = _make_mock_modal()
+        mock_modal._captured["remote_fn"] = lambda **kw: ({"result": 42}, {})
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
 
         operation = MagicMock()
         operation.environments = Environments()
-        operation.execute.return_value = {"result": 42}
         operation.tool = None
 
         sandbox = tmp_path / "sandbox"
@@ -77,12 +88,12 @@ class TestModalComputeRouter:
     def test_route_execute_returns_none(self, tmp_path):
         """route_execute passes through None returns."""
         mock_modal = _make_mock_modal()
+        mock_modal._captured["remote_fn"] = lambda **kw: (None, {})
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
 
         operation = MagicMock()
         operation.environments = Environments()
-        operation.execute.return_value = None
         operation.tool = None
 
         sandbox = tmp_path / "sandbox"
@@ -106,8 +117,8 @@ class TestModalComputeRouter:
         router = ModalComputeRouter(config)
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            fn1 = router._ensure_running()
-            fn2 = router._ensure_running()
+            fn1 = router._ensure_running("test_op")
+            fn2 = router._ensure_running("test_op")
 
         assert fn1 is fn2
 
@@ -118,8 +129,9 @@ class TestModalComputeRouter:
         router = ModalComputeRouter(config)
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            router._ensure_running()
+            router._ensure_running("test_op")
 
+        mock_modal.App.assert_called_once_with("artisan-test_op")
         mock_app = mock_modal.App.return_value
         mock_app.run.assert_called_once()
         mock_app.run.return_value.__enter__.assert_called_once()
@@ -137,9 +149,9 @@ class TestModalComputeRouter:
         router = ModalComputeRouter(config)
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            router._ensure_running()
+            router._ensure_running("gpu_op")
 
-        mock_modal.App.assert_called_once()
+        mock_modal.App.assert_called_once_with("artisan-gpu_op")
         mock_modal.Image.from_registry.assert_called_once_with(
             "my-registry/gpu-image:v1"
         )
@@ -151,7 +163,7 @@ class TestModalComputeRouter:
         router = ModalComputeRouter(config)
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            router._ensure_running()
+            router._ensure_running("test_op")
             router.close()
 
         mock_ctx = mock_modal.App.return_value.run.return_value
@@ -225,7 +237,7 @@ class TestModalComputeRouter:
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            fn = router._ensure_running()
+            fn = router._ensure_running("test_op")
             router.route_execute(operation, execute_input, str(sandbox))
 
         call_kwargs = fn.remote.call_args[1]
@@ -256,7 +268,7 @@ class TestModalComputeRouter:
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            fn = router._ensure_running()
+            fn = router._ensure_running("test_op")
             router.route_execute(operation, execute_input, str(sandbox))
 
         call_kwargs = fn.remote.call_args[1]
@@ -288,7 +300,7 @@ class TestModalComputeRouter:
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            fn = router._ensure_running()
+            fn = router._ensure_running("test_op")
             router.route_execute(operation, execute_input, str(sandbox))
 
         call_kwargs = fn.remote.call_args[1]
@@ -297,6 +309,12 @@ class TestModalComputeRouter:
     def test_output_snapshot_restored_locally(self, tmp_path):
         """Output files from remote are restored in the sandbox."""
         mock_modal = _make_mock_modal()
+        # Simulate remote returning an output snapshot
+        output_snapshot = {"result.json": b'{"done": true}'}
+        mock_modal._captured["remote_fn"] = lambda **kw: (
+            {"success": True},
+            output_snapshot,
+        )
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
 
@@ -309,13 +327,6 @@ class TestModalComputeRouter:
         execute_dir = tmp_path / "execute"
         execute_dir.mkdir()
 
-        # Operation writes a file during execute
-        def write_output(inp):
-            (execute_dir / "result.json").write_bytes(b'{"done": true}')
-            return {"success": True}
-
-        operation.execute.side_effect = write_output
-
         execute_input = ExecuteInput(
             inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log"
         )
@@ -325,4 +336,4 @@ class TestModalComputeRouter:
 
         assert result == {"success": True}
         # The output file should exist (restored from remote snapshot)
-        assert (execute_dir / "result.json").read_bytes() == b'{"done": true}'
+        assert (sandbox / "result.json").read_bytes() == b'{"done": true}'
