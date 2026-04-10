@@ -62,6 +62,7 @@ def instantiate_operation(
     execution: dict[str, Any] | None = None,
     environment: str | dict[str, Any] | None = None,
     tool: dict[str, Any] | None = None,
+    compute: str | dict[str, Any] | None = None,
 ) -> OperationDefinition:
     """Construct an operation instance from class, params, and overrides.
 
@@ -73,6 +74,8 @@ def instantiate_operation(
         environment: Optional environment override. String selects the active
             environment; dict deep-merges nested EnvironmentSpec fields.
         tool: Optional tool overrides (applied via model_copy on instance.tool).
+        compute: Optional compute override. String selects the active
+            provider; dict applied via model_copy.
 
     Returns:
         Fully configured operation instance.
@@ -118,6 +121,11 @@ def instantiate_operation(
             updates["environments"] = instance.environments.model_copy(
                 update=env_updates
             )
+    if compute is not None:
+        if isinstance(compute, str):
+            updates["compute"] = instance.compute.model_copy(update={"active": compute})
+        else:
+            updates["compute"] = instance.compute.model_copy(update=compute)
     if updates:
         instance = instance.model_copy(update=updates)
 
@@ -412,6 +420,7 @@ def execute_step(
     execution: dict[str, Any] | None = None,
     environment: str | dict[str, Any] | None = None,
     tool: dict[str, Any] | None = None,
+    compute: str | dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -439,6 +448,7 @@ def execute_step(
         execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
         environment: Environment override (string or dict).
         tool: Tool overrides (executable, interpreter, etc.).
+        compute: Compute routing override (string or dict).
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: "continue" or "fail_fast".
@@ -455,12 +465,12 @@ def execute_step(
         StepResult with output references and execution metadata.
     """
     operation = instantiate_operation(
-        operation_class, params, resources, execution, environment, tool
+        operation_class, params, resources, execution, environment, tool, compute
     )
     user_overrides = params or {}
 
-    # Merge environment + tool into config_overrides for hashing
-    config_overrides = _merge_config_overrides(environment, tool)
+    # Merge environment + tool + compute into config_overrides for hashing
+    config_overrides = _merge_config_overrides(environment, tool, compute)
 
     # Check if this is a curator operation
     if is_curator_operation(operation):
@@ -501,8 +511,9 @@ def execute_step(
 def _merge_config_overrides(
     environment: str | dict[str, Any] | None,
     tool: dict[str, Any] | None,
+    compute: str | dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Merge environment and tool overrides into a single dict for hashing."""
+    """Merge environment, tool, and compute overrides into a single dict for hashing."""
     merged: dict[str, Any] = {}
     if environment is not None:
         if isinstance(environment, str):
@@ -511,6 +522,8 @@ def _merge_config_overrides(
             merged["environment"] = environment
     if tool:
         merged["tool"] = tool
+    if compute is not None:
+        merged["compute"] = compute
     return merged or None
 
 
