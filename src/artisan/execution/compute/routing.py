@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from artisan.execution.compute.base import ComputeRouter
 from artisan.execution.compute.local import LocalComputeRouter
-from artisan.schemas.operation_config.compute import ComputeConfig, LocalComputeConfig
+from artisan.schemas.operation_config.compute import (
+    ComputeConfig,
+    LocalComputeConfig,
+    ModalComputeConfig,
+)
 
 
 def create_router(config: ComputeConfig) -> ComputeRouter:
@@ -21,5 +25,9 @@ def create_router(config: ComputeConfig) -> ComputeRouter:
     """
     if isinstance(config, LocalComputeConfig):
         return LocalComputeRouter()
+    if isinstance(config, ModalComputeConfig):
+        from artisan.execution.compute.modal import ModalComputeRouter
+
+        return ModalComputeRouter(config)
     msg = f"Unknown compute config: {type(config).__name__}"
     raise ValueError(msg)
