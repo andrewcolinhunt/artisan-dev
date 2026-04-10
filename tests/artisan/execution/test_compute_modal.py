@@ -27,6 +27,12 @@ def _make_mock_modal():
     mock_app = MagicMock()
     mock_modal.App.return_value = mock_app
 
+    # app.run() returns a context manager that no-ops
+    mock_ctx = MagicMock()
+    mock_ctx.__enter__ = MagicMock(return_value=None)
+    mock_ctx.__exit__ = MagicMock(return_value=False)
+    mock_app.run.return_value = mock_ctx
+
     # app.function() returns a decorator that wraps the function
     # and gives it a .remote() method
     def function_decorator(**kwargs):
@@ -93,20 +99,33 @@ class TestModalComputeRouter:
 
         assert result is None
 
-    def test_get_or_create_fn_caches(self):
-        """_get_or_create_fn returns the same function on repeated calls."""
+    def test_ensure_running_caches(self):
+        """_ensure_running returns the same function on repeated calls."""
         mock_modal = _make_mock_modal()
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            fn1 = router._get_or_create_fn()
-            fn2 = router._get_or_create_fn()
+            fn1 = router._ensure_running()
+            fn2 = router._ensure_running()
 
         assert fn1 is fn2
 
-    def test_get_or_create_fn_passes_config(self):
-        """_get_or_create_fn passes config fields to modal.App and Image."""
+    def test_ensure_running_enters_app_run(self):
+        """_ensure_running enters app.run() context."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running()
+
+        mock_app = mock_modal.App.return_value
+        mock_app.run.assert_called_once()
+        mock_app.run.return_value.__enter__.assert_called_once()
+
+    def test_ensure_running_passes_config(self):
+        """_ensure_running passes config fields to modal.App and Image."""
         mock_modal = _make_mock_modal()
         config = ModalComputeConfig(
             image="my-registry/gpu-image:v1",
@@ -118,12 +137,34 @@ class TestModalComputeRouter:
         router = ModalComputeRouter(config)
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            router._get_or_create_fn()
+            router._ensure_running()
 
         mock_modal.App.assert_called_once()
         mock_modal.Image.from_registry.assert_called_once_with(
             "my-registry/gpu-image:v1"
         )
+
+    def test_close_exits_app_run(self):
+        """close() exits the app.run() context."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running()
+            router.close()
+
+        mock_ctx = mock_modal.App.return_value.run.return_value
+        mock_ctx.__exit__.assert_called_once_with(None, None, None)
+        assert router._fn is None
+        assert router._app is None
+        assert router._ctx is None
+
+    def test_close_noop_when_not_running(self):
+        """close() is a no-op when the router hasn't been started."""
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+        router.close()  # should not raise
 
     def test_force_local_environment_switches_docker(self):
         """_force_local_environment switches Docker environment to local."""
@@ -184,7 +225,7 @@ class TestModalComputeRouter:
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            fn = router._get_or_create_fn()
+            fn = router._ensure_running()
             router.route_execute(operation, execute_input, str(sandbox))
 
         call_kwargs = fn.remote.call_args[1]
@@ -215,7 +256,7 @@ class TestModalComputeRouter:
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            fn = router._get_or_create_fn()
+            fn = router._ensure_running()
             router.route_execute(operation, execute_input, str(sandbox))
 
         call_kwargs = fn.remote.call_args[1]
@@ -247,7 +288,7 @@ class TestModalComputeRouter:
         )
 
         with patch.dict("sys.modules", {"modal": mock_modal}):
-            fn = router._get_or_create_fn()
+            fn = router._ensure_running()
             router.route_execute(operation, execute_input, str(sandbox))
 
         call_kwargs = fn.remote.call_args[1]
