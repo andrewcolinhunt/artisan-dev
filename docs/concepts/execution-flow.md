@@ -230,6 +230,41 @@ produced by non-final operations:
 For the full conceptual model of composites, see
 [Composites and Composition](composites-and-composition.md).
 
+### Compute routing
+
+The execute() call is the routing boundary for compute targets. Everything
+before it (sandbox setup, input materialization) and after it (lineage capture,
+staging to Parquet) runs on the worker. Only the execute() call itself can be
+routed to a remote target.
+
+```
+  Workers
+┌──────────────────────────┐
+│        EXECUTE           │
+│                          │
+│  Set up sandbox          │
+│  Materialize inputs      │
+│  ┌────────────────────┐  │
+│  │  execute() ────────│──│──→ [Compute target]
+│  │  (routing boundary)│  │     Local | Modal
+│  └────────────────────┘  │
+│  Capture lineage         │
+│  Stage to Parquet        │
+└──────────────────────────┘
+```
+
+Compute routing is orthogonal to the dispatch backend. A local worker can
+route execute() to Modal; a SLURM worker can also route execute() to Modal.
+The dispatch backend controls where the worker process runs. The compute
+target controls where execute() runs inside that worker.
+
+When compute is `"local"` (the default), execute() runs as a direct call
+inside the worker process -- today's behavior. When compute is `"modal"`,
+the framework serializes the operation and inputs via cloudpickle, ships
+them to a Modal container, runs execute() there, and returns the results.
+File-based operations additionally transport sandbox files (up to 50 MB per
+direction).
+
 ---
 
 ## Lineage capture
@@ -429,3 +464,4 @@ re-executes cancelled steps while completed steps load from cache.
 - [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) -- See the execution flow in action
 - [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) -- Run operations on a SLURM cluster
 - [Pipeline Cancellation Tutorial](../tutorials/execution/08-pipeline-cancellation.ipynb) -- Cooperative cancellation in action
+- [Compute Routing Tutorial](../tutorials/execution/13-compute-routing.ipynb) -- Route execute() to local or remote compute targets
