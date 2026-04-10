@@ -14,6 +14,7 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -74,6 +75,11 @@ class MetricCalculator(OperationDefinition):
 
     # ---------- Execution ----------
     execution: ExecutionConfig = ExecutionConfig(job_name="metric_calculator", artifacts_per_unit = 10000)
+
+    # ---------- Compute ----------
+    compute: Compute = Compute(
+        modal=ModalComputeConfig(image="python:3.12-slim"),
+    )
 
     # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:

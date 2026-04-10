@@ -14,6 +14,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -75,6 +76,11 @@ class DataGenerator(OperationDefinition):
     # ---------- Execution ----------
     execution: ExecutionConfig = ExecutionConfig(
         units_per_worker=100, job_name="data_generator"
+    )
+
+    # ---------- Compute ----------
+    compute: Compute = Compute(
+        modal=ModalComputeConfig(image="python:3.12-slim"),
     )
 
     # ---------- Lifecycle ----------
