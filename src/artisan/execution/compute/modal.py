@@ -54,7 +54,7 @@ class ModalComputeRouter(ComputeRouter):
         )
         from artisan.execution.transport.tool_transport import snapshot_tool_files
 
-        fn = self._ensure_running()
+        fn = self._ensure_running(operation.name)
         operation = self._force_local_environment(operation)
 
         sandbox_snapshot = snapshot_sandbox(sandbox_root)
@@ -104,19 +104,23 @@ class ModalComputeRouter(ComputeRouter):
             )
         return operation
 
-    def _ensure_running(self) -> Any:
+    def _ensure_running(self, operation_name: str) -> Any:
         """Lazily create the Modal app and hydrate the function.
 
         Creates an ephemeral ``modal.App``, decorates the execute
         function, and enters ``app.run()`` to hydrate it. The context
         is held open so subsequent calls hit warm containers.
+
+        Args:
+            operation_name: Used to name the Modal app for dashboard
+                visibility (e.g. ``artisan-data_transformer``).
         """
         if self._fn is not None:
             return self._fn
 
         import modal
 
-        app = modal.App()
+        app = modal.App(f"artisan-{operation_name}")
         image = modal.Image.from_registry(self._config.image)
 
         @app.function(
