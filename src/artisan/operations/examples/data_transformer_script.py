@@ -13,6 +13,7 @@ from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 from artisan.schemas.operation_config.environment_spec import (
     DockerEnvironmentSpec,
     LocalEnvironmentSpec,
@@ -94,6 +95,11 @@ class DataTransformerScript(OperationDefinition):
 
     # ---------- Execution ----------
     execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_script")
+
+    # ---------- Compute ----------
+    compute: Compute = Compute(
+        modal=ModalComputeConfig(image="python:3.12-slim"),
+    )
 
     # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
