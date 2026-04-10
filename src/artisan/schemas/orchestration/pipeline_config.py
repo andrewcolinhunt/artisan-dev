@@ -41,6 +41,10 @@ class PipelineConfig(BaseModel):
         default="local",
         description="Default backend name for step execution.",
     )
+    default_compute: str = Field(
+        default="local",
+        description="Default compute routing for step execution.",
+    )
     preserve_staging: bool = Field(
         default=False,
         description="Debug flag to preserve staging files after commit.",
