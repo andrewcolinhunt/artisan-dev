@@ -46,9 +46,9 @@ def _make_mock_modal():
             wrapped._original_fn = fn
             # Default: return (None, {}) — tests override via _captured
             wrapped.remote = MagicMock(
-                side_effect=lambda **kw: _captured.get("remote_fn", lambda **k: (None, {}))(
-                    **kw
-                )
+                side_effect=lambda **kw: _captured.get(
+                    "remote_fn", lambda **k: (None, {})
+                )(**kw)
             )
             return wrapped
 
@@ -335,5 +335,5 @@ class TestModalComputeRouter:
             result = router.route_execute(operation, execute_input, str(sandbox))
 
         assert result == {"success": True}
-        # The output file should exist (restored from remote snapshot)
-        assert (sandbox / "result.json").read_bytes() == b'{"done": true}'
+        # The output file should exist in execute_dir (not sandbox_root)
+        assert (execute_dir / "result.json").read_bytes() == b'{"done": true}'

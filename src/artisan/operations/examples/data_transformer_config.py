@@ -94,7 +94,7 @@ class DataTransformerConfig(OperationDefinition):
 
     # ---------- Compute ----------
     compute: Compute = Compute(
-        modal=ModalComputeConfig(image="python:3.12-slim"),
+        modal=ModalComputeConfig(),
     )
 
     # ---------- Lifecycle ----------
