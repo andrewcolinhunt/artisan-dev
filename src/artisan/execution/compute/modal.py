@@ -69,7 +69,7 @@ class ModalComputeRouter(ComputeRouter):
         )
 
         if output_snapshot:
-            restore_sandbox(sandbox_root, output_snapshot)
+            restore_sandbox(execute_input.execute_dir, output_snapshot)
 
         return result
 
@@ -121,7 +121,9 @@ class ModalComputeRouter(ComputeRouter):
         import modal
 
         app = modal.App(f"artisan-{operation_name}")
-        image = modal.Image.from_registry(self._config.image)
+        image = modal.Image.from_registry(self._config.image).add_local_python_source(
+            "artisan"
+        )
 
         @app.function(
             image=image,

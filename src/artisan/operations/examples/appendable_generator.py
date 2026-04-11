@@ -72,7 +72,7 @@ class AppendableGenerator(OperationDefinition):
     resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
     execution: ExecutionConfig = ExecutionConfig(job_name="appendable_generator")
     compute: Compute = Compute(
-        modal=ModalComputeConfig(image="python:3.12-slim"),
+        modal=ModalComputeConfig(),
     )
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
