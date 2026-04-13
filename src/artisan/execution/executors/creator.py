@@ -351,6 +351,7 @@ def run_creator_flow(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
     worker_id: int = 0,
+    compute_router: ComputeRouter | None = None,
 ) -> StagingResult:
     """Execute a creator operation through ordered execution phases.
 
@@ -361,6 +362,9 @@ def run_creator_flow(
         unit: Execution unit specifying the operation and its inputs.
         runtime_env: Paths and backend configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
+        compute_router: Shared router for compute dispatch. When provided,
+            the lifecycle skips creating its own router. When ``None``,
+            each invocation creates a router from the operation's config.
 
     Returns:
         StagingResult indicating success or failure with staged paths.
@@ -383,7 +387,8 @@ def run_creator_flow(
     try:
         # Run the lifecycle (setup → lineage)
         lifecycle_result = run_creator_lifecycle(
-            unit, runtime_env, worker_id, execution_run_id
+            unit, runtime_env, worker_id, execution_run_id,
+            compute_router=compute_router,
         )
         timings.update(lifecycle_result.timings)
 
