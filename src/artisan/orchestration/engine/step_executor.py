@@ -41,6 +41,7 @@ from artisan.orchestration.engine.results import (
     extract_execution_run_ids,
 )
 from artisan.schemas.enums import FailurePolicy, TablePath
+from artisan.schemas.operation_config.compute import ModalComputeConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -1018,17 +1019,31 @@ def _execute_creator_step(
 
             if units_to_dispatch:
                 try:
-                    backend.validate_operation(operation)
-                    handle = backend.create_dispatch_handle(
-                        operation.resources,
-                        operation.execution,
-                        step_number,
-                        job_name=operation.execution.job_name or operation.name,
-                        log_folder=uri_join(
-                            uri_parent(config.delta_root), "logs", "slurm"
-                        ),
-                        staging_root=config.staging_root,
-                    )
+                    compute_config = operation.compute.current()
+
+                    if isinstance(compute_config, ModalComputeConfig):
+                        from artisan.orchestration.engine.compute_routing_handle import (
+                            ComputeRoutingDispatchHandle,
+                        )
+
+                        handle = ComputeRoutingDispatchHandle(
+                            compute_config=compute_config,
+                            cancel_event=cancel_event,
+                        )
+                    else:
+                        backend.validate_operation(operation)
+                        handle = backend.create_dispatch_handle(
+                            operation.resources,
+                            operation.execution,
+                            step_number,
+                            job_name=operation.execution.job_name
+                            or operation.name,
+                            log_folder=uri_join(
+                                uri_parent(config.delta_root), "logs", "slurm"
+                            ),
+                            staging_root=config.staging_root,
+                        )
+
                     results = handle.run(
                         units_to_dispatch, runtime_env, cancel_event=cancel_event
                     )
