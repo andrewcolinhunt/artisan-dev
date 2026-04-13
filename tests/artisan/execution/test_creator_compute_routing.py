@@ -7,6 +7,7 @@ import os
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
@@ -15,6 +16,7 @@ import xxhash
 from artisan.execution.compute.local import LocalComputeRouter
 from artisan.execution.executors.creator import (
     LifecycleResult,
+    run_creator_flow,
     run_creator_lifecycle,
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
@@ -183,3 +185,42 @@ class TestCreatorComputeRouting:
         assert isinstance(result, LifecycleResult)
         assert "output" in result.artifacts
         assert len(result.artifacts["output"]) == 1
+
+
+class TestRunCreatorFlowRouterForwarding:
+    """Verify run_creator_flow forwards the compute_router parameter."""
+
+    @patch("artisan.execution.executors.creator.run_creator_lifecycle")
+    def test_forwards_explicit_router(self, mock_lifecycle):
+        """An explicit compute_router is forwarded to run_creator_lifecycle."""
+        mock_lifecycle.return_value = LifecycleResult(
+            input_artifacts={}, artifacts={}, edges=[], timings={},
+        )
+
+        unit = MagicMock()
+        unit.operation.name = "test"
+        unit.user_overrides = None
+        runtime_env = MagicMock()
+        router = MagicMock()
+
+        run_creator_flow(unit, runtime_env, compute_router=router)
+
+        _, kwargs = mock_lifecycle.call_args
+        assert kwargs["compute_router"] is router
+
+    @patch("artisan.execution.executors.creator.run_creator_lifecycle")
+    def test_default_forwards_none(self, mock_lifecycle):
+        """Without compute_router, None is forwarded (lifecycle auto-creates)."""
+        mock_lifecycle.return_value = LifecycleResult(
+            input_artifacts={}, artifacts={}, edges=[], timings={},
+        )
+
+        unit = MagicMock()
+        unit.operation.name = "test"
+        unit.user_overrides = None
+        runtime_env = MagicMock()
+
+        run_creator_flow(unit, runtime_env)
+
+        _, kwargs = mock_lifecycle.call_args
+        assert kwargs["compute_router"] is None
