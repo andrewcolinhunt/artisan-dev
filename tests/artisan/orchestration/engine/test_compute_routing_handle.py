@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import multiprocessing
-import threading
 from concurrent.futures.process import BrokenProcessPool
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -92,7 +91,7 @@ class TestRunUnitsWithSharedRouter:
         mock_create.return_value = MagicMock()
         cancel = multiprocessing.Event()
 
-        def _flow_with_cancel(unit, env, **kwargs):
+        def _flow_with_cancel(_unit, _env, **_kwargs):
             cancel.set()  # signal cancel after first unit
             return _make_staging_result(run_id="done")
 
@@ -100,7 +99,10 @@ class TestRunUnitsWithSharedRouter:
 
         units = [_make_unit() for _ in range(3)]
         results = _run_units_with_shared_router(
-            units, MagicMock(), MagicMock(), cancel_event=cancel,
+            units,
+            MagicMock(),
+            MagicMock(),
+            cancel_event=cancel,
         )
 
         assert len(results) == 3
@@ -174,13 +176,15 @@ class TestRunUnitsWithSharedRouter:
 class TestComputeRoutingDispatchHandle:
     def test_initial_state_is_idle(self):
         handle = ComputeRoutingDispatchHandle(
-            compute_config=MagicMock(), cancel_event=None,
+            compute_config=MagicMock(),
+            cancel_event=None,
         )
         assert handle._state is _HandleState.IDLE
 
     def test_double_dispatch_raises(self):
         handle = ComputeRoutingDispatchHandle(
-            compute_config=MagicMock(), cancel_event=None,
+            compute_config=MagicMock(),
+            cancel_event=None,
         )
         # First dispatch: mock _start_background to avoid real threads
         with patch.object(handle, "_start_background"):
@@ -191,7 +195,8 @@ class TestComputeRoutingDispatchHandle:
 
     def test_cancel_sets_mp_event(self):
         handle = ComputeRoutingDispatchHandle(
-            compute_config=MagicMock(), cancel_event=None,
+            compute_config=MagicMock(),
+            cancel_event=None,
         )
         # Simulate dispatch so _mp_cancel is created
         with patch.object(handle, "_start_background"):
@@ -203,19 +208,14 @@ class TestComputeRoutingDispatchHandle:
 
     def test_cancel_before_dispatch_is_noop(self):
         handle = ComputeRoutingDispatchHandle(
-            compute_config=MagicMock(), cancel_event=None,
+            compute_config=MagicMock(),
+            cancel_event=None,
         )
         # _mp_cancel is None before dispatch — cancel should not raise
         handle.cancel()
 
-    @patch(
-        "artisan.orchestration.engine.compute_routing_handle"
-        "._run_units_with_shared_router"
-    )
-    @patch(
-        "artisan.orchestration.engine.compute_routing_handle.ProcessPoolExecutor"
-    )
-    def test_end_to_end_with_mocked_pool(self, mock_pool_cls, mock_child_fn):
+    @patch("artisan.orchestration.engine.compute_routing_handle.ProcessPoolExecutor")
+    def test_end_to_end_with_mocked_pool(self, mock_pool_cls):
         """run() returns results from the child process."""
         expected = [_result(), _result(success=False, error="fail")]
         mock_future = MagicMock()
@@ -228,7 +228,8 @@ class TestComputeRoutingDispatchHandle:
         mock_pool_cls.return_value = mock_pool
 
         handle = ComputeRoutingDispatchHandle(
-            compute_config=MagicMock(), cancel_event=None,
+            compute_config=MagicMock(),
+            cancel_event=None,
         )
         results = handle.run([_make_unit(), _make_unit()], MagicMock())
 
@@ -237,7 +238,8 @@ class TestComputeRoutingDispatchHandle:
     def test_broken_process_pool_propagates(self):
         """BrokenProcessPool from child crash propagates through collect()."""
         handle = ComputeRoutingDispatchHandle(
-            compute_config=MagicMock(), cancel_event=None,
+            compute_config=MagicMock(),
+            cancel_event=None,
         )
         # Manually simulate what _start_background does on error
         handle._error = BrokenProcessPool("worker died")

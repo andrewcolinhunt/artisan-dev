@@ -15,11 +15,7 @@ from artisan.orchestration.engine.step_executor import (
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.compute import (
-    Compute,
-    LocalComputeConfig,
-    ModalComputeConfig,
-)
+from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -185,10 +181,10 @@ class _SimpleCreatorOp(OperationDefinition):
         ),
     }
 
-    def preprocess(self, inputs):
+    def preprocess(self, _inputs):
         return {}
 
-    def execute(self, inputs):
+    def execute(self, _inputs):
         return {}
 
 
@@ -290,7 +286,9 @@ class TestComputeRoutingSelection:
 
         mock_backend, mock_handle = _make_mock_backend(
             flow_return_value=[
-                UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
+                UnitResult(
+                    success=True, error=None, item_count=1, execution_run_ids=[]
+                ),
             ],
         )
 
