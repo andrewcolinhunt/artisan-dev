@@ -194,7 +194,10 @@ class TestRunCreatorFlowRouterForwarding:
     def test_forwards_explicit_router(self, mock_lifecycle):
         """An explicit compute_router is forwarded to run_creator_lifecycle."""
         mock_lifecycle.return_value = LifecycleResult(
-            input_artifacts={}, artifacts={}, edges=[], timings={},
+            input_artifacts={},
+            artifacts={},
+            edges=[],
+            timings={},
         )
 
         unit = MagicMock()
@@ -212,7 +215,10 @@ class TestRunCreatorFlowRouterForwarding:
     def test_default_forwards_none(self, mock_lifecycle):
         """Without compute_router, None is forwarded (lifecycle auto-creates)."""
         mock_lifecycle.return_value = LifecycleResult(
-            input_artifacts={}, artifacts={}, edges=[], timings={},
+            input_artifacts={},
+            artifacts={},
+            edges=[],
+            timings={},
         )
 
         unit = MagicMock()

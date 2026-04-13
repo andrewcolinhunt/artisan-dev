@@ -387,7 +387,10 @@ def run_creator_flow(
     try:
         # Run the lifecycle (setup → lineage)
         lifecycle_result = run_creator_lifecycle(
-            unit, runtime_env, worker_id, execution_run_id,
+            unit,
+            runtime_env,
+            worker_id,
+            execution_run_id,
             compute_router=compute_router,
         )
         timings.update(lifecycle_result.timings)

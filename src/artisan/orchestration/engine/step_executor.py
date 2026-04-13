@@ -41,9 +41,9 @@ from artisan.orchestration.engine.results import (
     extract_execution_run_ids,
 )
 from artisan.schemas.enums import FailurePolicy, TablePath
-from artisan.schemas.operation_config.compute import ModalComputeConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.operation_config.compute import ModalComputeConfig
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
 from artisan.storage.cache.cache_lookup import CacheHit, cache_lookup
@@ -1036,8 +1036,7 @@ def _execute_creator_step(
                             operation.resources,
                             operation.execution,
                             step_number,
-                            job_name=operation.execution.job_name
-                            or operation.name,
+                            job_name=operation.execution.job_name or operation.name,
                             log_folder=uri_join(
                                 uri_parent(config.delta_root), "logs", "slurm"
                             ),

@@ -63,7 +63,9 @@ def _run_units_with_shared_router(
 
             try:
                 result = run_creator_flow(
-                    unit, runtime_env, worker_id=0,
+                    unit,
+                    runtime_env,
+                    worker_id=0,
                     compute_router=router,
                 )
                 results.append(
@@ -145,7 +147,10 @@ class ComputeRoutingDispatchHandle(DispatchHandle):
             ):
                 future = pool.submit(
                     _run_units_with_shared_router,
-                    units, runtime_env, config, mp_cancel,
+                    units,
+                    runtime_env,
+                    config,
+                    mp_cancel,
                 )
                 while True:
                     try:
