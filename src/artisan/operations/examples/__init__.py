@@ -17,17 +17,23 @@ from artisan.operations.examples.data_transformer_config import (
 from artisan.operations.examples.data_transformer_script import DataTransformerScript
 from artisan.operations.examples.large_file_generator import LargeFileGenerator
 from artisan.operations.examples.metric_calculator import MetricCalculator
+from artisan.operations.examples.slow_transformer import (
+    SequentialSlowTransformer,
+    SlowTransformer,
+)
 from artisan.operations.examples.wait import Wait
 
 __all__ = [
+    "AppendableGenerator",
     "DataGenerator",
     "DataGeneratorWithMetrics",
     "DataTransformer",
     "DataTransformerConfig",
-    "SequentialDataTransformer",
     "DataTransformerScript",
     "LargeFileGenerator",
     "MetricCalculator",
-    "AppendableGenerator",
+    "SequentialDataTransformer",
+    "SequentialSlowTransformer",
+    "SlowTransformer",
     "Wait",
 ]
