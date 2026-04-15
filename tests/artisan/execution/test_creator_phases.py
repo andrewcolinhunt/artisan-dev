@@ -80,10 +80,7 @@ class _SimpleOp(OperationDefinition):
         }
 
     def execute(self, inputs: ExecuteInput) -> dict:
-        # Handle both monolithic (list) and per-artifact (string) inputs
-        source = inputs.inputs["source"]
-        paths = source if isinstance(source, list) else [source]
-        for path in paths:
+        for path in inputs.inputs["source"]:
             with open(path) as fh:
                 content = json.loads(fh.read())
             content["processed"] = True
@@ -176,11 +173,11 @@ class TestSplitPreparedInputs:
     def test_slices_lists_matching_batch_size(self):
         prepared = {"data": ["/a.csv", "/b.csv"], "config": "shared"}
         assert _split_prepared_inputs(prepared, 0, 2) == {
-            "data": "/a.csv",
+            "data": ["/a.csv"],
             "config": "shared",
         }
         assert _split_prepared_inputs(prepared, 1, 2) == {
-            "data": "/b.csv",
+            "data": ["/b.csv"],
             "config": "shared",
         }
 
@@ -204,7 +201,7 @@ class TestSplitPreparedInputs:
             ]
         }
         result = _split_prepared_inputs(prepared, 0, 2)
-        assert result["items"] == {"config_path": "/a.json", "name": "a"}
+        assert result["items"] == [{"config_path": "/a.json", "name": "a"}]
 
     def test_empty_dict(self):
         assert _split_prepared_inputs({}, 0, 1) == {}
@@ -298,9 +295,10 @@ class TestPrepUnit:
         assert len(prepped.artifact_execute_dirs) == 2
         for d in prepped.artifact_execute_dirs:
             assert os.path.isdir(d)
-        # Each ExecuteInput has a single-element source (sliced from list of 2)
+        # Each ExecuteInput has a single-element list (sliced from list of 2)
         for ei in prepped.artifact_execute_inputs:
-            assert isinstance(ei.inputs["source"], str)
+            assert isinstance(ei.inputs["source"], list)
+            assert len(ei.inputs["source"]) == 1
 
     def test_per_artifact_dispatch_false_single_input(self, delta_env):
         runtime_env, ids = delta_env
