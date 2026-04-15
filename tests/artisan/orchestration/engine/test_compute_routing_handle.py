@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import threading
 from concurrent.futures.process import BrokenProcessPool
 from unittest.mock import MagicMock, patch
 
@@ -193,26 +194,41 @@ class TestComputeRoutingDispatchHandle:
         with pytest.raises(RuntimeError, match="dispatch.*already called"):
             handle.dispatch([_make_unit()], MagicMock())
 
-    def test_cancel_sets_mp_event(self):
+    def test_cancel_is_noop(self):
         handle = ComputeRoutingDispatchHandle(
             compute_config=MagicMock(),
             cancel_event=None,
         )
-        # Simulate dispatch so _mp_cancel is created
+        # Before dispatch
+        handle.cancel()
+
+        # After dispatch
         with patch.object(handle, "_start_background"):
             handle.dispatch([_make_unit()], MagicMock())
-
-        assert not handle._mp_cancel.is_set()
         handle.cancel()
-        assert handle._mp_cancel.is_set()
+        assert not hasattr(handle, "_mp_cancel")
 
-    def test_cancel_before_dispatch_is_noop(self):
+    @patch("artisan.orchestration.engine.compute_routing_handle.ProcessPoolExecutor")
+    def test_cancel_event_interrupts_polling(self, mock_pool_cls):
+        """Polling loop raises RuntimeError when cancel event is set."""
+        mock_future = MagicMock()
+        mock_future.result.side_effect = TimeoutError
+
+        mock_pool = MagicMock()
+        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
+        mock_pool.__exit__ = MagicMock(return_value=False)
+        mock_pool.submit.return_value = mock_future
+        mock_pool_cls.return_value = mock_pool
+
+        cancel = threading.Event()
+        cancel.set()
+
         handle = ComputeRoutingDispatchHandle(
             compute_config=MagicMock(),
-            cancel_event=None,
+            cancel_event=cancel,
         )
-        # _mp_cancel is None before dispatch — cancel should not raise
-        handle.cancel()
+        with pytest.raises(RuntimeError, match="Compute routing interrupted"):
+            handle.run([_make_unit()], MagicMock(), cancel_event=cancel)
 
     @patch("artisan.orchestration.engine.compute_routing_handle.ProcessPoolExecutor")
     def test_end_to_end_with_mocked_pool(self, mock_pool_cls):

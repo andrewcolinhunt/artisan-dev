@@ -106,8 +106,8 @@ class ComputeRoutingDispatchHandle(DispatchHandle):
     Args:
         compute_config: Picklable config passed to ``create_router()``
             inside the child process.
-        cancel_event: Pipeline cancel event. Propagated to the child
-            via a ``multiprocessing.Event``.
+        cancel_event: Pipeline cancel event. Checked in the parent
+            polling loop; the child runs to completion.
     """
 
     def __init__(
@@ -118,7 +118,6 @@ class ComputeRoutingDispatchHandle(DispatchHandle):
         super().__init__()
         self._compute_config = compute_config
         self._cancel_event = cancel_event
-        self._mp_cancel: multiprocessing.synchronize.Event | None = None
 
     def dispatch(
         self,
@@ -133,8 +132,6 @@ class ComputeRoutingDispatchHandle(DispatchHandle):
         cancel = self._cancel_event
 
         mp_ctx = multiprocessing.get_context("spawn")
-        mp_cancel = mp_ctx.Event()
-        self._mp_cancel = mp_cancel
 
         def _run() -> list[UnitResult]:
             with (
@@ -150,19 +147,17 @@ class ComputeRoutingDispatchHandle(DispatchHandle):
                     units,
                     runtime_env,
                     config,
-                    mp_cancel,
                 )
                 while True:
                     try:
                         return future.result(timeout=0.5)
-                    except TimeoutError:
+                    except TimeoutError as err:
                         if cancel is not None and cancel.is_set():
-                            mp_cancel.set()
+                            msg = "Compute routing interrupted by cancellation"
+                            raise RuntimeError(msg) from err
                         continue
 
         self._start_background(_run)
 
     def cancel(self) -> None:
-        """Signal the child process to stop between units."""
-        if self._mp_cancel is not None:
-            self._mp_cancel.set()
+        """No-op -- the child process cannot be interrupted mid-unit."""
