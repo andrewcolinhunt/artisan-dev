@@ -35,6 +35,11 @@ class ModalComputeConfig(ComputeConfig):
         memory_gb: Container memory in GB.
         timeout: Per-call timeout in seconds.
         retries: Number of retries on preemption.
+        min_containers: Containers kept warm even at zero traffic.
+            Set to match expected batch parallelism to eliminate
+            cold starts. 0 means scale-to-zero (Modal default).
+        scaledown_window: Seconds a container idles before shutdown.
+            None uses Modal's default (60s). Max 1200s.
     """
 
     image: str = ARTISAN_WORKER_IMAGE
@@ -42,6 +47,8 @@ class ModalComputeConfig(ComputeConfig):
     memory_gb: int = 8
     timeout: int = 3600
     retries: int = 3
+    min_containers: int = 0
+    scaledown_window: int | None = None
 
 
 class Compute(BaseModel):
