@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import multiprocessing
-import signal
 import threading
 from concurrent.futures import ProcessPoolExecutor
 
@@ -15,12 +14,7 @@ from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.compute import ComputeConfig
 from artisan.utils.errors import format_error
-from artisan.utils.spawn import suppress_main_reimport
-
-
-def _ignore_sigint() -> None:
-    """Worker initializer: ignore SIGINT so the parent handles cancellation."""
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+from artisan.utils.spawn import ignore_sigint, suppress_main_reimport
 
 
 def _run_units_with_shared_router(
@@ -139,7 +133,7 @@ class ComputeRoutingDispatchHandle(DispatchHandle):
                 ProcessPoolExecutor(
                     max_workers=1,
                     mp_context=mp_ctx,
-                    initializer=_ignore_sigint,
+                    initializer=ignore_sigint,
                 ) as pool,
             ):
                 future = pool.submit(

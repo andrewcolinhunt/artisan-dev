@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import multiprocessing
-import signal
 import warnings
 from concurrent.futures import ProcessPoolExecutor
 
@@ -21,12 +20,7 @@ from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
-from artisan.utils.spawn import suppress_main_reimport
-
-
-def _ignore_sigint() -> None:
-    """Worker initializer: ignore SIGINT so the parent handles cancellation."""
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
+from artisan.utils.spawn import ignore_sigint, suppress_main_reimport
 
 
 class SIGINTSafeProcessPoolTaskRunner(ProcessPoolTaskRunner):
@@ -53,7 +47,7 @@ class SIGINTSafeProcessPoolTaskRunner(ProcessPoolTaskRunner):
         self._executor = ProcessPoolExecutor(
             max_workers=self._max_workers,
             mp_context=mp_context,
-            initializer=_ignore_sigint,
+            initializer=ignore_sigint,
         )
         return result
 
