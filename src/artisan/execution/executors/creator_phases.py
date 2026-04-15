@@ -118,8 +118,10 @@ def prep_unit(
     worker_id: int = 0,
     execution_run_id: str | None = None,
     sources: dict[str, ArtifactSource] | None = None,
+    *,
+    split_per_artifact: bool = True,
 ) -> PreppedUnit:
-    """Run setup, preprocess, and per-artifact splitting.
+    """Run setup, preprocess, and optionally split per-artifact.
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
@@ -127,9 +129,14 @@ def prep_unit(
         worker_id: Numeric worker identifier.
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources.
+        split_per_artifact: When True (default), split preprocess
+            output into per-artifact ExecuteInputs based on the
+            operation's ``per_artifact_dispatch`` setting. When False,
+            produce a single ExecuteInput with the full prepared_inputs
+            (monolithic behavior for ``run_creator_lifecycle``).
 
     Returns:
-        PreppedUnit with per-artifact ExecuteInputs ready for dispatch.
+        PreppedUnit with ExecuteInputs ready for dispatch.
 
     Raises:
         ValueError: If working_root is not set.
@@ -240,13 +247,16 @@ def prep_unit(
         )
         prepared_inputs = operation.preprocess(preprocess_input)
 
-    # --- split into per-artifact ExecuteInputs ---
-    batch_size = unit.get_batch_size() or 1
+    # --- build ExecuteInputs ---
     artifact_execute_inputs: list[ExecuteInput] = []
     artifact_execute_dirs: list[str] = []
 
-    if not getattr(operation, "per_artifact_dispatch", True):
-        # Subprocess tool opt-out: single ExecuteInput with all artifacts
+    should_split = (
+        split_per_artifact and getattr(operation, "per_artifact_dispatch", True)
+    )
+
+    if not should_split:
+        # Single ExecuteInput with full prepared_inputs (monolithic)
         artifact_execute_dirs.append(execute_dir)
         artifact_execute_inputs.append(
             ExecuteInput(
@@ -257,6 +267,7 @@ def prep_unit(
             )
         )
     else:
+        batch_size = unit.get_batch_size() or 1
         for i in range(batch_size):
             artifact_exec_dir = os.path.join(execute_dir, f"artifact_{i}")
             os.makedirs(artifact_exec_dir, exist_ok=True)
