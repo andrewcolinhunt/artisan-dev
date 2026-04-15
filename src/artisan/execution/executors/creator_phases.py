@@ -251,8 +251,8 @@ def prep_unit(
     artifact_execute_inputs: list[ExecuteInput] = []
     artifact_execute_dirs: list[str] = []
 
-    should_split = (
-        split_per_artifact and getattr(operation, "per_artifact_dispatch", True)
+    should_split = split_per_artifact and getattr(
+        operation, "per_artifact_dispatch", True
     )
 
     if not should_split:

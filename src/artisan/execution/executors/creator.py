@@ -100,7 +100,11 @@ def run_creator_lifecycle(
     from artisan.execution.executors.creator_phases import post_unit, prep_unit
 
     prepped = prep_unit(
-        unit, runtime_env, worker_id, execution_run_id, sources,
+        unit,
+        runtime_env,
+        worker_id,
+        execution_run_id,
+        sources,
         split_per_artifact=False,
     )
 
