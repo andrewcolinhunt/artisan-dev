@@ -61,6 +61,7 @@ project:
             - file: tutorials/execution/12-post-step-consolidation.ipynb
             - file: tutorials/execution/13-compute-routing.ipynb
             - file: tutorials/execution/14-modal-execution.ipynb
+            - file: tutorials/execution/15-batch-execute.ipynb
         - title: Analysis
           children:
             - file: tutorials/analysis/01-provenance-graphs.ipynb
