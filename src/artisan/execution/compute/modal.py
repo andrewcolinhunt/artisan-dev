@@ -185,14 +185,20 @@ class ModalComputeRouter(ComputeRouter):
             "artisan"
         )
 
-        @app.function(
-            image=image,
-            gpu=self._config.gpu,
-            memory=self._config.memory_gb * 1024,
-            timeout=self._config.timeout,
-            retries=self._config.retries,
-            serialized=True,
-        )
+        fn_kwargs: dict[str, Any] = {
+            "image": image,
+            "gpu": self._config.gpu,
+            "memory": self._config.memory_gb * 1024,
+            "timeout": self._config.timeout,
+            "retries": self._config.retries,
+            "serialized": True,
+        }
+        if self._config.min_containers > 0:
+            fn_kwargs["min_containers"] = self._config.min_containers
+        if self._config.scaledown_window is not None:
+            fn_kwargs["scaledown_window"] = self._config.scaledown_window
+
+        @app.function(**fn_kwargs)
         def _execute_on_modal(
             operation_bytes: bytes,
             execute_input_bytes: bytes,
