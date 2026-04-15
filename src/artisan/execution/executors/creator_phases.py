@@ -453,7 +453,9 @@ def _split_prepared_inputs(
     """Extract per-artifact inputs at the given index.
 
     Convention: list-valued entries whose length matches the batch
-    size are per-artifact and sliced at ``index``. All other entries
+    size are per-artifact and sliced at ``index``. The sliced item
+    is wrapped in a single-element list to preserve the list interface
+    that operations expect when iterating inputs. All other entries
     (scalars, dicts, lists of different length) are passed through
     unchanged (shared across artifacts).
 
@@ -469,12 +471,13 @@ def _split_prepared_inputs(
             distinguish per-artifact lists from shared lists.
 
     Returns:
-        Dict with per-artifact values at ``index``.
+        Dict with per-artifact values at ``index``, where sliced
+        items are wrapped in single-element lists.
     """
     result: dict[str, Any] = {}
     for key, value in prepared_inputs.items():
         if isinstance(value, list) and len(value) == batch_size:
-            result[key] = value[index]
+            result[key] = [value[index]]
         else:
             result[key] = value
     return result
