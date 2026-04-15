@@ -154,6 +154,18 @@ class OperationDefinition(BaseModel):
     multi-input operations.
     """
 
+    per_artifact_dispatch: ClassVar[bool] = True
+    """Whether execute fans out per artifact in batch dispatch.
+
+    When True (default), the framework splits preprocess output into
+    per-artifact ExecuteInputs and dispatches each separately. Modal
+    sends them to parallel containers; local/SLURM loops sequentially.
+
+    Set to False for operations that run external tools via
+    ``run_command()`` where a single subprocess should process all
+    artifacts to amortize model loading.
+    """
+
     # ---------- Tool ----------
     tool: ToolSpec | None = None
     """External binary/script this operation invokes. None for pure-Python ops."""
