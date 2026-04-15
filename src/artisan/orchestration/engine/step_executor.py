@@ -1022,13 +1022,14 @@ def _execute_creator_step(
                     compute_config = operation.compute.current()
 
                     if isinstance(compute_config, ModalComputeConfig):
-                        from artisan.orchestration.engine.compute_routing_handle import (
-                            ComputeRoutingDispatchHandle,
+                        from artisan.orchestration.engine.batch_compute_handle import (
+                            BatchComputeDispatchHandle,
                         )
 
-                        handle = ComputeRoutingDispatchHandle(
+                        handle = BatchComputeDispatchHandle(
                             compute_config=compute_config,
                             cancel_event=cancel_event,
+                            max_workers=operation.execution.max_workers or 4,
                         )
                     else:
                         backend.validate_operation(operation)
