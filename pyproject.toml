@@ -23,6 +23,7 @@ dependencies = []  # All dependencies managed by Pixi
 [project.optional-dependencies]
 s3 = ["s3fs"]
 gcs = ["gcsfs"]
+modal = ["modal"]
 
 [project.urls]
 Homepage = "https://github.com/dexterity-systems/artisan"
