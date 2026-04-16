@@ -181,9 +181,16 @@ class ModalComputeRouter(ComputeRouter):
         import modal
 
         app = modal.App(f"artisan-{operation_name}")
-        image = modal.Image.from_registry(self._config.image).add_local_python_source(
-            "artisan"
-        )
+
+        image_kwargs: dict[str, Any] = {}
+        if self._config.image_registry_secret is not None:
+            image_kwargs["secret"] = modal.Secret.from_name(
+                self._config.image_registry_secret
+            )
+
+        image = modal.Image.from_registry(
+            self._config.image, **image_kwargs
+        ).add_local_python_source("artisan")
 
         fn_kwargs: dict[str, Any] = {
             "image": image,

@@ -306,6 +306,36 @@ class TestModalComputeRouter:
         call_kwargs = fn.remote.call_args[1]
         assert call_kwargs["tool_files"] == {str(script): b"print('tool')"}
 
+    def test_init_app_no_registry_secret(self):
+        """Default config does not pass a secret to from_registry."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_modal.Image.from_registry.assert_called_once_with("test:latest")
+        mock_modal.Secret.from_name.assert_not_called()
+
+    def test_init_app_resolves_registry_secret(self):
+        """When set, image_registry_secret resolves via Secret.from_name."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(
+            image="priv:latest",
+            image_registry_secret="ghcr-pat",
+        )
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_modal.Secret.from_name.assert_called_once_with("ghcr-pat")
+        mock_modal.Image.from_registry.assert_called_once_with(
+            "priv:latest",
+            secret=mock_modal.Secret.from_name.return_value,
+        )
+
     def test_output_snapshot_restored_locally(self, tmp_path):
         """Output files from remote are restored in the sandbox."""
         mock_modal = _make_mock_modal()
