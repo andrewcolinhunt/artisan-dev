@@ -43,7 +43,8 @@ from artisan.orchestration.engine.results import (
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.compute import ModalComputeConfig
+from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
 from artisan.storage.cache.cache_lookup import CacheHit, cache_lookup
@@ -81,8 +82,6 @@ def instantiate_operation(
     Returns:
         Fully configured operation instance.
     """
-    from artisan.schemas.operation_config.environment_spec import EnvironmentSpec
-
     init_kwargs: dict[str, Any] = {}
 
     if params:
@@ -110,23 +109,26 @@ def instantiate_operation(
                 update={"active": environment}
             )
         else:
-            # Deep-merge nested environment specs so partial overrides
-            # (e.g. {"docker": {"image": "v2"}}) don't discard other fields.
-            env_updates: dict[str, Any] = {}
+            # Dump-merge-validate: coerces nested dicts into proper
+            # Pydantic models (handles both existing and None fields).
+            base = instance.environments.model_dump()
             for key, value in environment.items():
-                current = getattr(instance.environments, key, None)
-                if isinstance(current, EnvironmentSpec) and isinstance(value, dict):
-                    env_updates[key] = current.model_copy(update=value)
+                if isinstance(value, dict) and isinstance(base.get(key), dict):
+                    base[key] = {**base[key], **value}
                 else:
-                    env_updates[key] = value
-            updates["environments"] = instance.environments.model_copy(
-                update=env_updates
-            )
+                    base[key] = value
+            updates["environments"] = Environments.model_validate(base)
     if compute is not None:
         if isinstance(compute, str):
             updates["compute"] = instance.compute.model_copy(update={"active": compute})
         else:
-            updates["compute"] = instance.compute.model_copy(update=compute)
+            base = instance.compute.model_dump()
+            for key, value in compute.items():
+                if isinstance(value, dict) and isinstance(base.get(key), dict):
+                    base[key] = {**base[key], **value}
+                else:
+                    base[key] = value
+            updates["compute"] = Compute.model_validate(base)
     if updates:
         instance = instance.model_copy(update=updates)
 
