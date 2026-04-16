@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from artisan.schemas.operation_config.compute import (
+    Compute,
+    ComputeConfig,
+    LocalComputeConfig,
+)
 from artisan.schemas.operation_config.environment_spec import (
     ApptainerEnvironmentSpec,
     DockerEnvironmentSpec,
@@ -24,6 +29,11 @@ __all__ = [
     "PixiEnvironmentSpec",
     # Environments model
     "Environments",
+    # ComputeConfig hierarchy
+    "ComputeConfig",
+    "LocalComputeConfig",
+    # Compute model
+    "Compute",
     # ResourceConfig
     "ResourceConfig",
 ]
