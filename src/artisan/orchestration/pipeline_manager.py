@@ -868,6 +868,7 @@ class PipelineManager:
         failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
         cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
         backend: str | BackendBase = "local",
+        default_compute: str = "local",
         preserve_staging: bool = False,
         preserve_working: bool = False,
         recover_staging: bool = True,
@@ -892,6 +893,7 @@ class PipelineManager:
             cache_policy: Controls when completed steps qualify as cache hits.
             backend: Default backend for step execution. Accepts a BackendBase
                 instance or string name (e.g. "local", "slurm").
+            default_compute: Default compute routing for step execution.
             preserve_staging: Debug flag to preserve staging files after commit.
             preserve_working: Debug flag to preserve sandbox after execution.
             recover_staging: Commit leftover staging files from prior crashed
@@ -926,6 +928,7 @@ class PipelineManager:
             failure_policy=failure_policy,
             cache_policy=cache_policy,
             default_backend=resolved.name,
+            default_compute=default_compute,
             preserve_staging=preserve_staging,
             preserve_working=preserve_working,
             recover_staging=recover_staging,
@@ -1068,6 +1071,7 @@ class PipelineManager:
         execution: dict[str, Any] | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
+        compute: str | dict[str, Any] | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1089,6 +1093,7 @@ class PipelineManager:
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
             environment: Environment override (operations only).
             tool: Tool overrides (operations only).
+            compute: Compute routing override (string or dict).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
@@ -1111,6 +1116,7 @@ class PipelineManager:
             execution=execution,
             environment=environment,
             tool=tool,
+            compute=compute,
             failure_policy=failure_policy,
             compact=compact,
             name=name,
@@ -1134,6 +1140,7 @@ class PipelineManager:
         execution: dict[str, Any] | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
+        compute: str | dict[str, Any] | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1154,6 +1161,7 @@ class PipelineManager:
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
             environment: Environment override (operations only).
             tool: Tool overrides (operations only).
+            compute: Compute routing override (string or dict).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
@@ -1229,6 +1237,7 @@ class PipelineManager:
             execution,
             environment,
             tool,
+            compute,
             step_number,
             inputs,
         )
@@ -1277,6 +1286,7 @@ class PipelineManager:
                 execution=execution,
                 environment=environment,
                 tool=tool,
+                compute=compute,
                 failure_policy=failure_policy,
                 compact=compact,
                 step_name=step_name,
@@ -1420,6 +1430,7 @@ class PipelineManager:
         execution: dict[str, Any] | None,
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
+        compute: str | dict[str, Any] | None,
         step_number: int,
         inputs: Any,
     ) -> tuple[str, OperationDefinition]:
@@ -1440,7 +1451,7 @@ class PipelineManager:
         # Instantiate with merged defaults + user overrides so we can
         # dump the *full* params (including defaults) for hashing.
         temp_instance = instantiate_operation(
-            operation, params, resources, execution, environment, tool
+            operation, params, resources, execution, environment, tool, compute
         )
         if "params" in type(temp_instance).model_fields:
             full_params = temp_instance.params.model_dump(mode="json")  # type: ignore[attr-defined]
@@ -1457,7 +1468,7 @@ class PipelineManager:
         # TODO: _merge_config_overrides should not start with _
         from artisan.orchestration.engine.step_executor import _merge_config_overrides
 
-        config_overrides = _merge_config_overrides(environment, tool)
+        config_overrides = _merge_config_overrides(environment, tool, compute)
 
         input_spec = self._build_input_spec(inputs)
         step_spec_id = compute_step_spec_id(
@@ -1597,6 +1608,7 @@ class PipelineManager:
         execution: dict[str, Any] | None,
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
+        compute: str | dict[str, Any] | None,
         failure_policy: FailurePolicy | None,
         compact: bool,
         step_name: str,
@@ -1653,6 +1665,7 @@ class PipelineManager:
             "execution": execution or {},
             "environment": (environment if environment is not None else {}),
             "tool": tool or {},
+            "compute": (compute if compute is not None else {}),
         }
         start_record = StepStartRecord(
             step_run_id=step_run_id,
@@ -1711,6 +1724,7 @@ class PipelineManager:
                     execution=execution,
                     environment=environment,
                     tool=tool,
+                    compute=compute,
                     step_number=step_number,
                     config=self._config,
                     failure_policy=_failure_policy,

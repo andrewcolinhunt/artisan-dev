@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from artisan.execution.compute.base import ComputeRouter
+from artisan.execution.compute.routing import create_router
 from artisan.execution.context.builder import build_creator_execution_context
 from artisan.execution.context.sandbox import create_sandbox, output_snapshot
 from artisan.execution.inputs.instantiation import instantiate_inputs
@@ -88,6 +90,7 @@ def run_creator_lifecycle(
     worker_id: int = 0,
     execution_run_id: str | None = None,
     sources: dict[str, ArtifactSource] | None = None,
+    compute_router: ComputeRouter | None = None,
 ) -> LifecycleResult:
     """Run one operation through setup → preprocess → execute → postprocess → lineage.
 
@@ -103,6 +106,8 @@ def run_creator_lifecycle(
         sources: Optional pre-resolved artifact sources keyed by role.
             When provided, hydrate from sources instead of unit.inputs.
             Used by the composite executor for in-memory artifact passing.
+        compute_router: Optional pre-created router for execute() dispatch.
+            When None, created from the operation's compute config.
 
     Returns:
         LifecycleResult with artifacts, edges, and timings.
@@ -227,8 +232,13 @@ def run_creator_lifecycle(
 
     # --- execute phase ---
     with phase_timer("execute", timings):
+        if compute_router is None:
+            config = operation.compute.current()
+            compute_router = create_router(config)
         try:
-            raw_result = operation.execute(execute_input)
+            raw_result = compute_router.route_execute(
+                operation, execute_input, sandbox_path_str
+            )
         except Exception as exc:
             error = format_error(exc)
             if hasattr(exc, "stdout") and exc.stdout:
