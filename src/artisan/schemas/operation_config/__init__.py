@@ -6,6 +6,7 @@ from artisan.schemas.operation_config.compute import (
     Compute,
     ComputeConfig,
     LocalComputeConfig,
+    ModalComputeConfig,
 )
 from artisan.schemas.operation_config.environment_spec import (
     ApptainerEnvironmentSpec,
@@ -32,6 +33,7 @@ __all__ = [
     # ComputeConfig hierarchy
     "ComputeConfig",
     "LocalComputeConfig",
+    "ModalComputeConfig",
     # Compute model
     "Compute",
     # ResourceConfig
