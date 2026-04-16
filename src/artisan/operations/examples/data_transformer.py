@@ -146,8 +146,12 @@ class DataTransformer(OperationDefinition):
             stem = os.path.splitext(os.path.basename(input_path))[0]
 
             for variant_idx in range(self.params.variants):
-                suffix = f"_{self.params.output_prefix}" if self.params.output_prefix else ""
-                output_path = os.path.join(output_dir, f"{stem}_{variant_idx}{suffix}.csv")
+                suffix = (
+                    f"_{self.params.output_prefix}" if self.params.output_prefix else ""
+                )
+                output_path = os.path.join(
+                    output_dir, f"{stem}_{variant_idx}{suffix}.csv"
+                )
                 with open(output_path, "w", newline="") as f:
                     writer = csv.DictWriter(f, fieldnames=headers)
                     writer.writeheader()
@@ -198,3 +202,15 @@ class DataTransformer(OperationDefinition):
                 "created_files": raw.get("created_files", []),
             },
         )
+
+
+class SequentialDataTransformer(DataTransformer):
+    """DataTransformer with per-artifact dispatch disabled.
+
+    All artifacts in a unit are sent to a single execute() call.
+    Use this when the operation wraps an external tool that loads
+    model weights per invocation — batching amortizes the cost.
+    """
+
+    name: ClassVar[str] = "sequential_data_transformer"
+    per_artifact_dispatch: ClassVar[bool] = False

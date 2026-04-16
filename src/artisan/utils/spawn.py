@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import signal
 import sys
+
+
+def ignore_sigint() -> None:
+    """Worker initializer: ignore SIGINT so the parent handles cancellation."""
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 class suppress_main_reimport:

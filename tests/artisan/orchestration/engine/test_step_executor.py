@@ -205,11 +205,11 @@ def _make_mock_backend(flow_return_value=None):
 
 
 class TestComputeRoutingSelection:
-    """_execute_creator_step routes to ComputeRoutingDispatchHandle for Modal."""
+    """_execute_creator_step routes to BatchComputeDispatchHandle for Modal."""
 
     @patch(
-        "artisan.orchestration.engine.compute_routing_handle"
-        ".ComputeRoutingDispatchHandle"
+        "artisan.orchestration.engine.batch_compute_handle"
+        ".BatchComputeDispatchHandle"
     )
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
@@ -220,7 +220,7 @@ class TestComputeRoutingSelection:
         mock_handle_cls,
         tmp_path,
     ):
-        """ModalComputeConfig triggers ComputeRoutingDispatchHandle."""
+        """ModalComputeConfig triggers BatchComputeDispatchHandle."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
