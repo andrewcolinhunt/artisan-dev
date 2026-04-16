@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+ARTISAN_WORKER_IMAGE = "ghcr.io/dexterity-systems/artisan-worker:latest"
+
 
 class ComputeConfig(BaseModel):
     """Base class for compute provider configs.
@@ -35,7 +37,7 @@ class ModalComputeConfig(ComputeConfig):
         retries: Number of retries on preemption.
     """
 
-    image: str
+    image: str = ARTISAN_WORKER_IMAGE
     gpu: str | None = None
     memory_gb: int = 8
     timeout: int = 3600
