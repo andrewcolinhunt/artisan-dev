@@ -13,8 +13,8 @@ class TestSIGINTSafeProcessPoolTaskRunner:
 
     @patch("artisan.orchestration.backends.local.ProcessPoolExecutor")
     def test_enter_creates_pool_with_initializer(self, mock_ppe_cls):
-        """__enter__ re-creates executor with _ignore_sigint initializer."""
-        from artisan.orchestration.backends.local import _ignore_sigint
+        """__enter__ re-creates executor with ignore_sigint initializer."""
+        from artisan.utils.spawn import ignore_sigint
 
         # Mock the parent's __enter__ to set _executor
         mock_original_executor = MagicMock()
@@ -38,7 +38,7 @@ class TestSIGINTSafeProcessPoolTaskRunner:
         # New executor should be created with initializer
         call_kwargs = mock_ppe_cls.call_args[1]
         assert call_kwargs["max_workers"] == 2
-        assert call_kwargs["initializer"] is _ignore_sigint
+        assert call_kwargs["initializer"] is ignore_sigint
 
         # Clean up the spawn guard
         runner.__exit__(None, None, None)

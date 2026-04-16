@@ -9,7 +9,9 @@ from artisan.execution.transport.sandbox_transport import (
     restore_sandbox,
     snapshot_outputs,
     snapshot_sandbox,
+    snapshot_sandbox_for_artifact,
 )
+from artisan.schemas.specs.input_models import ExecuteInput
 
 
 class TestSnapshotSandbox:
@@ -147,3 +149,134 @@ class TestRestoreSandbox:
         root.mkdir()
         restore_sandbox(str(root), {})
         assert list(root.iterdir()) == []
+
+
+class TestSnapshotSandboxForArtifact:
+    """Tests for per-artifact sandbox snapshots."""
+
+    def _make_sandbox(self, tmp_path):
+        """Create a sandbox with two materialized inputs and a preprocess file."""
+        root = tmp_path / "sandbox"
+        mat = root / "materialized_inputs"
+        mat.mkdir(parents=True)
+        (mat / "a.json").write_bytes(b'{"a": 1}')
+        (mat / "b.json").write_bytes(b'{"b": 2}')
+        (root / "preprocess").mkdir()
+        (root / "preprocess" / "config.yaml").write_bytes(b"shared: true")
+        (root / "execute").mkdir()
+        return root
+
+    def test_captures_only_referenced_files(self, tmp_path):
+        """Only the materialized file referenced by execute_input is captured."""
+        root = self._make_sandbox(tmp_path)
+        a_path = str(root / "materialized_inputs" / "a.json")
+
+        ei = ExecuteInput(
+            execute_dir=str(root / "execute" / "artifact_0"),
+            inputs={"source": a_path},
+        )
+
+        snapshot = snapshot_sandbox_for_artifact(str(root), ei)
+
+        assert "materialized_inputs/a.json" in snapshot
+        assert "materialized_inputs/b.json" not in snapshot
+
+    def test_includes_preprocess_dir(self, tmp_path):
+        """The shared preprocess/ directory is always included."""
+        root = self._make_sandbox(tmp_path)
+        a_path = str(root / "materialized_inputs" / "a.json")
+
+        ei = ExecuteInput(
+            execute_dir=str(root / "execute" / "artifact_0"),
+            inputs={"source": a_path},
+        )
+
+        snapshot = snapshot_sandbox_for_artifact(str(root), ei)
+
+        assert "preprocess/config.yaml" in snapshot
+        assert snapshot["preprocess/config.yaml"] == b"shared: true"
+
+    def test_nested_input_paths_discovered(self, tmp_path):
+        """File paths nested in dicts/lists are discovered."""
+        root = self._make_sandbox(tmp_path)
+        a_path = str(root / "materialized_inputs" / "a.json")
+        b_path = str(root / "materialized_inputs" / "b.json")
+
+        ei = ExecuteInput(
+            execute_dir=str(root / "execute" / "artifact_0"),
+            inputs={
+                "items": [
+                    {"config_path": a_path, "name": "first"},
+                    {"config_path": b_path, "name": "second"},
+                ]
+            },
+        )
+
+        snapshot = snapshot_sandbox_for_artifact(str(root), ei)
+
+        assert "materialized_inputs/a.json" in snapshot
+        assert "materialized_inputs/b.json" in snapshot
+
+    def test_non_path_values_ignored(self, tmp_path):
+        """Scalar values that aren't file paths produce no errors."""
+        root = self._make_sandbox(tmp_path)
+
+        ei = ExecuteInput(
+            execute_dir=str(root / "execute" / "artifact_0"),
+            inputs={"count": 5, "name": "test", "flag": True},
+        )
+
+        snapshot = snapshot_sandbox_for_artifact(str(root), ei)
+
+        # Only preprocess files — no materialized inputs referenced
+        assert len(snapshot) == 1
+        assert "preprocess/config.yaml" in snapshot
+
+    def test_size_limit_enforced(self, tmp_path):
+        """Exceeding 50 MB raises ValueError."""
+        root = tmp_path / "sandbox"
+        mat = root / "materialized_inputs"
+        mat.mkdir(parents=True)
+        big_data = b"x" * (_MAX_SNAPSHOT_BYTES + 1)
+        (mat / "huge.bin").write_bytes(big_data)
+        (root / "execute").mkdir()
+
+        ei = ExecuteInput(
+            execute_dir=str(root / "execute" / "artifact_0"),
+            inputs={"data": str(mat / "huge.bin")},
+        )
+
+        with pytest.raises(ValueError, match="50 MB limit"):
+            snapshot_sandbox_for_artifact(str(root), ei)
+
+    def test_no_preprocess_dir_ok(self, tmp_path):
+        """Works when no preprocess/ directory exists."""
+        root = tmp_path / "sandbox"
+        mat = root / "materialized_inputs"
+        mat.mkdir(parents=True)
+        (mat / "a.json").write_bytes(b'{"a": 1}')
+        (root / "execute").mkdir()
+
+        ei = ExecuteInput(
+            execute_dir=str(root / "execute" / "artifact_0"),
+            inputs={"source": str(mat / "a.json")},
+        )
+
+        snapshot = snapshot_sandbox_for_artifact(str(root), ei)
+
+        assert len(snapshot) == 1
+        assert "materialized_inputs/a.json" in snapshot
+
+    def test_empty_inputs_returns_preprocess_only(self, tmp_path):
+        """No file references → only preprocess files."""
+        root = self._make_sandbox(tmp_path)
+
+        ei = ExecuteInput(
+            execute_dir=str(root / "execute" / "artifact_0"),
+            inputs={},
+        )
+
+        snapshot = snapshot_sandbox_for_artifact(str(root), ei)
+
+        assert len(snapshot) == 1
+        assert "preprocess/config.yaml" in snapshot

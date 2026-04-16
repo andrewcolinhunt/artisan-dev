@@ -1,12 +1,15 @@
 """Artisan example operations for testing and demonstration."""
+
 from __future__ import annotations
 
+from artisan.operations.examples.appendable_generator import AppendableGenerator
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.operations.examples.data_generator_with_metrics import (
     DataGeneratorWithMetrics,
 )
 from artisan.operations.examples.data_transformer import (
     DataTransformer,
+    SequentialDataTransformer,
 )
 from artisan.operations.examples.data_transformer_config import (
     DataTransformerConfig,
@@ -14,10 +17,14 @@ from artisan.operations.examples.data_transformer_config import (
 from artisan.operations.examples.data_transformer_script import DataTransformerScript
 from artisan.operations.examples.large_file_generator import LargeFileGenerator
 from artisan.operations.examples.metric_calculator import MetricCalculator
-from artisan.operations.examples.appendable_generator import AppendableGenerator
+from artisan.operations.examples.slow_transformer import (
+    SequentialSlowTransformer,
+    SlowTransformer,
+)
 from artisan.operations.examples.wait import Wait
 
 __all__ = [
+    "AppendableGenerator",
     "DataGenerator",
     "DataGeneratorWithMetrics",
     "DataTransformer",
@@ -25,6 +32,8 @@ __all__ = [
     "DataTransformerScript",
     "LargeFileGenerator",
     "MetricCalculator",
-    "AppendableGenerator",
+    "SequentialDataTransformer",
+    "SequentialSlowTransformer",
+    "SlowTransformer",
     "Wait",
 ]
