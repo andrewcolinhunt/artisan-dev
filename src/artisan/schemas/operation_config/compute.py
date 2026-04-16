@@ -40,6 +40,11 @@ class ModalComputeConfig(ComputeConfig):
             cold starts. 0 means scale-to-zero (Modal default).
         scaledown_window: Seconds a container idles before shutdown.
             None uses Modal's default (60s). Max 1200s.
+        image_registry_secret: Name of a Modal Secret (created via
+            ``modal secret create ...``) carrying ``REGISTRY_USERNAME``
+            and ``REGISTRY_PASSWORD`` for pulling private images. None
+            (default) pulls without authentication; set when ``image``
+            points at a private registry.
     """
 
     image: str = ARTISAN_WORKER_IMAGE
@@ -49,6 +54,7 @@ class ModalComputeConfig(ComputeConfig):
     retries: int = 3
     min_containers: int = 0
     scaledown_window: int | None = None
+    image_registry_secret: str | None = None
 
 
 class Compute(BaseModel):
