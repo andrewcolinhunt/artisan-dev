@@ -11,11 +11,14 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.step_executor import (
     _cancelled_result,
     execute_step,
+    instantiate_operation,
 )
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
+from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -303,3 +306,85 @@ class TestComputeRoutingSelection:
 
         mock_backend.create_dispatch_handle.assert_called_once()
         mock_handle.run.assert_called_once()
+
+
+class TestInstantiateOperationComputeOverrides:
+    """Dict-form compute overrides must coerce into proper Pydantic models."""
+
+    def test_instantiate_operation_compute_dict_coerces_modal_config(self):
+        """Dict override creates ModalComputeConfig when field starts as None."""
+        op = instantiate_operation(
+            _SimpleCreatorOp,
+            params=None,
+            compute={"active": "modal", "modal": {"min_containers": 8}},
+        )
+        assert isinstance(op.compute.modal, ModalComputeConfig)
+        assert op.compute.modal.min_containers == 8
+        assert op.compute.active == "modal"
+
+    def test_instantiate_operation_compute_dict_merges_existing_modal(self):
+        """Partial dict preserves existing fields on the nested config."""
+
+        class _ModalOp(_SimpleCreatorOp):
+            compute: Compute = Compute(
+                active="modal", modal=ModalComputeConfig(gpu="A10G", memory_gb=16)
+            )
+
+        result = instantiate_operation(
+            _ModalOp,
+            params=None,
+            compute={"modal": {"min_containers": 4}},
+        )
+        assert result.compute.modal.gpu == "A10G"
+        assert result.compute.modal.memory_gb == 16
+        assert result.compute.modal.min_containers == 4
+
+    def test_instantiate_operation_compute_string_override(self):
+        """String compute override selects the active provider."""
+        op = instantiate_operation(
+            _SimpleCreatorOp,
+            params=None,
+            compute="modal",
+        )
+        assert op.compute.active == "modal"
+
+    def test_instantiate_operation_compute_dict_passes_isinstance_check(self):
+        """Reproduces the bug: compute.current() must return a ModalComputeConfig."""
+        op = instantiate_operation(
+            _SimpleCreatorOp,
+            params=None,
+            compute={"active": "modal", "modal": {"min_containers": 8}},
+        )
+        assert isinstance(op.compute.current(), ModalComputeConfig)
+
+
+class TestInstantiateOperationEnvironmentOverrides:
+    """Dict-form environment overrides must coerce into proper Pydantic models."""
+
+    def test_instantiate_operation_env_dict_coerces_docker_from_none(self):
+        """Dict override creates DockerEnvironmentSpec when field starts as None."""
+        op = instantiate_operation(
+            _SimpleCreatorOp,
+            params=None,
+            environment={"active": "docker", "docker": {"image": "my-image:v2"}},
+        )
+        assert isinstance(op.environments.docker, DockerEnvironmentSpec)
+        assert op.environments.docker.image == "my-image:v2"
+        assert op.environments.active == "docker"
+
+    def test_instantiate_operation_env_dict_merges_existing_docker(self):
+        """Partial dict preserves existing fields on the nested spec."""
+
+        class _DockerOp(_SimpleCreatorOp):
+            environments: Environments = Environments(
+                active="docker",
+                docker=DockerEnvironmentSpec(image="old:v1", gpu=True),
+            )
+
+        result = instantiate_operation(
+            _DockerOp,
+            params=None,
+            environment={"docker": {"image": "new:v2"}},
+        )
+        assert result.environments.docker.image == "new:v2"
+        assert result.environments.docker.gpu is True
