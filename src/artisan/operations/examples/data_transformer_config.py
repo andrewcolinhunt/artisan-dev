@@ -13,6 +13,7 @@ from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -90,6 +91,11 @@ class DataTransformerConfig(OperationDefinition):
 
     # ---------- Execution ----------
     execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_config")
+
+    # ---------- Compute ----------
+    compute: Compute = Compute(
+        modal=ModalComputeConfig(),
+    )
 
     # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:

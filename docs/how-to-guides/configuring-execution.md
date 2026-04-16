@@ -7,7 +7,7 @@ is batched — from local development through production SLURM.
 [Building a Pipeline](building-a-pipeline.md)
 
 **Key types:** `Backend`, `ResourceConfig`, `ExecutionConfig`, `ToolSpec`,
-`Environments`, `CachePolicy`, `FailurePolicy`
+`Environments`, `CachePolicy`, `FailurePolicy`, `Compute`, `ModalComputeConfig`
 
 ---
 
@@ -81,6 +81,78 @@ pipeline.run(operation=MyOp, inputs=..., execution={"max_workers": 8})
 ```
 
 The default process pool size is 4.
+
+---
+
+## Configure compute routing
+
+Compute routing controls where the execute() phase runs, independently of
+the dispatch backend. Set it per step or as a pipeline-wide default:
+
+```python
+from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+
+# Pipeline-wide default
+pipeline = PipelineManager.create(..., default_compute="local")
+
+# Step-level override (string shorthand)
+pipeline.run(operation=MyOp, inputs=..., compute="modal")
+
+# Step-level override (dict with inline config)
+pipeline.run(
+    operation=MyOp,
+    inputs=...,
+    compute={"active": "modal", "modal": {"gpu": "A100", "memory_gb": 32}},
+)
+```
+
+| Compute target | How it runs | When to use |
+|----------------|-------------|-------------|
+| `"local"` (default) | Direct call inside the worker | Development, testing, CPU-only ops |
+| `"modal"` | Route to a Modal container | GPU work, cloud burst, isolated environments |
+
+### ModalComputeConfig fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `image` | `str` | (required) | Container image for the Modal function |
+| `gpu` | `str \| None` | `None` | GPU type (e.g. `"T4"`, `"A100"`, `"H100"`) |
+| `memory_gb` | `int` | `8` | Container memory in GB |
+| `timeout` | `int` | `3600` | Per-call timeout in seconds |
+| `retries` | `int` | `3` | Retries on preemption |
+
+The container image must have artisan installed. Transport functions run
+inside the container.
+
+### Validating operations for remote compute
+
+Use `validate_remote_execute()` in your test suite to catch serialization
+issues before they reach production:
+
+```python
+from artisan.execution.compute import validate_remote_execute
+
+op = MyOperation()
+assert validate_remote_execute(op)  # checks cloudpickle + tool paths
+```
+
+The validator checks two things:
+
+- **Cloudpickle round-trip:** serializes and deserializes the operation
+  instance. Fails if the operation has unpicklable attributes (file handles,
+  lambdas, etc.).
+- **ToolSpec path check:** warns if `tool.executable` points to a local-only
+  absolute path that won't exist on the remote container.
+
+### Transport limits
+
+File-based operations transport sandbox files to and from the remote
+container. The transport limit is 50 MB per direction. For larger data,
+put files on object storage (S3, GCS) and pass URIs as operation
+parameters.
+
+Python scripts referenced by ToolSpec are shipped automatically. External
+binaries (compiled tools) must be pre-installed in the container image.
 
 ---
 
@@ -518,3 +590,5 @@ failures occur — the job name format is `s{step_number}_{operation_name}`.
 - [Execution Flow](../concepts/execution-flow.md) — dispatch, execute, commit lifecycle
 - [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) — interactive SLURM walkthrough
 - [Writing Creator Operations](writing-creator-operations.md) — declaring operation-level defaults
+- [Compute Routing Tutorial](../tutorials/execution/13-compute-routing.ipynb) — interactive compute routing walkthrough
+- [Running on Modal Tutorial](../tutorials/execution/14-modal-execution.ipynb) — Modal-specific configuration and debugging

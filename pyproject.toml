@@ -105,6 +105,10 @@ polars = ">=0.20.0"     # DataFrame operations with native Delta Lake support
 # Visualization
 graphviz = "*"          # Python bindings for Graphviz (provenance graph visualization)
 
+# Cloud compute routing
+modal = "*"             # Modal SDK for remote compute routing
+cloudpickle = "*"       # Serialization for remote execute()
+
 # =============================================================================
 # DEV FEATURE - Development tools (testing, linting, debugging, notebooks)
 # =============================================================================

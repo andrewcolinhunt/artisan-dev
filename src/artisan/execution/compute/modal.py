@@ -15,18 +15,22 @@ class ModalComputeRouter(ComputeRouter):
     """Route execute() to a Modal container.
 
     Serializes the operation and execute input via cloudpickle,
-    ships them to a Modal function, and returns the result. A lazy
-    ``modal.App`` is created on first call and reused for the
-    router's lifetime so repeated calls hit warm containers.
+    ships them to a Modal function, and returns the result. The
+    Modal app is lazily created and held open so subsequent calls
+    within the same step hit warm containers.
 
     Attributes:
         _config: Modal compute configuration.
+        _app: Cached Modal app (created lazily).
         _fn: Cached Modal function (created lazily).
+        _ctx: The ``app.run()`` context manager (held open).
     """
 
     def __init__(self, config: ModalComputeConfig) -> None:
         self._config = config
+        self._app: Any = None
         self._fn: Any = None
+        self._ctx: Any = None
 
     def route_execute(
         self,
@@ -50,7 +54,7 @@ class ModalComputeRouter(ComputeRouter):
         )
         from artisan.execution.transport.tool_transport import snapshot_tool_files
 
-        fn = self._get_or_create_fn()
+        fn = self._ensure_running(operation.name)
         operation = self._force_local_environment(operation)
 
         sandbox_snapshot = snapshot_sandbox(sandbox_root)
@@ -65,9 +69,20 @@ class ModalComputeRouter(ComputeRouter):
         )
 
         if output_snapshot:
-            restore_sandbox(sandbox_root, output_snapshot)
+            restore_sandbox(execute_input.execute_dir, output_snapshot)
 
         return result
+
+    def close(self) -> None:
+        """Exit app.run() and release Modal resources."""
+        if self._ctx is not None:
+            self._ctx.__exit__(None, None, None)
+            self._ctx = None
+            self._app = None
+            self._fn = None
+
+    def __del__(self) -> None:
+        self.close()
 
     def _force_local_environment(self, operation: Any) -> Any:
         """Override environment to local for Modal execution.
@@ -89,20 +104,26 @@ class ModalComputeRouter(ComputeRouter):
             )
         return operation
 
-    def _get_or_create_fn(self) -> Any:
-        """Lazily create the Modal function from config.
+    def _ensure_running(self, operation_name: str) -> Any:
+        """Lazily create the Modal app and hydrate the function.
 
-        Creates an ephemeral ``modal.App`` with the config's image,
-        GPU, memory, timeout, and retry settings. Cached for the
-        router's lifetime so repeated calls hit warm containers.
+        Creates an ephemeral ``modal.App``, decorates the execute
+        function, and enters ``app.run()`` to hydrate it. The context
+        is held open so subsequent calls hit warm containers.
+
+        Args:
+            operation_name: Used to name the Modal app for dashboard
+                visibility (e.g. ``artisan-data_transformer``).
         """
         if self._fn is not None:
             return self._fn
 
         import modal
 
-        app = modal.App()
-        image = modal.Image.from_registry(self._config.image)
+        app = modal.App(f"artisan-{operation_name}")
+        image = modal.Image.from_registry(self._config.image).add_local_python_source(
+            "artisan"
+        )
 
         @app.function(
             image=image,
@@ -110,6 +131,7 @@ class ModalComputeRouter(ComputeRouter):
             memory=self._config.memory_gb * 1024,
             timeout=self._config.timeout,
             retries=self._config.retries,
+            serialized=True,
         )
         def _execute_on_modal(
             operation_bytes: bytes,
@@ -141,5 +163,8 @@ class ModalComputeRouter(ComputeRouter):
             output_files = snapshot_outputs(execute_input.execute_dir)
             return raw_result, output_files
 
+        self._app = app
         self._fn = _execute_on_modal
+        self._ctx = app.run()
+        self._ctx.__enter__()
         return self._fn

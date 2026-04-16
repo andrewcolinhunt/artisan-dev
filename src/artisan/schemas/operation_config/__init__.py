@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from artisan.schemas.operation_config.compute import (
+    ARTISAN_WORKER_IMAGE,
     Compute,
     ComputeConfig,
     LocalComputeConfig,
@@ -31,6 +32,7 @@ __all__ = [
     # Environments model
     "Environments",
     # ComputeConfig hierarchy
+    "ARTISAN_WORKER_IMAGE",
     "ComputeConfig",
     "LocalComputeConfig",
     "ModalComputeConfig",
