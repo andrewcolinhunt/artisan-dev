@@ -197,7 +197,7 @@ class ModalComputeRouter(ComputeRouter):
 
         image = modal.Image.from_registry(
             self._config.image, **image_kwargs
-        ).add_local_python_source("artisan")
+        ).add_local_python_source(*self._config.local_python_sources)
 
         fn_kwargs: dict[str, Any] = {
             "image": image,

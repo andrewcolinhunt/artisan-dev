@@ -337,6 +337,65 @@ class TestModalComputeRouter:
             secret=mock_modal.Secret.from_name.return_value,
         )
 
+    def test_local_python_sources_default(self):
+        """Default config splats ["artisan"] into add_local_python_source."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_image = mock_modal.Image.from_registry.return_value
+        mock_image.add_local_python_source.assert_called_once_with("artisan")
+
+    def test_local_python_sources_multiple(self):
+        """Multiple sources splat in declaration order."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(
+            image="test:latest",
+            local_python_sources=["artisan", "pipelines"],
+        )
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_image = mock_modal.Image.from_registry.return_value
+        mock_image.add_local_python_source.assert_called_once_with(
+            "artisan", "pipelines"
+        )
+
+    def test_local_python_sources_opts_out_of_artisan(self):
+        """Dropping 'artisan' from the list drops it from the call."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(
+            image="test:latest",
+            local_python_sources=["pipelines"],
+        )
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_image = mock_modal.Image.from_registry.return_value
+        mock_image.add_local_python_source.assert_called_once_with("pipelines")
+
+    def test_local_python_sources_empty(self):
+        """Empty list splats to a zero-arg call."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(
+            image="test:latest",
+            local_python_sources=[],
+        )
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_image = mock_modal.Image.from_registry.return_value
+        mock_image.add_local_python_source.assert_called_once_with()
+
     def test_output_snapshot_restored_locally(self, tmp_path):
         """Output files from remote are restored in the sandbox."""
         mock_modal = _make_mock_modal()
