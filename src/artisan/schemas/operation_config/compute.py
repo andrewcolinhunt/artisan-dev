@@ -45,6 +45,18 @@ class ModalComputeConfig(ComputeConfig):
             and ``REGISTRY_PASSWORD`` for pulling private images. None
             (default) pulls without authentication; set when ``image``
             points at a private registry.
+        local_python_sources: Top-level Python package names to overlay
+            onto the Modal image via
+            ``modal.Image.add_local_python_source``. The default
+            ``["artisan"]`` preserves the existing behavior of shipping
+            the dev-host artisan source live, shadowing whatever version
+            the image pip-installed. Add your own package name(s) to
+            also overlay project sources live
+            (e.g. ``["artisan", "pipelines"]``). Remove ``"artisan"`` to
+            use the image's pinned version instead; pass ``[]`` to
+            overlay nothing. Mounted at cold-start rather than baked
+            into the image — upload bandwidth scales with total source
+            size.
     """
 
     image: str = ARTISAN_WORKER_IMAGE
@@ -55,6 +67,7 @@ class ModalComputeConfig(ComputeConfig):
     min_containers: int = 0
     scaledown_window: int | None = None
     image_registry_secret: str | None = None
+    local_python_sources: list[str] = Field(default_factory=lambda: ["artisan"])
 
 
 class Compute(BaseModel):
