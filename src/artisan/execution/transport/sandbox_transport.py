@@ -15,39 +15,55 @@ _INPUT_DIRS = ("materialized_inputs", "preprocess", "execute")
 _MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024  # 50 MB
 
 
-def snapshot_sandbox(root: str) -> dict[str, bytes]:
-    """Snapshot sandbox input files as {relative_path: content}.
+def snapshot_sandbox(root: str) -> tuple[dict[str, bytes], list[str]]:
+    """Snapshot sandbox input files and empty directory shells.
 
     Walks only ``_INPUT_DIRS`` under root. Skips postprocess/
-    (not needed for execute phase). Returns empty dict when
-    root contains no files (in-memory operations).
+    (not needed for execute phase). Returns ``({}, [])`` when
+    root contains no input dirs.
+
+    Empty directories are captured explicitly so remote restoration
+    reproduces the directory shells the local lifecycle created
+    (e.g. an empty ``execute/`` the caller intends to use as a
+    subprocess cwd).
 
     Args:
         root: Path to the sandbox root directory.
 
     Returns:
-        Dict mapping relative paths to file contents.
+        Tuple ``(files, empty_dirs)``:
+            * ``files`` maps relative paths to file contents.
+            * ``empty_dirs`` lists relative paths of directories
+              under ``_INPUT_DIRS`` that exist and have no
+              descendant files (leaf empties).
 
     Raises:
         ValueError: If total size exceeds 50 MB.
     """
-    snapshot: dict[str, bytes] = {}
+    files: dict[str, bytes] = {}
+    empty_dirs: list[str] = []
     total_size = 0
 
     for dir_name in _INPUT_DIRS:
         dir_path = os.path.join(root, dir_name)
         if not os.path.isdir(dir_path):
             continue
-        for dirpath, _, filenames in os.walk(dir_path):
-            for filename in filenames:
-                abs_path = os.path.join(dirpath, filename)
-                rel_path = os.path.relpath(abs_path, root)
-                content = _read_file(abs_path)
-                total_size += len(content)
-                snapshot[rel_path] = content
+        for dirpath, dirnames, filenames in os.walk(dir_path):
+            if filenames:
+                for filename in filenames:
+                    abs_path = os.path.join(dirpath, filename)
+                    rel_path = os.path.relpath(abs_path, root)
+                    content = _read_file(abs_path)
+                    total_size += len(content)
+                    files[rel_path] = content
+            elif not dirnames:
+                # Leaf directory with no files — record so restore
+                # can recreate the shell. Non-leaf empty dirs are
+                # covered transitively via their descendants.
+                empty_dirs.append(os.path.relpath(dirpath, root))
 
     _check_size(total_size)
-    return snapshot
+    return files, empty_dirs
 
 
 def snapshot_outputs(execute_dir: str) -> dict[str, bytes]:
@@ -84,16 +100,30 @@ def snapshot_outputs(execute_dir: str) -> dict[str, bytes]:
     return snapshot
 
 
-def restore_sandbox(root: str, snapshot: dict[str, bytes]) -> None:
-    """Recreate sandbox files from a snapshot.
+def restore_sandbox(
+    root: str,
+    snapshot: dict[str, bytes],
+    empty_dirs: list[str] | None = None,
+) -> None:
+    """Recreate sandbox files and directory shells from a snapshot.
 
-    Recreates the directory structure under root and writes
-    each file at its original relative path.
+    Creates ``empty_dirs`` first (idempotent) so callers that pass
+    a directory to ``subprocess.Popen(cwd=...)`` don't ENOENT on an
+    expected-but-empty local directory that never crossed the wire.
+    Then writes each file at its original relative path.
 
     Args:
         root: Target root directory for restoration.
-        snapshot: Dict mapping relative paths to file contents.
+        snapshot: ``{rel_path: bytes}`` mapping, typically from
+            ``snapshot_sandbox()[0]``.
+        empty_dirs: Optional list of relative paths to directories
+            that should exist after restore. ``None`` (default)
+            preserves the historical file-only behavior.
     """
+    if empty_dirs:
+        for rel_path in empty_dirs:
+            os.makedirs(os.path.join(root, rel_path), exist_ok=True)
+
     for rel_path, content in snapshot.items():
         abs_path = os.path.join(root, rel_path)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
@@ -110,26 +140,33 @@ def _read_file(path: str) -> bytes:
 def snapshot_sandbox_for_artifact(
     sandbox_root: str,
     execute_input: Any,
-) -> dict[str, bytes]:
-    """Snapshot only the files needed for a single artifact's execute.
+) -> tuple[dict[str, bytes], list[str]]:
+    """Snapshot the files needed for a single artifact's execute.
 
     Captures materialized input files referenced in
     ``execute_input.inputs`` and the shared ``preprocess/`` directory.
     Excludes other artifacts' materialized files, keeping per-artifact
     payloads small for Modal transport.
 
+    Also records the per-artifact ``execute_dir`` (typically
+    ``execute/artifact_{i}/``) as an empty-dir entry when it exists
+    and is empty — remote restoration needs the shell so that
+    ``subprocess.Popen(cwd=execute_dir)`` doesn't ENOENT.
+
     Args:
         sandbox_root: Unit-level sandbox root.
         execute_input: Per-artifact ``ExecuteInput`` with file
-            references in its ``inputs`` dict.
+            references in its ``inputs`` dict and ``execute_dir``.
 
     Returns:
-        Snapshot dict suitable for ``restore_sandbox()``.
+        Tuple ``(files, empty_dirs)`` suitable for
+        ``restore_sandbox()``.
 
     Raises:
         ValueError: If total size exceeds 50 MB.
     """
-    snapshot: dict[str, bytes] = {}
+    files: dict[str, bytes] = {}
+    empty_dirs: list[str] = []
     total_size = 0
 
     # Collect file paths referenced in execute_input.inputs
@@ -142,7 +179,7 @@ def snapshot_sandbox_for_artifact(
             rel_path = os.path.relpath(abs_path, sandbox_root)
             content = _read_file(abs_path)
             total_size += len(content)
-            snapshot[rel_path] = content
+            files[rel_path] = content
 
     # Always include the shared preprocess/ directory
     preprocess_dir = os.path.join(sandbox_root, "preprocess")
@@ -151,13 +188,22 @@ def snapshot_sandbox_for_artifact(
             for filename in filenames:
                 abs_path = os.path.join(dirpath, filename)
                 rel_path = os.path.relpath(abs_path, sandbox_root)
-                if rel_path not in snapshot:
+                if rel_path not in files:
                     content = _read_file(abs_path)
                     total_size += len(content)
-                    snapshot[rel_path] = content
+                    files[rel_path] = content
+
+    # Include the per-artifact execute_dir shell if empty. Non-empty
+    # dirs will be reproduced by file writes during restore, so we
+    # only need to record the empty case explicitly.
+    execute_dir = execute_input.execute_dir
+    if os.path.isdir(execute_dir) and not os.listdir(execute_dir):
+        rel_execute = os.path.relpath(execute_dir, sandbox_root)
+        if rel_execute not in empty_dirs:
+            empty_dirs.append(rel_execute)
 
     _check_size(total_size)
-    return snapshot
+    return files, empty_dirs
 
 
 def _collect_file_paths(
