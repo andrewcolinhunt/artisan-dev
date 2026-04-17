@@ -448,9 +448,7 @@ class TestExecuteOnModalCallback:
             inputs={},
             log_path="/tmp/log",
         )
-        files, empty_dirs = snapshot_sandbox_for_artifact(
-            str(local_root), local_input
-        )
+        files, empty_dirs = snapshot_sandbox_for_artifact(str(local_root), local_input)
         assert "execute/artifact_0" in empty_dirs  # precondition
 
         # Point the cloudpickled ExecuteInput at a path that does NOT
@@ -526,9 +524,7 @@ class TestExecuteOnModalCallback:
             name = "cwd_op"
 
             def execute(self, execute_input):
-                subprocess.run(
-                    ["true"], cwd=execute_input.execute_dir, check=True
-                )
+                subprocess.run(["true"], cwd=execute_input.execute_dir, check=True)
 
         files, _, fresh_root, fresh_input, fresh_artifact_exec = (
             self._snapshot_local_and_build_fresh_input(tmp_path)
@@ -551,7 +547,8 @@ class TestExecuteOnModalCallback:
         except FileNotFoundError:
             pass  # expected
         else:
-            raise AssertionError(
+            msg = (
                 "Expected FileNotFoundError when sandbox_dirs is dropped; "
                 "the execute/artifact_0 shell should not exist on the fresh root."
             )
+            raise AssertionError(msg)
