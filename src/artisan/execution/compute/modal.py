@@ -62,13 +62,14 @@ class ModalComputeRouter(ComputeRouter):
         fn = self._ensure_running(operation.name)
         operation = self._force_local_environment(operation)
 
-        sandbox_snapshot = snapshot_sandbox(sandbox_root)
+        sandbox_files, sandbox_dirs = snapshot_sandbox(sandbox_root)
         tool_files = snapshot_tool_files(operation)
 
         result, output_snapshot = fn.remote(
             operation_bytes=cloudpickle.dumps(operation),
             execute_input_bytes=cloudpickle.dumps(execute_input),
-            sandbox=sandbox_snapshot,
+            sandbox=sandbox_files,
+            sandbox_dirs=sandbox_dirs,
             sandbox_root=sandbox_root,
             tool_files=tool_files,
         )
@@ -102,15 +103,21 @@ class ModalComputeRouter(ComputeRouter):
         op_bytes = cloudpickle.dumps(forced_op)
 
         inputs_bytes = [cloudpickle.dumps(ei) for ei in execute_inputs]
-        sandboxes = [
+        # Split the per-artifact (files, empty_dirs) tuples into
+        # parallel lists for experimental_spawn_map's positional
+        # zip semantics.
+        snapshots = [
             snapshot_sandbox_for_artifact(sandbox_root, ei) for ei in execute_inputs
         ]
+        sandboxes = [files for files, _ in snapshots]
+        sandbox_dirs_list = [dirs for _, dirs in snapshots]
         tool_files = snapshot_tool_files(operation)
 
         fc = fn.experimental_spawn_map(
             [op_bytes] * len(execute_inputs),
             inputs_bytes,
             sandboxes,
+            sandbox_dirs_list,
             [sandbox_root] * len(execute_inputs),
             [tool_files] * len(execute_inputs),
         )
@@ -210,6 +217,7 @@ class ModalComputeRouter(ComputeRouter):
             operation_bytes: bytes,
             execute_input_bytes: bytes,
             sandbox: dict[str, bytes] | None = None,
+            sandbox_dirs: list[str] | None = None,
             sandbox_root: str | None = None,
             tool_files: dict[str, bytes] | None = None,
         ) -> tuple[Any, dict[str, bytes]]:
@@ -223,8 +231,17 @@ class ModalComputeRouter(ComputeRouter):
                 restore_tool_files,
             )
 
-            if sandbox:
-                restore_sandbox(sandbox_root, sandbox)
+            # Always call restore_sandbox so empty-dir shells (e.g. the
+            # per-artifact execute/artifact_i/ that the local lifecycle
+            # mkdirs but that has no files) get recreated. `sandbox`
+            # may be None for in-memory ops; restore_sandbox handles
+            # that gracefully via the `or {}` fallbacks.
+            if sandbox or sandbox_dirs:
+                restore_sandbox(
+                    sandbox_root,
+                    sandbox or {},
+                    empty_dirs=sandbox_dirs,
+                )
             if tool_files:
                 restore_tool_files(tool_files)
 

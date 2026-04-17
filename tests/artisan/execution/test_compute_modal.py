@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import cloudpickle
@@ -367,3 +368,190 @@ class TestModalComputeRouter:
         assert result == {"success": True}
         # The output file should exist in execute_dir (not sandbox_root)
         assert (execute_dir / "result.json").read_bytes() == b'{"done": true}'
+
+    def test_route_execute_passes_empty_dirs(self, tmp_path):
+        """Empty sandbox dirs are threaded to fn.remote as sandbox_dirs."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        operation = MagicMock()
+        operation.environments = Environments()
+        operation.execute.return_value = "ok"
+        operation.tool = None
+
+        # Sandbox has an empty execute/ leaf — captured by snapshot_sandbox.
+        sandbox = tmp_path / "sandbox"
+        (sandbox / "materialized_inputs").mkdir(parents=True)
+        (sandbox / "materialized_inputs" / "input.txt").write_bytes(b"data")
+        (sandbox / "execute").mkdir()  # empty shell
+        execute_dir = sandbox / "execute"
+        # For the outer route_execute test path, execute_dir exists locally;
+        # the assertion below is on what crossed the `remote()` boundary.
+
+        execute_input = ExecuteInput(
+            inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log"
+        )
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            fn = router._ensure_running("test_op")
+            router.route_execute(operation, execute_input, str(sandbox))
+
+        call_kwargs = fn.remote.call_args[1]
+        assert call_kwargs["sandbox"] == {"materialized_inputs/input.txt": b"data"}
+        assert call_kwargs["sandbox_dirs"] == ["execute"]
+
+
+class TestExecuteOnModalCallback:
+    """End-to-end regression for the Modal container callback.
+
+    The symptom we're fixing: cloudpickled ops that do
+    `subprocess.Popen(cwd=execute_input.execute_dir)` hit ENOENT when
+    the Modal container has the sandbox restored but not the
+    per-artifact `execute/artifact_i/` empty dir.
+
+    These tests extract the real ``_execute_on_modal`` function from
+    the decorated mock (``wrapped._original_fn``) and invoke it
+    directly against a fresh sandbox_root — mirroring what Modal does
+    in the real container.
+    """
+
+    def _capture_execute_on_modal(self, config):
+        """Initialize a router and return (router, _execute_on_modal)."""
+        mock_modal = _make_mock_modal()
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            fn = router._ensure_running("test_op")
+
+        return router, fn._original_fn
+
+    def _snapshot_local_and_build_fresh_input(self, tmp_path):
+        """Build a local sandbox, snapshot it, and return the snapshot
+        plus an `ExecuteInput` whose `execute_dir` points at a FRESH
+        sandbox_root (not yet on disk). Mirrors what happens on Modal:
+        the container sees a new absolute path that must be recreated
+        via restore_sandbox.
+        """
+        from artisan.execution.transport.sandbox_transport import (
+            snapshot_sandbox_for_artifact,
+        )
+
+        # Local sandbox the way prep_unit would create it.
+        local_root = tmp_path / "local_sandbox"
+        (local_root / "preprocess").mkdir(parents=True)
+        local_artifact_exec = local_root / "execute" / "artifact_0"
+        local_artifact_exec.mkdir(parents=True)  # empty leaf
+
+        local_input = ExecuteInput(
+            execute_dir=str(local_artifact_exec),
+            inputs={},
+            log_path="/tmp/log",
+        )
+        files, empty_dirs = snapshot_sandbox_for_artifact(
+            str(local_root), local_input
+        )
+        assert "execute/artifact_0" in empty_dirs  # precondition
+
+        # Point the cloudpickled ExecuteInput at a path that does NOT
+        # yet exist. Only restore_sandbox can materialize it.
+        fresh_root = tmp_path / "fresh_sandbox"
+        fresh_artifact_exec = fresh_root / "execute" / "artifact_0"
+        fresh_input = ExecuteInput(
+            execute_dir=str(fresh_artifact_exec),
+            inputs={},
+            log_path="/tmp/log",
+        )
+        return files, empty_dirs, fresh_root, fresh_input, fresh_artifact_exec
+
+    def test_creates_missing_execute_dir_from_empty_dirs(self, tmp_path):
+        """Fake op subprocess-cwd'd on execute_dir succeeds on a fresh root.
+
+        Reproduces the original FoundryRFD3-on-Modal failure in a
+        single-process test: local sandbox has empty
+        `execute/artifact_0/`; we snapshot it, invoke
+        `_execute_on_modal` against a fresh (non-existent)
+        sandbox_root, and the op's `subprocess.run(cwd=execute_dir)`
+        must succeed.
+        """
+
+        class _CwdOp:
+            name = "cwd_op"
+
+            def execute(self, execute_input):
+                subprocess.run(
+                    ["sh", "-c", "echo ok > marker.txt"],
+                    cwd=execute_input.execute_dir,
+                    check=True,
+                )
+                return "done"
+
+        files, empty_dirs, fresh_root, fresh_input, fresh_artifact_exec = (
+            self._snapshot_local_and_build_fresh_input(tmp_path)
+        )
+        assert not fresh_artifact_exec.exists()  # precondition
+
+        _, execute_on_modal = self._capture_execute_on_modal(
+            ModalComputeConfig(image="test:latest")
+        )
+
+        raw_result, output_files = execute_on_modal(
+            operation_bytes=cloudpickle.dumps(_CwdOp()),
+            execute_input_bytes=cloudpickle.dumps(fresh_input),
+            sandbox=files,
+            sandbox_dirs=empty_dirs,
+            sandbox_root=str(fresh_root),
+            tool_files={},
+        )
+
+        assert raw_result == "done"
+        assert output_files == {"marker.txt": b"ok\n"}
+        assert (fresh_artifact_exec / "marker.txt").read_bytes() == b"ok\n"
+
+    def test_subprocess_cwd_fails_without_sandbox_dirs(self, tmp_path):
+        """Negative control: dropping sandbox_dirs reproduces the bug.
+
+        Same setup but we call _execute_on_modal without
+        ``sandbox_dirs``. The empty execute dir never gets recreated
+        on the fresh root, and the op's subprocess.run raises
+        FileNotFoundError at Popen.
+
+        This test is load-bearing: if a future refactor silently
+        drops ``sandbox_dirs`` from the Modal call chain, this test
+        fails — which means the positive test above would also fail —
+        making the contract explicit in CI.
+        """
+
+        class _CwdOp:
+            name = "cwd_op"
+
+            def execute(self, execute_input):
+                subprocess.run(
+                    ["true"], cwd=execute_input.execute_dir, check=True
+                )
+
+        files, _, fresh_root, fresh_input, fresh_artifact_exec = (
+            self._snapshot_local_and_build_fresh_input(tmp_path)
+        )
+        assert not fresh_artifact_exec.exists()  # precondition
+
+        _, execute_on_modal = self._capture_execute_on_modal(
+            ModalComputeConfig(image="test:latest")
+        )
+
+        try:
+            execute_on_modal(
+                operation_bytes=cloudpickle.dumps(_CwdOp()),
+                execute_input_bytes=cloudpickle.dumps(fresh_input),
+                sandbox=files,
+                # sandbox_dirs intentionally omitted — pre-fix behavior.
+                sandbox_root=str(fresh_root),
+                tool_files={},
+            )
+        except FileNotFoundError:
+            pass  # expected
+        else:
+            raise AssertionError(
+                "Expected FileNotFoundError when sandbox_dirs is dropped; "
+                "the execute/artifact_0 shell should not exist on the fresh root."
+            )
