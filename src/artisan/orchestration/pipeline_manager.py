@@ -32,7 +32,6 @@ from artisan.orchestration.engine.step_executor import (
     instantiate_operation,
 )
 from artisan.orchestration.engine.step_tracker import StepTracker
-from artisan.orchestration.post_step_future import PostStepFuture
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy
@@ -1077,7 +1076,6 @@ class PipelineManager:
         name: str | None = None,
         intermediates: str = "discard",
         skip_cache: bool = False,
-        post_step: type[OperationDefinition] | None = None,
     ) -> StepResult:
         """Execute a pipeline step (blocking).
 
@@ -1100,9 +1098,6 @@ class PipelineManager:
             intermediates: How to handle intermediate artifacts in composites:
                 "discard" (default), "persist", or "expose".
             skip_cache: Bypass cache lookups for this step.
-            post_step: Operation to auto-insert after the main step. When
-                provided, the main step's outputs are wired as inputs to the
-                post_step, and the returned StepResult is from the post_step.
 
         Returns:
             StepResult with output references and execution metadata.
@@ -1122,7 +1117,6 @@ class PipelineManager:
             name=name,
             intermediates=intermediates,
             skip_cache=skip_cache,
-            post_step=post_step,
         ).result()
 
     def submit(
@@ -1146,8 +1140,7 @@ class PipelineManager:
         name: str | None = None,
         intermediates: str = "discard",
         skip_cache: bool = False,
-        post_step: type[OperationDefinition] | None = None,
-    ) -> StepFuture | PostStepFuture:
+    ) -> StepFuture:
         """Submit a pipeline step (non-blocking).
 
         Accepts both OperationDefinition and CompositeDefinition subclasses.
@@ -1167,16 +1160,9 @@ class PipelineManager:
             name: Custom step name. Defaults to operation.name.
             intermediates: How to handle intermediate artifacts in composites.
             skip_cache: Bypass cache lookups for this step.
-            post_step: Operation to auto-insert after the main step. When
-                provided, the main step's outputs are wired as inputs to the
-                post_step, and the returned PostStepFuture routes output()
-                to the correct source step. Behavioral flags (backend,
-                compact, skip_cache, failure_policy) are forwarded; overrides
-                (params, resources, etc.) are not.
 
         Returns:
-            StepFuture (no post_step) or PostStepFuture (with post_step)
-            for wiring to downstream steps.
+            StepFuture for wiring to downstream steps.
 
         Raises:
             ValueError: If any override keys are unrecognized.
@@ -1185,8 +1171,6 @@ class PipelineManager:
 
         # 1. Route composites to a dedicated handler — composites expand into
         #    multiple internal operations and have their own caching/dispatch.
-        #    post_step is not applied to composites (deferred; composites
-        #    handle internal steps in compose()).
         if isinstance(operation, type) and issubclass(operation, CompositeDefinition):  # type: ignore[redundant-expr]
             return self._submit_composite(
                 composite_class=operation,
@@ -1244,22 +1228,22 @@ class PipelineManager:
 
         # 5. Cache check: if a prior run produced identical spec_id, return
         #    the cached StepResult immediately without re-executing.
-        #    Assigns main_future so post_step can chain from it.
-        main_future: StepFuture | None = None
         if not (skip_cache or self._config.skip_cache):
-            main_future = self._try_cached_step(
+            cached = self._try_cached_step(
                 step_spec_id,
                 step_number,
                 step_name,
                 operation.outputs,
             )
+            if cached is not None:
+                return cached
 
         # 6. File path promotion: if the user passed raw file paths (list of
         #    strings), validate them and commit FileRefArtifacts to Delta Lake
         #    so downstream execution sees artifact IDs, not filesystem paths.
         #    Only curator operations accept raw paths; creators must receive
         #    artifact references from a prior ingest step.
-        if main_future is None and _is_file_path_input(inputs):
+        if _is_file_path_input(inputs):
             file_result = self._handle_file_path_inputs(
                 cast(list[str], inputs),
                 temp_instance,
@@ -1276,68 +1260,24 @@ class PipelineManager:
         # 7. Dispatch: register the step, resolve the backend (local vs SLURM),
         #    record the step start in Delta, and submit the _run() closure to
         #    the thread pool executor for background execution.
-        if main_future is None:
-            main_future = self._dispatch_step(
-                operation=operation,
-                inputs=inputs,
-                params=params,
-                backend=backend,
-                resources=resources,
-                execution=execution,
-                environment=environment,
-                tool=tool,
-                compute=compute,
-                failure_policy=failure_policy,
-                compact=compact,
-                step_name=step_name,
-                step_number=step_number,
-                step_spec_id=step_spec_id,
-                temp_instance=temp_instance,
-                skip_cache=skip_cache,
-            )
-
-        # 8. Post-step: if provided, wire main step outputs as post_step
-        #    inputs and recursively submit. Returns a PostStepFuture that
-        #    routes output() to the correct source step.
-        if post_step is not None:
-            post_inputs: dict[str, OutputReference] = {
-                role: main_future.output(role)
-                for role in operation.outputs
-                if role in post_step.inputs
-            }
-            post_future = self.submit(
-                post_step,
-                inputs=post_inputs,
-                backend=backend,
-                compact=compact,
-                skip_cache=skip_cache,
-                failure_policy=failure_policy,
-                name=f"{step_name}.post",
-            )
-            assert isinstance(post_future, StepFuture)
-
-            # Post-step outputs take precedence; remaining main-op outputs
-            # pass through.
-            output_map: dict[str, OutputReference] = {}
-            output_types: dict[str, str | None] = {}
-
-            for role in operation.outputs:
-                if role not in post_step.outputs:
-                    output_map[role] = main_future.output(role)
-                    output_types[role] = operation.outputs[role].artifact_type
-
-            for role in post_step.outputs:
-                output_map[role] = post_future.output(role)
-                output_types[role] = post_step.outputs[role].artifact_type
-
-            return PostStepFuture(
-                main_future=main_future,
-                post_future=post_future,
-                output_map=output_map,
-                output_types=output_types,
-            )
-
-        return main_future
+        return self._dispatch_step(
+            operation=operation,
+            inputs=inputs,
+            params=params,
+            backend=backend,
+            resources=resources,
+            execution=execution,
+            environment=environment,
+            tool=tool,
+            compute=compute,
+            failure_policy=failure_policy,
+            compact=compact,
+            step_name=step_name,
+            step_number=step_number,
+            step_spec_id=step_spec_id,
+            temp_instance=temp_instance,
+            skip_cache=skip_cache,
+        )
 
     # =========================================================================
     # submit() helpers
