@@ -21,7 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PipelineConfig`, `RuntimeEnvironment`, `ArtifactStore`, and all executor
   layers for external-content artifact storage
 - `files_dir` threaded to creator operations via `ExecuteInput`
-- `post_step` parameter on `submit()` and `run()` for post-step consolidation
 - `DispatchHandle` abstract base class — lifecycle handle for in-flight backend
   work with `dispatch()` / `is_done()` / `collect()` / `cancel()` semantics
 - `UnitResult` dataclass — typed dispatch results replacing `list[dict]`
@@ -33,7 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after lineage is established
 - `num_files` parameter on `RecordBundleGenerator` for multi-file output
 - External file storage tutorial (`11-external-file-storage`)
-- Post-step consolidation tutorial (`12-post-step-consolidation`)
 
 ### Changed
 
