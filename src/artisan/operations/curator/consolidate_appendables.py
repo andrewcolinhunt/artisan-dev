@@ -1,8 +1,8 @@
 """Curator that concatenates per-worker JSONL files into a single file.
 
-Natural post_step target for AppendableGenerator: after parallel
-workers each produce their own JSONL files, this curator reads them
-all and writes a single combined.jsonl in files_root.
+Consolidation step for AppendableGenerator: after parallel workers
+each produce their own JSONL files, this curator reads them all and
+writes a single combined.jsonl in files_root.
 """
 
 from __future__ import annotations
