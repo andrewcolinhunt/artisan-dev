@@ -152,7 +152,9 @@ output("gen", "datasets", step_number=0)
 ```python
 output = pipeline.output
 pipeline.run(operation=DataGenerator, name="generate", params={"count": 5})
-pipeline.run(operation=DataTransformer, inputs={"dataset": output("generate", "datasets")})
+pipeline.run(
+    operation=DataTransformer, inputs={"dataset": output("generate", "datasets")}
+)
 ```
 
 **Direct chaining (also works):**
@@ -171,9 +173,9 @@ a summary dict:
 
 ```python
 summary = pipeline.finalize()
-print(summary["pipeline_name"])     # "my_pipeline"
-print(summary["total_steps"])       # 3
-print(summary["overall_success"])   # True
+print(summary["pipeline_name"])  # "my_pipeline"
+print(summary["total_steps"])  # 3
+print(summary["overall_success"])  # True
 ```
 
 `finalize()` is required when using `submit()` (see below). With `run()` only,
@@ -230,8 +232,16 @@ Feed the same output into multiple independent steps:
 ```python
 output = pipeline.output
 pipeline.run(operation=DataGenerator, name="generate", params={"count": 10})
-pipeline.submit(operation=TransformA, name="branch_a", inputs={"data": output("generate", "datasets")})
-pipeline.submit(operation=TransformB, name="branch_b", inputs={"data": output("generate", "datasets")})
+pipeline.submit(
+    operation=TransformA,
+    name="branch_a",
+    inputs={"data": output("generate", "datasets")},
+)
+pipeline.submit(
+    operation=TransformB,
+    name="branch_b",
+    inputs={"data": output("generate", "datasets")},
+)
 ```
 
 ### Merging branches
@@ -291,6 +301,7 @@ from artisan.composites import CompositeDefinition, CompositeContext
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
+
 class TransformAndScore(CompositeDefinition):
     """Transform data then compute metrics."""
 
@@ -331,12 +342,18 @@ output = pipeline.output
 pipeline.run(operation=DataGenerator, name="gen", params={"count": 10})
 
 # Collapsed — single step
-pipeline.run(operation=TransformAndScore, name="ts",
-             inputs={"dataset": output("gen", "datasets")})
+pipeline.run(
+    operation=TransformAndScore,
+    name="ts",
+    inputs={"dataset": output("gen", "datasets")},
+)
 
 # Expanded — each internal operation is a separate step
-pipeline.expand(composite=TransformAndScore, name="ts",
-                inputs={"dataset": output("gen", "datasets")})
+pipeline.expand(
+    composite=TransformAndScore,
+    name="ts",
+    inputs={"dataset": output("gen", "datasets")},
+)
 ```
 
 For the full guide on writing composites, see
@@ -416,7 +433,9 @@ Run your pipeline with a small dataset to confirm wiring and output:
 
 ```python
 pipeline = PipelineManager.create(
-    name="test", delta_root="test/delta", staging_root="test/staging",
+    name="test",
+    delta_root="test/delta",
+    staging_root="test/staging",
 )
 step = pipeline.run(operation=DataGenerator, params={"count": 3})
 assert step.success

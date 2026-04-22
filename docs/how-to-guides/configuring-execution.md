@@ -257,6 +257,7 @@ from artisan.operations.base import OperationDefinition
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.execution.execution_config import ExecutionConfig
 
+
 class GpuInference(OperationDefinition):
     name = "gpu_inference"
 
@@ -305,6 +306,7 @@ from artisan.operations.base import OperationDefinition
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.environment_spec import ApptainerEnvironmentSpec
+
 
 class ToolAOp(OperationDefinition):
     name = "tool_a"
@@ -447,8 +449,10 @@ pipeline.submit(
 # Downstream steps that depend on a submitted step automatically wait
 pipeline.run(
     operation=MergeOp,
-    inputs={"a": pipeline.output("branch_a", "result"),
-            "b": pipeline.output("branch_b", "result")},
+    inputs={
+        "a": pipeline.output("branch_a", "result"),
+        "b": pipeline.output("branch_b", "result"),
+    },
 )
 ```
 

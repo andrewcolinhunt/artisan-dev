@@ -259,6 +259,7 @@ class Params(BaseModel):
     scale_factor: float = Field(default=1.5, ge=0.0)
     seed: int | None = Field(default=None)
 
+
 params: Params = Params()
 ```
 
@@ -435,6 +436,7 @@ construct artifacts from `memory_outputs` in postprocess:
 def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
     return {"accuracy": 0.95, "f1": 0.87}
 
+
 def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
     metric = MetricArtifact.draft(
         content=inputs.memory_outputs,
@@ -456,6 +458,7 @@ each as a separate output role with its own lineage:
 class OutputRole(StrEnum):
     DATASETS = "datasets"
     METRICS = "metrics"
+
 
 outputs: ClassVar[dict[str, OutputSpec]] = {
     OutputRole.DATASETS: OutputSpec(
@@ -517,6 +520,7 @@ from artisan.schemas.operation_config.environment_spec import (
 )
 from artisan.schemas.operation_config.environments import Environments
 
+
 class MyToolOp(OperationDefinition):
     name = "my_tool"
 
@@ -546,9 +550,12 @@ In `execute`, use `self.tool.parts()` to build the command prefix and
 ```python
 from artisan.utils.external_tools import format_args, run_command
 
+
 def execute(self, inputs: ExecuteInput) -> Any:
     env = self.environments.current()
-    args = format_args({"input": inputs.inputs["data_path"], "output-dir": str(inputs.execute_dir)})
+    args = format_args(
+        {"input": inputs.inputs["data_path"], "output-dir": str(inputs.execute_dir)}
+    )
     run_command(env, [*self.tool.parts(), *args], cwd=inputs.execute_dir)
     return None
 ```
@@ -564,6 +571,7 @@ preprocess:
 
 ```python
 from artisan.schemas.enums import GroupByStrategy
+
 
 class AlignOp(OperationDefinition):
     name = "align"
@@ -596,11 +604,14 @@ Set defaults on the class. Override per-step at the pipeline level:
 class HeavyOp(OperationDefinition):
     name = "heavy_op"
     resources: ResourceConfig = ResourceConfig(
-        cpus=4, memory_gb=32, gpus=1,
+        cpus=4,
+        memory_gb=32,
+        gpus=1,
         extra={"partition": "gpu"},
     )
     execution: ExecutionConfig = ExecutionConfig(
-        artifacts_per_unit=5, estimated_seconds=3600.0,
+        artifacts_per_unit=5,
+        estimated_seconds=3600.0,
     )
     ...
 ```
@@ -672,11 +683,15 @@ For a full integration test, run in a pipeline (defaults to local backend):
 from artisan.orchestration import PipelineManager
 
 pipeline = PipelineManager.create(
-    name="test", delta_root="test/delta", staging_root="test/staging",
+    name="test",
+    delta_root="test/delta",
+    staging_root="test/staging",
 )
 output = pipeline.output
 pipeline.run(operation=DataGenerator, name="source", params={"count": 3})
-step = pipeline.run(operation=ScaleData, inputs={"dataset": output("source", "datasets")})
+step = pipeline.run(
+    operation=ScaleData, inputs={"dataset": output("source", "datasets")}
+)
 assert step.success
 assert step.succeeded_count > 0
 ```

@@ -14,14 +14,19 @@ A complete inspection workflow in a few lines:
 
 ```python
 from pathlib import Path
-from artisan.visualization import inspect_pipeline, inspect_step, inspect_metrics, build_macro_graph
+from artisan.visualization import (
+    inspect_pipeline,
+    inspect_step,
+    inspect_metrics,
+    build_macro_graph,
+)
 
 delta_root = Path("runs/delta")
 
-inspect_pipeline(delta_root)       # One row per step: operation, status, counts, duration
-inspect_step(delta_root, 0)        # One row per artifact at step 0
-inspect_metrics(delta_root, 2)     # Metric values as columns at step 2
-build_macro_graph(delta_root)      # Step-level pipeline graph (renders in Jupyter)
+inspect_pipeline(delta_root)  # One row per step: operation, status, counts, duration
+inspect_step(delta_root, 0)  # One row per artifact at step 0
+inspect_metrics(delta_root, 2)  # Metric values as columns at step 2
+build_macro_graph(delta_root)  # Step-level pipeline graph (renders in Jupyter)
 ```
 
 The rest of this guide covers each inspection technique in detail.
@@ -272,13 +277,13 @@ metrics = store.get_associated({"abc123..."}, associated_type="metric")
 store = ArtifactStore(delta_root)
 
 # Single lookups
-artifact_type = store.get_artifact_type("abc123...")        # "data", "metric", etc.
-step_number = store.get_artifact_step_number("abc123...")    # int
+artifact_type = store.get_artifact_type("abc123...")  # "data", "metric", etc.
+step_number = store.get_artifact_step_number("abc123...")  # int
 
 # Bulk lookups (single Delta scan each — use these when querying many artifacts)
-type_map = store.load_artifact_type_map()       # {artifact_id: type_str}
-step_map = store.load_step_number_map()         # {artifact_id: step_number}
-name_map = store.load_step_name_map()           # {step_number: step_name}
+type_map = store.load_artifact_type_map()  # {artifact_id: type_str}
+step_map = store.load_step_number_map()  # {artifact_id: step_number}
+name_map = store.load_step_name_map()  # {step_number: step_name}
 
 # Get artifact IDs by type, optionally filtered by step
 ids = store.load_artifact_ids_by_type("metric", step_numbers=[2, 3])
@@ -308,9 +313,9 @@ timings.execution_timings(step_number=1)
 timings.execution_stats(step_number=1)
 
 # Matplotlib plots
-timings.plot_steps()              # Stacked bar chart of step timings
+timings.plot_steps()  # Stacked bar chart of step timings
 timings.plot_steps(step_numbers=[0, 2, 4])  # Subset of steps
-timings.plot_execution_stats()    # Stacked bar chart of mean execution timings
+timings.plot_execution_stats()  # Stacked bar chart of mean execution timings
 ```
 
 ---
@@ -366,17 +371,16 @@ import polars as pl
 df_edges = pl.read_delta(str(delta_root / "provenance" / "artifact_edges"))
 
 # Find all children of a specific artifact
-children = df_edges.filter(
-    pl.col("source_artifact_id") == "abc123..."
-).select("target_artifact_id", "target_role")
+children = df_edges.filter(pl.col("source_artifact_id") == "abc123...").select(
+    "target_artifact_id", "target_role"
+)
 
 # Execution provenance edges (artifact ↔ execution)
 df_exec = pl.read_delta(str(delta_root / "provenance" / "execution_edges"))
 
 # All artifacts consumed by a specific execution
 inputs = df_exec.filter(
-    (pl.col("execution_run_id") == "run_xyz...")
-    & (pl.col("direction") == "input")
+    (pl.col("execution_run_id") == "run_xyz...") & (pl.col("direction") == "input")
 )
 ```
 
