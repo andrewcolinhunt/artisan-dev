@@ -65,7 +65,8 @@ def serialize_params(operation: Any) -> dict[str, Any]:
     params = getattr(operation, "params", None)
     if params is None or not hasattr(params, "model_dump"):
         return {}
-    return params.model_dump(mode="json")
+    dumped: dict[str, Any] = params.model_dump(mode="json")
+    return dumped
 
 
 def compute_execution_spec_id(

@@ -136,7 +136,7 @@ def run_composite(
             staging_root=runtime_env.staging_root,
             fs=fs,
             storage_options=storage_options,
-            operation=composite,
+            operation=composite,  # type: ignore[arg-type]  # CompositeDefinition shares the relevant attrs
             sandbox_path=os.path.join(working_root, "dummy"),
             compute_backend_name=runtime_env.compute_backend_name,
             shared_filesystem=runtime_env.shared_filesystem,

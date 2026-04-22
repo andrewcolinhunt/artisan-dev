@@ -29,7 +29,7 @@ class _ArtifactTypesMeta(type):
             return False
         return item in cls._registry  # type: ignore[attr-defined]
 
-    def __iter__(cls):  # type: ignore[override]
+    def __iter__(cls):
         """Iterate over all registered type keys."""
         return iter(cls._registry)  # type: ignore[attr-defined]
 
@@ -83,9 +83,7 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
                 f"Unknown artifact type: {key!r}. "
                 f"Registered: {list(cls._registry.keys())}"
             )
-            raise KeyError(
-                msg
-            )
+            raise KeyError(msg)
         return cls._registry[key]
 
     @classmethod

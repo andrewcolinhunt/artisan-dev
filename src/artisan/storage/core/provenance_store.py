@@ -317,7 +317,8 @@ class ProvenanceStore:
         if result.is_empty():
             return None
 
-        return result["origin_step_number"][0]
+        step_number: int = result["origin_step_number"][0]
+        return step_number
 
     def get_step_range(self, artifact_ids: pl.Series) -> tuple[int, int] | None:
         """Return the min and max origin step numbers for the given IDs.

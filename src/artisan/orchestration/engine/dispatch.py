@@ -10,6 +10,7 @@ import logging
 import os
 import pickle
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, cast
 
 from prefect import task
 
@@ -43,7 +44,7 @@ def _save_units(
 def _load_units(path: str) -> list[ExecutionUnit | ExecutionComposite]:
     """Deserialize execution units from a pickle file."""
     with open(path, "rb") as f:
-        return pickle.load(f)
+        return cast(list[ExecutionUnit | ExecutionComposite], pickle.load(f))
 
 
 @task
@@ -76,7 +77,7 @@ def execute_unit_task(
                 success=result.success,
                 error=result.error,
                 item_count=1,
-                execution_run_ids=[result.execution_run_id],
+                execution_run_ids=[result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
             )
 
         from artisan.execution.executors.curator import (
@@ -92,7 +93,7 @@ def execute_unit_task(
                 success=result.success,
                 error=result.error,
                 item_count=len(result.artifact_ids) if result.success else 1,
-                execution_run_ids=[result.execution_run_id],
+                execution_run_ids=[result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
             )
         # Creator ops return single StagingResult
         from artisan.execution.executors.creator import run_creator_flow
@@ -102,7 +103,7 @@ def execute_unit_task(
             success=result.success,
             error=result.error,
             item_count=unit.get_batch_size() or 1,
-            execution_run_ids=[result.execution_run_id],
+            execution_run_ids=[result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
         )
     except KeyboardInterrupt:
         msg = "Operation interrupted by SIGINT"
@@ -116,10 +117,10 @@ def execute_unit_task(
         )
 
 
-def _get_one(future: object) -> UnitResult:
+def _get_one(future: Any) -> UnitResult:
     """Retrieve result from a single future, converting exceptions to failures."""
     try:
-        return future.result()
+        return cast(UnitResult, future.result())
     except Exception as exc:
         logger.error(
             "Future raised during result collection: %s: %s",
@@ -134,7 +135,7 @@ def _get_one(future: object) -> UnitResult:
         )
 
 
-def _collect_results(futures: list) -> list[UnitResult]:
+def _collect_results(futures: list[Any]) -> list[UnitResult]:
     """Collect results from Prefect futures in parallel.
 
     Uses a thread pool so that multiple blocking ``f.result()`` calls
@@ -155,11 +156,11 @@ def _collect_results(futures: list) -> list[UnitResult]:
     logger.info("Collected results from %d futures", len(futures))
 
     # Best-effort SLURM log capture (may replace results with worker_log populated)
+    # All slots are populated after `as_completed` loop above; None is no longer possible.
     return [
-        _capture_slurm_logs(future, result)
+        _capture_slurm_logs(future, result)  # type: ignore[arg-type]  # None slots filled by `as_completed` loop before this runs
         for future, result in zip(futures, results, strict=False)
     ]
-
 
 
 def _capture_slurm_logs(future: object, result: UnitResult) -> UnitResult:

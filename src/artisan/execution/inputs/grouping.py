@@ -78,7 +78,8 @@ def group_inputs(
     elif strategy == GroupByStrategy.LINEAGE:
         matched_sets = _match_by_ancestry(inputs, artifact_store)
     else:
-        msg = f"Unknown group_by strategy: {strategy}"
+        # Defensive branch for non-enum values; mypy sees enum as exhausted.
+        msg = f"Unknown group_by strategy: {strategy}"  # type: ignore[unreachable]
         raise ValueError(msg)
 
     return _matched_sets_to_aligned(inputs, matched_sets)

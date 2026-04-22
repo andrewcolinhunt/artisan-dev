@@ -8,6 +8,8 @@ preparation for the artifact_index.
 
 from __future__ import annotations
 
+from typing import cast
+
 import polars as pl
 from fsspec import AbstractFileSystem
 
@@ -103,7 +105,10 @@ class ArtifactStore:
         # ID-only mode - return minimal artifact
         if not hydrate:
             model_cls = ArtifactTypeDef.get_model(artifact_type)
-            return model_cls(artifact_id=artifact_id, artifact_type=artifact_type)
+            return cast(
+                "Artifact",
+                model_cls(artifact_id=artifact_id, artifact_type=artifact_type),
+            )
 
         # Full hydration - load from storage
         table_path_str = ArtifactTypeDef.get_table_path(artifact_type)
@@ -124,7 +129,7 @@ class ArtifactStore:
 
         row = result.row(0, named=True)
         model_cls = ArtifactTypeDef.get_model(artifact_type)
-        return model_cls.from_row(row)
+        return cast("Artifact", model_cls.from_row(row))  # type: ignore[attr-defined]
 
     def get_artifacts_by_type(
         self,
@@ -163,7 +168,10 @@ class ArtifactStore:
         model_cls = ArtifactTypeDef.get_model(artifact_type)
         artifacts: dict[str, Artifact] = {}
         for row in result.iter_rows(named=True):
-            artifact = model_cls.from_row(row)
+            artifact = cast("Artifact", model_cls.from_row(row))  # type: ignore[attr-defined]
+            # Artifacts loaded from storage are always finalized (artifact_id
+            # is non-None).
+            assert artifact.artifact_id is not None
             artifacts[artifact.artifact_id] = artifact
 
         return artifacts
@@ -200,7 +208,7 @@ class ArtifactStore:
         if result.is_empty():
             return None
 
-        return result["artifact_type"][0]
+        return cast("str | None", result["artifact_type"][0])
 
     def get_ancestor_artifact_ids(self, artifact_id: str) -> list[str]:
         """Return direct ancestor (source) artifact IDs.

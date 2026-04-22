@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -42,7 +43,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
     description = "Generate datasets with co-produced statistics"
 
     # ---------- Inputs ----------
-    inputs: ClassVar[dict] = {}
+    inputs: ClassVar[dict[str, Any]] = {}
 
     # ---------- Outputs ----------
     class OutputRole(StrEnum):
@@ -84,7 +85,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
     params: Params = Params()
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Execution ----------
     execution: ExecutionConfig = ExecutionConfig(
@@ -149,7 +150,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
         """Build DataArtifact and MetricArtifact drafts from execution output."""
         raw = inputs.memory_outputs
 
-        dataset_drafts: list[DataArtifact] = []
+        dataset_drafts: list[Artifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".csv"):
                 with open(file_path, "rb") as f:
@@ -162,7 +163,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
                     )
                 )
 
-        metric_drafts: list[MetricArtifact] = []
+        metric_drafts: list[Artifact] = []
         for metric_data in raw.get("calculated_metrics", []):
             metric_drafts.append(
                 MetricArtifact.draft(

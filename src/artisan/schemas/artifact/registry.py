@@ -15,7 +15,7 @@ Example::
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from artisan.schemas.artifact.types import ArtifactTypes
 
@@ -61,9 +61,7 @@ class ArtifactTypeDef:
         for attr in ("POLARS_SCHEMA", "to_row", "from_row"):
             if not hasattr(model, attr):
                 msg = f"{cls.__name__}.model ({model.__name__}) must have '{attr}'"
-                raise TypeError(
-                    msg
-                )
+                raise TypeError(msg)
 
         # Reject duplicate keys
         if key in ArtifactTypeDef._registry:
@@ -73,9 +71,7 @@ class ArtifactTypeDef:
                     f"Duplicate artifact type key {key!r}: "
                     f"{cls.__name__} conflicts with {existing.__name__}"
                 )
-                raise ValueError(
-                    msg
-                )
+                raise ValueError(msg)
             return
 
         # Register in both registries
@@ -90,7 +86,7 @@ class ArtifactTypeDef:
     @classmethod
     def polars_schema(cls) -> dict[str, Any]:
         """Return the Polars column schema from the model."""
-        return cls.model.POLARS_SCHEMA
+        return cast("dict[str, Any]", cls.model.POLARS_SCHEMA)  # type: ignore[attr-defined]
 
     # --- Public lookup API ---
 
@@ -112,9 +108,7 @@ class ArtifactTypeDef:
                 f"Unknown artifact type: {key!r}. "
                 f"Registered: {list(ArtifactTypeDef._registry.keys())}"
             )
-            raise KeyError(
-                msg
-            )
+            raise KeyError(msg)
         return ArtifactTypeDef._registry[key]
 
     @staticmethod
@@ -156,7 +150,7 @@ class ArtifactTypeDef:
         Returns:
             Dict mapping column names to Polars data types.
         """
-        return ArtifactTypeDef.get(key).model.POLARS_SCHEMA
+        return cast("dict[str, Any]", ArtifactTypeDef.get(key).model.POLARS_SCHEMA)  # type: ignore[attr-defined]
 
 
 # =============================================================================

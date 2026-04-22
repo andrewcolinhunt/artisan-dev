@@ -161,19 +161,15 @@ class CollapsedCompositeContext(CompositeContext):
         # Resolve CompositeRef inputs to ArtifactSources
         op_sources = self._resolve_inputs(inputs or {})
 
-        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):
+        if issubclass(operation, CompositeDefinition):
             return self._run_nested_composite(operation, op_sources, params)
 
-        if not (
-            isinstance(operation, type) and issubclass(operation, OperationDefinition)
-        ):
+        if not issubclass(operation, OperationDefinition):
             msg = (
                 f"Expected OperationDefinition or CompositeDefinition subclass, "
                 f"got {operation}"
             )
-            raise TypeError(
-                msg
-            )
+            raise TypeError(msg)
 
         if is_curator_operation(operation):
             return self._run_curator(operation, op_sources, params)
@@ -312,9 +308,7 @@ class CollapsedCompositeContext(CompositeContext):
 
         if not result.success:
             msg = f"Curator {instance.name} failed: {result.error or 'Unknown error'}"
-            raise RuntimeError(
-                msg
-            )
+            raise RuntimeError(msg)
 
         # Collect results based on result type
         op_outputs = getattr(type(instance), "outputs", {})
@@ -362,10 +356,8 @@ class CollapsedCompositeContext(CompositeContext):
                 )
 
             case _:
-                msg = f"Unexpected result type from curator: {type(result).__name__}"
-                raise TypeError(
-                    msg
-                )
+                msg = f"Unexpected result type from curator: {type(result).__name__}"  # type: ignore[unreachable]  # defensive fallback for future result types
+                raise TypeError(msg)
 
     def _run_nested_composite(
         self,
@@ -428,17 +420,13 @@ class CollapsedCompositeContext(CompositeContext):
                         f"CompositeRef for role '{role}' has no source "
                         "(expanded-mode ref used in collapsed context)"
                     )
-                    raise ValueError(
-                        msg
-                    )
+                    raise ValueError(msg)
             else:
                 msg = (
                     f"Expected CompositeRef for input role '{role}', "
                     f"got {type(ref).__name__}"
                 )
-                raise TypeError(
-                    msg
-                )
+                raise TypeError(msg)
         return sources
 
     def _pre_curator_commit(self) -> None:
@@ -565,7 +553,7 @@ class ExpandedCompositeContext(CompositeContext):
         step_name = f"{self._step_name_prefix}.{op_name}"
 
         # Handle nested composites
-        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):
+        if issubclass(operation, CompositeDefinition):
             return self._run_nested_composite(
                 operation,
                 translated_inputs,
@@ -616,9 +604,7 @@ class ExpandedCompositeContext(CompositeContext):
                 f"CompositeRef for output role '{role}' has no OutputReference "
                 "(collapsed-mode ref used in expanded context)"
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
         self._output_map[role] = ref.output_reference
 
     def get_output_map(self) -> dict[str, OutputReference]:
@@ -649,9 +635,7 @@ class ExpandedCompositeContext(CompositeContext):
                         f"CompositeRef for role '{role}' has no OutputReference "
                         "(collapsed-mode ref used in expanded context)"
                     )
-                    raise ValueError(
-                        msg
-                    )
+                    raise ValueError(msg)
             else:
                 translated[role] = ref
         return translated

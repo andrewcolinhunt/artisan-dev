@@ -54,4 +54,4 @@ def derive_human_names(
 
             # Extract suffix: "abc123_scored" - "abc123" = "_scored"
             suffix = output_name[len(input_id) :]
-            art.original_name = f"{input_name}{suffix}"
+            art.original_name = f"{input_name}{suffix}"  # type: ignore[attr-defined]  # original_name only on subclasses; base `Artifact` lacks it

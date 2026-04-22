@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.orchestration.output_reference import OutputReference
 
 
@@ -60,7 +61,7 @@ class StepResult(BaseModel):
         return OutputReference(
             source_step=self.step_number,
             role=role,
-            artifact_type=self.output_types.get(role),
+            artifact_type=self.output_types.get(role) or ArtifactTypes.ANY,
         )
 
     @property

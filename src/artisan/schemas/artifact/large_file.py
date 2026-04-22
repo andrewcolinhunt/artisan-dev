@@ -29,7 +29,7 @@ class LargeFileArtifact(Artifact):
     model weights, embedding matrices, simulation outputs.
     """
 
-    POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
+    POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
         "artifact_id": pl.String,
         "origin_step_number": pl.Int32,
         "content_hash": pl.String,

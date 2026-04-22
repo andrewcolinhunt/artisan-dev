@@ -179,11 +179,11 @@ class OperationDefinition(BaseModel):
     """Compute routing configuration. Selects where execute() runs."""
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig()
+    resources: ResourceConfig = ResourceConfig()  # type: ignore[call-arg]
     """Hardware resource allocation for SLURM jobs."""
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig()
+    execution: ExecutionConfig = ExecutionConfig()  # type: ignore[call-arg]
     """Batching and scheduling configuration."""
 
     # ---------- Lifecycle ----------
@@ -347,7 +347,10 @@ class OperationDefinition(BaseModel):
         Raises:
             KeyError: If name is not registered.
         """
-        return get_registered(name, cls._registry, "operation")
+        result: type[OperationDefinition] = get_registered(
+            name, cls._registry, "operation"
+        )
+        return result
 
     @classmethod
     def get_all(cls) -> dict[str, type[OperationDefinition]]:

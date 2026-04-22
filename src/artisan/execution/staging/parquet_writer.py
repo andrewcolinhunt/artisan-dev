@@ -99,6 +99,7 @@ def _stage_artifacts(
         artifact.artifact_id
         for artifact_list in artifacts.values()
         for artifact in artifact_list
+        if artifact.artifact_id is not None
     ]
 
 
@@ -161,7 +162,7 @@ def _stage_artifacts_by_type(
 
     for type_key, typed_artifacts in by_type.items():
         type_def = ArtifactTypeDef.get(type_key)
-        rows = [a.to_row() for a in typed_artifacts]
+        rows = [a.to_row() for a in typed_artifacts]  # type: ignore[attr-defined]  # to_row defined on each concrete artifact subclass, not the base
         df = pl.DataFrame(rows, schema=type_def.polars_schema())
         with fs.open(f"{staging_path}/{type_def.parquet_filename()}", "wb") as f:
             df.write_parquet(f, compression="zstd")

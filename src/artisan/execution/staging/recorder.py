@@ -143,7 +143,8 @@ def record_execution_success(
         fs,
     )
     output_ids = {
-        role: [a.artifact_id for a in arts] for role, arts in artifacts.items()
+        role: [a.artifact_id for a in arts if a.artifact_id is not None]
+        for role, arts in artifacts.items()
     }
     execution_edges = build_execution_edges(
         execution_run_id=execution_context.execution_run_id,

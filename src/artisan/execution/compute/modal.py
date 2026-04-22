@@ -180,7 +180,7 @@ class ModalComputeRouter(ComputeRouter):
 
         with self._init_lock:
             if self._fn is not None:
-                return self._fn
+                return self._fn  # type: ignore[unreachable]  # double-checked locking: another thread may have set it
             return self._init_app(operation_name)
 
     def _init_app(self, operation_name: str) -> Any:
@@ -212,7 +212,7 @@ class ModalComputeRouter(ComputeRouter):
         if self._config.scaledown_window is not None:
             fn_kwargs["scaledown_window"] = self._config.scaledown_window
 
-        @app.function(**fn_kwargs)
+        @app.function(**fn_kwargs)  # type: ignore[misc,unused-ignore]  # modal.App.function is untyped; env-dependent
         def _execute_on_modal(
             operation_bytes: bytes,
             execute_input_bytes: bytes,
@@ -238,7 +238,7 @@ class ModalComputeRouter(ComputeRouter):
             # that gracefully via the `or {}` fallbacks.
             if sandbox or sandbox_dirs:
                 restore_sandbox(
-                    sandbox_root,
+                    sandbox_root,  # type: ignore[arg-type]  # sandbox_root truthy-guarded by outer condition
                     sandbox or {},
                     empty_dirs=sandbox_dirs,
                 )

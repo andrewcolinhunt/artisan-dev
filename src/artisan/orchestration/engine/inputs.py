@@ -172,13 +172,11 @@ def resolve_inputs(
                 inputs, delta_root, fs, step_run_ids, storage_options
             )
         # File paths are handled in _execute_curator_step, not here
-        msg = (
+        msg = (  # type: ignore[unreachable]  # runtime defense: list may contain non-OutputReference
             "Raw file paths must be handled by _execute_curator_step(). "
             "This function should not receive file paths directly."
         )
-        raise ValueError(
-            msg
-        )
+        raise ValueError(msg)
 
     resolved: dict[str, list[str]] = {}
 
@@ -191,23 +189,20 @@ def resolve_inputs(
         elif isinstance(value, list):
             # Already artifact IDs - validate format
             for artifact_id in value:
-                if not isinstance(artifact_id, str) or len(artifact_id) != 32:
+                # runtime defense: value items may not be 32-char hex strings
+                if not isinstance(artifact_id, str) or len(artifact_id) != 32:  # type: ignore[redundant-expr]
                     msg = (
                         f"Invalid artifact ID in inputs['{role}']: {artifact_id!r}. "
                         f"Expected 32-character hex string."
                     )
-                    raise ValueError(
-                        msg
-                    )
+                    raise ValueError(msg)
             resolved[role] = sorted(value)  # Sort for determinism
         else:
-            msg = (
+            msg = (  # type: ignore[unreachable]  # runtime defense against bad input types
                 f"Invalid input type for role '{role}': {type(value).__name__}. "
                 f"Expected OutputReference or list[str]."
             )
-            raise TypeError(
-                msg
-            )
+            raise TypeError(msg)
 
     return resolved
 
@@ -228,13 +223,11 @@ def _resolve_list_inputs(
 
     for i, ref in enumerate(refs):
         if not isinstance(ref, OutputReference):
-            msg = (
+            msg = (  # type: ignore[unreachable]  # runtime defense against bad input types
                 f"List inputs must contain OutputReference objects, "
                 f"got {type(ref).__name__} at index {i}"
             )
-            raise TypeError(
-                msg
-            )
+            raise TypeError(msg)
         sri = step_run_ids.get(ref.source_step) if step_run_ids else None
         artifact_ids = resolve_output_reference(
             ref, delta_root, fs, step_run_id=sri, storage_options=storage_options

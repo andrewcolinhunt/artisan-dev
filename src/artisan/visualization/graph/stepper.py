@@ -7,7 +7,7 @@ one step at a time, showing the cumulative graph build-up.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fsspec import AbstractFileSystem
 
@@ -97,18 +97,18 @@ def display_provenance_stepper(
     # Create output area for the graph
     output = widgets.Output()
 
-    def update_display(change: dict) -> None:
+    def update_display(change: dict[str, Any]) -> None:
         """Refresh the displayed graph when the slider value changes."""
         step = change["new"]
         step_label.value = f"{step} / {max_step}"
         output.outputs = ()
-        output.append_display_data(SVG(filename=str(rendered_paths[step])))
+        output.append_display_data(SVG(filename=str(rendered_paths[step])))  # type: ignore[no-untyped-call,unused-ignore]  # IPython.display.SVG; env-dependent typing
 
     # Connect slider to update function
     slider.observe(update_display, names="value")
 
     # Initial display
-    output.append_display_data(SVG(filename=str(rendered_paths[max_step])))
+    output.append_display_data(SVG(filename=str(rendered_paths[max_step])))  # type: ignore[no-untyped-call,unused-ignore]  # IPython.display.SVG; env-dependent typing
 
     # Layout: slider + label on top, graph below
     header = widgets.HBox([slider, step_label])

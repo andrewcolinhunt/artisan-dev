@@ -14,6 +14,8 @@ Key exports:
 
 from __future__ import annotations
 
+from typing import Any
+
 import polars as pl
 
 from artisan.schemas.enums import TablePath
@@ -153,7 +155,10 @@ STEPS_SCHEMA = {
 # Mapping from TablePath to schema for framework tables only.
 # Artifact content table schemas are managed by ArtifactTypeDef.
 
-FRAMEWORK_SCHEMAS: dict[TablePath, dict[str, pl.DataType]] = {
+# Schemas use Polars DataType classes (e.g. ``pl.String``) as well as
+# instances (e.g. ``pl.Datetime(...)``), so the value type is widened to
+# ``Any`` rather than ``pl.DataType``.
+FRAMEWORK_SCHEMAS: dict[TablePath, dict[str, Any]] = {
     TablePath.EXECUTIONS: EXECUTIONS_SCHEMA,
     TablePath.EXECUTION_EDGES: EXECUTION_EDGES_SCHEMA,
     TablePath.ARTIFACT_EDGES: ARTIFACT_EDGES_SCHEMA,
@@ -173,7 +178,7 @@ NON_PARTITIONED_TABLES: frozenset[TablePath] = frozenset(
 )
 
 
-def get_schema(table: TablePath) -> dict[str, pl.DataType]:
+def get_schema(table: TablePath) -> dict[str, Any]:
     """Return the Polars schema dict for a framework table.
 
     Args:
@@ -187,9 +192,7 @@ def get_schema(table: TablePath) -> dict[str, pl.DataType]:
     """
     if table not in FRAMEWORK_SCHEMAS:
         msg = f"Unknown table: {table}. Valid tables: {list(FRAMEWORK_SCHEMAS.keys())}"
-        raise KeyError(
-            msg
-        )
+        raise KeyError(msg)
     return FRAMEWORK_SCHEMAS[table]
 
 

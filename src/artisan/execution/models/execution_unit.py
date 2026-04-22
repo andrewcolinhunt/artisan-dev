@@ -86,10 +86,10 @@ class ExecutionUnit(BaseModel):
         # Validate all values are lists of 32-char hex strings
         for role, artifact_ids in self.inputs.items():
             if not isinstance(artifact_ids, list):
-                msg = f"inputs['{role}'] must be a list, got {type(artifact_ids).__name__}"
+                msg = f"inputs['{role}'] must be a list, got {type(artifact_ids).__name__}"  # type: ignore[unreachable]
                 raise ValueError(msg)
             for artifact_id in artifact_ids:
-                if not isinstance(artifact_id, str) or len(artifact_id) != 32:
+                if not isinstance(artifact_id, str) or len(artifact_id) != 32:  # type: ignore[redundant-expr]
                     msg = (
                         f"artifact_id must be 32-char hex string, got: {artifact_id!r}"
                     )

@@ -141,7 +141,7 @@ def build_config_reference_edges(
     config_refs: list[tuple[ExecutionConfigArtifact, list[str]]] = []
     for config in config_artifacts:
         if not isinstance(config, ExecutionConfigArtifact):
-            continue
+            continue  # type: ignore[unreachable]
         refs = list(config.get_artifact_references())
         config_refs.append((config, refs))
         all_ref_ids.update(refs)
@@ -155,13 +155,16 @@ def build_config_reference_edges(
 
     edges: list[ArtifactProvenanceEdge] = []
     for config, refs in config_refs:
+        if config.artifact_id is None:
+            continue
+        target_id = config.artifact_id
         for ref_id in refs:
             source_type = type_map.get(ref_id, UNKNOWN_ARTIFACT_TYPE)
             edges.append(
                 ArtifactProvenanceEdge(
                     execution_run_id=execution_run_id,
                     source_artifact_id=ref_id,
-                    target_artifact_id=config.artifact_id,
+                    target_artifact_id=target_id,
                     source_artifact_type=source_type,
                     target_artifact_type=ArtifactTypes.CONFIG,
                     source_role="referenced",

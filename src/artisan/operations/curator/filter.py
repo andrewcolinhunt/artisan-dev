@@ -95,7 +95,7 @@ def _build_metric_namespace(
     passthrough_df: pl.DataFrame,
     metric_pairs: pl.DataFrame,
     artifact_store: ArtifactStore,
-) -> tuple[pl.DataFrame, dict[str, set[int]] | None]:
+) -> tuple[pl.DataFrame, dict[str, Any] | None]:
     """Hydrate metrics and build wide DataFrame for evaluation.
 
     Args:
@@ -106,7 +106,8 @@ def _build_metric_namespace(
     Returns:
         Tuple of (wide DataFrame with passthrough_id + metric columns,
         step_info mapping field names to sets of step numbers that
-        produce them — None if no metrics found).
+        produce them — None if no metrics found). The dict also contains
+        a special ``_step_names`` key mapping step numbers to step names.
     """
     base_df = passthrough_df.select(pl.col("artifact_id").alias("passthrough_id"))
 
@@ -235,9 +236,15 @@ class _DiagnosticsAccumulator:
             col = wide_chunk[col_name]
             non_null = col.drop_nulls()
             if non_null.len() > 0:
-                self._mins[i] = min(self._mins[i], non_null.min())
-                self._maxs[i] = max(self._maxs[i], non_null.max())
-                self._sums[i] += non_null.sum()
+                # Numeric metric columns are expected here; cast to float for
+                # comparison against the float-typed min/max accumulators.
+                col_min = float(non_null.min())  # type: ignore[arg-type]
+                col_max = float(non_null.max())  # type: ignore[arg-type]
+                self._mins[i] = min(self._mins[i], col_min)
+                self._maxs[i] = max(self._maxs[i], col_max)
+                self._sums[i] += float(
+                    non_null.sum()
+                )  # .sum() may return Decimal for integer cols; coerce for float accumulator
                 self._non_null_counts[i] += non_null.len()
 
         # Funnel: progressive AND
@@ -256,7 +263,7 @@ class _DiagnosticsAccumulator:
         total_input: int,
         total_passed: int,
         total_metrics_discovered: int,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Produce the final v4 diagnostics dict from accumulated statistics."""
         criteria_diagnostics = []
         for i, crit in enumerate(criteria):
@@ -400,7 +407,7 @@ class Filter(OperationDefinition):
         # No criteria -> all passthrough artifacts pass
         if not self.params.criteria:
             passthrough_ids = passthrough_df["artifact_id"].to_list()
-            diag: dict = {
+            diag: dict[str, Any] = {
                 "version": 4,
                 "total_input": len(passthrough_ids),
                 "total_evaluated": len(passthrough_ids),
@@ -729,7 +736,7 @@ class Filter(OperationDefinition):
         passthrough_df: pl.DataFrame,
         metric_pairs: pl.DataFrame,
         artifact_store: ArtifactStore,
-    ) -> tuple[pl.DataFrame, dict[str, set[int]] | None]:
+    ) -> tuple[pl.DataFrame, dict[str, Any] | None]:
         """Hydrate metrics and build wide DataFrame for evaluation.
 
         Args:

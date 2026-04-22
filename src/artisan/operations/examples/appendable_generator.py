@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.appendable import AppendableArtifact
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
@@ -41,7 +42,7 @@ class AppendableGenerator(OperationDefinition):
     name = "appendable_generator"
     description = "Generate appendable JSONL files with random data"
 
-    inputs: ClassVar[dict] = {}
+    inputs: ClassVar[dict[str, Any]] = {}
 
     class OutputRole(StrEnum):
         records = auto()
@@ -69,8 +70,8 @@ class AppendableGenerator(OperationDefinition):
         )
 
     params: Params = Params()
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="appendable_generator")
+    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
+    execution: ExecutionConfig = ExecutionConfig(job_name="appendable_generator")  # type: ignore[call-arg]  # pydantic defaults
     compute: Compute = Compute(
         modal=ModalComputeConfig(),
     )
@@ -123,7 +124,7 @@ class AppendableGenerator(OperationDefinition):
         """Create AppendableArtifact drafts from execute metadata."""
         records = inputs.memory_outputs["records"]
 
-        drafts = [
+        drafts: list[Artifact] = [
             AppendableArtifact.draft(
                 record_id=rec["record_id"],
                 content_hash=rec["content_hash"],

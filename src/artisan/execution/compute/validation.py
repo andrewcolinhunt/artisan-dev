@@ -50,9 +50,7 @@ def _check_pickle_roundtrip(operation: Any) -> None:
             "cloudpickle is required for remote compute validation. "
             "Install it with: pip install cloudpickle"
         )
-        raise ImportError(
-            msg
-        ) from None
+        raise ImportError(msg) from None
 
     try:
         data = cloudpickle.dumps(operation)

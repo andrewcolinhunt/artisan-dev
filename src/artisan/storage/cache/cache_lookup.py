@@ -93,8 +93,8 @@ def cache_lookup(
     execution_run_id = row["execution_run_id"]
 
     # Query execution_edges for inputs/outputs
-    inputs: list[dict] = []
-    outputs: list[dict] = []
+    inputs: list[dict[str, str]] = []
+    outputs: list[dict[str, str]] = []
 
     if fs.exists(provenance_path):
         provenance_df = (

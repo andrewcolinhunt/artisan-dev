@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
@@ -39,7 +40,7 @@ class LargeFileGenerator(OperationDefinition):
     name = "large_file_generator"
     description = "Generate large binary files stored externally"
 
-    inputs: ClassVar[dict] = {}
+    inputs: ClassVar[dict[str, Any]] = {}
 
     class OutputRole(StrEnum):
         files = auto()
@@ -66,8 +67,8 @@ class LargeFileGenerator(OperationDefinition):
         )
 
     params: Params = Params()
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="large_file_generator")
+    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
+    execution: ExecutionConfig = ExecutionConfig(job_name="large_file_generator")  # type: ignore[call-arg]  # pydantic defaults
     compute: Compute = Compute(
         modal=ModalComputeConfig(),
     )
@@ -101,7 +102,7 @@ class LargeFileGenerator(OperationDefinition):
         """Create LargeFileArtifact drafts from execute metadata."""
         files = inputs.memory_outputs["files"]
 
-        drafts = [
+        drafts: list[Artifact] = [
             LargeFileArtifact.draft(
                 content_hash=f["content_hash"],
                 size_bytes=f["size_bytes"],

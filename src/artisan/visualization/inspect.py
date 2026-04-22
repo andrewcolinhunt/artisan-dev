@@ -489,7 +489,7 @@ def _build_details(artifact_type: str, row: dict[str, Any]) -> str:
     elif artifact_type == "appendable":
         record_id = row.get("record_id")
         if record_id is not None:
-            return record_id
+            return str(record_id)
         return "-"
 
     else:

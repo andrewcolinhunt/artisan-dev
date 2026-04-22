@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.execution_config import ExecutionConfig
@@ -87,10 +89,10 @@ class DataTransformerConfig(OperationDefinition):
     params: Params = Params()
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
+    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_config")
+    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_config")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
     compute: Compute = Compute(
@@ -100,11 +102,13 @@ class DataTransformerConfig(OperationDefinition):
     # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract per-dataset info as parallel lists (one entry per artifact)."""
-        datasets = inputs.input_artifacts["dataset"]
+        datasets: list[DataArtifact] = [
+            d for d in inputs.input_artifacts["dataset"] if isinstance(d, DataArtifact)
+        ]
         return {
             "dataset_artifact_ids": [d.artifact_id for d in datasets],
             "dataset_stems": [
-                os.path.splitext(d.original_name)[0] for d in datasets
+                os.path.splitext(d.original_name or "")[0] for d in datasets
             ],
         }
 
@@ -113,7 +117,7 @@ class DataTransformerConfig(OperationDefinition):
         artifact_ids = inputs.inputs["dataset_artifact_ids"]
         stems = inputs.inputs["dataset_stems"]
 
-        configs = []
+        configs: list[dict[str, Any]] = []
         for artifact_id, stem in zip(artifact_ids, stems, strict=True):
             for scale_factor in self.params.scale_factors:
                 for noise_amplitude in self.params.noise_amplitudes:
@@ -135,7 +139,7 @@ class DataTransformerConfig(OperationDefinition):
         """Build ExecutionConfigArtifact drafts from generated configs."""
         configs = inputs.memory_outputs["configs"]
 
-        drafts = [
+        drafts: list[Artifact] = [
             ExecutionConfigArtifact.draft(
                 content=cfg["content"],
                 original_name=cfg["original_name"],

@@ -252,7 +252,7 @@ class BatchComputeDispatchHandle(DispatchHandle):
         self._cancel_event = cancel_event
         self._max_workers = max_workers
 
-    def dispatch(
+    def dispatch(  # type: ignore[override]  # narrower than base: batch handle only accepts ExecutionUnit, not composites
         self,
         units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,

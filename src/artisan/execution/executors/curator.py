@@ -392,7 +392,8 @@ def run_curator_flow(
                             user_overrides=user_overrides,
                         )
                     case _:
-                        error = (
+                        # Defensive branch: mypy narrows to known cases.
+                        error = (  # type: ignore[unreachable]
                             f"Unexpected result type from curator operation: "
                             f"{type(result_with_metadata).__name__}. "
                             f"Expected ArtifactResult or PassthroughResult."

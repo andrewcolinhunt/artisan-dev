@@ -19,17 +19,22 @@ def build_role_docs(cls: type) -> str:
     """Generate Input/Output Roles docstring sections from class specs."""
     sections: list[str] = []
 
-    if cls.inputs:
+    # Accessed on OperationDefinition/CompositeDefinition subclasses which
+    # declare `inputs`/`outputs` as ClassVars; `type` alone is too narrow.
+    inputs = cls.inputs  # type: ignore[attr-defined]
+    outputs = cls.outputs  # type: ignore[attr-defined]
+
+    if inputs:
         lines = ["    Input Roles:"]
-        for role, spec in cls.inputs.items():
+        for role, spec in inputs.items():
             type_label = spec.artifact_type if spec.artifact_type else "any"
             desc = f" -- {spec.description}" if spec.description else ""
             lines.append(f"        {role} ({type_label}){desc}")
         sections.append("\n".join(lines))
 
-    if cls.outputs:
+    if outputs:
         lines = ["    Output Roles:"]
-        for role, spec in cls.outputs.items():
+        for role, spec in outputs.items():
             type_label = spec.artifact_type if spec.artifact_type else "any"
             desc = f" -- {spec.description}" if spec.description else ""
             lines.append(f"        {role} ({type_label}){desc}")
@@ -57,29 +62,34 @@ def validate_role_enums(cls: type, _class_label: str) -> None:
         cls: The definition subclass being validated.
         class_label: Human-readable label for error messages (e.g. "operation").
     """
-    if cls.outputs:
+    # Accessed on OperationDefinition/CompositeDefinition subclasses which
+    # declare `inputs`/`outputs` as ClassVars; `type` alone is too narrow.
+    inputs = cls.inputs  # type: ignore[attr-defined]
+    outputs = cls.outputs  # type: ignore[attr-defined]
+
+    if outputs:
         out_enum = getattr(cls, "OutputRole", None)
         if out_enum is None:
             msg = (
                 f"{cls.__name__} must define OutputRole(StrEnum) matching outputs keys"
             )
             raise TypeError(msg)
-        if set(out_enum) != set(cls.outputs):
+        if set(out_enum) != set(outputs):
             msg = (
                 f"{cls.__name__}.OutputRole values {set(out_enum)} "
-                f"don't match outputs keys {set(cls.outputs)}"
+                f"don't match outputs keys {set(outputs)}"
             )
             raise TypeError(msg)
 
-    if cls.inputs:
+    if inputs:
         in_enum = getattr(cls, "InputRole", None)
         if in_enum is None:
             msg = f"{cls.__name__} must define InputRole(StrEnum) matching inputs keys"
             raise TypeError(msg)
-        if set(in_enum) != set(cls.inputs):
+        if set(in_enum) != set(inputs):
             msg = (
                 f"{cls.__name__}.InputRole values {set(in_enum)} "
-                f"don't match inputs keys {set(cls.inputs)}"
+                f"don't match inputs keys {set(inputs)}"
             )
             raise TypeError(msg)
 

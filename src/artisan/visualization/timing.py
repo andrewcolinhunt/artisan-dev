@@ -393,7 +393,8 @@ class PipelineTimings:
         """Return the step dict matching step_number, or raise."""
         for step in self._data["steps"]:
             if step["step_number"] == step_number:
-                return step
+                result: dict[str, Any] = step
+                return result
         msg = f"Step {step_number} not found in timing data"
         raise ValueError(msg)
 
@@ -409,7 +410,8 @@ def _parse_timings(metadata_json: str | None) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(metadata_json)
-        return data.get("timings")
+        timings: dict[str, Any] | None = data.get("timings")
+        return timings
     except (json.JSONDecodeError, TypeError):
         return None
 
