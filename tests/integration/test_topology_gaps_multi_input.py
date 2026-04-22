@@ -13,7 +13,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.curator import Filter

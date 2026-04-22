@@ -496,7 +496,7 @@ def get_artifact(
 ## Testing
 
 - Cover: happy path, edge cases, error conditions
-- Use `@pytest.mark.slow` for integration tests
+- Use `@pytest.mark.integration` for integration tests
 - Integration tests live in `tests/integration/` and run in parallel
 - Test functions: `test_<function>_<scenario>`
 - Tests mirror source structure: `tests/artisan/{module}/test_<file>.py`

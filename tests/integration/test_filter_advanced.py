@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.curator import Filter
 from artisan.operations.examples import (

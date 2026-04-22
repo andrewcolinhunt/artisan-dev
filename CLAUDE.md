@@ -69,7 +69,7 @@ Tests mirror source structure: `tests/artisan/{module}/`
 - Files: `test_<module>.py`
 - Functions: `test_<function>_<scenario>`
 - Cover: happy path, edge cases, error conditions
-- `@pytest.mark.slow` for integration tests
+- `@pytest.mark.integration` for integration tests
 - Integration tests in `tests/integration/` run in parallel via pytest-xdist
 
 ---

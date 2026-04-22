@@ -262,17 +262,17 @@ integration test execution.
 
 **Test organization:**
 
-- **Unit tests** (`@pytest.mark.fast` or unmarked) run sequentially. They are
-  fast, isolated, and test individual functions.
-- **Integration tests** (`@pytest.mark.slow`) run full pipeline executions
-  against real Delta Lake stores. They run in parallel via `pytest -n 4` to
-  keep total test time manageable.
+- **Unit tests** (unmarked) run sequentially. They are fast, isolated, and
+  test individual functions.
+- **Integration tests** (`@pytest.mark.integration`) run full pipeline
+  executions against real Delta Lake stores. They run in parallel via
+  `pytest -n 4` to keep total test time manageable.
 
-**Why sequential unit tests + parallel integration tests?** Unit tests are fast
-enough that parallelization overhead is not worth the complexity. Integration
-tests are slow enough (seconds each) that running them in parallel provides a
-meaningful speedup, and they are designed to be independent (each creates its own
-temporary Delta Lake store).
+**Why sequential unit tests + parallel integration tests?** Unit tests run
+fast enough that parallelization overhead isn't worth the complexity.
+Integration tests take seconds each, so parallel execution provides a
+meaningful speedup, and they are designed to be independent (each creates
+its own temporary Delta Lake store).
 
 ---
 
