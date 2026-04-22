@@ -59,7 +59,7 @@ class ArtifactTypeDef:
         for attr in ("POLARS_SCHEMA", "to_row", "from_row"):
             if not hasattr(model, attr):
                 raise TypeError(
-                    f"{cls.__name__}.model ({model.__name__}) " f"must have '{attr}'"
+                    f"{cls.__name__}.model ({model.__name__}) must have '{attr}'"
                 )
 
         # Reject duplicate keys

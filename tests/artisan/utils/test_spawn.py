@@ -39,8 +39,7 @@ class TestSuppressMainReimport:
         main_mod = sys.modules["__main__"]
         original = main_mod.__file__
 
-        with pytest.raises(ValueError, match="boom"):
-            with suppress_main_reimport():
-                raise ValueError("boom")
+        with pytest.raises(ValueError, match="boom"), suppress_main_reimport():
+            raise ValueError("boom")
 
         assert main_mod.__file__ == original

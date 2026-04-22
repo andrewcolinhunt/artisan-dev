@@ -112,8 +112,11 @@ class MyComposite(CompositeDefinition):
 
     def compose(self, ctx: CompositeContext) -> None:
         step_a = ctx.run(OpA, inputs={"data": ctx.input("data")})
-        step_b = ctx.run(OpB, inputs={"data": step_a.output("result")},
-                         params={"threshold": self.params.threshold})
+        step_b = ctx.run(
+            OpB,
+            inputs={"data": step_a.output("result")},
+            params={"threshold": self.params.threshold},
+        )
         ctx.output("result", step_b.output("result"))
 ```
 

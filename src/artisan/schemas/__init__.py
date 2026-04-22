@@ -52,6 +52,7 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
 __all__ = [
+    "AppendableArtifact",
     "ApptainerEnvironmentSpec",
     "Artifact",
     "ArtifactProvenanceEdge",
@@ -72,13 +73,12 @@ __all__ = [
     "ExecutionEdge",
     "ExecutionRecord",
     "FileRefArtifact",
-    "LargeFileArtifact",
     "InputSpec",
+    "LargeFileArtifact",
     "LineageMapping",
     "LocalEnvironmentSpec",
     "MetricArtifact",
     "OutputReference",
-    "AppendableArtifact",
     "OutputSpec",
     "PassthroughResult",
     "PipelineConfig",

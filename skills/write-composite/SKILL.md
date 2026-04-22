@@ -159,8 +159,7 @@ class OuterComposite(CompositeDefinition):
 
     def compose(self, ctx: CompositeContext) -> None:
         inner = ctx.run(InnerComposite)
-        metrics = ctx.run(MetricCalculator,
-            inputs={"dataset": inner.output("dataset")})
+        metrics = ctx.run(MetricCalculator, inputs={"dataset": inner.output("dataset")})
         ctx.output("metrics", metrics.output("metrics"))
 ```
 
@@ -215,13 +214,17 @@ Two execution modes — see `write-pipeline` for full API details:
 
 ```python
 # Collapsed: single pipeline step, in-memory passing
-pipeline.run(TransformAndScore, name="ts",
+pipeline.run(
+    TransformAndScore,
+    name="ts",
     inputs={"data": output("generate", "datasets")},
-    intermediates="discard")
+    intermediates="discard",
+)
 
 # Expanded: each internal op becomes its own pipeline step
-expanded = pipeline.expand(TransformAndScore, name="ts",
-    inputs={"data": output("generate", "datasets")})
+expanded = pipeline.expand(
+    TransformAndScore, name="ts", inputs={"data": output("generate", "datasets")}
+)
 pipeline.run(NextOp, inputs={"data": expanded.output("metrics")})
 ```
 
@@ -234,13 +237,16 @@ pipeline.run(NextOp, inputs={"data": expanded.output("metrics")})
 ```python
 def test_composite_collapsed(tmp_path):
     pipeline = PipelineManager.create(
-        name="test", delta_root=tmp_path / "delta", staging_root=tmp_path / "staging",
+        name="test",
+        delta_root=tmp_path / "delta",
+        staging_root=tmp_path / "staging",
     )
     output = pipeline.output
 
     pipeline.run(DataGenerator, name="gen", params={"count": 2, "seed": 42})
-    pipeline.run(TransformAndScore, name="ts",
-        inputs={"data": output("gen", "datasets")})
+    pipeline.run(
+        TransformAndScore, name="ts", inputs={"data": output("gen", "datasets")}
+    )
 
     summary = pipeline.finalize()
     assert summary.steps_completed == 2
@@ -251,13 +257,16 @@ def test_composite_collapsed(tmp_path):
 ```python
 def test_composite_expanded(tmp_path):
     pipeline = PipelineManager.create(
-        name="test", delta_root=tmp_path / "delta", staging_root=tmp_path / "staging",
+        name="test",
+        delta_root=tmp_path / "delta",
+        staging_root=tmp_path / "staging",
     )
     output = pipeline.output
 
     pipeline.run(DataGenerator, name="gen", params={"count": 2, "seed": 42})
-    expanded = pipeline.expand(TransformAndScore, name="ts",
-        inputs={"data": output("gen", "datasets")})
+    expanded = pipeline.expand(
+        TransformAndScore, name="ts", inputs={"data": output("gen", "datasets")}
+    )
 
     summary = pipeline.finalize()
     # Expanded creates one step per internal operation

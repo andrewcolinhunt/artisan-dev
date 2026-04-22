@@ -299,10 +299,12 @@ See `src/artisan/operations/examples/data_generator.py`.
 def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
     prepared = []
     for group in inputs.grouped():
-        prepared.append({
-            "dataset": str(group["dataset"].materialized_path),
-            "config": str(group["config"].materialized_path),
-        })
+        prepared.append(
+            {
+                "dataset": str(group["dataset"].materialized_path),
+                "config": str(group["config"].materialized_path),
+            }
+        )
     return {"items": prepared}
 ```
 

@@ -253,8 +253,7 @@ def _match_by_ancestry(
     else:
         # Fallback: smaller set as targets for efficiency
         logger.warning(
-            "LINEAGE matching: step numbers unavailable, using smaller "
-            "role as targets"
+            "LINEAGE matching: step numbers unavailable, using smaller role as targets"
         )
         if len(inputs[role_a]) <= len(inputs[role_b]):
             target_role, candidate_role = role_a, role_b

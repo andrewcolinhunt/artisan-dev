@@ -280,8 +280,11 @@ class TransformAndScore(CompositeDefinition):
 
     def compose(self, ctx: CompositeContext) -> None:
         transformed = ctx.run(DataTransformer, inputs={"dataset": ctx.input("dataset")})
-        scored = ctx.run(MetricCalculator, inputs={"dataset": transformed.output("dataset")})
+        scored = ctx.run(
+            MetricCalculator, inputs={"dataset": transformed.output("dataset")}
+        )
         ctx.output("metrics", scored.output("metrics"))
+
 
 # Collapsed: single step
 pipeline.run(TransformAndScore, inputs={"dataset": output("gen", "datasets")})

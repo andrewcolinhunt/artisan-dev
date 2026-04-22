@@ -99,6 +99,6 @@ class TestExecuteUnitTaskKeyboardInterrupt:
                 "artisan.execution.executors.creator.run_creator_flow",
                 side_effect=KeyboardInterrupt,
             ),
+            pytest.raises(RuntimeError, match="SIGINT"),
         ):
-            with pytest.raises(RuntimeError, match="SIGINT"):
-                execute_unit_task(unit, runtime_env)
+            execute_unit_task(unit, runtime_env)

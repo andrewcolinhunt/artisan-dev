@@ -69,7 +69,9 @@ from artisan.orchestration import PipelineManager
 from artisan.operations.examples import DataGenerator
 
 pipeline = PipelineManager.create(
-    name="example", delta_root="runs/delta", staging_root="runs/staging",
+    name="example",
+    delta_root="runs/delta",
+    staging_root="runs/staging",
 )
 output = pipeline.output
 
@@ -181,6 +183,7 @@ Group composite-level configuration into a nested `Params` model:
 
 ```python
 from pydantic import BaseModel, Field
+
 
 class TransformAndScore(CompositeDefinition):
     # ... name, roles, inputs, outputs ...
@@ -363,7 +366,9 @@ from artisan.orchestration import PipelineManager
 from artisan.operations.examples import DataGenerator
 
 pipeline = PipelineManager.create(
-    name="test", delta_root="test/delta", staging_root="test/staging",
+    name="test",
+    delta_root="test/delta",
+    staging_root="test/staging",
 )
 output = pipeline.output
 pipeline.run(operation=DataGenerator, name="generate", params={"count": 3})
@@ -379,7 +384,9 @@ pipeline.finalize()
 
 # Expanded (in a separate pipeline)
 pipeline2 = PipelineManager.create(
-    name="test_expanded", delta_root="test2/delta", staging_root="test2/staging",
+    name="test_expanded",
+    delta_root="test2/delta",
+    staging_root="test2/staging",
 )
 output2 = pipeline2.output
 pipeline2.run(operation=DataGenerator, name="generate", params={"count": 3})

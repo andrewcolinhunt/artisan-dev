@@ -163,15 +163,13 @@ dev = { features = ["dev"], solve-group = "default" }
 docs = { features = ["docs"], solve-group = "default" }
 
 # =============================================================================
-# ACTIVATION
-# =============================================================================
-[tool.pixi.activation]
-scripts = ["scripts/pixi/activate.sh"]
-
-# =============================================================================
 # TASKS
 # =============================================================================
 [tool.pixi.tasks]
+# One-time post-install fixups. Contributors run `pixi run setup` once after
+# cloning. Body lives in scripts/setup.sh so it has a real shell; idempotent.
+setup = "bash scripts/setup.sh"
+
 prefect-start = "prefect-server start --bg"
 prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
@@ -219,6 +217,10 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 warn_unreachable = true
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+# Tests dir uses namespace-style conftest.py files (no __init__.py); without these
+# flags mypy sees duplicate "conftest" modules and aborts before type-checking.
+explicit_package_bases = true
+namespace_packages = true
 
 [tool.ruff]
 extend-exclude = ["examples", "_dev", ".pixi", "demos"]
@@ -264,6 +266,9 @@ isort.required-imports = ["from __future__ import annotations"]
 
 [tool.codespell]
 skip = "pixi.lock,_dev/**"
+# Repo-specific terms codespell misflags. Extend as new false positives surface.
+# "ser" — SER appears in test data (serialization-format constants); not a typo for SET.
+ignore-words-list = "ser"
 
 [dependency-groups]
 dev = ["nameisok>=0.1.8,<0.2"]
