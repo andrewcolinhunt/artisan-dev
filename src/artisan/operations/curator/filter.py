@@ -136,7 +136,7 @@ def _build_metric_namespace(
 
     # Build step_info: {field_name: {step_numbers}}
     step_info: dict[str, Any] = {"_step_names": {}}
-    for mid, sn in step_number_map.items():
+    for _mid, sn in step_number_map.items():
         step_info["_step_names"][sn] = step_name_map.get(sn, "")
 
     for col in value_columns:

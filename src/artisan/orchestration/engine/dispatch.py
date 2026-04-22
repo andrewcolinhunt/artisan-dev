@@ -65,7 +65,7 @@ def execute_unit_task(
 
         # Get worker_id from backend-specific environment variable
         env_var = runtime_env.worker_id_env_var
-        worker_id = int(os.environ.get(env_var, 0)) if env_var else 0
+        worker_id = int(os.environ.get(env_var, "0")) if env_var else 0
 
         # Route composite to composite executor
         if isinstance(unit, ExecutionComposite):

@@ -5209,8 +5209,8 @@ packages:
   requires_python: '>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*'
 - pypi: ./
   name: dexterity-artisan
-  version: 0.1.2a6.dev132+g797336731.d20260422
-  sha256: 32736f0030cca5553a57860685602bc135db5b1506bae0dfba41f92d06c9fd1e
+  version: 0.1.2a6.dev136+g000a0cf8f.d20260422
+  sha256: 894dad2891c92c43f32f018374852cbc41190866f55bd340e363e333fd0bcd23
   requires_dist:
   - gcsfs ; extra == 'gcs'
   - modal ; extra == 'modal'

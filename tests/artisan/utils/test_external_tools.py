@@ -175,9 +175,11 @@ class TestProcessCleanup:
         mock_proc.pid = 12345
         mock_proc.wait.return_value = 0
 
-        with patch("artisan.utils.external_tools.os.getpgid", return_value=12345):
-            with patch("artisan.utils.external_tools.os.killpg") as mock_killpg:
-                _kill_process_group(mock_proc)
+        with (
+            patch("artisan.utils.external_tools.os.getpgid", return_value=12345),
+            patch("artisan.utils.external_tools.os.killpg") as mock_killpg,
+        ):
+            _kill_process_group(mock_proc)
 
         mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
 
@@ -190,9 +192,11 @@ class TestProcessCleanup:
             0,
         ]
 
-        with patch("artisan.utils.external_tools.os.getpgid", return_value=12345):
-            with patch("artisan.utils.external_tools.os.killpg") as mock_killpg:
-                _kill_process_group(mock_proc)
+        with (
+            patch("artisan.utils.external_tools.os.getpgid", return_value=12345),
+            patch("artisan.utils.external_tools.os.killpg") as mock_killpg,
+        ):
+            _kill_process_group(mock_proc)
 
         assert mock_killpg.call_count == 2
         mock_killpg.assert_any_call(12345, signal.SIGTERM)

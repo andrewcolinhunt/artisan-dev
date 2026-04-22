@@ -224,9 +224,9 @@ class TestDeprecationWarning:
                 return_value=None,
             ),
             pytest.warns(DeprecationWarning, match="ARTISAN_PREFECT_SERVER"),
+            pytest.raises(PrefectServerNotFound),
         ):
-            with pytest.raises(PrefectServerNotFound):
-                discover_server()
+            discover_server()
 
     def test_old_env_var_no_warn_if_new_set(
         self, monkeypatch: pytest.MonkeyPatch
@@ -543,9 +543,9 @@ class TestCheckVersionCompatibility:
                 return_value="3.5.0",
             ),
             patch("prefect.__version__", "3.6.13"),
+            pytest.raises(PrefectVersionMismatch, match="mismatch"),
         ):
-            with pytest.raises(PrefectVersionMismatch, match="mismatch"):
-                _check_version_compatibility(info)
+            _check_version_compatibility(info)
 
     def test_server_unreachable_warns(self) -> None:
         info = PrefectServerInfo(url="http://host:4200/api", source="argument")

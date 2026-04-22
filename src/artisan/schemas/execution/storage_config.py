@@ -57,7 +57,7 @@ class StorageConfig(BaseModel):
         etc.) via the Rust ``object_store`` crate — no explicit
         options dict needed.
 
-        This method exists as the stable API surface for docs 02–03
+        This method exists as the stable API surface for docs 02-03
         call sites. If a future scenario requires explicit options
         (e.g. MinIO endpoint not in env vars), it can be extended
         here without changing callers.

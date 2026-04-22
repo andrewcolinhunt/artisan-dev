@@ -167,7 +167,7 @@ class ArtifactTypeDef:
 # class-definition time. The models are fully defined before this
 # module's bottom-of-file code executes.
 
-from artisan.schemas.artifact.execution_config import (
+from artisan.schemas.artifact.execution_config import (  # noqa: E402
     ExecutionConfigArtifact,
 )
 from artisan.schemas.artifact.file_ref import FileRefArtifact  # noqa: E402

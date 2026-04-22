@@ -43,7 +43,7 @@ class TestPipelineConfigFilesRoot:
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
         )
-        with pytest.raises(Exception):  # noqa: B017 (ValidationError on frozen model)
+        with pytest.raises(Exception):
             config.files_root = str(tmp_path / "other")  # type: ignore[misc]
 
     def test_files_root_none_input_gets_default(self, tmp_path: Path) -> None:

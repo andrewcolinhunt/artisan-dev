@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tree-wide (5 files touched). Previously `pixi run -e dev fmt` and
   the pre-commit gate could disagree on formatting; they now run the
   same ruff version.
+- Resolved 532 `ruff check` violations: 184 via autofix (EM101/EM102
+  message hoisting, SIM117 with-statement merges), the remainder via
+  real fixes (undefined `OperationDefinition` type hint in local
+  backend, `os.environ.get` default type, two `assert False` →
+  `pytest.fail`, three loop-variable renames, en-dash → hyphen in
+  one docstring) plus documented `[tool.ruff.lint.ignore]` and
+  `[tool.ruff.lint.per-file-ignores]` entries covering G004,
+  PLW0603, and the protocol-conformance `ARG` / pytest-style rules
+  in tests.
 
 ### Removed
 

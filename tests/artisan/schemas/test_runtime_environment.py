@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 
 
@@ -37,6 +39,6 @@ class TestRuntimeEnvironmentFilesRoot:
         )
         try:
             env.files_root = str(tmp_path / "other")  # type: ignore[misc]
-            assert False, "Should have raised"  # noqa: B011
+            pytest.fail("Should have raised")
         except Exception:
             pass  # Expected: ValidationError on frozen model

@@ -254,15 +254,45 @@ ignore = [
   "PLC0415",  # Deferred imports are intentional (circular deps, optional deps)
   "PLR09",    # Too many <...>
   "PLR2004",  # Magic value used in comparison
+  "G004",     # logging-f-string — readable idiom; lazy-eval perf cost is negligible here
+  "PLW0603",  # global-statement — intentional for module-level state (e.g. prefect server settings context)
 ]
 isort.required-imports = ["from __future__ import annotations"]
 # Uncomment if using a _compat.typing backport
 # typing-modules = ["artisan._compat.typing"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["T20"]
+# Src: ARG001/ARG002 — many methods implement protocol / abstract-base
+# signatures and keep unused args for interface conformance. The caller
+# relies on the signature shape, so renaming the arg or dropping it is
+# not an option.
+"src/**" = ["ARG001", "ARG002"]
+# Tests: allow unused fixture args (ARG — capsys/monkeypatch declared to
+# activate), late imports (E402 — rootutils setup before project imports),
+# prints (T20 — diagnostic output in debugging tests), pytest-style rules
+# that are legitimate in many test patterns (B017 broad-exception raises,
+# PT011/012/017/019, RUF043 ambiguous-regex), and PLW2901 (loop variable
+# overwritten by assignment — benign in short loops).
+"tests/**" = [
+    "ARG",
+    "B017",
+    "E402",
+    "PLW2901",
+    "PT011",
+    "PT012",
+    "PT017",
+    "PT019",
+    "RUF043",
+    "T20",
+]
+# Tutorial demo scripts: prints are the demo's whole point; shebang is for
+# readability, not executability (users run via pixi, not directly).
+"docs/tutorials/**/*.py" = ["EXE001", "T20"]
+# Notebooks: allow prints (tutorial narrative), direct open() calls
+# (pedagogical; context-manager is taught separately), and typographic
+# unicode characters (× in multiplication, – en-dash in prose).
+"docs/**/*.ipynb" = ["RUF002", "RUF003", "SIM115", "T20"]
 "noxfile.py" = ["T20"]
-"docs/**/*.ipynb" = ["T20"]
 
 [tool.codespell]
 skip = "pixi.lock,_dev/**"

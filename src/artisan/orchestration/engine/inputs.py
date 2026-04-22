@@ -11,11 +11,11 @@ import logging
 import polars as pl
 from fsspec import AbstractFileSystem
 
-logger = logging.getLogger(__name__)
-
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.utils.path import uri_join
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_output_reference(
