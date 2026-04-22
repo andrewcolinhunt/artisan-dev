@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token `SER`. Added `explicit_package_bases` / `namespace_packages` to
   mypy config so it can run past the duplicate-`conftest` issue. No
   behavior changes.
+- Bumped pixi's `ruff` pin from `==0.6.2` to `==0.13.2` to match the
+  pre-commit gate's `ruff-pre-commit` rev, then applied `ruff format`
+  tree-wide (5 files touched). Previously `pixi run -e dev fmt` and
+  the pre-commit gate could disagree on formatting; they now run the
+  same ruff version.
 
 ### Removed
 
