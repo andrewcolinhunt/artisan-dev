@@ -41,7 +41,7 @@ class RuntimeEnvironment(BaseModel):
     delta_root: str = Field(
         ...,
         description=(
-            "Root URI for Delta Lake tables. " "Local path or s3://bucket/delta."
+            "Root URI for Delta Lake tables. Local path or s3://bucket/delta."
         ),
     )
 
@@ -57,7 +57,7 @@ class RuntimeEnvironment(BaseModel):
     staging_root: str = Field(
         ...,
         description=(
-            "Root URI for staged Parquet files. " "Local path or s3://bucket/staging."
+            "Root URI for staged Parquet files. Local path or s3://bucket/staging."
         ),
     )
 
@@ -73,7 +73,7 @@ class RuntimeEnvironment(BaseModel):
     failure_logs_root: str | None = Field(
         None,
         description=(
-            "Where to write human-readable failure log files. " "Always a local path."
+            "Where to write human-readable failure log files. Always a local path."
         ),
     )
 

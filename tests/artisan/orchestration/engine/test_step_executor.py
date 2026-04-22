@@ -211,8 +211,7 @@ class TestComputeRoutingSelection:
     """_execute_creator_step routes to BatchComputeDispatchHandle for Modal."""
 
     @patch(
-        "artisan.orchestration.engine.batch_compute_handle"
-        ".BatchComputeDispatchHandle"
+        "artisan.orchestration.engine.batch_compute_handle.BatchComputeDispatchHandle"
     )
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")

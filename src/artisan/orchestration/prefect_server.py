@@ -114,7 +114,7 @@ def _read_discovery_file() -> dict | None:
 def _build_unreachable_message(info: PrefectServerInfo) -> str:
     """Build actionable error context when health check fails."""
     lines = [
-        f"Prefect server at {info.url} is not reachable " f"(source: {info.source}).",
+        f"Prefect server at {info.url} is not reachable (source: {info.source}).",
         "",
     ]
     disco = _read_discovery_file()
@@ -259,7 +259,7 @@ def _warn_old_env_var() -> None:
         import warnings
 
         warnings.warn(
-            f"{_OLD_ENV_VAR} is no longer recognized. " f"Use {ENV_VAR} instead.",
+            f"{_OLD_ENV_VAR} is no longer recognized. Use {ENV_VAR} instead.",
             DeprecationWarning,
             stacklevel=3,
         )

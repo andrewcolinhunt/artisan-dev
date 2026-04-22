@@ -154,12 +154,14 @@ class TestDiscoverServerNotFound:
             "prefect_submitit.server.discovery.DEFAULT_DATA_DIR",
             tmp_path / "nonexistent",
         )
-        with patch(
-            "artisan.orchestration.prefect_server._resolve_from_prefect_settings",
-            return_value=None,
+        with (
+            patch(
+                "artisan.orchestration.prefect_server._resolve_from_prefect_settings",
+                return_value=None,
+            ),
+            pytest.raises(PrefectServerNotFound),
         ):
-            with pytest.raises(PrefectServerNotFound):
-                discover_server()
+            discover_server()
 
 
 class TestDiscoverServerPriority:
@@ -216,13 +218,15 @@ class TestDeprecationWarning:
             "prefect_submitit.server.discovery.DEFAULT_DATA_DIR",
             Path("/nonexistent"),
         )
-        with patch(
-            "artisan.orchestration.prefect_server._resolve_from_prefect_settings",
-            return_value=None,
+        with (
+            patch(
+                "artisan.orchestration.prefect_server._resolve_from_prefect_settings",
+                return_value=None,
+            ),
+            pytest.warns(DeprecationWarning, match="ARTISAN_PREFECT_SERVER"),
         ):
-            with pytest.warns(DeprecationWarning, match="ARTISAN_PREFECT_SERVER"):
-                with pytest.raises(PrefectServerNotFound):
-                    discover_server()
+            with pytest.raises(PrefectServerNotFound):
+                discover_server()
 
     def test_old_env_var_no_warn_if_new_set(
         self, monkeypatch: pytest.MonkeyPatch

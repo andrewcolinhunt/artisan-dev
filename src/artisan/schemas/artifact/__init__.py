@@ -13,6 +13,7 @@ from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.types import ArtifactTypes
 
 __all__ = [
+    "AppendableArtifact",
     "Artifact",
     "ArtifactProvenanceEdge",
     "ArtifactTypes",
@@ -21,5 +22,4 @@ __all__ = [
     "FileRefArtifact",
     "LargeFileArtifact",
     "MetricArtifact",
-    "AppendableArtifact",
 ]
