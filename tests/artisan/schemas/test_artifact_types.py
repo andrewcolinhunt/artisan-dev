@@ -38,7 +38,8 @@ class TestGet:
     def test_get_unknown_raises(self) -> None:
         try:
             ArtifactTypes.get("nonexistent")
-            assert False, "Should have raised KeyError"
+            msg = "Should have raised KeyError"
+            raise AssertionError(msg)
         except KeyError:
             pass
 

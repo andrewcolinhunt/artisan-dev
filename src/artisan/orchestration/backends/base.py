@@ -82,8 +82,9 @@ class BackendBase(ABC):
         super().__init_subclass__(**kwargs)
         for attr in ("name", "worker_traits", "orchestrator_traits"):
             if not hasattr(cls, attr):
+                msg = f"BackendBase subclass {cls.__name__!r} must define {attr!r}"
                 raise TypeError(
-                    f"BackendBase subclass {cls.__name__!r} must define {attr!r}"
+                    msg
                 )
 
     @abstractmethod
@@ -131,10 +132,11 @@ class BackendBase(ABC):
         """
         ...
 
-    def validate_operation(self, operation: Any) -> None:
+    def validate_operation(self, operation: Any) -> None:  # noqa: B027
         """Validate that operation config is compatible with this backend.
 
-        Called before dispatch. Default is a no-op. Override to add checks.
+        Called before dispatch. Default is a deliberate no-op (not abstract);
+        subclasses override to add checks.
 
         Args:
             operation: Operation to validate.

@@ -74,7 +74,8 @@ class CompositeStepHandle:
         """
         if self._operation_outputs and role not in self._operation_outputs:
             available = sorted(self._operation_outputs.keys())
-            raise ValueError(f"Unknown output role '{role}'. Available: {available}")
+            msg = f"Unknown output role '{role}'. Available: {available}"
+            raise ValueError(msg)
 
         if self._artifacts is not None:
             from artisan.execution.models.artifact_source import ArtifactSource
@@ -128,5 +129,6 @@ class ExpandedCompositeResult:
         """
         if role not in self._output_map:
             available = sorted(self._output_map.keys())
-            raise ValueError(f"Unknown output role '{role}'. Available: {available}")
+            msg = f"Unknown output role '{role}'. Available: {available}"
+            raise ValueError(msg)
         return self._output_map[role]

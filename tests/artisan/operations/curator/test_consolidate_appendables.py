@@ -81,7 +81,7 @@ class TestConsolidateBasicExecution:
         inputs = {"records": _df(list(artifacts.keys()))}
 
         op = ConsolidateAppendables()
-        result = op.execute_curator(inputs, step_number=5, artifact_store=store)
+        op.execute_curator(inputs, step_number=5, artifact_store=store)
 
         combined = files_root / "5" / "combined.jsonl"
         assert combined.exists()

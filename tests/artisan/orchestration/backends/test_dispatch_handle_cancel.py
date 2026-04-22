@@ -20,7 +20,7 @@ from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
 def _result(**overrides: object) -> UnitResult:
-    defaults = dict(success=True, error=None, item_count=1, execution_run_ids=[])
+    defaults = {"success": True, "error": None, "item_count": 1, "execution_run_ids": []}
     return UnitResult(**{**defaults, **overrides})
 
 

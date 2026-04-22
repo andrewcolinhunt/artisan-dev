@@ -136,7 +136,7 @@ def _build_metric_namespace(
 
     # Build step_info: {field_name: {step_numbers}}
     step_info: dict[str, Any] = {"_step_names": {}}
-    for mid, sn in step_number_map.items():
+    for _mid, sn in step_number_map.items():
         step_info["_step_names"][sn] = step_name_map.get(sn, "")
 
     for col in value_columns:
@@ -521,7 +521,7 @@ class Filter(OperationDefinition):
 
             # Collect metric source info from step_info
             if step_info is not None:
-                for field, step_nums in step_info.items():
+                for _field, step_nums in step_info.items():
                     for sn in step_nums:
                         if sn not in metric_sources_map:
                             metric_sources_map[sn] = {

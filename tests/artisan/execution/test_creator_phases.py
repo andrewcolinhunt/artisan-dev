@@ -216,7 +216,7 @@ class TestReassembleResults:
     def test_all_none(self, tmp_path):
         d0 = tmp_path / "artifact_0"
         d0.mkdir()
-        memory, files = _reassemble_results([None, None], [str(d0), str(d0)])
+        memory, _files = _reassemble_results([None, None], [str(d0), str(d0)])
         assert memory is None
 
     def test_dict_concatenates_lists(self, tmp_path):

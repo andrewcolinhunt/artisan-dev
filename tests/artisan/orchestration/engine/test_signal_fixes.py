@@ -113,7 +113,8 @@ class TestCuratorCancelAwareMessage:
 
         def raise_broken_pool(*args, **kwargs):
             event.set()
-            raise BrokenProcessPool("killed")
+            msg = "killed"
+            raise BrokenProcessPool(msg)
 
         mock_run_sub.side_effect = raise_broken_pool
 
@@ -130,9 +131,9 @@ class TestCuratorCancelAwareMessage:
         )
 
         # Verify the cancellation message was logged (not OOM)
-        assert any(
-            "cancellation" in record.message for record in caplog.records
-        ), f"Expected 'cancellation' in log, got: {[r.message for r in caplog.records]}"
+        assert any("cancellation" in record.message for record in caplog.records), (
+            f"Expected 'cancellation' in log, got: {[r.message for r in caplog.records]}"
+        )
 
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
     @patch("artisan.orchestration.engine.step_executor.build_curator_execution_context")
@@ -181,9 +182,9 @@ class TestCuratorCancelAwareMessage:
             step_spec_id="test-spec-id",
         )
 
-        assert any(
-            "OOM" in record.message for record in caplog.records
-        ), f"Expected 'OOM' in log, got: {[r.message for r in caplog.records]}"
+        assert any("OOM" in record.message for record in caplog.records), (
+            f"Expected 'OOM' in log, got: {[r.message for r in caplog.records]}"
+        )
 
 
 class TestCuratorCancelAwareWait:

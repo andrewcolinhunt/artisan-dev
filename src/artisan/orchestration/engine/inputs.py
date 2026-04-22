@@ -11,11 +11,11 @@ import logging
 import polars as pl
 from fsspec import AbstractFileSystem
 
-logger = logging.getLogger(__name__)
-
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.utils.path import uri_join
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_output_reference(
@@ -172,9 +172,12 @@ def resolve_inputs(
                 inputs, delta_root, fs, step_run_ids, storage_options
             )
         # File paths are handled in _execute_curator_step, not here
-        raise ValueError(
+        msg = (
             "Raw file paths must be handled by _execute_curator_step(). "
             "This function should not receive file paths directly."
+        )
+        raise ValueError(
+            msg
         )
 
     resolved: dict[str, list[str]] = {}
@@ -189,15 +192,21 @@ def resolve_inputs(
             # Already artifact IDs - validate format
             for artifact_id in value:
                 if not isinstance(artifact_id, str) or len(artifact_id) != 32:
-                    raise ValueError(
+                    msg = (
                         f"Invalid artifact ID in inputs['{role}']: {artifact_id!r}. "
                         f"Expected 32-character hex string."
                     )
+                    raise ValueError(
+                        msg
+                    )
             resolved[role] = sorted(value)  # Sort for determinism
         else:
-            raise TypeError(
+            msg = (
                 f"Invalid input type for role '{role}': {type(value).__name__}. "
                 f"Expected OutputReference or list[str]."
+            )
+            raise TypeError(
+                msg
             )
 
     return resolved
@@ -219,9 +228,12 @@ def _resolve_list_inputs(
 
     for i, ref in enumerate(refs):
         if not isinstance(ref, OutputReference):
-            raise TypeError(
+            msg = (
                 f"List inputs must contain OutputReference objects, "
                 f"got {type(ref).__name__} at index {i}"
+            )
+            raise TypeError(
+                msg
             )
         sri = step_run_ids.get(ref.source_step) if step_run_ids else None
         artifact_ids = resolve_output_reference(

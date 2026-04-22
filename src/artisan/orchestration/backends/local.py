@@ -5,6 +5,7 @@ from __future__ import annotations
 import multiprocessing
 import warnings
 from concurrent.futures import ProcessPoolExecutor
+from typing import Any
 
 from prefect.task_runners import ProcessPoolTaskRunner
 
@@ -157,7 +158,7 @@ class LocalBackend(BackendBase):
     ) -> None:
         """No-op — local logs are in the orchestrator's stdout."""
 
-    def validate_operation(self, operation: OperationDefinition) -> None:
+    def validate_operation(self, operation: Any) -> None:
         """Warn if SLURM-specific resources are configured on a local backend."""
         r = operation.resources
         if r.extra:

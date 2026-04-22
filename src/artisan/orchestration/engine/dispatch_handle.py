@@ -78,7 +78,8 @@ class DispatchHandle(ABC):
             RuntimeError: If called before completion.
         """
         if not self._done.is_set():
-            raise RuntimeError("collect() called before completion")
+            msg = "collect() called before completion"
+            raise RuntimeError(msg)
         if self._thread is not None:
             self._thread.join()
         if self._error is not None:
@@ -114,7 +115,8 @@ class DispatchHandle(ABC):
     def _assert_idle(self) -> None:
         """Raise if ``dispatch()`` was already called."""
         if self._state is not _HandleState.IDLE:
-            raise RuntimeError("dispatch() already called")
+            msg = "dispatch() already called"
+            raise RuntimeError(msg)
 
     def _start_background(self, fn: Callable[[], list[UnitResult]]) -> None:
         """Run *fn* in a daemon thread, storing results for ``collect()``.

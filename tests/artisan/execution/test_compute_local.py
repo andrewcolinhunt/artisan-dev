@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from artisan.execution.compute.local import LocalComputeRouter
 from artisan.schemas.specs.input_models import ExecuteInput
 
@@ -55,6 +57,6 @@ class TestLocalComputeRouter:
 
         try:
             router.route_execute(operation, execute_input, "/tmp/sandbox")
-            assert False, "Should have raised"  # noqa: B011
+            pytest.fail("Should have raised")
         except RuntimeError as exc:
             assert str(exc) == "boom"

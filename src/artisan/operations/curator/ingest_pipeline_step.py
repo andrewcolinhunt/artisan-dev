@@ -68,9 +68,9 @@ class IngestPipelineStep(OperationDefinition):
     # ---------- Lifecycle ----------
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],  # noqa: ARG002
+        inputs: dict[str, pl.DataFrame],
         step_number: int,
-        artifact_store: ArtifactStore,  # noqa: ARG002
+        artifact_store: ArtifactStore,
     ) -> ArtifactResult:
         """Load artifacts from source store and re-draft them.
 

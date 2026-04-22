@@ -121,7 +121,7 @@ class AppendableArtifact(Artifact):
         if fs is not None:
             opener = fs.open(self.external_path, "r")
         else:
-            opener = open(self.external_path)
+            opener = open(self.external_path)  # noqa: SIM115 — held via the `with opener` below
         with opener as f:
             for line in f:
                 record = json.loads(line)

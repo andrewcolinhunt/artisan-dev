@@ -102,7 +102,7 @@ def capture_lineage_metadata(
         # Build artifact_id -> role lookup for filesystem match map resolution
         id_to_role: dict[str, str] = {}
         if filesystem_match_map:
-            for cand_name, cand_id, cand_role in candidates:
+            for _cand_name, cand_id, cand_role in candidates:
                 id_to_role[cand_id] = cand_role
 
         role_mappings: list[LineageMapping] = []

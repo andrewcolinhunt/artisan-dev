@@ -40,7 +40,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
         params={"count": 3, "seed": 42},
         backend=Backend.LOCAL,
     )
-    step1a = p1.run(
+    p1.run(
         DataTransformer,
         inputs={"dataset": step0a.output("datasets")},
         params={
@@ -68,7 +68,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
         params={"count": 3, "seed": 42},
         backend=Backend.LOCAL,
     )
-    step1b = p2.run(
+    p2.run(
         DataTransformer,
         inputs={"dataset": step0b.output("datasets")},
         params={
@@ -136,7 +136,7 @@ def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, str]):
         params={"count": 3, "seed": 42},
         backend=Backend.LOCAL,
     )
-    step1b = p2.run(
+    p2.run(
         FailingTransformer,
         inputs={"dataset": step0b.output("datasets")},
         params={"fail_on_index": 1},
@@ -146,9 +146,9 @@ def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, str]):
 
     exec_count2 = count_executions_by_step(delta_root, 1)
     # Step 0 is cached (no failures), step 1 re-executes
-    assert (
-        exec_count2 > exec_count1
-    ), "ALL_SUCCEEDED: partial failure should not be cached"
+    assert exec_count2 > exec_count1, (
+        "ALL_SUCCEEDED: partial failure should not be cached"
+    )
 
 
 def test_step_completed_partial_failure_cached(pipeline_env: dict[str, str]):
@@ -205,7 +205,7 @@ def test_step_completed_partial_failure_cached(pipeline_env: dict[str, str]):
     p2.finalize()
 
     exec_count2 = count_executions_by_step(delta_root, 1)
-    assert (
-        exec_count2 == exec_count1
-    ), "STEP_COMPLETED: partial failure should be cached"
+    assert exec_count2 == exec_count1, (
+        "STEP_COMPLETED: partial failure should be cached"
+    )
     assert step1b.success is False, "Cached result preserves failure status"

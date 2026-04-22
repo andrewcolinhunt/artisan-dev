@@ -186,8 +186,9 @@ def get_schema(table: TablePath) -> dict[str, pl.DataType]:
         KeyError: If ``table`` is not a registered framework table.
     """
     if table not in FRAMEWORK_SCHEMAS:
+        msg = f"Unknown table: {table}. Valid tables: {list(FRAMEWORK_SCHEMAS.keys())}"
         raise KeyError(
-            f"Unknown table: {table}. Valid tables: {list(FRAMEWORK_SCHEMAS.keys())}"
+            msg
         )
     return FRAMEWORK_SCHEMAS[table]
 

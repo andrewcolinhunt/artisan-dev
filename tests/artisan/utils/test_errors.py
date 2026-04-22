@@ -11,7 +11,8 @@ class TestFormatError:
     def test_includes_traceback(self) -> None:
         """Raised exception includes full traceback text."""
         try:
-            raise ValueError("test error")
+            msg = "test error"
+            raise ValueError(msg)
         except ValueError as exc:
             result = format_error(exc)
 
@@ -41,9 +42,11 @@ class TestFormatError:
         """Chained exception via 'from' includes cause."""
         try:
             try:
-                raise KeyError("original")
+                msg = "original"
+                raise KeyError(msg)
             except KeyError as cause:
-                raise ValueError("wrapped") from cause
+                msg = "wrapped"
+                raise ValueError(msg) from cause
         except ValueError as exc:
             result = format_error(exc)
 

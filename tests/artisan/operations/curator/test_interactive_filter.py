@@ -83,7 +83,7 @@ def delta_root(tmp_path: Path) -> Path:
 
     # -- artifact_index --
     index_rows = []
-    for i, sid in enumerate(s_ids):
+    for sid in s_ids:
         index_rows.append(
             {
                 "artifact_id": sid,
@@ -92,7 +92,7 @@ def delta_root(tmp_path: Path) -> Path:
                 "metadata": "{}",
             }
         )
-    for i, mid in enumerate(m1_ids):
+    for mid in m1_ids:
         index_rows.append(
             {
                 "artifact_id": mid,
@@ -101,7 +101,7 @@ def delta_root(tmp_path: Path) -> Path:
                 "metadata": "{}",
             }
         )
-    for i, mid in enumerate(m2_ids):
+    for mid in m2_ids:
         index_rows.append(
             {
                 "artifact_id": mid,

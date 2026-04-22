@@ -257,7 +257,7 @@ def _run_with_streaming(
     """
     from contextlib import nullcontext
 
-    log_context = open(log_path, "w") if log_path else nullcontext()
+    log_context = open(log_path, "w") if log_path else nullcontext()  # noqa: SIM115 — conditional; held via `with log_context` below
 
     with log_context as log_file:
         process = subprocess.Popen(

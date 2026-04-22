@@ -45,9 +45,12 @@ class Environments(BaseModel):
         """
         env = getattr(self, self.active, None)
         if env is None:
-            raise ValueError(
+            msg = (
                 f"Environment '{self.active}' is not configured. "
                 f"Available: {self.available()}"
+            )
+            raise ValueError(
+                msg
             )
         return env
 

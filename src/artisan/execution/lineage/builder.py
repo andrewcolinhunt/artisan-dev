@@ -11,8 +11,8 @@ from artisan.schemas.specs.output_spec import OutputSpec
 def build_edges(
     lineage: dict[str, list[LineageMapping]],
     finalized_artifacts: dict[str, list[Artifact]],
-    input_artifacts: dict[str, list[Artifact]],  # noqa: ARG001
-    output_specs: dict[str, OutputSpec],  # noqa: ARG001
+    input_artifacts: dict[str, list[Artifact]],
+    output_specs: dict[str, OutputSpec],
 ) -> list[SourceTargetPair]:
     """Resolve lineage mappings into concrete source-target artifact pairs.
 

@@ -14,8 +14,6 @@ import polars as pl
 from deltalake import DeltaTable, WriterProperties
 from fsspec import AbstractFileSystem
 
-logger = logging.getLogger(__name__)
-
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import (
@@ -24,6 +22,8 @@ from artisan.storage.core.table_schemas import (
 )
 from artisan.storage.io.staging import StagingManager
 from artisan.utils.path import uri_join
+
+logger = logging.getLogger(__name__)
 
 # Default writer properties for Delta Lake writes
 # Using zstd compression for good compression ratio and performance
@@ -91,16 +91,11 @@ class DeltaCommitter:
 
     def _is_non_partitioned(self, table: str) -> bool:
         """Check if a table should not be partitioned."""
-        for npt in NON_PARTITIONED_TABLES:
-            if _to_str(npt) == _to_str(table):
-                return True
-        return False
+        return any(_to_str(npt) == _to_str(table) for npt in NON_PARTITIONED_TABLES)
 
     def _has_artifact_id(self, table: str) -> bool:
         """Check if the table supports artifact_id deduplication."""
-        if _to_str(table) == _to_str(TablePath.EXECUTION_EDGES):
-            return False
-        return True
+        return _to_str(table) != _to_str(TablePath.EXECUTION_EDGES)
 
     # -------------------------------------------------------------------------
     # Commit operations

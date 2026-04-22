@@ -128,7 +128,7 @@ def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    step0 = pipeline.run(
+    pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
         backend=Backend.LOCAL,
@@ -188,7 +188,7 @@ def test_cancel_event_reaches_dispatch_handle(pipeline_env: dict[str, str]):
     threading.Thread(target=_cancel_after_delay, daemon=True).start()
 
     start = time.monotonic()
-    future = pipeline.submit(
+    pipeline.submit(
         Wait,
         params={"duration": 30},
         backend=Backend.LOCAL,

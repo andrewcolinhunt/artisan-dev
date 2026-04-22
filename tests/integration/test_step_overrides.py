@@ -39,7 +39,7 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, str])
     )
 
     # Step 1: scale_factor=2.0
-    step1 = pipeline.run(
+    pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
@@ -52,7 +52,7 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, str])
     )
 
     # Step 2: scale_factor=5.0
-    step2 = pipeline.run(
+    pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
@@ -70,9 +70,9 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, str])
     # Different params → different artifact IDs
     step1_ids = set(get_execution_outputs(delta_root, 1, "dataset"))
     step2_ids = set(get_execution_outputs(delta_root, 2, "dataset"))
-    assert (
-        step1_ids != step2_ids
-    ), "Different scale_factors should produce different artifacts"
+    assert step1_ids != step2_ids, (
+        "Different scale_factors should produce different artifacts"
+    )
     assert len(step1_ids) == 2
     assert len(step2_ids) == 2
 

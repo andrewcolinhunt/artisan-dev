@@ -79,7 +79,8 @@ def _mock_execute_step_slow(**kwargs):
 
 def _mock_execute_step_error(**kwargs):
     """Simulate a failed step."""
-    raise RuntimeError("Step execution failed")
+    msg = "Step execution failed"
+    raise RuntimeError(msg)
 
 
 class TestSubmit:

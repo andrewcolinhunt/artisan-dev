@@ -480,7 +480,7 @@ def _build_details(artifact_type: str, row: dict[str, Any]) -> str:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return "-"
 
-    elif artifact_type == "file_ref" or artifact_type == "large_file":
+    elif artifact_type in {"file_ref", "large_file"}:
         size = row.get("size_bytes")
         if size is not None:
             return _format_size(size)

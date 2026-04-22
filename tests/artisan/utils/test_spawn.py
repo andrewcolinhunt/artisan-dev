@@ -40,6 +40,7 @@ class TestSuppressMainReimport:
         original = main_mod.__file__
 
         with pytest.raises(ValueError, match="boom"), suppress_main_reimport():
-            raise ValueError("boom")
+            msg = "boom"
+            raise ValueError(msg)
 
         assert main_mod.__file__ == original

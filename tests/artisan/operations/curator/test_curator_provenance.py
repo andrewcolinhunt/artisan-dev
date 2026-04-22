@@ -81,7 +81,7 @@ class TestCuratorOperationsSummary:
     """Summary tests for curator operations provenance patterns."""
 
     @pytest.mark.parametrize(
-        "op_class,output_role,expected_type,expects_edges",
+        ("op_class", "output_role", "expected_type", "expects_edges"),
         [
             (Merge, "merged", ArtifactTypes.ANY, False),
             (Filter, "passthrough", ArtifactTypes.ANY, False),

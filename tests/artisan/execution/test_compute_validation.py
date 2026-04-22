@@ -35,9 +35,11 @@ class TestValidateRemoteExecute:
             # so we mock the failure to ensure the error path is tested
             mock_cp = MagicMock()
             mock_cp.dumps.side_effect = TypeError("cannot pickle file")
-            with patch.dict("sys.modules", {"cloudpickle": mock_cp}):
-                with pytest.raises(RuntimeError, match="failed cloudpickle round-trip"):
-                    validate_remote_execute(op)
+            with (
+                patch.dict("sys.modules", {"cloudpickle": mock_cp}),
+                pytest.raises(RuntimeError, match="failed cloudpickle round-trip"),
+            ):
+                validate_remote_execute(op)
         finally:
             op.file_handle.close()
 
@@ -47,13 +49,15 @@ class TestValidateRemoteExecute:
         operation.tool = MagicMock()
         operation.tool.executable = "/opt/local-only-binary"
 
-        with patch("shutil.which", return_value=None):
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                validate_remote_execute(operation)
-                assert len(w) == 1
-                assert "absolute path" in str(w[0].message)
-                assert "/opt/local-only-binary" in str(w[0].message)
+        with (
+            patch("shutil.which", return_value=None),
+            warnings.catch_warnings(record=True) as w,
+        ):
+            warnings.simplefilter("always")
+            validate_remote_execute(operation)
+            assert len(w) == 1
+            assert "absolute path" in str(w[0].message)
+            assert "/opt/local-only-binary" in str(w[0].message)
 
     def test_tool_on_path_no_warning(self):
         """An operation whose tool is on PATH does not warn."""
@@ -61,11 +65,13 @@ class TestValidateRemoteExecute:
         operation.tool = MagicMock()
         operation.tool.executable = "/usr/bin/python"
 
-        with patch("shutil.which", return_value="/usr/bin/python"):
-            with warnings.catch_warnings(record=True) as w:
-                warnings.simplefilter("always")
-                validate_remote_execute(operation)
-                assert len(w) == 0
+        with (
+            patch("shutil.which", return_value="/usr/bin/python"),
+            warnings.catch_warnings(record=True) as w,
+        ):
+            warnings.simplefilter("always")
+            validate_remote_execute(operation)
+            assert len(w) == 0
 
     def test_no_tool_no_warning(self):
         """An operation without a tool does not warn."""

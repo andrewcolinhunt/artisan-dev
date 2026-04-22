@@ -90,7 +90,8 @@ class TestDataArtifactMaterialization:
         path_b = b.materialize_to(str(tmp_path))
 
         assert path_a != path_b
-        assert os.path.exists(path_a) and os.path.exists(path_b)
+        assert os.path.exists(path_a)
+        assert os.path.exists(path_b)
 
 
 class TestMetricArtifactMaterialization:
@@ -148,7 +149,8 @@ class TestMetricArtifactMaterialization:
         path_b = b.materialize_to(str(tmp_path))
 
         assert path_a != path_b
-        assert os.path.exists(path_a) and os.path.exists(path_b)
+        assert os.path.exists(path_a)
+        assert os.path.exists(path_b)
 
 
 class TestExecutionConfigArtifactMaterialization:

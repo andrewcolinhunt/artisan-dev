@@ -79,9 +79,12 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
             KeyError: If key is not registered.
         """
         if key not in cls._registry:
-            raise KeyError(
+            msg = (
                 f"Unknown artifact type: {key!r}. "
                 f"Registered: {list(cls._registry.keys())}"
+            )
+            raise KeyError(
+                msg
             )
         return cls._registry[key]
 

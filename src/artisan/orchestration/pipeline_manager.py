@@ -196,7 +196,7 @@ def _promote_file_paths_to_store(
         content_hash = compute_artifact_id(content)
         size_bytes = len(content)
         basename = os.path.basename(path_str)
-        name_part, ext_part = os.path.splitext(basename)
+        _name_part, ext_part = os.path.splitext(basename)
         artifact = cast(
             FileRefArtifact,
             FileRefArtifact.draft(
@@ -1770,11 +1770,11 @@ class PipelineManager:
         composite: type[CompositeDefinition],
         inputs: (dict[str, OutputReference | list[str]] | None) = None,
         params: dict[str, Any] | None = None,
-        resources: dict[str, Any] | None = None,  # noqa: ARG002 — reserved for forwarding to composite steps
-        execution: dict[str, Any] | None = None,  # noqa: ARG002
-        backend: str | BackendBase | None = None,  # noqa: ARG002
-        environment: str | dict[str, Any] | None = None,  # noqa: ARG002
-        tool: dict[str, Any] | None = None,  # noqa: ARG002
+        resources: dict[str, Any] | None = None,
+        execution: dict[str, Any] | None = None,
+        backend: str | BackendBase | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
         name: str | None = None,
     ) -> ExpandedCompositeResult:
         """Expand a composite into individual pipeline steps.

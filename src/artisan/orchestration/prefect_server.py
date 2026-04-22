@@ -66,7 +66,7 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
     except RuntimeError:
         url = _resolve_from_prefect_settings()
         if url is None:
-            raise PrefectServerNotFound(
+            msg = (
                 "No Prefect server detected.\n"
                 "\n"
                 "For self-hosted:\n"
@@ -77,6 +77,9 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
                 "\n"
                 "Or set the URL directly:\n"
                 "  export PREFECT_API_URL=http://<host>:<port>/api\n"
+            )
+            raise PrefectServerNotFound(
+                msg
             ) from None
         source = "prefect_profile"
 

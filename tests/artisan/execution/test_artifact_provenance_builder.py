@@ -294,7 +294,7 @@ class TestBuildConfigReferenceEdges:
         mock_artifact_store = Mock()
 
         edges = build_config_reference_edges(
-            config_artifacts=[metric],  # type: ignore  # Intentionally wrong type
+            config_artifacts=[metric],  # type: ignore[list-item]  # Intentionally wrong type
             artifact_store=mock_artifact_store,
             execution_run_id="e" * 32,
         )

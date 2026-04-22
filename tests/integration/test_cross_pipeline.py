@@ -49,7 +49,7 @@ def test_ingest_pipeline_step_basic(
         params={"count": 3, "seed": 42},
         backend=Backend.LOCAL,
     )
-    step1 = pa.run(
+    pa.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
@@ -69,7 +69,7 @@ def test_ingest_pipeline_step_basic(
         staging_root=env_b["staging_root"],
         working_root=env_b["working_root"],
     )
-    step0b = pb.run(
+    pb.run(
         IngestPipelineStep,
         params={
             "source_delta_root": env_a["delta_root"],
@@ -123,7 +123,7 @@ def test_ingest_pipeline_step_type_filter(
         staging_root=env_b["staging_root"],
         working_root=env_b["working_root"],
     )
-    step0b = pb.run(
+    pb.run(
         IngestPipelineStep,
         params={
             "source_delta_root": env_a["delta_root"],
@@ -160,7 +160,7 @@ def test_execution_config_artifact_references(pipeline_env: dict[str, str]):
     )
 
     # Step 1: Generate configs with $artifact references
-    step1 = pipeline.run(
+    pipeline.run(
         DataTransformerConfig,
         inputs={"dataset": step0.output("datasets")},
         params={
@@ -191,6 +191,6 @@ def test_execution_config_artifact_references(pipeline_env: dict[str, str]):
         if "input" in content and isinstance(content["input"], dict):
             ref = content["input"].get("$artifact")
             if ref is not None:
-                assert (
-                    ref in step0_ids
-                ), f"$artifact reference {ref} should be a valid step 0 artifact ID"
+                assert ref in step0_ids, (
+                    f"$artifact reference {ref} should be a valid step 0 artifact ID"
+                )

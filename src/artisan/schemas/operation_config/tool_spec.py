@@ -51,4 +51,5 @@ class ToolSpec(BaseModel):
         """
         exe = str(self.executable)
         if not os.path.exists(exe) and not shutil.which(exe):
-            raise FileNotFoundError(f"Executable not found: {self.executable}")
+            msg = f"Executable not found: {self.executable}"
+            raise FileNotFoundError(msg)
