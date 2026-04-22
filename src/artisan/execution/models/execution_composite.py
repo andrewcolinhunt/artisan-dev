@@ -47,7 +47,7 @@ class ExecutionComposite:
     inputs: dict[str, list[str]]
     step_number: int
     execution_spec_id: str
-    resources: ResourceConfig = field(default_factory=ResourceConfig)
-    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    resources: ResourceConfig = field(default_factory=ResourceConfig)  # type: ignore[arg-type]
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)  # type: ignore[arg-type]
     intermediates: CompositeIntermediates = CompositeIntermediates.DISCARD
     step_run_id: str | None = None

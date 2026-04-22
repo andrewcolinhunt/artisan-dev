@@ -126,7 +126,7 @@ pytest-xdist = "*"  # Parallel test execution
 # Linting and formatting
 ruff = "==0.13.2"
 pre-commit = "=4.3.0,<5"
-mypy = ">=1.19.0,<2"
+mypy = "==1.18.2"
 
 # Visualization
 bokeh = ">=3.1.0"
@@ -207,7 +207,12 @@ markers = [
 ]
 
 [tool.mypy]
-files = ["src", "tests"]
+# Point mypy at the package source root (`src/artisan`) and the tests
+# tree. `mypy_path = "src"` makes `artisan.*` the canonical module prefix;
+# without it and with `files = ["src", "tests"]` mypy sees the same file
+# under both `src.artisan.*` and `artisan.*` and aborts.
+mypy_path = "src"
+files = ["src/artisan", "tests"]
 exclude = "^_dev/"
 python_version = "3.12"
 warn_return_any = true

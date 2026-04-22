@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from artisan.execution.models.artifact_source import ArtifactSource
     from artisan.orchestration.step_future import StepFuture
+    from artisan.schemas.artifact.base import Artifact
     from artisan.schemas.orchestration.output_reference import OutputReference
     from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -51,7 +52,7 @@ class CompositeStepHandle:
     def __init__(
         self,
         *,
-        artifacts: dict[str, list] | None = None,
+        artifacts: dict[str, list[Artifact]] | None = None,
         step_future: StepFuture | None = None,
         operation_outputs: dict[str, OutputSpec] | None = None,
     ) -> None:
@@ -84,6 +85,10 @@ class CompositeStepHandle:
                 source=ArtifactSource.from_artifacts(self._artifacts[role]),
                 output_reference=None,
                 role=role,
+            )
+        if self._step_future is None:
+            raise ValueError(
+                "CompositeStepHandle has neither artifacts nor step_future set"
             )
         return CompositeRef(
             source=None,

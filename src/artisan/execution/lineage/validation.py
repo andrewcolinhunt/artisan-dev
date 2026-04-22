@@ -71,9 +71,10 @@ def validate_lineage_completeness(
             mapping.draft_original_name for mapping in lineage.get(role, [])
         }
         for artifact in artifact_list:
-            if artifact.original_name not in mapped_names:
+            original_name = getattr(artifact, "original_name", None)
+            if original_name not in mapped_names:
                 msg = (
-                    f"Artifact '{artifact.original_name}' in role '{role}' "
+                    f"Artifact '{original_name}' in role '{role}' "
                     f"has no lineage mapping"
                 )
                 raise LineageCompletenessError(msg)
@@ -103,7 +104,7 @@ def validate_lineage_integrity(
     }
     all_source_ids = input_ids | output_ids
     output_names = {
-        artifact.original_name
+        getattr(artifact, "original_name", None)
         for artifacts in output_artifacts.values()
         for artifact in artifacts
     }

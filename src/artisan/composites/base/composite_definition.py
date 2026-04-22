@@ -50,10 +50,10 @@ class CompositeDefinition(BaseModel):
     outputs: ClassVar[dict[str, OutputSpec]] = {}
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig()
+    resources: ResourceConfig = ResourceConfig()  # type: ignore[call-arg]
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig()
+    execution: ExecutionConfig = ExecutionConfig()  # type: ignore[call-arg]
 
     # ---------- Compose ----------
     def compose(self, ctx: CompositeContext) -> None:
@@ -103,7 +103,10 @@ class CompositeDefinition(BaseModel):
         Raises:
             KeyError: If name is not registered.
         """
-        return get_registered(name, cls._registry, "composite")
+        result: type[CompositeDefinition] = get_registered(
+            name, cls._registry, "composite"
+        )
+        return result
 
     @classmethod
     def get_all(cls) -> dict[str, type[CompositeDefinition]]:

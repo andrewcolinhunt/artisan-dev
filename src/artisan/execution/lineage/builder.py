@@ -53,10 +53,11 @@ def build_edges(
                 if draft_name == "":
                     msg = f"Invalid draft name: {source_id} (no draft prefix)"
                     raise ValueError(msg)
-                source_id = role_name_to_id.get(mapping.source_role, {}).get(draft_name)
-                if source_id is None:
+                resolved = role_name_to_id.get(mapping.source_role, {}).get(draft_name)
+                if resolved is None:
                     msg = f"Draft {draft_name} not found in role {mapping.source_role}"
                     raise ValueError(msg)
+                source_id = resolved
             if target_id:
                 edges.append(
                     SourceTargetPair(

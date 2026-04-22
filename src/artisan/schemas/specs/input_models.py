@@ -33,6 +33,8 @@ class _InputArtifactsMixin:
         Returns:
             List of associated artifacts, or empty list if none.
         """
+        if artifact.artifact_id is None:
+            return []
         return self._associated.get((artifact.artifact_id, assoc_type), [])
 
     def grouped(self) -> Iterator[dict[str, Artifact]]:

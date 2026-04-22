@@ -161,19 +161,15 @@ class CollapsedCompositeContext(CompositeContext):
         # Resolve CompositeRef inputs to ArtifactSources
         op_sources = self._resolve_inputs(inputs or {})
 
-        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):
+        if issubclass(operation, CompositeDefinition):
             return self._run_nested_composite(operation, op_sources, params)
 
-        if not (
-            isinstance(operation, type) and issubclass(operation, OperationDefinition)
-        ):
+        if not issubclass(operation, OperationDefinition):
             msg = (
                 f"Expected OperationDefinition or CompositeDefinition subclass, "
                 f"got {operation}"
             )
-            raise TypeError(
-                msg
-            )
+            raise TypeError(msg)
 
         if is_curator_operation(operation):
             return self._run_curator(operation, op_sources, params)
@@ -565,7 +561,7 @@ class ExpandedCompositeContext(CompositeContext):
         step_name = f"{self._step_name_prefix}.{op_name}"
 
         # Handle nested composites
-        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):
+        if issubclass(operation, CompositeDefinition):
             return self._run_nested_composite(
                 operation,
                 translated_inputs,

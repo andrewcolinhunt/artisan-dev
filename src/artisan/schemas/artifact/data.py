@@ -32,7 +32,7 @@ class DataArtifact(Artifact):
     Designed as a domain-agnostic artifact type for example operations.
     """
 
-    POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
+    POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
         "artifact_id": pl.String,
         "origin_step_number": pl.Int32,
         "content": pl.Binary,

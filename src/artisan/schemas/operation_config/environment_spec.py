@@ -18,7 +18,8 @@ def _find_free_port() -> int:
     """Find a free ephemeral port by binding to port 0."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 class EnvironmentSpec(BaseModel):

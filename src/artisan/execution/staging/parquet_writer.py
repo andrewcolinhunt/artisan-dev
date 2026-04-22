@@ -99,6 +99,7 @@ def _stage_artifacts(
         artifact.artifact_id
         for artifact_list in artifacts.values()
         for artifact in artifact_list
+        if artifact.artifact_id is not None
     ]
 
 

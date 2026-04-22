@@ -15,7 +15,7 @@ Example::
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from artisan.schemas.artifact.types import ArtifactTypes
 
@@ -90,7 +90,7 @@ class ArtifactTypeDef:
     @classmethod
     def polars_schema(cls) -> dict[str, Any]:
         """Return the Polars column schema from the model."""
-        return cls.model.POLARS_SCHEMA
+        return cast("dict[str, Any]", cls.model.POLARS_SCHEMA)  # type: ignore[attr-defined]
 
     # --- Public lookup API ---
 
@@ -156,7 +156,7 @@ class ArtifactTypeDef:
         Returns:
             Dict mapping column names to Polars data types.
         """
-        return ArtifactTypeDef.get(key).model.POLARS_SCHEMA
+        return cast("dict[str, Any]", ArtifactTypeDef.get(key).model.POLARS_SCHEMA)  # type: ignore[attr-defined]
 
 
 # =============================================================================
