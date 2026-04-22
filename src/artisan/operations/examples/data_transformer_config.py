@@ -99,33 +99,35 @@ class DataTransformerConfig(OperationDefinition):
 
     # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract dataset info for config generation."""
-        dataset = inputs.input_artifacts["dataset"][0]
+        """Extract per-dataset info as parallel lists (one entry per artifact)."""
+        datasets = inputs.input_artifacts["dataset"]
         return {
-            "dataset_artifact_id": dataset.artifact_id,
-            "dataset_stem": os.path.splitext(dataset.original_name)[0],
+            "dataset_artifact_ids": [d.artifact_id for d in datasets],
+            "dataset_stems": [
+                os.path.splitext(d.original_name)[0] for d in datasets
+            ],
         }
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Build config dicts for each scale_factor x noise_amplitude combo."""
-        dataset_artifact_id = inputs.inputs["dataset_artifact_id"]
-        dataset_stem = inputs.inputs["dataset_stem"]
+        """Build configs for each (dataset, scale_factor, noise_amplitude) combo."""
+        artifact_ids = inputs.inputs["dataset_artifact_ids"]
+        stems = inputs.inputs["dataset_stems"]
 
         configs = []
-        index = 0
-        for scale_factor in self.params.scale_factors:
-            for noise_amplitude in self.params.noise_amplitudes:
-                configs.append({
-                    "index": index,
-                    "original_name": f"{dataset_stem}_config_{index}.json",
-                    "content": {
-                        "input": {"$artifact": dataset_artifact_id},
-                        "scale_factor": scale_factor,
-                        "noise_amplitude": noise_amplitude,
-                        "seed": self.params.seed,
-                    },
-                })
-                index += 1
+        for artifact_id, stem in zip(artifact_ids, stems, strict=True):
+            for scale_factor in self.params.scale_factors:
+                for noise_amplitude in self.params.noise_amplitudes:
+                    index = len(configs)
+                    configs.append({
+                        "index": index,
+                        "original_name": f"{stem}_config_{index}.json",
+                        "content": {
+                            "input": {"$artifact": artifact_id},
+                            "scale_factor": scale_factor,
+                            "noise_amplitude": noise_amplitude,
+                            "seed": self.params.seed,
+                        },
+                    })
 
         return {"configs": configs}
 
