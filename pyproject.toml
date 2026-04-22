@@ -163,15 +163,14 @@ dev = { features = ["dev"], solve-group = "default" }
 docs = { features = ["docs"], solve-group = "default" }
 
 # =============================================================================
-# ACTIVATION
-# =============================================================================
-[tool.pixi.activation]
-scripts = ["scripts/pixi/activate.sh"]
-
-# =============================================================================
 # TASKS
 # =============================================================================
 [tool.pixi.tasks]
+# One-time post-install fixups. Contributors run `pixi run setup` once after
+# cloning (or `pixi run -e dev setup` to also install pre-commit hooks).
+# Body lives in scripts/setup.sh so it has a real shell; idempotent.
+setup = "bash scripts/setup.sh"
+
 prefect-start = "prefect-server start --bg"
 prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
