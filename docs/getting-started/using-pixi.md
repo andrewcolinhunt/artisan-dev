@@ -143,9 +143,9 @@ flags and command sequences.
 
 | Task | Command | Description |
 |------|---------|-------------|
-| `test` | `pytest -m 'not slow' && pytest -m slow -n 4` | Run unit tests (sequential) then integration tests (parallel) |
-| `test-unit` | `pytest -m 'not slow'` | Run only unit tests |
-| `test-integration` | `pytest -m slow -n 4` | Run only integration tests (parallel) |
+| `test` | `pytest -m 'not integration' && pytest -m integration -n 4` | Run unit tests (sequential) then integration tests (parallel) |
+| `test-unit` | `pytest -m 'not integration'` | Run only unit tests |
+| `test-integration` | `pytest -m integration -n 4` | Run only integration tests (parallel) |
 | `test-seq` | `pytest` | Run all tests sequentially (useful for debugging) |
 | `fmt` | `ruff format . && ruff check --fix .` | Format and lint the codebase |
 | `build-dist` | `rm -rf dist/ && python -m build` | Build distribution packages |
