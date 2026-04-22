@@ -21,12 +21,14 @@ def _mock_data_artifact(name: str = "dataset_00000.csv") -> DataArtifact:
     ).finalize()
 
 
-def _run_config_op(operation, artifact, output_dir: Path):
+def _run_config_op(operation, artifacts, output_dir: Path):
     output_dir.mkdir(parents=True, exist_ok=True)
     execute_dir = output_dir / "execute"
     execute_dir.mkdir()
 
-    input_artifacts = {"dataset": [artifact]}
+    if isinstance(artifacts, DataArtifact):
+        artifacts = [artifacts]
+    input_artifacts = {"dataset": list(artifacts)}
 
     prepared = operation.preprocess(
         PreprocessInput(input_artifacts=input_artifacts, preprocess_dir=output_dir / "pre")
@@ -107,3 +109,28 @@ class TestDataTransformerConfig:
         assert values["scale_factor"] == 2.5
         assert values["noise_amplitude"] == 0.3
         assert values["seed"] == 123
+
+    def test_multiple_datasets_per_unit(self, tmp_path: Path):
+        a = _mock_data_artifact("dataset_00000.csv")
+        b = _mock_data_artifact("dataset_00001.csv")
+        op = DataTransformerConfig(
+            params=DataTransformerConfig.Params(
+                scale_factors=[1.0, 2.0], noise_amplitudes=[0.0]
+            )
+        )
+        result = _run_config_op(op, [a, b], tmp_path / "out")
+
+        assert result.success
+        # 2 datasets x 2 scale_factors x 1 noise_amplitude = 4 configs
+        assert len(result.artifacts["config"]) == 4
+
+        names = [c.original_name for c in result.artifacts["config"]]
+        assert names == [
+            "dataset_00000_config_0",
+            "dataset_00000_config_1",
+            "dataset_00001_config_2",
+            "dataset_00001_config_3",
+        ]
+
+        ids = [c.values["input"]["$artifact"] for c in result.artifacts["config"]]
+        assert ids == [a.artifact_id, a.artifact_id, b.artifact_id, b.artifact_id]
