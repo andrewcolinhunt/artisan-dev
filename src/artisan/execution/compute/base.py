@@ -36,6 +36,7 @@ class ComputeRouter(ABC):
         operation: Any,
         execute_inputs: list[ExecuteInput],
         sandbox_root: str,
+        timings: dict[str, Any] | None = None,
     ) -> Iterable[Any]:
         """Batch-execute across multiple artifacts.
 
@@ -48,11 +49,16 @@ class ComputeRouter(ABC):
             execute_inputs: One ExecuteInput per artifact.
             sandbox_root: Unit-level sandbox root (shared by all
                 artifacts in the batch).
+            timings: Optional dict for per-phase timings. Accepted for
+                signature parity with subclasses that record sub-phases
+                (e.g. Modal's serialize/dispatch split); the default
+                serial loop does not record anything.
 
         Returns:
             Iterable of raw results, one per artifact. Failures are
             the exception instance at that index.
         """
+        del timings  # unused in the default serial loop
         results: list[Any] = []
         for ei in execute_inputs:
             try:
@@ -60,3 +66,16 @@ class ComputeRouter(ABC):
             except Exception as exc:
                 results.append(exc)
         return results
+
+    def warm(self, operation_name: str) -> None:
+        """Pre-initialize any lazy state so the first dispatch is hot.
+
+        Default is a no-op. Subclasses override when they have lazy
+        startup worth isolating from the first execute call (e.g.
+        Modal's ``app.run()`` entry + function hydration).
+
+        Args:
+            operation_name: Used by Modal to name the app; other
+                routers may ignore.
+        """
+        return

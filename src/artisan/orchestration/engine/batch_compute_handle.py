@@ -53,11 +53,14 @@ def _batch_execute_with_shared_router(
 ) -> list[UnitResult]:
     """Process units concurrently with a shared compute router.
 
-    Creates a router from the picklable compute config, processes
-    units via a thread pool (prep/post overlap across units), and
-    closes the router after all threads complete.
+    Creates a router from the picklable compute config, warms it, and
+    processes units via a thread pool (prep/post overlap across units).
+    Closes the router after all threads complete.
 
-    Runs inside a spawned child process.
+    Runs inside a spawned child process. Router warm-up time is
+    recorded as ``router_init`` on a shared worker timings dict and
+    copied onto every unit's ``prepped.timings`` so it appears as a
+    column in ``PipelineTimings.execution_stats``.
 
     Args:
         units: Execution units to process.
@@ -66,7 +69,11 @@ def _batch_execute_with_shared_router(
         max_workers: Thread pool size for cross-unit parallelism.
     """
     router = create_router(compute_config)
+    worker_timings: dict[str, Any] = {}
     try:
+        if units:
+            with phase_timer("router_init", worker_timings):
+                router.warm(units[0].operation.name)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [
                 pool.submit(
@@ -75,6 +82,7 @@ def _batch_execute_with_shared_router(
                     runtime_env,
                     router,
                     worker_id=i,
+                    worker_timings=worker_timings,
                 )
                 for i, unit in enumerate(units)
             ]
@@ -89,8 +97,15 @@ def _process_unit(
     runtime_env: RuntimeEnvironment,
     router: ComputeRouter,
     worker_id: int = 0,
+    worker_timings: dict[str, Any] | None = None,
 ) -> UnitResult:
-    """Process a single unit: prep → batch execute → post → record."""
+    """Process a single unit: prep → batch execute → post → record.
+
+    ``worker_timings`` carries phase timings shared across threads in
+    the worker subprocess (e.g. ``router_init``). Any keys present are
+    copied onto this unit's ``prepped.timings`` so they surface as
+    columns in :class:`PipelineTimings` stats.
+    """
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
     original_inputs = _extract_inputs(unit)
@@ -108,16 +123,24 @@ def _process_unit(
             execution_run_ids=[],
         )
 
+    if worker_timings and "router_init" in worker_timings:
+        prepped.timings["router_init"] = worker_timings["router_init"]
+
     # --- execute ---
     try:
         with phase_timer("execute", prepped.timings):
             if getattr(prepped.operation, "per_artifact_dispatch", True):
-                raw_results = list(
-                    router.route_execute_batch(
-                        prepped.operation,
-                        prepped.artifact_execute_inputs,
-                        prepped.sandbox_path,
-                    )
+                handle = router.route_execute_batch(
+                    prepped.operation,
+                    prepped.artifact_execute_inputs,
+                    prepped.sandbox_path,
+                    timings=prepped.timings,
+                )
+                with phase_timer("collect", prepped.timings):
+                    raw_results = list(handle)
+                _aggregate_container_timings(
+                    getattr(handle, "container_timings", []),
+                    prepped.timings,
                 )
             else:
                 raw_results = [
@@ -219,6 +242,37 @@ def _get_params_dict(operation: Any) -> dict[str, Any]:
     from artisan.utils.hashing import serialize_params
 
     return serialize_params(operation)
+
+
+def _aggregate_container_timings(
+    cts: list[dict[str, float]],
+    timings: dict[str, Any],
+) -> None:
+    """Fold per-container epoch timestamps into scalar summary phases.
+
+    Writes ``container_cold_start_p50`` (median time from container
+    start to execute start), ``container_execute_p50`` (median time
+    inside ``operation.execute``), and ``fan_out_span`` (wall-clock
+    from the earliest container start to the latest execute end)
+    onto ``timings`` as float keys. All values rounded to 4 decimals.
+    No-op when ``cts`` is empty so partial-failure batches still work.
+
+    Args:
+        cts: Per-artifact epoch dicts from ``_execute_on_modal``.
+        timings: Dict to mutate in place.
+    """
+    if not cts:
+        return
+    cold = sorted(ct["execute_start_epoch"] - ct["container_start_epoch"] for ct in cts)
+    exec_ = sorted(ct["execute_end_epoch"] - ct["execute_start_epoch"] for ct in cts)
+    mid = len(cts) // 2
+    timings["container_cold_start_p50"] = round(cold[mid], 4)
+    timings["container_execute_p50"] = round(exec_[mid], 4)
+    timings["fan_out_span"] = round(
+        max(ct["execute_end_epoch"] for ct in cts)
+        - min(ct["container_start_epoch"] for ct in cts),
+        4,
+    )
 
 
 # ---------------------------------------------------------------------------

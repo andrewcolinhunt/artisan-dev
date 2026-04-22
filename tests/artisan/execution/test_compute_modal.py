@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import cloudpickle
@@ -17,7 +18,18 @@ from artisan.schemas.specs.input_models import ExecuteInput
 
 
 def _make_mock_modal():
-    """Build a mock modal module with App and Image."""
+    """Build a mock modal module with App and Image.
+
+    ``remote_fn`` and ``spawn_map_iter`` can be injected via
+    ``mock_modal._captured`` to stub the container-side return values:
+
+    - ``_captured["remote_fn"]``: callable returning the 3-tuple
+      ``(raw_result, output_snapshot, container_timings)``. Default
+      returns ``(None, {}, {})``.
+    - ``_captured["spawn_map_iter"]``: iterable (or callable returning
+      one) of 3-tuples yielded by ``function_call.iter()`` for the
+      batch path. Default yields nothing.
+    """
     mock_modal = MagicMock()
 
     # modal.Image.from_registry returns an image object
@@ -34,22 +46,35 @@ def _make_mock_modal():
     mock_ctx.__exit__ = MagicMock(return_value=False)
     mock_app.run.return_value = mock_ctx
 
-    # app.function() returns a decorator that wraps the function
-    # and gives it a .remote() method. The remote mock returns a
-    # (result, output_snapshot) tuple — matching the real return
-    # signature — without deserializing the cloudpickled bytes
-    # (MagicMock can't survive cloudpickle round-trips).
-    _captured = {}
+    # app.function() returns a decorator that wraps the function and
+    # gives it both ``.remote()`` (single-path) and
+    # ``.experimental_spawn_map()`` (batch-path) mocks. Return values
+    # are 3-tuples to match the updated container-side wire format;
+    # callers can't rely on cloudpickled args being deserialized
+    # (MagicMock can't survive cloudpickle round-trips) so injection
+    # happens via ``_captured``.
+    _captured: dict[str, Any] = {}
+
+    def _make_function_call():
+        """Build a FunctionCall mock whose .iter() returns configured items."""
+        source = _captured.get("spawn_map_iter", [])
+        items = source() if callable(source) else source
+        fc = MagicMock()
+        fc.iter.return_value = iter(items)
+        return fc
 
     def function_decorator(**kwargs):
         def decorator(fn):
             wrapped = MagicMock()
             wrapped._original_fn = fn
-            # Default: return (None, {}) — tests override via _captured
+            # Default: return (None, {}, {}) — tests override via _captured
             wrapped.remote = MagicMock(
                 side_effect=lambda **kw: _captured.get(
-                    "remote_fn", lambda **k: (None, {})
+                    "remote_fn", lambda **k: (None, {}, {})
                 )(**kw)
+            )
+            wrapped.experimental_spawn_map = MagicMock(
+                side_effect=lambda *a, **kw: _make_function_call()
             )
             return wrapped
 
@@ -64,7 +89,7 @@ class TestModalComputeRouter:
     def test_route_execute_serializes_and_calls_remote(self, tmp_path):
         """route_execute cloudpickles args and calls fn.remote."""
         mock_modal = _make_mock_modal()
-        mock_modal._captured["remote_fn"] = lambda **kw: ({"result": 42}, {})
+        mock_modal._captured["remote_fn"] = lambda **kw: ({"result": 42}, {}, {})
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
 
@@ -89,7 +114,7 @@ class TestModalComputeRouter:
     def test_route_execute_returns_none(self, tmp_path):
         """route_execute passes through None returns."""
         mock_modal = _make_mock_modal()
-        mock_modal._captured["remote_fn"] = lambda **kw: (None, {})
+        mock_modal._captured["remote_fn"] = lambda **kw: (None, {}, {})
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
 
@@ -404,6 +429,7 @@ class TestModalComputeRouter:
         mock_modal._captured["remote_fn"] = lambda **kw: (
             {"success": True},
             output_snapshot,
+            {},
         )
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
@@ -552,7 +578,7 @@ class TestExecuteOnModalCallback:
             ModalComputeConfig(image="test:latest")
         )
 
-        raw_result, output_files = execute_on_modal(
+        raw_result, output_files, _ = execute_on_modal(
             operation_bytes=cloudpickle.dumps(_CwdOp()),
             execute_input_bytes=cloudpickle.dumps(fresh_input),
             sandbox=files,
@@ -611,3 +637,196 @@ class TestExecuteOnModalCallback:
                 "the execute/artifact_0 shell should not exist on the fresh root."
             )
             raise AssertionError(msg)
+
+
+class TestModalSubPhaseTimings:
+    """Tests for router.warm() and sub-phase timing instrumentation."""
+
+    def _make_execute_input(self, tmp_path, name: str) -> ExecuteInput:
+        exec_dir = tmp_path / "execute" / name
+        exec_dir.mkdir(parents=True)
+        return ExecuteInput(inputs={}, execute_dir=str(exec_dir), log_path="/tmp/log")
+
+    def test_warm_initializes_app_once(self, tmp_path):
+        """warm() triggers init; a second warm() and a later batch call reuse it."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        operation = MagicMock()
+        operation.name = "warm_op"
+        operation.environments = Environments()
+        operation.tool = None
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router.warm("warm_op")
+            router.warm("warm_op")  # idempotent
+            router.route_execute_batch(operation, [], str(sandbox))
+
+        assert mock_modal.App.call_count == 1
+
+    def test_route_execute_batch_records_serialize_and_dispatch(self, tmp_path):
+        """Passing timings records serialize and dispatch as floats; omitting is safe."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        operation = MagicMock()
+        operation.name = "batch_op"
+        operation.environments = Environments()
+        operation.tool = None
+
+        sandbox = tmp_path / "sandbox"
+        (sandbox / "materialized_inputs").mkdir(parents=True)
+        ei = self._make_execute_input(tmp_path, "artifact_0")
+
+        timings: dict[str, Any] = {}
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router.route_execute_batch(operation, [ei], str(sandbox), timings=timings)
+
+        assert isinstance(timings["serialize"], float)
+        assert timings["serialize"] >= 0.0
+        assert isinstance(timings["dispatch"], float)
+        assert timings["dispatch"] >= 0.0
+
+        # Omitting the kwarg does not raise.
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router.route_execute_batch(operation, [ei], str(sandbox))
+
+    def test_route_execute_batch_empty_inputs(self, tmp_path):
+        """Empty inputs still record both phases; handle yields nothing."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        operation = MagicMock()
+        operation.name = "batch_op"
+        operation.environments = Environments()
+        operation.tool = None
+
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+
+        timings: dict[str, Any] = {}
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            handle = router.route_execute_batch(
+                operation, [], str(sandbox), timings=timings
+            )
+            results = list(handle)
+
+        assert isinstance(timings["serialize"], float)
+        assert isinstance(timings["dispatch"], float)
+        assert results == []
+        assert handle.container_timings == []
+
+    def test_execute_on_modal_returns_container_timings(self, tmp_path):
+        """The remote function returns a 3-tuple with ordered epoch floats."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            fn = router._ensure_running("test_op")
+
+        class _Op:
+            name = "test_op"
+
+            def execute(self, execute_input):
+                return "ok"
+
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+        ei = ExecuteInput(inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log")
+
+        raw_result, output_files, ct = fn._original_fn(
+            operation_bytes=cloudpickle.dumps(_Op()),
+            execute_input_bytes=cloudpickle.dumps(ei),
+            sandbox=None,
+            sandbox_dirs=None,
+            sandbox_root=None,
+            tool_files={},
+        )
+
+        assert raw_result == "ok"
+        assert isinstance(output_files, dict)
+        assert set(ct.keys()) == {
+            "container_start_epoch",
+            "execute_start_epoch",
+            "execute_end_epoch",
+        }
+        assert all(isinstance(v, float) for v in ct.values())
+        assert ct["container_start_epoch"] <= ct["execute_start_epoch"]
+        assert ct["execute_start_epoch"] <= ct["execute_end_epoch"]
+
+    def test_batch_handle_populates_container_timings(self, tmp_path):
+        """Iterating the handle appends one ct entry per yielded result."""
+        from artisan.execution.compute.modal import BatchExecuteHandle
+
+        cts = [
+            {
+                "container_start_epoch": 100.0,
+                "execute_start_epoch": 100.5,
+                "execute_end_epoch": 101.0,
+            },
+            {
+                "container_start_epoch": 100.1,
+                "execute_start_epoch": 100.7,
+                "execute_end_epoch": 101.3,
+            },
+            {
+                "container_start_epoch": 100.2,
+                "execute_start_epoch": 100.9,
+                "execute_end_epoch": 101.6,
+            },
+        ]
+        items = [("r0", {}, cts[0]), ("r1", {}, cts[1]), ("r2", {}, cts[2])]
+
+        fc = MagicMock()
+        fc.iter.return_value = iter(items)
+
+        eis = [self._make_execute_input(tmp_path, f"a{i}") for i in range(3)]
+        handle = BatchExecuteHandle(function_call=fc, execute_inputs=eis, count=3)
+
+        results = list(handle)
+        assert results == ["r0", "r1", "r2"]
+        assert len(handle.container_timings) == 3
+        for observed, expected in zip(handle.container_timings, cts, strict=True):
+            assert observed == expected
+
+    def test_batch_handle_partial_failure_timings(self, tmp_path):
+        """When one invocation raises mid-stream, surviving ct entries are kept."""
+        from artisan.execution.compute.modal import BatchExecuteHandle
+
+        cts = [
+            {
+                "container_start_epoch": 0.0,
+                "execute_start_epoch": 0.1,
+                "execute_end_epoch": 0.2,
+            },
+            {
+                "container_start_epoch": 0.3,
+                "execute_start_epoch": 0.4,
+                "execute_end_epoch": 0.5,
+            },
+        ]
+
+        def _generator():
+            yield ("r0", {}, cts[0])
+            yield ("r1", {}, cts[1])
+            msg = "modal blew up"
+            raise RuntimeError(msg)
+
+        fc = MagicMock()
+        fc.iter.return_value = _generator()
+
+        eis = [self._make_execute_input(tmp_path, f"a{i}") for i in range(3)]
+        handle = BatchExecuteHandle(function_call=fc, execute_inputs=eis, count=3)
+
+        results = list(handle)
+        assert results[0] == "r0"
+        assert results[1] == "r1"
+        assert isinstance(results[2], RuntimeError)
+        assert len(handle.container_timings) == 2
