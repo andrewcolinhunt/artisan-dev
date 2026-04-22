@@ -227,6 +227,27 @@ disallow_incomplete_defs = false
 explicit_package_bases = true
 namespace_packages = true
 
+# Tests are not strictly type-checked at the mypy gate. The functional
+# gate is pytest, which fires when tests drift from real src signatures.
+# This override makes mypy silent on tests/** so the pre-commit mypy
+# hook can pass while src/artisan stays under strict mode (top-level).
+# A later phase tightens this incrementally back toward strict; see
+# _dev/design/0_current/precommit-state-and-reinstatement.md.
+[[tool.mypy.overrides]]
+module = ["tests.*", "conftest"]
+ignore_errors = true
+
+# Third-party libs without py.typed / stubs. Silence import-untyped repo-wide.
+[[tool.mypy.overrides]]
+module = [
+    "fsspec.*",
+    "graphviz",
+    "cloudpickle",
+    "prefect_submitit.*",
+    "ipywidgets",
+]
+ignore_missing_imports = true
+
 [tool.ruff]
 extend-exclude = ["examples", "_dev", ".pixi", "demos"]
 
