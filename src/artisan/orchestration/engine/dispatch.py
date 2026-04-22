@@ -105,7 +105,8 @@ def execute_unit_task(
             execution_run_ids=[result.execution_run_id],
         )
     except KeyboardInterrupt:
-        raise RuntimeError("Operation interrupted by SIGINT") from None
+        msg = "Operation interrupted by SIGINT"
+        raise RuntimeError(msg) from None
     except Exception as exc:
         return UnitResult(
             success=False,
@@ -154,12 +155,11 @@ def _collect_results(futures: list) -> list[UnitResult]:
     logger.info("Collected results from %d futures", len(futures))
 
     # Best-effort SLURM log capture (may replace results with worker_log populated)
-    results = [
+    return [
         _capture_slurm_logs(future, result)
         for future, result in zip(futures, results, strict=False)
     ]
 
-    return results
 
 
 def _capture_slurm_logs(future: object, result: UnitResult) -> UnitResult:

@@ -50,25 +50,31 @@ class ArtifactTypeDef:
 
         # Validate required attributes
         if "table_path" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must set 'table_path' class variable")
+            msg = f"{cls.__name__} must set 'table_path' class variable"
+            raise TypeError(msg)
         if "model" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must set 'model' class variable")
+            msg = f"{cls.__name__} must set 'model' class variable"
+            raise TypeError(msg)
 
         # Validate model has required serialization interface
         model = cls.model
         for attr in ("POLARS_SCHEMA", "to_row", "from_row"):
             if not hasattr(model, attr):
+                msg = f"{cls.__name__}.model ({model.__name__}) must have '{attr}'"
                 raise TypeError(
-                    f"{cls.__name__}.model ({model.__name__}) must have '{attr}'"
+                    msg
                 )
 
         # Reject duplicate keys
         if key in ArtifactTypeDef._registry:
             existing = ArtifactTypeDef._registry[key]
             if existing is not cls:
-                raise ValueError(
+                msg = (
                     f"Duplicate artifact type key {key!r}: "
                     f"{cls.__name__} conflicts with {existing.__name__}"
+                )
+                raise ValueError(
+                    msg
                 )
             return
 
@@ -102,9 +108,12 @@ class ArtifactTypeDef:
             KeyError: If key is not registered.
         """
         if key not in ArtifactTypeDef._registry:
-            raise KeyError(
+            msg = (
                 f"Unknown artifact type: {key!r}. "
                 f"Registered: {list(ArtifactTypeDef._registry.keys())}"
+            )
+            raise KeyError(
+                msg
             )
         return ArtifactTypeDef._registry[key]
 

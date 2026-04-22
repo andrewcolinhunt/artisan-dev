@@ -202,9 +202,12 @@ def _raise_timeout_error(
     if len(missing) > max_shown:
         details_str += f"\n  ... and {len(missing) - max_shown} more"
 
-    raise TimeoutError(
+    msg = (
         f"Staging files not visible after {timeout_seconds}s.\n"
         f"Missing {len(missing)}/{total_count} execution_run_ids:\n"
         f"{details_str}\n"
         f"Check SLURM worker logs for these executions."
+    )
+    raise TimeoutError(
+        msg
     )

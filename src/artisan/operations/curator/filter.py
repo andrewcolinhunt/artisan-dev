@@ -521,7 +521,7 @@ class Filter(OperationDefinition):
 
             # Collect metric source info from step_info
             if step_info is not None:
-                for field, step_nums in step_info.items():
+                for _field, step_nums in step_info.items():
                     for sn in step_nums:
                         if sn not in metric_sources_map:
                             metric_sources_map[sn] = {

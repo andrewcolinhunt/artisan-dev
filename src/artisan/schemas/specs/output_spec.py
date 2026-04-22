@@ -85,25 +85,34 @@ class OutputSpec(BaseModel):
 
         # Reject empty dict - ambiguous intent
         if not v:
-            raise ValueError(
+            msg = (
                 "Empty dict {} is not valid. "
                 "Use {'inputs': [...]} for declared lineage, or {'inputs': []} for generative operations."
+            )
+            raise ValueError(
+                msg
             )
 
         # Validate keys - only "inputs" and "outputs" allowed
         valid_keys = {"inputs", "outputs"}
         invalid_keys = set(v.keys()) - valid_keys
         if invalid_keys:
-            raise ValueError(
+            msg = (
                 f"Invalid keys in infer_lineage_from: {invalid_keys}. "
                 f"Only 'inputs' and 'outputs' are allowed."
+            )
+            raise ValueError(
+                msg
             )
 
         # Reject combined inputs+outputs
         if "inputs" in v and "outputs" in v:
-            raise ValueError(
+            msg = (
                 "Combined inputs+outputs pattern is no longer supported. "
                 "Use separate output roles instead."
+            )
+            raise ValueError(
+                msg
             )
 
         return v

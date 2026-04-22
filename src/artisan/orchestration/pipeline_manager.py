@@ -196,7 +196,7 @@ def _promote_file_paths_to_store(
         content_hash = compute_artifact_id(content)
         size_bytes = len(content)
         basename = os.path.basename(path_str)
-        name_part, ext_part = os.path.splitext(basename)
+        _name_part, ext_part = os.path.splitext(basename)
         artifact = cast(
             FileRefArtifact,
             FileRefArtifact.draft(

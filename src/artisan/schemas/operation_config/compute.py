@@ -96,9 +96,12 @@ class Compute(BaseModel):
         """
         config = getattr(self, self.active, None)
         if config is None:
-            raise ValueError(
+            msg = (
                 f"Compute provider '{self.active}' is not configured. "
                 f"Available: {self.available()}"
+            )
+            raise ValueError(
+                msg
             )
         return config
 

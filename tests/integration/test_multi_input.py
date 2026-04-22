@@ -89,7 +89,7 @@ class DualInputLineage(OperationDefinition):
             pf = Path(pf)
             with open(pf) as fh:
                 reader = csv.DictReader(fh)
-                headers = list(reader.fieldnames or []) + ["lineage_marker"]
+                headers = [*list(reader.fieldnames or []), "lineage_marker"]
                 rows = list(reader)
 
             out_path = os.path.join(output_dir, f"{pf.stem}_0.csv")
@@ -166,7 +166,7 @@ class AssociatedMetricConsumer(OperationDefinition):
 
             with open(primary_path) as fh:
                 reader = csv.DictReader(fh)
-                headers = list(reader.fieldnames or []) + ["assoc_count"]
+                headers = [*list(reader.fieldnames or []), "assoc_count"]
                 rows = list(reader)
 
             out_path = os.path.join(output_dir, f"{primary_path.stem}_0.csv")
@@ -235,7 +235,7 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
     )
 
     # LINEAGE matches: B1↔M1 (share ancestor A1), B2↔M2 (share ancestor A2)
-    step3 = pipeline.run(
+    pipeline.run(
         DualInputLineage,
         inputs={
             "primary": step1.output("dataset"),
@@ -268,13 +268,13 @@ def test_with_associated(pipeline_env: dict[str, str]):
         backend=Backend.LOCAL,
     )
     # MetricCalc creates artifact_edges: D1→M1, D2→M2
-    step1 = pipeline.run(
+    pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
         backend=Backend.LOCAL,
     )
 
-    step2 = pipeline.run(
+    pipeline.run(
         AssociatedMetricConsumer,
         inputs={"primary": step0.output("datasets")},
         backend=Backend.LOCAL,

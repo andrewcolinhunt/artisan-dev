@@ -113,7 +113,8 @@ class TestCuratorCancelAwareMessage:
 
         def raise_broken_pool(*args, **kwargs):
             event.set()
-            raise BrokenProcessPool("killed")
+            msg = "killed"
+            raise BrokenProcessPool(msg)
 
         mock_run_sub.side_effect = raise_broken_pool
 

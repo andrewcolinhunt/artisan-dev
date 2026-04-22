@@ -1158,7 +1158,7 @@ class TestFilterChunkedEvaluation:
         """5 artifacts with chunk_size=2 gives same results as unchunked."""
         # Scores: 0.1, 0.6, 0.2, 0.8, 0.4 -> threshold 0.5 -> indices 1, 3 pass
         scores = [0.1, 0.6, 0.2, 0.8, 0.4]
-        store, pt_ids, m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
 
         criteria = [Criterion(metric="score", operator="gt", value=0.5)]
 
@@ -1189,7 +1189,7 @@ class TestFilterChunkedEvaluation:
     def test_chunk_size_1_correct(self):
         """chunk_size=1 processes each artifact individually, same result."""
         scores = [0.9, 0.3, 0.7]
-        store, pt_ids, m_ids = _build_multi_artifact_store(3, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(3, lambda i: scores[i])
 
         criteria = [Criterion(metric="score", operator="ge", value=0.5)]
 
@@ -1205,7 +1205,7 @@ class TestFilterChunkedEvaluation:
     def test_diagnostics_equivalence_chunked_vs_full(self):
         """Diagnostics (pass_count, min, max, mean, funnel) match across chunk sizes."""
         scores = [0.1, 0.6, 0.2, 0.8, 0.4]
-        store, pt_ids, m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
 
         criteria = [Criterion(metric="score", operator="gt", value=0.3)]
 
@@ -1246,7 +1246,7 @@ class TestFilterChunkedEvaluation:
 
     def test_single_chunk_degenerate_case(self):
         """chunk_size > total -> behaves exactly like non-chunked."""
-        store, pt_ids, m_ids = _build_multi_artifact_store(
+        store, pt_ids, _m_ids = _build_multi_artifact_store(
             3, lambda i: [0.9, 0.3, 0.7][i]
         )
 
@@ -1264,7 +1264,7 @@ class TestFilterChunkedEvaluation:
     def test_passthrough_failures_with_chunking(self):
         """passthrough_failures=True + chunking -> all IDs pass through."""
         scores = [0.9, 0.3, 0.7]
-        store, pt_ids, m_ids = _build_multi_artifact_store(3, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(3, lambda i: scores[i])
 
         op = Filter(
             params=Filter.Params(
@@ -1291,7 +1291,7 @@ class TestFilterChunkedEvaluation:
     def test_chunk_preserves_input_order(self):
         """Passed IDs maintain input order across chunks."""
         scores = [0.9, 0.3, 0.7, 0.8, 0.1]
-        store, pt_ids, m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
 
         op = Filter(
             params=Filter.Params(

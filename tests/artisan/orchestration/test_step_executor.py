@@ -871,7 +871,7 @@ class TestStepTimingIntegration:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_backend, mock_handle = _make_mock_backend(
+        mock_backend, _mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(success=True, error=None, item_count=2, execution_run_ids=[])
             ],
@@ -994,7 +994,7 @@ class TestEmptyInputHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_backend, mock_handle = _make_mock_backend()
+        mock_backend, _mock_handle = _make_mock_backend()
 
         mock_resolve.return_value = {"data": []}
 
@@ -1142,7 +1142,7 @@ class TestDispatchFailureHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_backend, mock_handle = _make_mock_backend(
+        mock_backend, _mock_handle = _make_mock_backend(
             flow_side_effect=ConnectionError("Network down"),
         )
 
@@ -1226,7 +1226,7 @@ class TestDispatchFailureHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_backend, mock_handle = _make_mock_backend(
+        mock_backend, _mock_handle = _make_mock_backend(
             flow_side_effect=RuntimeError("fail_fast: step failed"),
         )
 
@@ -1269,7 +1269,7 @@ class TestCommitFailureHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_backend, mock_handle = _make_mock_backend(
+        mock_backend, _mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(
                     success=True, error=None, item_count=1, execution_run_ids=["a"]
@@ -1321,7 +1321,7 @@ class TestStagingTimeoutHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_backend, mock_handle = _make_mock_backend(
+        mock_backend, _mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(
                     success=True, error=None, item_count=1, execution_run_ids=["a"]

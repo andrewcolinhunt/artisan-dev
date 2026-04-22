@@ -12,7 +12,7 @@ def _csv_bytes(text: str) -> bytes:
 
 def _make_input(artifact_id: str, original_name: str) -> DataArtifact:
     """Create a finalized input artifact with a known ID and name."""
-    art = DataArtifact(
+    return DataArtifact(
         artifact_type="data",
         artifact_id=artifact_id,
         origin_step_number=0,
@@ -21,12 +21,11 @@ def _make_input(artifact_id: str, original_name: str) -> DataArtifact:
         extension=".csv",
         size_bytes=4,
     )
-    return art
 
 
 def _make_output(artifact_id: str, original_name: str) -> DataArtifact:
     """Create a finalized output artifact with a transient name."""
-    art = DataArtifact(
+    return DataArtifact(
         artifact_type="data",
         artifact_id=artifact_id,
         origin_step_number=1,
@@ -35,7 +34,6 @@ def _make_output(artifact_id: str, original_name: str) -> DataArtifact:
         extension=".csv",
         size_bytes=4,
     )
-    return art
 
 
 class TestSuffixExtraction:

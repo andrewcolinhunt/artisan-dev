@@ -113,7 +113,8 @@ class CollapsedCompositeContext(CompositeContext):
         """
         if role not in self._sources:
             available = sorted(self._sources.keys())
-            raise ValueError(f"Unknown input role '{role}'. Available: {available}")
+            msg = f"Unknown input role '{role}'. Available: {available}"
+            raise ValueError(msg)
         return CompositeRef(
             source=self._sources[role],
             output_reference=None,
@@ -166,9 +167,12 @@ class CollapsedCompositeContext(CompositeContext):
         if not (
             isinstance(operation, type) and issubclass(operation, OperationDefinition)
         ):
-            raise TypeError(
+            msg = (
                 f"Expected OperationDefinition or CompositeDefinition subclass, "
                 f"got {operation}"
+            )
+            raise TypeError(
+                msg
             )
 
         if is_curator_operation(operation):
@@ -188,7 +192,8 @@ class CollapsedCompositeContext(CompositeContext):
         composite_outputs = getattr(type(self._composite), "outputs", {})
         if composite_outputs and role not in composite_outputs:
             available = sorted(composite_outputs.keys())
-            raise ValueError(f"Unknown output role '{role}'. Available: {available}")
+            msg = f"Unknown output role '{role}'. Available: {available}"
+            raise ValueError(msg)
         self._output_map[role] = ref
 
     # ----- Internal operation runners -----
@@ -306,8 +311,9 @@ class CollapsedCompositeContext(CompositeContext):
         )
 
         if not result.success:
+            msg = f"Curator {instance.name} failed: {result.error or 'Unknown error'}"
             raise RuntimeError(
-                f"Curator {instance.name} failed: {result.error or 'Unknown error'}"
+                msg
             )
 
         # Collect results based on result type
@@ -356,8 +362,9 @@ class CollapsedCompositeContext(CompositeContext):
                 )
 
             case _:
+                msg = f"Unexpected result type from curator: {type(result).__name__}"
                 raise TypeError(
-                    f"Unexpected result type from curator: {type(result).__name__}"
+                    msg
                 )
 
     def _run_nested_composite(
@@ -417,14 +424,20 @@ class CollapsedCompositeContext(CompositeContext):
                 if ref.source is not None:
                     sources[role] = ref.source
                 else:
-                    raise ValueError(
+                    msg = (
                         f"CompositeRef for role '{role}' has no source "
                         "(expanded-mode ref used in collapsed context)"
                     )
+                    raise ValueError(
+                        msg
+                    )
             else:
-                raise TypeError(
+                msg = (
                     f"Expected CompositeRef for input role '{role}', "
                     f"got {type(ref).__name__}"
+                )
+                raise TypeError(
+                    msg
                 )
         return sources
 
@@ -509,7 +522,8 @@ class ExpandedCompositeContext(CompositeContext):
         """
         if role not in self._input_refs:
             available = sorted(self._input_refs.keys())
-            raise ValueError(f"Unknown input role '{role}'. Available: {available}")
+            msg = f"Unknown input role '{role}'. Available: {available}"
+            raise ValueError(msg)
         return CompositeRef(
             source=None,
             output_reference=self._input_refs[role],
@@ -595,11 +609,15 @@ class ExpandedCompositeContext(CompositeContext):
         composite_outputs = getattr(type(self._composite), "outputs", {})
         if composite_outputs and role not in composite_outputs:
             available = sorted(composite_outputs.keys())
-            raise ValueError(f"Unknown output role '{role}'. Available: {available}")
+            msg = f"Unknown output role '{role}'. Available: {available}"
+            raise ValueError(msg)
         if ref.output_reference is None:
-            raise ValueError(
+            msg = (
                 f"CompositeRef for output role '{role}' has no OutputReference "
                 "(collapsed-mode ref used in expanded context)"
+            )
+            raise ValueError(
+                msg
             )
         self._output_map[role] = ref.output_reference
 
@@ -627,9 +645,12 @@ class ExpandedCompositeContext(CompositeContext):
                 if ref.output_reference is not None:
                     translated[role] = ref.output_reference
                 else:
-                    raise ValueError(
+                    msg = (
                         f"CompositeRef for role '{role}' has no OutputReference "
                         "(collapsed-mode ref used in expanded context)"
+                    )
+                    raise ValueError(
+                        msg
                     )
             else:
                 translated[role] = ref
@@ -699,7 +720,8 @@ class _ExpandedNestedHandle(CompositeStepHandle):
         """Get output reference from the expanded nested composite."""
         if self._operation_outputs and role not in self._operation_outputs:
             available = sorted(self._operation_outputs.keys())
-            raise ValueError(f"Unknown output role '{role}'. Available: {available}")
+            msg = f"Unknown output role '{role}'. Available: {available}"
+            raise ValueError(msg)
         out_ref = self._expanded_result.output(role)
         return CompositeRef(
             source=None,

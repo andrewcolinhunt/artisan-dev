@@ -46,9 +46,12 @@ def _check_pickle_roundtrip(operation: Any) -> None:
     try:
         import cloudpickle
     except ImportError:
-        raise ImportError(
+        msg = (
             "cloudpickle is required for remote compute validation. "
             "Install it with: pip install cloudpickle"
+        )
+        raise ImportError(
+            msg
         ) from None
 
     try:

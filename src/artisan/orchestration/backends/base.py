@@ -82,8 +82,9 @@ class BackendBase(ABC):
         super().__init_subclass__(**kwargs)
         for attr in ("name", "worker_traits", "orchestrator_traits"):
             if not hasattr(cls, attr):
+                msg = f"BackendBase subclass {cls.__name__!r} must define {attr!r}"
                 raise TypeError(
-                    f"BackendBase subclass {cls.__name__!r} must define {attr!r}"
+                    msg
                 )
 
     @abstractmethod

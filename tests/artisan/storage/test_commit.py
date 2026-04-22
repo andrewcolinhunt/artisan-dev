@@ -155,7 +155,7 @@ class TestDeltaCommitter:
 
     def test_commit_all_tables(self, setup_paths, committer):
         """Commit all staged tables at once."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
 
         # Stage multiple tables
         staging = StagingArea(str(staging_path), fs, batch_id="test")
@@ -196,7 +196,7 @@ class TestDeltaCommitter:
 
     def test_commit_all_tables_cleanup(self, setup_paths, committer):
         """Commit all cleans up staging by default."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
 
         # Stage data
         staging = StagingArea(str(staging_path), fs, batch_id="test")
@@ -222,7 +222,7 @@ class TestDeltaCommitter:
 
     def test_commit_batch_specific(self, setup_paths, committer):
         """Commit only a specific batch."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
 
         # Stage multiple batches
         staging1 = StagingArea(str(staging_path), fs, batch_id="batch1")
@@ -268,7 +268,7 @@ class TestDeltaCommitter:
 
     def test_initialize_tables(self, setup_paths, committer):
         """Initialize creates empty tables with schemas."""
-        delta_path, staging_path, fs = setup_paths
+        delta_path, _staging_path, _fs = setup_paths
 
         committer.initialize_tables()
 
@@ -293,7 +293,7 @@ class TestDeltaCommitter:
 
     def test_compact_table_returns_stats(self, setup_paths, committer):
         """Compact table returns compaction statistics."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
 
         # Create table with some data
         staging = StagingArea(str(staging_path), fs, batch_id="test")
@@ -321,7 +321,7 @@ class TestDeltaCommitter:
 
     def test_compact_table_with_zorder(self, setup_paths, committer):
         """Compact table with Z-ORDER clusters data by specified column."""
-        delta_path, staging_path, fs = setup_paths
+        delta_path, _staging_path, _fs = setup_paths
 
         # Create table with multiple rows to make Z-ORDER meaningful
         rows = []
@@ -358,7 +358,7 @@ class TestDeltaCommitter:
 
     def test_compact_all_tables_with_zorder(self, setup_paths, committer):
         """Compact all tables applies correct Z-ORDER columns."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
 
         # Initialize tables to have something to compact
         committer.initialize_tables()
@@ -388,7 +388,7 @@ class TestDeltaCommitter:
 
     def test_compact_all_tables_without_zorder(self, setup_paths, committer):
         """Compact all tables without Z-ORDER performs standard compaction."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, _staging_path, _fs = setup_paths
 
         # Initialize tables
         committer.initialize_tables()
@@ -401,7 +401,7 @@ class TestDeltaCommitter:
 
     def test_compact_table_by_step(self, setup_paths, committer):
         """Compact table with step filter only compacts that partition."""
-        delta_path, staging_path, fs = setup_paths
+        delta_path, _staging_path, _fs = setup_paths
 
         # Create table with data in multiple steps
         rows = []
@@ -445,7 +445,7 @@ class TestDeltaCommitter:
 
     def test_compact_all_tables_by_step(self, setup_paths, committer):
         """Compact all tables with step filter."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
 
         # Initialize tables
         committer.initialize_tables()
@@ -477,7 +477,7 @@ class TestDeltaCommitter:
         self, setup_paths, committer
     ):
         """Step filter is ignored for artifact_index (not partitioned by origin_step_number)."""
-        delta_path, staging_path, fs = setup_paths
+        delta_path, _staging_path, _fs = setup_paths
 
         # Create artifact_index with data
         df = pl.DataFrame(
@@ -589,7 +589,7 @@ class TestArtifactEdgesCommit:
 
     def test_artifact_edges_in_commit_batch(self, setup_paths, committer):
         """artifact_edges works with commit_batch."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
 
         # Stage artifact_edges data via StagingArea
         staging = StagingArea(str(staging_path), fs, batch_id="test_batch")
@@ -619,7 +619,7 @@ class TestArtifactEdgesCommit:
         self, setup_paths, committer
     ):
         """Step filter is ignored for artifact_edges (not partitioned)."""
-        delta_path, staging_path, fs = setup_paths
+        delta_path, _staging_path, _fs = setup_paths
 
         # Create artifact_edges with data
         prov_df = pl.DataFrame(
@@ -657,7 +657,7 @@ class TestArtifactEdgesCommit:
 
     def test_artifact_edges_zorder_config(self, setup_paths, committer):
         """artifact_edges uses source_artifact_id and target_artifact_id for Z-ORDER."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
 
         # Initialize tables
         committer.initialize_tables()
@@ -841,7 +841,7 @@ class TestRecoverStaged:
 
     def test_recover_staged_cleans_up_staging(self, setup_paths, committer):
         """Staging files removed after recovery (default behavior)."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
         self._stage_mock_execution(staging_path, fs)
 
         committer.recover_staged()
@@ -852,7 +852,7 @@ class TestRecoverStaged:
 
     def test_recover_staged_preserves_staging(self, setup_paths, committer):
         """With preserve_staging=True, staging files remain after recovery."""
-        delta_path, staging_path, fs = setup_paths
+        _delta_path, staging_path, fs = setup_paths
         self._stage_mock_execution(staging_path, fs)
 
         committer.recover_staged(preserve_staging=True)

@@ -137,7 +137,6 @@ class TestResume:
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
         p1.run(IngestMockOp, inputs=None)
-        run1_id = p1.config.pipeline_run_id
 
         # Run 2 — Ingest + MockOp (different steps, so not all cache hits)
         p2 = PipelineManager.create(

@@ -56,7 +56,7 @@ class TestPipelineDunderMethods:
             params={"count": 2, "seed": 42},
             backend=Backend.LOCAL,
         )
-        step1 = pipeline.run(
+        pipeline.run(
             MetricCalculator,
             inputs={"dataset": step0.output("datasets")},
             backend=Backend.LOCAL,
@@ -77,7 +77,7 @@ class TestPipelineDunderMethods:
             working_root=pipeline_env["working_root"],
         )
 
-        step0 = pipeline.run(
+        pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
             backend=Backend.LOCAL,
@@ -433,7 +433,7 @@ class TestFinalizeOrdering:
             params={"count": 2, "seed": 42},
             backend=Backend.LOCAL,
         )
-        step1 = pipeline.run(
+        pipeline.run(
             MetricCalculator,
             inputs={"dataset": step0.output("datasets")},
             backend=Backend.LOCAL,

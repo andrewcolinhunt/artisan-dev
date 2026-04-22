@@ -156,7 +156,8 @@ class Artifact(BaseModel):
             return self
         hashable = self._finalize_content()
         if hashable is None:
-            raise ValueError("Cannot finalize: artifact not hydrated")
+            msg = "Cannot finalize: artifact not hydrated"
+            raise ValueError(msg)
         self.artifact_id = compute_artifact_id(hashable)
         return self
 

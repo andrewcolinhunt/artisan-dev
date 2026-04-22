@@ -397,7 +397,7 @@ def passthrough_pipeline(
     )
 
     # Step 1: Calculate metrics
-    step1 = pipeline.run(
+    pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
         backend=Backend.LOCAL,
@@ -652,7 +652,7 @@ def comprehensive_pipeline(
 
     # Stage 3: Metrics & Filter
     # Step 6: Calculate metrics
-    step6 = pipeline.run(
+    pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step5.output("merged")},
         backend=Backend.LOCAL,

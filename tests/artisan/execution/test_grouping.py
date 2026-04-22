@@ -433,7 +433,7 @@ class TestGroupInputsCrossProduct:
             "c": ["c1", "c2"],
         }
 
-        aligned, group_ids = group_inputs(inputs, GroupByStrategy.CROSS_PRODUCT)
+        _aligned, group_ids = group_inputs(inputs, GroupByStrategy.CROSS_PRODUCT)
         assert len(group_ids) == 8
 
     def test_empty_role_produces_empty(self):
@@ -535,7 +535,7 @@ class TestGroupInputsLineage:
             "metrics": [ids["M_A1"], ids["M_B1"]],
         }
 
-        aligned, group_ids = group_inputs(
+        aligned, _group_ids = group_inputs(
             inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
@@ -548,7 +548,7 @@ class TestGroupInputsLineage:
         ids = mock_artifact_store._test_ids
         inputs = {"results": [], "metrics": [ids["M_A1"]]}
 
-        aligned, group_ids = group_inputs(
+        _aligned, group_ids = group_inputs(
             inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 

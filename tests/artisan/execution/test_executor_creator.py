@@ -222,7 +222,8 @@ class ExceptionTestOp(OperationDefinition):
         return {}
 
     def execute(self, inputs: ExecuteInput) -> Any:
-        raise RuntimeError("Intentional exception")
+        msg = "Intentional exception"
+        raise RuntimeError(msg)
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         # This should never be called since execute raises

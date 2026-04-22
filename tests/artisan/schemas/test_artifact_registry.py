@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any, ClassVar
 
 import polars as pl
@@ -53,10 +54,8 @@ def _clean_registry():
     ArtifactTypes._registry.update(original_types_registry)
     # Clean up dynamic attributes
     for attr in set(dir(ArtifactTypes)) - original_attrs:
-        try:
+        with contextlib.suppress(AttributeError):
             delattr(ArtifactTypes, attr)
-        except AttributeError:
-            pass
 
 
 # --- Tests ---

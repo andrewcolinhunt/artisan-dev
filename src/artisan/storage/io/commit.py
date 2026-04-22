@@ -91,16 +91,11 @@ class DeltaCommitter:
 
     def _is_non_partitioned(self, table: str) -> bool:
         """Check if a table should not be partitioned."""
-        for npt in NON_PARTITIONED_TABLES:
-            if _to_str(npt) == _to_str(table):
-                return True
-        return False
+        return any(_to_str(npt) == _to_str(table) for npt in NON_PARTITIONED_TABLES)
 
     def _has_artifact_id(self, table: str) -> bool:
         """Check if the table supports artifact_id deduplication."""
-        if _to_str(table) == _to_str(TablePath.EXECUTION_EDGES):
-            return False
-        return True
+        return _to_str(table) != _to_str(TablePath.EXECUTION_EDGES)
 
     # -------------------------------------------------------------------------
     # Commit operations

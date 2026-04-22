@@ -21,23 +21,23 @@ from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 
 __all__ = [
-    # ToolSpec
-    "ToolSpec",
-    # EnvironmentSpec hierarchy
-    "EnvironmentSpec",
-    "LocalEnvironmentSpec",
-    "DockerEnvironmentSpec",
-    "ApptainerEnvironmentSpec",
-    "PixiEnvironmentSpec",
-    # Environments model
-    "Environments",
     # ComputeConfig hierarchy
     "ARTISAN_WORKER_IMAGE",
-    "ComputeConfig",
-    "LocalComputeConfig",
-    "ModalComputeConfig",
+    "ApptainerEnvironmentSpec",
     # Compute model
     "Compute",
+    "ComputeConfig",
+    "DockerEnvironmentSpec",
+    # EnvironmentSpec hierarchy
+    "EnvironmentSpec",
+    # Environments model
+    "Environments",
+    "LocalComputeConfig",
+    "LocalEnvironmentSpec",
+    "ModalComputeConfig",
+    "PixiEnvironmentSpec",
     # ResourceConfig
     "ResourceConfig",
+    # ToolSpec
+    "ToolSpec",
 ]

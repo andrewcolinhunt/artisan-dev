@@ -102,7 +102,7 @@ class DualInputConfigConsumer(OperationDefinition):
             df_path = Path(df_path)
             with open(df_path) as fh:
                 reader = csv.DictReader(fh)
-                headers = list(reader.fieldnames or []) + ["consumed"]
+                headers = [*list(reader.fieldnames or []), "consumed"]
                 rows = list(reader)
 
             out_path = os.path.join(output_dir, f"{df_path.stem}_0.csv")
@@ -156,7 +156,7 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
 
     # Step 1: Filter using co-produced metrics (mean_score >= 0)
     # The filter should auto-discover metrics from step 0's output-to-output lineage
-    step1 = pipeline.run(
+    pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
         params={
@@ -212,7 +212,7 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
     # Step 2: Consume with LINEAGE grouping
     # Each dataset has 2 configs descended from it -> 2 groups
     # Each group: 1 dataset + 2 configs -> product gives 2 execution units per group
-    step2 = pipeline.run(
+    pipeline.run(
         DualInputConfigConsumer,
         inputs={
             "dataset": step0.output("datasets"),

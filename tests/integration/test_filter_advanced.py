@@ -44,14 +44,14 @@ def test_multi_criterion_filter(pipeline_env: dict[str, str]):
     )
 
     # Step 1: Compute metrics
-    step1 = pipeline.run(
+    pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
         backend=Backend.LOCAL,
     )
 
     # Step 2: Filter with 3 AND criteria
-    step2 = pipeline.run(
+    pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
         params={
@@ -98,7 +98,7 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
     )
 
     # Impossible criterion (median > 999) with passthrough_failures=True
-    step2 = pipeline.run(
+    pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
         params={
@@ -150,21 +150,21 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
     )
 
     # Step 2: Metrics on originals
-    step2 = pipeline.run(
+    pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
         backend=Backend.LOCAL,
     )
 
     # Step 3: Metrics on transformed
-    step3 = pipeline.run(
+    pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
         backend=Backend.LOCAL,
     )
 
     # Step 4: Filter passthrough step 1 artifacts using step 3 metrics
-    step4 = pipeline.run(
+    pipeline.run(
         Filter,
         inputs={"passthrough": step1.output("dataset")},
         params={
@@ -216,14 +216,14 @@ def test_multi_source_filter_with_colliding_field_names(
     )
 
     # Step 1: Compute nested metrics (distribution.range, summary.row_count)
-    step1 = pipeline.run(
+    pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
         backend=Backend.LOCAL,
     )
 
     # Step 2: Filter on criteria from BOTH metric sources
-    step2 = pipeline.run(
+    pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
         params={

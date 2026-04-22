@@ -395,7 +395,8 @@ class FailingTransformer(OperationDefinition):
 
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:
-            raise ValueError("No dataset input provided")
+            msg = "No dataset input provided"
+            raise ValueError(msg)
 
         if isinstance(dataset_input, (str, Path)):
             input_files = [Path(dataset_input)]
@@ -416,9 +417,11 @@ class FailingTransformer(OperationDefinition):
             index = int(match.group(1)) if match else -1
 
             if self.params.fail_on_all:
-                raise ValueError(f"Intentional failure on {stem}")
+                msg = f"Intentional failure on {stem}"
+                raise ValueError(msg)
             if index == self.params.fail_on_index:
-                raise ValueError(f"Intentional failure on index {index}")
+                msg = f"Intentional failure on index {index}"
+                raise ValueError(msg)
 
             # Scale numeric columns by 1.1 to produce different content
             with open(input_path) as f:

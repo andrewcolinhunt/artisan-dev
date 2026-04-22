@@ -39,7 +39,7 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, str])
     )
 
     # Step 1: scale_factor=2.0
-    step1 = pipeline.run(
+    pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
@@ -52,7 +52,7 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, str])
     )
 
     # Step 2: scale_factor=5.0
-    step2 = pipeline.run(
+    pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={

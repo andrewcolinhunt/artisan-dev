@@ -157,11 +157,9 @@ class TestCreatorLifecycleFilesDir:
         )
 
         result = run_creator_lifecycle(unit, env)
-        captured = None
         for arts in result.artifacts.values():
             for art in arts:
                 if art.artifact_id:
-                    captured = art
                     break
 
         # The operation captured files_dir — verify the sharded directory was created

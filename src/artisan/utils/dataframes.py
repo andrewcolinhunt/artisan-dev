@@ -91,7 +91,8 @@ def pivot_metrics_wide(
 
     missing = _REQUIRED_COLS - set(tidy.columns)
     if missing:
-        raise ValueError(f"Missing required columns: {sorted(missing)}")
+        msg = f"Missing required columns: {sorted(missing)}"
+        raise ValueError(msg)
 
     if tidy.is_empty():
         schema = {col: tidy.schema[col] for col in index_cols if col in tidy.schema}

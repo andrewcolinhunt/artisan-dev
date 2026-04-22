@@ -40,7 +40,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
         params={"count": 3, "seed": 42},
         backend=Backend.LOCAL,
     )
-    step1a = p1.run(
+    p1.run(
         DataTransformer,
         inputs={"dataset": step0a.output("datasets")},
         params={
@@ -68,7 +68,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
         params={"count": 3, "seed": 42},
         backend=Backend.LOCAL,
     )
-    step1b = p2.run(
+    p2.run(
         DataTransformer,
         inputs={"dataset": step0b.output("datasets")},
         params={
@@ -136,7 +136,7 @@ def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, str]):
         params={"count": 3, "seed": 42},
         backend=Backend.LOCAL,
     )
-    step1b = p2.run(
+    p2.run(
         FailingTransformer,
         inputs={"dataset": step0b.output("datasets")},
         params={"fail_on_index": 1},

@@ -251,7 +251,7 @@ class TestExpandedRun:
         )
 
         ref = ctx.input("data")
-        handle = ctx.run(DataGenerator, inputs={"data": ref})
+        ctx.run(DataGenerator, inputs={"data": ref})
 
         mock_pipeline.submit.assert_called_once()
         call_kwargs = mock_pipeline.submit.call_args

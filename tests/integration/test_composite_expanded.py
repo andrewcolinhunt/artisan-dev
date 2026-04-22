@@ -187,7 +187,7 @@ def test_expand_step_naming(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    result = pipeline.expand(
+    pipeline.expand(
         GenTransformMetrics,
     )
 
