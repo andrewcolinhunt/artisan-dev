@@ -223,9 +223,7 @@ class StagingManager:
                 step_dir = f"{self.staging_dir}/{step_number}"
             if not self._fs.exists(step_dir):
                 return []
-            matches: list[str] = self._fs.glob(
-                f"{step_dir}/**/{table_name}.parquet"
-            )
+            matches: list[str] = self._fs.glob(f"{step_dir}/**/{table_name}.parquet")
             return matches
 
         all_matches: list[str] = self._fs.glob(

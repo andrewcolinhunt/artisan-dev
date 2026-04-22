@@ -176,9 +176,7 @@ def resolve_inputs(
             "Raw file paths must be handled by _execute_curator_step(). "
             "This function should not receive file paths directly."
         )
-        raise ValueError(
-            msg
-        )
+        raise ValueError(msg)
 
     resolved: dict[str, list[str]] = {}
 
@@ -197,18 +195,14 @@ def resolve_inputs(
                         f"Invalid artifact ID in inputs['{role}']: {artifact_id!r}. "
                         f"Expected 32-character hex string."
                     )
-                    raise ValueError(
-                        msg
-                    )
+                    raise ValueError(msg)
             resolved[role] = sorted(value)  # Sort for determinism
         else:
             msg = (  # type: ignore[unreachable]  # runtime defense against bad input types
                 f"Invalid input type for role '{role}': {type(value).__name__}. "
                 f"Expected OutputReference or list[str]."
             )
-            raise TypeError(
-                msg
-            )
+            raise TypeError(msg)
 
     return resolved
 
@@ -233,9 +227,7 @@ def _resolve_list_inputs(
                 f"List inputs must contain OutputReference objects, "
                 f"got {type(ref).__name__} at index {i}"
             )
-            raise TypeError(
-                msg
-            )
+            raise TypeError(msg)
         sri = step_run_ids.get(ref.source_step) if step_run_ids else None
         artifact_ids = resolve_output_reference(
             ref, delta_root, fs, step_run_id=sri, storage_options=storage_options

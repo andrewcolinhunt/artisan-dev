@@ -308,9 +308,7 @@ class CollapsedCompositeContext(CompositeContext):
 
         if not result.success:
             msg = f"Curator {instance.name} failed: {result.error or 'Unknown error'}"
-            raise RuntimeError(
-                msg
-            )
+            raise RuntimeError(msg)
 
         # Collect results based on result type
         op_outputs = getattr(type(instance), "outputs", {})
@@ -359,9 +357,7 @@ class CollapsedCompositeContext(CompositeContext):
 
             case _:
                 msg = f"Unexpected result type from curator: {type(result).__name__}"  # type: ignore[unreachable]  # defensive fallback for future result types
-                raise TypeError(
-                    msg
-                )
+                raise TypeError(msg)
 
     def _run_nested_composite(
         self,
@@ -424,17 +420,13 @@ class CollapsedCompositeContext(CompositeContext):
                         f"CompositeRef for role '{role}' has no source "
                         "(expanded-mode ref used in collapsed context)"
                     )
-                    raise ValueError(
-                        msg
-                    )
+                    raise ValueError(msg)
             else:
                 msg = (
                     f"Expected CompositeRef for input role '{role}', "
                     f"got {type(ref).__name__}"
                 )
-                raise TypeError(
-                    msg
-                )
+                raise TypeError(msg)
         return sources
 
     def _pre_curator_commit(self) -> None:
@@ -612,9 +604,7 @@ class ExpandedCompositeContext(CompositeContext):
                 f"CompositeRef for output role '{role}' has no OutputReference "
                 "(collapsed-mode ref used in expanded context)"
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
         self._output_map[role] = ref.output_reference
 
     def get_output_map(self) -> dict[str, OutputReference]:
@@ -645,9 +635,7 @@ class ExpandedCompositeContext(CompositeContext):
                         f"CompositeRef for role '{role}' has no OutputReference "
                         "(collapsed-mode ref used in expanded context)"
                     )
-                    raise ValueError(
-                        msg
-                    )
+                    raise ValueError(msg)
             else:
                 translated[role] = ref
         return translated

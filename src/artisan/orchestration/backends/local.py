@@ -92,7 +92,7 @@ class LocalDispatchHandle(DispatchHandle):
                 execute_unit_task,
             )
 
-            @flow(task_runner=task_runner)
+            @flow(task_runner=task_runner)  # type: ignore[arg-type]  # SIGINTSafeProcessPoolTaskRunner subclasses ProcessPoolTaskRunner; prefect's type stub is narrow
             def step_flow() -> list[UnitResult]:
                 futures = execute_unit_task.map(
                     units, runtime_env=unmapped(runtime_env)

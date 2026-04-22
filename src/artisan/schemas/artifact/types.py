@@ -83,9 +83,7 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
                 f"Unknown artifact type: {key!r}. "
                 f"Registered: {list(cls._registry.keys())}"
             )
-            raise KeyError(
-                msg
-            )
+            raise KeyError(msg)
         return cls._registry[key]
 
     @classmethod

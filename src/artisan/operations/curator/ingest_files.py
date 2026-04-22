@@ -90,7 +90,7 @@ class IngestFiles(OperationDefinition):
         for fid in file_ref_ids:
             file_ref = file_refs_by_id.get(fid)
             if file_ref is not None:
-                drafts.append(self.convert_file(file_ref, step_number))
+                drafts.append(self.convert_file(file_ref, step_number))  # type: ignore[arg-type]  # file_ref is FileRefArtifact at runtime; dict values typed as base Artifact
 
         if not drafts:
             return ArtifactResult(

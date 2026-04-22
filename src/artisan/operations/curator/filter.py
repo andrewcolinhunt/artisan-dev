@@ -242,7 +242,9 @@ class _DiagnosticsAccumulator:
                 col_max = float(non_null.max())  # type: ignore[arg-type]
                 self._mins[i] = min(self._mins[i], col_min)
                 self._maxs[i] = max(self._maxs[i], col_max)
-                self._sums[i] += non_null.sum()
+                self._sums[i] += float(
+                    non_null.sum()
+                )  # .sum() may return Decimal for integer cols; coerce for float accumulator
                 self._non_null_counts[i] += non_null.len()
 
         # Funnel: progressive AND

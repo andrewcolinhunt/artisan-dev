@@ -208,6 +208,4 @@ def _raise_timeout_error(
         f"{details_str}\n"
         f"Check SLURM worker logs for these executions."
     )
-    raise TimeoutError(
-        msg
-    )
+    raise TimeoutError(msg)

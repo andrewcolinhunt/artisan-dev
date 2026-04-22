@@ -192,9 +192,7 @@ def get_schema(table: TablePath) -> dict[str, Any]:
     """
     if table not in FRAMEWORK_SCHEMAS:
         msg = f"Unknown table: {table}. Valid tables: {list(FRAMEWORK_SCHEMAS.keys())}"
-        raise KeyError(
-            msg
-        )
+        raise KeyError(msg)
     return FRAMEWORK_SCHEMAS[table]
 
 

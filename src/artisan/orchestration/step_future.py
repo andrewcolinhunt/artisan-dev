@@ -68,7 +68,7 @@ class StepFuture:
         return OutputReference(
             source_step=self.step_number,
             role=role,
-            artifact_type=self._output_types.get(role),
+            artifact_type=self._output_types.get(role),  # type: ignore[arg-type]  # narrowed at construction; absent roles caught above
         )
 
     @property

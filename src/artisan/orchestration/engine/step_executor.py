@@ -42,13 +42,13 @@ from artisan.orchestration.engine.results import (
     extract_execution_run_ids,
 )
 from artisan.schemas.enums import FailurePolicy, TablePath
+from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
-from artisan.schemas.execution.cache_result import CacheHit
 from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
 from artisan.utils.hashing import serialize_params

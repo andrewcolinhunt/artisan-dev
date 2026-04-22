@@ -169,7 +169,9 @@ class DeltaCommitter:
                 storage_options=self._storage_options,
             )
         else:
-            write_opts: dict[str, Any] = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
+            write_opts: dict[str, Any] = {
+                "writer_properties": DEFAULT_WRITER_PROPERTIES
+            }
             if partition_by:
                 write_opts["partition_by"] = partition_by
             staged_df.write_delta(
@@ -386,7 +388,9 @@ class DeltaCommitter:
                 storage_options=self._storage_options,
             )
         else:
-            write_opts: dict[str, Any] = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
+            write_opts: dict[str, Any] = {
+                "writer_properties": DEFAULT_WRITER_PROPERTIES
+            }
             if partition_by:
                 write_opts["partition_by"] = partition_by
             df.write_delta(

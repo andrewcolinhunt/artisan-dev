@@ -39,6 +39,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[tool.ruff.lint.per-file-ignores]` entries covering G004,
   PLW0603, and the protocol-conformance `ARG` / pytest-style rules
   in tests.
+- Mypy strict-mode now passes on `src/artisan/**`. Added
+  `[[tool.mypy.overrides]]` relaxing `tests/**` (ignore_errors) and
+  silencing third-party untyped imports (fsspec, graphviz,
+  cloudpickle, prefect_submitit, ipywidgets, matplotlib, modal,
+  IPython). Cleared ~290 real type errors in src via an 8-agent
+  parallel dispatch plus coordinator residuals — primarily type
+  annotations, narrowing casts, and specific-code `type: ignore`
+  comments. No runtime behavior changes. `pixi run -e dev mypy
+  src/artisan tests` and `pre-commit run mypy --all-files` now
+  exit 0. Tests under `tests/**` remain parsed by mypy but
+  errors are not reported — functional regression gate stays
+  pytest; tightening tests back toward strict is deferred to a
+  future phase.
 
 ### Removed
 

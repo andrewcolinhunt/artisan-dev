@@ -105,7 +105,7 @@ def capture_lineage_metadata(
             for _cand_name, cand_id, cand_role in candidates:
                 id_to_role[cand_id] = cand_role
 
-        role_mappings: list[LineageMapping] = []
+        role_mappings = []
         for artifact in artifacts:
             original_name = getattr(artifact, "original_name", None)
             if original_name is None:

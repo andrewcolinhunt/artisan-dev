@@ -151,9 +151,7 @@ def format_args(params: dict[str, Any]) -> list[str]:
 # =============================================================================
 
 
-def _kill_process_group(
-    process: subprocess.Popen[str], timeout: float = 3.0
-) -> None:
+def _kill_process_group(process: subprocess.Popen[str], timeout: float = 3.0) -> None:
     """Kill a subprocess and its entire process group.
 
     Sends SIGTERM first for graceful shutdown, then escalates to SIGKILL

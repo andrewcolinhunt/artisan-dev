@@ -61,9 +61,7 @@ class ArtifactTypeDef:
         for attr in ("POLARS_SCHEMA", "to_row", "from_row"):
             if not hasattr(model, attr):
                 msg = f"{cls.__name__}.model ({model.__name__}) must have '{attr}'"
-                raise TypeError(
-                    msg
-                )
+                raise TypeError(msg)
 
         # Reject duplicate keys
         if key in ArtifactTypeDef._registry:
@@ -73,9 +71,7 @@ class ArtifactTypeDef:
                     f"Duplicate artifact type key {key!r}: "
                     f"{cls.__name__} conflicts with {existing.__name__}"
                 )
-                raise ValueError(
-                    msg
-                )
+                raise ValueError(msg)
             return
 
         # Register in both registries
@@ -112,9 +108,7 @@ class ArtifactTypeDef:
                 f"Unknown artifact type: {key!r}. "
                 f"Registered: {list(ArtifactTypeDef._registry.keys())}"
             )
-            raise KeyError(
-                msg
-            )
+            raise KeyError(msg)
         return ArtifactTypeDef._registry[key]
 
     @staticmethod

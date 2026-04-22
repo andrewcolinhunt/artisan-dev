@@ -14,7 +14,12 @@ from artisan.schemas.execution.unit_result import UnitResult
 
 def _result(**overrides: object) -> UnitResult:
     """Build a UnitResult with sensible defaults."""
-    defaults = {"success": True, "error": None, "item_count": 1, "execution_run_ids": []}
+    defaults = {
+        "success": True,
+        "error": None,
+        "item_count": 1,
+        "execution_run_ids": [],
+    }
     return UnitResult(**{**defaults, **overrides})
 
 

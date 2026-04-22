@@ -100,9 +100,7 @@ class Compute(BaseModel):
                 f"Compute provider '{self.active}' is not configured. "
                 f"Available: {self.available()}"
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
         return config
 
     def available(self) -> list[str]:

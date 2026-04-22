@@ -709,7 +709,9 @@ class InteractiveFilter:
         """
         # Only called from commit() after load()/set_criteria() have populated
         # _wide_df; caller has already checked for None.
-        assert self._wide_df is not None, "load() must be called before _build_diagnostics"
+        assert self._wide_df is not None, (
+            "load() must be called before _build_diagnostics"
+        )
         wide = self._wide_df
         total = len(self._primary_artifact_ids)
 

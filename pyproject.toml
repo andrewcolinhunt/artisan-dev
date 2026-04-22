@@ -238,6 +238,10 @@ module = ["tests.*", "conftest"]
 ignore_errors = true
 
 # Third-party libs without py.typed / stubs. Silence import-untyped repo-wide.
+# Note: matplotlib, modal, and IPython are listed here because the pre-commit
+# mypy hook runs in an isolated environment where those packages aren't
+# installed — without this override, the hook would flag them as
+# import-not-found even though `pixi run -e dev mypy` sees them via the dev env.
 [[tool.mypy.overrides]]
 module = [
     "fsspec.*",
@@ -245,6 +249,12 @@ module = [
     "cloudpickle",
     "prefect_submitit.*",
     "ipywidgets",
+    "matplotlib",
+    "matplotlib.*",
+    "modal",
+    "modal.*",
+    "IPython",
+    "IPython.*",
 ]
 ignore_missing_imports = true
 

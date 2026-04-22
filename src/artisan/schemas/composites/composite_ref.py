@@ -87,9 +87,8 @@ class CompositeStepHandle:
                 role=role,
             )
         if self._step_future is None:
-            raise ValueError(
-                "CompositeStepHandle has neither artifacts nor step_future set"
-            )
+            msg = "CompositeStepHandle has neither artifacts nor step_future set"
+            raise ValueError(msg)
         return CompositeRef(
             source=None,
             output_reference=self._step_future.output(role),

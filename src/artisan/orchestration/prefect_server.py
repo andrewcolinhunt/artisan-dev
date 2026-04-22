@@ -78,9 +78,7 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
                 "Or set the URL directly:\n"
                 "  export PREFECT_API_URL=http://<host>:<port>/api\n"
             )
-            raise PrefectServerNotFound(
-                msg
-            ) from None
+            raise PrefectServerNotFound(msg) from None
         url = resolved
         source = "prefect_profile"
 

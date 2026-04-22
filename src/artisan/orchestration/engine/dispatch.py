@@ -163,7 +163,6 @@ def _collect_results(futures: list[Any]) -> list[UnitResult]:
     ]
 
 
-
 def _capture_slurm_logs(future: object, result: UnitResult) -> UnitResult:
     """Extract SLURM worker stdout/stderr from a future.
 

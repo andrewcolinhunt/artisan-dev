@@ -52,7 +52,7 @@ def extract_execution_run_ids(results: list[UnitResult]) -> list[str]:
     Returns:
         Flat list of all non-None execution run IDs.
     """
-    ids = []
+    ids: list[str] = []
     for r in results:
         ids.extend(id for id in r.execution_run_ids if id)
     return ids

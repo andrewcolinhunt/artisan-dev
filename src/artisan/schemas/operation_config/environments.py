@@ -49,9 +49,7 @@ class Environments(BaseModel):
                 f"Environment '{self.active}' is not configured. "
                 f"Available: {self.available()}"
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
         return env
 
     def available(self) -> list[str]:

@@ -89,9 +89,7 @@ class OutputSpec(BaseModel):
                 "Empty dict {} is not valid. "
                 "Use {'inputs': [...]} for declared lineage, or {'inputs': []} for generative operations."
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
 
         # Validate keys - only "inputs" and "outputs" allowed
         valid_keys = {"inputs", "outputs"}
@@ -101,9 +99,7 @@ class OutputSpec(BaseModel):
                 f"Invalid keys in infer_lineage_from: {invalid_keys}. "
                 f"Only 'inputs' and 'outputs' are allowed."
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
 
         # Reject combined inputs+outputs
         if "inputs" in v and "outputs" in v:
@@ -111,9 +107,7 @@ class OutputSpec(BaseModel):
                 "Combined inputs+outputs pattern is no longer supported. "
                 "Use separate output roles instead."
             )
-            raise ValueError(
-                msg
-            )
+            raise ValueError(msg)
 
         return v
 
