@@ -5,11 +5,6 @@
 #
 # Add more steps below as the project accretes post-install concerns.
 # Keep each step guarded so the script is safe to rerun.
-#
-# NB: pre-commit hook installation is intentionally NOT wired here yet.
-# See _dev/design/0_current/precommit-state-and-reinstatement.md for the
-# backlog of hook-failures that must be cleared before `pre-commit install`
-# can be auto-run without breaking contributor commits.
 
 set -euo pipefail
 
@@ -20,6 +15,17 @@ set -euo pipefail
 if [ ! -f "$CONDA_PREFIX/lib/graphviz/config8" ]; then
     echo "setup: registering graphviz layout plugins..."
     dot -c >/dev/null
+fi
+
+# Pre-commit hooks: auto-install when pre-commit is on PATH (i.e. the user
+# ran `pixi run -e dev setup`). The default env does not include pre-commit,
+# so contributors who only ran `pixi run setup` without `-e dev` get the
+# graphviz fix but no hooks — they can opt in later by running the dev-env
+# setup. The full hook suite passes on the tree as of Phase 4 of the
+# pre-commit backlog cleanup.
+if command -v pre-commit >/dev/null 2>&1; then
+    echo "setup: installing pre-commit hooks..."
+    pre-commit install >/dev/null
 fi
 
 echo "setup: done."

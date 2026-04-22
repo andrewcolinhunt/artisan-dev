@@ -167,7 +167,8 @@ docs = { features = ["docs"], solve-group = "default" }
 # =============================================================================
 [tool.pixi.tasks]
 # One-time post-install fixups. Contributors run `pixi run setup` once after
-# cloning. Body lives in scripts/setup.sh so it has a real shell; idempotent.
+# cloning (or `pixi run -e dev setup` to also install pre-commit hooks).
+# Body lives in scripts/setup.sh so it has a real shell; idempotent.
 setup = "bash scripts/setup.sh"
 
 prefect-start = "prefect-server start --bg"

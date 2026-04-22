@@ -46,6 +46,13 @@ pixi run python -c "import artisan; print('Installation OK')"
 
 You should see `Installation OK` printed to the terminal.
 
+:::{tip}
+**Contributors:** run `pixi run -e dev setup` once to register Graphviz layout
+plugins and install pre-commit hooks. The hook suite (ruff, mypy, codespell,
+blacken-docs, and supporting checkers) runs on every commit; the same suite
+is enforced in CI. Customize via `.pre-commit-config.yaml`.
+:::
+
 :::{dropdown} What is Pixi?
 Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
 it creates an isolated environment — but Pixi also handles Python itself and

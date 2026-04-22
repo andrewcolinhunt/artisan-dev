@@ -52,6 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   errors are not reported — functional regression gate stays
   pytest; tightening tests back toward strict is deferred to a
   future phase.
+- `pixi run -e dev setup` now auto-installs pre-commit hooks
+  (reinstates the block removed in `c79990d` once the backlog was
+  cleared). A new `pre-commit` CI job runs
+  `pixi run -e dev pre-commit run --all-files` on every push/PR, so
+  regressions on any hook (ruff, mypy, blacken-docs, codespell, ...)
+  now block merge. Default-env `pixi run setup` still skips the hook
+  install — pre-commit is a dev-feature dep.
 
 ### Removed
 
