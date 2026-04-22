@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed pytest marker `slow` to `integration` across `pyproject.toml`,
+  pixi tasks, all 17 files in `tests/integration/`, and contributor docs.
+  The new name describes the requirement (real infra: Delta Lake + Prefect
+  harness) rather than a speed adjective. Select with `pytest -m integration`;
+  deselect with `pytest -m 'not integration'`.
+
+### Removed
+
+- Unused `fast` pytest marker (never applied to any test).
+
 ## [0.1.2a5] - 2026-04-06
 
 ### Added
