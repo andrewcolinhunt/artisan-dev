@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The new name describes the requirement (real infra: Delta Lake + Prefect
   harness) rather than a speed adjective. Select with `pytest -m integration`;
   deselect with `pytest -m 'not integration'`.
+- Tightened pre-commit hook scope: per-hook excludes for blacken-docs (4
+  files with intentional pseudo-code), check-yaml / prettier
+  (`recipe/meta.yaml` Jinja template), name-tests-test
+  (`tests/fixtures/csv.py` helper), and end-of-file-fixer /
+  trailing-whitespace (Delta Lake fixture stores under
+  `docs/tutorials/*/runs/`). Dropped Markdown from prettier's scope —
+  contributors hand-format MyST; Python in Markdown fences stays
+  covered by blacken-docs. Added codespell ignore for structural-biology
+  token `SER`. Added `explicit_package_bases` / `namespace_packages` to
+  mypy config so it can run past the duplicate-`conftest` issue. No
+  behavior changes.
 
 ### Removed
 

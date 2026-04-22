@@ -8,6 +8,15 @@ repos:
     hooks:
       - id: blacken-docs
         additional_dependencies: [black==24.*]
+        # Files with intentional pseudo-code (`...` in arg lists, incomplete snippets)
+        # that Black cannot parse. Keep the list explicit, not a blanket dir exclude.
+        exclude: |
+          (?x)^(
+            docs/how-to-guides/creating-artifact-types\.md|
+            docs/contributing/coding-conventions\.md|
+            skills/write-pipeline/SKILL\.md|
+            docs/how-to-guides/writing-curator-operations\.md
+          )$
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: "v6.0.0"
@@ -17,12 +26,16 @@ repos:
       - id: check-merge-conflict # Check for files that contain merge conflict strings.
       - id: check-symlinks # Checks for symlinks which do not point to anything.
       - id: check-yaml # Attempts to load all yaml files to verify syntax.
+        exclude: ^recipe/meta\.yaml$ # Jinja template — not loadable by pyyaml
       - id: debug-statements # Check for debugger imports
       - id: end-of-file-fixer # Makes sure files end in a newline and only a newline.
+        exclude: ^docs/tutorials/[^/]+/runs/ # Delta Lake fixture subtree (_delta_log JSON, parquet)
       - id: mixed-line-ending # Replaces or checks mixed line ending.
       - id: name-tests-test # verifies that test files are named correctly.
         args: ["--pytest-test-first"] # ensure tests match test_.*\.py
+        exclude: ^tests/fixtures/csv\.py$ # fixture-builder helper, not a test
       - id: trailing-whitespace # Trims trailing whitespace.
+        exclude: ^docs/tutorials/[^/]+/runs/ # Delta Lake fixture subtree
 
   # A collection of fast, cheap, regex based pre-commit hooks.
   - repo: https://github.com/pre-commit/pygrep-hooks
@@ -36,8 +49,11 @@ repos:
     rev: "v3.6.2"
     hooks:
       - id: prettier
-        types_or: [yaml, markdown, json]
-        args: [--prose-wrap=always]
+        # Markdown dropped: no MyST-aware Markdown formatter handles Jupyter Book 2's
+        # directive surface reliably. Contributors hand-format Markdown. Python code
+        # blocks in docs are still covered by blacken-docs above.
+        types_or: [yaml, json]
+        exclude: ^recipe/meta\.yaml$ # Jinja template — prettier can't parse
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: "v0.13.2"
