@@ -28,7 +28,7 @@ class AppendableArtifact(Artifact):
     only per-record metadata; record data lives in the JSONL file.
     """
 
-    POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
+    POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
         "artifact_id": pl.String,
         "origin_step_number": pl.Int32,
         "record_id": pl.String,
@@ -116,15 +116,18 @@ class AppendableArtifact(Artifact):
             The parsed JSON record dict.
 
         Raises:
-            ValueError: If record_id is not found in the file.
+            ValueError: If external_path is not set or record_id is not found.
         """
+        if self.external_path is None:
+            msg = "Cannot read record: external_path not set"
+            raise ValueError(msg)
         if fs is not None:
             opener = fs.open(self.external_path, "r")
         else:
             opener = open(self.external_path)  # noqa: SIM115 — held via the `with opener` below
         with opener as f:
             for line in f:
-                record = json.loads(line)
+                record: dict[str, Any] = json.loads(line)
                 if record.get("record_id") == self.record_id:
                     return record
         msg = f"Record {self.record_id} not found in {self.external_path}"

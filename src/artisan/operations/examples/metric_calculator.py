@@ -71,10 +71,10 @@ class MetricCalculator(OperationDefinition):
     }
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="metric_calculator", artifacts_per_unit = 10000)
+    execution: ExecutionConfig = ExecutionConfig(job_name="metric_calculator", artifacts_per_unit = 10000)  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
     compute: Compute = Compute(

@@ -11,6 +11,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
@@ -35,7 +36,7 @@ class DataGenerator(OperationDefinition):
     description = "Generate CSV datasets with random numeric data"
 
     # ---------- Inputs ----------
-    inputs: ClassVar[dict] = {}
+    inputs: ClassVar[dict[str, Any]] = {}
 
     # ---------- Outputs ----------
     class OutputRole(StrEnum):
@@ -71,10 +72,10 @@ class DataGenerator(OperationDefinition):
     params: Params = Params()
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(
+    execution: ExecutionConfig = ExecutionConfig(  # type: ignore[call-arg]  # pydantic defaults
         units_per_worker=100, job_name="data_generator"
     )
 
@@ -117,7 +118,7 @@ class DataGenerator(OperationDefinition):
         raw = inputs.memory_outputs
         created_files = raw.get("created_files", [])
 
-        drafts: list[DataArtifact] = []
+        drafts: list[Artifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".csv"):
                 with open(file_path, "rb") as f:

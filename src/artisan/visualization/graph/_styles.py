@@ -82,4 +82,5 @@ def render_graph(
     parent = os.path.dirname(output_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    return graph.render(filename=output_path, cleanup=True)
+    rendered: str = graph.render(filename=output_path, cleanup=True)
+    return rendered

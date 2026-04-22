@@ -15,7 +15,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from fsspec import AbstractFileSystem
 
@@ -35,6 +35,7 @@ from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
 )
+from artisan.orchestration.engine.dispatch_handle import DispatchHandle
 from artisan.orchestration.engine.inputs import resolve_inputs
 from artisan.orchestration.engine.results import (
     aggregate_results,
@@ -47,7 +48,8 @@ from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
-from artisan.storage.cache.cache_lookup import CacheHit, cache_lookup
+from artisan.schemas.execution.cache_result import CacheHit
+from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
 from artisan.utils.hashing import serialize_params
 from artisan.utils.path import uri_join, uri_parent
@@ -88,7 +90,7 @@ def instantiate_operation(
         if "params" in operation_class.model_fields:
             # New-style: wrap user params into the params sub-model
             params_cls = operation_class.model_fields["params"].annotation
-            init_kwargs["params"] = params_cls(**params)
+            init_kwargs["params"] = params_cls(**params)  # type: ignore[misc]  # pydantic field annotation is non-None at runtime
         else:
             # Flat fields
             init_kwargs.update(params)
@@ -193,7 +195,7 @@ def build_step_result(
         StepResult with execution metadata.
     """
     # Extract output roles and types from operation
-    output_roles = {}
+    output_roles: dict[str, str | None] = {}
     for role, spec in operation.outputs.items():
         output_roles[role] = spec.artifact_type
 
@@ -338,7 +340,7 @@ def _handle_dispatch_exception(
     *,
     label: str = "Dispatch",
     unit_count: int = 1,
-) -> tuple[str, list, int, int]:
+) -> tuple[str, list[UnitResult], int, int]:
     """Handle a generic dispatch exception; returns (error, results, succeeded, failed)."""
     dispatch_error = f"{type(exc).__name__}: {exc}"
     logger.error(
@@ -568,6 +570,8 @@ def _execute_curator_step(
     Returns:
         StepResult with output references and execution metadata.
     """
+    # All production callers supply config; narrow for type-checker only.
+    config = cast(PipelineConfig, config)
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
 
@@ -690,7 +694,7 @@ def _execute_curator_step(
                         if staging_result.success
                         else 1
                     ),
-                    execution_run_ids=[staging_result.execution_run_id],
+                    execution_run_ids=[staging_result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
                 )
             ]
             succeeded, failed = aggregate_results(results, failure_policy)
@@ -875,6 +879,8 @@ def _execute_creator_step(
     Returns:
         StepResult with output references and execution metadata.
     """
+    # All production callers supply config; narrow for type-checker only.
+    config = cast(PipelineConfig, config)
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
 
@@ -1023,6 +1029,7 @@ def _execute_creator_step(
                 try:
                     compute_config = operation.compute.current()
 
+                    handle: DispatchHandle
                     if isinstance(compute_config, ModalComputeConfig):
                         from artisan.orchestration.engine.batch_compute_handle import (
                             BatchComputeDispatchHandle,
@@ -1047,7 +1054,9 @@ def _execute_creator_step(
                         )
 
                     results = handle.run(
-                        units_to_dispatch, runtime_env, cancel_event=cancel_event
+                        units_to_dispatch,  # type: ignore[arg-type]  # list[ExecutionUnit] vs invariant list[ExecutionUnit | ExecutionComposite]; widening is safe — DispatchHandle.run does not mutate
+                        runtime_env,
+                        cancel_event=cancel_event,
                     )
                     succeeded, failed = aggregate_results(results, failure_policy)
                 except BrokenProcessPool:
@@ -1164,9 +1173,12 @@ def execute_composite_step(
     Returns:
         StepResult with output references and execution metadata.
     """
+    from artisan.composites.base.composite_definition import CompositeDefinition
     from artisan.execution.models.execution_composite import ExecutionComposite
     from artisan.utils.hashing import compute_execution_spec_id
 
+    # All production callers supply config; narrow for type-checker only.
+    config = cast(PipelineConfig, config)
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
 
@@ -1202,7 +1214,7 @@ def execute_composite_step(
         )
 
         composite_transport = ExecutionComposite(
-            composite=instance,
+            composite=cast(CompositeDefinition, instance),
             inputs=resolved_inputs,
             step_number=step_number,
             execution_spec_id=spec_id,

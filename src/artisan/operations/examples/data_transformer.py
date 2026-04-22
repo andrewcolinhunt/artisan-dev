@@ -11,6 +11,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
@@ -98,10 +99,10 @@ class DataTransformer(OperationDefinition):
     params: Params = Params()
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer")
+    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
     compute: Compute = Compute(
@@ -177,7 +178,7 @@ class DataTransformer(OperationDefinition):
         """Build DataArtifact drafts from transformed CSV files."""
         raw = inputs.memory_outputs
 
-        drafts: list[DataArtifact] = []
+        drafts: list[Artifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".csv"):
                 with open(file_path, "rb") as f:

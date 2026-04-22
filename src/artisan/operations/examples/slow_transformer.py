@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 from artisan.schemas.specs.input_models import (
@@ -117,7 +118,7 @@ class SlowTransformer(OperationDefinition):
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from timing marker CSVs."""
-        drafts: list[DataArtifact] = []
+        drafts: list[Artifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".csv"):
                 with open(file_path, "rb") as f:

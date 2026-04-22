@@ -9,6 +9,7 @@ compaction/vacuum.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import polars as pl
 from deltalake import DeltaTable, WriterProperties
@@ -168,7 +169,7 @@ class DeltaCommitter:
                 storage_options=self._storage_options,
             )
         else:
-            write_opts = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
+            write_opts: dict[str, Any] = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
             if partition_by:
                 write_opts["partition_by"] = partition_by
             staged_df.write_delta(
@@ -206,8 +207,8 @@ class DeltaCommitter:
             rows are omitted. A ``_failed_tables`` key is present when
             any table commit raised an exception.
         """
-        results = {}
-        failed_tables = []
+        results: dict[str, Any] = {}
+        failed_tables: list[tuple[str, str]] = []
 
         for table in _get_commit_order():
             table_name = _table_name_from_path(_to_str(table))
@@ -302,7 +303,7 @@ class DeltaCommitter:
             Mapping of table name to rows committed. Tables with zero
             rows are omitted.
         """
-        results = {}
+        results: dict[str, int] = {}
         batch_dir = f"{self.staging_manager.staging_dir}/{batch_id}"
 
         if not self._fs.exists(batch_dir):
@@ -385,7 +386,7 @@ class DeltaCommitter:
                 storage_options=self._storage_options,
             )
         else:
-            write_opts = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
+            write_opts: dict[str, Any] = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
             if partition_by:
                 write_opts["partition_by"] = partition_by
             df.write_delta(
@@ -416,7 +417,9 @@ class DeltaCommitter:
                     partition_by = None
                 else:
                     partition_by = ["origin_step_number"]
-                write_opts = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
+                write_opts: dict[str, Any] = {
+                    "writer_properties": DEFAULT_WRITER_PROPERTIES
+                }
                 if partition_by:
                     write_opts["partition_by"] = partition_by
                 empty_df.write_delta(
@@ -431,14 +434,14 @@ class DeltaCommitter:
             table_path = self._table_path(type_def.table_path)
             if not self._fs.exists(table_path):
                 empty_df = pl.DataFrame(schema=type_def.polars_schema())
-                write_opts = {
+                write_opts_content: dict[str, Any] = {
                     "writer_properties": DEFAULT_WRITER_PROPERTIES,
                     "partition_by": ["origin_step_number"],
                 }
                 empty_df.write_delta(
                     table_path,
                     mode="overwrite",
-                    delta_write_options=write_opts,
+                    delta_write_options=write_opts_content,
                     storage_options=self._storage_options,
                 )
 

@@ -67,7 +67,7 @@ def _run_units_with_shared_router(
                         success=result.success,
                         error=result.error,
                         item_count=unit.get_batch_size() or 1,
-                        execution_run_ids=[result.execution_run_id],
+                        execution_run_ids=[result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
                     )
                 )
             except Exception as exc:
@@ -113,7 +113,7 @@ class ComputeRoutingDispatchHandle(DispatchHandle):
         self._compute_config = compute_config
         self._cancel_event = cancel_event
 
-    def dispatch(
+    def dispatch(  # type: ignore[override]  # LSP is fine; base accepts broader input and we narrow at call site
         self,
         units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,

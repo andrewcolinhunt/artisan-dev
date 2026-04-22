@@ -480,7 +480,7 @@ class _StepEntry:
 # =============================================================================
 
 
-def _atexit_shutdown_executor(ref: weakref.ref) -> None:
+def _atexit_shutdown_executor(ref: weakref.ref[ThreadPoolExecutor]) -> None:
     """Last-resort cleanup: shut down a leaked ThreadPoolExecutor at exit."""
     executor = ref()
     if executor is not None:
@@ -922,8 +922,8 @@ class PipelineManager:
             pipeline_run_id=pipeline_run_id,
             delta_root=delta_root,
             staging_root=staging_root,
-            **({"working_root": working_root} if working_root is not None else {}),
-            **({"files_root": files_root} if files_root is not None else {}),
+            **({"working_root": working_root} if working_root is not None else {}),  # type: ignore[arg-type]  # conditional kwarg expansion
+            **({"files_root": files_root} if files_root is not None else {}),  # type: ignore[arg-type]  # conditional kwarg expansion
             failure_policy=failure_policy,
             cache_policy=cache_policy,
             default_backend=resolved.name,
@@ -1753,6 +1753,7 @@ class PipelineManager:
                 return failed_result
 
         ctx = contextvars.copy_context()
+        assert self._executor is not None, "executor must be live during submit"
         cf_future = self._executor.submit(ctx.run, _run)
 
         future = StepFuture(
@@ -2071,6 +2072,7 @@ class PipelineManager:
                 return failed_result
 
         ctx = contextvars.copy_context()
+        assert self._executor is not None, "executor must be live during submit"
         cf_future = self._executor.submit(ctx.run, _run)
 
         future = StepFuture(

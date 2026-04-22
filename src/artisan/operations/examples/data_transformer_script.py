@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.execution_config import ExecutionConfig
@@ -78,7 +80,7 @@ class DataTransformerScript(OperationDefinition):
     group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
 
     # ---------- Tool ----------
-    tool: ToolSpec = ToolSpec(executable=SCRIPT_PATH, interpreter="python")
+    tool: ToolSpec = ToolSpec(executable=str(SCRIPT_PATH), interpreter="python")
 
     # ---------- Environments ----------
     environments: Environments = Environments(
@@ -87,14 +89,14 @@ class DataTransformerScript(OperationDefinition):
     )
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(
+    resources: ResourceConfig = ResourceConfig(  # type: ignore[call-arg]  # pydantic defaults
         cpus=1,
         memory_gb=4,
         time_limit="00:30:00",
     )
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_script")
+    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_script")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
     compute: Compute = Compute(
@@ -104,9 +106,9 @@ class DataTransformerScript(OperationDefinition):
     # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized config paths from paired inputs."""
-        prepared_inputs = []
+        prepared_inputs: list[dict[str, Any]] = []
         for group in inputs.grouped():
-            config = group["config"]
+            config = cast(ExecutionConfigArtifact, group["config"])
             prepared_inputs.append({
                 "config_path": str(config.materialized_path),
                 "design_name": config.original_name,
@@ -138,7 +140,7 @@ class DataTransformerScript(OperationDefinition):
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from script-produced CSV files."""
-        drafts = []
+        drafts: list[Artifact] = []
         for f in inputs.file_outputs:
             if not f.endswith(".csv"):
                 continue

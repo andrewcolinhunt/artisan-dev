@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 import polars as pl
 from deltalake import WriterProperties
@@ -84,7 +85,7 @@ class StepTracker:
 
         return _row_to_step_result(result.row(0, named=True))
 
-    def _base_row(self, record: StepStartRecord, status: str) -> dict:
+    def _base_row(self, record: StepStartRecord, status: str) -> dict[str, Any]:
         """Build the common row dict shared by all record_step_* methods."""
         return {
             "step_run_id": record.step_run_id,
@@ -118,7 +119,7 @@ class StepTracker:
             record: StepStartRecord with all metadata fields.
         """
         row = self._base_row(record, "running")
-        df = pl.DataFrame([row], schema=STEPS_SCHEMA)
+        df = pl.DataFrame([row], schema=STEPS_SCHEMA)  # type: ignore[arg-type]  # STEPS_SCHEMA is dict[str, object] via mixed pl types
         self._write_row(df)
 
     def record_step_completed(
@@ -148,7 +149,7 @@ class StepTracker:
             ),
             metadata=json.dumps(result.metadata) if result.metadata else None,
         )
-        df = pl.DataFrame([row], schema=STEPS_SCHEMA)
+        df = pl.DataFrame([row], schema=STEPS_SCHEMA)  # type: ignore[arg-type]  # STEPS_SCHEMA is dict[str, object] via mixed pl types
         self._write_row(df)
 
     def record_step_skipped(
@@ -175,7 +176,7 @@ class StepTracker:
             duration_seconds=result.duration_seconds,
             metadata=json.dumps(result.metadata) if result.metadata else None,
         )
-        df = pl.DataFrame([row], schema=STEPS_SCHEMA)
+        df = pl.DataFrame([row], schema=STEPS_SCHEMA)  # type: ignore[arg-type]  # STEPS_SCHEMA is dict[str, object] via mixed pl types
         self._write_row(df)
 
     def record_step_failed(
@@ -191,7 +192,7 @@ class StepTracker:
         """
         row = self._base_row(start_record, "failed")
         row["error"] = error
-        df = pl.DataFrame([row], schema=STEPS_SCHEMA)
+        df = pl.DataFrame([row], schema=STEPS_SCHEMA)  # type: ignore[arg-type]  # STEPS_SCHEMA is dict[str, object] via mixed pl types
         self._write_row(df)
 
     def record_step_cancelled(
@@ -211,7 +212,7 @@ class StepTracker:
         """
         row = self._base_row(start_record, "cancelled")
         row["error"] = reason
-        df = pl.DataFrame([row], schema=STEPS_SCHEMA)
+        df = pl.DataFrame([row], schema=STEPS_SCHEMA)  # type: ignore[arg-type]  # STEPS_SCHEMA is dict[str, object] via mixed pl types
         self._write_row(df)
 
     def load_completed_steps(
@@ -336,7 +337,7 @@ class StepTracker:
             )
 
 
-def _row_to_step_result(row: dict) -> StepResult:
+def _row_to_step_result(row: dict[str, Any]) -> StepResult:
     """Reconstruct a StepResult from a steps delta table row."""
     return StepResult(
         step_name=row["step_name"],

@@ -94,7 +94,7 @@ class Compute(BaseModel):
         Raises:
             ValueError: If the active provider is not configured.
         """
-        config = getattr(self, self.active, None)
+        config: ComputeConfig | None = getattr(self, self.active, None)
         if config is None:
             msg = (
                 f"Compute provider '{self.active}' is not configured. "

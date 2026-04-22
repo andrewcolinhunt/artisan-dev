@@ -54,7 +54,7 @@ _LOG_STYLES = {
 }
 
 
-class _ConsoleHandler(logging.StreamHandler):
+class _ConsoleHandler(logging.StreamHandler):  # type: ignore[type-arg]  # StreamHandler generic only in typeshed; supports any stream-like object
     """StreamHandler that renders formatted log lines through Rich Console.
 
     Follows the same pattern as Prefect's ``PrefectConsoleHandler``:

@@ -151,7 +151,9 @@ def format_args(params: dict[str, Any]) -> list[str]:
 # =============================================================================
 
 
-def _kill_process_group(process: subprocess.Popen, timeout: float = 3.0) -> None:
+def _kill_process_group(
+    process: subprocess.Popen[str], timeout: float = 3.0
+) -> None:
     """Kill a subprocess and its entire process group.
 
     Sends SIGTERM first for graceful shutdown, then escalates to SIGKILL
@@ -215,12 +217,16 @@ def run_command(
         else:
             result = _run_captured(full_cmd, cwd, timeout, env)
     except subprocess.TimeoutExpired as e:
+        # text=True is used everywhere in this module, so stdout/stderr are str
+        # at runtime even though typeshed declares them as `bytes | None`.
+        stdout: str = e.stdout or ""  # type: ignore[assignment]
+        stderr: str = e.stderr or ""  # type: ignore[assignment]
         raise ExternalToolError(
             message=f"Command timed out after {timeout}s",
             command=full_cmd.parts,
             return_code=-1,
-            stdout=e.stdout or "",
-            stderr=e.stderr or "",
+            stdout=stdout,
+            stderr=stderr,
             runtime=environment,
         ) from e
 
@@ -274,6 +280,8 @@ def _run_with_streaming(
         stdout_lines: list[str] = []
         start_time = time.monotonic()
 
+        # stdout=PIPE guarantees process.stdout is not None
+        assert process.stdout is not None
         try:
             for line in process.stdout:
                 if timeout and (time.monotonic() - start_time) > timeout:

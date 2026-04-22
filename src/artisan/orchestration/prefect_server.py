@@ -64,8 +64,8 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
         url = _normalize_url(resolve_api_url(prefect_server))
         source = _source_label(url, prefect_server)
     except RuntimeError:
-        url = _resolve_from_prefect_settings()
-        if url is None:
+        resolved = _resolve_from_prefect_settings()
+        if resolved is None:
             msg = (
                 "No Prefect server detected.\n"
                 "\n"
@@ -81,6 +81,7 @@ def discover_server(prefect_server: str | None = None) -> PrefectServerInfo:
             raise PrefectServerNotFound(
                 msg
             ) from None
+        url = resolved
         source = "prefect_profile"
 
     info = PrefectServerInfo(url=url, source=source)
@@ -106,12 +107,13 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _read_discovery_file() -> dict | None:
+def _read_discovery_file() -> dict[str, Any] | None:
     """Read the prefect_submitit discovery file.
 
     Thin wrapper so tests can mock at the artisan module level.
     """
-    return read_discovery()
+    result: dict[str, Any] | None = read_discovery()
+    return result
 
 
 def _build_unreachable_message(info: PrefectServerInfo) -> str:
@@ -192,7 +194,8 @@ def _get_server_version(url: str) -> str | None:
         with urllib.request.urlopen(
             f"{url.rstrip('/')}/admin/version", timeout=5
         ) as resp:
-            return resp.read().decode().strip().strip('"')
+            version_str: str = resp.read().decode().strip().strip('"')
+            return version_str
     except Exception:
         return None
 

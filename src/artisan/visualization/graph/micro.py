@@ -12,7 +12,7 @@ For a higher-level step-based view, see ``artisan.visualization.graph.macro``.
 from __future__ import annotations
 
 import os
-from typing import Literal
+from typing import Any, Literal, cast
 
 import graphviz
 import polars as pl
@@ -37,7 +37,7 @@ def _scan_or_empty(
     delta_root: str,
     table: TablePath,
     columns: list[str],
-    empty_schema: dict[str, pl.DataType],
+    empty_schema: dict[str, Any],
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
@@ -114,7 +114,7 @@ def _load_artifact_labels(
     labels: dict[str, str] = {}
 
     for _key, typedef in ArtifactTypeDef.get_all().items():
-        schema = typedef.model.POLARS_SCHEMA
+        schema = cast("dict[str, Any]", typedef.model.POLARS_SCHEMA)  # type: ignore[attr-defined]
         table_path = uri_join(delta_root, typedef.table_path)
 
         if not fs.exists(table_path):
@@ -502,7 +502,7 @@ def get_max_step_number(
     executions = _load_executions(delta_root, storage_options=storage_options, fs=fs)
     if executions.is_empty():
         return None
-    return executions["origin_step_number"].max()
+    return cast("int | None", executions["origin_step_number"].max())
 
 
 def render_micro_graph_steps(

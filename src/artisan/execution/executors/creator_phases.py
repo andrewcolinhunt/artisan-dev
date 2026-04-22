@@ -180,8 +180,9 @@ def prep_unit(
         materialized_dir = os.path.join(sandbox_path_str, "materialized_inputs")
         os.makedirs(materialized_dir, exist_ok=True)
 
+        files_dir: str | None
         if runtime_env.files_root is not None:
-            files_dir: str | None = shard_uri(
+            files_dir = shard_uri(
                 runtime_env.files_root,
                 execution_run_id,
                 unit.step_number,
@@ -426,7 +427,7 @@ def post_unit(
 
     # Clean up sandbox
     if (
-        prepped.sandbox_path is not None
+        prepped.sandbox_path is not None  # type: ignore[redundant-expr]  # defensive runtime check
         and not runtime_env.preserve_working
         and os.path.exists(prepped.sandbox_path)
     ):

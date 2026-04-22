@@ -358,7 +358,7 @@ class CollapsedCompositeContext(CompositeContext):
                 )
 
             case _:
-                msg = f"Unexpected result type from curator: {type(result).__name__}"
+                msg = f"Unexpected result type from curator: {type(result).__name__}"  # type: ignore[unreachable]  # defensive fallback for future result types
                 raise TypeError(
                     msg
                 )

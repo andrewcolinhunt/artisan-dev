@@ -73,7 +73,14 @@ class ConsolidateAppendables(OperationDefinition):
 
         fs = artifact_store._fs
         record_ids = inputs["records"]["artifact_id"].to_list()
-        artifacts = artifact_store.get_artifacts_by_type(record_ids, "appendable")
+        # get_artifacts_by_type returns dict[str, Artifact]; "appendable" is the
+        # requested type, so the values are AppendableArtifact instances.
+        raw_artifacts = artifact_store.get_artifacts_by_type(record_ids, "appendable")
+        artifacts: dict[str, AppendableArtifact] = {
+            aid: art
+            for aid, art in raw_artifacts.items()
+            if isinstance(art, AppendableArtifact)
+        }
 
         # Find distinct worker files
         worker_files: set[str] = set()
@@ -93,6 +100,9 @@ class ConsolidateAppendables(OperationDefinition):
         # Create new artifacts pointing to combined file
         drafts: list[AppendableArtifact] = []
         for art in artifacts.values():
+            assert art.record_id is not None, "finalized appendable has record_id"
+            assert art.content_hash is not None, "finalized appendable has content_hash"
+            assert art.size_bytes is not None, "finalized appendable has size_bytes"
             drafts.append(
                 AppendableArtifact.draft(
                     record_id=art.record_id,
@@ -106,5 +116,5 @@ class ConsolidateAppendables(OperationDefinition):
 
         return ArtifactResult(
             success=True,
-            artifacts={"records": drafts},
+            artifacts={"records": list(drafts)},
         )

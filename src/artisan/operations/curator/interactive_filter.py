@@ -23,6 +23,7 @@ from artisan.operations.curator.filter import (
     _criterion_to_expr,
 )
 from artisan.provenance.traversal import walk_forward
+from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.step_result import StepResult
@@ -205,7 +206,7 @@ class InteractiveFilter:
         # Build metric_sources from step_info
         self._metric_sources = []
         if step_info is not None:
-            step_names = step_info.get("_step_names", {})
+            step_names: dict[int, str] = step_info.get("_step_names", {})
             seen_steps: set[int] = set()
             for field, step_nums in step_info.items():
                 if field.startswith("_"):
@@ -242,7 +243,7 @@ class InteractiveFilter:
         for pid in primary_ids:
             for mid in primary_to_metrics.get(pid, []):
                 metric = metric_artifacts.get(mid)
-                if metric is None:
+                if not isinstance(metric, MetricArtifact):
                     continue
                 try:
                     values = metric.values
@@ -295,7 +296,8 @@ class InteractiveFilter:
         )
         if result.is_empty():
             return None
-        return result.item(0, 0)
+        value = result.item(0, 0)
+        return str(value) if value is not None else None
 
     # ------------------------------------------------------------------
     # Properties
@@ -443,7 +445,7 @@ class InteractiveFilter:
 
             if numeric.len() > 0:
                 row["min"] = numeric.min()
-                row["mean"] = round(numeric.mean(), 6)
+                row["mean"] = round(float(numeric.mean()), 6)  # type: ignore[arg-type]
                 row["max"] = numeric.max()
             else:
                 row["min"] = None
@@ -640,7 +642,7 @@ class InteractiveFilter:
                     "metadata": json.dumps({"diagnostics": diagnostics}),
                 }
             ],
-            schema=EXECUTIONS_SCHEMA,
+            schema=EXECUTIONS_SCHEMA,  # type: ignore[arg-type]
         )
 
         from artisan.storage.io.commit import DeltaCommitter
@@ -705,6 +707,9 @@ class InteractiveFilter:
         Returns:
             Diagnostics dict with v4 structure.
         """
+        # Only called from commit() after load()/set_criteria() have populated
+        # _wide_df; caller has already checked for None.
+        assert self._wide_df is not None, "load() must be called before _build_diagnostics"
         wide = self._wide_df
         total = len(self._primary_artifact_ids)
 
@@ -734,7 +739,7 @@ class InteractiveFilter:
                 stats = {
                     "min": numeric.min(),
                     "max": numeric.max(),
-                    "mean": round(mean_val, 6),
+                    "mean": round(float(mean_val), 6),  # type: ignore[arg-type]
                 }
 
             criteria_diags.append(

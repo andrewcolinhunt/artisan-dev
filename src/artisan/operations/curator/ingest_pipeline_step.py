@@ -60,10 +60,12 @@ class IngestPipelineStep(OperationDefinition):
     )
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
+    # pydantic Field-based defaults aren't recognized by mypy without the plugin;
+    # ignore call-arg errors on these config constructors.
+    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")  # type: ignore[call-arg]
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="ingest_pipeline_step")
+    execution: ExecutionConfig = ExecutionConfig(job_name="ingest_pipeline_step")  # type: ignore[call-arg]
 
     # ---------- Lifecycle ----------
     def execute_curator(

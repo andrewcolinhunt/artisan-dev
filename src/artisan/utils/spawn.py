@@ -37,9 +37,9 @@ class suppress_main_reimport:
         self._main_mod = sys.modules.get("__main__")
         self._original_file = getattr(self._main_mod, "__file__", None)
         if self._main_mod is not None:
-            self._main_mod.__file__ = None  # type: ignore[attr-defined]
+            self._main_mod.__file__ = None
         return self
 
     def __exit__(self, *args: object) -> None:
         if self._main_mod is not None:
-            self._main_mod.__file__ = self._original_file  # type: ignore[attr-defined]
+            self._main_mod.__file__ = self._original_file
