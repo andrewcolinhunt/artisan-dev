@@ -202,9 +202,9 @@ def test_fan_out_execution(pipeline_env: dict[str, str]):
     # Both branches receive same input IDs
     step1_input_ids = get_execution_inputs(delta_root, 1, "dataset")
     step2_input_ids = get_execution_inputs(delta_root, 2, "dataset")
-    assert set(step1_input_ids) == set(
-        step2_input_ids
-    ), "Both branches should receive identical input artifact IDs"
+    assert set(step1_input_ids) == set(step2_input_ids), (
+        "Both branches should receive identical input artifact IDs"
+    )
 
     # Total: 2 (gen) + 2 (A) + 2 (B) = 6
     assert count_artifacts_by_type(delta_root, "data") == 6
@@ -353,9 +353,9 @@ def test_fan_in_merge(pipeline_env: dict[str, str]):
     assert result["overall_success"], "Pipeline should complete successfully"
 
     # Merge doesn't create new artifacts in artifact_index
-    assert (
-        count_artifacts_by_step(delta_root, 2) == 0
-    ), "Merge is passthrough, no new artifacts"
+    assert count_artifacts_by_step(delta_root, 2) == 0, (
+        "Merge is passthrough, no new artifacts"
+    )
 
     # But merged output references 4 artifacts
     merged_outputs = get_execution_outputs(delta_root, 2, "merged")
@@ -456,9 +456,9 @@ def test_passthrough(pipeline_env: dict[str, str]):
     step0_ids = get_execution_outputs(delta_root, 0, "datasets")
 
     for pt_id in passthrough_ids:
-        assert (
-            pt_id in step0_ids
-        ), "Passthrough IDs must reference original artifacts, not copies"
+        assert pt_id in step0_ids, (
+            "Passthrough IDs must reference original artifacts, not copies"
+        )
 
     # Downstream receives correct count
     assert count_artifacts_by_step(delta_root, 3) == len(passthrough_ids)

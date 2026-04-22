@@ -191,6 +191,6 @@ def test_execution_config_artifact_references(pipeline_env: dict[str, str]):
         if "input" in content and isinstance(content["input"], dict):
             ref = content["input"].get("$artifact")
             if ref is not None:
-                assert (
-                    ref in step0_ids
-                ), f"$artifact reference {ref} should be a valid step 0 artifact ID"
+                assert ref in step0_ids, (
+                    f"$artifact reference {ref} should be a valid step 0 artifact ID"
+                )
