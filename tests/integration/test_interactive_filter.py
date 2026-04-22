@@ -9,7 +9,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.curator.interactive_filter import (
     FilterSummary,

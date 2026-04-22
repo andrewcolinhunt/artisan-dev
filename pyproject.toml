@@ -177,10 +177,10 @@ prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
-test = "pytest -m 'not slow' && pytest -m slow -n 4"  # Unit sequential + integration parallel
+test = "pytest -m 'not integration' && pytest -m integration -n 4"  # Unit sequential + integration parallel
 test-seq = "pytest"  # Fully sequential (for debugging test interactions)
-test-unit = "pytest -m 'not slow'"  # Run only unit tests
-test-integration = "pytest -m slow -n 4"  # Run only integration tests in parallel
+test-unit = "pytest -m 'not integration'"  # Run only unit tests
+test-integration = "pytest -m integration -n 4"  # Run only integration tests in parallel
 fmt = "ruff format . && ruff check --fix ."
 build-dist = "rm -rf dist/ && python -m build"
 check-dist = "python -m twine check dist/*"
@@ -205,8 +205,7 @@ xfail_strict = true
 addopts = ["-ra", "--strict-config", "--strict-markers"]
 filterwarnings = ["error"]
 markers = [
-    "fast: marks tests as fast (deselect with '-m \"not fast\"')",
-    "slow: marks tests as slow/integration (select with '-m slow')",
+    "integration: needs real infra (Delta Lake, Prefect harness) — run with '-m integration'",
 ]
 
 [tool.mypy]

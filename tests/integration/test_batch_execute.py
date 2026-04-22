@@ -19,7 +19,7 @@ from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 
 from .conftest import count_artifacts_by_step, get_execution_outputs
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 
 def test_split_lifecycle_matches_monolithic(pipeline_env):

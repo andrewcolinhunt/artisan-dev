@@ -10,7 +10,7 @@ from typing import ClassVar
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.composites import CompositeContext, CompositeDefinition
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator

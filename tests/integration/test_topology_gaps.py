@@ -13,7 +13,7 @@ from typing import ClassVar
 import polars as pl
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.composites import CompositeContext, CompositeDefinition
 from artisan.operations.curator import Filter, Merge

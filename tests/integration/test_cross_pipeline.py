@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.curator import IngestPipelineStep
 from artisan.operations.examples import (

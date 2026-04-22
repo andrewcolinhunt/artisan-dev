@@ -20,8 +20,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-# Mark all tests in this module as slow (integration tests)
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.curator import Filter, IngestData, Merge
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
