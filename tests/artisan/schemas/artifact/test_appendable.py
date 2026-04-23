@@ -193,6 +193,44 @@ class TestMaterialize:
             art.materialize_to(str(tmp_path / "out"))
 
 
+class TestReadRecordAutoInferFs:
+    """When fs=None, _read_record infers fs from external_path via url_to_fs."""
+
+    def test_auto_infers_memory_fs_from_uri(self, tmp_path: Path) -> None:
+        """memory:// path → MemoryFileSystem auto-resolved, record found."""
+        import fsspec
+
+        mem_fs = fsspec.filesystem("memory")
+        records = [
+            {"record_id": "rec_000000", "x": 1},
+            {"record_id": "rec_000001", "x": 2},
+        ]
+        with mem_fs.open("/test_appendable/auto/data.jsonl", "w") as f:
+            for r in records:
+                f.write(json.dumps(r, sort_keys=True) + "\n")
+
+        art = _draft(external_path="memory:///test_appendable/auto/data.jsonl")
+        art = AppendableArtifact.model_validate(art.finalize().model_dump())
+        # Override record_id on the model to look up rec_000001 explicitly.
+        art = art.model_copy(update={"record_id": "rec_000001"})
+        record = art._read_record()
+        assert record == {"record_id": "rec_000001", "x": 2}
+
+        mem_fs.rm("/test_appendable/auto/data.jsonl")
+
+    def test_explicit_fs_overrides_inference(self, tmp_path: Path) -> None:
+        """When fs= is passed, it's used directly without resolve_fs."""
+        jsonl_path = tmp_path / "data.jsonl"
+        _make_jsonl(jsonl_path, [{"record_id": "rec_000000", "x": 7}])
+
+        art = _draft(external_path=str(jsonl_path))
+        art = AppendableArtifact.model_validate(art.finalize().model_dump())
+        from fsspec.implementations.local import LocalFileSystem
+
+        record = art._read_record(fs=LocalFileSystem())
+        assert record == {"record_id": "rec_000000", "x": 7}
+
+
 class TestTypeRegistration:
     """Tests for artifact type registry integration."""
 

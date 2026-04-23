@@ -1974,3 +1974,88 @@ class TestConfigureLoggingCloudGuard:
             PipelineManager(config)
         mock_configure.assert_called_once()
         assert mock_configure.call_args.kwargs["logs_root"] is None
+
+
+class TestPromoteFilePathsCloudUri:
+    """_promote_file_paths_to_store accepts cloud URIs via resolve_fs.
+
+    These tests use MemoryFileSystem (via the protocol-match step of
+    resolve_fs) so they don't depend on MinIO or Docker. The MemoryFS
+    "happens to" act like a cloud backend from the function's POV —
+    a different protocol than the local pipeline default.
+    """
+
+    def test_memory_uri_inputs_succeed(self, tmp_path):
+        """memory:// inputs resolve via resolve_fs and get promoted."""
+        import contextlib
+
+        import fsspec
+
+        from artisan.orchestration.pipeline_manager import (
+            _promote_file_paths_to_store,
+        )
+        from artisan.schemas.execution.storage_config import StorageConfig
+
+        mem_fs = fsspec.filesystem("memory")
+        for i in range(2):
+            with mem_fs.open(f"/promote-cloud/data_{i}.csv", "wb") as f:
+                f.write(f"x,y\n{i},{i + 1}\n".encode())
+
+        # Pipeline storage is "memory" so step 1 of resolve_fs matches
+        # and uses storage.filesystem() (the same MemoryFileSystem).
+        # delta_root and staging_root must also live on memory:// so
+        # DeltaCommitter can write there.
+        config = PipelineConfig(
+            name="test",
+            delta_root="memory:///promote-cloud-delta",
+            staging_root="memory:///promote-cloud-staging",
+            working_root=str(tmp_path / "working"),
+            files_root="memory:///promote-cloud-files",
+            recover_staging=False,
+            storage=StorageConfig(protocol="memory"),
+        )
+        result, count = _promote_file_paths_to_store(
+            [
+                "memory:///promote-cloud/data_0.csv",
+                "memory:///promote-cloud/data_1.csv",
+            ],
+            config,
+            step_number=1,
+            operation_name="ingest",
+        )
+        assert count == 2
+        assert result is not None
+        assert "file" in result
+        assert len(result["file"]) == 2
+
+        # Best-effort cleanup of the in-memory fs. MemoryFileSystem
+        # doesn't track empty dirs, so a missing parent on rm is fine.
+        for path in ("/promote-cloud", "/promote-cloud-delta", "/promote-cloud-staging"):
+            with contextlib.suppress(FileNotFoundError):
+                mem_fs.rm(path, recursive=True)
+
+    def test_invalid_uri_surfaces_in_warning_not_crash(self, tmp_path, caplog):
+        """A bogus cloud URI is reported as Inaccessible, not a kickoff crash."""
+        from artisan.orchestration.pipeline_manager import (
+            _promote_file_paths_to_store,
+        )
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        (tmp_path / "delta").mkdir(parents=True)
+        (tmp_path / "staging").mkdir(parents=True)
+
+        # gcs:// without gcsfs installed → ImportError surfaces as
+        # Inaccessible, not a crash. (gcsfs is in optional deps.)
+        result, count = _promote_file_paths_to_store(
+            ["gcs://nope/notfound.csv"],
+            config,
+            step_number=1,
+            operation_name="ingest",
+        )
+        assert result is None
+        assert count == 0
