@@ -860,3 +860,85 @@ class TestRecoverStaged:
         # Staging files should still exist
         remaining = list(staging_path.rglob("*.parquet"))
         assert len(remaining) > 0
+
+
+class TestDeltaCommitterBackendParametrized:
+    """Smoke tests for DeltaCommitter parametrized over [local, s3] backends.
+
+    Uses the ``backend_fs`` fixture from ``tests/artisan/storage/conftest.py``
+    to exercise the critical write/read round-trip on both filesystems. S3
+    params skip cleanly when MinIO is unavailable.
+    """
+
+    def test_commit_dataframe_writes_to_table(self, backend_fs):
+        """commit_dataframe writes rows readable via pl.read_delta."""
+        fs, storage, root = backend_fs
+        delta_root = f"{root}/delta"
+        staging_root = f"{root}/staging"
+
+        sm = StagingManager(staging_root, fs)
+        committer = DeltaCommitter(
+            delta_root,
+            sm,
+            fs=fs,
+            storage_options=storage.delta_storage_options(),
+        )
+
+        df = pl.DataFrame(
+            {
+                "artifact_id": ["a" * 32],
+                "origin_step_number": [0],
+                "content": [b'{"score": 0.5}'],
+                "original_name": ["smoke"],
+                "extension": [".json"],
+                "metadata": ["{}"],
+                "external_path": [None],
+            },
+            schema=METRICS_SCHEMA,
+        )
+
+        table = "smoke_commit_dataframe"
+        rows = committer.commit_dataframe(df, table)
+        assert rows == 1
+
+        table_uri = f"{delta_root}/{table}"
+        result = pl.read_delta(
+            table_uri, storage_options=storage.delta_storage_options()
+        )
+        assert result.shape[0] == 1
+        assert result["artifact_id"][0] == "a" * 32
+        assert result["origin_step_number"][0] == 0
+
+    def test_commit_dataframe_dedup(self, backend_fs):
+        """Second commit_dataframe of the same row dedups to 0."""
+        fs, storage, root = backend_fs
+        delta_root = f"{root}/delta"
+        staging_root = f"{root}/staging"
+
+        sm = StagingManager(staging_root, fs)
+        committer = DeltaCommitter(
+            delta_root,
+            sm,
+            fs=fs,
+            storage_options=storage.delta_storage_options(),
+        )
+
+        df = pl.DataFrame(
+            {
+                "artifact_id": ["d" * 32],
+                "origin_step_number": [0],
+                "content": [b'{"score": 0.9}'],
+                "original_name": ["dup"],
+                "extension": [".json"],
+                "metadata": ["{}"],
+                "external_path": [None],
+            },
+            schema=METRICS_SCHEMA,
+        )
+
+        table = "smoke_commit_dedup"
+        first = committer.commit_dataframe(df, table, deduplicate=True)
+        assert first == 1
+
+        second = committer.commit_dataframe(df, table, deduplicate=True)
+        assert second == 0

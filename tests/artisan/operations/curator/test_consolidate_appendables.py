@@ -186,3 +186,70 @@ class TestConsolidateClassAttributes:
     def test_output_lineage_traces_to_input(self) -> None:
         spec = ConsolidateAppendables.outputs["records"]
         assert spec.infer_lineage_from == {"inputs": ["records"]}
+
+
+class TestConsolidateAppendablesBackendParametrized:
+    """Smoke test: consolidate JSONL workers into a combined file on each backend.
+
+    The curator's consolidation loop opens both worker files and the
+    combined output via ``fs.open(..., "r"|"w")`` in text mode — the
+    S3-sensitive codepath called out in the design. This class
+    parametrizes ``[local, s3]`` to exercise it against both backends.
+
+    ``backend_fs`` is inlined here because this test file lives outside
+    ``tests/artisan/storage/`` (where the shared fixture is defined) and
+    a one-off inline fixture is simpler than a cross-package conftest
+    chain. Only ``s3_fs`` (from the root ``tests/conftest.py``) is needed
+    to stay in scope.
+    """
+
+    @pytest.fixture(params=["local", "s3"])
+    def backend_fs(self, request, tmp_path, s3_fs):
+        if request.param == "local":
+            from artisan.schemas.execution.storage_config import StorageConfig
+
+            return LocalFileSystem(), StorageConfig(), str(tmp_path)
+        return s3_fs
+
+    def test_consolidates_worker_jsonl_files(self, backend_fs) -> None:
+        """Two worker JSONL files concatenate into one combined.jsonl."""
+        fs, _, root = backend_fs
+
+        # Write two per-worker JSONL files via the parametrized fs in
+        # text mode — this is the S3-sensitive path the curator uses for
+        # the combined output write below.
+        worker_a = f"{root}/workers/a/records.jsonl"
+        worker_b = f"{root}/workers/b/records.jsonl"
+        fs.makedirs(f"{root}/workers/a", exist_ok=True)
+        fs.makedirs(f"{root}/workers/b", exist_ok=True)
+        with fs.open(worker_a, "w") as f:
+            f.write(json.dumps({"record_id": "rec_0", "values": {"x": 1}}) + "\n")
+        with fs.open(worker_b, "w") as f:
+            f.write(json.dumps({"record_id": "rec_1", "values": {"x": 2}}) + "\n")
+
+        art_0 = _make_appendable_artifact("rec_0", worker_a)
+        art_1 = _make_appendable_artifact("rec_1", worker_b)
+        artifacts = {art_0.artifact_id: art_0, art_1.artifact_id: art_1}
+
+        files_root = f"{root}/files"
+        store = MagicMock()
+        store.files_root = files_root
+        store._fs = fs
+        store.get_artifacts_by_type.return_value = artifacts
+
+        op = ConsolidateAppendables()
+        result = op.execute_curator(
+            {"records": _df(list(artifacts.keys()))},
+            step_number=5,
+            artifact_store=store,
+        )
+
+        combined = f"{files_root}/5/combined.jsonl"
+        assert fs.exists(combined)
+        with fs.open(combined, "r") as f:
+            lines = f.read().strip().split("\n")
+        assert len(lines) == 2
+
+        # Output drafts point to the combined file on both backends.
+        for draft in result.artifacts["records"]:
+            assert draft.external_path == combined

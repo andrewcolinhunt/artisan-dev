@@ -227,3 +227,66 @@ class TestCacheHitSchema:
 
         assert not hasattr(hit, "parents")
         assert not hasattr(hit, "children")
+
+
+class TestCacheLookupBackendParametrized:
+    """Smoke test cache_lookup against both [local, s3] backends."""
+
+    def test_cache_hit_round_trip(self, backend_fs):
+        """Successful execution + edges produce a CacheHit on either backend."""
+        fs, storage, root = backend_fs
+        delta_root = f"{root}/delta"
+        executions_path = f"{delta_root}/orchestration/executions"
+        edges_path = f"{delta_root}/provenance/execution_edges"
+        storage_options = storage.delta_storage_options()
+
+        now = datetime.now()
+        executions_df = pl.DataFrame(
+            {
+                "execution_run_id": ["run_success"],
+                "execution_spec_id": ["spec_success"],
+                "step_run_id": [None],
+                "origin_step_number": [1],
+                "operation_name": ["relax"],
+                "params": ["{}"],
+                "user_overrides": ["{}"],
+                "timestamp_start": [now],
+                "timestamp_end": [now],
+                "source_worker": [0],
+                "compute_backend": ["local"],
+                "success": [True],
+                "error": [None],
+                "tool_output": [None],
+                "worker_log": [None],
+                "metadata": ["{}"],
+            },
+            schema=EXECUTIONS_SCHEMA,
+        )
+        executions_df.write_delta(
+            executions_path, mode="overwrite", storage_options=storage_options
+        )
+
+        edges_df = pl.DataFrame(
+            {
+                "execution_run_id": ["run_success", "run_success"],
+                "direction": ["input", "output"],
+                "role": ["data", "processed"],
+                "artifact_id": ["input123", "output456"],
+            },
+            schema=EXECUTION_EDGES_SCHEMA,
+        )
+        edges_df.write_delta(
+            edges_path, mode="overwrite", storage_options=storage_options
+        )
+
+        result = cache_lookup(
+            executions_path,
+            "spec_success",
+            fs,
+            storage_options=storage_options,
+        )
+
+        assert isinstance(result, CacheHit)
+        assert result.execution_run_id == "run_success"
+        assert len(result.inputs) == 1
+        assert len(result.outputs) == 1

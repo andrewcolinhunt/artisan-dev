@@ -207,3 +207,40 @@ class TestLoadMetricsDf:
 
         assert result.is_empty()
         assert result.columns == ["artifact_id", "content"]
+
+
+class TestStoreDfMethodsBackendParametrized:
+    """Smoke test ArtifactStore DataFrame methods on both [local, s3] backends."""
+
+    def test_load_metrics_df_round_trip(self, backend_fs):
+        """Write a metrics Delta table and load it back via ArtifactStore."""
+        fs, storage, root = backend_fs
+        delta_root = f"{root}/delta"
+        metrics_path = f"{delta_root}/artifacts/metrics"
+        storage_options = storage.delta_storage_options()
+
+        content = json.dumps({"score": 0.95}).encode("utf-8")
+        metrics_df = pl.DataFrame(
+            [
+                {
+                    "artifact_id": "m1",
+                    "origin_step_number": 1,
+                    "content": content,
+                    "original_name": "score",
+                    "extension": ".json",
+                    "metadata": "{}",
+                    "external_path": None,
+                }
+            ],
+            schema=MetricArtifact.POLARS_SCHEMA,
+        )
+        metrics_df.write_delta(
+            metrics_path, mode="overwrite", storage_options=storage_options
+        )
+
+        store = ArtifactStore(delta_root, fs=fs, storage_options=storage_options)
+        result = store.load_metrics_df(["m1"])
+
+        assert len(result) == 1
+        assert result["artifact_id"][0] == "m1"
+        assert result["content"][0] == content

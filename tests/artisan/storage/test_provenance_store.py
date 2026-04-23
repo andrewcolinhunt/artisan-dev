@@ -239,3 +239,37 @@ class TestGetDescendantIds:
         _write_delta(tmp_path / "provenance/artifact_edges", edges)
 
         assert store.get_descendant_ids(C) == []
+
+
+class TestProvenanceStoreBackendParametrized:
+    """Smoke test: seed a small provenance graph and read it back on each backend.
+
+    Uses ``backend_fs`` from ``tests/artisan/storage/conftest.py`` to run
+    against both ``LocalFileSystem`` and the per-test S3 bucket on MinIO.
+    Writes Delta tables via the production-style ``write_delta`` path
+    (with ``storage_options`` from the parametrized ``StorageConfig``),
+    then reads back through ``ProvenanceStore.get_ancestor_ids`` /
+    ``get_descendant_ids``.
+    """
+
+    def test_seed_and_walk(self, backend_fs):
+        """Seed A -> B -> C, then walk both directions via the store."""
+        fs, storage_config, root = backend_fs
+        storage_options = storage_config.delta_storage_options()
+
+        edges = _make_edges([(A, B, "data"), (B, C, "data")])
+        index = _make_index([(A, "data", 1), (B, "data", 2), (C, "data", 3)])
+
+        edges.write_delta(
+            f"{root}/provenance/artifact_edges",
+            storage_options=storage_options,
+        )
+        index.write_delta(
+            f"{root}/artifacts/index",
+            storage_options=storage_options,
+        )
+
+        store = ProvenanceStore(root, fs=fs, storage_options=storage_options)
+
+        assert set(store.get_ancestor_ids(C)) == {A, B}
+        assert set(store.get_descendant_ids(A)) == {B, C}
