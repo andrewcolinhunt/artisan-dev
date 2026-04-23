@@ -537,7 +537,16 @@ class PipelineManager:
         if configure_logging:
             from artisan.utils.logging import configure_logging as _configure
 
-            _configure(logs_root=uri_join(uri_parent(config.delta_root), "logs"))
+            # logs_root must be local (configure_logging os.makedirs it
+            # at DEBUG level). When delta_root is cloud, pass None so no
+            # file handler is attached. Cloud-side log persistence is
+            # tracked in _dev/design/1_future/cloud/failure-log-persistence.md.
+            logs_root = (
+                uri_join(uri_parent(config.delta_root), "logs")
+                if config.storage.is_local
+                else None
+            )
+            _configure(logs_root=logs_root)
 
         self._config = config
 

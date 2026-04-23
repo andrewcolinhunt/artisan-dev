@@ -1924,3 +1924,53 @@ class TestFilesRootThreading:
         )
         pipeline = PipelineManager(config)
         assert pipeline.config.files_root == custom_files
+
+
+class TestConfigureLoggingCloudGuard:
+    """logs_root must not be derived from cloud delta_root.
+
+    `configure_logging` os.makedirs the logs_root at DEBUG level. If
+    cloud delta_root flowed through unchanged, that would corrupt a
+    literal-colon directory on the local filesystem.
+    """
+
+    def test_local_storage_passes_derived_logs_root(self, tmp_path):
+        """Local storage: logs_root is the sibling-of-delta path."""
+        from artisan.schemas.execution.storage_config import StorageConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+            storage=StorageConfig(),  # protocol="file"
+        )
+        with patch("artisan.utils.logging.configure_logging") as mock_configure:
+            PipelineManager(config)
+        mock_configure.assert_called_once()
+        call_kwargs = mock_configure.call_args.kwargs
+        assert call_kwargs["logs_root"] == str(tmp_path / "logs")
+
+    def test_cloud_storage_passes_logs_root_none(self, tmp_path):
+        """Cloud storage: logs_root must be None — no os.makedirs on s3:// path."""
+        from artisan.schemas.execution.storage_config import StorageConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root="s3://bucket/delta",
+            staging_root="s3://bucket/staging",
+            working_root=str(tmp_path / "working"),
+            files_root="s3://bucket/files",
+            recover_staging=False,  # avoids actually touching s3 in __init__
+            storage=StorageConfig(protocol="s3"),
+        )
+        # StepTracker construction reads from delta_root via fs.exists,
+        # which would fail without a real S3 backend; mock the fs.
+        with (
+            patch("artisan.utils.logging.configure_logging") as mock_configure,
+            patch.object(StorageConfig, "filesystem", return_value=MagicMock()),
+            patch("artisan.orchestration.engine.step_tracker.StepTracker"),
+        ):
+            PipelineManager(config)
+        mock_configure.assert_called_once()
+        assert mock_configure.call_args.kwargs["logs_root"] is None

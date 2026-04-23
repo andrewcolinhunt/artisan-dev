@@ -1797,3 +1797,45 @@ class TestCuratorSubprocessIsolation:
         assert result.succeeded_count == 0
         assert "dispatch_error" in result.metadata
         assert "ValueError" in result.metadata["dispatch_error"]
+
+
+class TestCreateRuntimeEnvironmentFailureLogsRoot:
+    """failure_logs_root must always be a local path regardless of delta_root."""
+
+    def test_local_delta_root_uses_sibling_layout(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import (
+            _create_runtime_environment,
+        )
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        env = _create_runtime_environment(config, MockIngestOp)
+        assert env.failure_logs_root == str(tmp_path / "logs" / "failures")
+
+    def test_cloud_delta_root_derives_from_working_root(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import (
+            _create_runtime_environment,
+        )
+        from artisan.schemas.execution.storage_config import StorageConfig
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root="s3://bucket/delta",
+            staging_root="s3://bucket/staging",
+            working_root=str(tmp_path / "working"),
+            files_root="s3://bucket/files",
+            storage=StorageConfig(protocol="s3"),
+        )
+        env = _create_runtime_environment(config, MockIngestOp)
+
+        # Must be local (no s3:// prefix) per the runtime_environment.py:76
+        # invariant.
+        assert env.failure_logs_root is not None
+        assert not env.failure_logs_root.startswith("s3://")
+        assert env.failure_logs_root == str(tmp_path / "working" / "logs" / "failures")

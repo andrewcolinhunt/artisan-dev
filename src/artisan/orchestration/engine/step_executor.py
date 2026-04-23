@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
 import resource
 import threading
 import time
@@ -401,12 +402,22 @@ def _create_runtime_environment(
     # Curator operations don't need a sandbox (no materialization)
     is_curator = is_curator_operation(operation)
 
+    # failure_logs_root must be local (recorder._write_failure_log uses
+    # os.makedirs/open). For local delta_root keep the historical
+    # sibling-of-delta layout. For cloud delta_root derive from
+    # working_root, which is already declared local in
+    # runtime_environment.py:51.
+    if config.storage.is_local:
+        failure_logs_root = uri_join(uri_parent(config.delta_root), "logs", "failures")
+    else:
+        failure_logs_root = os.path.join(config.working_root, "logs", "failures")
+
     return RuntimeEnvironment(
         delta_root=config.delta_root,
         staging_root=config.staging_root,
         working_root=None if is_curator else config.working_root,
         files_root=config.files_root,
-        failure_logs_root=uri_join(uri_parent(config.delta_root), "logs", "failures"),
+        failure_logs_root=failure_logs_root,
         preserve_staging=config.preserve_staging,
         preserve_working=config.preserve_working,
         worker_id_env_var=backend.worker_traits.worker_id_env_var if backend else None,
