@@ -84,6 +84,11 @@ class LargeFileArtifact(Artifact):
         Args:
             directory: Target directory for the output file.
             fs: Optional fsspec filesystem for reading source from cloud.
+                When None, infers fs from ``self.external_path`` via
+                ``fsspec.core.url_to_fs``. ``shutil.copy2`` is used only
+                when the resolved fs is the local filesystem (preserves
+                metadata for local-to-local copies); otherwise ``fs.get``
+                is used.
 
         Returns:
             Path to the copied file.
@@ -99,7 +104,16 @@ class LargeFileArtifact(Artifact):
         if fs is not None:
             fs.get(self.external_path, dest)
         else:
-            shutil.copy2(self.external_path, dest)
+            from fsspec.implementations.local import LocalFileSystem
+
+            from artisan.utils.fs_resolve import resolve_fs
+
+            resolved_fs, source_path = resolve_fs(self.external_path, storage=None)
+            if isinstance(resolved_fs, LocalFileSystem):
+                # Preserve metadata (mtime, mode) for local-to-local.
+                shutil.copy2(source_path, dest)
+            else:
+                resolved_fs.get(source_path, dest)
         self.materialized_path = dest
         return dest
 

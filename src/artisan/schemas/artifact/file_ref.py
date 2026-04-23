@@ -73,7 +73,13 @@ class FileRefArtifact(Artifact):
 
         Args:
             fs: Optional fsspec filesystem for reading from cloud storage.
-                None reads from local filesystem.
+                When None, infers the filesystem from ``self.path`` via
+                ``fsspec.core.url_to_fs`` — local paths resolve to
+                ``LocalFileSystem``, ``s3://...`` to ``S3FileSystem``, etc.
+                Artifacts have no ``StorageConfig`` back-reference so
+                step 1 of the resolve_fs rule isn't available; callers
+                that need configured-storage credentials must pass ``fs``
+                explicitly.
 
         Raises:
             ValueError: If path is None (not hydrated).
@@ -82,12 +88,14 @@ class FileRefArtifact(Artifact):
             if self.path is None:
                 msg = "Cannot read content: artifact not hydrated"
                 raise ValueError(msg)
-            if fs is not None:
-                with fs.open(self.path, "rb") as f:
-                    self._cached_content = f.read()
+            if fs is None:
+                from artisan.utils.fs_resolve import resolve_fs
+
+                fs, path = resolve_fs(self.path, storage=None)
             else:
-                with open(self.path, "rb") as fh:
-                    self._cached_content = fh.read()
+                path = self.path
+            with fs.open(path, "rb") as f:
+                self._cached_content = f.read()
         return self._cached_content
 
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:

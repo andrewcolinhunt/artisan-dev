@@ -111,6 +111,8 @@ class AppendableArtifact(Artifact):
 
         Args:
             fs: Optional fsspec filesystem for reading from cloud storage.
+                When None, infers fs from ``self.external_path`` via
+                ``fsspec.core.url_to_fs``.
 
         Returns:
             The parsed JSON record dict.
@@ -121,11 +123,13 @@ class AppendableArtifact(Artifact):
         if self.external_path is None:
             msg = "Cannot read record: external_path not set"
             raise ValueError(msg)
-        if fs is not None:
-            opener = fs.open(self.external_path, "r")
+        if fs is None:
+            from artisan.utils.fs_resolve import resolve_fs
+
+            fs, source_path = resolve_fs(self.external_path, storage=None)
         else:
-            opener = open(self.external_path)  # noqa: SIM115 — held via the `with opener` below
-        with opener as f:
+            source_path = self.external_path
+        with fs.open(source_path, "r") as f:
             for line in f:
                 record: dict[str, Any] = json.loads(line)
                 if record.get("record_id") == self.record_id:

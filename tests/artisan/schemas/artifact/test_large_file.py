@@ -172,6 +172,58 @@ class TestMaterialize:
             art.materialize_to(str(tmp_path))
 
 
+class TestMaterializeAutoInferFs:
+    """When fs=None, _materialize_content infers fs from external_path.
+
+    Local paths take the shutil.copy2 fast-path (preserves metadata).
+    Cloud paths fall through to fs.get on the resolved fs.
+    """
+
+    def test_materialize_local_uses_shutil_copy(self, tmp_path: Path) -> None:
+        """Bare local path → resolve_fs returns LocalFileSystem → shutil.copy2."""
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"local-bytes")
+
+        art = LargeFileArtifact.draft(
+            content_hash=compute_content_hash(b"local-bytes"),
+            size_bytes=len(b"local-bytes"),
+            step_number=0,
+            external_path=str(src),
+            extension=".bin",
+        ).finalize()
+        art = LargeFileArtifact.model_validate(art.model_dump())
+
+        out = tmp_path / "out"
+        out.mkdir()
+        dest = art._materialize_content(str(out))
+        assert os.path.basename(dest).endswith(".bin")
+        assert (out / os.path.basename(dest)).read_bytes() == b"local-bytes"
+
+    def test_materialize_memory_fs_uses_fs_get(self, tmp_path: Path) -> None:
+        """memory:// path → resolve_fs returns MemoryFileSystem → fs.get."""
+        import fsspec
+
+        mem_fs = fsspec.filesystem("memory")
+        with mem_fs.open("/test_large_file/auto/blob.bin", "wb") as f:
+            f.write(b"memory-bytes")
+
+        art = LargeFileArtifact.draft(
+            content_hash=compute_content_hash(b"memory-bytes"),
+            size_bytes=len(b"memory-bytes"),
+            step_number=0,
+            external_path="memory:///test_large_file/auto/blob.bin",
+            extension=".bin",
+        ).finalize()
+        art = LargeFileArtifact.model_validate(art.model_dump())
+
+        out = tmp_path / "out"
+        out.mkdir()
+        dest = art._materialize_content(str(out))
+        assert (out / os.path.basename(dest)).read_bytes() == b"memory-bytes"
+
+        mem_fs.rm("/test_large_file/auto/blob.bin")
+
+
 class TestTypeRegistration:
     """Tests for artifact type registry integration."""
 

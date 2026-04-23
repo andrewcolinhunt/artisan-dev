@@ -162,20 +162,40 @@ def _promote_file_paths_to_store(
         Tuple of (resolved inputs dict or None if all invalid,
         count of valid files).
     """
+    from fsspec import AbstractFileSystem
+    from fsspec.implementations.local import LocalFileSystem
+
     from artisan.schemas.artifact.file_ref import FileRefArtifact
     from artisan.schemas.enums import TablePath
     from artisan.storage.io.commit import DeltaCommitter
     from artisan.utils.filename import strip_extensions
+    from artisan.utils.fs_resolve import resolve_fs
 
-    valid_paths: list[str] = []
+    # Per-path fs resolution (two-step rule from utils/fs_resolve.py):
+    # protocol-match → config.storage.filesystem(); else → url_to_fs
+    # ambient discovery. This lets a local pipeline ingest from S3, and
+    # lets test fixtures with explicit credentials in StorageConfig
+    # reach MinIO without setting AWS_* env vars (would leak across
+    # xdist workers).
+    valid_paths: list[tuple[str, AbstractFileSystem, str]] = []
     invalid_paths: list[str] = []
     for path_str in file_paths:
-        if not os.path.exists(path_str):
-            invalid_paths.append(f"Not found: {path_str}")
-        elif not os.path.isfile(path_str):
-            invalid_paths.append(f"Not a file: {path_str}")
-        else:
-            valid_paths.append(path_str)
+        try:
+            fs, stripped = resolve_fs(path_str, config.storage)
+            if not fs.exists(stripped):
+                invalid_paths.append(f"Not found: {path_str}")
+                continue
+            if not fs.isfile(stripped):
+                invalid_paths.append(f"Not a file: {path_str}")
+                continue
+        except Exception as exc:
+            # Invalid URI, missing fsspec driver (e.g. gcs:// without
+            # gcsfs installed), or auth/network failure on fs.exists.
+            # User-provided paths must never crash pipeline kickoff —
+            # they surface alongside not-found paths in the warning below.
+            invalid_paths.append(f"Inaccessible: {path_str} ({exc})")
+            continue
+        valid_paths.append((path_str, fs, stripped))
 
     if invalid_paths:
         logger.warning(
@@ -190,17 +210,25 @@ def _promote_file_paths_to_store(
 
     # Create FileRefArtifacts and finalize
     file_ref_artifacts: list[FileRefArtifact] = []
-    for path_str in valid_paths:
-        with open(path_str, "rb") as f:
+    for original, fs, stripped in valid_paths:
+        with fs.open(stripped, "rb") as f:
             content = f.read()
         content_hash = compute_artifact_id(content)
         size_bytes = len(content)
-        basename = os.path.basename(path_str)
+        # basename/splitext are pure string ops — work on URIs.
+        basename = os.path.basename(original)
         _name_part, ext_part = os.path.splitext(basename)
+        # Local paths get an absolute path; cloud URIs get stored as-is.
+        # `isinstance` (not `fs.protocol == "file"`) because fsspec
+        # implementations may declare `protocol` as a tuple
+        # (e.g. s3fs uses `("s3", "s3a")`).
+        stored_path = (
+            os.path.abspath(original) if isinstance(fs, LocalFileSystem) else original
+        )
         artifact = cast(
             FileRefArtifact,
             FileRefArtifact.draft(
-                path=os.path.abspath(path_str),
+                path=stored_path,
                 content_hash=content_hash,
                 size_bytes=size_bytes,
                 step_number=step_number,
