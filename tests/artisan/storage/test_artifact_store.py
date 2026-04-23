@@ -935,3 +935,59 @@ class TestGetAssociated:
         store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         result = store.get_associated({"a" * 32}, "metric")
         assert result == {}
+
+
+class TestArtifactStoreBackendParametrized:
+    """Smoke tests for ArtifactStore parametrized over [local, s3] backends.
+
+    Uses the ``backend_fs`` fixture from ``tests/artisan/storage/conftest.py``
+    to exercise an end-to-end seed-and-query round-trip on both filesystems.
+    S3 params skip cleanly when MinIO is unavailable.
+    """
+
+    def test_get_artifact_type_after_seed(self, backend_fs):
+        """Seed artifact_index via DeltaCommitter, then query via ArtifactStore."""
+        from artisan.schemas.enums import TablePath
+        from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.staging import StagingManager
+
+        fs, storage, root = backend_fs
+        delta_root = f"{root}/delta"
+        staging_root = f"{root}/staging"
+
+        sm = StagingManager(staging_root, fs)
+        committer = DeltaCommitter(
+            delta_root,
+            sm,
+            fs=fs,
+            storage_options=storage.delta_storage_options(),
+        )
+
+        index_df = pl.DataFrame(
+            {
+                "artifact_id": ["a" * 32],
+                "artifact_type": ["metric"],
+                "origin_step_number": [0],
+                "metadata": ["{}"],
+            },
+            schema=ARTIFACT_INDEX_SCHEMA,
+        )
+        rows = committer.commit_dataframe(index_df, TablePath.ARTIFACT_INDEX.value)
+        assert rows == 1
+
+        # Verify the seeded table is readable via pl.read_delta directly.
+        table_uri = f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}"
+        verify = pl.read_delta(
+            table_uri, storage_options=storage.delta_storage_options()
+        )
+        assert verify.shape[0] == 1
+
+        # Now exercise ArtifactStore against the same backend.
+        store = ArtifactStore(
+            delta_root,
+            fs=fs,
+            storage_options=storage.delta_storage_options(),
+        )
+        assert store.get_artifact_type("a" * 32) == "metric"
+        assert store.artifact_exists("a" * 32) is True
+        assert store.get_artifact_type("z" * 32) is None

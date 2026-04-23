@@ -2030,7 +2030,11 @@ class TestPromoteFilePathsCloudUri:
 
         # Best-effort cleanup of the in-memory fs. MemoryFileSystem
         # doesn't track empty dirs, so a missing parent on rm is fine.
-        for path in ("/promote-cloud", "/promote-cloud-delta", "/promote-cloud-staging"):
+        for path in (
+            "/promote-cloud",
+            "/promote-cloud-delta",
+            "/promote-cloud-staging",
+        ):
             with contextlib.suppress(FileNotFoundError):
                 mem_fs.rm(path, recursive=True)
 

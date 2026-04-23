@@ -28,9 +28,12 @@ rootutils.setup_root(
 # The MinIO image tag is pinned for CI reproducibility. Bump this tag during
 # periodic dependency review — track upstream releases at
 # https://github.com/minio/minio/releases. When bumping, run
-# `pytest -m integration -k smoke_s3` to confirm the new image still passes
-# the latency assertion (catches IMDS regressions and behavior drift).
-_MINIO_IMAGE = "minio/minio:RELEASE.2024-09-22T00-33-43Z"
+# `pytest -m integration` to confirm the new image still passes the smoke
+# latency assertion (catches IMDS regressions and behavior drift) and the
+# parametrized [local, s3] tests (catches checksum-handling regressions
+# in DeleteObjects — older MinIO releases require Content-MD5 while
+# modern boto3 sends only CRC32, breaking recursive bucket cleanup).
+_MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 
 
 @pytest.fixture(scope="session")
@@ -48,6 +51,14 @@ def minio_endpoint() -> Iterator[dict[str, str] | None]:
     # because s3fs runs inside this same process — there is no subprocess
     # to inherit a separate env.
     os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
+    # Recent boto3 (used by s3fs) defaults to CRC32 integrity checksums on
+    # write/delete, but the pinned MinIO image only accepts the legacy
+    # MD5/optional path. Force the request checksum to MD5-on-required
+    # so DeleteObjects against MinIO doesn't 400 with `MissingContentMD5`.
+    # Real S3 ignores this header so production behavior is unaffected.
+    os.environ.setdefault("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required")
+    os.environ.setdefault("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required")
 
     existing = os.environ.get("ARTISAN_S3_ENDPOINT")
     if existing:

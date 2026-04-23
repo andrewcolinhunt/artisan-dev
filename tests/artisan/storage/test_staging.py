@@ -1,10 +1,15 @@
-"""Tests for staging.py"""
+"""Tests for staging.py — parametrized over [local, s3] backends.
+
+The ``backend_fs`` fixture (from ``tests/artisan/storage/conftest.py``)
+yields ``(fs, storage_config, uri_prefix)`` for each backend so the
+test body is backend-agnostic. S3 params skip cleanly when MinIO is
+unavailable.
+"""
 
 from __future__ import annotations
 
 import polars as pl
 import pytest
-from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.storage.io.staging import StagingArea, StagingManager
@@ -12,96 +17,87 @@ from artisan.storage.io.staging import StagingArea, StagingManager
 METRICS_SCHEMA = MetricArtifact.POLARS_SCHEMA
 
 
-@pytest.fixture
-def local_fs():
-    """Local filesystem for staging tests."""
-    return LocalFileSystem()
+def _row(artifact_id: str = "a" * 32, name: str = "test") -> dict:
+    """Reusable single-row payload matching METRICS_SCHEMA."""
+    return {
+        "artifact_id": [artifact_id],
+        "origin_step_number": [0],
+        "content": [b'{"score": 0.5}'],
+        "original_name": [name],
+        "extension": [".json"],
+        "metadata": ["{}"],
+        "external_path": [None],
+    }
 
 
 class TestStagingArea:
-    """Tests for StagingArea worker operations."""
+    """Tests for StagingArea worker operations on both local and s3."""
 
-    def test_create_staging_area(self, tmp_path, local_fs):
-        """Create staging area creates batch directory."""
-        root = str(tmp_path)
-        staging = StagingArea(root, local_fs, batch_id="test_batch")
+    def test_create_staging_area(self, backend_fs):
+        """Create staging area creates batch directory.
+
+        S3 has no concept of empty directories — a prefix only "exists"
+        once an object has been written under it. The post-write
+        existence check is exercised by ``test_stage_dataframe`` instead.
+        """
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, batch_id="test_batch")
 
         assert staging.batch_id == "test_batch"
-        assert local_fs.exists(staging.batch_dir)
         assert staging.batch_dir == f"{root}/test_batch"
+        if isinstance(fs, LocalFileSystem):
+            assert fs.exists(staging.batch_dir)
 
-    def test_auto_generate_batch_id(self, tmp_path, local_fs):
+    def test_auto_generate_batch_id(self, backend_fs):
         """Batch ID is auto-generated when not provided."""
-        staging = StagingArea(str(tmp_path), local_fs, worker_id=5)
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, worker_id=5)
 
         assert staging.batch_id.startswith("w5_")
         assert len(staging.batch_id) > 3
 
-    def test_stage_dataframe(self, tmp_path, local_fs):
+    def test_stage_dataframe(self, backend_fs):
         """Stage DataFrame writes Parquet file."""
-        staging = StagingArea(str(tmp_path), local_fs, batch_id="test")
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, batch_id="test")
 
-        df = pl.DataFrame(
-            {
-                "artifact_id": ["a" * 32],
-                "origin_step_number": [0],
-                "content": [b'{"score": 0.5}'],
-                "original_name": ["test"],
-                "extension": [".json"],
-                "metadata": ["{}"],
-                "external_path": [None],
-            },
-            schema=METRICS_SCHEMA,
-        )
-
+        df = pl.DataFrame(_row(), schema=METRICS_SCHEMA)
         uri = staging.stage_dataframe(df, "metrics")
 
-        assert local_fs.exists(uri)
+        assert fs.exists(uri)
         assert "metrics" in staging.list_staged_tables()
 
-        read_back = pl.read_parquet(uri)
+        # Read-back with polars across both fs flavors. For s3, polars
+        # reads via fsspec when given an s3:// URI directly.
+        with fs.open(uri, "rb") as f:
+            read_back = pl.read_parquet(f)
         assert read_back.shape == (1, 7)
 
-    def test_stage_dataframe_append(self, tmp_path, local_fs):
+    def test_stage_dataframe_append(self, backend_fs):
         """Staging same table twice appends data."""
-        staging = StagingArea(str(tmp_path), local_fs, batch_id="test")
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, batch_id="test")
 
-        df1 = pl.DataFrame(
-            {
-                "artifact_id": ["a" * 32],
-                "origin_step_number": [0],
-                "content": [b'{"score": 0.5}'],
-                "original_name": ["a"],
-                "extension": [".json"],
-                "metadata": ["{}"],
-                "external_path": [None],
-            },
-            schema=METRICS_SCHEMA,
+        staging.stage_dataframe(
+            pl.DataFrame(_row("a" * 32, "a"), schema=METRICS_SCHEMA),
+            "metrics",
         )
-
-        df2 = pl.DataFrame(
-            {
-                "artifact_id": ["b" * 32],
-                "origin_step_number": [0],
-                "content": [b'{"score": 0.5}'],
-                "original_name": ["b"],
-                "extension": [".json"],
-                "metadata": ["{}"],
-                "external_path": [None],
-            },
-            schema=METRICS_SCHEMA,
+        staging.stage_dataframe(
+            pl.DataFrame(_row("b" * 32, "b"), schema=METRICS_SCHEMA),
+            "metrics",
         )
-
-        staging.stage_dataframe(df1, "metrics")
-        staging.stage_dataframe(df2, "metrics")
 
         uri = staging.get_staged_file("metrics")
-        read_back = pl.read_parquet(uri)
+        with fs.open(uri, "rb") as f:
+            read_back = pl.read_parquet(f)
         assert read_back.shape[0] == 2
 
-    def test_stage_empty_dataframe(self, tmp_path, local_fs):
+    def test_stage_empty_dataframe(self, backend_fs):
         """Staging empty DataFrame doesn't write file."""
-        staging = StagingArea(str(tmp_path), local_fs, batch_id="test")
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, batch_id="test")
 
         df = pl.DataFrame(schema=METRICS_SCHEMA)
         staging.stage_dataframe(df, "metrics")
@@ -109,22 +105,12 @@ class TestStagingArea:
         staged_file = staging.get_staged_file("metrics")
         assert staged_file is None
 
-    def test_stage_artifacts(self, tmp_path, local_fs):
+    def test_stage_artifacts(self, backend_fs):
         """Stage multiple artifact tables at once."""
-        staging = StagingArea(str(tmp_path), local_fs, batch_id="test")
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, batch_id="test")
 
-        metrics_df = pl.DataFrame(
-            {
-                "artifact_id": ["a" * 32],
-                "origin_step_number": [0],
-                "content": [b'{"score": 0.5}'],
-                "original_name": ["test"],
-                "extension": [".json"],
-                "metadata": ["{}"],
-                "external_path": [None],
-            },
-            schema=METRICS_SCHEMA,
-        )
+        metrics_df = pl.DataFrame(_row(), schema=METRICS_SCHEMA)
 
         staging.stage_artifacts(
             {
@@ -135,101 +121,68 @@ class TestStagingArea:
 
         assert "metrics" in staging.list_staged_tables()
 
-    def test_cleanup(self, tmp_path, local_fs):
+    def test_cleanup(self, backend_fs):
         """Cleanup removes batch directory."""
-        staging = StagingArea(str(tmp_path), local_fs, batch_id="test")
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, batch_id="test")
 
-        df = pl.DataFrame(
-            {
-                "artifact_id": ["a" * 32],
-                "origin_step_number": [0],
-                "content": [b'{"score": 0.5}'],
-                "original_name": ["test"],
-                "extension": [".json"],
-                "metadata": ["{}"],
-                "external_path": [None],
-            },
-            schema=METRICS_SCHEMA,
-        )
-
-        staging.stage_dataframe(df, "metrics")
-        assert local_fs.exists(staging.batch_dir)
+        staging.stage_dataframe(pl.DataFrame(_row(), schema=METRICS_SCHEMA), "metrics")
+        assert fs.exists(staging.batch_dir)
 
         staging.cleanup()
-        assert not local_fs.exists(staging.batch_dir)
+        assert not fs.exists(staging.batch_dir)
 
-    def test_context_manager(self, tmp_path, local_fs):
-        """StagingArea works as context manager."""
-        with StagingArea(str(tmp_path), local_fs, batch_id="context_test") as staging:
-            assert local_fs.exists(staging.batch_dir)
+    def test_context_manager(self, backend_fs):
+        """StagingArea works as context manager.
 
-    def test_batch_dir_returns_str(self, tmp_path, local_fs):
+        S3 has no concept of empty directories; the post-init existence
+        check only applies to LocalFileSystem.
+        """
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs, _, root = backend_fs
+        with StagingArea(root, fs, batch_id="context_test") as staging:
+            assert staging.batch_dir == f"{root}/context_test"
+            if isinstance(fs, LocalFileSystem):
+                assert fs.exists(staging.batch_dir)
+
+    def test_batch_dir_returns_str(self, backend_fs):
         """batch_dir returns str, not Path."""
-        staging = StagingArea(str(tmp_path), local_fs, batch_id="test")
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, batch_id="test")
         assert isinstance(staging.batch_dir, str)
 
-    def test_stage_dataframe_returns_str(self, tmp_path, local_fs):
+    def test_stage_dataframe_returns_str(self, backend_fs):
         """stage_dataframe returns str URI."""
-        staging = StagingArea(str(tmp_path), local_fs, batch_id="test")
-        df = pl.DataFrame(
-            {
-                "artifact_id": ["a" * 32],
-                "origin_step_number": [0],
-                "content": [b'{"score": 0.5}'],
-                "original_name": ["test"],
-                "extension": [".json"],
-                "metadata": ["{}"],
-                "external_path": [None],
-            },
-            schema=METRICS_SCHEMA,
+        fs, _, root = backend_fs
+        staging = StagingArea(root, fs, batch_id="test")
+        result = staging.stage_dataframe(
+            pl.DataFrame(_row(), schema=METRICS_SCHEMA), "metrics"
         )
-        result = staging.stage_dataframe(df, "metrics")
         assert isinstance(result, str)
 
 
 class TestStagingManager:
-    """Tests for StagingManager orchestrator operations."""
+    """Tests for StagingManager orchestrator operations on both backends."""
 
     @pytest.fixture
-    def populated_staging(self, tmp_path, local_fs):
-        """Create staging directory with multiple batches."""
-        root = str(tmp_path)
+    def populated_staging(self, backend_fs):
+        """Create staging directory with multiple batches on the parametrized backend."""
+        fs, _, root = backend_fs
 
-        batch1 = StagingArea(root, local_fs, batch_id="batch1", worker_id=0)
+        batch1 = StagingArea(root, fs, batch_id="batch1", worker_id=0)
         batch1.stage_dataframe(
-            pl.DataFrame(
-                {
-                    "artifact_id": ["a" * 32],
-                    "origin_step_number": [0],
-                    "content": [b'{"score": 0.5}'],
-                    "original_name": ["a"],
-                    "extension": [".json"],
-                    "metadata": ["{}"],
-                    "external_path": [None],
-                },
-                schema=METRICS_SCHEMA,
-            ),
+            pl.DataFrame(_row("a" * 32, "a"), schema=METRICS_SCHEMA),
             "metrics",
         )
 
-        batch2 = StagingArea(root, local_fs, batch_id="batch2", worker_id=1)
+        batch2 = StagingArea(root, fs, batch_id="batch2", worker_id=1)
         batch2.stage_dataframe(
-            pl.DataFrame(
-                {
-                    "artifact_id": ["b" * 32],
-                    "origin_step_number": [0],
-                    "content": [b'{"score": 0.5}'],
-                    "original_name": ["b"],
-                    "extension": [".json"],
-                    "metadata": ["{}"],
-                    "external_path": [None],
-                },
-                schema=METRICS_SCHEMA,
-            ),
+            pl.DataFrame(_row("b" * 32, "b"), schema=METRICS_SCHEMA),
             "metrics",
         )
 
-        return StagingManager(root, local_fs)
+        return StagingManager(root, fs)
 
     def test_list_batch_ids(self, populated_staging):
         """List all batch IDs."""
@@ -255,9 +208,10 @@ class TestStagingManager:
         assert df.shape[0] == 2
         assert set(df["artifact_id"].to_list()) == {"a" * 32, "b" * 32}
 
-    def test_read_all_staged_no_files(self, tmp_path, local_fs):
+    def test_read_all_staged_no_files(self, backend_fs):
         """Returns None when no staged files exist."""
-        manager = StagingManager(str(tmp_path), local_fs)
+        fs, _, root = backend_fs
+        manager = StagingManager(root, fs)
         result = manager.read_all_staged_for_table("metrics")
         assert result is None
 

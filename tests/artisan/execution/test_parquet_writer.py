@@ -548,3 +548,46 @@ class TestJsonDefault:
     def test_unsupported_type_raises(self):
         with pytest.raises(TypeError, match="object"):
             _json_default(object())
+
+
+@pytest.fixture(params=["local", "s3"])
+def backend_fs(request, tmp_path, s3_fs):
+    """Yield ``(fs, uri_prefix)`` for both local and s3 backends.
+
+    Inlined here because ``tests/artisan/execution/`` does not share the
+    storage-layer ``backend_fs`` fixture. S3 params skip cleanly when MinIO
+    is unavailable (handled by the session-scoped ``s3_fs`` fixture).
+    """
+    if request.param == "local":
+        return LocalFileSystem(), str(tmp_path)
+    fs, _, uri_prefix = s3_fs
+    return fs, uri_prefix
+
+
+class TestParquetWriterBackendParametrized:
+    """Smoke round-trip of staging writes against both [local, s3] backends."""
+
+    def test_stage_artifact_edges_round_trip(self, backend_fs):
+        """Edges write to Parquet and read back identically on both backends."""
+        fs, root = backend_fs
+        edges = [
+            ArtifactProvenanceEdge(
+                execution_run_id="e" * 32,
+                source_artifact_id="s" * 32,
+                target_artifact_id="t" * 32,
+                source_artifact_type="data",
+                target_artifact_type="metric",
+                source_role="data",
+                target_role="energy",
+            )
+        ]
+
+        _stage_artifact_edges(edges, root, fs)
+
+        uri = f"{root}/artifact_edges.parquet"
+        assert fs.exists(uri)
+        with fs.open(uri, "rb") as f:
+            df = pl.read_parquet(f)
+        assert len(df) == 1
+        assert df["source_artifact_id"][0] == "s" * 32
+        assert df["target_role"][0] == "energy"

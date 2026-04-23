@@ -22,6 +22,8 @@ Task-oriented instructions for common Artisan framework operations. Each guide f
 
 - [Configuring Execution](configuring-execution.md) -- Resource allocation,
   batching, and SLURM configuration
+- [Configuring S3-Compatible Storage](configuring-s3.md) -- Point Delta
+  Lake, staging, and inputs at S3, MinIO, or any S3-compatible backend
 - [Connect to Prefect](connect-to-prefect.md) -- Connect pipelines to Prefect
   for monitoring
 
