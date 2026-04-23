@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import cloudpickle
@@ -12,6 +12,7 @@ import cloudpickle
 from artisan.execution.compute.base import ComputeRouter
 from artisan.schemas.operation_config.compute import ModalComputeConfig
 from artisan.schemas.specs.input_models import ExecuteInput
+from artisan.utils.timing import phase_timer
 
 
 class ModalComputeRouter(ComputeRouter):
@@ -65,7 +66,7 @@ class ModalComputeRouter(ComputeRouter):
         sandbox_files, sandbox_dirs = snapshot_sandbox(sandbox_root)
         tool_files = snapshot_tool_files(operation)
 
-        result, output_snapshot = fn.remote(
+        result, output_snapshot, _container_timings = fn.remote(
             operation_bytes=cloudpickle.dumps(operation),
             execute_input_bytes=cloudpickle.dumps(execute_input),
             sandbox=sandbox_files,
@@ -84,11 +85,16 @@ class ModalComputeRouter(ComputeRouter):
         operation: Any,
         execute_inputs: list[ExecuteInput],
         sandbox_root: str,
+        timings: dict[str, Any] | None = None,
     ) -> Iterable[Any]:
         """Batch-execute via Modal experimental_spawn_map().
 
         Serializes the operation ONCE, then per-artifact execute_inputs
         and sandboxes. Dispatches a single experimental_spawn_map() call.
+
+        If ``timings`` is provided, records ``serialize`` (cloudpickle +
+        sandbox/tool snapshots) and ``dispatch`` (the spawn_map call)
+        phase timings into it via :func:`phase_timer`.
 
         Note: experimental_spawn_map() is the variant that returns a
         FunctionCall handle. The stable spawn_map() returns None.
@@ -100,27 +106,31 @@ class ModalComputeRouter(ComputeRouter):
 
         fn = self._ensure_running(operation.name)
         forced_op = self._force_local_environment(operation)
-        op_bytes = cloudpickle.dumps(forced_op)
 
-        inputs_bytes = [cloudpickle.dumps(ei) for ei in execute_inputs]
-        # Split the per-artifact (files, empty_dirs) tuples into
-        # parallel lists for experimental_spawn_map's positional
-        # zip semantics.
-        snapshots = [
-            snapshot_sandbox_for_artifact(sandbox_root, ei) for ei in execute_inputs
-        ]
-        sandboxes = [files for files, _ in snapshots]
-        sandbox_dirs_list = [dirs for _, dirs in snapshots]
-        tool_files = snapshot_tool_files(operation)
+        t = timings if timings is not None else {}
 
-        fc = fn.experimental_spawn_map(
-            [op_bytes] * len(execute_inputs),
-            inputs_bytes,
-            sandboxes,
-            sandbox_dirs_list,
-            [sandbox_root] * len(execute_inputs),
-            [tool_files] * len(execute_inputs),
-        )
+        with phase_timer("serialize", t):
+            op_bytes = cloudpickle.dumps(forced_op)
+            inputs_bytes = [cloudpickle.dumps(ei) for ei in execute_inputs]
+            # Split the per-artifact (files, empty_dirs) tuples into
+            # parallel lists for experimental_spawn_map's positional
+            # zip semantics.
+            snapshots = [
+                snapshot_sandbox_for_artifact(sandbox_root, ei) for ei in execute_inputs
+            ]
+            sandboxes = [files for files, _ in snapshots]
+            sandbox_dirs_list = [dirs for _, dirs in snapshots]
+            tool_files = snapshot_tool_files(operation)
+
+        with phase_timer("dispatch", t):
+            fc = fn.experimental_spawn_map(
+                [op_bytes] * len(execute_inputs),
+                inputs_bytes,
+                sandboxes,
+                sandbox_dirs_list,
+                [sandbox_root] * len(execute_inputs),
+                [tool_files] * len(execute_inputs),
+            )
 
         return BatchExecuteHandle(
             function_call=fc,
@@ -138,6 +148,20 @@ class ModalComputeRouter(ComputeRouter):
 
     def __del__(self) -> None:
         self.close()
+
+    def warm(self, operation_name: str) -> None:
+        """Enter ``app.run()`` and hydrate the function.
+
+        Idempotent wrapper around :meth:`_ensure_running` — callers that
+        skip ``warm()`` still work (lazy init fires on first dispatch);
+        calling ``warm()`` explicitly lets the caller record router
+        startup as a separately-labeled phase.
+
+        Args:
+            operation_name: Used to name the Modal app for dashboard
+                visibility (e.g. ``artisan-data_transformer``).
+        """
+        self._ensure_running(operation_name)
 
     def _force_local_environment(self, operation: Any) -> Any:
         """Override environment to local for Modal execution.
@@ -220,7 +244,9 @@ class ModalComputeRouter(ComputeRouter):
             sandbox_dirs: list[str] | None = None,
             sandbox_root: str | None = None,
             tool_files: dict[str, bytes] | None = None,
-        ) -> tuple[Any, dict[str, bytes]]:
+        ) -> tuple[Any, dict[str, bytes], dict[str, float]]:
+            import time
+
             import cloudpickle as cp
 
             from artisan.execution.transport.sandbox_transport import (
@@ -230,6 +256,8 @@ class ModalComputeRouter(ComputeRouter):
             from artisan.execution.transport.tool_transport import (
                 restore_tool_files,
             )
+
+            container_start = time.time()
 
             # Always call restore_sandbox so empty-dir shells (e.g. the
             # per-artifact execute/artifact_i/ that the local lifecycle
@@ -248,10 +276,17 @@ class ModalComputeRouter(ComputeRouter):
             operation = cp.loads(operation_bytes)
             execute_input = cp.loads(execute_input_bytes)
 
+            execute_start = time.time()
             raw_result = operation.execute(execute_input)
+            execute_end = time.time()
 
             output_files = snapshot_outputs(execute_input.execute_dir)
-            return raw_result, output_files
+            container_timings = {
+                "container_start_epoch": container_start,
+                "execute_start_epoch": execute_start,
+                "execute_end_epoch": execute_end,
+            }
+            return raw_result, output_files, container_timings
 
         self._app = app
         self._fn = _execute_on_modal
@@ -266,12 +301,16 @@ class BatchExecuteHandle:
 
     Iterates results in input order, restoring per-artifact sandboxes
     inline. Failed invocations yield the exception at that index
-    instead of aborting iteration.
+    instead of aborting iteration. Per-artifact container-side epoch
+    timestamps are appended to ``container_timings`` as each result is
+    drained, so callers can aggregate cold-start / execute-span stats
+    after iteration completes.
     """
 
     function_call: Any  # modal.FunctionCall
     execute_inputs: list[ExecuteInput]
     count: int
+    container_timings: list[dict[str, float]] = field(default_factory=list)
 
     def cancel(self) -> None:
         """Cancel all in-flight Modal invocations."""
@@ -284,7 +323,8 @@ class BatchExecuteHandle:
         it = self.function_call.iter()
         for i in range(self.count):
             try:
-                raw_result, output_snap = next(it)
+                raw_result, output_snap, ct = next(it)
+                self.container_timings.append(ct)
                 if output_snap:
                     restore_sandbox(
                         self.execute_inputs[i].execute_dir,

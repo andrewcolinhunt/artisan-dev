@@ -9,6 +9,7 @@ import pytest
 
 from artisan.orchestration.engine.batch_compute_handle import (
     BatchComputeDispatchHandle,
+    _aggregate_container_timings,
     _batch_execute_with_shared_router,
     _process_unit,
 )
@@ -255,3 +256,128 @@ class TestProcessUnit:
         router.route_execute.assert_called_once()
         router.route_execute_batch.assert_not_called()
         assert result.success
+
+
+class TestSubPhaseTimings:
+    """Tests for router_init, collect, and _aggregate_container_timings."""
+
+    @patch("artisan.orchestration.engine.batch_compute_handle.record_execution_success")
+    @patch("artisan.orchestration.engine.batch_compute_handle.post_unit")
+    @patch("artisan.orchestration.engine.batch_compute_handle.prep_unit")
+    @patch("artisan.orchestration.engine.batch_compute_handle.create_router")
+    def test_router_init_phase_recorded_on_every_unit(
+        self, mock_create, mock_prep, mock_post, mock_record
+    ):
+        """router.warm() is called once; router_init shows up on every unit's timings."""
+        observed: list[dict] = []
+
+        def _fresh_prepped(unit, runtime_env, worker_id=0):
+            prepped = MagicMock()
+            prepped.operation.per_artifact_dispatch = True
+            prepped.timings = {}
+            prepped.execution_run_id = f"run{worker_id}"
+            observed.append(prepped.timings)
+            return prepped
+
+        mock_prep.side_effect = _fresh_prepped
+        mock_post.return_value = MagicMock(artifacts={}, edges=[])
+
+        router = MagicMock()
+        router.route_execute_batch.return_value = []
+        mock_create.return_value = router
+
+        units = [_make_unit(), _make_unit(), _make_unit()]
+        _batch_execute_with_shared_router(
+            units, MagicMock(), MagicMock(), max_workers=2
+        )
+
+        router.warm.assert_called_once_with(units[0].operation.name)
+        assert len(observed) == 3
+        for t in observed:
+            assert "router_init" in t
+            assert isinstance(t["router_init"], float)
+            assert t["router_init"] >= 0.0
+
+    @patch("artisan.orchestration.engine.batch_compute_handle.record_execution_success")
+    @patch("artisan.orchestration.engine.batch_compute_handle.post_unit")
+    @patch("artisan.orchestration.engine.batch_compute_handle.prep_unit")
+    def test_collect_phase_distinct_from_execute(
+        self, mock_prep, mock_post, mock_record
+    ):
+        """collect wraps handle iteration; execute is the outer timer."""
+        prepped = MagicMock()
+        prepped.operation.per_artifact_dispatch = True
+        prepped.timings = {}
+        prepped.execution_run_id = "run_collect"
+        mock_prep.return_value = prepped
+        mock_post.return_value = MagicMock(artifacts={}, edges=[])
+
+        router = MagicMock()
+        router.route_execute_batch.return_value = [{"r": 0}, {"r": 1}]
+
+        result = _process_unit(_make_unit(batch_size=2), MagicMock(), router)
+
+        assert result.success
+        assert "execute" in prepped.timings
+        assert "collect" in prepped.timings
+        assert isinstance(prepped.timings["execute"], float)
+        assert isinstance(prepped.timings["collect"], float)
+        assert prepped.timings["collect"] <= prepped.timings["execute"]
+
+    def test_aggregate_container_timings_summaries(self):
+        """Helper writes p50 + fan_out_span scalars from synthetic epoch dicts."""
+        cts = [
+            {
+                "container_start_epoch": 10.0,
+                "execute_start_epoch": 10.5,
+                "execute_end_epoch": 11.0,
+            },
+            {
+                "container_start_epoch": 10.1,
+                "execute_start_epoch": 10.8,
+                "execute_end_epoch": 11.4,
+            },
+            {
+                "container_start_epoch": 10.2,
+                "execute_start_epoch": 11.0,
+                "execute_end_epoch": 12.0,
+            },
+        ]
+        timings: dict = {}
+        _aggregate_container_timings(cts, timings)
+
+        # cold deltas sorted: [0.5, 0.7, 0.8] -> median 0.7
+        assert timings["container_cold_start_p50"] == 0.7
+        # exec deltas sorted: [0.5, 0.6, 1.0] -> median 0.6
+        assert timings["container_execute_p50"] == 0.6
+        # fan_out_span = max(end) - min(start) = 12.0 - 10.0 = 2.0
+        assert timings["fan_out_span"] == 2.0
+        assert all(isinstance(v, float) for v in timings.values())
+
+    def test_aggregate_container_timings_empty_noop(self):
+        """Empty cts leaves the timings dict unchanged."""
+        timings: dict = {"existing": 1.23}
+        _aggregate_container_timings([], timings)
+        assert timings == {"existing": 1.23}
+
+    def test_aggregate_container_timings_partial(self):
+        """Partial-failure batches still produce valid p50s over survivors."""
+        cts = [
+            {
+                "container_start_epoch": 0.0,
+                "execute_start_epoch": 0.1,
+                "execute_end_epoch": 0.3,
+            },
+            {
+                "container_start_epoch": 0.2,
+                "execute_start_epoch": 0.5,
+                "execute_end_epoch": 0.9,
+            },
+        ]
+        timings: dict = {}
+        _aggregate_container_timings(cts, timings)
+
+        assert isinstance(timings["container_cold_start_p50"], float)
+        assert isinstance(timings["container_execute_p50"], float)
+        assert isinstance(timings["fan_out_span"], float)
+        assert timings["fan_out_span"] == round(0.9 - 0.0, 4)
