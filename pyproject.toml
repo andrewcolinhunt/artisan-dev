@@ -142,6 +142,13 @@ icecream = "*"
 build = ">=1.4.0,<2"
 twine = ">=6.2.0,<7"
 
+# S3 testing — pulled in for unit-parametrized [local, s3] coverage and the
+# E2E MinIO integration test. Production users still install via the
+# `artisan[s3]` extra; this duplication is intentional so dev gets s3fs
+# without the extra.
+s3fs = "*"
+testcontainers = { version = "*", extras = ["minio"] }
+
 # =============================================================================
 # DOCS FEATURE - Documentation packages (Jupyter Book 2)
 # =============================================================================
