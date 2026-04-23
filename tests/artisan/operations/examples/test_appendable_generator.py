@@ -8,8 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from fsspec.implementations.local import LocalFileSystem
+
+from artisan.execution.executors.creator import run_creator_lifecycle
+from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.examples.appendable_generator import AppendableGenerator
 from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.utils.hashing import compute_content_hash
 
@@ -151,3 +157,74 @@ class TestNumFiles:
         assert len(all_lines) == 10
         ids = {json.loads(line)["record_id"] for line in all_lines}
         assert len(ids) == 10
+
+
+# ---------------------------------------------------------------------------
+# Parametrized [local, s3] lifecycle smoke — regression guard for the
+# shared-file dedup case in PR 7's _upload_files_to_root.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(params=["local", "s3"])
+def backend_env(request, tmp_path, s3_fs):
+    """Yield ``(fs, storage, files_root, working_root)`` for both backends."""
+    working = tmp_path / "working"
+    working.mkdir()
+    if request.param == "local":
+        files_root = tmp_path / "files_root"
+        files_root.mkdir()
+        return (
+            LocalFileSystem(),
+            StorageConfig(protocol="file"),
+            str(files_root),
+            str(working),
+        )
+    fs, storage, uri_prefix = s3_fs
+    return fs, storage, f"{uri_prefix}/files", str(working)
+
+
+class TestAppendableGeneratorLifecycle:
+    """Creator lifecycle for AppendableGenerator on both backends.
+
+    Multiple ``AppendableArtifact`` records share a single JSONL file
+    (``appendable_generator.py:109-119``). The upload helper dedups
+    by source path: one ``shutil.move`` / ``fs.put``, N rewrites of
+    ``external_path`` to the same destination. This test asserts that
+    invariant still holds after the lifecycle runs.
+    """
+
+    def test_shared_external_path_preserved_after_upload(
+        self, backend_env, tmp_path: Path
+    ) -> None:
+        fs, storage, files_root, working_root = backend_env
+
+        env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            working_root=working_root,
+            staging_root=str(tmp_path / "staging"),
+            files_root=files_root,
+            storage=storage,
+        )
+        unit = ExecutionUnit(
+            operation=AppendableGenerator(
+                params=AppendableGenerator.Params(
+                    count=5, num_files=1, fields_per_record=2, seed=0
+                )
+            ),
+            inputs={},
+            execution_spec_id="apg_smoke_" + "0" * 22,
+            step_number=4,
+        )
+
+        result = run_creator_lifecycle(unit, env)
+
+        artifacts = result.artifacts["records"]
+        assert len(artifacts) == 5
+        paths = {art.external_path for art in artifacts}
+        assert len(paths) == 1, (
+            f"expected all 5 records to share one external_path, got {paths!r}"
+        )
+        shared_path = artifacts[0].external_path
+        assert shared_path is not None
+        assert shared_path.startswith(files_root)
+        assert fs.exists(shared_path)

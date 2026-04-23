@@ -92,10 +92,14 @@ class ExecuteInput:
         log_path: Path where external tool output should be written.
             Provided by the framework for automatic capture.
         metadata: Escape hatch for additional data from the engine.
-        files_dir: Directory within files_root for external file output.
-            Set when the pipeline has files_root configured. Operations
-            that produce Artisan-managed external files write here instead
-            of execute_dir. None when files_root is not configured.
+        files_dir: Local sandbox directory for external file output.
+            Always a local filesystem path, never a cloud URI. Operations
+            write here using stdlib I/O; the framework uploads the
+            contents to ``files_root`` on postprocess and rewrites each
+            artifact's ``external_path`` to the destination (cloud URI
+            on cloud backends; sharded path under ``files_root`` on
+            local). Set when the pipeline has ``files_root`` configured;
+            None otherwise.
     """
 
     execute_dir: str
