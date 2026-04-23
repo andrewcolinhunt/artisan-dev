@@ -72,6 +72,38 @@ def pipeline_env(tmp_path: Path) -> dict[str, str]:
 
 
 @pytest.fixture
+def s3_pipeline_env(tmp_path: Path, s3_fs) -> dict:
+    """Cloud-backed pipeline environment on the per-test MinIO bucket.
+
+    Mirrors :func:`pipeline_env` but returns ``delta_root``,
+    ``staging_root``, and ``files_root`` as ``s3://`` URIs plus the
+    populated ``StorageConfig``. ``working_root`` stays local — it
+    holds sandboxes and (cloud-derived) failure logs that
+    ``recorder._write_failure_log`` writes with ``os.makedirs``.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory (used for working_root).
+        s3_fs: ``(fs, storage_config, uri_prefix)`` from the session MinIO.
+
+    Returns:
+        Dict with ``delta_root``, ``staging_root``, ``files_root``,
+        ``working_root``, and ``storage`` (the ``StorageConfig``).
+    """
+    fs, storage, uri_prefix = s3_fs
+    working_root = tmp_path / "working"
+    working_root.mkdir()
+    return {
+        "delta_root": f"{uri_prefix}/delta",
+        "staging_root": f"{uri_prefix}/staging",
+        "files_root": f"{uri_prefix}/files",
+        "working_root": str(working_root),
+        "storage": storage,
+        "fs": fs,
+        "uri_prefix": uri_prefix,
+    }
+
+
+@pytest.fixture
 def sample_csv_files(tmp_path: Path) -> list[Path]:
     """Create 3 sample CSV files with unique content for testing.
 
