@@ -3,18 +3,41 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
+from fsspec import AbstractFileSystem
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator.consolidate_appendables import (
     ConsolidateAppendables,
 )
 from artisan.schemas.artifact.appendable import AppendableArtifact
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.utils.hashing import compute_content_hash
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("local"),
+        pytest.param("s3", marks=pytest.mark.integration),
+    ]
+)
+def backend_fs(request, tmp_path, s3_fs):
+    """Yield ``(fs, StorageConfig, uri_prefix)`` for both backends.
+
+    Module-level so ``TestConsolidateBasicExecution`` and
+    ``TestConsolidateAppendablesBackendParametrized`` share the same
+    parametrization. Inlined here because this test file lives outside
+    ``tests/artisan/storage/`` (where the shared fixture is defined);
+    only ``s3_fs`` (from the root ``tests/conftest.py``) is needed to
+    stay in scope. The ``s3`` param carries the ``integration`` marker
+    so ``test-unit`` stays MinIO-free.
+    """
+    if request.param == "local":
+        return LocalFileSystem(), StorageConfig(), str(tmp_path)
+    return s3_fs
 
 
 def _df(artifact_ids: list[str]) -> pl.DataFrame:
@@ -41,63 +64,74 @@ def _make_appendable_artifact(
     return art
 
 
-def _write_jsonl(path: Path, records: list[dict]) -> None:
-    with path.open("w") as f:
+def _write_jsonl(fs: AbstractFileSystem, path: str, records: list[dict]) -> None:
+    """Write a JSONL file via fsspec (works for both local + s3)."""
+    with fs.open(path, "w") as f:
         for rec in records:
             f.write(json.dumps(rec, sort_keys=True) + "\n")
 
 
 def _mock_store_with_appendables(
     artifacts: dict[str, AppendableArtifact],
-    files_root: Path | None,
+    files_root: str | None,
+    fs: AbstractFileSystem,
 ) -> MagicMock:
     """Create a mock ArtifactStore with get_artifacts_by_type returning artifacts."""
     store = MagicMock()
-    store.files_root = str(files_root) if files_root else None
-    store._fs = LocalFileSystem()
+    store.files_root = files_root
+    store._fs = fs
     store.get_artifacts_by_type.return_value = artifacts
     return store
 
 
 class TestConsolidateBasicExecution:
-    """Tests for basic consolidation behavior."""
+    """Tests for basic consolidation behavior.
 
-    def test_concatenates_worker_files(self, tmp_path: Path) -> None:
+    Runs against both local and s3 backends via the module-level
+    ``backend_fs`` fixture — verifies the consolidation codepath
+    (worker-file read, combined-file write via ``fs.open``) works on
+    both filesystems.
+    """
+
+    def test_concatenates_worker_files(self, backend_fs) -> None:
+        fs, _storage, root = backend_fs
         # Set up two worker JSONL files
-        worker_a = tmp_path / "workers" / "a" / "records.jsonl"
-        worker_b = tmp_path / "workers" / "b" / "records.jsonl"
-        worker_a.parent.mkdir(parents=True)
-        worker_b.parent.mkdir(parents=True)
-        _write_jsonl(worker_a, [{"record_id": "rec_0", "values": {"x": 1}}])
-        _write_jsonl(worker_b, [{"record_id": "rec_1", "values": {"x": 2}}])
+        worker_a = f"{root}/workers/a/records.jsonl"
+        worker_b = f"{root}/workers/b/records.jsonl"
+        fs.makedirs(f"{root}/workers/a", exist_ok=True)
+        fs.makedirs(f"{root}/workers/b", exist_ok=True)
+        _write_jsonl(fs, worker_a, [{"record_id": "rec_0", "values": {"x": 1}}])
+        _write_jsonl(fs, worker_b, [{"record_id": "rec_1", "values": {"x": 2}}])
 
-        art_0 = _make_appendable_artifact("rec_0", str(worker_a))
-        art_1 = _make_appendable_artifact("rec_1", str(worker_b))
+        art_0 = _make_appendable_artifact("rec_0", worker_a)
+        art_1 = _make_appendable_artifact("rec_1", worker_b)
         artifacts = {art_0.artifact_id: art_0, art_1.artifact_id: art_1}
 
-        files_root = tmp_path / "files"
-        files_root.mkdir()
-        store = _mock_store_with_appendables(artifacts, files_root)
+        files_root = f"{root}/files"
+        fs.makedirs(files_root, exist_ok=True)
+        store = _mock_store_with_appendables(artifacts, files_root, fs)
         inputs = {"records": _df(list(artifacts.keys()))}
 
         op = ConsolidateAppendables()
         op.execute_curator(inputs, step_number=5, artifact_store=store)
 
-        combined = files_root / "5" / "combined.jsonl"
-        assert combined.exists()
-        lines = combined.read_text().strip().split("\n")
+        combined = f"{files_root}/5/combined.jsonl"
+        assert fs.exists(combined)
+        with fs.open(combined, "r") as f:
+            lines = f.read().strip().split("\n")
         assert len(lines) == 2
 
-    def test_output_artifacts_point_to_combined_file(self, tmp_path: Path) -> None:
-        worker = tmp_path / "worker.jsonl"
-        _write_jsonl(worker, [{"record_id": "rec_0", "values": {}}])
+    def test_output_artifacts_point_to_combined_file(self, backend_fs) -> None:
+        fs, _storage, root = backend_fs
+        worker = f"{root}/worker.jsonl"
+        _write_jsonl(fs, worker, [{"record_id": "rec_0", "values": {}}])
 
-        art = _make_appendable_artifact("rec_0", str(worker))
+        art = _make_appendable_artifact("rec_0", worker)
         artifacts = {art.artifact_id: art}
 
-        files_root = tmp_path / "files"
-        files_root.mkdir()
-        store = _mock_store_with_appendables(artifacts, files_root)
+        files_root = f"{root}/files"
+        fs.makedirs(files_root, exist_ok=True)
+        store = _mock_store_with_appendables(artifacts, files_root, fs)
         inputs = {"records": _df(list(artifacts.keys()))}
 
         op = ConsolidateAppendables()
@@ -107,9 +141,11 @@ class TestConsolidateBasicExecution:
         for draft in result.artifacts["records"]:
             assert draft.external_path == expected_path
 
-    def test_record_count_preserved(self, tmp_path: Path) -> None:
-        worker = tmp_path / "worker.jsonl"
+    def test_record_count_preserved(self, backend_fs) -> None:
+        fs, _storage, root = backend_fs
+        worker = f"{root}/worker.jsonl"
         _write_jsonl(
+            fs,
             worker,
             [
                 {"record_id": "rec_0", "values": {}},
@@ -117,13 +153,13 @@ class TestConsolidateBasicExecution:
             ],
         )
 
-        art_0 = _make_appendable_artifact("rec_0", str(worker))
-        art_1 = _make_appendable_artifact("rec_1", str(worker))
+        art_0 = _make_appendable_artifact("rec_0", worker)
+        art_1 = _make_appendable_artifact("rec_1", worker)
         artifacts = {art_0.artifact_id: art_0, art_1.artifact_id: art_1}
 
-        files_root = tmp_path / "files"
-        files_root.mkdir()
-        store = _mock_store_with_appendables(artifacts, files_root)
+        files_root = f"{root}/files"
+        fs.makedirs(files_root, exist_ok=True)
+        store = _mock_store_with_appendables(artifacts, files_root, fs)
         inputs = {"records": _df(list(artifacts.keys()))}
 
         op = ConsolidateAppendables()
@@ -131,17 +167,18 @@ class TestConsolidateBasicExecution:
 
         assert len(result.artifacts["records"]) == 2
 
-    def test_new_artifact_ids(self, tmp_path: Path) -> None:
+    def test_new_artifact_ids(self, backend_fs) -> None:
         """Consolidated artifacts get new IDs because external_path changed."""
-        worker = tmp_path / "worker.jsonl"
-        _write_jsonl(worker, [{"record_id": "rec_0", "values": {}}])
+        fs, _storage, root = backend_fs
+        worker = f"{root}/worker.jsonl"
+        _write_jsonl(fs, worker, [{"record_id": "rec_0", "values": {}}])
 
-        art = _make_appendable_artifact("rec_0", str(worker))
+        art = _make_appendable_artifact("rec_0", worker)
         artifacts = {art.artifact_id: art}
 
-        files_root = tmp_path / "files"
-        files_root.mkdir()
-        store = _mock_store_with_appendables(artifacts, files_root)
+        files_root = f"{root}/files"
+        fs.makedirs(files_root, exist_ok=True)
+        store = _mock_store_with_appendables(artifacts, files_root, fs)
         inputs = {"records": _df(list(artifacts.keys()))}
 
         op = ConsolidateAppendables()
@@ -154,7 +191,11 @@ class TestConsolidateBasicExecution:
 
 
 class TestConsolidateErrorHandling:
-    """Tests for error conditions."""
+    """Tests for error conditions.
+
+    Stays local-only (no backend parametrization) — ``test_raises_without_files_root``
+    asserts only a ``ValueError`` without touching the filesystem.
+    """
 
     def test_raises_without_files_root(self) -> None:
         store = MagicMock()
@@ -191,30 +232,10 @@ class TestConsolidateClassAttributes:
 class TestConsolidateAppendablesBackendParametrized:
     """Smoke test: consolidate JSONL workers into a combined file on each backend.
 
-    The curator's consolidation loop opens both worker files and the
-    combined output via ``fs.open(..., "r"|"w")`` in text mode — the
-    S3-sensitive codepath called out in the design. This class
-    parametrizes ``[local, s3]`` to exercise it against both backends.
-
-    ``backend_fs`` is inlined here because this test file lives outside
-    ``tests/artisan/storage/`` (where the shared fixture is defined) and
-    a one-off inline fixture is simpler than a cross-package conftest
-    chain. Only ``s3_fs`` (from the root ``tests/conftest.py``) is needed
-    to stay in scope.
+    Kept as a higher-level end-to-end smoke alongside the promoted
+    ``TestConsolidateBasicExecution`` class, which now covers the same
+    backends at a finer granularity.
     """
-
-    @pytest.fixture(
-        params=[
-            pytest.param("local"),
-            pytest.param("s3", marks=pytest.mark.integration),
-        ]
-    )
-    def backend_fs(self, request, tmp_path, s3_fs):
-        if request.param == "local":
-            from artisan.schemas.execution.storage_config import StorageConfig
-
-            return LocalFileSystem(), StorageConfig(), str(tmp_path)
-        return s3_fs
 
     def test_consolidates_worker_jsonl_files(self, backend_fs) -> None:
         """Two worker JSONL files concatenate into one combined.jsonl."""
