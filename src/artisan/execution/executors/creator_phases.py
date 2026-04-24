@@ -182,12 +182,12 @@ def prep_unit(
 
         files_dir: str | None
         if runtime_env.files_root is not None:
-            files_dir = shard_uri(
-                runtime_env.files_root,
-                execution_run_id,
-                unit.step_number,
-                operation_name=operation.name,
-            )
+            # files_dir is a local sandbox subdirectory. The framework
+            # uploads its contents to runtime_env.files_root in
+            # post_unit via _upload_files_to_root (cloud = fs.put,
+            # local = shutil.move), rewriting external_path on each
+            # produced artifact.
+            files_dir = os.path.join(sandbox_path_str, "files_outputs")
             os.makedirs(files_dir, exist_ok=True)
         else:
             files_dir = None
@@ -366,6 +366,24 @@ def post_unit(
         finalized_artifacts = finalize_artifacts(op_result.artifacts)
         validate_artifacts_match_specs(finalized_artifacts, operation_class.outputs)
 
+        # Upload local files_dir bytes to runtime_env.files_root and
+        # rewrite external_path on each finalized artifact. Runs inside
+        # the postprocess phase_timer, so any _UploadFailure surfaces
+        # as a postprocess failure (it subclasses _PostprocessFailure)
+        # and the existing except clause at creator.py:204 records it.
+        # Because the exception propagates out of post_unit before the
+        # sandbox cleanup at lines 429-434, the local files survive
+        # automatically for recovery — no explicit preservation code.
+        _upload_files_to_root(
+            finalized_artifacts,
+            files_dir=prepped.files_dir,
+            runtime_env=runtime_env,
+            execution_run_id=prepped.execution_run_id,
+            step_number=prepped.unit.step_number,
+            operation_name=operation.name,
+            sandbox_path=prepped.sandbox_path,
+        )
+
         augment_match_map_from_artifacts(
             filesystem_match_map,
             prepped.materialized_artifact_ids,
@@ -444,6 +462,146 @@ def post_unit(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _upload_files_to_root(
+    finalized_artifacts: dict[str, list[Artifact]],
+    files_dir: str | None,
+    runtime_env: RuntimeEnvironment,
+    execution_run_id: str,
+    step_number: int,
+    operation_name: str,
+    sandbox_path: str,
+) -> None:
+    """Relocate local ``files_dir`` bytes to ``runtime_env.files_root``.
+
+    Walks every finalized artifact whose ``external_path`` points
+    inside the unit's local ``files_dir`` and moves (local) or
+    uploads (cloud) the underlying file to its canonical sharded
+    destination under ``files_root``, then rewrites the artifact's
+    ``external_path`` in place.
+
+    Multiple artifacts may share one source file (e.g.
+    ``AppendableGenerator`` emits N ``AppendableArtifact`` instances
+    backed by one JSONL). A ``moved`` dict keyed on source path
+    deduplicates so each file moves / uploads at most once; every
+    artifact still gets its ``external_path`` rewritten.
+
+    Artifacts whose ``external_path`` is already a cloud URI or
+    lives outside ``files_dir`` are left untouched.
+
+    ``Artifact`` is not frozen (``schemas/artifact/base.py:30``), so
+    rewrites are direct attribute assignments.
+
+    Args:
+        finalized_artifacts: Output of ``finalize_artifacts`` — dict
+            of role -> list of finalized Artifact instances.
+        files_dir: Unit's local sandbox files directory, or None
+            when no operation in this unit produces file outputs.
+        runtime_env: Runtime environment carrying ``files_root`` and
+            the storage backend.
+        execution_run_id: Per-execution ID used to compute the
+            sharded destination under ``files_root``.
+        step_number: Pipeline step number for sharding.
+        operation_name: Operation name for sharding.
+        sandbox_path: Unit sandbox path; included in the failure
+            log so recovery is possible when an upload fails.
+
+    Raises:
+        _UploadFailure: When ``shutil.move`` or ``fs.put`` raises.
+            As a subclass of ``_PostprocessFailure`` this propagates
+            out of ``post_unit`` before the sandbox cleanup runs,
+            preserving the local files automatically.
+    """
+    if files_dir is None or runtime_env.files_root is None:
+        return
+
+    from artisan.execution.executors.creator import _UploadFailure
+
+    target_shard = shard_uri(
+        runtime_env.files_root,
+        execution_run_id,
+        step_number,
+        operation_name=operation_name,
+    )
+
+    fs = runtime_env.storage.filesystem()
+    is_local = runtime_env.storage.is_local
+
+    if is_local:
+        os.makedirs(target_shard, exist_ok=True)
+    else:
+        # No-op on most object stores (prefixes are implicit).
+        fs.makedirs(target_shard, exist_ok=True)
+
+    # Source local path -> destination URI/path. Dedups the
+    # AppendableGenerator shared-file case.
+    moved: dict[str, str] = {}
+
+    for artifact_list in finalized_artifacts.values():
+        for artifact in artifact_list:
+            ext_path = artifact.external_path
+            if ext_path is None:
+                continue
+            if not _is_under_local_dir(ext_path, files_dir):
+                continue
+
+            if ext_path not in moved:
+                relative = os.path.relpath(ext_path, files_dir)
+                destination = (
+                    os.path.join(target_shard, relative)
+                    if is_local
+                    else f"{target_shard}/{relative}"
+                )
+                try:
+                    if is_local:
+                        os.makedirs(os.path.dirname(destination), exist_ok=True)
+                        shutil.move(ext_path, destination)
+                    else:
+                        fs.put(ext_path, destination)
+                except Exception as exc:
+                    logger.warning(
+                        "Upload to files_root failed at %s; "
+                        "preserving sandbox %s for recovery.",
+                        destination,
+                        sandbox_path,
+                    )
+                    msg = f"Upload to {destination} failed: {exc}"
+                    raise _UploadFailure(msg) from exc
+                moved[ext_path] = destination
+
+            destination = moved[ext_path]
+            # Direct mutation: Artifact is not frozen (base.py:30).
+            artifact.external_path = destination
+            # Local: shutil.move relocated the bytes; point at the
+            # new path. Cloud: sandbox still has the bytes until the
+            # cleanup at the end of post_unit — keep the local ref
+            # so any in-process consumer avoids an fs.get round-trip.
+            artifact.materialized_path = destination if is_local else ext_path
+
+
+def _is_under_local_dir(candidate: str, root: str) -> bool:
+    """True iff ``candidate`` is a local path inside ``root``.
+
+    ``os.path.commonpath`` raises on cross-protocol paths, so guard
+    against ``s3://...`` strings explicitly.
+
+    Args:
+        candidate: Path to test.
+        root: Parent directory.
+
+    Returns:
+        True when ``candidate`` lives under ``root`` on the local
+        filesystem; False otherwise (including cloud URIs).
+    """
+    if "://" in candidate:
+        return False
+    try:
+        return os.path.commonpath(
+            [os.path.abspath(candidate), os.path.abspath(root)]
+        ) == os.path.abspath(root)
+    except ValueError:
+        return False
 
 
 def _split_prepared_inputs(

@@ -16,16 +16,20 @@ from artisan.execution.compute.local import LocalComputeRouter
 from artisan.execution.executors.creator import LifecycleResult, run_creator_lifecycle
 from artisan.execution.executors.creator_phases import (
     PreppedUnit,
+    _is_under_local_dir,
     _reassemble_results,
     _split_prepared_inputs,
+    _upload_files_to_root,
     post_unit,
     prep_unit,
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -376,3 +380,300 @@ class TestRoundTripEquivalence:
         for role in mono_result.artifacts:
             assert len(split_result.artifacts[role]) == len(mono_result.artifacts[role])
         assert len(split_result.edges) == len(mono_result.edges)
+
+
+# ---------------------------------------------------------------------------
+# TestUploadFilesToRoot — unit tests for _upload_files_to_root
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clear_memory_fs() -> Any:
+    """Clear fsspec's MemoryFileSystem class-level store around each test."""
+    import fsspec
+
+    fs = fsspec.filesystem("memory")
+    fs.store.clear()
+    fs.pseudo_dirs.clear()
+    yield fs
+    fs.store.clear()
+    fs.pseudo_dirs.clear()
+
+
+def _make_runtime_env(
+    files_root: str, storage: StorageConfig, working_root: Path
+) -> RuntimeEnvironment:
+    return RuntimeEnvironment(
+        delta_root=str(working_root / "delta"),
+        staging_root=str(working_root / "staging"),
+        working_root=str(working_root),
+        files_root=files_root,
+        storage=storage,
+    )
+
+
+def _make_artifact(external_path: str) -> LargeFileArtifact:
+    return LargeFileArtifact(
+        artifact_id="a" * 32,
+        origin_step_number=1,
+        content_hash="b" * 32,
+        size_bytes=10,
+        external_path=external_path,
+        original_name="output",
+        extension=".bin",
+    )
+
+
+class TestUploadFilesToRoot:
+    """Unit tests for the `_upload_files_to_root` upload helper.
+
+    Uses ``MemoryFileSystem`` as a stand-in for S3 so the tests do
+    not need MinIO.
+    """
+
+    def test_local_case_moves_file_and_rewrites_paths(self, tmp_path: Path) -> None:
+        sandbox = tmp_path / "sandbox"
+        files_dir = sandbox / "files_outputs"
+        files_dir.mkdir(parents=True)
+        source = files_dir / "output_00000.bin"
+        source.write_bytes(b"x" * 10)
+        files_root = tmp_path / "files_root"
+        files_root.mkdir()
+
+        artifact = _make_artifact(str(source))
+        runtime_env = _make_runtime_env(
+            str(files_root), StorageConfig(protocol="file"), tmp_path
+        )
+
+        _upload_files_to_root(
+            {"files": [artifact]},
+            files_dir=str(files_dir),
+            runtime_env=runtime_env,
+            execution_run_id="a" * 32,
+            step_number=1,
+            operation_name="test_op",
+            sandbox_path=str(sandbox),
+        )
+
+        assert artifact.external_path is not None
+        assert str(files_root) in artifact.external_path
+        assert artifact.external_path.endswith("output_00000.bin")
+        assert os.path.exists(artifact.external_path)
+        # shutil.move relocated the bytes — source no longer exists.
+        assert not source.exists()
+        # Local: materialized_path points at the new (final) location.
+        assert artifact.materialized_path == artifact.external_path
+
+    def test_cloud_case_uploads_and_rewrites_to_uri(
+        self, tmp_path: Path, clear_memory_fs: Any
+    ) -> None:
+        sandbox = tmp_path / "sandbox"
+        files_dir = sandbox / "files_outputs"
+        files_dir.mkdir(parents=True)
+        source = files_dir / "output_00000.bin"
+        source.write_bytes(b"x" * 10)
+
+        artifact = _make_artifact(str(source))
+        files_root = "memory://bucket/files"
+        runtime_env = _make_runtime_env(
+            files_root, StorageConfig(protocol="memory"), tmp_path
+        )
+
+        _upload_files_to_root(
+            {"files": [artifact]},
+            files_dir=str(files_dir),
+            runtime_env=runtime_env,
+            execution_run_id="c" * 32,
+            step_number=2,
+            operation_name="test_op",
+            sandbox_path=str(sandbox),
+        )
+
+        assert artifact.external_path is not None
+        assert artifact.external_path.startswith("memory://bucket/files/")
+        assert artifact.external_path.endswith("output_00000.bin")
+        fs = runtime_env.storage.filesystem()
+        assert fs.exists(artifact.external_path)
+        # fs.put copied (didn't move): the sandbox source survives.
+        assert source.exists()
+        # Cloud: materialized_path keeps the local sandbox ref so
+        # in-process consumers avoid an fs.get round-trip.
+        assert artifact.materialized_path == str(source)
+
+    def test_already_cloud_external_path_left_alone(self, tmp_path: Path) -> None:
+        sandbox = tmp_path / "sandbox"
+        files_dir = sandbox / "files_outputs"
+        files_dir.mkdir(parents=True)
+        files_root = tmp_path / "files_root"
+        files_root.mkdir()
+
+        # Passthrough reference to a pre-existing cloud URI.
+        artifact = _make_artifact("s3://other-bucket/already/there.bin")
+        original_ext_path = artifact.external_path
+        runtime_env = _make_runtime_env(
+            str(files_root), StorageConfig(protocol="file"), tmp_path
+        )
+
+        _upload_files_to_root(
+            {"files": [artifact]},
+            files_dir=str(files_dir),
+            runtime_env=runtime_env,
+            execution_run_id="d" * 32,
+            step_number=1,
+            operation_name="test_op",
+            sandbox_path=str(sandbox),
+        )
+
+        assert artifact.external_path == original_ext_path
+
+    def test_outside_sandbox_external_path_left_alone(self, tmp_path: Path) -> None:
+        sandbox = tmp_path / "sandbox"
+        files_dir = sandbox / "files_outputs"
+        files_dir.mkdir(parents=True)
+        files_root = tmp_path / "files_root"
+        files_root.mkdir()
+
+        # Absolute path outside files_dir — operation ingested an
+        # existing file by reference.
+        elsewhere = tmp_path / "elsewhere.bin"
+        elsewhere.write_bytes(b"x" * 5)
+        artifact = _make_artifact(str(elsewhere))
+        runtime_env = _make_runtime_env(
+            str(files_root), StorageConfig(protocol="file"), tmp_path
+        )
+
+        _upload_files_to_root(
+            {"files": [artifact]},
+            files_dir=str(files_dir),
+            runtime_env=runtime_env,
+            execution_run_id="e" * 32,
+            step_number=1,
+            operation_name="test_op",
+            sandbox_path=str(sandbox),
+        )
+
+        assert artifact.external_path == str(elsewhere)
+        assert elsewhere.exists()
+
+    def test_shared_source_path_dedups_upload(
+        self, tmp_path: Path, clear_memory_fs: Any
+    ) -> None:
+        """AppendableGenerator emits N artifacts sharing one JSONL."""
+        sandbox = tmp_path / "sandbox"
+        files_dir = sandbox / "files_outputs"
+        files_dir.mkdir(parents=True)
+        source = files_dir / "records_0.jsonl"
+        source.write_bytes(b'{"record_id":"r0"}\n{"record_id":"r1"}\n')
+
+        art1 = _make_artifact(str(source))
+        art2 = _make_artifact(str(source))
+
+        files_root = "memory://bucket/files"
+        runtime_env = _make_runtime_env(
+            files_root, StorageConfig(protocol="memory"), tmp_path
+        )
+
+        fs = runtime_env.storage.filesystem()
+        put_calls: list[tuple[str, str]] = []
+        original_put = fs.put
+
+        def counting_put(local: str, remote: str, *a: Any, **kw: Any) -> Any:
+            put_calls.append((local, remote))
+            return original_put(local, remote, *a, **kw)
+
+        fs.put = counting_put  # type: ignore[method-assign]
+        try:
+            _upload_files_to_root(
+                {"records": [art1, art2]},
+                files_dir=str(files_dir),
+                runtime_env=runtime_env,
+                execution_run_id="f" * 32,
+                step_number=1,
+                operation_name="test_op",
+                sandbox_path=str(sandbox),
+            )
+        finally:
+            fs.put = original_put  # type: ignore[method-assign]
+
+        assert len(put_calls) == 1, f"expected one fs.put, got {put_calls}"
+        assert art1.external_path == art2.external_path
+        assert art1.external_path is not None
+        assert art1.external_path.startswith("memory://bucket/files/")
+
+    def test_upload_failure_raises_upload_failure_caught_as_postprocess(
+        self, tmp_path: Path, clear_memory_fs: Any
+    ) -> None:
+        """_UploadFailure propagates as _PostprocessFailure via subclassing."""
+        from artisan.execution.executors.creator import (
+            _ExecuteFailure,
+            _PostprocessFailure,
+            _UploadFailure,
+        )
+
+        sandbox = tmp_path / "sandbox"
+        files_dir = sandbox / "files_outputs"
+        files_dir.mkdir(parents=True)
+        source = files_dir / "output.bin"
+        source.write_bytes(b"x")
+
+        artifact = _make_artifact(str(source))
+        files_root = "memory://bucket/files"
+        runtime_env = _make_runtime_env(
+            files_root, StorageConfig(protocol="memory"), tmp_path
+        )
+
+        fs = runtime_env.storage.filesystem()
+        original_put = fs.put
+
+        def failing_put(*a: Any, **kw: Any) -> Any:
+            msg = "disk full"
+            raise OSError(msg)
+
+        fs.put = failing_put  # type: ignore[method-assign]
+        try:
+            with pytest.raises(_UploadFailure) as exc_info:
+                _upload_files_to_root(
+                    {"files": [artifact]},
+                    files_dir=str(files_dir),
+                    runtime_env=runtime_env,
+                    execution_run_id="9" * 32,
+                    step_number=1,
+                    operation_name="test_op",
+                    sandbox_path=str(sandbox),
+                )
+        finally:
+            fs.put = original_put  # type: ignore[method-assign]
+
+        # Subclass invariant: the existing except tuple catches us.
+        assert isinstance(exc_info.value, _PostprocessFailure)
+        try:
+            raise exc_info.value
+        except (_PostprocessFailure, _ExecuteFailure):
+            pass  # caught by existing clause
+        except Exception as e:  # pragma: no cover — regression guard
+            pytest.fail(
+                f"_UploadFailure escaped the existing except tuple: {type(e).__name__}"
+            )
+        assert "disk full" in str(exc_info.value)
+
+
+class TestIsUnderLocalDir:
+    """Unit tests for `_is_under_local_dir`."""
+
+    def test_inside_returns_true(self, tmp_path: Path) -> None:
+        root = tmp_path / "sandbox"
+        root.mkdir()
+        candidate = root / "a" / "b.bin"
+        assert _is_under_local_dir(str(candidate), str(root))
+
+    def test_outside_returns_false(self, tmp_path: Path) -> None:
+        root = tmp_path / "sandbox"
+        root.mkdir()
+        elsewhere = tmp_path / "elsewhere.bin"
+        assert not _is_under_local_dir(str(elsewhere), str(root))
+
+    def test_cloud_uri_returns_false(self, tmp_path: Path) -> None:
+        root = tmp_path / "sandbox"
+        root.mkdir()
+        assert not _is_under_local_dir("s3://bucket/path.bin", str(root))
+        assert not _is_under_local_dir("memory://bucket/path.bin", str(root))

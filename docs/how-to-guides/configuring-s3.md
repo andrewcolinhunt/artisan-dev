@@ -107,6 +107,41 @@ combination — without forcing users to think about which credentials apply.
 
 ---
 
+## External file outputs (`files_root`) on cloud
+
+`files_root` is where `LargeFileArtifact` and `AppendableArtifact`
+content lives — bytes too large to embed in Delta. When `files_root`
+is a cloud URI, Artisan uses a **local sandbox + framework upload**
+model so operation authors never have to reach for fsspec:
+
+1. During `execute`, the operation writes to `inputs.files_dir`
+   using ordinary stdlib I/O (`open(...)`, `os.path.join`, etc.).
+   `files_dir` is always a local sandbox subdirectory, never a
+   cloud URI.
+2. After `postprocess`, the framework walks every finalized
+   artifact whose `external_path` points inside `files_dir` and
+   uploads the file to the sharded destination under `files_root`
+   (cloud: `fs.put`; local: `shutil.move`), then rewrites
+   `external_path` on each artifact to the destination.
+3. Downstream consumers read the artifact via
+   `LargeFileArtifact.materialize_to(...)`, which uses `fs.get`
+   on `external_path` — so the cloud round-trip is transparent.
+
+This means existing creators like `LargeFileGenerator` and
+`AppendableGenerator` work on cloud `files_root` without any code
+change; they keep writing to `inputs.files_dir` with `open()`, and
+the framework handles the upload.
+
+Multiple artifacts may share one output file (for example,
+`AppendableGenerator` emits N `AppendableArtifact` rows backed by
+one JSONL). The upload helper dedups by source path: one upload,
+N `external_path` rewrites to the shared destination.
+
+If the upload fails, the unit fails with a postprocess-style error
+and the local sandbox is preserved so the bytes are recoverable.
+
+---
+
 ## Verification
 
 Construct the manager and submit a no-op:

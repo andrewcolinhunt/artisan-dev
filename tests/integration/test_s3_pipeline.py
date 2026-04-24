@@ -14,12 +14,18 @@ Marked ``integration``; skips cleanly when MinIO is unavailable
 
 from __future__ import annotations
 
+import pathlib
+
 import polars as pl
 import pytest
 
 pytestmark = pytest.mark.integration
 
-from artisan.operations.examples import DataGenerator, MetricCalculator
+from artisan.operations.examples import (
+    DataGenerator,
+    LargeFileGenerator,
+    MetricCalculator,
+)
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.backends import Backend
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -141,3 +147,51 @@ class TestS3PipelineEndToEnd:
         # Stored paths should be s3:// URIs (not abspath'd local paths).
         for path in file_refs_df["path"].to_list():
             assert path.startswith("s3://"), f"Expected s3:// path, got {path!r}"
+
+    def test_large_file_outputs_uploaded_to_files_root(self, s3_pipeline_env):
+        """LargeFileGenerator on cloud files_root uploads via fs.put and rewrites external_path.
+
+        Without the upload step, the operation writes bytes into the
+        local sandbox files_dir, records that local path as
+        external_path, and downstream materialization fails because
+        the bytes don't exist at the path the consumer resolves. This
+        test is the regression guard for PR 7 (files_root cloud
+        uploads).
+        """
+        env = s3_pipeline_env
+        pipeline = _make_pipeline(env, "s3_large_file")
+
+        pipeline.run(
+            LargeFileGenerator,
+            params={"count": 2, "file_size_bytes": 1024, "seed": 0},
+            backend=Backend.LOCAL,
+        )
+        pipeline.finalize()
+
+        # Read the LargeFileArtifact rows from Delta.
+        storage_options = env["storage"].delta_storage_options()
+        table_uri = f"{env['delta_root']}/artifacts/large_files"
+        df = pl.read_delta(table_uri, storage_options=storage_options)
+        assert df.height == 2
+
+        # external_path must be cloud URIs; bytes must live on MinIO.
+        fs = env["fs"]
+        for ext_path in df["external_path"].to_list():
+            assert ext_path.startswith("s3://"), (
+                f"Expected cloud external_path, got {ext_path!r}"
+            )
+            assert fs.exists(ext_path), (
+                f"external_path {ext_path!r} does not resolve on the fixture fs"
+            )
+
+        # No new literal-colon leak from this run under the repo root.
+        # (Pre-existing dirs from before PR 7 may still be present; this
+        # check only asserts nothing new was created inside one today.)
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        leaked = repo_root / "s3:"
+        if leaked.exists():
+            import time
+
+            cutoff = time.time() - 600  # anything newer than 10 minutes ago
+            fresh = [p for p in leaked.rglob("*") if p.stat().st_mtime > cutoff]
+            assert not fresh, f"Fresh literal-colon leak inside {leaked}: {fresh!r}"

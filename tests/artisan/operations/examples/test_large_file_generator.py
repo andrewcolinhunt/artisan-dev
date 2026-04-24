@@ -6,9 +6,14 @@ import os
 from pathlib import Path
 
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
+from artisan.execution.executors.creator import run_creator_lifecycle
+from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.examples.large_file_generator import LargeFileGenerator
 from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.utils.hashing import compute_content_hash
 
@@ -98,3 +103,78 @@ class TestLargeFileGenerator:
             data = fh.read()
         expected = compute_content_hash(data)
         assert raw["files"][0]["content_hash"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Parametrized [local, s3] lifecycle smoke — exercises the framework
+# upload step from PR 7 (files-root-cloud-uploads).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(params=["local", "s3"])
+def backend_env(request, tmp_path, s3_fs):
+    """Yield ``(fs, storage, files_root, working_root)`` for both backends.
+
+    Inline here because ``tests/artisan/operations/examples/`` does not
+    share the storage-layer ``backend_fs`` fixture. The s3 param skips
+    cleanly when MinIO is unavailable via ``s3_fs``.
+    """
+    working = tmp_path / "working"
+    working.mkdir()
+    if request.param == "local":
+        files_root = tmp_path / "files_root"
+        files_root.mkdir()
+        return (
+            LocalFileSystem(),
+            StorageConfig(protocol="file"),
+            str(files_root),
+            str(working),
+        )
+    fs, storage, uri_prefix = s3_fs
+    return fs, storage, f"{uri_prefix}/files", str(working)
+
+
+class TestLargeFileGeneratorLifecycle:
+    """End-to-end creator lifecycle for LargeFileGenerator on both backends.
+
+    Regression guard for the files_root upload path: without
+    ``_upload_files_to_root`` the cloud run would leak a literal-colon
+    directory under the executor and store a local path in
+    ``external_path``.
+    """
+
+    def test_external_path_resolves_on_parametrized_backend(
+        self, backend_env, tmp_path: Path
+    ) -> None:
+        fs, storage, files_root, working_root = backend_env
+
+        env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            working_root=working_root,
+            staging_root=str(tmp_path / "staging"),
+            files_root=files_root,
+            storage=storage,
+        )
+        unit = ExecutionUnit(
+            operation=LargeFileGenerator(
+                params=LargeFileGenerator.Params(
+                    count=2, file_size_bytes=256, seed=0
+                )
+            ),
+            inputs={},
+            execution_spec_id="lfg_smoke_" + "0" * 22,
+            step_number=3,
+        )
+
+        result = run_creator_lifecycle(unit, env)
+
+        artifacts = result.artifacts["files"]
+        assert len(artifacts) == 2
+        for art in artifacts:
+            assert art.external_path is not None
+            assert art.external_path.startswith(files_root), (
+                f"external_path {art.external_path!r} not under {files_root!r}"
+            )
+            assert fs.exists(art.external_path), (
+                f"external_path {art.external_path!r} does not resolve on {fs}"
+            )

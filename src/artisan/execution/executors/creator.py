@@ -34,6 +34,15 @@ class _PostprocessFailure(Exception):
     """Raised when postprocess returns success=False with a clean error message."""
 
 
+class _UploadFailure(_PostprocessFailure):
+    """Raised when fs.put / shutil.move fails inside _upload_files_to_root.
+
+    Subclass of _PostprocessFailure so the existing
+    ``except (_PostprocessFailure, _ExecuteFailure)`` clause catches it
+    and records the failure through ``record_execution_failure``.
+    """
+
+
 class _ExecuteFailure(Exception):
     """Raised when execute() throws, carrying the formatted error and tool output."""
 
