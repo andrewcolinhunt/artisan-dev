@@ -203,7 +203,12 @@ class TestConsolidateAppendablesBackendParametrized:
     to stay in scope.
     """
 
-    @pytest.fixture(params=["local", "s3"])
+    @pytest.fixture(
+        params=[
+            pytest.param("local"),
+            pytest.param("s3", marks=pytest.mark.integration),
+        ]
+    )
     def backend_fs(self, request, tmp_path, s3_fs):
         if request.param == "local":
             from artisan.schemas.execution.storage_config import StorageConfig

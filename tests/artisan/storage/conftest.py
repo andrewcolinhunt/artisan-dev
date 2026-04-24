@@ -15,13 +15,23 @@ from fsspec.implementations.local import LocalFileSystem
 from artisan.schemas.execution.storage_config import StorageConfig
 
 
-@pytest.fixture(params=["local", "s3"])
+@pytest.fixture(
+    params=[
+        pytest.param("local"),
+        pytest.param("s3", marks=pytest.mark.integration),
+    ]
+)
 def backend_fs(request, tmp_path, s3_fs):
     """Yield ``(fs, storage_config, uri_prefix)`` for both backends.
 
     Tests that use this fixture run twice — once against
     ``LocalFileSystem`` rooted at ``tmp_path``, once against the
     per-test S3 bucket on MinIO.
+
+    The ``s3`` param carries the ``integration`` marker so
+    ``pixi run -e dev test-unit`` (``pytest -m 'not integration'``)
+    collects only the local branch and never boots MinIO. The s3
+    branch runs under ``test-integration``.
     """
     if request.param == "local":
         return LocalFileSystem(), StorageConfig(), str(tmp_path)
