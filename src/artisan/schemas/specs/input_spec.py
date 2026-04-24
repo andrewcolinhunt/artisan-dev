@@ -6,9 +6,10 @@ they are delivered (materialized to disk or passed in memory).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.specs._validators import validate_artifact_type_str
 
 
 class InputSpec(BaseModel):
@@ -77,6 +78,12 @@ class InputSpec(BaseModel):
     Example:
         InputSpec(artifact_type="data", with_associated=("data_annotation",))
     """
+
+    @field_validator("artifact_type")
+    @classmethod
+    def _validate_artifact_type(cls, v: str) -> str:
+        """Reject unregistered artifact type strings."""
+        return validate_artifact_type_str(v)
 
     @model_validator(mode="after")
     def _validate_materialize_as(self) -> InputSpec:
