@@ -12,6 +12,7 @@ from typing import Any, ClassVar
 import polars as pl
 import pytest
 from fixtures.csv import make_csv
+from fsspec import AbstractFileSystem
 from prefect.testing.utilities import prefect_test_harness
 from pydantic import BaseModel, Field
 
@@ -128,23 +129,57 @@ def sample_csv_files(tmp_path: Path) -> list[Path]:
 # =============================================================================
 
 
-def read_table(delta_root: str, table_name: str) -> pl.DataFrame:
+def read_table(
+    delta_root: str,
+    table_name: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> pl.DataFrame:
     """Read a Delta Lake table, return empty DataFrame if not exists.
 
+    ``fs`` and ``storage_options`` travel as a pair. For cloud
+    ``delta_root`` (URI), callers must pass ``fs``; ``storage_options``
+    should be ``env["storage"].delta_storage_options()`` from the
+    fixture, which may be ``None`` for production IAM/env-var auth.
+    Local callers pass nothing and behave identically to today.
+
     Args:
-        delta_root: Root directory for Delta Lake tables.
+        delta_root: Root directory or URI for Delta Lake tables.
         table_name: Name of the table to read.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options forwarded to
+            ``pl.read_delta``. ``None`` is valid on cloud URIs — delta-rs
+            will read credentials from env vars / IAM role.
 
     Returns:
-        Polars DataFrame with table contents, or empty DataFrame.
+        Polars DataFrame with table contents, or empty DataFrame when
+        the table doesn't exist.
+
+    Raises:
+        ValueError: When ``delta_root`` is a URI but ``fs`` is None.
     """
-    table_path = os.path.join(delta_root, table_name)
-    if not os.path.exists(table_path):
-        return pl.DataFrame()
-    return pl.read_delta(table_path)
+    if "://" in delta_root:
+        if fs is None:
+            msg = f"fs required for cloud delta_root {delta_root!r}"
+            raise ValueError(msg)
+        table_uri = f"{delta_root.rstrip('/')}/{table_name.lstrip('/')}"
+        if not fs.exists(table_uri):
+            return pl.DataFrame()
+    else:
+        table_uri = os.path.join(delta_root, table_name)
+        if not os.path.exists(table_uri):
+            return pl.DataFrame()
+    return pl.read_delta(table_uri, storage_options=storage_options)
 
 
-def count_artifacts_by_step(delta_root: str, step_number: int) -> int:
+def count_artifacts_by_step(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count artifacts produced by a specific step.
 
     Queries: artifact_index WHERE origin_step_number = step_number
@@ -152,17 +187,27 @@ def count_artifacts_by_step(delta_root: str, step_number: int) -> int:
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to count artifacts for.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of artifacts produced by the step.
     """
-    df_index = read_table(delta_root, "artifacts/index")
+    df_index = read_table(
+        delta_root, "artifacts/index", fs=fs, storage_options=storage_options
+    )
     if df_index.is_empty():
         return 0
     return df_index.filter(pl.col("origin_step_number") == step_number).height
 
 
-def count_artifacts_by_type(delta_root: str, artifact_type: str) -> int:
+def count_artifacts_by_type(
+    delta_root: str,
+    artifact_type: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count artifacts of a specific type.
 
     Queries: artifact_index WHERE artifact_type = artifact_type
@@ -170,17 +215,28 @@ def count_artifacts_by_type(delta_root: str, artifact_type: str) -> int:
     Args:
         delta_root: Root directory for Delta Lake tables.
         artifact_type: Artifact type to count.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of artifacts of the specified type.
     """
-    df_index = read_table(delta_root, "artifacts/index")
+    df_index = read_table(
+        delta_root, "artifacts/index", fs=fs, storage_options=storage_options
+    )
     if df_index.is_empty():
         return 0
     return df_index.filter(pl.col("artifact_type") == artifact_type).height
 
 
-def get_execution_outputs(delta_root: str, step_number: int, role: str) -> list[str]:
+def get_execution_outputs(
+    delta_root: str,
+    step_number: int,
+    role: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> list[str]:
     """Get output artifact IDs for a step/role.
 
     Steps:
@@ -192,12 +248,21 @@ def get_execution_outputs(delta_root: str, step_number: int, role: str) -> list[
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to query.
         role: Output role name.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         List of artifact IDs.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
-    df_prov = read_table(delta_root, "provenance/execution_edges")
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
+    df_prov = read_table(
+        delta_root,
+        "provenance/execution_edges",
+        fs=fs,
+        storage_options=storage_options,
+    )
 
     if df_exec.is_empty() or df_prov.is_empty():
         return []
@@ -213,7 +278,14 @@ def get_execution_outputs(delta_root: str, step_number: int, role: str) -> list[
     )["artifact_id"].to_list()
 
 
-def get_execution_inputs(delta_root: str, step_number: int, role: str) -> list[str]:
+def get_execution_inputs(
+    delta_root: str,
+    step_number: int,
+    role: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> list[str]:
     """Get input artifact IDs for a step/role.
 
     Same as get_execution_outputs but with direction = 'input'.
@@ -222,12 +294,21 @@ def get_execution_inputs(delta_root: str, step_number: int, role: str) -> list[s
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to query.
         role: Input role name.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         List of artifact IDs.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
-    df_prov = read_table(delta_root, "provenance/execution_edges")
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
+    df_prov = read_table(
+        delta_root,
+        "provenance/execution_edges",
+        fs=fs,
+        storage_options=storage_options,
+    )
 
     if df_exec.is_empty() or df_prov.is_empty():
         return []
@@ -243,7 +324,13 @@ def get_execution_inputs(delta_root: str, step_number: int, role: str) -> list[s
     )["artifact_id"].to_list()
 
 
-def count_executions_by_step(delta_root: str, step_number: int) -> int:
+def count_executions_by_step(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count execution records for a specific step.
 
     Queries: executions WHERE origin_step_number = step_number
@@ -252,27 +339,44 @@ def count_executions_by_step(delta_root: str, step_number: int) -> int:
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to count executions for.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of execution records for the step.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
     if df_exec.is_empty():
         return 0
     return df_exec.filter(pl.col("origin_step_number") == step_number).height
 
 
-def get_artifact_edges(delta_root: str, source_id: str) -> list[str]:
+def get_artifact_edges(
+    delta_root: str,
+    source_id: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> list[str]:
     """Get target artifact IDs linked from a source artifact.
 
     Args:
         delta_root: Root directory for Delta Lake tables.
         source_id: Source artifact ID.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         List of target artifact IDs.
     """
-    df = read_table(delta_root, "provenance/artifact_edges")
+    df = read_table(
+        delta_root,
+        "provenance/artifact_edges",
+        fs=fs,
+        storage_options=storage_options,
+    )
     if df.is_empty():
         return []
     return df.filter(pl.col("source_artifact_id") == source_id)[
@@ -280,17 +384,27 @@ def get_artifact_edges(delta_root: str, source_id: str) -> list[str]:
     ].to_list()
 
 
-def get_step_status(delta_root: str, step_number: int) -> str | None:
+def get_step_status(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> str | None:
     """Get the latest status for a step.
 
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to query.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Latest status string, or None if not found.
     """
-    df = read_table(delta_root, "orchestration/steps")
+    df = read_table(
+        delta_root, "orchestration/steps", fs=fs, storage_options=storage_options
+    )
     if df.is_empty():
         return None
     filtered = df.filter(pl.col("step_number") == step_number).sort(
@@ -301,17 +415,27 @@ def get_step_status(delta_root: str, step_number: int) -> str | None:
     return filtered["status"][0]
 
 
-def get_failed_executions(delta_root: str, step_number: int) -> int:
+def get_failed_executions(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count failed executions for a step.
 
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to query.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of failed executions.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
     if df_exec.is_empty():
         return 0
     return df_exec.filter(
@@ -319,17 +443,27 @@ def get_failed_executions(delta_root: str, step_number: int) -> int:
     ).height
 
 
-def get_successful_executions(delta_root: str, step_number: int) -> int:
+def get_successful_executions(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count successful executions for a step.
 
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to query.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of successful executions.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
     if df_exec.is_empty():
         return 0
     return df_exec.filter(

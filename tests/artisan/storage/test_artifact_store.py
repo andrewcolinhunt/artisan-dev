@@ -87,12 +87,13 @@ class TestArtifactStoreReadWithDelta:
     """Tests for artifact reading (requires Delta Lake)."""
 
     @pytest.fixture
-    def store_with_data(self, tmp_path):
+    def store_with_data(self, backend_fs):
         """Create an ArtifactStore and populate with test data."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
         # Create metrics table with test data
-        metrics_path = tmp_path / "artifacts/metrics"
         metrics_data = {
             "artifact_id": ["a" * 32, "b" * 32],
             "origin_step_number": [1, 1],
@@ -103,10 +104,9 @@ class TestArtifactStoreReadWithDelta:
             "external_path": [None, None],
         }
         df = pl.DataFrame(metrics_data, schema=METRICS_SCHEMA)
-        df.write_delta(str(metrics_path))
+        df.write_delta(f"{root}/artifacts/metrics", storage_options=opts)
 
         # Create artifact_index with test data
-        index_path = tmp_path / "artifacts/index"
         index_data = {
             "artifact_id": ["a" * 32, "b" * 32],
             "artifact_type": ["metric", "metric"],
@@ -114,7 +114,7 @@ class TestArtifactStoreReadWithDelta:
             "metadata": ["{}", "{}"],
         }
         pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            str(index_path)
+            f"{root}/artifacts/index", storage_options=opts
         )
 
         return store
@@ -151,17 +151,18 @@ class TestBulkLoadMethods:
     """Tests for bulk-load methods (load_provenance_map, load_step_number_map)."""
 
     @pytest.fixture
-    def store_with_provenance(self, tmp_path):
+    def store_with_provenance(self, backend_fs):
         """Create an ArtifactStore with provenance and index data.
 
         Chain: A -> B -> C (A is root, B has parent A, C has parent B).
         Also: A -> D (A has two children: B and D).
         Step numbers: A=0, B=1, C=2, D=1
         """
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
         # Create artifact_index
-        index_path = tmp_path / "artifacts/index"
         index_data = {
             "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
             "artifact_type": ["data", "data", "metric", "metric"],
@@ -169,11 +170,10 @@ class TestBulkLoadMethods:
             "metadata": ["{}", "{}", "{}", "{}"],
         }
         pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA).write_delta(
-            str(index_path)
+            f"{root}/artifacts/index", storage_options=opts
         )
 
         # Create artifact_edges: A -> B -> C, A -> D
-        prov_path = tmp_path / "provenance/artifact_edges"
         prov_data = {
             "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
             "source_artifact_id": ["a" * 32, "b" * 32, "a" * 32],
@@ -185,7 +185,9 @@ class TestBulkLoadMethods:
             "group_id": [None, None, None],
             "step_boundary": [True, True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
+        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
+            f"{root}/provenance/artifact_edges", storage_options=opts
+        )
 
         return store
 
@@ -205,9 +207,12 @@ class TestBulkLoadMethods:
         # Root has no entry (no edges where A is target)
         assert "a" * 32 not in pmap
 
-    def test_load_provenance_map_empty_table(self, tmp_path):
+    def test_load_provenance_map_empty_table(self, backend_fs):
         """Returns empty dict when no provenance table exists."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         assert store.load_provenance_map() == {}
 
     def test_load_step_number_map_all(self, store_with_provenance):
@@ -228,9 +233,12 @@ class TestBulkLoadMethods:
         assert smap["c" * 32] == 2
         assert len(smap) == 2
 
-    def test_load_step_number_map_empty_table(self, tmp_path):
+    def test_load_step_number_map_empty_table(self, backend_fs):
         """Returns empty dict when no index table exists."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         assert store.load_step_number_map() == {}
 
     def test_load_step_number_map_nonexistent_ids(self, store_with_provenance):
@@ -243,11 +251,12 @@ class TestGetArtifactsByType:
     """Tests for get_artifacts_by_type() bulk loading."""
 
     @pytest.fixture
-    def store_with_metrics(self, tmp_path):
+    def store_with_metrics(self, backend_fs):
         """Create an ArtifactStore with metrics table."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
-        metrics_path = tmp_path / "artifacts/metrics"
         metrics_data = {
             "artifact_id": ["m1" + "a" * 30, "m2" + "b" * 30, "m3" + "c" * 30],
             "origin_step_number": [1, 1, 2],
@@ -261,7 +270,9 @@ class TestGetArtifactsByType:
             "metadata": ["{}", "{}", "{}"],
             "external_path": [None, None, None],
         }
-        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(str(metrics_path))
+        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(
+            f"{root}/artifacts/metrics", storage_options=opts
+        )
 
         return store
 
@@ -295,17 +306,21 @@ class TestGetArtifactsByType:
         )
         assert result == {}
 
-    def test_bulk_load_no_table(self, tmp_path):
+    def test_bulk_load_no_table(self, backend_fs):
         """Missing table returns empty dict."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         result = store.get_artifacts_by_type(["a" * 32], ArtifactTypes.METRIC)
         assert result == {}
 
-    def test_bulk_load_configs(self, tmp_path):
+    def test_bulk_load_configs(self, backend_fs):
         """Works for config type too (not just metrics)."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
-        configs_path = tmp_path / "artifacts/configs"
         configs_data = {
             "artifact_id": ["c1" + "a" * 30],
             "origin_step_number": [1],
@@ -315,7 +330,9 @@ class TestGetArtifactsByType:
             "metadata": ["{}"],
             "external_path": [None],
         }
-        pl.DataFrame(configs_data, schema=CONFIGS_SCHEMA).write_delta(str(configs_path))
+        pl.DataFrame(configs_data, schema=CONFIGS_SCHEMA).write_delta(
+            f"{root}/artifacts/configs", storage_options=opts
+        )
 
         result = store.get_artifacts_by_type(["c1" + "a" * 30], ArtifactTypes.CONFIG)
         assert len(result) == 1
@@ -326,16 +343,17 @@ class TestArtifactStoreProvenanceQueries:
     """Tests for provenance and step number query methods."""
 
     @pytest.fixture
-    def store_with_provenance(self, tmp_path):
+    def store_with_provenance(self, backend_fs):
         """Create an ArtifactStore with provenance data.
 
         Creates a simple chain: A -> B -> C
         Step numbers: A=0, B=1, C=2
         """
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
         # Create artifact_index with test data
-        index_path = tmp_path / "artifacts/index"
         index_data = {
             "artifact_id": ["a" * 32, "b" * 32, "c" * 32],
             "artifact_type": ["data", "data", "metric"],
@@ -343,11 +361,10 @@ class TestArtifactStoreProvenanceQueries:
             "metadata": ["{}", "{}", "{}"],
         }
         pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA).write_delta(
-            str(index_path)
+            f"{root}/artifacts/index", storage_options=opts
         )
 
         # Create artifact_edges: A -> B -> C
-        prov_path = tmp_path / "provenance/artifact_edges"
         prov_data = {
             "execution_run_id": ["x" * 32, "y" * 32],
             "source_artifact_id": ["a" * 32, "b" * 32],
@@ -359,7 +376,9 @@ class TestArtifactStoreProvenanceQueries:
             "group_id": [None, None],
             "step_boundary": [True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
+        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
+            f"{root}/provenance/artifact_edges", storage_options=opts
+        )
 
         return store
 
@@ -383,9 +402,12 @@ class TestArtifactStoreProvenanceQueries:
         result = store_with_provenance.get_ancestor_artifact_ids("z" * 32)
         assert result == []
 
-    def test_get_ancestor_artifact_ids_no_table(self, tmp_path):
+    def test_get_ancestor_artifact_ids_no_table(self, backend_fs):
         """Missing provenance table returns empty list."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         result = store.get_ancestor_artifact_ids("a" * 32)
         assert result == []
 
@@ -399,9 +421,12 @@ class TestArtifactStoreProvenanceQueries:
         """Returns None for nonexistent artifact."""
         assert store_with_provenance.get_artifact_step_number("z" * 32) is None
 
-    def test_get_artifact_step_number_no_table(self, tmp_path):
+    def test_get_artifact_step_number_no_table(self, backend_fs):
         """Missing artifact_index table returns None."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         assert store.get_artifact_step_number("a" * 32) is None
 
 
@@ -413,12 +438,13 @@ class TestMetricOriginalNamePersistence:
     """
 
     @pytest.fixture
-    def store_with_metrics(self, tmp_path):
+    def store_with_metrics(self, backend_fs):
         """Create an ArtifactStore with metric data including original_name."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
         # Create metrics table with test data
-        metrics_path = tmp_path / "artifacts/metrics"
         metrics_data = {
             "artifact_id": ["m1" + "a" * 30, "m2" + "b" * 30],
             "origin_step_number": [1, 1],
@@ -429,10 +455,9 @@ class TestMetricOriginalNamePersistence:
             "external_path": [None, None],
         }
         df = pl.DataFrame(metrics_data, schema=METRICS_SCHEMA)
-        df.write_delta(str(metrics_path))
+        df.write_delta(f"{root}/artifacts/metrics", storage_options=opts)
 
         # Create artifact_index for lookups
-        index_path = tmp_path / "artifacts/index"
         index_data = {
             "artifact_id": ["m1" + "a" * 30, "m2" + "b" * 30],
             "artifact_type": ["metric", "metric"],
@@ -440,7 +465,7 @@ class TestMetricOriginalNamePersistence:
             "metadata": ["{}", "{}"],
         }
         pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            str(index_path)
+            f"{root}/artifacts/index", storage_options=opts
         )
 
         return store
@@ -468,24 +493,26 @@ class TestExecutionConfigArtifactRoundTrip:
     """Tests for ExecutionConfigArtifact storage round-trip."""
 
     @pytest.fixture
-    def store_with_configs(self, tmp_path):
+    def store_with_configs(self, backend_fs):
         """Create store with configs table."""
         import json
 
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
         # Create artifact_index
-        index_path = tmp_path / "artifacts/index"
         index_data = {
             "artifact_id": ["c" * 32],
             "artifact_type": ["config"],
             "origin_step_number": [1],
             "metadata": ["{}"],
         }
-        pl.DataFrame(index_data).write_delta(str(index_path))
+        pl.DataFrame(index_data).write_delta(
+            f"{root}/artifacts/index", storage_options=opts
+        )
 
         # Create configs table
-        configs_path = tmp_path / "artifacts/configs"
         config_content = json.dumps(
             {"contig": "40-150,A8-10", "length": "175-275"}, sort_keys=True
         ).encode("utf-8")
@@ -498,7 +525,9 @@ class TestExecutionConfigArtifactRoundTrip:
             "metadata": ["{}"],
             "external_path": [None],
         }
-        pl.DataFrame(config_data, schema=CONFIGS_SCHEMA).write_delta(str(configs_path))
+        pl.DataFrame(config_data, schema=CONFIGS_SCHEMA).write_delta(
+            f"{root}/artifacts/configs", storage_options=opts
+        )
 
         return store
 
@@ -548,15 +577,16 @@ class TestGetDescendantArtifactIds:
     """Tests for get_descendant_artifact_ids() forward provenance query."""
 
     @pytest.fixture
-    def store_with_provenance(self, tmp_path):
+    def store_with_provenance(self, backend_fs):
         """Create ArtifactStore with provenance data for descendant queries.
 
         Graph: A -> B, A -> D, B -> C
         Types: A=data, B=data, C=metric, D=metric
         """
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
-        prov_path = tmp_path / "provenance/artifact_edges"
         prov_data = {
             "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
             "source_artifact_id": ["a" * 32, "b" * 32, "a" * 32],
@@ -568,7 +598,9 @@ class TestGetDescendantArtifactIds:
             "group_id": [None, None, None],
             "step_boundary": [True, True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
+        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
+            f"{root}/provenance/artifact_edges", storage_options=opts
+        )
 
         return store
 
@@ -605,9 +637,12 @@ class TestGetDescendantArtifactIds:
         result = store_with_provenance.get_descendant_artifact_ids(set())
         assert result == {}
 
-    def test_missing_table(self, tmp_path):
+    def test_missing_table(self, backend_fs):
         """Missing provenance table returns empty dict."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         result = store.get_descendant_artifact_ids({"a" * 32})
         assert result == {}
 
@@ -616,10 +651,11 @@ class TestLoadArtifactTypeMap:
     """Tests for load_artifact_type_map() bulk type resolution."""
 
     @pytest.fixture
-    def store_with_index(self, tmp_path):
+    def store_with_index(self, backend_fs):
         """Create store with artifact_index containing mixed types."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
-        index_path = tmp_path / "artifacts/index"
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
         pl.DataFrame(
             {
                 "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
@@ -633,7 +669,7 @@ class TestLoadArtifactTypeMap:
                 "metadata": ["{}", "{}", "{}", "{}"],
             },
             schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(str(index_path))
+        ).write_delta(f"{root}/artifacts/index", storage_options=opts)
         return store
 
     def test_load_all(self, store_with_index):
@@ -651,9 +687,12 @@ class TestLoadArtifactTypeMap:
         assert result["a" * 32] == "data"
         assert result["c" * 32] == "metric"
 
-    def test_empty_index(self, tmp_path):
+    def test_empty_index(self, backend_fs):
         """Missing index returns empty dict."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         assert store.load_artifact_type_map() == {}
 
     def test_nonexistent_ids(self, store_with_index):
@@ -666,10 +705,11 @@ class TestLoadArtifactIdsByType:
     """Tests for load_artifact_ids_by_type() filtered index query."""
 
     @pytest.fixture
-    def store_with_index(self, tmp_path):
+    def store_with_index(self, backend_fs):
         """Create store with artifact_index containing mixed types and steps."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
-        index_path = tmp_path / "artifacts/index"
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
         pl.DataFrame(
             {
                 "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
@@ -678,7 +718,7 @@ class TestLoadArtifactIdsByType:
                 "metadata": ["{}", "{}", "{}", "{}"],
             },
             schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(str(index_path))
+        ).write_delta(f"{root}/artifacts/index", storage_options=opts)
         return store
 
     def test_filter_by_type(self, store_with_index):
@@ -705,9 +745,12 @@ class TestLoadArtifactIdsByType:
         result = store_with_index.load_artifact_ids_by_type(ArtifactTypes.FILE_REF)
         assert result == set()
 
-    def test_missing_index(self, tmp_path):
+    def test_missing_index(self, backend_fs):
         """Missing index returns empty set."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         result = store.load_artifact_ids_by_type(ArtifactTypes.DATA)
         assert result == set()
 
@@ -716,10 +759,11 @@ class TestLoadForwardProvenanceMap:
     """Tests for load_forward_provenance_map()."""
 
     @pytest.fixture
-    def store_with_provenance(self, tmp_path):
+    def store_with_provenance(self, backend_fs):
         """Create store with provenance: A -> B, A -> D, B -> C."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
-        prov_path = tmp_path / "provenance/artifact_edges"
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
         pl.DataFrame(
             {
                 "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
@@ -732,7 +776,9 @@ class TestLoadForwardProvenanceMap:
                 "group_id": [None, None, None],
                 "step_boundary": [True, True, True],
             },
-        ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
+        ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
+            f"{root}/provenance/artifact_edges", storage_options=opts
+        )
         return store
 
     def test_forward_map(self, store_with_provenance):
@@ -742,9 +788,12 @@ class TestLoadForwardProvenanceMap:
         assert result["b" * 32] == ["c" * 32]
         assert "c" * 32 not in result  # leaf has no outgoing edges
 
-    def test_missing_table(self, tmp_path):
+    def test_missing_table(self, backend_fs):
         """Missing provenance table returns empty dict."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         assert store.load_forward_provenance_map() == {}
 
 
@@ -752,11 +801,12 @@ class TestLoadStepNameMap:
     """Tests for load_step_name_map()."""
 
     @pytest.fixture
-    def store_with_steps(self, tmp_path):
+    def store_with_steps(self, backend_fs):
         """Create store with steps table."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
         ts = datetime(2025, 1, 1, tzinfo=UTC)
-        steps_path = tmp_path / "orchestration/steps"
         pl.DataFrame(
             {
                 "step_run_id": ["r0" + "0" * 30, "r1" + "0" * 30],
@@ -783,7 +833,7 @@ class TestLoadStepNameMap:
                 "metadata": ["{}", "{}"],
             },
             schema=STEPS_SCHEMA,
-        ).write_delta(str(steps_path))
+        ).write_delta(f"{root}/orchestration/steps", storage_options=opts)
         return store
 
     def test_loads_step_names(self, store_with_steps):
@@ -792,16 +842,20 @@ class TestLoadStepNameMap:
         assert result[0] == "ingest"
         assert result[1] == "tool_c"
 
-    def test_missing_tables(self, tmp_path):
+    def test_missing_tables(self, backend_fs):
         """Missing tables returns empty dict."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         assert store.load_step_name_map() == {}
 
-    def test_fallback_to_executions(self, tmp_path):
+    def test_fallback_to_executions(self, backend_fs):
         """Falls back to executions when steps table is missing."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
         ts = datetime(2025, 1, 1, tzinfo=UTC)
-        records_path = tmp_path / "orchestration/executions"
         pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -822,7 +876,7 @@ class TestLoadStepNameMap:
                 "metadata": ["{}"],
             },
             schema=EXECUTIONS_SCHEMA,
-        ).write_delta(str(records_path))
+        ).write_delta(f"{root}/orchestration/executions", storage_options=opts)
         result = store.load_step_name_map()
         assert result[0] == "ingest_fallback"
 
@@ -831,7 +885,7 @@ class TestGetAssociated:
     """Tests for get_associated() provenance-based association lookup."""
 
     @pytest.fixture
-    def store_with_associated_metrics(self, tmp_path):
+    def store_with_associated_metrics(self, backend_fs):
         """Create store with source metrics, associated metrics, and provenance edges.
 
         Graph: S1 -> M1 (metric), S1 -> M2 (metric), S2 -> M3 (metric)
@@ -839,10 +893,11 @@ class TestGetAssociated:
         """
         import json
 
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
 
         # Create provenance edges: S1 -> M1, S1 -> M2, S2 -> M3
-        prov_path = tmp_path / "provenance/artifact_edges"
         pl.DataFrame(
             {
                 "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
@@ -867,10 +922,11 @@ class TestGetAssociated:
                 "group_id": [None, None, None],
                 "step_boundary": [True, True, True],
             },
-        ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(str(prov_path))
+        ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
+            f"{root}/provenance/artifact_edges", storage_options=opts
+        )
 
         # Create metrics table
-        metrics_path = tmp_path / "artifacts/metrics"
         pl.DataFrame(
             {
                 "artifact_id": ["m1" + "c" * 30, "m2" + "d" * 30, "m3" + "e" * 30],
@@ -886,7 +942,7 @@ class TestGetAssociated:
                 "external_path": [None, None, None],
             },
             schema=METRICS_SCHEMA,
-        ).write_delta(str(metrics_path))
+        ).write_delta(f"{root}/artifacts/metrics", storage_options=opts)
 
         return store
 
@@ -930,9 +986,12 @@ class TestGetAssociated:
         result = store_with_associated_metrics.get_associated(set(), "metric")
         assert result == {}
 
-    def test_missing_provenance_table(self, tmp_path):
+    def test_missing_provenance_table(self, backend_fs):
         """Missing provenance table returns empty dict."""
-        store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
         result = store.get_associated({"a" * 32}, "metric")
         assert result == {}
 

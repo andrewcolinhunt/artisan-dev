@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
-from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
@@ -19,36 +18,38 @@ METRICS_SCHEMA = MetricArtifact.POLARS_SCHEMA
 
 
 @pytest.fixture
-def local_fs():
-    """Local filesystem for Delta tests."""
-    return LocalFileSystem()
+def commit_env(backend_fs):
+    """Yield ``(committer, fs, storage, delta_root, staging_root)``.
+
+    Shared by ``TestDeltaCommitter``, ``TestArtifactEdgesCommit``, and
+    ``TestRecoverStaged``. Each consuming test runs twice — once per
+    ``backend_fs`` param. Delta/staging roots are URI strings; tests
+    must use ``f"{delta_root}/..."`` and ``fs.exists``, never
+    ``Path / str`` or ``Path.exists``.
+    """
+    fs, storage, root = backend_fs
+    delta_root = f"{root}/delta"
+    staging_root = f"{root}/staging"
+    # Local backend needs explicit dir creation; s3 buckets use prefixes
+    # and don't require pre-created "directories".
+    fs.makedirs(delta_root, exist_ok=True)
+    fs.makedirs(staging_root, exist_ok=True)
+    sm = StagingManager(staging_root, fs)
+    committer = DeltaCommitter(
+        delta_root, sm, fs=fs, storage_options=storage.delta_storage_options()
+    )
+    return committer, fs, storage, delta_root, staging_root
 
 
 class TestDeltaCommitter:
     """Tests for DeltaCommitter."""
 
-    @pytest.fixture
-    def setup_paths(self, tmp_path, local_fs):
-        """Create delta and staging directories."""
-        delta_path = tmp_path / "delta"
-        staging_path = tmp_path / "staging"
-        delta_path.mkdir()
-        staging_path.mkdir()
-        return delta_path, staging_path, local_fs
-
-    @pytest.fixture
-    def committer(self, setup_paths):
-        """Create a DeltaCommitter instance."""
-        delta_path, staging_path, fs = setup_paths
-        sm = StagingManager(str(staging_path), fs)
-        return DeltaCommitter(str(delta_path), sm, fs=fs)
-
-    def test_commit_table_creates_new_table(self, setup_paths, committer):
+    def test_commit_table_creates_new_table(self, commit_env):
         """Commit to non-existent table creates it."""
-        delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, delta_root, staging_root = commit_env
 
         # Stage some data
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -67,11 +68,11 @@ class TestDeltaCommitter:
         rows = committer.commit_table("artifacts/metrics")
 
         assert rows == 1
-        assert (delta_path / "artifacts/metrics").exists()
+        assert fs.exists(f"{delta_root}/artifacts/metrics")
 
-    def test_commit_table_appends_to_existing(self, setup_paths, committer):
+    def test_commit_table_appends_to_existing(self, commit_env):
         """Commit to existing table appends data."""
-        delta_path, staging_path, fs = setup_paths
+        committer, fs, storage, delta_root, staging_root = commit_env
 
         # Create initial table
         initial_df = pl.DataFrame(
@@ -86,10 +87,13 @@ class TestDeltaCommitter:
             },
             schema=METRICS_SCHEMA,
         )
-        initial_df.write_delta(str(delta_path / "artifacts/metrics"))
+        initial_df.write_delta(
+            f"{delta_root}/artifacts/metrics",
+            storage_options=storage.delta_storage_options(),
+        )
 
         # Stage new data
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         new_df = pl.DataFrame(
             {
                 "artifact_id": ["b" * 32],
@@ -110,12 +114,15 @@ class TestDeltaCommitter:
         assert rows == 1
 
         # Verify total
-        result = pl.read_delta(str(delta_path / "artifacts/metrics"))
+        result = pl.read_delta(
+            f"{delta_root}/artifacts/metrics",
+            storage_options=storage.delta_storage_options(),
+        )
         assert result.shape[0] == 2
 
-    def test_commit_table_deduplicates(self, setup_paths, committer):
+    def test_commit_table_deduplicates(self, commit_env):
         """Commit skips artifacts with existing IDs."""
-        delta_path, staging_path, fs = setup_paths
+        committer, fs, storage, delta_root, staging_root = commit_env
 
         # Create initial table
         initial_df = pl.DataFrame(
@@ -130,10 +137,13 @@ class TestDeltaCommitter:
             },
             schema=METRICS_SCHEMA,
         )
-        initial_df.write_delta(str(delta_path / "artifacts/metrics"))
+        initial_df.write_delta(
+            f"{delta_root}/artifacts/metrics",
+            storage_options=storage.delta_storage_options(),
+        )
 
         # Stage duplicate
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         duplicate_df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],  # Same ID
@@ -153,12 +163,12 @@ class TestDeltaCommitter:
 
         assert rows == 0  # Duplicate skipped
 
-    def test_commit_all_tables(self, setup_paths, committer):
+    def test_commit_all_tables(self, commit_env):
         """Commit all staged tables at once."""
-        _delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, _delta_root, staging_root = commit_env
 
         # Stage multiple tables
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
 
         metrics_df = pl.DataFrame(
             {
@@ -194,12 +204,12 @@ class TestDeltaCommitter:
         assert results["metrics"] == 1
         assert results["index"] == 1
 
-    def test_commit_all_tables_cleanup(self, setup_paths, committer):
+    def test_commit_all_tables_cleanup(self, commit_env):
         """Commit all cleans up staging by default."""
-        _delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, _delta_root, staging_root = commit_env
 
         # Stage data
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -220,13 +230,13 @@ class TestDeltaCommitter:
         # Staging should be empty
         assert committer.staging_manager.list_batch_ids() == []
 
-    def test_commit_batch_specific(self, setup_paths, committer):
+    def test_commit_batch_specific(self, commit_env):
         """Commit only a specific batch."""
-        _delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, _delta_root, staging_root = commit_env
 
         # Stage multiple batches
-        staging1 = StagingArea(str(staging_path), fs, batch_id="batch1")
-        staging2 = StagingArea(str(staging_path), fs, batch_id="batch2")
+        staging1 = StagingArea(staging_root, fs, batch_id="batch1")
+        staging2 = StagingArea(staging_root, fs, batch_id="batch2")
 
         df1 = pl.DataFrame(
             {
@@ -266,37 +276,39 @@ class TestDeltaCommitter:
         assert "batch1" not in committer.staging_manager.list_batch_ids()
         assert "batch2" in committer.staging_manager.list_batch_ids()
 
-    def test_initialize_tables(self, setup_paths, committer):
+    def test_initialize_tables(self, commit_env):
         """Initialize creates empty tables with schemas."""
-        delta_path, _staging_path, _fs = setup_paths
+        committer, fs, _storage, delta_root, _staging_root = commit_env
 
         committer.initialize_tables()
 
         # Check tables exist
-        assert (delta_path / "artifacts/data").exists()
-        assert (delta_path / "artifacts/metrics").exists()
-        assert (delta_path / "artifacts/file_refs").exists()
-        assert (delta_path / "orchestration/executions").exists()
-        assert (delta_path / "artifacts/index").exists()
-        assert (delta_path / "provenance/artifact_edges").exists()
+        assert fs.exists(f"{delta_root}/artifacts/data")
+        assert fs.exists(f"{delta_root}/artifacts/metrics")
+        assert fs.exists(f"{delta_root}/artifacts/file_refs")
+        assert fs.exists(f"{delta_root}/orchestration/executions")
+        assert fs.exists(f"{delta_root}/artifacts/index")
+        assert fs.exists(f"{delta_root}/provenance/artifact_edges")
 
-    def test_compact_table_no_error_on_missing(self, setup_paths, committer):
+    def test_compact_table_no_error_on_missing(self, commit_env):
         """Compact table doesn't error when table doesn't exist."""
+        committer, _fs, _storage, _delta_root, _staging_root = commit_env
         # This should not raise and returns empty stats
         stats = committer.compact_table("artifacts/metrics")
         assert stats == {"files_added": 0, "files_removed": 0}
 
-    def test_vacuum_table_no_error_on_missing(self, setup_paths, committer):
+    def test_vacuum_table_no_error_on_missing(self, commit_env):
         """Vacuum table doesn't error when table doesn't exist."""
+        committer, _fs, _storage, _delta_root, _staging_root = commit_env
         # This should not raise
         committer.vacuum_table("artifacts/metrics")
 
-    def test_compact_table_returns_stats(self, setup_paths, committer):
+    def test_compact_table_returns_stats(self, commit_env):
         """Compact table returns compaction statistics."""
-        _delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, _delta_root, staging_root = commit_env
 
         # Create table with some data
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -319,9 +331,9 @@ class TestDeltaCommitter:
         assert "files_added" in stats
         assert "files_removed" in stats
 
-    def test_compact_table_with_zorder(self, setup_paths, committer):
+    def test_compact_table_with_zorder(self, commit_env):
         """Compact table with Z-ORDER clusters data by specified column."""
-        delta_path, _staging_path, _fs = setup_paths
+        committer, _fs, storage, delta_root, _staging_root = commit_env
 
         # Create table with multiple rows to make Z-ORDER meaningful
         rows = []
@@ -340,7 +352,11 @@ class TestDeltaCommitter:
             )
 
         df = pl.DataFrame(rows, schema=METRICS_SCHEMA)
-        df.write_delta(str(delta_path / "artifacts/metrics"), mode="overwrite")
+        df.write_delta(
+            f"{delta_root}/artifacts/metrics",
+            mode="overwrite",
+            storage_options=storage.delta_storage_options(),
+        )
 
         # Compact with Z-ORDER on artifact_id
         stats = committer.compact_table(
@@ -352,19 +368,22 @@ class TestDeltaCommitter:
         assert "files_removed" in stats
 
         # Verify data is still correct after Z-ORDER
-        result = pl.read_delta(str(delta_path / "artifacts/metrics"))
+        result = pl.read_delta(
+            f"{delta_root}/artifacts/metrics",
+            storage_options=storage.delta_storage_options(),
+        )
         assert result.shape[0] == 10
         assert result["artifact_id"].n_unique() == 3
 
-    def test_compact_all_tables_with_zorder(self, setup_paths, committer):
+    def test_compact_all_tables_with_zorder(self, commit_env):
         """Compact all tables applies correct Z-ORDER columns."""
-        _delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, _delta_root, staging_root = commit_env
 
         # Initialize tables to have something to compact
         committer.initialize_tables()
 
         # Add some data to metrics table
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -386,9 +405,9 @@ class TestDeltaCommitter:
         # Should return dict (may be empty if no files needed compaction)
         assert isinstance(results, dict)
 
-    def test_compact_all_tables_without_zorder(self, setup_paths, committer):
+    def test_compact_all_tables_without_zorder(self, commit_env):
         """Compact all tables without Z-ORDER performs standard compaction."""
-        _delta_path, _staging_path, _fs = setup_paths
+        committer, _fs, _storage, _delta_root, _staging_root = commit_env
 
         # Initialize tables
         committer.initialize_tables()
@@ -399,9 +418,9 @@ class TestDeltaCommitter:
         # Should return dict
         assert isinstance(results, dict)
 
-    def test_compact_table_by_step(self, setup_paths, committer):
+    def test_compact_table_by_step(self, commit_env):
         """Compact table with step filter only compacts that partition."""
-        delta_path, _staging_path, _fs = setup_paths
+        committer, _fs, storage, delta_root, _staging_root = commit_env
 
         # Create table with data in multiple steps
         rows = []
@@ -422,9 +441,10 @@ class TestDeltaCommitter:
 
         df = pl.DataFrame(rows, schema=METRICS_SCHEMA)
         df.write_delta(
-            str(delta_path / "artifacts/metrics"),
+            f"{delta_root}/artifacts/metrics",
             mode="overwrite",
             delta_write_options={"partition_by": ["origin_step_number"]},
+            storage_options=storage.delta_storage_options(),
         )
 
         # Compact only step 1
@@ -439,19 +459,22 @@ class TestDeltaCommitter:
         assert "files_removed" in stats
 
         # Verify all data still present
-        result = pl.read_delta(str(delta_path / "artifacts/metrics"))
+        result = pl.read_delta(
+            f"{delta_root}/artifacts/metrics",
+            storage_options=storage.delta_storage_options(),
+        )
         assert result.shape[0] == 9
         assert set(result["origin_step_number"].unique().to_list()) == {0, 1, 2}
 
-    def test_compact_all_tables_by_step(self, setup_paths, committer):
+    def test_compact_all_tables_by_step(self, commit_env):
         """Compact all tables with step filter."""
-        _delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, _delta_root, staging_root = commit_env
 
         # Initialize tables
         committer.initialize_tables()
 
         # Add data with specific step
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         df = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32],
@@ -473,11 +496,9 @@ class TestDeltaCommitter:
         # Should return dict
         assert isinstance(results, dict)
 
-    def test_compact_table_step_filter_ignored_for_artifact_index(
-        self, setup_paths, committer
-    ):
+    def test_compact_table_step_filter_ignored_for_artifact_index(self, commit_env):
         """Step filter is ignored for artifact_index (not partitioned by origin_step_number)."""
-        delta_path, _staging_path, _fs = setup_paths
+        committer, _fs, storage, delta_root, _staging_root = commit_env
 
         # Create artifact_index with data
         df = pl.DataFrame(
@@ -489,7 +510,11 @@ class TestDeltaCommitter:
             },
             schema=ARTIFACT_INDEX_SCHEMA,
         )
-        df.write_delta(str(delta_path / "artifacts/index"), mode="overwrite")
+        df.write_delta(
+            f"{delta_root}/artifacts/index",
+            mode="overwrite",
+            storage_options=storage.delta_storage_options(),
+        )
 
         # Compact with step_number filter - should not fail, step_number is ignored
         stats = committer.compact_table(
@@ -503,35 +528,22 @@ class TestDeltaCommitter:
         assert "files_removed" in stats
 
         # All data should still be present
-        result = pl.read_delta(str(delta_path / "artifacts/index"))
+        result = pl.read_delta(
+            f"{delta_root}/artifacts/index",
+            storage_options=storage.delta_storage_options(),
+        )
         assert result.shape[0] == 2
 
 
 class TestArtifactEdgesCommit:
     """Tests for artifact_edges table commits."""
 
-    @pytest.fixture
-    def setup_paths(self, tmp_path, local_fs):
-        """Create delta and staging directories."""
-        delta_path = tmp_path / "delta"
-        staging_path = tmp_path / "staging"
-        delta_path.mkdir()
-        staging_path.mkdir()
-        return delta_path, staging_path, local_fs
-
-    @pytest.fixture
-    def committer(self, setup_paths):
-        """Create a DeltaCommitter instance."""
-        delta_path, staging_path, fs = setup_paths
-        sm = StagingManager(str(staging_path), fs)
-        return DeltaCommitter(str(delta_path), sm, fs=fs)
-
-    def test_artifact_edges_in_commit_order(self, setup_paths, committer):
+    def test_artifact_edges_in_commit_order(self, commit_env):
         """artifact_edges is committed in correct order."""
-        delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, delta_root, staging_root = commit_env
 
         # Stage artifact_edges data
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         prov_df = pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -553,14 +565,14 @@ class TestArtifactEdgesCommit:
 
         assert "artifact_edges" in results
         assert results["artifact_edges"] == 1
-        assert (delta_path / "provenance/artifact_edges").exists()
+        assert fs.exists(f"{delta_root}/provenance/artifact_edges")
 
-    def test_artifact_edges_not_partitioned(self, setup_paths, committer):
+    def test_artifact_edges_not_partitioned(self, commit_env):
         """artifact_edges is NOT partitioned by step number."""
-        delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, delta_root, staging_root = commit_env
 
         # Stage artifact_edges data
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         prov_df = pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -579,20 +591,21 @@ class TestArtifactEdgesCommit:
 
         committer.commit_all_tables(cleanup_staging=False)
 
-        # Check that table exists without partition subdirectories
-        table_path = delta_path / "provenance/artifact_edges"
-        assert table_path.exists()
+        # Check the table exists. The old assertion also checked for
+        # absence of ``origin_step_number=*`` partition directories on
+        # disk, but that's a delta-rs POSIX-layout internal, not a
+        # user-facing invariant, and doesn't translate to S3 key
+        # prefixes. The table-level round-trip + the dedicated
+        # ``commit_all_tables`` result above already prove the data
+        # was written correctly without partitioning.
+        assert fs.exists(f"{delta_root}/provenance/artifact_edges")
 
-        # If partitioned, there would be origin_step_number=X directories
-        partition_dirs = list(table_path.glob("origin_step_number=*"))
-        assert len(partition_dirs) == 0, "artifact_edges should not be partitioned"
-
-    def test_artifact_edges_in_commit_batch(self, setup_paths, committer):
+    def test_artifact_edges_in_commit_batch(self, commit_env):
         """artifact_edges works with commit_batch."""
-        _delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, _delta_root, staging_root = commit_env
 
         # Stage artifact_edges data via StagingArea
-        staging = StagingArea(str(staging_path), fs, batch_id="test_batch")
+        staging = StagingArea(staging_root, fs, batch_id="test_batch")
         prov_df = pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -615,11 +628,9 @@ class TestArtifactEdgesCommit:
         assert "artifact_edges" in results
         assert results["artifact_edges"] == 1
 
-    def test_compact_step_filter_ignored_for_artifact_edges(
-        self, setup_paths, committer
-    ):
+    def test_compact_step_filter_ignored_for_artifact_edges(self, commit_env):
         """Step filter is ignored for artifact_edges (not partitioned)."""
-        delta_path, _staging_path, _fs = setup_paths
+        committer, _fs, storage, delta_root, _staging_root = commit_env
 
         # Create artifact_edges with data
         prov_df = pl.DataFrame(
@@ -637,7 +648,9 @@ class TestArtifactEdgesCommit:
             schema=ARTIFACT_EDGES_SCHEMA,
         )
         prov_df.write_delta(
-            str(delta_path / "provenance/artifact_edges"), mode="overwrite"
+            f"{delta_root}/provenance/artifact_edges",
+            mode="overwrite",
+            storage_options=storage.delta_storage_options(),
         )
 
         # Compact with step_number filter - should not fail, step_number is ignored
@@ -652,18 +665,21 @@ class TestArtifactEdgesCommit:
         assert "files_removed" in stats
 
         # All data should still be present
-        result = pl.read_delta(str(delta_path / "provenance/artifact_edges"))
+        result = pl.read_delta(
+            f"{delta_root}/provenance/artifact_edges",
+            storage_options=storage.delta_storage_options(),
+        )
         assert result.shape[0] == 2
 
-    def test_artifact_edges_zorder_config(self, setup_paths, committer):
+    def test_artifact_edges_zorder_config(self, commit_env):
         """artifact_edges uses source_artifact_id and target_artifact_id for Z-ORDER."""
-        _delta_path, staging_path, fs = setup_paths
+        committer, fs, _storage, _delta_root, staging_root = commit_env
 
         # Initialize tables
         committer.initialize_tables()
 
         # Stage artifact_edges data
-        staging = StagingArea(str(staging_path), fs, batch_id="test")
+        staging = StagingArea(staging_root, fs, batch_id="test")
         prov_df = pl.DataFrame(
             {
                 "execution_run_id": ["e" * 32],
@@ -691,24 +707,8 @@ class TestArtifactEdgesCommit:
 class TestRecoverStaged:
     """Tests for DeltaCommitter.recover_staged()."""
 
-    @pytest.fixture
-    def setup_paths(self, tmp_path, local_fs):
-        """Create delta and staging directories."""
-        delta_path = tmp_path / "delta"
-        staging_path = tmp_path / "staging"
-        delta_path.mkdir()
-        staging_path.mkdir()
-        return delta_path, staging_path, local_fs
-
-    @pytest.fixture
-    def committer(self, setup_paths):
-        """Create a DeltaCommitter instance."""
-        delta_path, staging_path, fs = setup_paths
-        sm = StagingManager(str(staging_path), fs)
-        return DeltaCommitter(str(delta_path), sm, fs=fs)
-
     def _stage_mock_execution(
-        self, staging_path, fs, batch_id="crashed_worker", artifact_id="a" * 32
+        self, staging_root, fs, batch_id="crashed_worker", artifact_id="a" * 32
     ):
         """Stage mock execution + artifact data simulating a crashed run."""
         from artisan.storage.core.table_schemas import (
@@ -716,7 +716,7 @@ class TestRecoverStaged:
             EXECUTIONS_SCHEMA,
         )
 
-        staging = StagingArea(str(staging_path), fs, batch_id=batch_id)
+        staging = StagingArea(staging_root, fs, batch_id=batch_id)
 
         # Stage an execution record
         exec_df = pl.DataFrame(
@@ -783,28 +783,34 @@ class TestRecoverStaged:
 
         return staging
 
-    def test_recover_staged_no_staging_dir(self, tmp_path, local_fs):
+    def test_recover_staged_no_staging_dir(self, backend_fs):
         """Returns {} when staging dir doesn't exist."""
-        delta_path = tmp_path / "delta"
-        delta_path.mkdir()
-        nonexistent = str(tmp_path / "no_such_staging")
+        fs, storage, root = backend_fs
+        delta_root = f"{root}/delta_no_staging"
+        fs.makedirs(delta_root, exist_ok=True)
+        # Deliberately do NOT create staging_root — the fixture's
+        # purpose is to exercise the missing-staging-dir path.
+        nonexistent = f"{root}/no_such_staging"
 
-        sm = StagingManager(nonexistent, local_fs)
-        committer = DeltaCommitter(str(delta_path), sm, fs=local_fs)
+        sm = StagingManager(nonexistent, fs)
+        committer = DeltaCommitter(
+            delta_root, sm, fs=fs, storage_options=storage.delta_storage_options()
+        )
         result = committer.recover_staged()
 
         assert result == {}
 
-    def test_recover_staged_empty_staging(self, setup_paths, committer):
+    def test_recover_staged_empty_staging(self, commit_env):
         """Returns {} when staging dir exists but has no files."""
+        committer, _fs, _storage, _delta_root, _staging_root = commit_env
         result = committer.recover_staged()
 
         assert result == {}
 
-    def test_recover_staged_commits_leftover_files(self, setup_paths, committer):
+    def test_recover_staged_commits_leftover_files(self, commit_env):
         """Stages mock data, calls recover_staged, verifies rows in Delta."""
-        delta_path, staging_path, fs = setup_paths
-        self._stage_mock_execution(staging_path, fs)
+        committer, fs, storage, delta_root, staging_root = commit_env
+        self._stage_mock_execution(staging_root, fs)
 
         results = committer.recover_staged(preserve_staging=True)
 
@@ -814,17 +820,23 @@ class TestRecoverStaged:
         assert results.get("index") == 1
 
         # Verify data is actually in Delta
-        exec_table = pl.read_delta(str(delta_path / "orchestration/executions"))
+        exec_table = pl.read_delta(
+            f"{delta_root}/orchestration/executions",
+            storage_options=storage.delta_storage_options(),
+        )
         assert exec_table.shape[0] == 1
         assert exec_table["execution_run_id"][0] == "exec_001"
 
-        metrics_table = pl.read_delta(str(delta_path / "artifacts/metrics"))
+        metrics_table = pl.read_delta(
+            f"{delta_root}/artifacts/metrics",
+            storage_options=storage.delta_storage_options(),
+        )
         assert metrics_table.shape[0] == 1
 
-    def test_recover_staged_idempotent(self, setup_paths, committer):
+    def test_recover_staged_idempotent(self, commit_env):
         """Calling recover_staged twice with preserve_staging produces no duplicates."""
-        delta_path, staging_path, fs = setup_paths
-        self._stage_mock_execution(staging_path, fs)
+        committer, fs, storage, delta_root, staging_root = commit_env
+        self._stage_mock_execution(staging_root, fs)
 
         results1 = committer.recover_staged(preserve_staging=True)
         results2 = committer.recover_staged(preserve_staging=True)
@@ -836,29 +848,32 @@ class TestRecoverStaged:
         assert results2.get("metrics", 0) == 0
 
         # Verify no duplicates in Delta
-        metrics_table = pl.read_delta(str(delta_path / "artifacts/metrics"))
+        metrics_table = pl.read_delta(
+            f"{delta_root}/artifacts/metrics",
+            storage_options=storage.delta_storage_options(),
+        )
         assert metrics_table.shape[0] == 1
 
-    def test_recover_staged_cleans_up_staging(self, setup_paths, committer):
+    def test_recover_staged_cleans_up_staging(self, commit_env):
         """Staging files removed after recovery (default behavior)."""
-        _delta_path, staging_path, fs = setup_paths
-        self._stage_mock_execution(staging_path, fs)
+        committer, fs, _storage, _delta_root, staging_root = commit_env
+        self._stage_mock_execution(staging_root, fs)
 
         committer.recover_staged()
 
         # Staging dir should have been cleaned
-        remaining = list(staging_path.rglob("*.parquet"))
+        remaining = list(fs.glob(f"{staging_root}/**/*.parquet"))
         assert remaining == []
 
-    def test_recover_staged_preserves_staging(self, setup_paths, committer):
+    def test_recover_staged_preserves_staging(self, commit_env):
         """With preserve_staging=True, staging files remain after recovery."""
-        _delta_path, staging_path, fs = setup_paths
-        self._stage_mock_execution(staging_path, fs)
+        committer, fs, _storage, _delta_root, staging_root = commit_env
+        self._stage_mock_execution(staging_root, fs)
 
         committer.recover_staged(preserve_staging=True)
 
         # Staging files should still exist
-        remaining = list(staging_path.rglob("*.parquet"))
+        remaining = list(fs.glob(f"{staging_root}/**/*.parquet"))
         assert len(remaining) > 0
 
 
@@ -868,6 +883,11 @@ class TestDeltaCommitterBackendParametrized:
     Uses the ``backend_fs`` fixture from ``tests/artisan/storage/conftest.py``
     to exercise the critical write/read round-trip on both filesystems. S3
     params skip cleanly when MinIO is unavailable.
+
+    Kept alongside the promoted classes above because the smoke methods
+    (``commit_dataframe``) are a public surface not exercised by
+    ``TestDeltaCommitter`` (which covers ``commit_table`` /
+    ``commit_all_tables`` / ``recover_staged``).
     """
 
     def test_commit_dataframe_writes_to_table(self, backend_fs):

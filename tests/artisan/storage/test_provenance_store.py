@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
-from fsspec.implementations.local import LocalFileSystem
 
 from artisan.storage.core.provenance_store import ProvenanceStore
 from artisan.storage.core.table_schemas import (
@@ -13,10 +12,9 @@ from artisan.storage.core.table_schemas import (
 )
 
 
-def _write_delta(path, df):
-    """Write a DataFrame as a Delta table."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.write_delta(str(path))
+def _write_delta(uri: str, df: pl.DataFrame, storage_options: dict | None) -> None:
+    """Write a DataFrame as a Delta table to the given URI."""
+    df.write_delta(uri, storage_options=storage_options)
 
 
 def _make_edges(pairs: list[tuple[str, str, str]]) -> pl.DataFrame:
@@ -59,20 +57,30 @@ D = "d" * 32
 E = "e" * 32
 
 
+@pytest.fixture
+def prov_env(backend_fs):
+    """Yield ``(store, fs, storage_options, root)`` per ``backend_fs`` param.
+
+    Shared by ``TestGetAncestorIds`` and ``TestGetDescendantIds`` so every
+    test runs twice — once against ``LocalFileSystem``, once against MinIO.
+    """
+    fs, storage, root = backend_fs
+    opts = storage.delta_storage_options()
+    store = ProvenanceStore(root, fs=fs, storage_options=opts)
+    return store, fs, opts, root
+
+
 class TestGetAncestorIds:
     """Tests for ProvenanceStore.get_ancestor_ids."""
 
-    @pytest.fixture
-    def store(self, tmp_path):
-        return ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
-
-    def test_no_edges_table(self, store):
+    def test_no_edges_table(self, prov_env):
         """Returns empty list when artifact_edges table is missing."""
+        store, _fs, _opts, _root = prov_env
         assert store.get_ancestor_ids(A) == []
 
-    def test_linear_chain(self, tmp_path):
+    def test_linear_chain(self, prov_env):
         """A -> B -> C: ancestors of C are [A, B]."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -86,23 +94,23 @@ class TestGetAncestorIds:
                 (C, "data", 3),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
-        _write_delta(tmp_path / "artifacts/index", index)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _write_delta(f"{root}/artifacts/index", index, opts)
 
         result = store.get_ancestor_ids(C)
         assert set(result) == {A, B}
 
-    def test_no_ancestors(self, tmp_path):
+    def test_no_ancestors(self, prov_env):
         """Root node has no ancestors."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
 
         assert store.get_ancestor_ids(A) == []
 
-    def test_diamond_graph(self, tmp_path):
+    def test_diamond_graph(self, prov_env):
         """A -> B, A -> C, B -> D, C -> D: ancestors of D are [A, B, C]."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -119,15 +127,15 @@ class TestGetAncestorIds:
                 (D, "data", 3),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
-        _write_delta(tmp_path / "artifacts/index", index)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _write_delta(f"{root}/artifacts/index", index, opts)
 
         result = store.get_ancestor_ids(D)
         assert set(result) == {A, B, C}
 
-    def test_ancestor_type_filter(self, tmp_path):
+    def test_ancestor_type_filter(self, prov_env):
         """Filter ancestors by type returns only matching types."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "metric"),
@@ -141,8 +149,8 @@ class TestGetAncestorIds:
                 (C, "data", 3),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
-        _write_delta(tmp_path / "artifacts/index", index)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _write_delta(f"{root}/artifacts/index", index, opts)
 
         # All ancestors
         assert set(store.get_ancestor_ids(C)) == {A, B}
@@ -155,11 +163,11 @@ class TestGetAncestorIds:
         result = store.get_ancestor_ids(C, ancestor_type="metric")
         assert result == [B]
 
-    def test_unknown_artifact(self, tmp_path):
+    def test_unknown_artifact(self, prov_env):
         """Artifact not in any edge returns empty list."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
 
         assert store.get_ancestor_ids(C) == []
 
@@ -167,39 +175,36 @@ class TestGetAncestorIds:
 class TestGetDescendantIds:
     """Tests for ProvenanceStore.get_descendant_ids."""
 
-    @pytest.fixture
-    def store(self, tmp_path):
-        return ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
-
-    def test_no_edges_table(self, store):
+    def test_no_edges_table(self, prov_env):
         """Returns empty list when artifact_edges table is missing."""
+        store, _fs, _opts, _root = prov_env
         assert store.get_descendant_ids(A) == []
 
-    def test_linear_chain(self, tmp_path):
+    def test_linear_chain(self, prov_env):
         """A -> B -> C: descendants of A are [B, C]."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
                 (B, C, "data"),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
 
         result = store.get_descendant_ids(A)
         assert set(result) == {B, C}
 
-    def test_no_descendants(self, tmp_path):
+    def test_no_descendants(self, prov_env):
         """Leaf node has no descendants."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
 
         assert store.get_descendant_ids(B) == []
 
-    def test_branching_graph(self, tmp_path):
+    def test_branching_graph(self, prov_env):
         """A -> B, A -> C, B -> D: descendants of A are [B, C, D]."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -207,14 +212,14 @@ class TestGetDescendantIds:
                 (B, D, "data"),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
 
         result = store.get_descendant_ids(A)
         assert set(result) == {B, C, D}
 
-    def test_descendant_type_filter(self, tmp_path):
+    def test_descendant_type_filter(self, prov_env):
         """Filter descendants by type returns only matching types."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -222,7 +227,7 @@ class TestGetDescendantIds:
                 (B, D, "data"),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
 
         # Only metric descendants
         result = store.get_descendant_ids(A, descendant_type="metric")
@@ -232,11 +237,11 @@ class TestGetDescendantIds:
         result = store.get_descendant_ids(A, descendant_type="data")
         assert set(result) == {B, D}
 
-    def test_unknown_artifact(self, tmp_path):
+    def test_unknown_artifact(self, prov_env):
         """Artifact not in any edge returns empty list."""
-        store = ProvenanceStore(str(tmp_path), fs=LocalFileSystem())
+        store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
 
         assert store.get_descendant_ids(C) == []
 
@@ -244,12 +249,9 @@ class TestGetDescendantIds:
 class TestProvenanceStoreBackendParametrized:
     """Smoke test: seed a small provenance graph and read it back on each backend.
 
-    Uses ``backend_fs`` from ``tests/artisan/storage/conftest.py`` to run
-    against both ``LocalFileSystem`` and the per-test S3 bucket on MinIO.
-    Writes Delta tables via the production-style ``write_delta`` path
-    (with ``storage_options`` from the parametrized ``StorageConfig``),
-    then reads back through ``ProvenanceStore.get_ancestor_ids`` /
-    ``get_descendant_ids``.
+    Kept alongside the promoted classes above as an integration-level
+    end-to-end check of the store's public walk API. The promoted classes
+    cover more edge cases at the class-method level via ``prov_env``.
     """
 
     def test_seed_and_walk(self, backend_fs):

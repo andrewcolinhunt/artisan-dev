@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 import polars as pl
 import pytest
-from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.enums import CacheValidationReason
 from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
@@ -19,14 +17,20 @@ from artisan.storage.core.table_schemas import (
 
 
 @pytest.fixture
-def executions_path(tmp_path: Path) -> str:
-    """Create executions and execution_edges tables with test data."""
-    records_path = tmp_path / "orchestration/executions"
-    provenance_path = tmp_path / "provenance/execution_edges"
+def cache_env(backend_fs):
+    """Yield ``(executions_path, fs, storage_options, root)`` per backend.
+
+    Seeds ``orchestration/executions`` with one success + one failure,
+    and ``provenance/execution_edges`` with one input/output pair, so
+    consumers test the three primary outcomes (hit / miss-failed /
+    miss-unknown-spec) without having to re-seed.
+    """
+    fs, storage, root = backend_fs
+    opts = storage.delta_storage_options()
+    executions_path = f"{root}/orchestration/executions"
+    edges_path = f"{root}/provenance/execution_edges"
 
     now = datetime.now()
-
-    # Executions (no inputs/outputs columns)
     records_data = {
         "execution_run_id": ["run_success", "run_failed"],
         "execution_spec_id": ["spec_success", "spec_failed"],
@@ -45,149 +49,164 @@ def executions_path(tmp_path: Path) -> str:
         "worker_log": [None, None],
         "metadata": ["{}", "{}"],
     }
+    pl.DataFrame(records_data, schema=EXECUTIONS_SCHEMA).write_delta(
+        executions_path, mode="overwrite", storage_options=opts
+    )
 
-    df = pl.DataFrame(records_data, schema=EXECUTIONS_SCHEMA)
-    df.write_delta(str(records_path), mode="overwrite")
-
-    # Execution edges (normalized input/output edges)
     provenance_data = {
         "execution_run_id": ["run_success", "run_success"],
         "direction": ["input", "output"],
         "role": ["data", "processed"],
         "artifact_id": ["input123", "output456"],
     }
-
-    prov_df = pl.DataFrame(provenance_data, schema=EXECUTION_EDGES_SCHEMA)
-    prov_df.write_delta(str(provenance_path), mode="overwrite")
-
-    return str(records_path)
-
-
-def test_cache_hit(executions_path: str) -> None:
-    """Cache hit returns inputs/outputs from successful execution."""
-    result = cache_lookup(executions_path, "spec_success", LocalFileSystem())
-
-    assert isinstance(result, CacheHit)
-    assert result.execution_spec_id == "spec_success"
-    assert len(result.inputs) == 1
-    assert len(result.outputs) == 1
-
-
-def test_cache_miss_no_execution(tmp_path: Path) -> None:
-    """Cache miss when no execution exists."""
-    result = cache_lookup(str(tmp_path / "nonexistent"), "any_spec", LocalFileSystem())
-
-    assert isinstance(result, CacheMiss)
-    assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
-
-
-def test_cache_miss_failed_execution(executions_path: str) -> None:
-    """Cache miss when execution exists but failed."""
-    result = cache_lookup(executions_path, "spec_failed", LocalFileSystem())
-
-    assert isinstance(result, CacheMiss)
-    assert result.reason == CacheValidationReason.EXECUTION_FAILED
-
-
-def test_cache_miss_unknown_spec_id(executions_path: str) -> None:
-    """Cache miss when spec_id not found in existing table."""
-    result = cache_lookup(executions_path, "nonexistent_spec", LocalFileSystem())
-
-    assert isinstance(result, CacheMiss)
-    assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
-
-
-def test_cache_lookup_returns_most_recent_on_multiple_successes(
-    tmp_path: Path,
-) -> None:
-    """When multiple successful executions exist, return most recent."""
-    records_path = tmp_path / "orchestration/executions"
-    provenance_path = tmp_path / "provenance/execution_edges"
-
-    earlier = datetime(2024, 1, 1, 10, 0, 0)
-    later = datetime(2024, 1, 1, 12, 0, 0)
-
-    records_data = {
-        "execution_run_id": ["run_old", "run_new"],
-        "execution_spec_id": ["same_spec", "same_spec"],
-        "step_run_id": [None, None],
-        "origin_step_number": [1, 1],
-        "operation_name": ["op", "op"],
-        "params": ["{}", "{}"],
-        "user_overrides": ["{}", "{}"],
-        "timestamp_start": [earlier, later],
-        "timestamp_end": [earlier, later],
-        "source_worker": [0, 0],
-        "compute_backend": ["local", "local"],
-        "success": [True, True],
-        "error": [None, None],
-        "tool_output": [None, None],
-        "worker_log": [None, None],
-        "metadata": ["{}", "{}"],
-    }
-
-    df = pl.DataFrame(records_data, schema=EXECUTIONS_SCHEMA)
-    df.write_delta(str(records_path), mode="overwrite")
-
-    # Provenance for both executions
-    provenance_data = {
-        "execution_run_id": ["run_old", "run_old", "run_new", "run_new"],
-        "direction": ["input", "output", "input", "output"],
-        "role": ["x", "y", "x", "y"],
-        "artifact_id": ["a", "old_output", "a", "new_output"],
-    }
-
-    prov_df = pl.DataFrame(provenance_data, schema=EXECUTION_EDGES_SCHEMA)
-    prov_df.write_delta(str(provenance_path), mode="overwrite")
-
-    result = cache_lookup(str(records_path), "same_spec", LocalFileSystem())
-
-    assert isinstance(result, CacheHit)
-    assert result.execution_run_id == "run_new"
-
-
-def test_cache_hit_enables_output_reference_resolution(
-    executions_path: str,
-) -> None:
-    """Cache hit provides outputs for OutputReference resolution.
-
-    When a cache hit occurs, downstream steps use OutputReference(source_step, role)
-    to find artifact IDs. The CacheHit contains inputs/outputs that provides the
-    mapping that enables this resolution.
-
-    Key behavior verified:
-    - Cache hit returns inputs/outputs with role -> artifact_id mappings
-    - No new ExecutionRecord needed - artifacts exist from original execution
-    """
-    result = cache_lookup(executions_path, "spec_success", LocalFileSystem())
-
-    assert isinstance(result, CacheHit)
-
-    # The outputs can be used for OutputReference resolution
-    # OutputReference(source_step=N, role="processed") -> artifact_id
-    assert len(result.outputs) == 1
-    assert any(
-        o["role"] == "processed" and o["artifact_id"] == "output456"
-        for o in result.outputs
+    pl.DataFrame(provenance_data, schema=EXECUTION_EDGES_SCHEMA).write_delta(
+        edges_path, mode="overwrite", storage_options=opts
     )
 
+    return executions_path, fs, opts, root
 
-def test_cache_miss_reasons_for_different_scenarios(tmp_path: Path) -> None:
-    """CacheMiss.reason distinguishes between no execution and failed execution.
 
-    This helps the executor decide:
-    - NO_PREVIOUS_EXECUTION: New execution needed (first time)
-    - EXECUTION_FAILED: Retry needed (previous attempt failed)
+class TestCacheLookup:
+    """Cache lookup behavior across successful, failed, and absent executions.
 
-    Note: On cache miss, the executor proceeds to:
-    1. Materialization (stream artifacts to working directory)
-    2. Execute operation
-    3. Record execution
+    Runs against both local and s3 backends via the ``cache_env`` fixture.
     """
-    # Non-existent table -> NO_PREVIOUS_EXECUTION
-    result = cache_lookup(str(tmp_path / "nonexistent"), "any_spec", LocalFileSystem())
-    assert isinstance(result, CacheMiss)
-    assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
+
+    def test_cache_hit(self, cache_env):
+        """Cache hit returns inputs/outputs from successful execution."""
+        executions_path, fs, opts, _root = cache_env
+        result = cache_lookup(executions_path, "spec_success", fs, storage_options=opts)
+
+        assert isinstance(result, CacheHit)
+        assert result.execution_spec_id == "spec_success"
+        assert len(result.inputs) == 1
+        assert len(result.outputs) == 1
+
+    def test_cache_miss_no_execution(self, backend_fs):
+        """Cache miss when no execution exists."""
+        fs, storage, root = backend_fs
+        result = cache_lookup(
+            f"{root}/nonexistent",
+            "any_spec",
+            fs,
+            storage_options=storage.delta_storage_options(),
+        )
+
+        assert isinstance(result, CacheMiss)
+        assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
+
+    def test_cache_miss_failed_execution(self, cache_env):
+        """Cache miss when execution exists but failed."""
+        executions_path, fs, opts, _root = cache_env
+        result = cache_lookup(executions_path, "spec_failed", fs, storage_options=opts)
+
+        assert isinstance(result, CacheMiss)
+        assert result.reason == CacheValidationReason.EXECUTION_FAILED
+
+    def test_cache_miss_unknown_spec_id(self, cache_env):
+        """Cache miss when spec_id not found in existing table."""
+        executions_path, fs, opts, _root = cache_env
+        result = cache_lookup(
+            executions_path, "nonexistent_spec", fs, storage_options=opts
+        )
+
+        assert isinstance(result, CacheMiss)
+        assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
+
+    def test_cache_lookup_returns_most_recent_on_multiple_successes(self, backend_fs):
+        """When multiple successful executions exist, return most recent."""
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        executions_path = f"{root}/orchestration/executions"
+        edges_path = f"{root}/provenance/execution_edges"
+
+        earlier = datetime(2024, 1, 1, 10, 0, 0)
+        later = datetime(2024, 1, 1, 12, 0, 0)
+
+        records_data = {
+            "execution_run_id": ["run_old", "run_new"],
+            "execution_spec_id": ["same_spec", "same_spec"],
+            "step_run_id": [None, None],
+            "origin_step_number": [1, 1],
+            "operation_name": ["op", "op"],
+            "params": ["{}", "{}"],
+            "user_overrides": ["{}", "{}"],
+            "timestamp_start": [earlier, later],
+            "timestamp_end": [earlier, later],
+            "source_worker": [0, 0],
+            "compute_backend": ["local", "local"],
+            "success": [True, True],
+            "error": [None, None],
+            "tool_output": [None, None],
+            "worker_log": [None, None],
+            "metadata": ["{}", "{}"],
+        }
+        pl.DataFrame(records_data, schema=EXECUTIONS_SCHEMA).write_delta(
+            executions_path, mode="overwrite", storage_options=opts
+        )
+
+        # Provenance for both executions
+        provenance_data = {
+            "execution_run_id": ["run_old", "run_old", "run_new", "run_new"],
+            "direction": ["input", "output", "input", "output"],
+            "role": ["x", "y", "x", "y"],
+            "artifact_id": ["a", "old_output", "a", "new_output"],
+        }
+        pl.DataFrame(provenance_data, schema=EXECUTION_EDGES_SCHEMA).write_delta(
+            edges_path, mode="overwrite", storage_options=opts
+        )
+
+        result = cache_lookup(executions_path, "same_spec", fs, storage_options=opts)
+
+        assert isinstance(result, CacheHit)
+        assert result.execution_run_id == "run_new"
+
+    def test_cache_hit_enables_output_reference_resolution(self, cache_env):
+        """Cache hit provides outputs for OutputReference resolution.
+
+        When a cache hit occurs, downstream steps use OutputReference(source_step, role)
+        to find artifact IDs. The CacheHit contains inputs/outputs that provides the
+        mapping that enables this resolution.
+
+        Key behavior verified:
+        - Cache hit returns inputs/outputs with role -> artifact_id mappings
+        - No new ExecutionRecord needed - artifacts exist from original execution
+        """
+        executions_path, fs, opts, _root = cache_env
+        result = cache_lookup(executions_path, "spec_success", fs, storage_options=opts)
+
+        assert isinstance(result, CacheHit)
+
+        # The outputs can be used for OutputReference resolution
+        # OutputReference(source_step=N, role="processed") -> artifact_id
+        assert len(result.outputs) == 1
+        assert any(
+            o["role"] == "processed" and o["artifact_id"] == "output456"
+            for o in result.outputs
+        )
+
+    def test_cache_miss_reasons_for_different_scenarios(self, backend_fs):
+        """CacheMiss.reason distinguishes between no execution and failed execution.
+
+        This helps the executor decide:
+        - NO_PREVIOUS_EXECUTION: New execution needed (first time)
+        - EXECUTION_FAILED: Retry needed (previous attempt failed)
+
+        Note: On cache miss, the executor proceeds to:
+        1. Materialization (stream artifacts to working directory)
+        2. Execute operation
+        3. Record execution
+        """
+        fs, storage, root = backend_fs
+        # Non-existent table -> NO_PREVIOUS_EXECUTION
+        result = cache_lookup(
+            f"{root}/nonexistent",
+            "any_spec",
+            fs,
+            storage_options=storage.delta_storage_options(),
+        )
+        assert isinstance(result, CacheMiss)
+        assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
 
 
 class TestCacheHitSchema:
@@ -230,7 +249,11 @@ class TestCacheHitSchema:
 
 
 class TestCacheLookupBackendParametrized:
-    """Smoke test cache_lookup against both [local, s3] backends."""
+    """Smoke test cache_lookup against both [local, s3] backends.
+
+    Kept alongside the promoted ``TestCacheLookup`` class as an
+    additional integration-level round-trip guard.
+    """
 
     def test_cache_hit_round_trip(self, backend_fs):
         """Successful execution + edges produce a CacheHit on either backend."""

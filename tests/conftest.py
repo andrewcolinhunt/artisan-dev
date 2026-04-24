@@ -5,6 +5,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import socket
+import sys
 import uuid
 from collections.abc import Iterator
 
@@ -19,6 +21,35 @@ rootutils.setup_root(
     dotenv=True,
     cwd=False,
 )
+
+
+# =============================================================================
+# Suppress ResourceWarning noise from s3fs/asyncio socket teardown
+# =============================================================================
+#
+# s3fs / aiobotocore spawn asyncio self-pipe socketpair wakeup sockets
+# internally and don't always close them cleanly when the filesystem
+# instances are garbage-collected during interpreter shutdown. Python's
+# gc then prints ``Exception ignored in: <socket.socket ...>`` +
+# ``ResourceWarning: unclosed <socket.socket ...>`` via
+# ``sys.unraisablehook`` — pairs of adjacent loopback TCP ports the OS
+# already closes at process exit, so the warning is cosmetic.
+#
+# pyproject.toml's ``filterwarnings = ["error"]`` doesn't catch these
+# because they fire after pytest has finished, via the unraisable hook
+# rather than ``warnings.warn``. Narrow the hook to swallow ONLY
+# ``ResourceWarning`` on ``socket.socket`` objects — anything else still
+# surfaces.
+_original_unraisablehook = sys.unraisablehook
+
+
+def _quiet_socket_resourcewarning_hook(args):
+    if args.exc_type is ResourceWarning and isinstance(args.object, socket.socket):
+        return
+    _original_unraisablehook(args)
+
+
+sys.unraisablehook = _quiet_socket_resourcewarning_hook
 
 
 # =============================================================================
