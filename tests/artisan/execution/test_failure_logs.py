@@ -104,7 +104,7 @@ class TestWriteFailureLog:
         assert len(log_files) == 2
 
     def test_header_fields(self, tmp_path: Path) -> None:
-        """Log header contains run_id, operation, step, backend."""
+        """Log header contains run_id, operation, step, step_runner."""
         _write_failure_log(
             failure_logs_root=str(tmp_path),
             execution_run_id="header_test",

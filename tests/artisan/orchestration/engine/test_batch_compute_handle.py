@@ -71,7 +71,9 @@ class TestBatchComputeDispatchHandle:
         with patch.object(handle, "_start_background") as mock_bg:
             handle.dispatch([_make_unit()], MagicMock())
             bg_fn = mock_bg.call_args[0][0]
-            with pytest.raises(RuntimeError, match="Batch compute interrupted"):
+            with pytest.raises(
+                RuntimeError, match="Batch compute_provider interrupted"
+            ):
                 bg_fn()
 
     @patch("artisan.orchestration.engine.batch_compute_handle.ProcessPoolExecutor")

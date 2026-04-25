@@ -15,7 +15,7 @@ from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -95,7 +95,7 @@ class DataTransformerConfig(OperationDefinition):
     execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_config")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
-    compute: Compute = Compute(
+    compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 

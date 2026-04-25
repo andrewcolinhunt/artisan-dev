@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from artisan.schemas.operation_config.compute import (
     ARTISAN_WORKER_IMAGE,
-    Compute,
     ComputeConfig,
+    ComputeProvider,
     LocalComputeConfig,
     ModalComputeConfig,
 )
@@ -24,9 +24,9 @@ __all__ = [
     # ComputeConfig hierarchy
     "ARTISAN_WORKER_IMAGE",
     "ApptainerEnvironmentSpec",
-    # Compute model
-    "Compute",
     "ComputeConfig",
+    # Compute provider model
+    "ComputeProvider",
     "DockerEnvironmentSpec",
     # EnvironmentSpec hierarchy
     "EnvironmentSpec",

@@ -62,7 +62,7 @@ class TestCreatorBrokenProcessPool:
         result = _execute_creator_step(
             operation=mock_op,
             inputs={"data": ["id1", "id2"]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             step_number=1,
             config=config,
         )

@@ -15,7 +15,7 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -80,7 +80,7 @@ class DataGenerator(OperationDefinition):
     )
 
     # ---------- Compute ----------
-    compute: Compute = Compute(
+    compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 

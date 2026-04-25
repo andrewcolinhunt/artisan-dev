@@ -143,7 +143,7 @@ Reference a declared input of this composite.
 
 **Raises:** `ValueError` if role is not a declared input.
 
-#### `run(operation, *, inputs=None, params=None, resources=None, execution=None, backend=None, environment=None, tool=None) -> CompositeStepHandle`
+#### `run(operation, *, inputs=None, params=None, resources=None, execution=None, step_runner=None, environment=None, tool=None) -> CompositeStepHandle`
 
 Execute an operation or nested composite.
 

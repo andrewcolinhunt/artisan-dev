@@ -17,7 +17,7 @@ from artisan.operations.curator.interactive_filter import (
 )
 from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 from .conftest import (
     get_execution_inputs,
@@ -42,13 +42,13 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 4, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -126,13 +126,13 @@ def test_interactive_filter_selective_criteria(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 99},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -176,13 +176,13 @@ def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, str])
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -213,13 +213,13 @@ def test_interactive_filter_output_reference(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

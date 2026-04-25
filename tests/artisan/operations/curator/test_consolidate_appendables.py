@@ -193,7 +193,7 @@ class TestConsolidateBasicExecution:
 class TestConsolidateErrorHandling:
     """Tests for error conditions.
 
-    Stays local-only (no backend parametrization) — ``test_raises_without_files_root``
+    Stays local-only (no step_runner parametrization) — ``test_raises_without_files_root``
     asserts only a ``ValueError`` without touching the filesystem.
     """
 
@@ -230,7 +230,7 @@ class TestConsolidateClassAttributes:
 
 
 class TestConsolidateAppendablesBackendParametrized:
-    """Smoke test: consolidate JSONL workers into a combined file on each backend.
+    """Smoke test: consolidate JSONL workers into a combined file on each step_runner.
 
     Kept as a higher-level end-to-end smoke alongside the promoted
     ``TestConsolidateBasicExecution`` class, which now covers the same

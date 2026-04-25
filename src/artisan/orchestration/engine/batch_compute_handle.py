@@ -1,6 +1,6 @@
 """Batch dispatch handle with per-artifact fan-out in a child process.
 
-Replaces ``ComputeRoutingDispatchHandle`` for the Modal compute path.
+Replaces ``ComputeRoutingDispatchHandle`` for the Modal compute_provider path.
 Units process concurrently via a ``ThreadPoolExecutor`` — all threads
 share the same warm ``ModalComputeRouter``.
 """
@@ -51,9 +51,9 @@ def _batch_execute_with_shared_router(
     compute_config: ComputeConfig,
     max_workers: int = 4,
 ) -> list[UnitResult]:
-    """Process units concurrently with a shared compute router.
+    """Process units concurrently with a shared compute_provider router.
 
-    Creates a router from the picklable compute config, warms it, and
+    Creates a router from the picklable compute_provider config, warms it, and
     processes units via a thread pool (prep/post overlap across units).
     Closes the router after all threads complete.
 
@@ -64,7 +64,7 @@ def _batch_execute_with_shared_router(
 
     Args:
         units: Execution units to process.
-        runtime_env: Paths and backend configuration.
+        runtime_env: Paths and step_runner configuration.
         compute_config: Picklable config for ``create_router()``.
         max_workers: Thread pool size for cross-unit parallelism.
     """
@@ -341,7 +341,7 @@ class BatchComputeDispatchHandle(DispatchHandle):
                         return future.result(timeout=0.5)
                     except TimeoutError as err:
                         if cancel is not None and cancel.is_set():
-                            msg = "Batch compute interrupted"
+                            msg = "Batch compute_provider interrupted"
                             raise RuntimeError(msg) from err
                         continue
 

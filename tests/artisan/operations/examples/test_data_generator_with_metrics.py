@@ -56,7 +56,7 @@ class TestDataGeneratorWithMetrics:
     def test_metric_values_match_data(self, tmp_path: Path):
         _, files, post_result = self._run(tmp_path, count=1, rows=5, seed=42)
 
-        # Read the generated CSV and compute expected stats
+        # Read the generated CSV and compute_provider expected stats
         with open(files[0]) as f:
             reader = csv.DictReader(f)
             xs = []

@@ -1,4 +1,4 @@
-"""Pre-flight validation for remote compute routing."""
+"""Pre-flight validation for remote compute_provider routing."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def _check_pickle_roundtrip(operation: Any) -> None:
         import cloudpickle
     except ImportError:
         msg = (
-            "cloudpickle is required for remote compute validation. "
+            "cloudpickle is required for remote compute_provider validation. "
             "Install it with: pip install cloudpickle"
         )
         raise ImportError(msg) from None
@@ -83,7 +83,7 @@ def _check_tool_paths(operation: Any) -> None:
         warnings.warn(
             f"Operation {type(operation).__name__} has tool.executable="
             f"'{executable}' which is an absolute path not found on PATH. "
-            "This binary may not exist on the remote compute target.",
+            "This binary may not exist on the remote compute_provider target.",
             UserWarning,
             stacklevel=3,
         )

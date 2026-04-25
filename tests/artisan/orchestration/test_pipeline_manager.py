@@ -980,7 +980,7 @@ class TestCancellation:
             composite_class=mock_composite,
             inputs={"data": ["a" * 32]},
             params=None,
-            backend=None,
+            step_runner=None,
             resources=None,
             execution=None,
             intermediates="discard",
@@ -1965,7 +1965,7 @@ class TestConfigureLoggingCloudGuard:
             storage=StorageConfig(protocol="s3"),
         )
         # StepTracker construction reads from delta_root via fs.exists,
-        # which would fail without a real S3 backend; mock the fs.
+        # which would fail without a real S3 step_runner; mock the fs.
         with (
             patch("artisan.utils.logging.configure_logging") as mock_configure,
             patch.object(StorageConfig, "filesystem", return_value=MagicMock()),
@@ -1981,7 +1981,7 @@ class TestPromoteFilePathsCloudUri:
 
     These tests use MemoryFileSystem (via the protocol-match step of
     resolve_fs) so they don't depend on MinIO or Docker. The MemoryFS
-    "happens to" act like a cloud backend from the function's POV —
+    "happens to" act like a cloud step_runner from the function's POV —
     a different protocol than the local pipeline default.
     """
 

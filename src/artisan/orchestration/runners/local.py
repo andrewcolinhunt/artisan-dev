@@ -1,4 +1,4 @@
-"""Local backend — ProcessPool execution on the orchestrator machine."""
+"""Local step_runner — ProcessPool execution on the orchestrator machine."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from prefect.task_runners import ProcessPoolTaskRunner
 
 from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.orchestration.backends.base import (
-    BackendBase,
+from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _HandleState
+from artisan.orchestration.runners.base import (
     OrchestratorTraits,
+    RunnerBase,
     WorkerTraits,
 )
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _HandleState
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
@@ -107,7 +107,7 @@ class LocalDispatchHandle(DispatchHandle):
         """No-op — local ProcessPool workers cannot be interrupted."""
 
 
-class LocalBackend(BackendBase):
+class LocalRunner(RunnerBase):
     """ProcessPool execution on the orchestrator machine.
 
     Args:
@@ -159,12 +159,12 @@ class LocalBackend(BackendBase):
         """No-op — local logs are in the orchestrator's stdout."""
 
     def validate_operation(self, operation: Any) -> None:
-        """Warn if SLURM-specific resources are configured on a local backend."""
+        """Warn if SLURM-specific resources are configured on a local step_runner."""
         r = operation.resources
         if r.extra:
             warnings.warn(
                 f"Operation {operation.name!r} has SLURM-specific resources "
-                f"(extra={r.extra!r}) but backend is 'local'. "
+                f"(extra={r.extra!r}) but step_runner is 'local'. "
                 f"These will be ignored.",
                 stacklevel=2,
             )

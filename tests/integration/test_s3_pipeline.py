@@ -4,7 +4,7 @@ This is the gate that proves all six s3-readiness PRs hold together:
 
 - PR 1's ``StorageConfig.delta_options`` reaches delta-rs.
 - PR 2's logs/failure_logs derivations stay local under cloud delta.
-- PR 3's MinIO fixture provides a working backend.
+- PR 3's MinIO fixture provides a working step_runner.
 - PR 4's cloud-URI inputs ingest via the two-step ``resolve_fs`` rule.
 - PR 5's storage layer round-trips against s3.
 
@@ -27,7 +27,7 @@ from artisan.operations.examples import (
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
 
@@ -55,12 +55,12 @@ class TestS3PipelineEndToEnd:
         gen = pipeline.run(
             DataGenerator,
             params={"count": 2, "rows_per_file": 5, "seed": 7},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": gen.output("datasets")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
         pipeline.finalize()
 
@@ -135,7 +135,7 @@ class TestS3PipelineEndToEnd:
                 f"{uri_prefix}/raw/data_0.csv",
                 f"{uri_prefix}/raw/data_1.csv",
             ],
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
         pipeline.finalize()
 
@@ -164,7 +164,7 @@ class TestS3PipelineEndToEnd:
         pipeline.run(
             LargeFileGenerator,
             params={"count": 2, "file_size_bytes": 1024, "seed": 0},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
         pipeline.finalize()
 

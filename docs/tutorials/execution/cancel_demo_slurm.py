@@ -32,7 +32,7 @@ Requires: SLURM cluster access.
 from __future__ import annotations
 
 from artisan.operations.examples import Wait
-from artisan.orchestration import Backend, PipelineManager
+from artisan.orchestration import Runner, PipelineManager
 from artisan.utils import tutorial_setup
 
 
@@ -54,7 +54,7 @@ def main() -> None:
             operation=Wait,
             name=f"wait_{i}",
             params={"duration": 60},
-            backend=Backend.SLURM,
+            step_runner=Runner.SLURM,
         )
 
     # finalize() blocks — Ctrl+C triggers cancel(), skipping remaining steps

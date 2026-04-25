@@ -15,7 +15,7 @@ from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.environment_spec import (
     DockerEnvironmentSpec,
     LocalEnvironmentSpec,
@@ -99,7 +99,7 @@ class DataTransformerScript(OperationDefinition):
     execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_script")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
-    compute: Compute = Compute(
+    compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 

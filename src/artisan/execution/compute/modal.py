@@ -1,4 +1,4 @@
-"""Modal compute router — route execute() to a Modal container."""
+"""Modal compute_provider router — route execute() to a Modal container."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class ModalComputeRouter(ComputeRouter):
     within the same step hit warm containers.
 
     Attributes:
-        _config: Modal compute configuration.
+        _config: Modal compute_provider configuration.
         _app: Cached Modal app (created lazily).
         _fn: Cached Modal function (created lazily).
         _ctx: The ``app.run()`` context manager (held open).

@@ -1,12 +1,12 @@
-"""Tests for backend base classes and traits."""
+"""Tests for step_runner base classes and traits."""
 
 from __future__ import annotations
 
 import pytest
 
-from artisan.orchestration.backends.base import (
-    BackendBase,
+from artisan.orchestration.runners.base import (
     OrchestratorTraits,
+    RunnerBase,
     WorkerTraits,
 )
 
@@ -55,7 +55,7 @@ class TestInitSubclassValidation:
     def test_missing_name_raises(self) -> None:
         with pytest.raises(TypeError, match="must define 'name'"):
 
-            class BadBackend(BackendBase):
+            class BadBackend(RunnerBase):
                 worker_traits = WorkerTraits()
                 orchestrator_traits = OrchestratorTraits()
 
@@ -70,7 +70,7 @@ class TestInitSubclassValidation:
     def test_missing_worker_traits_raises(self) -> None:
         with pytest.raises(TypeError, match="must define 'worker_traits'"):
 
-            class BadBackend(BackendBase):
+            class BadBackend(RunnerBase):
                 name = "bad"
                 orchestrator_traits = OrchestratorTraits()
 
@@ -85,7 +85,7 @@ class TestInitSubclassValidation:
     def test_missing_orchestrator_traits_raises(self) -> None:
         with pytest.raises(TypeError, match="must define 'orchestrator_traits'"):
 
-            class BadBackend(BackendBase):
+            class BadBackend(RunnerBase):
                 name = "bad"
                 worker_traits = WorkerTraits()
 
@@ -100,7 +100,7 @@ class TestInitSubclassValidation:
     def test_valid_subclass_succeeds(self) -> None:
         from unittest.mock import MagicMock
 
-        class GoodBackend(BackendBase):
+        class GoodBackend(RunnerBase):
             name = "good"
             worker_traits = WorkerTraits()
             orchestrator_traits = OrchestratorTraits()
@@ -111,5 +111,5 @@ class TestInitSubclassValidation:
             def capture_logs(self, results, staging_root, failure_logs_root, op, step):
                 pass
 
-        backend = GoodBackend()
-        assert backend.name == "good"
+        step_runner = GoodBackend()
+        assert step_runner.name == "good"

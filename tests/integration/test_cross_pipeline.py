@@ -20,7 +20,7 @@ from artisan.operations.examples import (
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 from .conftest import (
     count_artifacts_by_step,
@@ -47,7 +47,7 @@ def test_ingest_pipeline_step_basic(
     step0 = pa.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     pa.run(
         DataTransformer,
@@ -58,7 +58,7 @@ def test_ingest_pipeline_step_basic(
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     pa.finalize()
 
@@ -75,7 +75,7 @@ def test_ingest_pipeline_step_basic(
             "source_delta_root": env_a["delta_root"],
             "source_step": 1,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     result = pb.finalize()
 
@@ -107,12 +107,12 @@ def test_ingest_pipeline_step_type_filter(
     step0 = pa.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     pa.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     pa.finalize()
 
@@ -130,7 +130,7 @@ def test_ingest_pipeline_step_type_filter(
             "source_step": 1,
             "artifact_type": "metric",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     result = pb.finalize()
 
@@ -156,7 +156,7 @@ def test_execution_config_artifact_references(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate configs with $artifact references
@@ -168,7 +168,7 @@ def test_execution_config_artifact_references(pipeline_env: dict[str, str]):
             "noise_amplitudes": [0.0],
             "seed": 42,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

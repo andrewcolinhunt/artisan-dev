@@ -1,4 +1,4 @@
-"""Tests for compute routing through the creator lifecycle."""
+"""Tests for compute_provider routing through the creator lifecycle."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> Non
 
 
 class _SimpleOp(OperationDefinition):
-    """Minimal test operation for compute routing validation."""
+    """Minimal test operation for compute_provider routing validation."""
 
     class InputRole(StrEnum):
         source = auto()
@@ -179,7 +179,7 @@ class TestCreatorComputeRouting:
             step_number=1,
         )
 
-        # No compute_router — should auto-create from operation.compute
+        # No compute_router — should auto-create from operation.compute_provider
         result = run_creator_lifecycle(unit, runtime_env)
 
         assert isinstance(result, LifecycleResult)

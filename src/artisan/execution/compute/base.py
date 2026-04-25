@@ -10,7 +10,7 @@ from artisan.schemas.specs.input_models import ExecuteInput
 
 
 class ComputeRouter(ABC):
-    """Route execute() to a compute target."""
+    """Route execute() to a compute_provider target."""
 
     @abstractmethod
     def route_execute(

@@ -1,8 +1,8 @@
 """Tests for staging.py — parametrized over [local, s3] backends.
 
 The ``backend_fs`` fixture (from ``tests/artisan/storage/conftest.py``)
-yields ``(fs, storage_config, uri_prefix)`` for each backend so the
-test body is backend-agnostic. S3 params skip cleanly when MinIO is
+yields ``(fs, storage_config, uri_prefix)`` for each step_runner so the
+test body is step_runner-agnostic. S3 params skip cleanly when MinIO is
 unavailable.
 """
 
@@ -167,7 +167,7 @@ class TestStagingManager:
 
     @pytest.fixture
     def populated_staging(self, backend_fs):
-        """Create staging directory with multiple batches on the parametrized backend."""
+        """Create staging directory with multiple batches on the parametrized step_runner."""
         fs, _, root = backend_fs
 
         batch1 = StagingArea(root, fs, batch_id="batch1", worker_id=0)

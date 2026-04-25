@@ -380,9 +380,9 @@ class MockFilterOp(OperationDefinition):
 def _make_mock_backend(
     flow_return_value=None, flow_side_effect=None, needs_staging_verification=False
 ):
-    """Create a mock backend for step executor tests.
+    """Create a mock step_runner for step executor tests.
 
-    Returns a mock backend with a mock dispatch handle.  The handle's
+    Returns a mock step_runner with a mock dispatch handle.  The handle's
     ``run()`` returns *flow_return_value* (or raises *flow_side_effect*).
     """
     from unittest.mock import MagicMock
@@ -466,7 +466,7 @@ class TestCreatorStepPairing:
         _execute_creator_step(
             operation=MockMultiInputCreatorOp(),
             inputs={"data": [_ID_S1, _ID_S2], "config": [_ID_C1, _ID_C2]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             config_overrides=None,
             step_number=1,
             config=config,
@@ -480,7 +480,7 @@ class TestCreatorStepPairing:
         assert call_args[0][0] == resolved
         assert call_args[0][1] == GroupByStrategy.ZIP
 
-        # backend flow receives units_path; verify captured units
+        # step_runner flow receives units_path; verify captured units
         dispatched_units = mock_handle._captured_units
         assert len(dispatched_units) > 0
         # With batch size 1 (default), 2 items -> 2 units
@@ -523,7 +523,7 @@ class TestCreatorStepPairing:
         _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
             inputs={"data": [_ID_S1, _ID_S2]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             config_overrides=None,
             step_number=1,
             config=config,
@@ -534,7 +534,7 @@ class TestCreatorStepPairing:
         # group_inputs should NOT be called
         mock_group_inputs.assert_not_called()
 
-        # backend flow receives units_path; verify captured units
+        # step_runner flow receives units_path; verify captured units
         dispatched_units = mock_handle._captured_units
         for unit in dispatched_units:
             assert unit.group_ids is None
@@ -590,7 +590,7 @@ class TestCreatorStepPairing:
         _execute_creator_step(
             operation=op,
             inputs=resolved,
-            backend=mock_backend,
+            step_runner=mock_backend,
             config_overrides=None,
             step_number=1,
             config=config,
@@ -883,7 +883,7 @@ class TestStepTimingIntegration:
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
             inputs={"data": [_ID_S1]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             config_overrides=None,
             step_number=1,
             config=config,
@@ -1001,7 +1001,7 @@ class TestEmptyInputHandling:
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
             inputs={"data": []},
-            backend=mock_backend,
+            step_runner=mock_backend,
             config_overrides=None,
             step_number=2,
             config=config,
@@ -1085,7 +1085,7 @@ class TestEmptyInputHandling:
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
             inputs=None,
-            backend=mock_backend,
+            step_runner=mock_backend,
             config_overrides=None,
             step_number=0,
             config=config,
@@ -1152,7 +1152,7 @@ class TestDispatchFailureHandling:
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
             inputs={"data": [_ID_S1]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
@@ -1237,7 +1237,7 @@ class TestDispatchFailureHandling:
             _execute_creator_step(
                 operation=MockNoGroupByCreatorOp(),
                 inputs={"data": [_ID_S1]},
-                backend=mock_backend,
+                step_runner=mock_backend,
                 step_number=1,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
@@ -1284,7 +1284,7 @@ class TestCommitFailureHandling:
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
             inputs={"data": [_ID_S1]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
@@ -1337,7 +1337,7 @@ class TestStagingTimeoutHandling:
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
             inputs={"data": [_ID_S1]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,

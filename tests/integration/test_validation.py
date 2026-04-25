@@ -13,7 +13,7 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 
 def test_invalid_params_raises(pipeline_env: dict[str, str]):
@@ -29,7 +29,7 @@ def test_invalid_params_raises(pipeline_env: dict[str, str]):
         pipeline.run(
             DataGenerator,
             params={"count": 2, "nonexistent_param": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
     summary = pipeline.finalize()
@@ -50,7 +50,7 @@ def test_invalid_resources_raises(pipeline_env: dict[str, str]):
             DataGenerator,
             params={"count": 2},
             resources={"bogus_resource": 99},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
 
@@ -68,7 +68,7 @@ def test_invalid_execution_raises(pipeline_env: dict[str, str]):
             DataGenerator,
             params={"count": 2},
             execution={"nonexistent_key": True},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
 
@@ -84,14 +84,14 @@ def test_invalid_input_role_raises(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     with pytest.raises(ValueError, match="Unknown input roles"):
         pipeline.run(
             DataTransformer,
             inputs={"nonexistent_role": step0.output("datasets")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
 
@@ -108,7 +108,7 @@ def test_missing_required_input_raises(pipeline_env: dict[str, str]):
         pipeline.run(
             DataTransformer,
             inputs={},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
 
@@ -124,13 +124,13 @@ def test_input_type_mismatch_raises(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     step1 = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # MetricCalculator outputs "metrics" (type=metric), but DataTransformer
@@ -140,7 +140,7 @@ def test_input_type_mismatch_raises(pipeline_env: dict[str, str]):
         pipeline.run(
             DataTransformer,
             inputs={"dataset": step1.output("metrics")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
 
@@ -158,7 +158,7 @@ def test_valid_overrides_accepted(pipeline_env: dict[str, str]):
         params={"count": 2, "seed": 42},
         resources={"cpus": 2, "memory_gb": 8},
         execution={"artifacts_per_unit": 1},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     assert step0.success is True

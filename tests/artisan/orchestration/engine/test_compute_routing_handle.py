@@ -1,4 +1,4 @@
-"""Tests for compute routing dispatch handle and shared router child function."""
+"""Tests for compute_provider routing dispatch handle and shared router child function."""
 
 from __future__ import annotations
 

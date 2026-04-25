@@ -37,13 +37,13 @@ class PipelineConfig(BaseModel):
         default=CachePolicy.ALL_SUCCEEDED,
         description="Controls when completed steps qualify as cache hits.",
     )
-    default_backend: str = Field(
+    default_step_runner: str = Field(
         default="local",
-        description="Default backend name for step execution.",
+        description="Default step_runner name for step execution.",
     )
-    default_compute: str = Field(
+    default_compute_provider: str = Field(
         default="local",
-        description="Default compute routing for step execution.",
+        description="Default compute_provider routing for step execution.",
     )
     preserve_staging: bool = Field(
         default=False,
@@ -71,7 +71,7 @@ class PipelineConfig(BaseModel):
     )
     storage: StorageConfig = Field(
         default_factory=StorageConfig,
-        description="Storage backend configuration.",
+        description="Storage step_runner configuration.",
     )
 
     model_config = {"frozen": True}

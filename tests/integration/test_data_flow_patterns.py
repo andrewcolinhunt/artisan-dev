@@ -25,7 +25,7 @@ pytestmark = pytest.mark.integration
 from artisan.operations.curator import Filter, IngestData, Merge
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 from .conftest import (
     count_artifacts_by_step,
@@ -61,7 +61,7 @@ def linear_chain_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Transform datasets (1 variant each)
@@ -74,14 +74,14 @@ def linear_chain_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Calculate metrics
     pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -146,7 +146,7 @@ def fan_out_execution_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Shared reference for both branches
@@ -162,7 +162,7 @@ def fan_out_execution_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Transform with seed 200 (Branch B)
@@ -175,7 +175,7 @@ def fan_out_execution_pipeline(
             "variants": 1,
             "seed": 200,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -236,7 +236,7 @@ def fan_out_data_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 1, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Create 3 variants
@@ -249,7 +249,7 @@ def fan_out_data_pipeline(
             "variants": 3,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -311,14 +311,14 @@ def fan_in_merge_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate 2 datasets (Branch B)
     step1 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 100},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Merge both branches
@@ -328,7 +328,7 @@ def fan_in_merge_pipeline(
             "branch_a": step0.output("datasets"),
             "branch_b": step1.output("datasets"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -393,14 +393,14 @@ def passthrough_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Calculate metrics
     pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Filter (forward-walk metric discovery, always pass with min >= 0)
@@ -414,7 +414,7 @@ def passthrough_pipeline(
                 {"metric": "distribution.min", "operator": "ge", "value": 0},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Transform the passthrough datasets
@@ -427,7 +427,7 @@ def passthrough_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -490,7 +490,7 @@ def batch_processing_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 5, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Batch transform with artifacts_per_unit=2 via execution override
@@ -504,7 +504,7 @@ def batch_processing_pipeline(
             "seed": 100,
         },
         execution={"artifacts_per_unit": 2},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -591,14 +591,14 @@ def comprehensive_pipeline(
     step0 = pipeline.run(
         operation=IngestData,
         inputs=[str(f) for f in source_files],
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate 2 additional datasets
     step1 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 9999},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Merge ingest + generated
@@ -608,7 +608,7 @@ def comprehensive_pipeline(
             "ingested": step0.output("data"),
             "generated": step1.output("datasets"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Stage 2: Parallel Branches
@@ -623,7 +623,7 @@ def comprehensive_pipeline(
             "seed": 100,
             "output_prefix": "A",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 4: DataTransformer B
@@ -637,7 +637,7 @@ def comprehensive_pipeline(
             "seed": 200,
             "output_prefix": "B",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 5: Merge both branches
@@ -647,7 +647,7 @@ def comprehensive_pipeline(
             "branch_a": step3.output("dataset"),
             "branch_b": step4.output("dataset"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Stage 3: Metrics & Filter
@@ -655,7 +655,7 @@ def comprehensive_pipeline(
     pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step5.output("merged")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 7: Filter based on median_score (forward-walk metric discovery)
@@ -673,7 +673,7 @@ def comprehensive_pipeline(
                 },
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Stage 4: Final Fan-Out
@@ -687,7 +687,7 @@ def comprehensive_pipeline(
             "variants": 2,
             "seed": 300,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()

@@ -1,7 +1,7 @@
 """Portable hardware resource requirements.
 
-Each backend translates these to its native format.
-The extra dict is an escape hatch for backend-specific settings.
+Each step_runner translates these to its native format.
+The extra dict is an escape hatch for step_runner-specific settings.
 """
 
 from __future__ import annotations

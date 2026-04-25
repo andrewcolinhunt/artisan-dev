@@ -247,7 +247,7 @@ class TestGetDescendantIds:
 
 
 class TestProvenanceStoreBackendParametrized:
-    """Smoke test: seed a small provenance graph and read it back on each backend.
+    """Smoke test: seed a small provenance graph and read it back on each step_runner.
 
     Kept alongside the promoted classes above as an integration-level
     end-to-end check of the store's public walk API. The promoted classes

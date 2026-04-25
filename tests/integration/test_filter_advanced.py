@@ -18,7 +18,7 @@ from artisan.operations.examples import (
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 from .conftest import (
     get_execution_outputs,
@@ -40,14 +40,14 @@ def test_multi_criterion_filter(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Compute metrics
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Filter with 3 AND criteria
@@ -61,7 +61,7 @@ def test_multi_criterion_filter(pipeline_env: dict[str, str]):
                 {"metric": "summary.row_count", "operator": "eq", "value": 10},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -87,14 +87,14 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Compute metrics (needed for filter evaluation)
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Impossible criterion (median > 999) with passthrough_failures=True
@@ -107,7 +107,7 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
             ],
             "passthrough_failures": True,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -133,7 +133,7 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Transform datasets
@@ -146,21 +146,21 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Metrics on originals
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Metrics on transformed
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 4: Filter passthrough step 1 artifacts using step 3 metrics
@@ -177,7 +177,7 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
                 },
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -212,14 +212,14 @@ def test_multi_source_filter_with_colliding_field_names(
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 5, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Compute nested metrics (distribution.range, summary.row_count)
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Filter on criteria from BOTH metric sources
@@ -232,7 +232,7 @@ def test_multi_source_filter_with_colliding_field_names(
                 {"metric": "distribution.range", "operator": "lt", "value": 0.95},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

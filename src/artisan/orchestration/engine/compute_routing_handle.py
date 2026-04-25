@@ -1,4 +1,4 @@
-"""Dispatch handle that runs units in a child process with a shared compute router."""
+"""Dispatch handle that runs units in a child process with a shared compute_provider router."""
 
 from __future__ import annotations
 
@@ -23,15 +23,15 @@ def _run_units_with_shared_router(
     compute_config: ComputeConfig,
     cancel_event: multiprocessing.synchronize.Event | None = None,
 ) -> list[UnitResult]:
-    """Run units sequentially with a shared compute router.
+    """Run units sequentially with a shared compute_provider router.
 
-    Creates a router from the picklable compute config, runs all units
+    Creates a router from the picklable compute_provider config, runs all units
     with it, and closes it. Intended to run inside a spawned child
     process -- the router never crosses a process boundary.
 
     Args:
         units: Execution units to process.
-        runtime_env: Paths and backend configuration.
+        runtime_env: Paths and step_runner configuration.
         compute_config: Picklable config for ``create_router()``.
         cancel_event: Cross-process event checked between units.
 
@@ -86,7 +86,7 @@ def _run_units_with_shared_router(
 
 
 class ComputeRoutingDispatchHandle(DispatchHandle):
-    """Dispatch units to a child process with a shared compute router.
+    """Dispatch units to a child process with a shared compute_provider router.
 
     Spawns a single child process that creates a ``ComputeRouter`` from
     the picklable ``ComputeConfig``, runs all units sequentially with

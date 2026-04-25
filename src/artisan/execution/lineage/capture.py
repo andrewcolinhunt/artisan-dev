@@ -225,7 +225,7 @@ def _build_candidates_from_outputs(
 def _build_stem_index(
     candidates: list[tuple[str, str, str]],
 ) -> dict[str, list[tuple[str, str]]]:
-    """Pre-compute stripped stems and build a lookup index.
+    """Pre-compute_provider stripped stems and build a lookup index.
 
     Args:
         candidates: List of (original_name, artifact_id, role) tuples.

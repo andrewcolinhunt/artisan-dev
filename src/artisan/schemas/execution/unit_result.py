@@ -3,7 +3,7 @@
 ``UnitResult`` represents the outcome of executing one unit (or one
 batch of units) in the dispatch layer. Replaces the informal
 ``list[dict]`` contract between dispatch, result aggregation, and
-backend log capture.
+step_runner log capture.
 """
 
 from __future__ import annotations

@@ -17,7 +17,7 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 from .conftest import read_table
 
@@ -42,7 +42,7 @@ def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     result1 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -61,7 +61,7 @@ def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     result2 = p2.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 
@@ -95,7 +95,7 @@ def test_cache_miss_different_params(pipeline_env: dict[str, str]) -> None:
     p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -109,7 +109,7 @@ def test_cache_miss_different_params(pipeline_env: dict[str, str]) -> None:
     result = p2.run(
         DataGenerator,
         params={"count": 3, "seed": 99},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 
@@ -138,7 +138,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
     step0 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.run(
         DataTransformer,
@@ -149,7 +149,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -167,7 +167,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
     step0b = p2.run(
         DataGenerator,
         params={"count": 2, "seed": 99},  # different seed
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     result = p2.run(
         DataTransformer,
@@ -178,7 +178,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 
@@ -211,7 +211,7 @@ def test_resume(pipeline_env: dict[str, str]) -> None:
     step0 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.run(
         DataTransformer,
@@ -222,7 +222,7 @@ def test_resume(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -262,7 +262,7 @@ def test_async_submit(pipeline_env: dict[str, str]) -> None:
     future = pipeline.submit(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # output() returns immediately (never blocks)
@@ -299,7 +299,7 @@ def test_list_runs(pipeline_env: dict[str, str]) -> None:
     p.run(
         DataGenerator,
         params={"count": 1, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p.finalize()
 

@@ -22,7 +22,7 @@ from artisan.schemas.composites.composite_ref import (
 if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
     from artisan.execution.models.execution_composite import CompositeIntermediates
-    from artisan.orchestration.backends import BackendBase
+    from artisan.orchestration.runners import RunnerBase
     from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
     from artisan.schemas.orchestration.output_reference import OutputReference
     from artisan.schemas.specs.output_spec import OutputSpec
@@ -46,7 +46,7 @@ class CompositeContext(ABC):
         params: dict[str, Any] | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
+        step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
     ) -> CompositeStepHandle:
@@ -128,7 +128,7 @@ class CollapsedCompositeContext(CompositeContext):
         params: dict[str, Any] | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
+        step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
     ) -> CompositeStepHandle:
@@ -140,7 +140,7 @@ class CollapsedCompositeContext(CompositeContext):
             params: Parameter overrides.
             resources: Ignored in collapsed mode (logged as debug).
             execution: Ignored in collapsed mode (logged as debug).
-            backend: Ignored in collapsed mode (logged as debug).
+            step_runner: Ignored in collapsed mode (logged as debug).
             environment: Environment override for the operation.
             tool: Tool overrides for the operation.
 
@@ -151,9 +151,9 @@ class CollapsedCompositeContext(CompositeContext):
         from artisan.execution.executors.curator import is_curator_operation
         from artisan.operations.base.operation_definition import OperationDefinition
 
-        if resources or backend or execution:
+        if resources or step_runner or execution:
             logger.debug(
-                "Per-operation resources/backend/execution overrides ignored "
+                "Per-operation resources/step_runner/execution overrides ignored "
                 "in collapsed composite mode for %s",
                 getattr(operation, "name", operation.__name__),
             )
@@ -525,7 +525,7 @@ class ExpandedCompositeContext(CompositeContext):
         params: dict[str, Any] | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
+        step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
     ) -> CompositeStepHandle:
@@ -537,7 +537,7 @@ class ExpandedCompositeContext(CompositeContext):
             params: Parameter overrides.
             resources: Resource overrides (forwarded to pipeline.submit).
             execution: Execution overrides (forwarded to pipeline.submit).
-            backend: Backend override (forwarded to pipeline.submit).
+            step_runner: Step runner (forwarded to pipeline.submit).
             environment: Environment override.
             tool: Tool overrides.
 
@@ -561,7 +561,7 @@ class ExpandedCompositeContext(CompositeContext):
                 step_name,
                 resources,
                 execution,
-                backend,
+                step_runner,
                 environment,
                 tool,
             )
@@ -573,7 +573,7 @@ class ExpandedCompositeContext(CompositeContext):
             params=params,
             resources=resources,
             execution=execution,
-            backend=backend,
+            step_runner=step_runner,
             environment=environment,
             tool=tool,
             name=step_name,
@@ -648,7 +648,7 @@ class ExpandedCompositeContext(CompositeContext):
         step_name: str,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
+        step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
     ) -> CompositeStepHandle:

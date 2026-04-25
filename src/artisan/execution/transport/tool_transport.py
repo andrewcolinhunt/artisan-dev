@@ -1,7 +1,7 @@
 """Snapshot and restore tool script files for remote transport.
 
 Captures local tool scripts referenced by ``ToolSpec`` so they can
-be shipped alongside the sandbox to a remote compute target.
+be shipped alongside the sandbox to a remote compute_provider target.
 """
 
 from __future__ import annotations

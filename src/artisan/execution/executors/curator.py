@@ -267,7 +267,7 @@ def run_curator_flow(
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and backend configuration for this run.
+        runtime_env: Paths and step_runner configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
 
     Returns:
