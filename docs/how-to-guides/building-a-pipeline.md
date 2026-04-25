@@ -61,7 +61,8 @@ pipeline = PipelineManager.create(
 | `working_root` | `Path \| str \| None` | `tempfile.gettempdir()` | Worker sandbox directory. Defaults to `$TMPDIR` |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | How to handle step failures (`CONTINUE` or `FAIL_FAST`) |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When completed steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
-| `backend` | `str \| BackendBase` | `"local"` | Default execution backend. Accepts an instance or string name (`"local"`, `"slurm"`, `"slurm_intra"`) |
+| `default_step_runner` | `str \| RunnerBase` | `"local"` | Default step runner. Accepts an instance or string name (`"local"`, `"slurm"`, `"slurm_intra"`) |
+| `default_compute_provider` | `str` | `"local"` | Default compute provider for `execute()` routing (`"local"` or `"modal"`) |
 | `preserve_staging` | `bool` | `False` | Keep staging files after commit (debugging) |
 | `preserve_working` | `bool` | `False` | Keep worker sandboxes after execution (debugging) |
 | `recover_staging` | `bool` | `True` | Commit leftover staging files from prior crashed runs at init |
@@ -188,14 +189,14 @@ the executor.
 
 ### `run()` vs `submit()`
 
-Both accept the same parameters. The difference is blocking behavior:
+`run()` blocks and returns a `StepResult`; `submit()` returns a `StepFuture`
+immediately. Both wire downstream the same way (`.output("role")`). Use
+`submit()` when steps can overlap; `run()` is the natural choice for
+straight-line scripts. `finalize()` is required after `submit()` (it drains
+pending futures); after `run()` only it is optional.
 
-| | `run()` | `submit()` |
-|---|---------|------------|
-| Returns | `StepResult` (blocks until done) | `StepFuture` (returns immediately) |
-| Wiring downstream | `step.output("role")` | `future.output("role")` — works identically |
-| Use when | Steps must complete before continuing | Steps can overlap |
-| `finalize()` | Optional | Required — waits for all futures |
+For composites, the equivalent surface is `submit_composite()` /
+`run_composite()`.
 
 ```python
 output = pipeline.output
@@ -207,6 +208,25 @@ pipeline.submit(
 )
 summary = pipeline.finalize()
 ```
+
+### Context-manager form (scripts only)
+
+`PipelineManager` supports `with`-block usage in scripts that exit when the
+block ends:
+
+```python
+with PipelineManager.create(name="batch", delta_root="runs/delta",
+                            staging_root="runs/staging") as pipeline:
+    pipeline.run(operation=DataGenerator, name="generate")
+    pipeline.run(operation=DataTransformer, name="transform",
+                 inputs={"dataset": pipeline.output("generate", "datasets")})
+# __exit__ calls finalize() automatically.
+```
+
+This form is **for scripts only** — do not use it in notebooks. `__exit__`
+calls `finalize()`, which shuts down the executor; subsequent cells that try
+to submit more steps will crash. In notebooks, call `finalize()` explicitly
+in the last cell.
 
 ### Step-level overrides
 
@@ -373,7 +393,7 @@ operations before the final one:
 Dispatch a step to SLURM:
 
 ```python
-from artisan.orchestration import Backend
+from artisan.orchestration import Runner
 
 pipeline.run(
     operation=DataTransformer,
@@ -409,7 +429,9 @@ the pipeline name.
 Inspect all pipeline runs stored in a delta root:
 
 ```python
-runs = PipelineManager.list_runs(delta_root="runs/delta")
+from artisan.orchestration import list_runs
+
+runs = list_runs(delta_root="runs/delta")
 print(runs)  # polars DataFrame with run IDs, step counts, and timestamps
 ```
 
