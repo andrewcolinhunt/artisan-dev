@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.specs._validators import validate_artifact_type_str
 
 
 class OutputSpec(BaseModel):
@@ -68,6 +69,12 @@ class OutputSpec(BaseModel):
     description: str = ""
     required: bool = True
     infer_lineage_from: dict[str, list[str]] | None = None
+
+    @field_validator("artifact_type")
+    @classmethod
+    def _validate_artifact_type(cls, v: str) -> str:
+        """Reject unregistered artifact type strings."""
+        return validate_artifact_type_str(v)
 
     @field_validator("infer_lineage_from")
     @classmethod

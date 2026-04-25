@@ -92,3 +92,35 @@ class TestMaterializeAs:
             materialize_as=".dat",
         )
         assert hash(spec1) != hash(spec2)
+
+
+class TestArtifactTypeValidator:
+    """Tests for the artifact_type field validator."""
+
+    def test_default_any_accepted(self):
+        """InputSpec() constructs and defaults artifact_type to ANY."""
+        spec = InputSpec()
+        assert spec.artifact_type == ArtifactTypes.ANY
+
+    @pytest.mark.parametrize(
+        "artifact_type",
+        [
+            ArtifactTypes.METRIC,
+            ArtifactTypes.FILE_REF,
+            ArtifactTypes.CONFIG,
+            ArtifactTypes.DATA,
+        ],
+    )
+    def test_registered_key_accepted(self, artifact_type: str):
+        """Each built-in registered key is accepted."""
+        spec = InputSpec(artifact_type=artifact_type)
+        assert spec.artifact_type == artifact_type
+
+    def test_unregistered_string_rejected(self):
+        """Unregistered strings raise with a helpful message."""
+        with pytest.raises(ValidationError) as exc_info:
+            InputSpec(artifact_type="totally_made_up")
+        msg = str(exc_info.value)
+        assert "totally_made_up" in msg
+        assert "metric" in msg
+        assert "ArtifactTypeDef" in msg
