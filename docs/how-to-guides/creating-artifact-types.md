@@ -288,7 +288,7 @@ The base class `materialize_to()` rejects format conversion by default and
 delegates to your `_materialize_content()`. For most artifact types,
 implementing `_materialize_content()` is sufficient. Override
 `materialize_to()` only if you need custom logic beyond writing content to
-disk -- for example, `ExecutionConfigArtifact` overrides it to resolve
+disk -- for example, `BatchStrategyArtifact` overrides it to resolve
 `{"$artifact": id}` reference patterns into filesystem paths before writing.
 
 ---
@@ -444,7 +444,7 @@ metadata={"record_count": 42}
 ### Using JsonContentMixin for JSON-based artifacts
 
 If your artifact stores JSON-encoded content (like `MetricArtifact` and
-`ExecutionConfigArtifact` do), use the `JsonContentMixin` from
+`BatchStrategyArtifact` do), use the `JsonContentMixin` from
 `artisan.schemas.artifact.common`. It provides a cached `values` property that
 parses and returns the JSON content as a dict:
 

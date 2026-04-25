@@ -6,9 +6,9 @@ from unittest.mock import MagicMock, patch
 
 from artisan.orchestration.engine.dispatch_handle import DispatchHandle
 from artisan.orchestration.runners.slurm import SlurmDispatchHandle, SlurmRunner
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
 class TestSlurmRunnerTraits:
@@ -32,11 +32,11 @@ class TestSlurmRunnerCreateDispatchHandle:
     @patch("prefect_submitit.SlurmTaskRunner")
     def test_returns_slurm_dispatch_handle(self, mock_slurm_runner: MagicMock) -> None:
         step_runner = SlurmRunner()
-        resources = ResourceConfig()
-        execution = ExecutionConfig(units_per_worker=1)
+        runner_resources = RunnerResources()
+        batch_strategy = BatchStrategy(units_per_worker=1)
 
         handle = step_runner.create_dispatch_handle(
-            resources, execution, step_number=0, job_name="test_op"
+            runner_resources, batch_strategy, step_number=0, job_name="test_op"
         )
         assert isinstance(handle, DispatchHandle)
         assert isinstance(handle, SlurmDispatchHandle)
@@ -44,18 +44,18 @@ class TestSlurmRunnerCreateDispatchHandle:
     @patch("prefect_submitit.SlurmTaskRunner")
     def test_configures_slurm_task_runner(self, mock_slurm_runner: MagicMock) -> None:
         step_runner = SlurmRunner()
-        resources = ResourceConfig(
+        runner_resources = RunnerResources(
             cpus=4,
             memory_gb=8,
             gpus=1,
             time_limit="02:00:00",
             extra={"partition": "gpu"},
         )
-        execution = ExecutionConfig(units_per_worker=1)
+        batch_strategy = BatchStrategy(units_per_worker=1)
 
         step_runner.create_dispatch_handle(
-            resources,
-            execution,
+            runner_resources,
+            batch_strategy,
             step_number=3,
             job_name="test_op",
             log_folder="/runs/pipeline/logs/slurm",
@@ -72,11 +72,11 @@ class TestSlurmRunnerCreateDispatchHandle:
     @patch("prefect_submitit.SlurmTaskRunner")
     def test_uses_custom_job_name(self, mock_slurm_runner: MagicMock) -> None:
         step_runner = SlurmRunner()
-        resources = ResourceConfig()
-        execution = ExecutionConfig(units_per_worker=1)
+        runner_resources = RunnerResources()
+        batch_strategy = BatchStrategy(units_per_worker=1)
 
         handle = step_runner.create_dispatch_handle(
-            resources, execution, step_number=5, job_name="custom_name"
+            runner_resources, batch_strategy, step_number=5, job_name="custom_name"
         )
 
         call_kwargs = mock_slurm_runner.call_args[1]

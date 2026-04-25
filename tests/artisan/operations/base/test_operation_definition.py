@@ -11,8 +11,8 @@ from pydantic import Field, ValidationError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -143,8 +143,8 @@ class TestOperationDefinitionModelDump:
         assert kwargs["label"] == "default"
         assert kwargs["verbose"] is True
         # Base class sub-model fields are also present
-        assert "resources" in kwargs
-        assert "execution" in kwargs
+        assert "runner_resources" in kwargs
+        assert "batch_strategy" in kwargs
 
     def test_should_roundtrip_via_model_dump(self):
         """Should be able to reconstruct operation from model_dump."""
@@ -207,28 +207,28 @@ class TestResourcesAndExecutionDefaults:
     """Tests for resources and execution instance fields on the base class."""
 
     def test_default_resources(self):
-        """Operations get default ResourceConfig from base class."""
+        """Operations get default RunnerResources from base class."""
         op = SimpleOperation()
-        assert isinstance(op.resources, ResourceConfig)
-        assert op.resources.cpus == 1
-        assert op.resources.memory_gb == 4
-        assert op.resources.gpus == 0
+        assert isinstance(op.runner_resources, RunnerResources)
+        assert op.runner_resources.cpus == 1
+        assert op.runner_resources.memory_gb == 4
+        assert op.runner_resources.gpus == 0
 
     def test_default_execution(self):
-        """Operations get default ExecutionConfig from base class."""
+        """Operations get default BatchStrategy from base class."""
         op = SimpleOperation()
-        assert isinstance(op.execution, ExecutionConfig)
-        assert op.execution.artifacts_per_unit == 1
-        assert op.execution.units_per_worker == 1
-        assert op.execution.job_name is None
+        assert isinstance(op.batch_strategy, BatchStrategy)
+        assert op.batch_strategy.artifacts_per_unit == 1
+        assert op.batch_strategy.units_per_worker == 1
+        assert op.batch_strategy.job_name is None
 
     def test_resources_not_in_model_dump_exclude(self):
         """resources and execution are instance fields on the base class."""
         op = SimpleOperation()
         dump = op.model_dump()
         # resources and execution are present in model_dump (they are instance fields)
-        assert "resources" in dump
-        assert "execution" in dump
+        assert "runner_resources" in dump
+        assert "batch_strategy" in dump
 
     def test_data_transformer_script_has_instance_first_fields(self):
         """DataTransformerScript uses instance-first tool/environments/resources/execution."""
@@ -241,8 +241,8 @@ class TestResourcesAndExecutionDefaults:
         assert isinstance(op.tool, ToolSpec)
         assert op.tool.interpreter == "python"
         assert op.environments.available() == ["local", "docker"]
-        assert op.resources.cpus == 1
-        assert op.execution.job_name == "data_transformer_script"
+        assert op.runner_resources.cpus == 1
+        assert op.batch_strategy.job_name == "data_transformer_script"
 
 
 class TestRoleEnumValidation:

@@ -65,7 +65,7 @@ The two-level strategy for dividing work across workers. Level 1
 (`artifacts_per_unit`) controls how many artifacts go into each
 [execution unit](#glossary-execution-unit). Level 2 (`units_per_worker`)
 controls how many execution units are sent to each worker process. Both are
-configured via [ExecutionConfig](#glossary-execution-config) on the operation.
+configured via [BatchStrategy](#glossary-execution-config) on the operation.
 
 ---
 
@@ -147,7 +147,7 @@ framework finalizes them before committing to storage.
 ---
 
 (glossary-execution-config)=
-## ExecutionConfig
+## BatchStrategy
 
 Per-operation configuration controlling how work is divided and distributed.
 Fields include `artifacts_per_unit`, `units_per_worker`, `max_workers`, and
@@ -334,7 +334,7 @@ See [Provenance System](../concepts/provenance-system.md).
 ---
 
 (glossary-resource-config)=
-## ResourceConfig
+## RunnerResources
 
 Portable hardware resource requirements declared on an operation. Specifies
 `cpus`, `memory_gb`, `gpus`, `time_limit`, and an `extra` dict for

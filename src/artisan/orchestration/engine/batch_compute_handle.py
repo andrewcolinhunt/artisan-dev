@@ -17,7 +17,10 @@ from typing import Any
 
 from artisan.execution.compute.base import ComputeRouter
 from artisan.execution.compute.routing import create_router
-from artisan.execution.executors.creator import _ExecuteFailure, _PostprocessFailure
+from artisan.execution.executors.creator import (
+    _ExecuteFailure,
+    _PostprocessFailure,
+)
 from artisan.execution.executors.creator_phases import (
     _extract_inputs,
     post_unit,
@@ -33,6 +36,7 @@ from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _Handle
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.compute import ComputeConfig
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.utils.errors import format_error
 from artisan.utils.spawn import ignore_sigint, suppress_main_reimport
 from artisan.utils.timing import phase_timer
@@ -50,12 +54,14 @@ def _batch_execute_with_shared_router(
     runtime_env: RuntimeEnvironment,
     compute_config: ComputeConfig,
     max_workers: int = 4,
+    compute_resources: ComputeResources | None = None,
 ) -> list[UnitResult]:
-    """Process units concurrently with a shared compute_provider router.
+    """Process units concurrently with a shared compute provider router.
 
-    Creates a router from the picklable compute_provider config, warms it, and
-    processes units via a thread pool (prep/post overlap across units).
-    Closes the router after all threads complete.
+    Creates a router from the picklable provider config plus hardware
+    resources, warms it, and processes units via a thread pool
+    (prep/post overlap across units). Closes the router after all
+    threads complete.
 
     Runs inside a spawned child process. Router warm-up time is
     recorded as ``router_init`` on a shared worker timings dict and
@@ -67,8 +73,10 @@ def _batch_execute_with_shared_router(
         runtime_env: Paths and step_runner configuration.
         compute_config: Picklable config for ``create_router()``.
         max_workers: Thread pool size for cross-unit parallelism.
+        compute_resources: Hardware spec (gpu/memory_gb/timeout) for the
+            provider; None defers to provider defaults.
     """
-    router = create_router(compute_config)
+    router = create_router(compute_config, compute_resources=compute_resources)
     worker_timings: dict[str, Any] = {}
     try:
         if units:
@@ -300,9 +308,11 @@ class BatchComputeDispatchHandle(DispatchHandle):
         compute_config: ComputeConfig,
         cancel_event: threading.Event | None = None,
         max_workers: int = 4,
+        compute_resources: ComputeResources | None = None,
     ) -> None:
         super().__init__()
         self._compute_config = compute_config
+        self._compute_resources = compute_resources
         self._cancel_event = cancel_event
         self._max_workers = max_workers
 
@@ -316,6 +326,7 @@ class BatchComputeDispatchHandle(DispatchHandle):
         self._state = _HandleState.DISPATCHED
 
         config = self._compute_config
+        compute_resources = self._compute_resources
         cancel = self._cancel_event
         max_workers = self._max_workers
         mp_ctx = multiprocessing.get_context("spawn")
@@ -335,6 +346,7 @@ class BatchComputeDispatchHandle(DispatchHandle):
                     runtime_env,
                     config,
                     max_workers,
+                    compute_resources,
                 )
                 while True:
                     try:

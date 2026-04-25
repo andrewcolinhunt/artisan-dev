@@ -981,8 +981,8 @@ class TestCancellation:
             inputs={"data": ["a" * 32]},
             params=None,
             step_runner=None,
-            resources=None,
-            execution=None,
+            runner_resources=None,
+            batch_strategy=None,
             intermediates="discard",
             failure_policy=None,
             compact=False,
@@ -2094,7 +2094,7 @@ class _CompositeForTests:
 
 
 # Real CompositeDefinition for fail-fast tests
-from artisan.composites.base.composite_definition import (  # noqa: E402
+from artisan.composites.base.composite_definition import (
     CompositeDefinition,
 )
 

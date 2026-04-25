@@ -66,8 +66,8 @@ logger = logging.getLogger(__name__)
 def instantiate_operation(
     operation_class: type[OperationDefinition],
     params: dict[str, Any] | None,
-    resources: dict[str, Any] | None = None,
-    execution: dict[str, Any] | None = None,
+    runner_resources: dict[str, Any] | None = None,
+    batch_strategy: dict[str, Any] | None = None,
     environment: str | dict[str, Any] | None = None,
     tool: dict[str, Any] | None = None,
     compute_provider: str | dict[str, Any] | None = None,
@@ -77,8 +77,8 @@ def instantiate_operation(
     Args:
         operation_class: The operation class to instantiate.
         params: User-provided parameters (merged into params sub-model or flat fields).
-        resources: Optional resource overrides (applied via model_copy).
-        execution: Optional execution overrides (applied via model_copy).
+        runner_resources: Optional resource overrides (applied via model_copy).
+        batch_strategy: Optional execution overrides (applied via model_copy).
         environment: Optional environment override. String selects the active
             environment; dict deep-merges nested EnvironmentSpec fields.
         tool: Optional tool overrides (applied via model_copy on instance.tool).
@@ -103,10 +103,14 @@ def instantiate_operation(
 
     # Apply overrides via model_copy
     updates: dict[str, Any] = {}
-    if resources:
-        updates["resources"] = instance.resources.model_copy(update=resources)
-    if execution:
-        updates["execution"] = instance.execution.model_copy(update=execution)
+    if runner_resources:
+        updates["runner_resources"] = instance.runner_resources.model_copy(
+            update=runner_resources
+        )
+    if batch_strategy:
+        updates["batch_strategy"] = instance.batch_strategy.model_copy(
+            update=batch_strategy
+        )
     if tool and instance.tool is not None:
         updates["tool"] = instance.tool.model_copy(update=tool)
     if environment is not None:
@@ -441,8 +445,8 @@ def execute_step(
     inputs: Any,
     params: dict[str, Any] | None,
     step_runner: RunnerBase,
-    resources: dict[str, Any] | None = None,
-    execution: dict[str, Any] | None = None,
+    runner_resources: dict[str, Any] | None = None,
+    batch_strategy: dict[str, Any] | None = None,
     environment: str | dict[str, Any] | None = None,
     tool: dict[str, Any] | None = None,
     compute_provider: str | dict[str, Any] | None = None,
@@ -469,8 +473,8 @@ def execute_step(
         inputs: Input specification (see PipelineManager.run() for formats).
         params: Parameter overrides.
         step_runner: Backend to use for execution.
-        resources: Resource overrides (cpus, memory_gb, etc.).
-        execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
+        runner_resources: Resource overrides (cpus, memory_gb, etc.).
+        batch_strategy: Batching/scheduling overrides (artifacts_per_unit, etc.).
         environment: Environment override (string or dict).
         tool: Tool overrides (executable, interpreter, etc.).
         compute_provider: Compute routing override (string or dict).
@@ -492,8 +496,8 @@ def execute_step(
     operation = instantiate_operation(
         operation_class,
         params,
-        resources,
-        execution,
+        runner_resources,
+        batch_strategy,
         environment,
         tool,
         compute_provider,
@@ -1064,15 +1068,17 @@ def _execute_creator_step(
                         handle = BatchComputeDispatchHandle(
                             compute_config=compute_config,
                             cancel_event=cancel_event,
-                            max_workers=operation.execution.max_workers or 4,
+                            max_workers=operation.batch_strategy.max_workers or 4,
+                            compute_resources=operation.compute_resources,
                         )
                     else:
                         step_runner.validate_operation(operation)
                         handle = step_runner.create_dispatch_handle(
-                            operation.resources,
-                            operation.execution,
+                            operation.runner_resources,
+                            operation.batch_strategy,
                             step_number,
-                            job_name=operation.execution.job_name or operation.name,
+                            job_name=operation.batch_strategy.job_name
+                            or operation.name,
                             log_folder=uri_join(
                                 uri_parent(config.delta_root), "logs", "slurm"
                             ),
@@ -1166,8 +1172,8 @@ def execute_composite_step(
     inputs: Any,
     params: dict[str, Any] | None,
     step_runner: RunnerBase,
-    composite_resources: Any,  # ResourceConfig
-    composite_execution: Any,  # ExecutionConfig
+    composite_resources: Any,  # RunnerResources
+    composite_execution: Any,  # BatchStrategy
     intermediates: Any,  # CompositeIntermediates
     step_number: int = 0,
     config: PipelineConfig | None = None,
@@ -1186,8 +1192,8 @@ def execute_composite_step(
         inputs: Initial inputs (same formats as execute_step).
         params: Parameter overrides.
         step_runner: Backend for worker dispatch.
-        composite_resources: Composite-level ResourceConfig.
-        composite_execution: Composite-level ExecutionConfig.
+        composite_resources: Composite-level RunnerResources.
+        composite_execution: Composite-level BatchStrategy.
         intermediates: CompositeIntermediates enum value.
         step_number: Pipeline step number.
         config: Pipeline configuration.
@@ -1244,8 +1250,8 @@ def execute_composite_step(
             inputs=resolved_inputs,
             step_number=step_number,
             execution_spec_id=spec_id,
-            resources=composite_resources,
-            execution=composite_execution,
+            runner_resources=composite_resources,
+            batch_strategy=composite_execution,
             intermediates=intermediates,
             step_run_id=step_run_id,
         )

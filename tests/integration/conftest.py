@@ -19,8 +19,8 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -542,8 +542,8 @@ class FailingTransformer(OperationDefinition):
         fail_on_all: bool = Field(default=False, description="Fail on all datasets")
 
     params: Params = Params()
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="failing_transformer")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="failing_transformer")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths and original names from input artifacts."""

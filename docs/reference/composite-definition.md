@@ -29,8 +29,8 @@ and a `compose()` method that wires internal operations together.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `resources` | `ResourceConfig` | `ResourceConfig()` | Worker resource allocation (collapsed mode) |
-| `execution` | `ExecutionConfig` | `ExecutionConfig()` | Batching and scheduling config (collapsed mode) |
+| `resources` | `RunnerResources` | `RunnerResources()` | Worker resource allocation (collapsed mode) |
+| `execution` | `BatchStrategy` | `BatchStrategy()` | Batching and scheduling config (collapsed mode) |
 
 ### Inner classes
 

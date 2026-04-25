@@ -299,7 +299,7 @@ class TestMetricOriginalNameStaging:
         assert df["original_name"][0] == "sample_001_metrics"  # Stem only
 
 
-class TestStageExecutionConfigs:
+class TestStageBatchStrategys:
     """Tests for _stage_configs function."""
 
     def test_stage_configs_writes_parquet(self, tmp_path):

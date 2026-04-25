@@ -189,9 +189,9 @@ class TestIngestDataClassAttributes:
     def test_should_have_resource_config(self):
         """Test IngestData has resource configuration."""
         op = IngestData()
-        assert op.resources.cpus == 1
-        assert op.resources.time_limit == "00:10:00"
-        assert op.execution.job_name == "ingest"
+        assert op.runner_resources.cpus == 1
+        assert op.runner_resources.time_limit == "00:10:00"
+        assert op.batch_strategy.job_name == "ingest"
 
 
 class TestIngestDataOutputFormat:

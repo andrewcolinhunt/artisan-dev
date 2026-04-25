@@ -11,8 +11,14 @@ import cloudpickle
 
 from artisan.execution.compute.base import ComputeRouter
 from artisan.schemas.operation_config.compute import ModalComputeConfig
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.utils.timing import phase_timer
+
+# Modal API defaults applied when ComputeResources fields are None.
+# These match the values previously baked into ModalComputeConfig.
+_MODAL_DEFAULT_MEMORY_GB = 8
+_MODAL_DEFAULT_TIMEOUT = 3600
 
 
 class ModalComputeRouter(ComputeRouter):
@@ -31,8 +37,16 @@ class ModalComputeRouter(ComputeRouter):
         _init_lock: Guards lazy initialization for thread safety.
     """
 
-    def __init__(self, config: ModalComputeConfig) -> None:
+    def __init__(
+        self,
+        config: ModalComputeConfig,
+        compute_resources: ComputeResources | None = None,
+    ) -> None:
         self._config = config
+        # Hardware spec (gpu, memory_gb, timeout) lives on ComputeResources
+        # so the same fields can apply to any future provider. None values
+        # fall back to Modal API defaults at dispatch time.
+        self._compute_resources = compute_resources or ComputeResources()
         self._app: Any = None
         self._fn: Any = None
         self._ctx: Any = None
@@ -223,11 +237,21 @@ class ModalComputeRouter(ComputeRouter):
             self._config.image, **image_kwargs
         ).add_local_python_source(*self._config.local_python_sources)
 
+        memory_gb = (
+            self._compute_resources.memory_gb
+            if self._compute_resources.memory_gb is not None
+            else _MODAL_DEFAULT_MEMORY_GB
+        )
+        timeout = (
+            self._compute_resources.timeout
+            if self._compute_resources.timeout is not None
+            else _MODAL_DEFAULT_TIMEOUT
+        )
         fn_kwargs: dict[str, Any] = {
             "image": image,
-            "gpu": self._config.gpu,
-            "memory": self._config.memory_gb * 1024,
-            "timeout": self._config.timeout,
+            "gpu": self._compute_resources.gpu,
+            "memory": memory_gb * 1024,
+            "timeout": timeout,
             "retries": self._config.retries,
             "serialized": True,
         }

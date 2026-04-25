@@ -99,7 +99,7 @@ def test_execution_override_batching(pipeline_env: dict[str, str]):
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"scale_factor": 2.0, "noise_amplitude": 0.0, "variants": 1, "seed": 1},
-        execution={"artifacts_per_unit": 3},
+        batch_strategy={"artifacts_per_unit": 3},
         step_runner=Runner.LOCAL,
     )
 
@@ -108,7 +108,7 @@ def test_execution_override_batching(pipeline_env: dict[str, str]):
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"scale_factor": 3.0, "noise_amplitude": 0.0, "variants": 1, "seed": 2},
-        execution={"artifacts_per_unit": 2},
+        batch_strategy={"artifacts_per_unit": 2},
         step_runner=Runner.LOCAL,
     )
 
@@ -145,7 +145,7 @@ def test_override_isolation(pipeline_env: dict[str, str]):
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"scale_factor": 2.0, "noise_amplitude": 0.0, "variants": 1, "seed": 1},
-        execution={"artifacts_per_unit": 4},
+        batch_strategy={"artifacts_per_unit": 4},
         step_runner=Runner.LOCAL,
     )
 

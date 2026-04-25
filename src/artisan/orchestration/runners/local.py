@@ -17,10 +17,10 @@ from artisan.orchestration.runners.base import (
     RunnerBase,
     WorkerTraits,
 )
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.utils.spawn import ignore_sigint, suppress_main_reimport
 
 
@@ -112,7 +112,7 @@ class LocalRunner(RunnerBase):
 
     Args:
         default_max_workers: Default process pool size. Overridden by
-            operation.execution.max_workers when set.
+            operation.batch_strategy.max_workers when set.
     """
 
     name = "local"
@@ -124,8 +124,8 @@ class LocalRunner(RunnerBase):
 
     def create_dispatch_handle(
         self,
-        resources: ResourceConfig,
-        execution: ExecutionConfig,
+        runner_resources: RunnerResources,
+        batch_strategy: BatchStrategy,
         step_number: int,
         job_name: str,
         log_folder: str | None = None,
@@ -137,9 +137,9 @@ class LocalRunner(RunnerBase):
         avoid GPU memory contention and CUDA context conflicts. CPU
         operations use the configured pool size.
         """
-        if execution.max_workers is not None:
-            max_workers = execution.max_workers
-        elif resources.gpus > 0:
+        if batch_strategy.max_workers is not None:
+            max_workers = batch_strategy.max_workers
+        elif runner_resources.gpus > 0:
             max_workers = 1
         else:
             max_workers = self._default_max_workers
@@ -160,7 +160,7 @@ class LocalRunner(RunnerBase):
 
     def validate_operation(self, operation: Any) -> None:
         """Warn if SLURM-specific resources are configured on a local step_runner."""
-        r = operation.resources
+        r = operation.runner_resources
         if r.extra:
             warnings.warn(
                 f"Operation {operation.name!r} has SLURM-specific resources "

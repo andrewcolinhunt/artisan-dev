@@ -44,7 +44,7 @@ class TestGetBatchConfig:
         from typing import ClassVar
 
         from artisan.operations.base.operation_definition import OperationDefinition
-        from artisan.schemas.execution.execution_config import ExecutionConfig
+        from artisan.schemas.execution.batch_strategy import BatchStrategy
         from artisan.schemas.specs.input_spec import InputSpec
         from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -52,7 +52,7 @@ class TestGetBatchConfig:
             name: ClassVar[str] = "mock_batch_test"
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {}
-            execution: ExecutionConfig = ExecutionConfig(artifacts_per_unit=5)
+            batch_strategy: BatchStrategy = BatchStrategy(artifacts_per_unit=5)
 
             def execute(self, inputs, output_dir):
                 pass
@@ -66,7 +66,7 @@ class TestGetBatchConfig:
         from typing import ClassVar
 
         from artisan.operations.base.operation_definition import OperationDefinition
-        from artisan.schemas.execution.execution_config import ExecutionConfig
+        from artisan.schemas.execution.batch_strategy import BatchStrategy
         from artisan.schemas.specs.input_spec import InputSpec
         from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -74,7 +74,7 @@ class TestGetBatchConfig:
             name: ClassVar[str] = "mock_upw_test"
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {}
-            execution: ExecutionConfig = ExecutionConfig(
+            batch_strategy: BatchStrategy = BatchStrategy(
                 artifacts_per_unit=10, units_per_worker=4
             )
 
@@ -86,7 +86,7 @@ class TestGetBatchConfig:
         assert config.units_per_worker == 4
 
     def test_default_operation_gets_default_config(self):
-        """Test operation with default ExecutionConfig gets defaults."""
+        """Test operation with default BatchStrategy gets defaults."""
         from typing import ClassVar
 
         from artisan.operations.base.operation_definition import OperationDefinition
@@ -110,7 +110,7 @@ class TestGetBatchConfig:
         from typing import ClassVar
 
         from artisan.operations.base.operation_definition import OperationDefinition
-        from artisan.schemas.execution.execution_config import ExecutionConfig
+        from artisan.schemas.execution.batch_strategy import BatchStrategy
         from artisan.schemas.specs.input_spec import InputSpec
         from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -118,7 +118,7 @@ class TestGetBatchConfig:
             name: ClassVar[str] = "mock_cap_test"
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {}
-            execution: ExecutionConfig = ExecutionConfig(
+            batch_strategy: BatchStrategy = BatchStrategy(
                 artifacts_per_unit=100, max_artifacts_per_unit=5
             )
 

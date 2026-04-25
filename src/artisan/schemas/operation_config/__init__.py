@@ -17,7 +17,7 @@ from artisan.schemas.operation_config.environment_spec import (
     PixiEnvironmentSpec,
 )
 from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 
 __all__ = [
@@ -36,8 +36,8 @@ __all__ = [
     "LocalEnvironmentSpec",
     "ModalComputeConfig",
     "PixiEnvironmentSpec",
-    # ResourceConfig
-    "ResourceConfig",
+    # RunnerResources
+    "RunnerResources",
     # ToolSpec
     "ToolSpec",
 ]

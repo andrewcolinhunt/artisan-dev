@@ -52,28 +52,40 @@ class TestCompute:
 
 
 class TestModalComputeConfig:
+    """ModalComputeConfig now carries Modal-specific non-hardware fields only.
+
+    Hardware fields (gpu, memory_gb, timeout) live on ComputeResources.
+    """
+
     def test_required_image(self):
         config = ModalComputeConfig(image="my-registry/my-image:latest")
         assert config.image == "my-registry/my-image:latest"
 
     def test_defaults(self):
         config = ModalComputeConfig(image="img")
-        assert config.gpu is None
-        assert config.memory_gb == 8
-        assert config.timeout == 3600
         assert config.retries == 3
+        assert config.min_containers == 0
+        assert config.scaledown_window is None
+        assert config.image_registry_secret is None
+        assert config.local_python_sources == ["artisan"]
 
     def test_custom_fields(self):
         config = ModalComputeConfig(
-            image="img", gpu="A100", memory_gb=32, timeout=7200, retries=1
+            image="img",
+            retries=1,
+            min_containers=2,
+            scaledown_window=120,
+            image_registry_secret="my-secret",
+            local_python_sources=["artisan", "pipelines"],
         )
-        assert config.gpu == "A100"
-        assert config.memory_gb == 32
-        assert config.timeout == 7200
         assert config.retries == 1
+        assert config.min_containers == 2
+        assert config.scaledown_window == 120
+        assert config.image_registry_secret == "my-secret"
+        assert config.local_python_sources == ["artisan", "pipelines"]
 
     def test_round_trip(self):
-        config = ModalComputeConfig(image="img", gpu="H100")
+        config = ModalComputeConfig(image="img", retries=5)
         data = config.model_dump()
         restored = ModalComputeConfig.model_validate(data)
         assert restored == config
@@ -96,16 +108,16 @@ class TestComputeWithModal:
         assert "modal" not in compute_provider.available()
 
     def test_current_returns_modal_config(self):
-        modal_config = ModalComputeConfig(image="img", gpu="A10G")
+        modal_config = ModalComputeConfig(image="img", retries=5)
         compute_provider = ComputeProvider(active="modal", modal=modal_config)
         current = compute_provider.current()
         assert isinstance(current, ModalComputeConfig)
-        assert current.gpu == "A10G"
+        assert current.retries == 5
 
     def test_round_trip_with_modal(self):
         compute_provider = ComputeProvider(
             active="modal",
-            modal=ModalComputeConfig(image="img", gpu="A100"),
+            modal=ModalComputeConfig(image="img", retries=2),
         )
         data = compute_provider.model_dump()
         restored = ComputeProvider.model_validate(data)

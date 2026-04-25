@@ -1,16 +1,16 @@
-"""Tests for ExecutionConfig."""
+"""Tests for BatchStrategy."""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 
 
-class TestExecutionConfig:
+class TestBatchStrategy:
     def test_defaults(self):
-        ec = ExecutionConfig()
+        ec = BatchStrategy()
         assert ec.artifacts_per_unit == 1
         assert ec.units_per_worker == 1
         assert ec.max_workers is None
@@ -18,7 +18,7 @@ class TestExecutionConfig:
         assert ec.job_name is None
 
     def test_non_default(self):
-        ec = ExecutionConfig(
+        ec = BatchStrategy(
             artifacts_per_unit=8,
             units_per_worker=10,
             max_workers=4,
@@ -33,24 +33,24 @@ class TestExecutionConfig:
 
     def test_artifacts_per_unit_ge_1(self):
         with pytest.raises(ValidationError):
-            ExecutionConfig(artifacts_per_unit=0)
+            BatchStrategy(artifacts_per_unit=0)
 
     def test_units_per_worker_ge_1(self):
         with pytest.raises(ValidationError):
-            ExecutionConfig(units_per_worker=0)
+            BatchStrategy(units_per_worker=0)
 
     def test_model_copy_update(self):
-        ec = ExecutionConfig()
+        ec = BatchStrategy()
         updated = ec.model_copy(update={"job_name": "tool_b"})
         assert updated.job_name == "tool_b"
         assert ec.job_name is None
 
     def test_round_trip(self):
-        ec = ExecutionConfig(artifacts_per_unit=5, job_name="test")
+        ec = BatchStrategy(artifacts_per_unit=5, job_name="test")
         data = ec.model_dump()
-        restored = ExecutionConfig.model_validate(data)
+        restored = BatchStrategy.model_validate(data)
         assert restored == ec
 
     def test_negative_values_rejected(self):
         with pytest.raises(ValidationError):
-            ExecutionConfig(artifacts_per_unit=-1)
+            BatchStrategy(artifacts_per_unit=-1)

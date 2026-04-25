@@ -380,7 +380,7 @@ pipeline.run(
     name="transform",
     inputs={"dataset": output("generate", "datasets")},
     step_runner=Runner.SLURM,
-    resources={"gpus": 1, "memory_gb": 16, "extra": {"partition": "gpu"}},
+    runner_resources={"gpus": 1, "memory_gb": 16, "extra": {"partition": "gpu"}},
 )
 ```
 

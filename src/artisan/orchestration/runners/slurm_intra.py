@@ -12,9 +12,9 @@ from artisan.orchestration.runners.base import (
     RunnerBase,
     WorkerTraits,
 )
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
 class SlurmIntraRunner(RunnerBase):
@@ -40,8 +40,8 @@ class SlurmIntraRunner(RunnerBase):
 
     def create_dispatch_handle(
         self,
-        resources: ResourceConfig,
-        execution: ExecutionConfig,
+        runner_resources: RunnerResources,
+        batch_strategy: BatchStrategy,
         step_number: int,
         job_name: str,
         log_folder: str | None = None,
@@ -50,8 +50,8 @@ class SlurmIntraRunner(RunnerBase):
         """Build a dispatch handle that uses srun within an existing allocation.
 
         Args:
-            resources: Hardware resource allocation.
-            execution: Batching and scheduling configuration.
+            runner_resources: Hardware resource allocation.
+            batch_strategy: Batching and scheduling configuration.
             step_number: Pipeline step number (for naming).
             job_name: Human-readable name for logging.
             log_folder: Directory for SLURM log files.
@@ -64,7 +64,7 @@ class SlurmIntraRunner(RunnerBase):
 
         from artisan.orchestration.runners.slurm import SlurmDispatchHandle
 
-        slurm_kwargs: dict[str, Any] = dict(resources.extra)
+        slurm_kwargs: dict[str, Any] = dict(runner_resources.extra)
         if log_folder is not None:
             slurm_kwargs["log_folder"] = log_folder
 
@@ -74,11 +74,11 @@ class SlurmIntraRunner(RunnerBase):
         # the existing allocation, and srun steps have no independent job names.
         task_runner = SlurmTaskRunner(
             execution_mode="srun",
-            time_limit=resources.time_limit,
-            mem_gb=resources.memory_gb,
-            gpus_per_node=resources.gpus,
-            cpus_per_task=resources.cpus,
-            units_per_worker=execution.units_per_worker,
+            time_limit=runner_resources.time_limit,
+            mem_gb=runner_resources.memory_gb,
+            gpus_per_node=runner_resources.gpus,
+            cpus_per_task=runner_resources.cpus,
+            units_per_worker=batch_strategy.units_per_worker,
             **slurm_kwargs,
         )
         return SlurmDispatchHandle(

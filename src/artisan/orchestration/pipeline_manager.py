@@ -318,9 +318,9 @@ def _validate_params(
 
 def _validate_resources(resources: dict[str, Any]) -> None:
     """Raise ValueError if any resource keys are unrecognized."""
-    from artisan.schemas.operation_config.resource_config import ResourceConfig
+    from artisan.schemas.operation_config.runner_resources import RunnerResources
 
-    valid_keys = set(ResourceConfig.model_fields)
+    valid_keys = set(RunnerResources.model_fields)
     unknown = set(resources) - valid_keys
     if unknown:
         msg = (
@@ -332,9 +332,9 @@ def _validate_resources(resources: dict[str, Any]) -> None:
 
 def _validate_execution(execution: dict[str, Any]) -> None:
     """Raise ValueError if any execution keys are unrecognized."""
-    from artisan.schemas.execution.execution_config import ExecutionConfig
+    from artisan.schemas.execution.batch_strategy import BatchStrategy
 
-    valid_keys = set(ExecutionConfig.model_fields)
+    valid_keys = set(BatchStrategy.model_fields)
     unknown = set(execution) - valid_keys
     if unknown:
         msg = (
@@ -1104,8 +1104,8 @@ class PipelineManager:
         ) = None,
         params: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | None = None,
+        batch_strategy: dict[str, Any] | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
         compute_provider: str | dict[str, Any] | None = None,
@@ -1124,8 +1124,8 @@ class PipelineManager:
             inputs: Input specification (dict, list, or None).
             params: Parameter overrides.
             step_runner: Step runner for execution. None uses pipeline default.
-            resources: Resource overrides (cpus, memory_gb, etc.).
-            execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
+            runner_resources: Resource overrides (cpus, memory_gb, etc.).
+            batch_strategy: Batching/scheduling overrides (artifacts_per_unit, etc.).
             environment: Environment override.
             tool: Tool overrides.
             compute_provider: Compute provider override (string or dict).
@@ -1145,8 +1145,8 @@ class PipelineManager:
             inputs=inputs,
             params=params,
             step_runner=step_runner,
-            resources=resources,
-            execution=execution,
+            runner_resources=runner_resources,
+            batch_strategy=batch_strategy,
             environment=environment,
             tool=tool,
             compute_provider=compute_provider,
@@ -1168,8 +1168,8 @@ class PipelineManager:
         ) = None,
         params: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | None = None,
+        batch_strategy: dict[str, Any] | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
         compute_provider: str | dict[str, Any] | None = None,
@@ -1187,8 +1187,8 @@ class PipelineManager:
             inputs: Input specification (dict, list, or None).
             params: Parameter overrides.
             step_runner: Step runner for execution. None uses pipeline default.
-            resources: Resource overrides (cpus, memory_gb, etc.).
-            execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
+            runner_resources: Resource overrides (cpus, memory_gb, etc.).
+            batch_strategy: Batching/scheduling overrides (artifacts_per_unit, etc.).
             environment: Environment override.
             tool: Tool overrides.
             compute_provider: Compute provider override (string or dict).
@@ -1224,8 +1224,8 @@ class PipelineManager:
             operation,
             inputs,
             params,
-            resources,
-            execution,
+            runner_resources,
+            batch_strategy,
             environment,
             tool,
         )
@@ -1248,8 +1248,8 @@ class PipelineManager:
         step_spec_id, temp_instance = self._prepare_step_spec(
             operation,
             params,
-            resources,
-            execution,
+            runner_resources,
+            batch_strategy,
             environment,
             tool,
             compute_provider,
@@ -1296,8 +1296,8 @@ class PipelineManager:
             inputs=inputs,
             params=params,
             step_runner=step_runner,
-            resources=resources,
-            execution=execution,
+            runner_resources=runner_resources,
+            batch_strategy=batch_strategy,
             environment=environment,
             tool=tool,
             compute_provider=compute_provider,
@@ -1319,8 +1319,8 @@ class PipelineManager:
         operation: type[OperationDefinition],
         inputs: Any,
         params: dict[str, Any] | None,
-        resources: dict[str, Any] | None,
-        execution: dict[str, Any] | None,
+        runner_resources: dict[str, Any] | None,
+        batch_strategy: dict[str, Any] | None,
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
     ) -> None:
@@ -1334,10 +1334,10 @@ class PipelineManager:
         """
         if params:
             _validate_params(operation, params)
-        if resources:
-            _validate_resources(resources)
-        if execution:
-            _validate_execution(execution)
+        if runner_resources:
+            _validate_resources(runner_resources)
+        if batch_strategy:
+            _validate_execution(batch_strategy)
         if environment is not None:
             _validate_environment(operation, environment)
         if tool:
@@ -1397,8 +1397,8 @@ class PipelineManager:
         self,
         operation: type[OperationDefinition],
         params: dict[str, Any] | None,
-        resources: dict[str, Any] | None,
-        execution: dict[str, Any] | None,
+        runner_resources: dict[str, Any] | None,
+        batch_strategy: dict[str, Any] | None,
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
         compute_provider: str | dict[str, Any] | None,
@@ -1422,7 +1422,13 @@ class PipelineManager:
         # Instantiate with merged defaults + user overrides so we can
         # dump the *full* params (including defaults) for hashing.
         temp_instance = instantiate_operation(
-            operation, params, resources, execution, environment, tool, compute_provider
+            operation,
+            params,
+            runner_resources,
+            batch_strategy,
+            environment,
+            tool,
+            compute_provider,
         )
         if "params" in type(temp_instance).model_fields:
             full_params = temp_instance.params.model_dump(mode="json")  # type: ignore[attr-defined]
@@ -1575,8 +1581,8 @@ class PipelineManager:
         inputs: Any,
         params: dict[str, Any] | None,
         step_runner: str | RunnerBase | None,
-        resources: dict[str, Any] | None,
-        execution: dict[str, Any] | None,
+        runner_resources: dict[str, Any] | None,
+        batch_strategy: dict[str, Any] | None,
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
         compute_provider: str | dict[str, Any] | None,
@@ -1631,9 +1637,11 @@ class PipelineManager:
         else:
             resolved_runner = resolve_runner(self._config.default_step_runner)
 
+        # Internal compute_options keys stay "resources"/"execution" to
+        # preserve persisted-record stability across the public-API renames.
         compute_options_data = {
-            "resources": resources or {},
-            "execution": execution or {},
+            "resources": runner_resources or {},
+            "execution": batch_strategy or {},
             "environment": (environment if environment is not None else {}),
             "tool": tool or {},
             "compute_provider": (
@@ -1693,8 +1701,8 @@ class PipelineManager:
                     inputs=inputs,
                     params=params,
                     step_runner=resolved_runner,
-                    resources=resources,
-                    execution=execution,
+                    runner_resources=runner_resources,
+                    batch_strategy=batch_strategy,
                     environment=environment,
                     tool=tool,
                     compute_provider=compute_provider,
@@ -1809,8 +1817,8 @@ class PipelineManager:
         expand: bool = False,
         intermediates: Literal["discard", "persist", "expose"] = "discard",
         step_runner: str | RunnerBase | None = None,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | None = None,
+        batch_strategy: dict[str, Any] | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
         compute_provider: str | dict[str, Any] | None = None,
@@ -1839,9 +1847,9 @@ class PipelineManager:
                 "discard" when ``expand=True`` (expanded mode always persists
                 via the per-step Delta path).
             step_runner: Step runner for execution. None uses pipeline default.
-            resources: Resource overrides (forwarded to each child step in
+            runner_resources: Resource overrides (forwarded to each child step in
                 expanded mode).
-            execution: Batching/scheduling overrides.
+            batch_strategy: Batching/scheduling overrides.
             environment: Environment override.
             tool: Tool overrides.
             compute_provider: Compute provider override (string or dict).
@@ -1885,8 +1893,8 @@ class PipelineManager:
                 inputs=inputs,
                 params=params,
                 step_runner=step_runner,
-                resources=resources,
-                execution=execution,
+                runner_resources=runner_resources,
+                batch_strategy=batch_strategy,
                 intermediates=intermediates,
                 failure_policy=failure_policy,
                 compact=compact,
@@ -1940,8 +1948,8 @@ class PipelineManager:
         expand: bool = False,
         intermediates: Literal["discard", "persist", "expose"] = "discard",
         step_runner: str | RunnerBase | None = None,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | None = None,
+        batch_strategy: dict[str, Any] | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
         compute_provider: str | dict[str, Any] | None = None,
@@ -1972,8 +1980,8 @@ class PipelineManager:
             expand=expand,
             intermediates=intermediates,
             step_runner=step_runner,
-            resources=resources,
-            execution=execution,
+            runner_resources=runner_resources,
+            batch_strategy=batch_strategy,
             environment=environment,
             tool=tool,
             compute_provider=compute_provider,
@@ -1991,8 +1999,8 @@ class PipelineManager:
         inputs: Any,
         params: dict[str, Any] | None,
         step_runner: str | RunnerBase | None,
-        resources: dict[str, Any] | None,
-        execution: dict[str, Any] | None,
+        runner_resources: dict[str, Any] | None,
+        batch_strategy: dict[str, Any] | None,
         intermediates: str,
         failure_policy: FailurePolicy | None,
         compact: bool,
@@ -2005,8 +2013,8 @@ class PipelineManager:
             composite_class: CompositeDefinition subclass.
             inputs: Initial inputs.
             step_runner: Step runner override.
-            resources: Composite-level resource overrides.
-            execution: Composite-level execution overrides.
+            runner_resources: Composite-level resource overrides.
+            batch_strategy: Composite-level execution overrides.
             intermediates: "discard", "persist", or "expose".
             params: Parameter overrides.
             failure_policy: Override pipeline failure policy.
@@ -2017,10 +2025,12 @@ class PipelineManager:
         Returns:
             StepFuture for downstream wiring.
         """
-        from artisan.execution.models.execution_composite import CompositeIntermediates
+        from artisan.execution.models.execution_composite import (
+            CompositeIntermediates,
+        )
         from artisan.orchestration.engine.step_executor import execute_composite_step
-        from artisan.schemas.execution.execution_config import ExecutionConfig
-        from artisan.schemas.operation_config.resource_config import ResourceConfig
+        from artisan.schemas.execution.batch_strategy import BatchStrategy
+        from artisan.schemas.operation_config.runner_resources import RunnerResources
 
         # Validate inputs against composite declarations
         _validate_input_roles(composite_class, inputs)
@@ -2029,10 +2039,10 @@ class PipelineManager:
 
         if params:
             _validate_params(composite_class, params)
-        if resources:
-            _validate_resources(resources)
-        if execution:
-            _validate_execution(execution)
+        if runner_resources:
+            _validate_resources(runner_resources)
+        if batch_strategy:
+            _validate_execution(batch_strategy)
 
         early = self._check_early_exit(name, composite_class.outputs, inputs)
         if early is not None:
@@ -2097,8 +2107,8 @@ class PipelineManager:
 
         _failure_policy = failure_policy or self._config.failure_policy
         composite_intermediates = CompositeIntermediates(intermediates)
-        composite_resources = ResourceConfig(**(resources or {}))
-        composite_execution = ExecutionConfig(**(execution or {}))
+        composite_resources = RunnerResources(**(runner_resources or {}))
+        composite_execution = BatchStrategy(**(batch_strategy or {}))
 
         def _run() -> StepResult:
             # Bail out immediately if cancelled while queued in the executor

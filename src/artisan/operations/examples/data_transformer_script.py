@@ -14,14 +14,14 @@ from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.environment_spec import (
     DockerEnvironmentSpec,
     LocalEnvironmentSpec,
 )
 from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -89,14 +89,14 @@ class DataTransformerScript(OperationDefinition):
     )
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(  # type: ignore[call-arg]  # pydantic defaults
+    runner_resources: RunnerResources = RunnerResources(  # type: ignore[call-arg]  # pydantic defaults
         cpus=1,
         memory_gb=4,
         time_limit="00:30:00",
     )
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_script")  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_script")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(

@@ -294,12 +294,12 @@ class TestModelBehavior:
     def test_resources_default(self):
         cls = _make_valid_composite("test_resources_default")
         instance = cls()
-        assert instance.resources.cpus == 1
+        assert instance.runner_resources.cpus == 1
 
     def test_execution_default(self):
         cls = _make_valid_composite("test_execution_default")
         instance = cls()
-        assert instance.execution.artifacts_per_unit == 1
+        assert instance.batch_strategy.artifacts_per_unit == 1
 
 
 # ---------------------------------------------------------------------------

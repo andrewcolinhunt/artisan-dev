@@ -47,7 +47,7 @@ Artisan provides four built-in artifact types:
 |------|-------|---------|
 | `DATA` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
 | `METRIC` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
-| `CONFIG` | `ExecutionConfigArtifact` | Execution configuration snapshots (JSON) |
+| `CONFIG` | `BatchStrategyArtifact` | Execution configuration snapshots (JSON) |
 | `FILE_REF` | `FileRefArtifact` | References to files at their original paths on disk |
 
 Custom artifact types can be registered by domain layers through the

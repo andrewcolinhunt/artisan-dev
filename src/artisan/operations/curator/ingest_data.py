@@ -12,8 +12,8 @@ from typing import ClassVar
 from artisan.operations.curator.ingest_files import IngestFiles
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.output_spec import OutputSpec
 
 
@@ -37,12 +37,12 @@ class IngestData(IngestFiles):
     }
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(
+    runner_resources: RunnerResources = RunnerResources(
         cpus=1, memory_gb=4, gpus=0, time_limit="00:10:00"
     )
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(
+    batch_strategy: BatchStrategy = BatchStrategy(
         artifacts_per_unit=1, units_per_worker=1, job_name="ingest"
     )
 

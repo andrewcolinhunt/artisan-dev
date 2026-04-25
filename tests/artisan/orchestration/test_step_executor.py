@@ -20,7 +20,10 @@ import pytest
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import FailurePolicy, GroupByStrategy
-from artisan.schemas.execution.curator_result import ArtifactResult, PassthroughResult
+from artisan.schemas.execution.curator_result import (
+    ArtifactResult,
+    PassthroughResult,
+)
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.specs.input_models import PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
@@ -553,7 +556,7 @@ class TestCreatorStepPairing:
         from artisan.orchestration.engine.step_executor import (
             _execute_creator_step,
         )
-        from artisan.schemas.execution.execution_config import ExecutionConfig
+        from artisan.schemas.execution.batch_strategy import BatchStrategy
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
         config = PipelineConfig(
@@ -585,7 +588,9 @@ class TestCreatorStepPairing:
 
         # Create operation with artifacts_per_unit=2
         op = MockMultiInputCreatorOp()
-        op = op.model_copy(update={"execution": ExecutionConfig(artifacts_per_unit=2)})
+        op = op.model_copy(
+            update={"batch_strategy": BatchStrategy(artifacts_per_unit=2)}
+        )
 
         _execute_creator_step(
             operation=op,

@@ -15,8 +15,8 @@ from artisan.orchestration.runners import Runner, resolve_runner
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.runners.slurm import SlurmRunner
 from artisan.orchestration.runners.slurm_intra import SlurmIntraRunner
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
 class TestBackendRouting:
@@ -25,10 +25,10 @@ class TestBackendRouting:
     def test_local_backend_returns_dispatch_handle(self):
         from artisan.orchestration.engine.dispatch_handle import DispatchHandle
 
-        resources = ResourceConfig()
-        execution = ExecutionConfig()
+        runner_resources = RunnerResources()
+        batch_strategy = BatchStrategy()
         handle = Runner.LOCAL.create_dispatch_handle(
-            resources, execution, step_number=0, job_name="test_op"
+            runner_resources, batch_strategy, step_number=0, job_name="test_op"
         )
         assert isinstance(handle, DispatchHandle)
 
@@ -36,17 +36,17 @@ class TestBackendRouting:
     def test_slurm_backend_returns_dispatch_handle(self, mock_slurm_runner):
         from artisan.orchestration.runners.slurm import SlurmDispatchHandle
 
-        resources = ResourceConfig(
+        runner_resources = RunnerResources(
             cpus=4,
             memory_gb=8,
             gpus=1,
             time_limit="02:00:00",
             extra={"partition": "gpu"},
         )
-        execution = ExecutionConfig(units_per_worker=1)
+        batch_strategy = BatchStrategy(units_per_worker=1)
 
         handle = Runner.SLURM.create_dispatch_handle(
-            resources, execution, step_number=3, job_name="test_op"
+            runner_resources, batch_strategy, step_number=3, job_name="test_op"
         )
 
         assert isinstance(handle, SlurmDispatchHandle)
@@ -59,11 +59,13 @@ class TestBackendRouting:
     def test_slurm_intra_backend_returns_dispatch_handle(self, mock_slurm_runner):
         from artisan.orchestration.runners.slurm import SlurmDispatchHandle
 
-        resources = ResourceConfig(cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00")
-        execution = ExecutionConfig(units_per_worker=1)
+        runner_resources = RunnerResources(
+            cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00"
+        )
+        batch_strategy = BatchStrategy(units_per_worker=1)
 
         handle = Runner.SLURM_INTRA.create_dispatch_handle(
-            resources, execution, step_number=1, job_name="test"
+            runner_resources, batch_strategy, step_number=1, job_name="test"
         )
 
         assert isinstance(handle, SlurmDispatchHandle)
