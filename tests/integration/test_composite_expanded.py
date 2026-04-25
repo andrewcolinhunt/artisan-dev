@@ -1,6 +1,6 @@
 """Integration tests for expanded composites.
 
-Exercises pipeline.expand(CompositeDefinition) where each internal
+Exercises pipeline.submit_composite(MyComposite, expand=True) where each internal
 operation becomes its own pipeline step.
 """
 
@@ -106,8 +106,9 @@ def test_expand_basic(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    result = pipeline.expand(
+    result = pipeline.submit_composite(
         GenTransformMetrics,
+        expand=True,
         step_runner=Runner.LOCAL,
     )
 
@@ -139,8 +140,9 @@ def test_expand_with_upstream(pipeline_env: dict[str, str]):
         step_runner=Runner.LOCAL,
     )
 
-    result = pipeline.expand(
+    result = pipeline.submit_composite(
         TransformComposite,
+        expand=True,
         inputs={"data": gen.output("datasets")},
     )
 
@@ -163,8 +165,9 @@ def test_expand_to_downstream(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    result = pipeline.expand(
+    result = pipeline.submit_composite(
         GenTransformMetrics,
+        expand=True,
     )
 
     # Wire expanded output to a downstream step
@@ -187,8 +190,9 @@ def test_expand_step_naming(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    pipeline.expand(
+    pipeline.submit_composite(
         GenTransformMetrics,
+        expand=True,
     )
 
     pipeline.finalize()

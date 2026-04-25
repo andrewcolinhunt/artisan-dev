@@ -959,13 +959,13 @@ class TestCancellation:
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_composite_skipped_on_cancel(self, mock_tracker_cls, tmp_path):
-        """_submit_composite returns skipped result when cancelled."""
+        """_dispatch_collapsed_composite returns skipped result when cancelled."""
         mock_tracker_cls.return_value = MagicMock()
 
         pipeline = _make_pipeline(tmp_path)
         pipeline.cancel()
 
-        # Call _submit_composite directly with a mock composite class
+        # Call _dispatch_collapsed_composite directly with a mock composite class
 
         mock_composite = MagicMock()
         mock_composite.name = "test_composite"
@@ -976,7 +976,7 @@ class TestCancellation:
             "data": MagicMock(artifact_type="data", required=True),
         }
 
-        result_future = pipeline._submit_composite(
+        result_future = pipeline._dispatch_collapsed_composite(
             composite_class=mock_composite,
             inputs={"data": ["a" * 32]},
             params=None,
@@ -2063,3 +2063,102 @@ class TestPromoteFilePathsCloudUri:
         )
         assert result is None
         assert count == 0
+
+
+# =============================================================================
+# Composite split (PR 2): submit_composite / run_composite fail-fast
+# =============================================================================
+
+
+class _OpForTests(OperationDefinition):
+    """Minimal OperationDefinition for composite-fail-fast tests."""
+
+    name: ClassVar[str] = "_op_for_composite_tests"
+    inputs: ClassVar[dict] = {}
+    outputs: ClassVar[dict] = {}
+
+    def execute(self, _inputs):
+        return {}
+
+
+class _CompositeForTests:
+    """Synthetic CompositeDefinition stand-in for fail-fast tests.
+
+    Does not need to be functional — these tests only check the early
+    rejection paths in submit / run / submit_composite.
+    """
+
+    name = "_composite_for_tests"
+    inputs: ClassVar[dict] = {}
+    outputs: ClassVar[dict] = {}
+
+
+# Real CompositeDefinition for fail-fast tests
+from artisan.composites.base.composite_definition import (  # noqa: E402
+    CompositeDefinition,
+)
+
+
+class _RealComposite(CompositeDefinition):
+    name: ClassVar[str] = "_real_composite_for_tests"
+    inputs: ClassVar[dict] = {}
+    outputs: ClassVar[dict] = {}
+
+    def compose(self, ctx):
+        return None
+
+
+class TestCompositeFailFast:
+    """submit() and run() must reject CompositeDefinition subclasses."""
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_rejects_composite(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(TypeError, match="submit_composite"):
+            pipeline.submit(_RealComposite)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_run_rejects_composite(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(TypeError, match="submit_composite"):
+            pipeline.run(_RealComposite)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_composite_rejects_operation(self, mock_tracker_cls, tmp_path):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(TypeError, match="CompositeDefinition"):
+            pipeline.submit_composite(_OpForTests)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_composite_expand_with_persist_raises(
+        self, mock_tracker_cls, tmp_path
+    ):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(ValueError, match="intermediates"):
+            pipeline.submit_composite(
+                _RealComposite,
+                expand=True,
+                intermediates="persist",
+            )
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_composite_expand_with_default_intermediates_ok(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """expand=True with intermediates='discard' (default) does not raise."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        # Does not raise; returns ExpandedCompositeResult with no children.
+        result = pipeline.submit_composite(_RealComposite, expand=True)
+        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+
+        assert isinstance(result, ExpandedCompositeResult)

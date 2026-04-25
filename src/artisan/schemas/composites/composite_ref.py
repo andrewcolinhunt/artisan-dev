@@ -97,22 +97,31 @@ class CompositeStepHandle:
 
 
 class ExpandedCompositeResult:
-    """Returned by pipeline.expand(). Maps composite outputs to internal steps.
+    """Returned by pipeline.submit_composite(expand=True).
 
-    Duck-types with StepResult and StepFuture (.output(role) -> OutputReference).
+    Maps composite outputs to internal steps and exposes the child
+    StepFutures so that ``run_composite(expand=True)`` can block on
+    completion via ``.wait()``. Duck-types with StepResult and
+    StepFuture for ``.output(role) -> OutputReference``.
 
     Attributes:
         _output_map: Composite output role to OutputReference.
         _output_types: Composite output role to artifact type.
+        _child_futures: StepFutures of the composite's expanded children.
+            For nested composites this is empty — the children register
+            on the parent pipeline's _active_futures, so the top-level
+            wait() drains them transitively.
     """
 
     def __init__(
         self,
         output_map: dict[str, OutputReference],
         output_types: dict[str, str | None],
+        child_futures: list[StepFuture] | None = None,
     ) -> None:
         self._output_map = output_map
         self._output_types = output_types
+        self._child_futures = child_futures if child_futures is not None else []
 
     @property
     def output_roles(self) -> frozenset[str]:
@@ -136,3 +145,42 @@ class ExpandedCompositeResult:
             msg = f"Unknown output role '{role}'. Available: {available}"
             raise ValueError(msg)
         return self._output_map[role]
+
+    def wait(self, *, timeout: float | None = None) -> ExpandedCompositeResult:
+        """Block until every child step completes.
+
+        Args:
+            timeout: Optional total deadline in seconds. If None, waits
+                indefinitely. The deadline is enforced across the
+                aggregate set of futures, not per-future.
+
+        Returns:
+            Self, with all child steps now resolved. Use ``.output(role)``
+            to access individual outputs after the wait.
+
+        Raises:
+            TimeoutError: If timeout expires before all children resolve.
+        """
+        import time
+
+        deadline: float | None = None
+        if timeout is not None:
+            deadline = time.monotonic() + timeout
+
+        for future in self._child_futures:
+            remaining: float | None = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    msg = (
+                        f"ExpandedCompositeResult.wait timed out after {timeout}s "
+                        f"with {sum(1 for f in self._child_futures if not f.done)} "
+                        "children still pending"
+                    )
+                    raise TimeoutError(msg)
+            try:
+                future.result(timeout=remaining)
+            except TimeoutError as e:
+                msg = f"ExpandedCompositeResult.wait timed out after {timeout}s"
+                raise TimeoutError(msg) from e
+        return self

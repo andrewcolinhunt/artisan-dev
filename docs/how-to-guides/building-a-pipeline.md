@@ -334,7 +334,7 @@ class TransformAndScore(CompositeDefinition):
 ```
 
 Use `pipeline.run()` for **collapsed** execution (single step, in-memory
-artifact passing) or `pipeline.expand()` for **expanded** execution (each
+artifact passing) or `pipeline.run_composite()` for **expanded** execution (each
 internal operation becomes its own pipeline step):
 
 ```python
@@ -349,7 +349,7 @@ pipeline.run(
 )
 
 # Expanded — each internal operation is a separate step
-pipeline.expand(
+pipeline.run_composite(
     composite=TransformAndScore,
     name="ts",
     inputs={"dataset": output("gen", "datasets")},

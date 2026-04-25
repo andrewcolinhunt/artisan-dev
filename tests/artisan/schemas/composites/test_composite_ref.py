@@ -150,3 +150,95 @@ class TestExpandedCompositeResult:
         # Same interface: .output(role) -> OutputReference
         ref = result.output("data")
         assert isinstance(ref, OutputReference)
+
+
+class TestExpandedCompositeResultWait:
+    """Tests for the .wait() method added in PR 2."""
+
+    def _make_done_future(self):
+        from concurrent.futures import Future
+
+        from artisan.orchestration.step_future import StepFuture
+        from artisan.schemas.orchestration.step_result import StepResult
+
+        future: Future = Future()
+        future.set_result(
+            StepResult(
+                step_name="x",
+                step_number=0,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+            )
+        )
+        return StepFuture(
+            step_number=0,
+            step_name="x",
+            output_roles=frozenset({"out"}),
+            output_types={"out": None},
+            future=future,
+        )
+
+    def _make_pending_future(self):
+        from concurrent.futures import Future
+
+        from artisan.orchestration.step_future import StepFuture
+
+        future: Future = Future()  # never resolved
+        return StepFuture(
+            step_number=1,
+            step_name="y",
+            output_roles=frozenset({"out"}),
+            output_types={"out": None},
+            future=future,
+        )
+
+    def test_wait_drains_done_futures(self):
+        """wait() returns immediately when all child futures are done."""
+        f1 = self._make_done_future()
+        f2 = self._make_done_future()
+        result = ExpandedCompositeResult(
+            output_map={},
+            output_types={},
+            child_futures=[f1, f2],
+        )
+        returned = result.wait()
+        assert returned is result
+        assert f1.done is True
+        assert f2.done is True
+
+    def test_wait_returns_self_for_chaining(self):
+        """wait() returns self so callers can chain ``.output(role)``."""
+        result = ExpandedCompositeResult(
+            output_map={},
+            output_types={},
+            child_futures=[],
+        )
+        assert result.wait() is result
+
+    def test_wait_with_no_children_is_noop(self):
+        """Empty child_futures (e.g. nested composite case) returns immediately."""
+        result = ExpandedCompositeResult(
+            output_map={},
+            output_types={},
+            child_futures=None,
+        )
+        result.wait()
+        assert result._child_futures == []
+
+    def test_wait_timeout_raises(self):
+        """Timeout deadline raises TimeoutError."""
+        pending = self._make_pending_future()
+        result = ExpandedCompositeResult(
+            output_map={},
+            output_types={},
+            child_futures=[pending],
+        )
+        with pytest.raises(TimeoutError):
+            result.wait(timeout=0.05)
+
+    def test_child_futures_default_empty(self):
+        """Omitting child_futures keeps backwards-compat default."""
+        result = ExpandedCompositeResult(output_map={}, output_types={})
+        assert result._child_futures == []

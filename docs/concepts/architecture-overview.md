@@ -271,7 +271,7 @@ A `CompositeDefinition` declares inputs, outputs, and a `compose()` method
 that wires operations together using a `CompositeContext`. The same composite
 can run **collapsed** (single worker, in-memory artifact passing via
 `pipeline.run()`) or **expanded** (each internal operation becomes its own
-pipeline step via `pipeline.expand()`).
+pipeline step via `pipeline.run_composite()`).
 
 ```python
 class TransformAndScore(CompositeDefinition):
@@ -290,7 +290,7 @@ class TransformAndScore(CompositeDefinition):
 pipeline.run(TransformAndScore, inputs={"dataset": output("gen", "datasets")})
 
 # Expanded: each internal op becomes its own step
-pipeline.expand(TransformAndScore, inputs={"dataset": output("gen", "datasets")})
+pipeline.run_composite(TransformAndScore, inputs={"dataset": output("gen", "datasets")})
 ```
 
 Composites share the same dispatch-execute-commit lifecycle as regular steps.
