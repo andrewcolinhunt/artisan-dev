@@ -224,7 +224,7 @@ class PipelineTimings:
         """Summary statistics for execution-level phase timings of a step.
 
         Args:
-            step_number: The step to compute_provider stats for.
+            step_number: The step to compute stats for.
 
         Returns:
             DataFrame with columns: phase, mean, std, min, max.

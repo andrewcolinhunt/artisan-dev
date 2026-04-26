@@ -26,7 +26,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 class SlowTransformer(OperationDefinition):
     """Sleep per artifact, then write a timing marker.
 
-    Simulates a compute_provider-heavy operation where each artifact takes a
+    Simulates a compute-heavy operation where each artifact takes a
     fixed duration. With per-artifact dispatch on Modal, N artifacts
     execute in parallel (~duration total). Without it, they execute
     sequentially (~N * duration total).

@@ -54,8 +54,8 @@ class OperationDefinition(BaseModel):
         description (str): Human-readable summary shown in docs and logs.
         inputs (dict[str, InputSpec]): Named input specifications.
         outputs (dict[str, OutputSpec]): Named output specifications.
-        resources (RunnerResources): Hardware resource allocation for SLURM jobs.
-        execution (BatchStrategy): Batching and scheduling configuration.
+        runner_resources (RunnerResources): Hardware resource allocation for SLURM jobs.
+        batch_strategy (BatchStrategy): Batching and scheduling configuration.
     """
 
     model_config = ConfigDict(
