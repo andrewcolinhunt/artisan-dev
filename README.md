@@ -179,10 +179,10 @@ plugin with skills for scaffolding operations, pipelines, and documentation.
 
 | Skill | Description |
 |-------|-------------|
-| `/write-operation` | Scaffold or review an `OperationDefinition` subclass |
-| `/write-composite` | Scaffold or review a `CompositeDefinition` subclass |
-| `/write-pipeline` | Scaffold a pipeline script composing operations |
-| `/write-docs` | Write or edit documentation pages, tutorials, and guides |
+| `/operation-write` | Scaffold or review an `OperationDefinition` subclass |
+| `/composite-write` | Scaffold or review a `CompositeDefinition` subclass |
+| `/pipeline-write` | Scaffold a pipeline script composing operations |
+| `/docs-write` | Write or edit documentation pages, tutorials, and guides |
 
 The plugin is included in the repository and activates automatically.
 Downstream repos can install it by pointing their settings to this repo. See

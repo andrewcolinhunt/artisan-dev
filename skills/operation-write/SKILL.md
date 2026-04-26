@@ -1,5 +1,5 @@
 ---
-name: write-operation
+name: operation-write
 description: Write, scaffold, or review an Artisan pipeline operation. Use this skill when the user asks to create a new operation, write a creator or curator, scaffold an operation class, or review an existing operation for correctness. Trigger on phrases like "write an operation", "create a creator", "new curator", "scaffold operation", or any request involving OperationDefinition subclasses.
 argument-hint: "[OperationClassName or description of what the operation should do]"
 ---

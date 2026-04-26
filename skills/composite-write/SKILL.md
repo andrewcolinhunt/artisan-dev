@@ -1,5 +1,5 @@
 ---
-name: write-composite
+name: composite-write
 description: Write or scaffold an Artisan composite operation. Use this skill when the user asks to create a composite, write a composite operation, scaffold a composite, compose operations, or any request involving CompositeDefinition subclasses. Trigger on phrases like "write a composite", "create a composite operation", "scaffold a composite", "compose operations", or any request to combine multiple operations into a reusable unit.
 argument-hint: "[CompositeClassName or description of what the composite should do]"
 ---
@@ -25,7 +25,7 @@ Before writing, read the example composites in integration tests
   (collapsed, single step) and `pipeline.expand()` (expanded, one step per
   internal op)
 
-If you only need a single operation, use `write-operation` instead.
+If you only need a single operation, use `operation-write` instead.
 
 ---
 
@@ -210,7 +210,7 @@ The framework validates at class definition time (`__pydantic_init_subclass__`):
 
 ## Running Composites
 
-Two execution modes — see `write-pipeline` for full API details:
+Two execution modes — see `pipeline-write` for full API details:
 
 ```python
 # Collapsed: single pipeline step, in-memory passing
@@ -277,7 +277,7 @@ def test_composite_expanded(tmp_path):
 
 ## Style Rules
 
-Follow these conventions (mirrors write-operation):
+Follow these conventions (mirrors operation-write):
 
 - **Module docstring**: One line, describes what the composite does
 - **Class docstring**: Summary line + optional extended description
