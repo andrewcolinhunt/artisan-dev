@@ -38,8 +38,8 @@ Airflow to trigger Artisan pipelines on a schedule.
 | **Caching** | Hash of inputs + command, automatic | Timestamp + Merkle tree | None built-in | Opt-in per-task (`cache_key_fn`) | Content-addressed hashes, automatic (configurable via `CachePolicy`) |
 | **Result storage** | Files in `work/` dirs | Files on filesystem | External (user-managed) | External (opt-in persistence) | Delta Lake tables (queryable, ACID) |
 | **Result querying** | Parse files or use Seqera Platform | Parse files | External tools | External tools | Direct SQL-like queries via Polars/DuckDB |
-| **HPC / SLURM** | Native (+ PBS, LSF, SGE) | Native (plugin-based) | None | Indirect (Dask + SLURMCluster) | Native (`SlurmBackend` via job arrays) |
-| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Extensible `BackendBase` architecture (LOCAL, SLURM, SLURM_INTRA built-in) |
+| **HPC / SLURM** | Native (+ PBS, LSF, SGE) | Native (plugin-based) | None | Indirect (Dask + SLURMCluster) | Native (`SlurmRunner` via job arrays) |
+| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Extensible `RunnerBase` architecture (LOCAL, SLURM, SLURM_INTRA built-in) |
 | **Infrastructure** | None (file-based) | None (file-based) | Scheduler + DB + web server | Server or Prefect Cloud | None (Delta Lake on filesystem) |
 | **Error model** | Per-process retry with resource escalation | Delete incomplete, retry with escalation | Task retry + SLA alerts | Task retry + state machine | Per-item containment with configurable policy (CONTINUE or FAIL_FAST) |
 | **Ecosystem** | nf-core (100+ pipelines) | Workflow Catalog, Bioconda | 1,000+ provider operators | Growing integrations | Domain-extensible artifact type registry |
@@ -131,7 +131,7 @@ a different problem.
 ### vs. Prefect
 
 Prefect is a Python-native orchestration framework. Artisan uses Prefect
-internally as its dispatch backend, so this comparison describes what Artisan
+internally as its step runner, so this comparison describes what Artisan
 adds on top.
 
 **What Prefect gives you that Artisan does not:**
@@ -151,7 +151,7 @@ adds on top.
 - Delta Lake storage with ACID commits and direct queryability
 - Staging-commit pattern for safe concurrent writes from thousands of workers
 - Composites that compose multiple operations with collapsed or expanded execution for tightly coupled computations
-- Backend abstraction (`BackendBase`) that decouples operation logic from
+- Step-runner abstraction (`RunnerBase`) that decouples operation logic from
   compute dispatch — swap LOCAL for SLURM without changing operations
 - Extensible type system where domain layers add artifact types and get full
   infrastructure for free
@@ -162,13 +162,13 @@ adds on top.
 ## How Artisan uses Prefect
 
 Artisan does not compete with Prefect. It uses Prefect as a transport layer
-for dispatching work to workers, wrapped behind a `BackendBase` abstraction.
+for dispatching work to workers, wrapped behind a `RunnerBase` abstraction.
 Understanding this relationship clarifies every comparison above.
 
 ```
 PipelineManager                                (Artisan: step sequencing, caching, provenance)
   └─ execute_step()
-       └─ BackendBase.create_dispatch_handle() (Artisan: backend abstraction)
+       └─ RunnerBase.create_dispatch_handle() (Artisan: step-runner abstraction)
             └─ DispatchHandle.run()            (handle owns dispatch lifecycle + cancellation)
                  └─ @flow(task_runner=...)      (Prefect: parallel dispatch + observability)
                       └─ execute_unit_task.map(units)
@@ -176,31 +176,31 @@ PipelineManager                                (Artisan: step sequencing, cachin
                            └─ run_composite()        (Artisan: composite operations lifecycle)
 ```
 
-Three built-in backends control which Prefect `task_runner` is used:
+Three built-in step runners control which Prefect `task_runner` is used:
 
-| Backend | Task runner | Dispatch mechanism |
+| Step runner | Task runner | Dispatch mechanism |
 |---|---|---|
-| `LocalBackend` | `ProcessPoolTaskRunner` | Process pool on the orchestrator machine |
-| `SlurmBackend` | `SlurmTaskRunner` (from `prefect_submitit`) | SLURM job arrays via `submitit` |
-| `SlurmIntraBackend` | `SlurmTaskRunner` (from `prefect_submitit`, srun mode) | srun within existing SLURM allocation |
+| `LocalRunner` | `ProcessPoolTaskRunner` | Process pool on the orchestrator machine |
+| `SlurmRunner` | `SlurmTaskRunner` (from `prefect_submitit`) | SLURM job arrays via `submitit` |
+| `SlurmIntraRunner` | `SlurmTaskRunner` (from `prefect_submitit`, srun mode) | srun within existing SLURM allocation |
 
 | Responsibility | Handled by |
 |---|---|
 | Pipeline definition, step sequencing | Artisan (`PipelineManager`) |
 | Input resolution, cache lookup | Artisan (orchestration layer) |
-| Backend selection and dispatch handle creation | Artisan (`BackendBase`) |
-| Parallel dispatch to workers | Prefect (via backend-selected `task_runner`) |
+| Step runner selection and dispatch handle creation | Artisan (`RunnerBase`) |
+| Parallel dispatch to workers | Prefect (via runner-selected `task_runner`) |
 | Operation lifecycle (preprocess/execute/postprocess) | Artisan (execution layer) |
 | Composite routing (single ops vs. composed composites) | Artisan (`execute_unit_task`) |
 | Lineage capture, staging | Artisan (execution layer) |
 | Atomic commit to Delta Lake | Artisan (orchestration layer) |
 | Flow/task run observability UI | Prefect |
 
-Workers run the same execution code regardless of backend — Prefect is the
+Workers run the same execution code regardless of step runner — Prefect is the
 transport, not the brain. Curator operations bypass Prefect dispatch and
-execute locally in a subprocess on the orchestrator. Custom backends can be
+execute locally in a subprocess on the orchestrator. Custom step runners can be
 created by subclassing
-`BackendBase` and implementing `create_dispatch_handle()` and `capture_logs()`.
+`RunnerBase` and implementing `create_dispatch_handle()` and `capture_logs()`.
 
 ---
 

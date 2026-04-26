@@ -104,7 +104,7 @@ communicate through two data structures and never share mutable state.
 
 `ExecutionUnit` carries **what** to execute: the operation instance, input
 artifact IDs, parameters, and cache key. `RuntimeEnvironment` specifies
-**where**: the Delta root, working root, staging root, and backend traits.
+**where**: the Delta root, working root, staging root, and step-runner traits.
 
 **Why this split matters:**
 
@@ -112,32 +112,32 @@ artifact IDs, parameters, and cache key. `RuntimeEnvironment` specifies
   worker crashes, its partial results are ignored. Shared state is never
   corrupted.
 - **Scale transparency.** The same code runs locally (process pool) or on a
-  cluster (SLURM job arrays). The backend abstraction swaps the dispatch
+  cluster (SLURM job arrays). The step-runner abstraction swaps the dispatch
   mechanism while keeping operations, execution logic, and storage identical.
 - **No shared mutable state.** Workers never write to Delta Lake directly.
   Thousands of concurrent workers would cause write conflicts. Instead, they
   stage Parquet files, and the orchestrator commits them atomically.
 
-### Backends
+### Step runners
 
-The dispatch mechanism is pluggable through the backend abstraction.
-A backend bundles three concerns: how to dispatch work (Prefect flow
+The dispatch mechanism is pluggable through the step-runner abstraction.
+A step runner bundles three concerns: how to dispatch work (Prefect flow
 configuration), how workers behave (filesystem sharing, worker IDs), and
 how the orchestrator handles post-dispatch verification (NFS attribute
 caching, staging timeouts).
 
-The framework ships three backends:
+The framework ships three step runners:
 
-| Backend | Dispatch mechanism | Filesystem | Use case |
-|---------|-------------------|------------|----------|
+| Step runner | Dispatch mechanism | Filesystem | Use case |
+|-------------|-------------------|------------|----------|
 | Local | ProcessPool on the orchestrator machine | Local (no sharing) | Development, small jobs |
 | SLURM | Job arrays via submitit | Shared NFS | HPC clusters, large-scale runs |
 | SLURM Intra | srun within existing allocation | Shared NFS | Interactive salloc sessions, zero queue wait |
 
-All backends use Prefect as the underlying task execution layer. The backend
-controls which `TaskRunner` Prefect uses — `ProcessPoolTaskRunner` for local,
-`SlurmTaskRunner` for SLURM and SLURM Intra — but everything above and below
-that boundary stays the same.
+All step runners use Prefect as the underlying task execution layer. The step
+runner controls which `TaskRunner` Prefect uses — `ProcessPoolTaskRunner` for
+local, `SlurmTaskRunner` for SLURM and SLURM Intra — but everything above and
+below that boundary stays the same.
 
 ---
 

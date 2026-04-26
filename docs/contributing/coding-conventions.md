@@ -251,7 +251,7 @@ internal wiring.
 | A new enum value | `schemas/enums.py` | Add to existing enum class |
 | A new enum type | `schemas/enums.py` | New class in same file |
 | A new execution concern | `execution/<existing_subpackage>/` | File in the sub-package that owns the responsibility |
-| A new orchestration backend | `orchestration/backends/<name>.py` | Subclass of `BackendBase` + register in `backends/__init__.py` |
+| A new orchestration step runner | `orchestration/runners/<name>.py` | Subclass of `RunnerBase` + register in `runners/__init__.py` |
 | A shared utility function | `utils/<topic>.py` | New file or add to existing file by topic, add re-export |
 | A helper used by one operation only | `operations/<tool>/utils.py` | Inside the operation's own package |
 
