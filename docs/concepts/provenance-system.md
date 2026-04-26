@@ -146,8 +146,7 @@ identifiers are treated as indivisible tokens.
 
 While stem matching handles most cases automatically, operations can also
 declare explicit parent-child relationships. A `LineageMapping` specifies the
-exact source artifact ID for each output draft, bypassing stem inference
-entirely.
+parent for each output draft, bypassing stem inference entirely.
 
 This is useful when:
 
@@ -155,9 +154,20 @@ This is useful when:
   files entirely)
 - The operation has custom grouping logic that stem matching cannot express
 - Output-to-output edges need precise control
+- Output roles are conditional at runtime, so the static `infer_lineage_from`
+  declaration on `OutputSpec` cannot express the parent relationship
+
+A `LineageMapping` references its parent in one of two ways: by
+`source_artifact_id` when the parent is an input artifact (its ID is known at
+postprocess time), or by `source_original_name` when the parent is a
+co-produced output (resolved per-role against finalized outputs after
+postprocess returns). Exactly one of the two source fields must be set on
+each mapping.
 
 Explicit mappings use the same `group_id` mechanism as inferred edges, so
-co-input semantics (joint derivation) work identically in both paths.
+co-input semantics (joint derivation) work identically in both paths. For
+step-by-step usage, see
+[Writing Creator Operations](../how-to-guides/writing-creator-operations.md#explicit-lineage).
 
 ---
 

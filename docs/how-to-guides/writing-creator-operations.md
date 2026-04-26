@@ -505,7 +505,74 @@ def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
 ```
 
 See `DataGeneratorWithMetrics` in `artisan.operations.examples` for a complete
-implementation.
+implementation, and the
+[Co-Produced Outputs tutorial](../tutorials/writing-operations/03-co-produced-outputs.ipynb)
+for a step-by-step walkthrough of authoring this pattern.
+
+### Explicit lineage
+
+Auto-inference via `infer_lineage_from` covers most cases. Use explicit
+lineage when:
+
+- Output filenames do not share stems with their sources (e.g., the operation
+  renames files entirely).
+- Output roles are conditional at runtime — the static `infer_lineage_from`
+  declaration on `OutputSpec` cannot express which role each output draft
+  derives from.
+- A specific source pairing must hold regardless of stem match.
+
+Pass a `lineage` block on `ArtifactResult`. Each
+[`LineageMapping`](../reference/glossary.md#glossary-lineage-mapping)
+declares one parent for one draft.
+
+```python
+from artisan.schemas import ArtifactResult, LineageMapping
+
+return ArtifactResult(
+    success=True,
+    artifacts={"structures": structures, "metrics": metrics},
+    lineage={
+        "structures": [
+            LineageMapping(
+                draft_original_name=structures[0].original_name,
+                source_artifact_id=input_artifact.artifact_id,
+                source_role="proteins",
+            ),
+        ],
+        "metrics": [
+            LineageMapping(
+                draft_original_name=metrics[0].original_name,
+                source_original_name=structures[0].original_name,
+                source_role="structures",
+            ),
+        ],
+    },
+)
+```
+
+Choose the source field by what is available at postprocess time:
+
+| Source kind | Field | When to use |
+|---|---|---|
+| Input artifact | `source_artifact_id` | Inputs are finalized; their IDs are already known. |
+| Co-produced output | `source_original_name` | Output IDs are not assigned until after postprocess returns. The framework resolves the name against finalized outputs in the named `source_role`. |
+
+Constraints:
+
+- Exactly one of `source_artifact_id` or `source_original_name` per mapping.
+  Both raise `ValidationError`; neither raises `ValidationError`.
+- One mapping per `draft_original_name` per output role.
+- `source_original_name` resolves only against finalized outputs in the
+  declared `source_role`. Use `source_artifact_id` for input parents.
+- Read `source_original_name` from the source artifact's `original_name`
+  field. Some artifact subclasses (`MetricArtifact`, `DataArtifact`,
+  `ExecutionConfigArtifact`) strip extensions on `draft()`; others
+  (`FileRefArtifact`, `AppendableArtifact`) keep them. Reconstructing the
+  name from the input filename leads to mismatched lookups.
+
+When you need explicit lineage on every output role, set
+`infer_lineage_from={"inputs": []}` on each `OutputSpec` so the framework
+expects user-supplied lineage rather than attempting stem inference.
 
 ### External tool operations
 
@@ -633,6 +700,8 @@ resource and batching options.
 | `ValidationError` on `OutputSpec` | Combined `{"inputs": [...], "outputs": [...]}` | Use separate output roles instead |
 | Empty artifacts after postprocess | Wrong file extension filter or missing files | Check `file_outputs` contents in the execute directory |
 | Wrong lineage connections | `original_name` doesn't match input filenames | Use input filename as the stem for 1:1 transforms |
+| `ValidationError: Provide exactly one of source_artifact_id or source_original_name` | Set both source fields, or neither, on a `LineageMapping` | Pick one — `source_artifact_id` for input parents, `source_original_name` for co-produced outputs |
+| `LineageIntegrityError: Lineage references non-existent output source` | `source_original_name` doesn't match any output's `original_name` in the declared `source_role` | Read the name from `artifact.original_name`; verify the role contains the artifact you intend to reference |
 | `ValueError: materialize_as requires materialize=True` | Set `materialize_as` on a non-materialized input | Remove `materialize_as` or set `materialize=True` |
 
 ---
