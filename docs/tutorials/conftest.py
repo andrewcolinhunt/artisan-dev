@@ -27,16 +27,16 @@ _TUTORIALS_DIR = Path(__file__).parent
 # can't be exercised in the local CI environment. Paths are relative
 # to docs/tutorials/.
 SKIP_NOTEBOOKS_INFRA = {
-    "execution/07-slurm-execution.ipynb",
-    "execution/10-slurm-intra-execution.ipynb",
-    "execution/11-external-file-storage.ipynb",
-    "execution/13-compute-routing.ipynb",
-    "execution/14-modal-execution.ipynb",
-    # 15-batch-execute genuinely runs against Modal (header says "Modal
-    # account required: Yes"). The kwarg syntax in its cells is now
-    # correct (compute_provider=, batch_strategy=) so when a CI job
-    # gains Modal credentials it can be un-skipped.
-    "execution/15-batch-execute.ipynb",
+    "07-compute-backends/02-slurm-execution.ipynb",
+    "07-compute-backends/03-slurm-intra-execution.ipynb",
+    "06-storage/02-external-file-storage.ipynb",
+    "07-compute-backends/01-compute-routing.ipynb",
+    "07-compute-backends/04-modal-execution.ipynb",
+    # 04-batching/02-batch-execute genuinely runs against Modal (header
+    # says "Modal account required: Yes"). The kwarg syntax in its
+    # cells is now correct (compute_provider=, batch_strategy=) so
+    # when a CI job gains Modal credentials it can be un-skipped.
+    "04-batching/02-batch-execute.ipynb",
 }
 
 # Notebooks with pre-existing runtime bugs to fix as separate work.
