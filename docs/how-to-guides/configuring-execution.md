@@ -102,7 +102,8 @@ pipeline.run(operation=MyOp, inputs=..., compute_provider="modal")
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    compute_provider={"active": "modal", "modal": {"gpu": "A100", "memory_gb": 32}},
+    compute_provider={"active": "modal"},
+    compute_resources={"gpu": "A100", "memory_gb": 32},
 )
 ```
 
@@ -111,18 +112,82 @@ pipeline.run(
 | `"local"` (default) | Direct call inside the worker | Development, testing, CPU-only ops |
 | `"modal"` | Route to a Modal container | GPU work, cloud burst, isolated environments |
 
-### ModalComputeConfig fields
+Hardware fields (`gpu`, `cpu`, `memory_gb`, `timeout`) live on
+`ComputeResources` so the same hardware spec applies to any future compute
+provider; `ModalComputeConfig` carries Modal-specific transport and
+runtime concerns only.
+
+### ComputeResources fields
+
+Container hardware allocated by the compute provider for each call. All
+fields are `None` by default — the provider's own default applies.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `image` | `str` | (required) | Container image for the Modal function |
-| `gpu` | `str \| None` | `None` | GPU type (e.g. `"T4"`, `"A100"`, `"H100"`) |
-| `memory_gb` | `int` | `8` | Container memory in GB |
-| `timeout` | `int` | `3600` | Per-call timeout in seconds |
-| `retries` | `int` | `3` | Retries on preemption |
+| `gpu` | `str \| None` | `None` | GPU type (e.g. `"A10G"`, `"A100"`, `"H100"`). |
+| `cpu` | `float \| None` | `None` | Fractional CPU cores. Modal's default is **0.125** — set this explicitly for non-trivial CPU work (pandas, numpy, shell-invoked tools). Fractional values like `0.5` and `2.5` are valid. |
+| `memory_gb` | `int \| None` | `None` | Container memory in GB. Modal's default is `8`. |
+| `timeout` | `int \| None` | `None` | Per-call timeout in seconds. Modal's default is `3600`. |
+
+### ModalComputeConfig fields
+
+Modal-specific provider configuration. Hardware fields (`gpu`, `cpu`,
+`memory_gb`, `timeout`) live on `ComputeResources` (above), not here.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `image` | `str` | `ARTISAN_WORKER_IMAGE` | Container image for the Modal function. |
+| `retries` | `int` | `3` | Retries on preemption. |
+| `min_containers` | `int` | `0` | Containers kept warm at zero traffic. Set to expected batch parallelism to eliminate cold starts; `0` means scale-to-zero. |
+| `max_containers` | `int \| None` | `None` | Upper bound on concurrent containers. Set when fanning out via `experimental_spawn_map()` to avoid spawning one container per input on large batches. |
+| `scaledown_window` | `int \| None` | `None` | Seconds a container idles before shutdown. Modal's default is 60s; max 1200s. |
+| `image_registry_secret` | `str \| None` | `None` | Name of a Modal Secret holding `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` for pulling private images. |
+| `secrets` | `list[str]` | `[]` | Names of Modal Secrets to inject into the runtime environment (e.g. `["hf-read", "aws-s3"]`). Created via `modal secret create ...`. Distinct from `image_registry_secret`, which authenticates the image pull only. |
+| `volumes` | `dict[str, str]` | `{}` | Mount path → volume name (e.g. `{"/weights": "foundry-weights"}`). Each volume is resolved via `modal.Volume.from_name(name, create_if_missing=True, version=2)` — surviving across cold starts is the point. |
+| `env` | `dict[str, str]` | `{}` | Environment variables set inside the container (e.g. `{"HF_XET_HIGH_PERFORMANCE": "1"}`). Applied as an image layer; cache hits survive as long as the dict is stable. |
+| `local_python_sources` | `list[str]` | `["artisan"]` | Top-level Python package names overlaid onto the Modal image at cold-start. Defaults to `["artisan"]` (ships dev-host artisan source live, shadowing the image's pinned version). Pass `[]` to use the image's pinned version. |
 
 The container image must have artisan installed. Transport functions run
 inside the container.
+
+#### GPU op with weights, secrets, and runtime env
+
+Typical pattern: a private image, a secret for HF auth, weights on a
+warm Modal Volume, and one runtime env var:
+
+```python
+from artisan.schemas.operation_config.compute import (
+    ComputeProvider,
+    ModalComputeConfig,
+)
+from artisan.schemas.operation_config.compute_resources import ComputeResources
+
+compute_provider = ComputeProvider(
+    active="modal",
+    modal=ModalComputeConfig(
+        image="ghcr.io/your-org/foundry-artisan:latest",
+        image_registry_secret="ghcr-pat",
+        secrets=["hf-read"],
+        volumes={"/weights": "foundry-weights"},
+        env={"HF_XET_HIGH_PERFORMANCE": "1"},
+        max_containers=50,
+    ),
+)
+
+compute_resources = ComputeResources(
+    gpu="A100",
+    cpu=4.0,
+    memory_gb=64,
+    timeout=7200,
+)
+
+pipeline.run(
+    operation=GpuInference,
+    inputs=...,
+    compute_provider=compute_provider,
+    compute_resources=compute_resources,
+)
+```
 
 ### Validating operations for remote compute
 
@@ -198,15 +263,17 @@ specify the fields you want to override.
 memory, time limit, and partition. The dispatcher uses these fields to request
 the allocation that hosts the worker process.
 
-`compute_resources` (set via the `compute_provider` typed model or dict) describes
-the Modal container hardware that the worker actually runs on — GPU type, container
-memory in GB, and per-call timeout. The worker reaches into this hardware when it
-hands the operation off to the remote compute provider.
+`compute_resources` (a `ComputeResources` typed model or dict) describes the
+remote container hardware that the worker actually runs on — GPU type,
+fractional CPU cores, memory in GB, and per-call timeout. The worker reaches
+into this hardware when it hands the operation off to the remote compute
+provider.
 
-Set both when a SLURM-dispatched worker should off-load the heavy compute step to
-a Modal container — for example, `runner_resources={"cpus": 2, "memory_gb": 8}`
-to host the dispatcher and `compute_provider={"active": "modal", "modal": {"gpu":
-"A100", "memory_gb": 64}}` to run inference on the GPU container.
+Set both when a SLURM-dispatched worker should off-load the heavy compute step
+to a Modal container — for example, `runner_resources={"cpus": 2, "memory_gb":
+8}` to host the dispatcher and `compute_provider={"active": "modal"}` plus
+`compute_resources={"gpu": "A100", "memory_gb": 64}` to run inference on the
+GPU container.
 
 ---
 
@@ -368,7 +435,17 @@ pipeline.run(operation=ToolAOp, inputs=..., environment="local")
 ```
 
 The `binds` field takes a list of `(host_path, container_path)` tuples — not
-colon-delimited strings.
+colon-delimited strings. To mount read-only (e.g. for a shared weights cache
+the running op should not be able to modify), pass a 3-tuple
+`(host_path, container_path, mode)` where `mode` is `"ro"`, `"rw"`, or any
+other Docker / Apptainer-supported mode string:
+
+```python
+binds = [
+    (Path("/data/weights"), Path("/weights"), "ro"),
+    (Path("/scratch"), Path("/scratch")),  # 2-tuple still works (default rw)
+]
+```
 
 ### ToolSpec fields
 
@@ -382,8 +459,8 @@ colon-delimited strings.
 
 | Spec | Use case | Key fields |
 |------|----------|------------|
-| `ApptainerEnvironmentSpec` | Apptainer/Singularity containers (HPC) | `image` (Path), `gpu`, `binds` |
-| `DockerEnvironmentSpec` | Docker containers | `image` (str), `gpu`, `binds` |
+| `ApptainerEnvironmentSpec` | Apptainer/Singularity containers (HPC) | `image` (Path), `gpu`, `binds` (2- or 3-tuple) |
+| `DockerEnvironmentSpec` | Docker containers | `image` (str), `gpu`, `binds` (2- or 3-tuple) |
 | `LocalEnvironmentSpec` | Local execution, optional virtualenv | `venv_path` |
 | `PixiEnvironmentSpec` | Pixi-managed environments | `pixi_environment`, `manifest_path` |
 
@@ -414,11 +491,23 @@ pipeline.submit(MyOp, environment=Environments(active="docker", docker=DockerEnv
 # String form (select active provider only):
 pipeline.submit(MyOp, compute_provider="modal")
 
-# Dict form (configure provider — must set 'active'):
-pipeline.submit(MyOp, compute_provider={"active": "modal", "modal": {"gpu": "A100", "memory_gb": 32}})
+# Dict form (configure provider — must set 'active'). Hardware fields go
+# on compute_resources, not the provider's modal block:
+pipeline.submit(
+    MyOp,
+    compute_provider={"active": "modal", "modal": {"image": "ghcr.io/your-org/img:latest"}},
+    compute_resources={"gpu": "A100", "memory_gb": 32},
+)
 
 # Typed-model form (autocomplete + validation):
-pipeline.submit(MyOp, compute_provider=ComputeProvider(active="modal", modal=ModalComputeConfig(gpu="A100", memory_gb=32)))
+pipeline.submit(
+    MyOp,
+    compute_provider=ComputeProvider(
+        active="modal",
+        modal=ModalComputeConfig(image="ghcr.io/your-org/img:latest"),
+    ),
+    compute_resources=ComputeResources(gpu="A100", memory_gb=32),
+)
 ```
 
 Passing a dict that configures a non-active provider (e.g.
@@ -617,7 +706,7 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 |---------|-------|-----|
 | SLURM jobs OOM-killed | Default `memory_gb=4` too low | Set `runner_resources={"memory_gb": 32}` or add to operation defaults |
 | Thousands of tiny SLURM jobs | `artifacts_per_unit=1` on a fast operation | Increase `artifacts_per_unit` to batch work |
-| `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` |
+| `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` (or `("/host", "/container", "ro")` for read-only) |
 | Step ignores `runner_resources` | Forgot `step_runner=Runner.SLURM` | Resources only apply to SLURM steps |
 | Workers contend on shared filesystem | Default `working_root` on NFS | Omit `working_root` — default uses `$TMPDIR` (node-local) |
 | GPU/extra resource warning on local | SLURM-specific resources on `Runner.LOCAL` | These are ignored locally — switch to `Runner.SLURM` or remove them |
