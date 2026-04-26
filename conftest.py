@@ -29,24 +29,17 @@ SKIP_NOTEBOOKS_INFRA = {
     "docs/tutorials/execution/11-external-file-storage.ipynb",
     "docs/tutorials/execution/13-compute-routing.ipynb",
     "docs/tutorials/execution/14-modal-execution.ipynb",
+    # 15-batch-execute genuinely runs against Modal (header says "Modal
+    # account required: Yes"). The kwarg syntax in its cells is now
+    # correct (compute_provider=, batch_strategy=) so when a CI job
+    # gains Modal credentials it can be un-skipped.
+    "docs/tutorials/execution/15-batch-execute.ipynb",
 }
 
 # Notebooks with pre-existing runtime bugs unrelated to the API-contract
-# tests landing here. Track each fix as separate work so this gate can
-# turn green now and start catching new regressions.
-#
-# - 01-writing-an-operation: Cell 6 calls ``inspect_data`` with a stale
-#   name lookup ("data" vs the actual "d0"/"d1" artifact names produced
-#   by the example operation).
-# - 02-writing-a-composite: Cells 3-4 reference a ``parallel_time``
-#   variable that is never defined upstream in the notebook.
-# - 15-batch-execute: Cells 3, 5 reference Modal compute infra without
-#   the skip-on-no-credentials fallback the SLURM tutorials have.
-SKIP_NOTEBOOKS_BROKEN = {
-    "docs/tutorials/writing-operations/01-writing-an-operation.ipynb",
-    "docs/tutorials/writing-operations/02-writing-a-composite.ipynb",
-    "docs/tutorials/execution/15-batch-execute.ipynb",
-}
+# tests landing here. Currently empty — bugs in 01-writing-an-operation
+# and 02-writing-a-composite were fixed alongside this gate landing.
+SKIP_NOTEBOOKS_BROKEN: set[str] = set()
 
 SKIP_NOTEBOOKS = SKIP_NOTEBOOKS_INFRA | SKIP_NOTEBOOKS_BROKEN
 
