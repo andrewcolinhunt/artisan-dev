@@ -236,6 +236,8 @@ class ModalComputeRouter(ComputeRouter):
         image = modal.Image.from_registry(
             self._config.image, **image_kwargs
         ).add_local_python_source(*self._config.local_python_sources)
+        if self._config.env:
+            image = image.env(self._config.env)
 
         memory_gb = (
             self._compute_resources.memory_gb
@@ -255,10 +257,25 @@ class ModalComputeRouter(ComputeRouter):
             "retries": self._config.retries,
             "serialized": True,
         }
+        if self._compute_resources.cpu is not None:
+            fn_kwargs["cpu"] = self._compute_resources.cpu
         if self._config.min_containers > 0:
             fn_kwargs["min_containers"] = self._config.min_containers
+        if self._config.max_containers is not None:
+            fn_kwargs["max_containers"] = self._config.max_containers
         if self._config.scaledown_window is not None:
             fn_kwargs["scaledown_window"] = self._config.scaledown_window
+        if self._config.secrets:
+            fn_kwargs["secrets"] = [
+                modal.Secret.from_name(s) for s in self._config.secrets
+            ]
+        if self._config.volumes:
+            fn_kwargs["volumes"] = {
+                mount_path: modal.Volume.from_name(
+                    name, create_if_missing=True, version=2
+                )
+                for mount_path, name in self._config.volumes.items()
+            }
 
         @app.function(**fn_kwargs)  # type: ignore[misc,unused-ignore]  # modal.App.function is untyped; env-dependent
         def _execute_on_modal(

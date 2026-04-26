@@ -10,6 +10,7 @@ import cloudpickle
 
 from artisan.execution.compute.modal import ModalComputeRouter
 from artisan.schemas.operation_config.compute import ModalComputeConfig
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import (
     DockerEnvironmentSpec,
 )
@@ -35,6 +36,15 @@ def _make_mock_modal():
     # modal.Image.from_registry returns an image object
     mock_image = MagicMock()
     mock_modal.Image.from_registry.return_value = mock_image
+    # Modal's image API is chainable — ``from_registry().add_local_python_source().env()``
+    # all return the same image. Mirror that so tests can assert on the
+    # final ``image.env(...)`` call without walking a chain of return values.
+    mock_image.add_local_python_source.return_value = mock_image
+    mock_image.env.return_value = mock_image
+
+    # modal.Volume.from_name(...) returns a unique volume mock per name so
+    # tests can assert on which volume landed at which mount path.
+    mock_modal.Volume.from_name.side_effect = lambda *a, **kw: MagicMock()
 
     # modal.App() returns an app with a .function() decorator
     mock_app = MagicMock()
@@ -64,6 +74,11 @@ def _make_mock_modal():
         return fc
 
     def function_decorator(**kwargs):
+        # Record the kwargs so tests can assert which fn_kwargs the router
+        # passed to @app.function(...). Stored under "fn_kwargs" — last
+        # decoration wins, which matches the single-_init_app-call pattern.
+        _captured["fn_kwargs"] = kwargs
+
         def decorator(fn):
             wrapped = MagicMock()
             wrapped._original_fn = fn
@@ -420,6 +435,152 @@ class TestModalComputeRouter:
 
         mock_image = mock_modal.Image.from_registry.return_value
         mock_image.add_local_python_source.assert_called_once_with()
+
+    def test_cpu_passed_when_set(self):
+        """``compute_resources.cpu`` lands in @app.function kwargs."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config, ComputeResources(cpu=2.0))
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        assert mock_modal._captured["fn_kwargs"]["cpu"] == 2.0
+
+    def test_cpu_omitted_when_none(self):
+        """``cpu=None`` (default) → no ``cpu`` kwarg passed to Modal."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        assert "cpu" not in mock_modal._captured["fn_kwargs"]
+
+    def test_max_containers_passed_when_set(self):
+        """``max_containers`` lands in @app.function kwargs when set."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest", max_containers=50)
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        assert mock_modal._captured["fn_kwargs"]["max_containers"] == 50
+
+    def test_max_containers_omitted_when_none(self):
+        """Default ``max_containers=None`` → no kwarg."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        assert "max_containers" not in mock_modal._captured["fn_kwargs"]
+
+    def test_secrets_resolved_via_from_name(self):
+        """Each secret name → modal.Secret.from_name(name); list flows to fn."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest", secrets=["hf-read", "aws-s3"])
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        # Two from_name calls (image_registry_secret unset).
+        assert mock_modal.Secret.from_name.call_count == 2
+        mock_modal.Secret.from_name.assert_any_call("hf-read")
+        mock_modal.Secret.from_name.assert_any_call("aws-s3")
+        secrets_kwarg = mock_modal._captured["fn_kwargs"]["secrets"]
+        assert len(secrets_kwarg) == 2
+
+    def test_secrets_omitted_when_empty(self):
+        """Default ``secrets=[]`` → no ``secrets`` kwarg, no from_name calls."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_modal.Secret.from_name.assert_not_called()
+        assert "secrets" not in mock_modal._captured["fn_kwargs"]
+
+    def test_volumes_resolved_via_from_name(self):
+        """Volume names resolve via Volume.from_name(create_if_missing, version=2)."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(
+            image="test:latest",
+            volumes={"/cache": "hf-cache", "/weights": "foundry-weights"},
+        )
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        assert mock_modal.Volume.from_name.call_count == 2
+        mock_modal.Volume.from_name.assert_any_call(
+            "hf-cache", create_if_missing=True, version=2
+        )
+        mock_modal.Volume.from_name.assert_any_call(
+            "foundry-weights", create_if_missing=True, version=2
+        )
+        volumes_kwarg = mock_modal._captured["fn_kwargs"]["volumes"]
+        assert set(volumes_kwarg.keys()) == {"/cache", "/weights"}
+
+    def test_volumes_omitted_when_empty(self):
+        """Default ``volumes={}`` → no ``volumes`` kwarg, no from_name calls."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_modal.Volume.from_name.assert_not_called()
+        assert "volumes" not in mock_modal._captured["fn_kwargs"]
+
+    def test_env_applied_to_image(self):
+        """``env`` chains an ``image.env(...)`` call into the image build."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(
+            image="test:latest", env={"HF_XET_HIGH_PERFORMANCE": "1"}
+        )
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_image = mock_modal.Image.from_registry.return_value
+        mock_image.env.assert_called_once_with({"HF_XET_HIGH_PERFORMANCE": "1"})
+
+    def test_env_skipped_when_empty(self):
+        """Empty ``env`` → no ``image.env(...)`` call, image cache stays clean."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_image = mock_modal.Image.from_registry.return_value
+        mock_image.env.assert_not_called()
+
+    def test_defaults_no_new_kwargs(self):
+        """Defaults: none of the new fields appear in @app.function kwargs."""
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(image="test:latest")
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        fn_kwargs = mock_modal._captured["fn_kwargs"]
+        for key in ("cpu", "max_containers", "secrets", "volumes"):
+            assert key not in fn_kwargs
+        mock_modal.Image.from_registry.return_value.env.assert_not_called()
 
     def test_output_snapshot_restored_locally(self, tmp_path):
         """Output files from remote are restored in the sandbox."""

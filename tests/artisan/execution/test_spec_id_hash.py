@@ -226,3 +226,13 @@ class TestCanonicalizeDict:
         result = _canonicalize_dict({"binds": [[Path("/src"), Path("/dst")]]})
         assert '"/src"' in result
         assert '"/dst"' in result
+
+    def test_nested_3tuple_bind_in_list(self):
+        """3-tuple binds (host, container, mode) hash deterministically."""
+        payload = {"binds": [["/host/weights", "/weights", "ro"]]}
+        r1 = _canonicalize_dict(payload)
+        r2 = _canonicalize_dict(payload)
+        assert r1 == r2
+        assert '"ro"' in r1
+        assert '"/host/weights"' in r1
+        assert '"/weights"' in r1

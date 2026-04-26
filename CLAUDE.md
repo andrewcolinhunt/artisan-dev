@@ -22,9 +22,10 @@ commands. The short `pixi` form is for user-facing docs only.
 
 ```bash
 pixi install                              # Install dependencies
-pixi run -e dev test                      # Run all tests (unit seq + integration parallel)
+pixi run -e dev test                      # Run all tests (unit seq + integration parallel + tutorial notebooks)
 pixi run -e dev test-unit                 # Run only unit tests
 pixi run -e dev test-integration          # Run only integration tests (parallel)
+pixi run -e dev test-notebook             # Run every CI-runnable tutorial notebook end-to-end
 pixi run -e dev test-seq                  # All tests sequentially (for debugging)
 pixi run -e dev fmt                       # Format and lint
 pixi run -e docs docs-build              # Build docs
@@ -98,7 +99,8 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`
 1. `pixi run -e dev fmt`
 2. `pixi run -e dev test-unit`
 3. `pixi run -e dev test-integration`
-4. `pixi run -e docs docs-build`
+4. `pixi run -e dev test-notebook`
+5. `pixi run -e docs docs-build`
 
 ---
 
@@ -157,7 +159,7 @@ docs/
 ## Pre-PR Checklist
 
 - [ ] Code: no debug prints, no commented-out code
-- [ ] Tests pass (`pixi run -e dev test`), new code has tests
+- [ ] Tests pass (`pixi run -e dev test` — unit + integration + tutorial notebooks), new code has tests
 - [ ] Formatted and linted (`pixi run -e dev fmt`)
 - [ ] Docs build (`pixi run -e docs docs-build`)
 - [ ] Commits are atomic with proper messages

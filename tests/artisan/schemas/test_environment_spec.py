@@ -106,6 +106,38 @@ class TestDockerEnvironmentSpec:
         result = spec.wrap_command(["cmd"])
         assert "/host/data:/container/data" in result
 
+    def test_wrap_command_with_3tuple_bind_ro(self):
+        """3-tuple bind emits ``host:container:mode`` for read-only mounts."""
+        spec = DockerEnvironmentSpec(
+            image="img:latest",
+            binds=[("/host/weights", "/weights", "ro")],
+        )
+        result = spec.wrap_command(["cmd"])
+        assert "/host/weights:/weights:ro" in result
+
+    def test_wrap_command_with_mixed_binds(self):
+        """A mix of 2-tuple and 3-tuple binds in one list both emit correctly."""
+        spec = DockerEnvironmentSpec(
+            image="img:latest",
+            binds=[
+                ("/a", "/b"),
+                ("/c", "/d", "ro"),
+            ],
+        )
+        result = spec.wrap_command(["cmd"])
+        assert "/a:/b" in result
+        assert "/c:/d:ro" in result
+
+    def test_round_trip_3tuple_bind(self):
+        """``model_dump`` ↔ ``model_validate`` preserves 3-tuple binds."""
+        spec = DockerEnvironmentSpec(
+            image="img:latest",
+            binds=[("/a", "/b", "ro")],
+        )
+        data = spec.model_dump()
+        restored = DockerEnvironmentSpec.model_validate(data)
+        assert restored == spec
+
     def test_wrap_command_with_env(self):
         spec = DockerEnvironmentSpec(image="img:latest", env={"KEY": "val"})
         result = spec.wrap_command(["cmd"])
@@ -167,6 +199,38 @@ class TestApptainerEnvironmentSpec:
         result = spec.wrap_command(["cmd"])
         assert "--bind" in result
         assert "--env" in result
+
+    def test_wrap_command_with_3tuple_bind_ro(self):
+        """3-tuple bind emits ``host:container:mode`` for Apptainer too."""
+        spec = ApptainerEnvironmentSpec(
+            image="/img.sif",
+            binds=[("/host/weights", "/weights", "ro")],
+        )
+        result = spec.wrap_command(["cmd"])
+        assert "/host/weights:/weights:ro" in result
+
+    def test_wrap_command_with_mixed_binds(self):
+        """A mix of 2-tuple and 3-tuple binds in one list both emit correctly."""
+        spec = ApptainerEnvironmentSpec(
+            image="/img.sif",
+            binds=[
+                ("/a", "/b"),
+                ("/c", "/d", "ro"),
+            ],
+        )
+        result = spec.wrap_command(["cmd"])
+        assert "/a:/b" in result
+        assert "/c:/d:ro" in result
+
+    def test_round_trip_3tuple_bind(self):
+        """``model_dump`` ↔ ``model_validate`` preserves 3-tuple binds."""
+        spec = ApptainerEnvironmentSpec(
+            image="/img.sif",
+            binds=[("/a", "/b", "ro")],
+        )
+        data = spec.model_dump()
+        restored = ApptainerEnvironmentSpec.model_validate(data)
+        assert restored == spec
 
     @patch("shutil.which", return_value=None)
     def test_validate_not_installed(self, mock_which):

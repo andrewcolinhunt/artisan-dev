@@ -14,6 +14,7 @@ class TestFieldDefaults:
     def test_all_defaults_none(self):
         cr = ComputeResources()
         assert cr.gpu is None
+        assert cr.cpu is None
         assert cr.memory_gb is None
         assert cr.timeout is None
 
@@ -33,6 +34,32 @@ class TestGpuField:
     def test_gpu_wrong_type_rejected(self):
         with pytest.raises(ValidationError):
             ComputeResources(gpu=123)
+
+
+class TestCpuField:
+    """``cpu`` is a fractional float > 0 or None."""
+
+    @pytest.mark.parametrize("cpu", [0.125, 0.5, 1.0, 2.5, 8.0])
+    def test_valid_cpu(self, cpu):
+        cr = ComputeResources(cpu=cpu)
+        assert cr.cpu == cpu
+
+    def test_cpu_none(self):
+        cr = ComputeResources(cpu=None)
+        assert cr.cpu is None
+
+    def test_cpu_zero_rejected(self):
+        """gt=0 constraint rejects 0."""
+        with pytest.raises(ValidationError):
+            ComputeResources(cpu=0)
+
+    def test_cpu_negative_rejected(self):
+        with pytest.raises(ValidationError):
+            ComputeResources(cpu=-0.5)
+
+    def test_cpu_wrong_type_rejected(self):
+        with pytest.raises(ValidationError):
+            ComputeResources(cpu="two")
 
 
 class TestMemoryGbField:
@@ -94,7 +121,7 @@ class TestRoundTrip:
     """``model_dump`` ↔ ``model_validate`` is lossless."""
 
     def test_round_trip_all_fields_set(self):
-        original = ComputeResources(gpu="A100", memory_gb=32, timeout=3600)
+        original = ComputeResources(gpu="A100", cpu=2.5, memory_gb=32, timeout=3600)
         dumped = original.model_dump()
         restored = ComputeResources.model_validate(dumped)
         assert restored == original
