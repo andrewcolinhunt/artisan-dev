@@ -1,4 +1,4 @@
-"""Tests for PipelineManager.resume() and list_runs()."""
+"""Tests for PipelineManager.resume()."""
 
 from __future__ import annotations
 
@@ -160,28 +160,5 @@ class TestResume:
             )
 
 
-class TestListRuns:
-    """Tests for PipelineManager.list_runs()."""
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_list_runs(self, mock_exec, tmp_path):
-        """Returns correct DataFrame."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        p1.run(IngestMockOp, inputs=None)
-
-        runs = PipelineManager.list_runs(str(delta))
-        assert len(runs) == 1
-        assert "pipeline_run_id" in runs.columns
-
-    def test_list_runs_empty(self, tmp_path):
-        """Empty table returns empty DataFrame."""
-        runs = PipelineManager.list_runs(str(tmp_path / "delta"))
-        assert len(runs) == 0
+# NOTE: TestListRuns moved to test_run_history.py (PR 4 — list_runs is now
+# a module-level function, not a classmethod).

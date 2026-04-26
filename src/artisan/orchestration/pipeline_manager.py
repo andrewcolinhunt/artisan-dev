@@ -1062,32 +1062,6 @@ class PipelineManager:
 
         return instance
 
-    @classmethod
-    def list_runs(
-        cls,
-        delta_root: str,
-        storage_options: dict[str, str] | None = None,
-    ) -> pl.DataFrame:
-        """List all pipeline runs in the delta root.
-
-        Args:
-            delta_root: Root path for Delta Lake tables.
-            storage_options: Delta-rs storage options for cloud backends.
-
-        Returns:
-            DataFrame with pipeline_run_id, step_count, last_status,
-            started_at, ended_at — one row per run.
-        """
-        from artisan.schemas.execution.storage_config import StorageConfig
-
-        storage = StorageConfig()
-        tracker = StepTracker(
-            delta_root,
-            storage_options=storage_options,
-            fs=storage.filesystem(),
-        )
-        return tracker.list_runs()
-
     # =========================================================================
     # Step execution: run() and submit()
     # =========================================================================

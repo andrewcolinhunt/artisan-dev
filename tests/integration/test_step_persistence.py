@@ -16,7 +16,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer
-from artisan.orchestration import PipelineManager
+from artisan.orchestration import PipelineManager, list_runs
 from artisan.orchestration.runners import Runner
 
 from .conftest import read_table
@@ -303,7 +303,7 @@ def test_list_runs(pipeline_env: dict[str, str]) -> None:
     )
     p.finalize()
 
-    runs = PipelineManager.list_runs(delta)
+    runs = list_runs(delta)
     assert isinstance(runs, pl.DataFrame)
     assert "pipeline_run_id" in runs.columns
     assert len(runs) >= 1
