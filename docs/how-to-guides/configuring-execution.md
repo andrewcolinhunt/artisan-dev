@@ -6,8 +6,8 @@ is batched — from local development through production SLURM.
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Building a Pipeline](building-a-pipeline.md)
 
-**Key types:** `Backend`, `RunnerResources`, `BatchStrategy`, `ToolSpec`,
-`Environments`, `CachePolicy`, `FailurePolicy`, `Compute`, `ModalComputeConfig`
+**Key types:** `Runner`, `RunnerResources`, `BatchStrategy`, `ToolSpec`,
+`Environments`, `CachePolicy`, `FailurePolicy`, `ComputeProvider`, `ModalComputeConfig`
 
 ---
 
@@ -16,7 +16,7 @@ is batched — from local development through production SLURM.
 A pipeline running one step locally and one on SLURM with GPU resources:
 
 ```python
-from artisan.orchestration import Backend, PipelineManager
+from artisan.orchestration import Runner, PipelineManager
 from myops import PreprocessOp, InferenceOp
 
 pipeline = PipelineManager.create(
@@ -41,13 +41,13 @@ The rest of this guide breaks down each option.
 
 ---
 
-## Choose a compute backend
+## Choose a step runner
 
-Every step runs on a compute backend. Set it per step or as a pipeline-wide
+Every step runs on a step runner. Set it per step or as a pipeline-wide
 default:
 
 ```python
-from artisan.orchestration import Backend
+from artisan.orchestration import Runner
 
 # Pipeline-wide default
 pipeline = PipelineManager.create(..., step_runner=Runner.SLURM)
@@ -56,8 +56,8 @@ pipeline = PipelineManager.create(..., step_runner=Runner.SLURM)
 pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
 ```
 
-| Backend | How it runs | When to use |
-|---------|-------------|-------------|
+| Step runner | How it runs | When to use |
+|-------------|-------------|-------------|
 | `Runner.LOCAL` (default) | Process pool on your machine | Development, testing, lightweight ops |
 | `Runner.SLURM` | SLURM job array on cluster | Production, GPU work, HPC |
 | `Runner.SLURM_INTRA` | srun within existing SLURM allocation | Interactive salloc sessions, zero queue wait |
@@ -87,10 +87,10 @@ The default process pool size is 4.
 ## Configure compute routing
 
 Compute routing controls where the execute() phase runs, independently of
-the dispatch backend. Set it per step or as a pipeline-wide default:
+the step runner. Set it per step or as a pipeline-wide default:
 
 ```python
-from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 
 # Pipeline-wide default
 pipeline = PipelineManager.create(..., default_compute_provider="local")
@@ -102,7 +102,7 @@ pipeline.run(operation=MyOp, inputs=..., compute_provider="modal")
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    compute={"active": "modal", "modal": {"gpu": "A100", "memory_gb": 32}},
+    compute_provider={"active": "modal", "modal": {"gpu": "A100", "memory_gb": 32}},
 )
 ```
 
@@ -158,7 +158,7 @@ binaries (compiled tools) must be pre-installed in the container image.
 
 ## Configure resources
 
-Pass a `resources` dict to override resource allocation for a step:
+Pass a `runner_resources` dict to override resource allocation for a step:
 
 ```python
 pipeline.run(
@@ -183,14 +183,30 @@ pipeline.run(
 | `memory_gb` | `int` | `4` | Memory in GB |
 | `gpus` | `int` | `0` | Number of GPUs requested |
 | `time_limit` | `str` | `"01:00:00"` | Wall-clock time limit (HH:MM:SS) |
-| `extra` | `dict` | `{}` | Backend-specific settings (e.g., `{"partition": "gpu"}`) |
+| `extra` | `dict` | `{}` | Runner-specific settings (e.g., `{"partition": "gpu"}`) |
 
-`RunnerResources` is portable across backends — each backend translates these
-fields to its native format. Use `extra` for backend-specific settings like
+`RunnerResources` is portable across step runners — each runner translates these
+fields to its native format. Use `extra` for runner-specific settings like
 SLURM partition or account.
 
-Step-level `resources` merge with operation defaults — you only need to specify
-the fields you want to override.
+Step-level `runner_resources` merge with operation defaults — you only need to
+specify the fields you want to override.
+
+### Runner resources vs compute resources
+
+`runner_resources` describes the SLURM job that the step runner books — CPUs,
+memory, time limit, and partition. The dispatcher uses these fields to request
+the allocation that hosts the worker process.
+
+`compute_resources` (set via the `compute_provider` typed model or dict) describes
+the Modal container hardware that the worker actually runs on — GPU type, container
+memory in GB, and per-call timeout. The worker reaches into this hardware when it
+hands the operation off to the remote compute provider.
+
+Set both when a SLURM-dispatched worker should off-load the heavy compute step to
+a Modal container — for example, `runner_resources={"cpus": 2, "memory_gb": 8}`
+to host the dispatcher and `compute_provider={"active": "modal", "modal": {"gpu":
+"A100", "memory_gb": 64}}` to run inference on the GPU container.
 
 ---
 
@@ -261,14 +277,14 @@ from artisan.schemas.execution.batch_strategy import BatchStrategy
 class GpuInference(OperationDefinition):
     name = "gpu_inference"
 
-    resources: RunnerResources = RunnerResources(
+    runner_resources: RunnerResources = RunnerResources(
         gpus=1,
         memory_gb=32,
         time_limit="02:00:00",
         extra={"partition": "gpu"},
     )
 
-    execution: BatchStrategy = BatchStrategy(
+    batch_strategy: BatchStrategy = BatchStrategy(
         artifacts_per_unit=1,
         estimated_seconds=600.0,
     )
@@ -373,6 +389,40 @@ colon-delimited strings.
 
 All specs share a base `EnvironmentSpec` with an `env` dict for extra
 environment variables.
+
+### String, dict, or typed model — pick one
+
+Both `environment` and `compute_provider` accept three shapes. Pick the form
+that matches what you want to do.
+
+`environment`:
+
+```python
+# String form (select active provider only):
+pipeline.submit(MyOp, environment="docker")
+
+# Dict form (configure provider — must set 'active'):
+pipeline.submit(MyOp, environment={"active": "docker", "docker": {"image": "myimg:latest"}})
+
+# Typed-model form (autocomplete + validation):
+pipeline.submit(MyOp, environment=Environments(active="docker", docker=DockerEnv(image="myimg:latest")))
+```
+
+`compute_provider`:
+
+```python
+# String form (select active provider only):
+pipeline.submit(MyOp, compute_provider="modal")
+
+# Dict form (configure provider — must set 'active'):
+pipeline.submit(MyOp, compute_provider={"active": "modal", "modal": {"gpu": "A100", "memory_gb": 32}})
+
+# Typed-model form (autocomplete + validation):
+pipeline.submit(MyOp, compute_provider=ComputeProvider(active="modal", modal=ModalComputeConfig(gpu="A100", memory_gb=32)))
+```
+
+Passing a dict that configures a non-active provider (e.g.
+`environment={"docker": {...}}` without `active="docker"`) raises `ValueError`.
 
 ---
 
@@ -533,7 +583,7 @@ parallelism via job arrays.
 
 ### Custom SLURM parameters
 
-Use `extra` for backend-specific parameters not covered by `RunnerResources`:
+Use `extra` for runner-specific parameters not covered by `RunnerResources`:
 
 ```python
 pipeline.run(
@@ -568,7 +618,7 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 | SLURM jobs OOM-killed | Default `memory_gb=4` too low | Set `runner_resources={"memory_gb": 32}` or add to operation defaults |
 | Thousands of tiny SLURM jobs | `artifacts_per_unit=1` on a fast operation | Increase `artifacts_per_unit` to batch work |
 | `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` |
-| Step ignores `resources` | Forgot `step_runner=Runner.SLURM` | Resources only apply to SLURM steps |
+| Step ignores `runner_resources` | Forgot `step_runner=Runner.SLURM` | Resources only apply to SLURM steps |
 | Workers contend on shared filesystem | Default `working_root` on NFS | Omit `working_root` — default uses `$TMPDIR` (node-local) |
 | GPU/extra resource warning on local | SLURM-specific resources on `Runner.LOCAL` | These are ignored locally — switch to `Runner.SLURM` or remove them |
 

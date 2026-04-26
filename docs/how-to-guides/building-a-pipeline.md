@@ -235,9 +235,11 @@ Both `run()` and `submit()` accept override parameters beyond `operation`,
 
 | Parameter | Purpose |
 |-----------|---------|
-| `backend` | Override the pipeline's default compute backend for this step |
-| `resources` | Override resource allocation (CPUs, memory, GPUs, time limit) |
-| `execution` | Override batching settings (`artifacts_per_unit`, `max_workers`) |
+| `step_runner` | Override the pipeline's default step runner for this step |
+| `runner_resources` | Override runner resource allocation (CPUs, memory, GPUs, time limit) |
+| `batch_strategy` | Override batching settings (`artifacts_per_unit`, `max_workers`) |
+| `compute_provider` | Override the compute provider — local, modal, etc. |
+| `compute_resources` | Override compute hardware (GPU, memory_gb, timeout) when using modal |
 | `environment` | Override the operation's runtime environment |
 | `tool` | Override the operation's external tool configuration |
 | `failure_policy` | Override the pipeline's failure policy for this step |
@@ -468,7 +470,7 @@ assert step.succeeded_count == 3
 
 ## Cross-references
 
-- [Configuring Execution](configuring-execution.md) — resources, batching, backends
+- [Configuring Execution](configuring-execution.md) — resources, batching, step runners
 - [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) — interactive walkthrough
 - [Execution Flow](../concepts/execution-flow.md) — what happens under the hood
 - [Writing Creator Operations](writing-creator-operations.md) — building custom operations

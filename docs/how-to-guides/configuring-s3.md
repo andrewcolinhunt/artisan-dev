@@ -6,6 +6,9 @@ S3-compatible backend for Delta Lake tables, staging, and external files.
 **Prerequisites:** [Configuring Execution](configuring-execution.md),
 the `artisan[s3]` install extra (`pip install 'dexterity-artisan[s3]'`).
 
+**Related:** [Pipeline Configuration](../concepts/pipeline-configuration.md)
+explains the `PipelineConfig` schema in depth.
+
 **Key types:** `StorageConfig`, `PipelineConfig`.
 
 ---
@@ -17,9 +20,8 @@ When running on EC2 (or anywhere with an IAM role / `~/.aws/credentials` /
 read credentials from the environment:
 
 ```python
-from artisan.orchestration import PipelineManager
+from artisan.orchestration import PipelineConfig, PipelineManager
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
 pipeline = PipelineManager(
     PipelineConfig(

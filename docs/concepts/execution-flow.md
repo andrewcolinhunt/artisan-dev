@@ -253,9 +253,9 @@ routed to a remote target.
 └──────────────────────────┘
 ```
 
-Compute routing is orthogonal to the dispatch backend. A local worker can
+Compute routing is orthogonal to the step runner. A local worker can
 route execute() to Modal; a SLURM worker can also route execute() to Modal.
-The dispatch backend controls where the worker process runs. The compute
+The step runner controls where the worker process runs. The compute
 target controls where execute() runs inside that worker.
 
 When compute is `"local"` (the default), execute() runs as a direct call
@@ -303,8 +303,8 @@ On distributed filesystems (NFS), directory attribute caching can delay
 visibility of files written by SLURM workers. Before committing, the
 orchestrator polls for `executions.parquet` sentinel files using
 close-to-open consistency checks (`open()` + `read()` rather than `stat()`)
-with exponential backoff. This verification runs only when the backend reports
-a shared filesystem; local backends skip it entirely.
+with exponential backoff. This verification runs only when the step runner
+reports a shared filesystem; local step runners skip it entirely.
 
 ---
 
@@ -323,7 +323,7 @@ merges small Parquet files into larger ones for better read performance.
 
 ### Worker log capture
 
-For SLURM backends, worker stdout/stderr is captured after dispatch completes
+For SLURM step runners, worker stdout/stderr is captured after dispatch completes
 and patched into the `executions.parquet` staging files before commit. Failed
 executions also get human-readable log files written to a per-step directory
 under `logs/failures/`. This happens on a best-effort basis -- missing logs
@@ -343,7 +343,7 @@ This table serves three purposes:
 - **Resume** -- `load_completed_steps` returns all completed or skipped steps
   from a prior run so the pipeline can skip them on restart.
 - **Observability** -- the table records `pipeline_run_id`, operation class,
-  parameters, compute backend, and timing for every step ever executed.
+  parameters, step runner, and timing for every step ever executed.
 
 ---
 
@@ -367,7 +367,7 @@ is folded into the `StagingResult` so the caller always gets a value. The
 original error and the staging error are combined into a single message.
 
 **Failure logs.** Every failed execution writes a human-readable log file
-containing the run ID, operation name, step number, backend, timestamp, full
+containing the run ID, operation name, step number, step runner, timestamp, full
 traceback, and (when available) tool output. These live in
 `logs/failures/step_{N}_{op_name}/` alongside the Delta tables.
 

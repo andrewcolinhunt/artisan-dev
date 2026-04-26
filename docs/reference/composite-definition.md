@@ -29,8 +29,8 @@ and a `compose()` method that wires internal operations together.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `resources` | `RunnerResources` | `RunnerResources()` | Worker resource allocation (collapsed mode) |
-| `execution` | `BatchStrategy` | `BatchStrategy()` | Batching and scheduling config (collapsed mode) |
+| `runner_resources` | `RunnerResources` | `RunnerResources()` | Worker resource allocation (collapsed mode) |
+| `batch_strategy` | `BatchStrategy` | `BatchStrategy()` | Batching and scheduling config (collapsed mode) |
 
 ### Inner classes
 
@@ -143,7 +143,7 @@ Reference a declared input of this composite.
 
 **Raises:** `ValueError` if role is not a declared input.
 
-#### `run(operation, *, inputs=None, params=None, resources=None, execution=None, step_runner=None, environment=None, tool=None) -> CompositeStepHandle`
+#### `run(operation, *, inputs=None, params=None, runner_resources=None, batch_strategy=None, step_runner=None, compute_provider=None, compute_resources=None, environment=None, tool=None) -> CompositeStepHandle`
 
 Execute an operation or nested composite.
 
@@ -152,16 +152,18 @@ Execute an operation or nested composite.
 | `operation` | `type` | — | `OperationDefinition` or `CompositeDefinition` subclass |
 | `inputs` | `dict[str, Any] \| None` | `None` | Input wiring as `{role: CompositeRef}` |
 | `params` | `dict[str, Any] \| None` | `None` | Parameter overrides |
-| `resources` | `dict[str, Any] \| None` | `None` | Resource overrides (expanded mode only) |
-| `execution` | `dict[str, Any] \| None` | `None` | Execution overrides (expanded mode only) |
-| `backend` | `str \| BackendBase \| None` | `None` | Backend override (expanded mode only) |
+| `runner_resources` | `dict[str, Any] \| None` | `None` | Runner resource overrides (expanded mode only) |
+| `batch_strategy` | `dict[str, Any] \| None` | `None` | Batching/scheduling overrides (expanded mode only) |
+| `step_runner` | `str \| RunnerBase \| None` | `None` | Step-runner override (expanded mode only) |
+| `compute_provider` | `str \| dict \| ComputeProvider \| None` | `None` | Compute-provider override (expanded mode only) |
+| `compute_resources` | `dict \| ComputeResources \| None` | `None` | Compute-resource overrides (expanded mode only) |
 | `environment` | `str \| dict[str, Any] \| None` | `None` | Environment override |
 | `tool` | `dict[str, Any] \| None` | `None` | Tool overrides |
 
 **Returns:** `CompositeStepHandle` wrapping the operation's results.
 
-In collapsed mode, `resources`, `execution`, and `backend` are ignored
-(logged as debug). In expanded mode, they are forwarded to the parent
+In collapsed mode, `runner_resources`, `batch_strategy`, and `step_runner` are
+ignored (logged as debug). In expanded mode, they are forwarded to the parent
 pipeline's `submit()`.
 
 #### `output(role: str, ref: CompositeRef) -> None`
