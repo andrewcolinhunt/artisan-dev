@@ -2184,9 +2184,7 @@ class TestCompositeFailFast:
         assert isinstance(result, ExpandedCompositeResult)
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_run_composite_accepts_compute_resources(
-        self, mock_tracker_cls, tmp_path
-    ):
+    def test_run_composite_accepts_compute_resources(self, mock_tracker_cls, tmp_path):
         """run_composite accepts compute_resources kwarg (symmetry with run)."""
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
