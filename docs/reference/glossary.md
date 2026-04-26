@@ -86,7 +86,7 @@ both policies.
 A reusable composition of operations with declared inputs and outputs. Defined
 by subclassing `CompositeDefinition` and implementing `compose()`. Can run
 **collapsed** (`pipeline.run()` — single step, in-memory artifact passing) or
-**expanded** (`pipeline.expand()` — each internal operation becomes its own
+**expanded** (`pipeline.run_composite()` — each internal operation becomes its own
 pipeline step). The `intermediates` setting controls whether intermediate
 artifacts are discarded, persisted, or exposed.
 

@@ -1,6 +1,6 @@
 """Integration tests for collapsed composites.
 
-Exercises pipeline.run(CompositeDefinition) with creators and intermediates modes.
+Exercises pipeline.run_composite(CompositeDefinition) with creators and intermediates modes.
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ def test_composite_creators_only(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    step = pipeline.run(
+    step = pipeline.run_composite(
         GenerateAndTransform,
         step_runner=Runner.LOCAL,
     )
@@ -149,7 +149,7 @@ def test_composite_with_upstream(pipeline_env: dict[str, str]):
         step_runner=Runner.LOCAL,
     )
 
-    step = pipeline.run(
+    step = pipeline.run_composite(
         TransformWithInput,
         inputs={"data": gen.output("datasets")},
         step_runner=Runner.LOCAL,
@@ -172,7 +172,7 @@ def test_composite_to_downstream(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    composite_step = pipeline.run(
+    composite_step = pipeline.run_composite(
         GenerateAndTransform,
         step_runner=Runner.LOCAL,
     )
@@ -200,7 +200,7 @@ def test_composite_nested(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    step = pipeline.run(
+    step = pipeline.run_composite(
         NestedComposite,
         step_runner=Runner.LOCAL,
     )

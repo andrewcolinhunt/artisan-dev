@@ -245,7 +245,7 @@ pipeline.run(
 
 `artisan.schemas.composites.composite_ref.ExpandedCompositeResult`
 
-Returned by `pipeline.expand()`. Maps composite outputs to internal
+Returned by `pipeline.run_composite()`. Maps composite outputs to internal
 pipeline steps. Duck-types with `StepResult` and `StepFuture`.
 
 ### Methods

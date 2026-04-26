@@ -24,7 +24,7 @@ from artisan.operations.examples import (
     DataTransformer,
     MetricCalculator,
 )
-from artisan.orchestration import Runner, PipelineManager
+from artisan.orchestration import PipelineManager, Runner
 from artisan.utils import tutorial_setup
 from artisan.visualization import inspect_pipeline
 

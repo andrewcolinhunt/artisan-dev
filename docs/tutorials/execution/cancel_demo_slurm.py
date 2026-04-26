@@ -32,7 +32,7 @@ Requires: SLURM cluster access.
 from __future__ import annotations
 
 from artisan.operations.examples import Wait
-from artisan.orchestration import Runner, PipelineManager
+from artisan.orchestration import PipelineManager, Runner
 from artisan.utils import tutorial_setup
 
 

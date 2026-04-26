@@ -90,7 +90,7 @@ in-memory between operations.
 
 ```python
 pipeline.run(operation=DataGenerator, name="generate", params={"count": 5})
-expanded = pipeline.expand(
+expanded = pipeline.run_composite(
     TransformAndScore,
     inputs={"dataset": output("generate", "datasets")},
 )

@@ -411,7 +411,7 @@ def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
     )
 
     # Step 0: collapsed composite (DataGenerator -> DataTransformer)
-    composite_step = pipeline.run(
+    composite_step = pipeline.run_composite(
         _GenerateAndTransform,
         step_runner=Runner.LOCAL,
     )

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
     from artisan.execution.models.execution_composite import CompositeIntermediates
     from artisan.orchestration.runners import RunnerBase
+    from artisan.orchestration.step_future import StepFuture
     from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
     from artisan.schemas.orchestration.output_reference import OutputReference
     from artisan.schemas.specs.output_spec import OutputSpec
@@ -495,6 +496,12 @@ class ExpandedCompositeContext(CompositeContext):
         self._composite = composite
         self._step_name_prefix = step_name_prefix
         self._output_map: dict[str, OutputReference] = {}
+        # Captured futures for each child step submitted via this context.
+        # Top-level run_composite(expand=True) drains these via .wait().
+        # Nested expanded composites do NOT need to drain themselves —
+        # each child still calls self._pipeline.submit(...), so the
+        # parent pipeline's _active_futures owns them.
+        self._child_futures: list[StepFuture] = []
 
     def input(self, role: str) -> CompositeRef:
         """Reference a declared input of this composite.
@@ -578,6 +585,7 @@ class ExpandedCompositeContext(CompositeContext):
             tool=tool,
             name=step_name,
         )
+        self._child_futures.append(future)
 
         return CompositeStepHandle(
             step_future=future,
@@ -610,6 +618,10 @@ class ExpandedCompositeContext(CompositeContext):
     def get_output_map(self) -> dict[str, OutputReference]:
         """Return the recorded output mappings."""
         return dict(self._output_map)
+
+    def get_child_futures(self) -> list[StepFuture]:
+        """Return the StepFutures for every child step submitted via this context."""
+        return list(self._child_futures)
 
     def get_output_types(self) -> dict[str, str | None]:
         """Return output types from composite definition."""

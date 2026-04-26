@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 from uuid import uuid4
 
 import polars as pl
@@ -1094,7 +1094,8 @@ class PipelineManager:
 
     def run(
         self,
-        operation: type[OperationDefinition] | type[CompositeDefinition],
+        operation: type[OperationDefinition],
+        *,
         inputs: (
             dict[str, OutputReference | list[str]]
             | list[OutputReference]
@@ -1111,33 +1112,33 @@ class PipelineManager:
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
-        intermediates: str = "discard",
         skip_cache: bool = False,
     ) -> StepResult:
-        """Execute a pipeline step (blocking).
+        """Execute an operation step (blocking).
 
-        Accepts both OperationDefinition and CompositeDefinition subclasses.
-        Equivalent to submit(...).result().
+        Composites must use ``run_composite``; passing one here raises.
+        Equivalent to ``submit(...).result()``.
 
         Args:
-            operation: OperationDefinition or CompositeDefinition subclass.
+            operation: OperationDefinition subclass.
             inputs: Input specification (dict, list, or None).
             params: Parameter overrides.
             step_runner: Step runner for execution. None uses pipeline default.
             resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-            environment: Environment override (operations only).
-            tool: Tool overrides (operations only).
-            compute_provider: Compute routing override (string or dict).
+            environment: Environment override.
+            tool: Tool overrides.
+            compute_provider: Compute provider override (string or dict).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
-            intermediates: How to handle intermediate artifacts in composites:
-                "discard" (default), "persist", or "expose".
             skip_cache: Bypass cache lookups for this step.
 
         Returns:
             StepResult with output references and execution metadata.
+
+        Raises:
+            TypeError: If ``operation`` is a CompositeDefinition subclass.
         """
         return self.submit(
             operation,
@@ -1152,13 +1153,13 @@ class PipelineManager:
             failure_policy=failure_policy,
             compact=compact,
             name=name,
-            intermediates=intermediates,
             skip_cache=skip_cache,
         ).result()
 
     def submit(
         self,
-        operation: type[OperationDefinition] | type[CompositeDefinition],
+        operation: type[OperationDefinition],
+        *,
         inputs: (
             dict[str, OutputReference | list[str]]
             | list[OutputReference]
@@ -1175,53 +1176,46 @@ class PipelineManager:
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
-        intermediates: str = "discard",
         skip_cache: bool = False,
     ) -> StepFuture:
-        """Submit a pipeline step (non-blocking).
+        """Submit an operation step (non-blocking).
 
-        Accepts both OperationDefinition and CompositeDefinition subclasses.
+        Composites must use ``submit_composite``; passing one here raises.
 
         Args:
-            operation: OperationDefinition or CompositeDefinition subclass.
+            operation: OperationDefinition subclass.
             inputs: Input specification (dict, list, or None).
             params: Parameter overrides.
             step_runner: Step runner for execution. None uses pipeline default.
             resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-            environment: Environment override (operations only).
-            tool: Tool overrides (operations only).
-            compute_provider: Compute routing override (string or dict).
+            environment: Environment override.
+            tool: Tool overrides.
+            compute_provider: Compute provider override (string or dict).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
-            intermediates: How to handle intermediate artifacts in composites.
             skip_cache: Bypass cache lookups for this step.
 
         Returns:
             StepFuture for wiring to downstream steps.
 
         Raises:
+            TypeError: If ``operation`` is a CompositeDefinition subclass.
             ValueError: If any override keys are unrecognized.
         """
         from artisan.composites.base.composite_definition import CompositeDefinition
 
-        # 1. Route composites to a dedicated handler — composites expand into
-        #    multiple internal operations and have their own caching/dispatch.
-        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):  # type: ignore[redundant-expr]
-            return self._submit_composite(
-                composite_class=operation,
-                inputs=inputs,
-                params=params,
-                step_runner=step_runner,
-                resources=resources,
-                execution=execution,
-                intermediates=intermediates,
-                failure_policy=failure_policy,
-                compact=compact,
-                name=name or operation.name,
-                skip_cache=skip_cache,
+        # 1. Reject composites at the boundary — they have a separate surface
+        #    (``submit_composite``/``run_composite``) so composite-only kwargs
+        #    don't pollute operation signatures.
+        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):
+            msg = (
+                f"submit() rejects composites — got {operation.__name__}. "
+                "Use submit_composite() / run_composite() for "
+                "CompositeDefinition subclasses."
             )
+            raise TypeError(msg)
 
         # 2. Fail-fast validation before any blocking work. Checks params,
         #    resources, execution, environment, and tool keys against the
@@ -1368,7 +1362,7 @@ class PipelineManager:
            complete, then re-checks cancellation (which may have been
            signalled while waiting).
 
-        Used by both ``submit()`` and ``_submit_composite()``.
+        Used by both ``submit()`` and ``_dispatch_collapsed_composite()``.
 
         Returns:
             Resolved StepFuture if the step should be skipped,
@@ -1805,65 +1799,115 @@ class PipelineManager:
         self._active_futures[step_number] = future
         return future
 
-    def expand(
+    def submit_composite(
         self,
         composite: type[CompositeDefinition],
+        *,
         inputs: (dict[str, OutputReference | list[str]] | None) = None,
         params: dict[str, Any] | None = None,
+        name: str | None = None,
+        expand: bool = False,
+        intermediates: Literal["discard", "persist", "expose"] = "discard",
+        step_runner: str | RunnerBase | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
-        name: str | None = None,
-    ) -> ExpandedCompositeResult:
-        """Expand a composite into individual pipeline steps.
+        compute_provider: str | dict[str, Any] | None = None,
+        failure_policy: FailurePolicy | None = None,
+        compact: bool = True,
+        skip_cache: bool = False,
+    ) -> StepFuture | ExpandedCompositeResult:
+        """Submit a composite step (non-blocking).
 
-        Each internal operation becomes its own pipeline step with
-        independent worker dispatch, batching, and caching.
+        Two modes selected by ``expand``:
+        - ``expand=False`` (default) — collapsed: the composite executes as
+          a single pipeline step with one cache entry.
+        - ``expand=True`` — expanded: each internal ctx.run() creates its
+          own pipeline step with independent worker dispatch, batching,
+          and caching.
 
         Args:
-            composite: CompositeDefinition subclass to expand.
+            composite: CompositeDefinition subclass.
             inputs: Input specification for the composite.
             params: Parameter overrides for the composite.
-            resources: Per-operation overrides forwarded from compose().
-            execution: Per-operation overrides forwarded from compose().
-            step_runner: Step runner override.
+            name: Custom step name (collapsed) or step-name prefix (expanded).
+                Defaults to composite.name.
+            expand: False for collapsed mode, True for expanded mode.
+            intermediates: How to handle intermediate artifacts in collapsed
+                mode: "discard" (default), "persist", or "expose". Must be
+                "discard" when ``expand=True`` (expanded mode always persists
+                via the per-step Delta path).
+            step_runner: Step runner for execution. None uses pipeline default.
+            resources: Resource overrides (forwarded to each child step in
+                expanded mode).
+            execution: Batching/scheduling overrides.
             environment: Environment override.
             tool: Tool overrides.
-            name: Step name prefix. Defaults to composite.name.
+            compute_provider: Compute provider override (string or dict).
+            failure_policy: Override pipeline-level failure policy.
+            compact: Run Delta Lake compaction after commit.
+            skip_cache: Bypass cache lookups for this step.
 
         Returns:
-            ExpandedCompositeResult with .output(role) for downstream wiring.
+            StepFuture (collapsed) or ExpandedCompositeResult (expanded).
+            Both expose ``.output(role) -> OutputReference`` for downstream
+            wiring.
+
+        Raises:
+            TypeError: If ``composite`` is not a CompositeDefinition subclass.
+            ValueError: If ``expand=True`` and ``intermediates != "discard"``.
         """
         from artisan.composites.base.composite_context import ExpandedCompositeContext
         from artisan.composites.base.composite_definition import CompositeDefinition
         from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
 
         if not (
-            isinstance(composite, type) and issubclass(composite, CompositeDefinition)  # type: ignore[redundant-expr]
+            isinstance(composite, type) and issubclass(composite, CompositeDefinition)
         ):
-            msg = f"expand() requires a CompositeDefinition subclass, got {composite}"  # type: ignore[unreachable]
+            msg = (
+                "submit_composite() requires a CompositeDefinition subclass, "
+                f"got {composite!r}"
+            )
             raise TypeError(msg)
 
-        # Validate inputs
+        if expand and intermediates != "discard":
+            msg = (
+                f"intermediates={intermediates!r} is only meaningful for "
+                "collapsed composites (expand=False); expanded composites "
+                "always persist via the per-step Delta path."
+            )
+            raise ValueError(msg)
+
+        if expand is False:
+            return self._dispatch_collapsed_composite(
+                composite_class=composite,
+                inputs=inputs,
+                params=params,
+                step_runner=step_runner,
+                resources=resources,
+                execution=execution,
+                intermediates=intermediates,
+                failure_policy=failure_policy,
+                compact=compact,
+                name=name or composite.name,
+                skip_cache=skip_cache,
+            )
+
+        # Expanded mode — each ctx.run() creates a real pipeline step.
         _validate_input_roles(composite, inputs)
         _validate_required_inputs(composite, inputs)
         _validate_input_types(composite, inputs)
-
         if params:
             _validate_params(composite, params)
 
-        # Wait for predecessors
         self._wait_for_predecessors(inputs)
 
-        # Instantiate the composite
         init_kwargs: dict[str, Any] = {}
         if params:
             init_kwargs["params"] = params
         instance = composite(**init_kwargs)
 
-        # Build input OutputReferences
         input_refs: dict[str, OutputReference] = {}
         if isinstance(inputs, dict):
             for role, ref in inputs.items():
@@ -1872,24 +1916,76 @@ class PipelineManager:
 
         step_name_prefix = name or composite.name
 
-        # Create expanded context
         ctx = ExpandedCompositeContext(
             pipeline=self,
             input_refs=input_refs,
             composite=instance,
             step_name_prefix=step_name_prefix,
         )
-
-        # Execute compose() — each ctx.run() creates real pipeline steps
         instance.compose(ctx)
 
-        # Build result from output mappings
         return ExpandedCompositeResult(
             output_map=ctx.get_output_map(),
             output_types=ctx.get_output_types(),
+            child_futures=ctx.get_child_futures(),
         )
 
-    def _submit_composite(
+    def run_composite(
+        self,
+        composite: type[CompositeDefinition],
+        *,
+        inputs: (dict[str, OutputReference | list[str]] | None) = None,
+        params: dict[str, Any] | None = None,
+        name: str | None = None,
+        expand: bool = False,
+        intermediates: Literal["discard", "persist", "expose"] = "discard",
+        step_runner: str | RunnerBase | None = None,
+        resources: dict[str, Any] | None = None,
+        execution: dict[str, Any] | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
+        compute_provider: str | dict[str, Any] | None = None,
+        failure_policy: FailurePolicy | None = None,
+        compact: bool = True,
+        skip_cache: bool = False,
+    ) -> StepResult | ExpandedCompositeResult:
+        """Execute a composite step (blocking).
+
+        Collapsed: returns the composite step's StepResult after completion.
+        Expanded: returns the ExpandedCompositeResult after every child
+        step completes (drained via ``ExpandedCompositeResult.wait()``).
+
+        Both return types expose ``.output(role) -> OutputReference``, so
+        downstream wiring is uniform across modes.
+
+        See ``submit_composite`` for argument details.
+
+        Raises:
+            TypeError: If ``composite`` is not a CompositeDefinition subclass.
+            ValueError: If ``expand=True`` and ``intermediates != "discard"``.
+        """
+        result = self.submit_composite(
+            composite,
+            inputs=inputs,
+            params=params,
+            name=name,
+            expand=expand,
+            intermediates=intermediates,
+            step_runner=step_runner,
+            resources=resources,
+            execution=execution,
+            environment=environment,
+            tool=tool,
+            compute_provider=compute_provider,
+            failure_policy=failure_policy,
+            compact=compact,
+            skip_cache=skip_cache,
+        )
+        if isinstance(result, StepFuture):
+            return result.result()
+        return result.wait()
+
+    def _dispatch_collapsed_composite(
         self,
         composite_class: type[CompositeDefinition],
         inputs: Any,
@@ -1903,7 +1999,7 @@ class PipelineManager:
         name: str,
         skip_cache: bool = False,
     ) -> StepFuture:
-        """Internal: submit a composite step for collapsed execution.
+        """Internal: dispatch a composite step for collapsed execution.
 
         Args:
             composite_class: CompositeDefinition subclass.

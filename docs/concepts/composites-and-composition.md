@@ -123,7 +123,7 @@ caller chooses.
 
 | | Collapsed | Expanded |
 |---|---|---|
-| Pipeline method | `pipeline.run(MyComposite, ...)` | `pipeline.expand(MyComposite, ...)` |
+| Pipeline method | `pipeline.run_composite(MyComposite, ...)` | `pipeline.run_composite(MyComposite, ...)` |
 | Pipeline steps | 1 | N (one per internal operation) |
 | Internal I/O | In-memory | Delta Lake round-trips |
 | Caching | Composite-level | Per-operation |
@@ -233,7 +233,7 @@ declare their data contract, but they are distinct abstractions:
 | Registry | Operation registry | Composite registry |
 | Implements | Computation (lifecycle phases or `execute_curator`) | Wiring (`compose`) |
 | Can be nested in composites | Yes | Yes |
-| Can be run as pipeline step | Yes (`pipeline.run`) | Yes (`pipeline.run` or `pipeline.expand`) |
+| Can be run as pipeline step | Yes (`pipeline.run`) | Yes (`pipeline.run_composite`, collapsed or `expand=True`) |
 
 Operations are leaves. Composites are branches. Both are nodes in the
 pipeline DAG.
