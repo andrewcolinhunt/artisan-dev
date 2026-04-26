@@ -126,12 +126,19 @@ def instantiate_operation(
                 update=batch_strategy
             )
     if tool and instance.tool is not None:
-        updates["tool"] = instance.tool.model_copy(update=tool)
+        from artisan.schemas.operation_config.tool_spec import ToolSpec
+
+        if isinstance(tool, ToolSpec):
+            updates["tool"] = tool
+        else:
+            updates["tool"] = instance.tool.model_copy(update=tool)
     if environment is not None:
         if isinstance(environment, str):
             updates["environments"] = instance.environments.model_copy(
                 update={"active": environment}
             )
+        elif isinstance(environment, Environments):
+            updates["environments"] = environment
         else:
             # Dump-merge-validate: coerces nested dicts into proper
             # Pydantic models (handles both existing and None fields).
@@ -571,21 +578,31 @@ def execute_step(
 
 
 def _merge_config_overrides(
-    environment: str | dict[str, Any] | None,
-    tool: dict[str, Any] | None,
-    compute_provider: str | dict[str, Any] | None = None,
+    environment: str | dict[str, Any] | Any | None,
+    tool: dict[str, Any] | Any | None,
+    compute_provider: str | dict[str, Any] | Any | None = None,
 ) -> dict[str, Any] | None:
-    """Merge environment, tool, and compute_provider overrides into a single dict for hashing."""
+    """Merge environment, tool, and compute_provider overrides into a single
+    dict for hashing.
+
+    Typed Pydantic models are normalized to dicts via ``model_dump`` so the
+    hash payload remains JSON-serializable and dict-vs-model forms produce
+    identical step_spec_ids.
+    """
+    from pydantic import BaseModel as _BaseModel
+
+    def _to_dict(v: Any) -> Any:
+        if isinstance(v, _BaseModel):
+            return v.model_dump(mode="json")
+        return v
+
     merged: dict[str, Any] = {}
     if environment is not None:
-        if isinstance(environment, str):
-            merged["environment"] = environment
-        else:
-            merged["environment"] = environment
+        merged["environment"] = _to_dict(environment)
     if tool:
-        merged["tool"] = tool
+        merged["tool"] = _to_dict(tool)
     if compute_provider is not None:
-        merged["compute_provider"] = compute_provider
+        merged["compute_provider"] = _to_dict(compute_provider)
     return merged or None
 
 

@@ -358,9 +358,17 @@ def _validate_execution(execution: dict[str, Any] | Any) -> None:
 
 def _validate_environment(
     operation: type[OperationDefinition],
-    environment: str | dict[str, Any],
+    environment: str | dict[str, Any] | Any,
 ) -> None:
-    """Raise ValueError if environment override is invalid for this operation."""
+    """Raise ValueError if environment override is invalid for this operation.
+
+    A typed ``Environments`` instance is already valid by construction;
+    this function only checks raw dict / string forms.
+    """
+    from artisan.schemas.operation_config.environments import Environments
+
+    if isinstance(environment, Environments):
+        return
     if isinstance(environment, str):
         temp = operation()
         if environment not in temp.environments.available():
@@ -378,7 +386,6 @@ def _validate_environment(
             LocalEnvironmentSpec,
             PixiEnvironmentSpec,
         )
-        from artisan.schemas.operation_config.environments import Environments
 
         valid_keys = set(Environments.model_fields)
         unknown = set(environment) - valid_keys
@@ -412,11 +419,17 @@ def _validate_environment(
 
 def _validate_tool(
     operation: type[OperationDefinition],
-    tool: dict[str, Any],
+    tool: dict[str, Any] | Any,
 ) -> None:
-    """Raise ValueError if tool overrides are invalid for this operation."""
+    """Raise ValueError if tool overrides are invalid for this operation.
+
+    A ``ToolSpec`` instance is already valid by construction; this
+    function only checks raw dicts.
+    """
     from artisan.schemas.operation_config.tool_spec import ToolSpec
 
+    if isinstance(tool, ToolSpec):
+        return
     temp = operation()
     if temp.tool is None:
         msg = f"Operation '{operation.name}' has no tool to override"
