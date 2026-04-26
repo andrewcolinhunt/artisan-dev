@@ -71,7 +71,7 @@ def _container_wrap(
     prefix: list[str],
     gpu_args: list[str],
     bind_flag: str,
-    binds: list[tuple[str, str]],
+    binds: list[tuple[str, str] | tuple[str, str, str]],
     env: dict[str, str],
     image: str,
     cmd: list[str],
@@ -86,8 +86,13 @@ def _container_wrap(
     if cwd is not None:
         parent = os.path.dirname(cwd)
         parts.extend([bind_flag, f"{parent}:{parent}"])
-    for host, container in binds:
-        parts.extend([bind_flag, f"{host}:{container}"])
+    for bind in binds:
+        if len(bind) == 2:
+            host, container = bind
+            parts.extend([bind_flag, f"{host}:{container}"])
+        else:
+            host, container, mode = bind
+            parts.extend([bind_flag, f"{host}:{container}:{mode}"])
     for k, v in env.items():
         parts.extend(["--env", f"{k}={v}"])
     if gpu and "MASTER_PORT" not in env:
@@ -105,12 +110,16 @@ class DockerEnvironmentSpec(EnvironmentSpec):
     Attributes:
         image: Docker image reference (e.g. "biocontainers/samtools:1.17").
         gpu: Whether to pass --gpus all.
-        binds: List of (host_path, container_path) volume mounts.
+        binds: Volume mounts. Each entry is either a ``(host_path,
+            container_path)`` tuple (default mode, typically ``rw``) or a
+            ``(host_path, container_path, mode)`` tuple where ``mode`` is
+            ``"ro"``, ``"rw"``, or another Docker-supported mode string
+            (e.g. ``"rprivate"``).
     """
 
     image: str
     gpu: bool = False
-    binds: list[tuple[str, str]] = Field(default_factory=list)
+    binds: list[tuple[str, str] | tuple[str, str, str]] = Field(default_factory=list)
 
     def wrap_command(self, cmd: list[str], cwd: str | None = None) -> list[str]:
         return _container_wrap(
@@ -137,12 +146,15 @@ class ApptainerEnvironmentSpec(EnvironmentSpec):
     Attributes:
         image: Filesystem path to .sif container image.
         gpu: Whether to pass --nv for GPU access.
-        binds: List of (host_path, container_path) bind mounts.
+        binds: Bind mounts. Each entry is either a ``(host_path,
+            container_path)`` tuple or a ``(host_path, container_path,
+            mode)`` tuple where ``mode`` is one of Apptainer's supported
+            options (e.g. ``"ro"``).
     """
 
     image: str
     gpu: bool = False
-    binds: list[tuple[str, str]] = Field(default_factory=list)
+    binds: list[tuple[str, str] | tuple[str, str, str]] = Field(default_factory=list)
 
     def wrap_command(self, cmd: list[str], cwd: str | None = None) -> list[str]:
         return _container_wrap(
