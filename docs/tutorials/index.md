@@ -39,8 +39,6 @@ illustrations.
 Running pipelines, caching, batching, error handling, and step-level
 configuration.
 
-- [Run vs Submit](execution/01-run-vs-submit.ipynb) (~10 min) -- Blocking vs
-  non-blocking step execution
 - [Resume and Caching](execution/02-resume-and-caching.ipynb) (~15 min) --
   List runs, resume pipelines, and step-level caching
 - [Batching and Performance](execution/03-batching-and-performance.ipynb) (~20 min) --

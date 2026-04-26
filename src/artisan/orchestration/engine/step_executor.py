@@ -66,11 +66,12 @@ logger = logging.getLogger(__name__)
 def instantiate_operation(
     operation_class: type[OperationDefinition],
     params: dict[str, Any] | None,
-    runner_resources: dict[str, Any] | None = None,
-    batch_strategy: dict[str, Any] | None = None,
-    environment: str | dict[str, Any] | None = None,
-    tool: dict[str, Any] | None = None,
-    compute_provider: str | dict[str, Any] | None = None,
+    runner_resources: dict[str, Any] | Any | None = None,
+    batch_strategy: dict[str, Any] | Any | None = None,
+    environment: str | dict[str, Any] | Any | None = None,
+    tool: dict[str, Any] | Any | None = None,
+    compute_provider: str | dict[str, Any] | Any | None = None,
+    compute_resources: dict[str, Any] | Any | None = None,
 ) -> OperationDefinition:
     """Construct an operation instance from class, params, and overrides.
 
@@ -101,16 +102,29 @@ def instantiate_operation(
 
     instance = operation_class(**init_kwargs)
 
-    # Apply overrides via model_copy
+    # Apply overrides via model_copy. Each override accepts either a
+    # dict (delta-merged into the operation default) or a typed model
+    # (replaces the default outright — already validated by construction).
+    from artisan.schemas.execution.batch_strategy import BatchStrategy as _BatchStrategy
+    from artisan.schemas.operation_config.runner_resources import (
+        RunnerResources as _RunnerResources,
+    )
+
     updates: dict[str, Any] = {}
     if runner_resources:
-        updates["runner_resources"] = instance.runner_resources.model_copy(
-            update=runner_resources
-        )
+        if isinstance(runner_resources, _RunnerResources):
+            updates["runner_resources"] = runner_resources
+        else:
+            updates["runner_resources"] = instance.runner_resources.model_copy(
+                update=runner_resources
+            )
     if batch_strategy:
-        updates["batch_strategy"] = instance.batch_strategy.model_copy(
-            update=batch_strategy
-        )
+        if isinstance(batch_strategy, _BatchStrategy):
+            updates["batch_strategy"] = batch_strategy
+        else:
+            updates["batch_strategy"] = instance.batch_strategy.model_copy(
+                update=batch_strategy
+            )
     if tool and instance.tool is not None:
         updates["tool"] = instance.tool.model_copy(update=tool)
     if environment is not None:
@@ -133,6 +147,8 @@ def instantiate_operation(
             updates["compute_provider"] = instance.compute_provider.model_copy(
                 update={"active": compute_provider}
             )
+        elif isinstance(compute_provider, ComputeProvider):
+            updates["compute_provider"] = compute_provider
         else:
             base = instance.compute_provider.model_dump()
             for key, value in compute_provider.items():
@@ -141,6 +157,15 @@ def instantiate_operation(
                 else:
                     base[key] = value
             updates["compute_provider"] = ComputeProvider.model_validate(base)
+    if compute_resources is not None:
+        from artisan.schemas.operation_config.compute_resources import ComputeResources
+
+        if isinstance(compute_resources, ComputeResources):
+            updates["compute_resources"] = compute_resources
+        else:
+            updates["compute_resources"] = instance.compute_resources.model_copy(
+                update=compute_resources
+            )
     if updates:
         instance = instance.model_copy(update=updates)
 
@@ -445,11 +470,12 @@ def execute_step(
     inputs: Any,
     params: dict[str, Any] | None,
     step_runner: RunnerBase,
-    runner_resources: dict[str, Any] | None = None,
-    batch_strategy: dict[str, Any] | None = None,
-    environment: str | dict[str, Any] | None = None,
-    tool: dict[str, Any] | None = None,
-    compute_provider: str | dict[str, Any] | None = None,
+    runner_resources: dict[str, Any] | Any | None = None,
+    batch_strategy: dict[str, Any] | Any | None = None,
+    environment: str | dict[str, Any] | Any | None = None,
+    tool: dict[str, Any] | Any | None = None,
+    compute_provider: str | dict[str, Any] | Any | None = None,
+    compute_resources: dict[str, Any] | Any | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -501,6 +527,7 @@ def execute_step(
         environment,
         tool,
         compute_provider,
+        compute_resources=compute_resources,
     )
     user_overrides = params or {}
 

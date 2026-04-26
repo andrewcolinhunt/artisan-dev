@@ -316,10 +316,16 @@ def _validate_params(
         raise ValueError(msg)
 
 
-def _validate_resources(resources: dict[str, Any]) -> None:
-    """Raise ValueError if any resource keys are unrecognized."""
+def _validate_resources(resources: dict[str, Any] | Any) -> None:
+    """Raise ValueError if any resource keys are unrecognized.
+
+    A ``RunnerResources`` instance is already valid by construction;
+    this function only checks raw dicts.
+    """
     from artisan.schemas.operation_config.runner_resources import RunnerResources
 
+    if isinstance(resources, RunnerResources):
+        return
     valid_keys = set(RunnerResources.model_fields)
     unknown = set(resources) - valid_keys
     if unknown:
@@ -330,10 +336,16 @@ def _validate_resources(resources: dict[str, Any]) -> None:
         raise ValueError(msg)
 
 
-def _validate_execution(execution: dict[str, Any]) -> None:
-    """Raise ValueError if any execution keys are unrecognized."""
+def _validate_execution(execution: dict[str, Any] | Any) -> None:
+    """Raise ValueError if any execution keys are unrecognized.
+
+    A ``BatchStrategy`` instance is already valid by construction;
+    this function only checks raw dicts.
+    """
     from artisan.schemas.execution.batch_strategy import BatchStrategy
 
+    if isinstance(execution, BatchStrategy):
+        return
     valid_keys = set(BatchStrategy.model_fields)
     unknown = set(execution) - valid_keys
     if unknown:
@@ -1078,11 +1090,12 @@ class PipelineManager:
         ) = None,
         params: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
-        runner_resources: dict[str, Any] | None = None,
-        batch_strategy: dict[str, Any] | None = None,
-        environment: str | dict[str, Any] | None = None,
-        tool: dict[str, Any] | None = None,
-        compute_provider: str | dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | Any | None = None,
+        batch_strategy: dict[str, Any] | Any | None = None,
+        environment: str | dict[str, Any] | Any | None = None,
+        tool: dict[str, Any] | Any | None = None,
+        compute_provider: str | dict[str, Any] | Any | None = None,
+        compute_resources: dict[str, Any] | Any | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1124,6 +1137,7 @@ class PipelineManager:
             environment=environment,
             tool=tool,
             compute_provider=compute_provider,
+            compute_resources=compute_resources,
             failure_policy=failure_policy,
             compact=compact,
             name=name,
@@ -1142,11 +1156,12 @@ class PipelineManager:
         ) = None,
         params: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
-        runner_resources: dict[str, Any] | None = None,
-        batch_strategy: dict[str, Any] | None = None,
-        environment: str | dict[str, Any] | None = None,
-        tool: dict[str, Any] | None = None,
-        compute_provider: str | dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | Any | None = None,
+        batch_strategy: dict[str, Any] | Any | None = None,
+        environment: str | dict[str, Any] | Any | None = None,
+        tool: dict[str, Any] | Any | None = None,
+        compute_provider: str | dict[str, Any] | Any | None = None,
+        compute_resources: dict[str, Any] | Any | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1275,6 +1290,7 @@ class PipelineManager:
             environment=environment,
             tool=tool,
             compute_provider=compute_provider,
+            compute_resources=compute_resources,
             failure_policy=failure_policy,
             compact=compact,
             step_name=step_name,
@@ -1555,11 +1571,11 @@ class PipelineManager:
         inputs: Any,
         params: dict[str, Any] | None,
         step_runner: str | RunnerBase | None,
-        runner_resources: dict[str, Any] | None,
-        batch_strategy: dict[str, Any] | None,
-        environment: str | dict[str, Any] | None,
-        tool: dict[str, Any] | None,
-        compute_provider: str | dict[str, Any] | None,
+        runner_resources: dict[str, Any] | Any | None,
+        batch_strategy: dict[str, Any] | Any | None,
+        environment: str | dict[str, Any] | Any | None,
+        tool: dict[str, Any] | Any | None,
+        compute_provider: str | dict[str, Any] | Any | None,
         failure_policy: FailurePolicy | None,
         compact: bool,
         step_name: str,
@@ -1567,6 +1583,7 @@ class PipelineManager:
         step_spec_id: str,
         temp_instance: OperationDefinition,
         skip_cache: bool = False,
+        compute_resources: dict[str, Any] | Any | None = None,
     ) -> StepFuture:
         """Register step, resolve step_runner, and submit execution to thread pool.
 
@@ -1613,13 +1630,21 @@ class PipelineManager:
 
         # Internal compute_options keys stay "resources"/"execution" to
         # preserve persisted-record stability across the public-API renames.
+        # Typed models are normalized to dicts so the record JSON-serializes.
+        from pydantic import BaseModel as _BaseModel
+
+        def _to_dict(v: Any) -> Any:
+            if isinstance(v, _BaseModel):
+                return v.model_dump(mode="json")
+            return v
+
         compute_options_data = {
-            "resources": runner_resources or {},
-            "execution": batch_strategy or {},
-            "environment": (environment if environment is not None else {}),
-            "tool": tool or {},
+            "resources": _to_dict(runner_resources) or {},
+            "execution": _to_dict(batch_strategy) or {},
+            "environment": (_to_dict(environment) if environment is not None else {}),
+            "tool": _to_dict(tool) or {},
             "compute_provider": (
-                compute_provider if compute_provider is not None else {}
+                _to_dict(compute_provider) if compute_provider is not None else {}
             ),
         }
         start_record = StepStartRecord(
@@ -1680,6 +1705,7 @@ class PipelineManager:
                     environment=environment,
                     tool=tool,
                     compute_provider=compute_provider,
+                    compute_resources=compute_resources,
                     step_number=step_number,
                     config=self._config,
                     failure_policy=_failure_policy,
