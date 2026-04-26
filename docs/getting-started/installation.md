@@ -210,5 +210,5 @@ setup and usage.
 
 ## Next steps
 
-- [Your First Pipeline](../tutorials/getting-started/01-first-pipeline.ipynb) — Build and run a pipeline in an interactive notebook
+- [Your First Pipeline](../tutorials/01-getting-started/01-first-pipeline.ipynb) — Build and run a pipeline in an interactive notebook
 - [Orientation](orientation.md) — The mental model behind the framework

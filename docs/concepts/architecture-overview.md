@@ -378,7 +378,7 @@ skipped automatically.
 | Understand the execution phases in detail | [Execution Flow](execution-flow.md) |
 | Understand the storage layer | [Storage and Delta Lake](storage-and-delta-lake.md) |
 | Understand design rationale | [Design Principles](design-principles.md) |
-| Build your first pipeline | [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) |
+| Build your first pipeline | [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) |
 | Look up terminology | [Glossary](../reference/glossary.md) |
 
 ---
@@ -392,5 +392,5 @@ skipped automatically.
 - [Storage and Delta Lake](storage-and-delta-lake.md) — Persistence and the staging pattern
 - [Composites and Composition](composites-and-composition.md) — Reusable operation composition
 - [Design Principles](design-principles.md) — Rationale for key decisions
-- [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) — Build and run your first pipeline
+- [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) — Build and run your first pipeline
 - [Coding Conventions](../contributing/coding-conventions.md) — Package boundaries and standards

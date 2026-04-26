@@ -31,7 +31,7 @@ illustrations.
   Operations that consume multiple input roles
 - [Diamonds and Iteration](pipeline-design/05-diamonds-and-iteration.ipynb) (~15 min) --
   Diamond DAGs, output lineage, and iterative refinement
-- [Composable Operations](pipeline-design/06-composable-operations.ipynb) (~15 min) --
+- [Composable Operations](pipeline-design/06-composites.ipynb) (~15 min) --
   Compose operations into reusable units with collapsed or expanded execution
 
 ## Execution

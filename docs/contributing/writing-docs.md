@@ -133,17 +133,21 @@ New pages go in the directory that matches their Diataxis quadrant:
 
 ```
 docs/
-├── getting-started/         # Installation and orientation
-├── tutorials/               # Jupyter notebooks (.ipynb)
-│   ├── getting-started/     # First steps
-│   ├── pipeline-design/     # Topology patterns
-│   ├── execution/           # Caching, batching, error handling, overrides
-│   ├── analysis/            # Provenance, filtering, timing
-│   └── writing-operations/  # Building custom operations and composites
-├── concepts/                # Explanations of design and architecture
-├── how-to-guides/           # Task-oriented recipes
-├── reference/               # API signatures, glossary, comparisons
-└── contributing/            # Project conventions (this page)
+├── getting-started/             # Installation and orientation
+├── tutorials/                   # Jupyter notebooks (.ipynb)
+│   ├── 01-getting-started/      # First steps
+│   ├── 02-pipeline-design/      # Topology patterns
+│   ├── 03-caching/              # Resume, cache lookup, force re-run
+│   ├── 04-batching/             # Two-level batching, per-artifact dispatch
+│   ├── 05-errors-and-control/   # Step overrides, errors, cancellation
+│   ├── 06-storage/              # Layout, logging, external files
+│   ├── 07-compute-backends/     # Compute routing, SLURM, Modal
+│   ├── 08-analysis/             # Provenance, filtering, timing
+│   └── 09-writing-operations/   # Building custom operations and composites
+├── concepts/                    # Explanations of design and architecture
+├── how-to-guides/               # Task-oriented recipes
+├── reference/                   # API signatures, glossary, comparisons
+└── contributing/                # Project conventions (this page)
 ```
 
 ### File naming
@@ -200,7 +204,7 @@ Use standard Markdown links with relative paths:
 
 ```markdown
 [Operations Model](../concepts/operations-model.md)
-[First Pipeline tutorial](../tutorials/getting-started/01-first-pipeline.ipynb)
+[First Pipeline tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb)
 ```
 
 Link to a specific heading by appending `#anchor`:

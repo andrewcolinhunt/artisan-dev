@@ -226,5 +226,5 @@ Prefect Cloud: https://api.prefect.cloud/api/accounts/.../workspaces/... (source
   batching, and SLURM
 - [Execution Flow](../concepts/execution-flow.md) — How Artisan orchestrates
   pipeline execution
-- [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) —
+- [SLURM Execution Tutorial](../tutorials/07-compute-backends/02-slurm-execution.ipynb) —
   Interactive SLURM walkthrough

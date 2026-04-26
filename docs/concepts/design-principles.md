@@ -345,4 +345,4 @@ expense.
 - [Execution Flow](execution-flow.md) — Dispatch, execute, commit in detail
 - [Storage and Delta Lake](storage-and-delta-lake.md) — Persistence and the staging-commit pattern
 - [Error Handling](error-handling.md) — Error containment and the fail-fast philosophy
-- [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) — See these principles in action
+- [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) — See these principles in action

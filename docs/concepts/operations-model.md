@@ -361,9 +361,9 @@ dependencies on each other or on global state.
   — Step-by-step guide to implementing a creator operation
 - [Writing Curator Operations](../how-to-guides/writing-curator-operations.md)
   — Step-by-step guide to implementing a curator operation
-- [Writing an Operation Tutorial](../tutorials/writing-operations/01-writing-an-operation.ipynb)
+- [Writing an Operation Tutorial](../tutorials/09-writing-operations/01-writing-an-operation.ipynb)
   — Hands-on walkthrough of building an operation from scratch
-- [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb)
+- [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb)
   — See operations in action in a complete pipeline
 - [Execution Flow](execution-flow.md) — How operations execute within the
   dispatch-execute-commit pipeline

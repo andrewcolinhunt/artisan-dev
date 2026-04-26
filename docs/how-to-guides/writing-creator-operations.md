@@ -506,7 +506,7 @@ def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
 
 See `DataGeneratorWithMetrics` in `artisan.operations.examples` for a complete
 implementation, and the
-[Co-Produced Outputs tutorial](../tutorials/writing-operations/03-co-produced-outputs.ipynb)
+[Co-Produced Outputs tutorial](../tutorials/09-writing-operations/03-co-produced-outputs.ipynb)
 for a step-by-step walkthrough of authoring this pattern.
 
 ### Explicit lineage

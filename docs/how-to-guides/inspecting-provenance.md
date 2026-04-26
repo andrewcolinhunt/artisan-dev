@@ -440,7 +440,7 @@ assert len(prov_map) > 0, "No provenance edges found"
 
 - [Provenance System](../concepts/provenance-system.md) — Dual provenance
   model, stem matching, and design rationale
-- [Provenance Graphs Tutorial](../tutorials/analysis/01-provenance-graphs.ipynb) — Interactive
+- [Provenance Graphs Tutorial](../tutorials/08-analysis/01-provenance-graphs.ipynb) — Interactive
   provenance visualization walkthrough
 - [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) — Table
   schemas and Delta Lake layout
