@@ -122,6 +122,7 @@ jupyterlab = ">=4.5.0,<5"
 # Testing
 pytest = "*"
 pytest-xdist = "*"  # Parallel test execution
+nbval = "*"  # Notebook execution as pytest items (see [tool.pytest.ini_options] markers)
 
 # Linting and formatting
 ruff = "==0.13.2"
@@ -183,10 +184,11 @@ prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
-test = "pytest -m 'not integration' && pytest -m integration -n 4"  # Unit sequential + integration parallel
-test-seq = "pytest"  # Fully sequential (for debugging test interactions)
-test-unit = "pytest -m 'not integration'"  # Run only unit tests
+test = "pytest -m 'not integration and not notebook' && pytest -m integration -n 4"  # Unit sequential + integration parallel
+test-seq = "pytest -m 'not notebook'"  # Fully sequential (for debugging test interactions)
+test-unit = "pytest -m 'not integration and not notebook'"  # Run only unit tests
 test-integration = "pytest -m integration -n 4"  # Run only integration tests in parallel
+test-notebook = "pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Execute every CI-runnable tutorial notebook end-to-end (loadfile keeps all cells of one notebook on one worker)
 fmt = "ruff format . && ruff check --fix ."
 build-dist = "rm -rf dist/ && python -m build"
 check-dist = "python -m twine check dist/*"
@@ -212,6 +214,7 @@ addopts = ["-ra", "--strict-config", "--strict-markers"]
 filterwarnings = ["error"]
 markers = [
     "integration: needs real infra (Delta Lake, Prefect harness) — run with '-m integration'",
+    "notebook: executes a tutorial notebook end-to-end via nbval (auto-applied by tests/conftest.py)",
 ]
 
 [tool.mypy]

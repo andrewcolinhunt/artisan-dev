@@ -54,6 +54,19 @@ jobs:
       - name: Run tests
         run: pixi run -e dev test
 
+  test-notebooks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.9.4
+        with:
+          pixi-version: v0.54.0
+          environments: dev
+
+      - name: Execute every CI-runnable tutorial notebook end-to-end
+        run: pixi run -e dev test-notebook
+
   build:
     runs-on: ubuntu-latest
     steps:
