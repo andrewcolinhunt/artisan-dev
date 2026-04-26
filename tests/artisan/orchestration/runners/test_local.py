@@ -15,7 +15,7 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
 @pytest.fixture
-def local_backend() -> LocalRunner:
+def local_runner() -> LocalRunner:
     return LocalRunner(default_max_workers=2)
 
 
@@ -47,15 +47,15 @@ class TestLocalRunnerTraits:
 
 
 class TestLocalRunnerCreateDispatchHandle:
-    def test_returns_dispatch_handle(self, local_backend: LocalRunner) -> None:
-        handle = local_backend.create_dispatch_handle(
+    def test_returns_dispatch_handle(self, local_runner: LocalRunner) -> None:
+        handle = local_runner.create_dispatch_handle(
             RunnerResources(), BatchStrategy(), step_number=0, job_name="test_op"
         )
         assert isinstance(handle, DispatchHandle)
         assert isinstance(handle, LocalDispatchHandle)
 
-    def test_uses_execution_max_workers(self, local_backend: LocalRunner) -> None:
-        handle = local_backend.create_dispatch_handle(
+    def test_uses_execution_max_workers(self, local_runner: LocalRunner) -> None:
+        handle = local_runner.create_dispatch_handle(
             RunnerResources(),
             BatchStrategy(max_workers=8),
             step_number=0,
@@ -63,8 +63,8 @@ class TestLocalRunnerCreateDispatchHandle:
         )
         assert handle._task_runner._max_workers == 8
 
-    def test_gpu_defaults_to_sequential(self, local_backend: LocalRunner) -> None:
-        handle = local_backend.create_dispatch_handle(
+    def test_gpu_defaults_to_sequential(self, local_runner: LocalRunner) -> None:
+        handle = local_runner.create_dispatch_handle(
             RunnerResources(gpus=1),
             BatchStrategy(),
             step_number=0,
@@ -72,8 +72,8 @@ class TestLocalRunnerCreateDispatchHandle:
         )
         assert handle._task_runner._max_workers == 1
 
-    def test_cpu_defaults_to_pool_size(self, local_backend: LocalRunner) -> None:
-        handle = local_backend.create_dispatch_handle(
+    def test_cpu_defaults_to_pool_size(self, local_runner: LocalRunner) -> None:
+        handle = local_runner.create_dispatch_handle(
             RunnerResources(gpus=0),
             BatchStrategy(),
             step_number=0,
@@ -82,9 +82,9 @@ class TestLocalRunnerCreateDispatchHandle:
         assert handle._task_runner._max_workers == 2  # fixture default
 
     def test_explicit_max_workers_overrides_gpu(
-        self, local_backend: LocalRunner
+        self, local_runner: LocalRunner
     ) -> None:
-        handle = local_backend.create_dispatch_handle(
+        handle = local_runner.create_dispatch_handle(
             RunnerResources(gpus=1),
             BatchStrategy(max_workers=3),
             step_number=0,
@@ -94,9 +94,9 @@ class TestLocalRunnerCreateDispatchHandle:
 
     def test_explicit_max_workers_overrides_cpu_default(
         self,
-        local_backend: LocalRunner,
+        local_runner: LocalRunner,
     ) -> None:
-        handle = local_backend.create_dispatch_handle(
+        handle = local_runner.create_dispatch_handle(
             RunnerResources(gpus=0),
             BatchStrategy(max_workers=6),
             step_number=0,
@@ -107,32 +107,32 @@ class TestLocalRunnerCreateDispatchHandle:
 
 class TestLocalRunnerValidateOperation:
     def test_no_warning_for_default_resources(
-        self, local_backend: LocalRunner, mock_operation: MagicMock
+        self, local_runner: LocalRunner, mock_operation: MagicMock
     ) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            local_backend.validate_operation(mock_operation)
+            local_runner.validate_operation(mock_operation)
 
     def test_no_warning_for_gpu_only(
-        self, local_backend: LocalRunner, mock_operation: MagicMock
+        self, local_runner: LocalRunner, mock_operation: MagicMock
     ) -> None:
         mock_operation.runner_resources.gpus = 1
         mock_operation.runner_resources.extra = {}
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            local_backend.validate_operation(mock_operation)
+            local_runner.validate_operation(mock_operation)
 
     def test_warns_on_extra_kwargs(
-        self, local_backend: LocalRunner, mock_operation: MagicMock
+        self, local_runner: LocalRunner, mock_operation: MagicMock
     ) -> None:
         mock_operation.runner_resources.extra = {"partition": "gpu"}
         with pytest.warns(UserWarning, match="SLURM-specific resources"):
-            local_backend.validate_operation(mock_operation)
+            local_runner.validate_operation(mock_operation)
 
 
 class TestLocalRunnerCaptureLogs:
-    def test_capture_logs_is_noop(self, local_backend: LocalRunner) -> None:
+    def test_capture_logs_is_noop(self, local_runner: LocalRunner) -> None:
         results = [
             UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
         ]
-        local_backend.capture_logs(results, MagicMock(), None, "test_op", 1)
+        local_runner.capture_logs(results, MagicMock(), None, "test_op", 1)

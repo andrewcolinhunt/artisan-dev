@@ -55,7 +55,7 @@ class TestInitSubclassValidation:
     def test_missing_name_raises(self) -> None:
         with pytest.raises(TypeError, match="must define 'name'"):
 
-            class BadBackend(RunnerBase):
+            class BadRunner(RunnerBase):
                 worker_traits = WorkerTraits()
                 orchestrator_traits = OrchestratorTraits()
 
@@ -70,7 +70,7 @@ class TestInitSubclassValidation:
     def test_missing_worker_traits_raises(self) -> None:
         with pytest.raises(TypeError, match="must define 'worker_traits'"):
 
-            class BadBackend(RunnerBase):
+            class BadRunner(RunnerBase):
                 name = "bad"
                 orchestrator_traits = OrchestratorTraits()
 
@@ -85,7 +85,7 @@ class TestInitSubclassValidation:
     def test_missing_orchestrator_traits_raises(self) -> None:
         with pytest.raises(TypeError, match="must define 'orchestrator_traits'"):
 
-            class BadBackend(RunnerBase):
+            class BadRunner(RunnerBase):
                 name = "bad"
                 worker_traits = WorkerTraits()
 
@@ -100,7 +100,7 @@ class TestInitSubclassValidation:
     def test_valid_subclass_succeeds(self) -> None:
         from unittest.mock import MagicMock
 
-        class GoodBackend(RunnerBase):
+        class GoodRunner(RunnerBase):
             name = "good"
             worker_traits = WorkerTraits()
             orchestrator_traits = OrchestratorTraits()
@@ -111,5 +111,5 @@ class TestInitSubclassValidation:
             def capture_logs(self, results, staging_root, failure_logs_root, op, step):
                 pass
 
-        step_runner = GoodBackend()
+        step_runner = GoodRunner()
         assert step_runner.name == "good"
