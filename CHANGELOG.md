@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — Skill renames:** The artisan plugin's skill names are inverted
+  to noun-first for tab-completion grouping. `write-operation` →
+  `operation-write`, `write-composite` → `composite-write`, `write-pipeline`
+  → `pipeline-write`. Any downstream invocations of `/write-operation`,
+  `/write-composite`, `/write-pipeline` (or their `/artisan:` namespaced
+  forms) must be updated to the new names. No aliases are kept.
 - **Cache invalidation event:** `_merge_config_overrides` now emits
   `"compute_resources"` as a fourth payload key alongside `"environment"`,
   `"tool"`, and `"compute_provider"`. Two runs that differ only by
