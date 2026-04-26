@@ -538,8 +538,11 @@ def execute_step(
     )
     user_overrides = params or {}
 
-    # Merge environment + tool + compute_provider into config_overrides for hashing
-    config_overrides = _merge_config_overrides(environment, tool, compute_provider)
+    # Merge environment + tool + compute_provider + compute_resources into
+    # config_overrides for hashing
+    config_overrides = _merge_config_overrides(
+        environment, tool, compute_provider, compute_resources
+    )
 
     # Check if this is a curator operation
     if is_curator_operation(operation):
@@ -581,9 +584,10 @@ def _merge_config_overrides(
     environment: str | dict[str, Any] | Any | None,
     tool: dict[str, Any] | Any | None,
     compute_provider: str | dict[str, Any] | Any | None = None,
+    compute_resources: dict[str, Any] | Any | None = None,
 ) -> dict[str, Any] | None:
-    """Merge environment, tool, and compute_provider overrides into a single
-    dict for hashing.
+    """Merge environment, tool, compute_provider, and compute_resources
+    overrides into a single dict for hashing.
 
     Typed Pydantic models are normalized to dicts via ``model_dump`` so the
     hash payload remains JSON-serializable and dict-vs-model forms produce
@@ -603,6 +607,8 @@ def _merge_config_overrides(
         merged["tool"] = _to_dict(tool)
     if compute_provider is not None:
         merged["compute_provider"] = _to_dict(compute_provider)
+    if compute_resources is not None:
+        merged["compute_resources"] = _to_dict(compute_resources)
     return merged or None
 
 

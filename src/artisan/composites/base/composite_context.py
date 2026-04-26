@@ -18,6 +18,9 @@ from artisan.schemas.composites.composite_ref import (
     CompositeRef,
     CompositeStepHandle,
 )
+from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.operation_config.compute import ComputeProvider
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 
 if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
@@ -535,6 +538,11 @@ class ExpandedCompositeContext(CompositeContext):
         step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
+        compute_resources: dict[str, Any] | ComputeResources | None = None,
+        compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
+        skip_cache: bool = False,
+        failure_policy: FailurePolicy | None = None,
+        compact: bool = True,
     ) -> CompositeStepHandle:
         """Delegate to parent pipeline's submit().
 
@@ -547,6 +555,11 @@ class ExpandedCompositeContext(CompositeContext):
             step_runner: Step runner (forwarded to pipeline.submit).
             environment: Environment override.
             tool: Tool overrides.
+            compute_resources: Hardware resources for the compute provider.
+            compute_provider: Compute provider override (string or dict).
+            skip_cache: Bypass cache lookups for this step.
+            failure_policy: Override pipeline-level failure policy.
+            compact: Run Delta Lake compaction after commit.
 
         Returns:
             CompositeStepHandle wrapping the parent pipeline's StepFuture.
@@ -571,6 +584,11 @@ class ExpandedCompositeContext(CompositeContext):
                 step_runner,
                 environment,
                 tool,
+                compute_resources,
+                compute_provider,
+                skip_cache,
+                failure_policy,
+                compact,
             )
 
         # Regular operation — delegate to parent pipeline
@@ -578,11 +596,16 @@ class ExpandedCompositeContext(CompositeContext):
             operation,
             inputs=translated_inputs,
             params=params,
-            runner_resources=runner_resources,
-            batch_strategy=batch_strategy,
             step_runner=step_runner,
+            runner_resources=runner_resources,
+            compute_resources=compute_resources,
+            batch_strategy=batch_strategy,
             environment=environment,
             tool=tool,
+            compute_provider=compute_provider,
+            failure_policy=failure_policy,
+            compact=compact,
+            skip_cache=skip_cache,
             name=step_name,
         )
         self._child_futures.append(future)
@@ -663,39 +686,41 @@ class ExpandedCompositeContext(CompositeContext):
         step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
+        compute_resources: dict[str, Any] | ComputeResources | None = None,
+        compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
+        skip_cache: bool = False,
+        failure_policy: FailurePolicy | None = None,
+        compact: bool = True,
     ) -> CompositeStepHandle:
-        """Recursively expand a nested composite."""
+        """Recursively expand a nested composite.
+
+        Delegates to ``pipeline.submit_composite(expand=True)`` so the same
+        per-ctx.run() overrides flow through the nested composite's child
+        steps via the parent pipeline's centralized expansion path.
+        """
         from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
 
-        init_kwargs: dict[str, Any] = {}
-        if params:
-            init_kwargs["params"] = params
-        nested = composite_class(**init_kwargs)
-
-        # Build OutputReference inputs for the nested context
-        input_refs: dict[str, Any] = {}
-        for role, value in translated_inputs.items():
-            input_refs[role] = value
-
-        nested_ctx = ExpandedCompositeContext(
-            pipeline=self._pipeline,
-            input_refs=input_refs,
-            composite=nested,
-            step_name_prefix=step_name,
+        result = self._pipeline.submit_composite(
+            composite_class,
+            inputs=translated_inputs,
+            params=params,
+            name=step_name,
+            expand=True,
+            step_runner=step_runner,
+            runner_resources=runner_resources,
+            batch_strategy=batch_strategy,
+            environment=environment,
+            tool=tool,
+            compute_resources=compute_resources,
+            compute_provider=compute_provider,
+            failure_policy=failure_policy,
+            compact=compact,
+            skip_cache=skip_cache,
         )
+        assert isinstance(result, ExpandedCompositeResult)
 
-        nested.compose(nested_ctx)
-
-        # Build ExpandedCompositeResult from nested output map
-        expanded_result = ExpandedCompositeResult(
-            output_map=nested_ctx.get_output_map(),
-            output_types=nested_ctx.get_output_types(),
-        )
-
-        # Wrap as a CompositeStepHandle that delegates to the expanded result
-        # We need a special handle that can produce CompositeRefs from OutputReferences
         return _ExpandedNestedHandle(
-            expanded_result=expanded_result,
+            expanded_result=result,
             operation_outputs=getattr(composite_class, "outputs", {}),
         )
 

@@ -14,18 +14,18 @@ from artisan.orchestration.runners import (
 )
 
 
-class TestBackendNamespace:
-    def test_local_is_local_backend(self) -> None:
+class TestRunnerNamespace:
+    def test_local_is_local_runner(self) -> None:
         assert isinstance(Runner.LOCAL, LocalRunner)
 
-    def test_slurm_is_slurm_backend(self) -> None:
+    def test_slurm_is_slurm_runner(self) -> None:
         assert isinstance(Runner.SLURM, SlurmRunner)
 
-    def test_slurm_intra_is_slurm_intra_backend(self) -> None:
+    def test_slurm_intra_is_slurm_intra_runner(self) -> None:
         assert isinstance(Runner.SLURM_INTRA, SlurmIntraRunner)
 
 
-class TestResolveBackend:
+class TestResolveRunner:
     def test_resolve_string_local(self) -> None:
         result = resolve_runner("local")
         assert isinstance(result, LocalRunner)
@@ -52,6 +52,6 @@ class TestResolveBackend:
         result = resolve_runner(step_runner)
         assert result._default_max_workers == 16
 
-    def test_all_backends_are_backend_base(self) -> None:
+    def test_all_runners_are_runner_base(self) -> None:
         for name in ("local", "slurm", "slurm_intra"):
             assert isinstance(resolve_runner(name), RunnerBase)

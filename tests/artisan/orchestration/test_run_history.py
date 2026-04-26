@@ -95,6 +95,40 @@ class TestListRuns:
         with pytest.raises(TypeError):
             list_runs(pipeline_env["delta"], StorageConfig())  # type: ignore[misc]
 
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_list_runs_multiple_runs(self, mock_exec, pipeline_env):
+        """Three runs produce three rows with documented columns and ordering."""
+        for i in range(3):
+            pipeline = PipelineManager.create(
+                name=f"multi_run_test_{i}",
+                delta_root=pipeline_env["delta"],
+                staging_root=pipeline_env["staging"],
+            )
+            # skip_cache=True so each run records a distinct step row;
+            # otherwise reruns of the same op with no params dedup to the
+            # first run's pipeline_run_id.
+            pipeline.run(_IngestMockOp, inputs=None, skip_cache=True)
+
+        runs = list_runs(pipeline_env["delta"])
+        assert len(runs) == 3
+
+        # Columns documented on list_runs / StepTracker.list_runs.
+        expected_cols = {
+            "pipeline_run_id",
+            "step_count",
+            "last_status",
+            "started_at",
+            "ended_at",
+        }
+        assert expected_cols.issubset(set(runs.columns))
+
+        # Documented ordering — most-recent-first by started_at.
+        started_at = runs["started_at"].to_list()
+        assert started_at == sorted(started_at, reverse=True)
+
 
 class TestPipelineConfigPublic:
     """PipelineConfig is now part of the public artisan.orchestration surface."""

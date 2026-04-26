@@ -35,6 +35,12 @@ from artisan.orchestration.runners import Runner, RunnerBase, resolve_runner
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider
+from artisan.schemas.operation_config.compute_resources import ComputeResources
+from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult
@@ -365,8 +371,6 @@ def _validate_environment(
     A typed ``Environments`` instance is already valid by construction;
     this function only checks raw dict / string forms.
     """
-    from artisan.schemas.operation_config.environments import Environments
-
     if isinstance(environment, Environments):
         return
     if isinstance(environment, str):
@@ -415,6 +419,76 @@ def _validate_environment(
                         f"Valid: {sorted(valid_spec_keys)}"
                     )
                     raise ValueError(msg)
+        _reject_inactive_provider_config(environment, kwarg="environment")
+
+
+def _validate_compute_provider(value: dict[str, Any]) -> None:
+    """Reject unknown keys and silent inactive-provider configuration.
+
+    Args:
+        value: User-supplied compute_provider override dict.
+
+    Raises:
+        ValueError: If keys are unrecognized or if the dict configures
+            a provider that is not the active one.
+    """
+    from pydantic import ValidationError
+
+    try:
+        ComputeProvider.model_validate(value)
+    except ValidationError as e:
+        msg = f"Unknown compute_provider override key(s): {e}"
+        raise ValueError(msg) from e
+    _reject_inactive_provider_config(value, kwarg="compute_provider")
+
+
+def _validate_compute_resources(value: dict[str, Any]) -> None:
+    """Reject unknown keys on compute_resources override.
+
+    Args:
+        value: User-supplied compute_resources override dict.
+
+    Raises:
+        ValueError: If keys are unrecognized.
+    """
+    from pydantic import ValidationError
+
+    try:
+        ComputeResources.model_validate(value)
+    except ValidationError as e:
+        msg = f"Unknown compute_resources override key(s): {e}"
+        raise ValueError(msg) from e
+
+
+def _reject_inactive_provider_config(value: dict[str, Any], *, kwarg: str) -> None:
+    """Raise if dict configures a provider without setting it active.
+
+    Closes the silent case-3 misconfiguration: a user passes
+    ``environment={"docker": {"image": "..."}}`` thinking they have
+    configured docker, but the active selector still points at local.
+
+    Args:
+        value: The user-supplied dict.
+        kwarg: The kwarg name (for the error message).
+
+    Raises:
+        ValueError: If a provider key carries a non-empty config dict
+            and ``active`` is not set to that provider.
+    """
+    provider_keys_with_config = {
+        k for k, v in value.items() if k != "active" and isinstance(v, dict) and v
+    }
+    active = value.get("active")
+    inactive_configured = provider_keys_with_config - ({active} if active else set())
+    if inactive_configured:
+        msg = (
+            f"Configured inactive provider(s) "
+            f"{sorted(inactive_configured)!r} on {kwarg!r} with "
+            f"active={active!r}. Set 'active' to the provider you want "
+            f"to configure, or pass a string to select without "
+            f"configuring."
+        )
+        raise ValueError(msg)
 
 
 def _validate_tool(
@@ -439,6 +513,118 @@ def _validate_tool(
     if unknown:
         msg = f"Unknown tool keys: {sorted(unknown)}. Valid keys: {sorted(valid_keys)}"
         raise ValueError(msg)
+
+
+def _coerce_runner_resources(
+    value: dict[str, Any] | RunnerResources | None,
+) -> dict[str, Any] | None:
+    """Normalize typed-or-dict RunnerResources input to a dict.
+
+    Args:
+        value: RunnerResources instance, dict, or None.
+
+    Returns:
+        Dict suitable for downstream override merging, or None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, RunnerResources):
+        return value.model_dump(exclude_defaults=True)
+    return value
+
+
+def _coerce_compute_resources(
+    value: dict[str, Any] | ComputeResources | None,
+) -> dict[str, Any] | None:
+    """Normalize typed-or-dict ComputeResources input to a dict.
+
+    Args:
+        value: ComputeResources instance, dict, or None.
+
+    Returns:
+        Dict suitable for downstream override merging, or None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, ComputeResources):
+        return value.model_dump(exclude_defaults=True)
+    return value
+
+
+def _coerce_batch_strategy(
+    value: dict[str, Any] | BatchStrategy | None,
+) -> dict[str, Any] | None:
+    """Normalize typed-or-dict BatchStrategy input to a dict.
+
+    Args:
+        value: BatchStrategy instance, dict, or None.
+
+    Returns:
+        Dict suitable for downstream override merging, or None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, BatchStrategy):
+        return value.model_dump(exclude_defaults=True)
+    return value
+
+
+def _coerce_tool(
+    value: dict[str, Any] | ToolSpec | None,
+) -> dict[str, Any] | None:
+    """Normalize typed-or-dict ToolSpec input to a dict.
+
+    Args:
+        value: ToolSpec instance, dict, or None.
+
+    Returns:
+        Dict suitable for downstream override merging, or None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, ToolSpec):
+        return value.model_dump(exclude_defaults=True)
+    return value
+
+
+def _coerce_environment(
+    value: str | dict[str, Any] | Environments | None,
+) -> str | dict[str, Any] | None:
+    """Normalize typed-or-dict-or-str Environments input.
+
+    String form (active-provider selector) passes through unchanged.
+
+    Args:
+        value: Environments instance, dict, str, or None.
+
+    Returns:
+        Str, dict, or None for downstream override merging.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, Environments):
+        return value.model_dump(exclude_defaults=True)
+    return value
+
+
+def _coerce_compute_provider(
+    value: str | dict[str, Any] | ComputeProvider | None,
+) -> str | dict[str, Any] | None:
+    """Normalize typed-or-dict-or-str ComputeProvider input.
+
+    String form (active-provider selector) passes through unchanged.
+
+    Args:
+        value: ComputeProvider instance, dict, str, or None.
+
+    Returns:
+        Str, dict, or None for downstream override merging.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, ComputeProvider):
+        return value.model_dump(exclude_defaults=True)
+    return value
 
 
 def _validate_input_roles(
@@ -1103,12 +1289,12 @@ class PipelineManager:
         ) = None,
         params: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
-        runner_resources: dict[str, Any] | Any | None = None,
-        batch_strategy: dict[str, Any] | Any | None = None,
-        environment: str | dict[str, Any] | Any | None = None,
-        tool: dict[str, Any] | Any | None = None,
-        compute_provider: str | dict[str, Any] | Any | None = None,
-        compute_resources: dict[str, Any] | Any | None = None,
+        runner_resources: dict[str, Any] | RunnerResources | None = None,
+        batch_strategy: dict[str, Any] | BatchStrategy | None = None,
+        environment: str | dict[str, Any] | Environments | None = None,
+        tool: dict[str, Any] | ToolSpec | None = None,
+        compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
+        compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1169,12 +1355,12 @@ class PipelineManager:
         ) = None,
         params: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
-        runner_resources: dict[str, Any] | Any | None = None,
-        batch_strategy: dict[str, Any] | Any | None = None,
-        environment: str | dict[str, Any] | Any | None = None,
-        tool: dict[str, Any] | Any | None = None,
-        compute_provider: str | dict[str, Any] | Any | None = None,
-        compute_resources: dict[str, Any] | Any | None = None,
+        runner_resources: dict[str, Any] | RunnerResources | None = None,
+        batch_strategy: dict[str, Any] | BatchStrategy | None = None,
+        environment: str | dict[str, Any] | Environments | None = None,
+        tool: dict[str, Any] | ToolSpec | None = None,
+        compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
+        compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1208,6 +1394,15 @@ class PipelineManager:
         """
         from artisan.composites.base.composite_definition import CompositeDefinition
 
+        # 0. Normalize typed-or-dict inputs to dict-or-str at the boundary so
+        #    every downstream consumer sees a single shape.
+        runner_resources = _coerce_runner_resources(runner_resources)
+        compute_resources = _coerce_compute_resources(compute_resources)
+        batch_strategy = _coerce_batch_strategy(batch_strategy)
+        environment = _coerce_environment(environment)
+        tool = _coerce_tool(tool)
+        compute_provider = _coerce_compute_provider(compute_provider)
+
         # 1. Reject composites at the boundary — they have a separate surface
         #    (``submit_composite``/``run_composite``) so composite-only kwargs
         #    don't pollute operation signatures.
@@ -1230,6 +1425,8 @@ class PipelineManager:
             batch_strategy,
             environment,
             tool,
+            compute_provider,
+            compute_resources,
         )
 
         step_name = name or operation.name
@@ -1244,7 +1441,7 @@ class PipelineManager:
         step_number = self._current_step
 
         # 4. Instantiate the operation with merged defaults + overrides to
-        #    compute_provider a deterministic step_spec_id (content hash of operation
+        #    compute a deterministic step_spec_id (content hash of operation
         #    name, params, input provenance, and config overrides). This ID
         #    drives the step-level cache.
         step_spec_id, temp_instance = self._prepare_step_spec(
@@ -1255,6 +1452,7 @@ class PipelineManager:
             environment,
             tool,
             compute_provider,
+            compute_resources,
             step_number,
             inputs,
         )
@@ -1326,6 +1524,8 @@ class PipelineManager:
         batch_strategy: dict[str, Any] | None,
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
+        compute_provider: str | dict[str, Any] | None = None,
+        compute_resources: dict[str, Any] | None = None,
     ) -> None:
         """Validate all overrides against the operation (fail-fast).
 
@@ -1345,6 +1545,10 @@ class PipelineManager:
             _validate_environment(operation, environment)
         if tool:
             _validate_tool(operation, tool)
+        if isinstance(compute_provider, dict):
+            _validate_compute_provider(compute_provider)
+        if isinstance(compute_resources, dict):
+            _validate_compute_resources(compute_resources)
         _validate_input_roles(operation, inputs)
         _validate_required_inputs(operation, inputs)
         _validate_input_types(operation, inputs)
@@ -1405,10 +1609,11 @@ class PipelineManager:
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
         compute_provider: str | dict[str, Any] | None,
+        compute_resources: dict[str, Any] | None,
         step_number: int,
         inputs: Any,
     ) -> tuple[str, OperationDefinition]:
-        """Instantiate operation and compute_provider deterministic step spec ID.
+        """Instantiate operation and compute deterministic step spec ID.
 
         The step_spec_id is a content hash of (operation name, step number,
         merged params, upstream spec IDs, and config overrides). Two runs
@@ -1432,6 +1637,7 @@ class PipelineManager:
             environment,
             tool,
             compute_provider,
+            compute_resources=compute_resources,
         )
         if "params" in type(temp_instance).model_fields:
             full_params = temp_instance.params.model_dump(mode="json")  # type: ignore[attr-defined]
@@ -1448,7 +1654,9 @@ class PipelineManager:
         # TODO: _merge_config_overrides should not start with _
         from artisan.orchestration.engine.step_executor import _merge_config_overrides
 
-        config_overrides = _merge_config_overrides(environment, tool, compute_provider)
+        config_overrides = _merge_config_overrides(
+            environment, tool, compute_provider, compute_resources
+        )
 
         input_spec = self._build_input_spec(inputs)
         step_spec_id = compute_step_spec_id(
@@ -1830,12 +2038,12 @@ class PipelineManager:
         expand: bool = False,
         intermediates: Literal["discard", "persist", "expose"] = "discard",
         step_runner: str | RunnerBase | None = None,
-        runner_resources: dict[str, Any] | Any | None = None,
-        batch_strategy: dict[str, Any] | Any | None = None,
-        environment: str | dict[str, Any] | Any | None = None,
-        tool: dict[str, Any] | Any | None = None,
-        compute_provider: str | dict[str, Any] | Any | None = None,
-        compute_resources: dict[str, Any] | Any | None = None,
+        runner_resources: dict[str, Any] | RunnerResources | None = None,
+        batch_strategy: dict[str, Any] | BatchStrategy | None = None,
+        environment: str | dict[str, Any] | Environments | None = None,
+        tool: dict[str, Any] | ToolSpec | None = None,
+        compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
+        compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
@@ -1887,6 +2095,14 @@ class PipelineManager:
         from artisan.composites.base.composite_definition import CompositeDefinition
         from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
 
+        # Normalize typed-or-dict inputs to dict-or-str at the boundary.
+        runner_resources = _coerce_runner_resources(runner_resources)
+        compute_resources = _coerce_compute_resources(compute_resources)
+        batch_strategy = _coerce_batch_strategy(batch_strategy)
+        environment = _coerce_environment(environment)
+        tool = _coerce_tool(tool)
+        compute_provider = _coerce_compute_provider(compute_provider)
+
         if not (
             isinstance(composite, type) and issubclass(composite, CompositeDefinition)
         ):
@@ -1912,6 +2128,10 @@ class PipelineManager:
                 step_runner=step_runner,
                 runner_resources=runner_resources,
                 batch_strategy=batch_strategy,
+                compute_resources=compute_resources,
+                compute_provider=compute_provider,
+                environment=environment,
+                tool=tool,
                 intermediates=intermediates,
                 failure_policy=failure_policy,
                 compact=compact,
@@ -1965,12 +2185,12 @@ class PipelineManager:
         expand: bool = False,
         intermediates: Literal["discard", "persist", "expose"] = "discard",
         step_runner: str | RunnerBase | None = None,
-        runner_resources: dict[str, Any] | Any | None = None,
-        batch_strategy: dict[str, Any] | Any | None = None,
-        environment: str | dict[str, Any] | Any | None = None,
-        tool: dict[str, Any] | Any | None = None,
-        compute_provider: str | dict[str, Any] | Any | None = None,
-        compute_resources: dict[str, Any] | Any | None = None,
+        runner_resources: dict[str, Any] | RunnerResources | None = None,
+        batch_strategy: dict[str, Any] | BatchStrategy | None = None,
+        environment: str | dict[str, Any] | Environments | None = None,
+        tool: dict[str, Any] | ToolSpec | None = None,
+        compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
+        compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
@@ -2025,6 +2245,10 @@ class PipelineManager:
         compact: bool,
         name: str,
         skip_cache: bool = False,
+        compute_resources: dict[str, Any] | None = None,
+        compute_provider: str | dict[str, Any] | None = None,
+        environment: str | dict[str, Any] | None = None,
+        tool: dict[str, Any] | None = None,
     ) -> StepFuture:
         """Internal: dispatch a composite step for collapsed execution.
 
@@ -2040,6 +2264,10 @@ class PipelineManager:
             compact: Run Delta Lake compaction.
             name: Step name.
             skip_cache: Bypass cache lookups for this step.
+            compute_resources: Composite-level compute resource overrides.
+            compute_provider: Composite-level compute provider override.
+            environment: Composite-level environment override.
+            tool: Composite-level tool override.
 
         Returns:
             StepFuture for downstream wiring.

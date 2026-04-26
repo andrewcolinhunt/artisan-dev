@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import pytest
 
+from artisan.orchestration.engine.step_executor import _merge_config_overrides
 from artisan.utils.hashing import (
     compute_composite_spec_id,
     compute_step_spec_id,
@@ -117,6 +118,102 @@ def test_step_spec_id_input_order_independent() -> None:
         config_overrides=None,
     )
     assert spec_a == spec_b
+
+
+# ---------------------------------------------------------------------------
+# Step spec hashes via _merge_config_overrides (end-to-end)
+# ---------------------------------------------------------------------------
+#
+# The fixtures above call compute_step_spec_id directly with hand-built
+# config_overrides dicts, so they lock the hashing primitive but do not
+# exercise _merge_config_overrides. A change to the merge function's
+# payload shape (e.g. adding "compute_resources" as a fourth payload
+# key, dropping a key, renaming one) would not flip any recorded hash
+# above.
+#
+# These end-to-end fixtures close that gap by flowing inputs through
+# _merge_config_overrides before feeding the result into
+# compute_step_spec_id. Hashes recorded against PR-A's tip
+# (ddf5fc2c2c6bb6ad2becf2ee9848bbc73ce97239), which widened the merge
+# payload to include "compute_resources" as the fourth key.
+
+RECORDED_MERGE_HASHES = [
+    pytest.param(
+        {
+            "merge_kwargs": {
+                "environment": None,
+                "tool": None,
+                "compute_provider": "slurm",
+                "compute_resources": None,
+            },
+            "spec_kwargs": {
+                "operation_name": "data_transformer",
+                "step_number": 1,
+                "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
+                "input_spec": {"dataset": ("upstream_id_aaa", "merged")},
+            },
+        },
+        "cc62090baabfcc4ef7b445603960f25d",
+        id="step_runner_slurm",
+    ),
+    pytest.param(
+        {
+            "merge_kwargs": {
+                "environment": None,
+                "tool": None,
+                "compute_provider": None,
+                "compute_resources": None,
+            },
+            "spec_kwargs": {
+                "operation_name": "data_transformer",
+                "step_number": 1,
+                "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
+                "input_spec": {"dataset": ("upstream_id_aaa", "merged")},
+            },
+        },
+        "b9bbd19393a8fc996a4cd37ee967918b",
+        id="runner_resources_cpus_4",
+    ),
+    pytest.param(
+        {
+            "merge_kwargs": {
+                "environment": None,
+                "tool": None,
+                "compute_provider": None,
+                "compute_resources": {"gpu": "A100", "memory_gb": 32},
+            },
+            "spec_kwargs": {
+                "operation_name": "data_transformer",
+                "step_number": 1,
+                "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
+                "input_spec": {"dataset": ("upstream_id_aaa", "merged")},
+            },
+        },
+        "ec800f042ef2d895a68d6c0df5a9dfd4",
+        id="split_hardware",
+    ),
+]
+
+
+@pytest.mark.parametrize(("inputs", "expected"), RECORDED_MERGE_HASHES)
+def test_step_spec_id_through_merge_config_overrides_matches_recorded_hash(
+    inputs: dict, expected: str
+) -> None:
+    """End-to-end: _merge_config_overrides → compute_step_spec_id.
+
+    Locks the merge function's payload shape AND the primitive's
+    hashing semantics together. A change to either layer (renaming a
+    payload key, adding a new one like PR-A's compute_resources,
+    reordering canonicalization) flips these digests.
+
+    A failure means callers' cached step results will miss-and-rerun.
+    Confirm that's intended before updating the constants.
+    """
+    config_overrides = _merge_config_overrides(**inputs["merge_kwargs"])
+    actual = compute_step_spec_id(
+        **inputs["spec_kwargs"], config_overrides=config_overrides
+    )
+    assert actual == expected
 
 
 # ---------------------------------------------------------------------------
