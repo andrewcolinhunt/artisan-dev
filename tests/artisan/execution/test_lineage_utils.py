@@ -412,16 +412,13 @@ class TestBuildCandidatesFromOutputs:
         assert candidates[0][1] == finalized_input_artifact.artifact_id
         assert candidates[0][2] == "data"
 
-    def test_builds_candidates_from_draft_outputs(self, draft_output_artifact):
-        """Should build candidates from draft outputs with __draft__ prefix."""
+    def test_unfinalized_output_raises_runtime_error(self, draft_output_artifact):
+        """Unfinalized output artifacts raise RuntimeError to surface ordering bugs."""
         output_artifacts = {"data": [draft_output_artifact]}
-        candidates = _build_candidates_from_outputs(output_artifacts, ["data"])
-
-        assert len(candidates) == 1
-        assert candidates[0][0] == "sample_001_processed"  # Stem only
-        # Draft artifacts get __draft__ prefix using stem
-        assert candidates[0][1] == "__draft__sample_001_processed"
-        assert candidates[0][2] == "data"
+        with pytest.raises(RuntimeError) as exc_info:
+            _build_candidates_from_outputs(output_artifacts, ["data"])
+        assert "no artifact_id" in str(exc_info.value)
+        assert "data" in str(exc_info.value)
 
 
 # =============================================================================
@@ -813,20 +810,17 @@ class TestBuildEdgesBasicConversion:
 
 
 # =============================================================================
-# Test build_edges - Draft Reference Resolution
+# Test build_edges - Source Reference Resolution
 # =============================================================================
 
 
 class TestBuildEdgesDraftReferenceResolution:
-    """Tests for build_edges resolving __draft__ references.
+    """Tests for build_edges resolving lineage source references.
 
-    Note: The __draft__ prefix is an internal format used by
-    capture_lineage_metadata for temporary tracking before finalization.
-    It should NOT be used in actual LineageMapping models.
-
-    The build_edges() function handles the case where lineage was captured
-    BEFORE finalization and the draft references need resolution. This
-    works via the name_to_id lookup from finalized_artifacts.
+    LineageMapping declares its source either by ``source_artifact_id``
+    (for input sources whose IDs are known) or by ``source_original_name``
+    (for co-produced output sources, resolved against finalized outputs
+    in the role named by ``source_role``).
     """
 
     def test_output_to_output_resolved_after_finalization(
@@ -881,6 +875,126 @@ class TestBuildEdgesDraftReferenceResolution:
         assert energy_edges[0].source == finalized_structure.artifact_id
         assert energy_edges[0].target == finalized_metric.artifact_id
         assert energy_edges[0].source_role == "processed"
+
+
+# =============================================================================
+# Test build_edges - source_original_name resolution
+# =============================================================================
+
+
+class TestBuildEdgesSourceOriginalName:
+    """Tests for build_edges resolving source_original_name to finalized IDs."""
+
+    def test_resolves_source_original_name_to_finalized_id(self):
+        """source_original_name should resolve to the matching artifact_id in source_role."""
+        structure = MetricArtifact.draft(
+            content={"processed": True},
+            original_name="1abc_out.json",
+            step_number=1,
+        ).finalize()
+        metric = MetricArtifact.draft(
+            content={"energy": -100.0},
+            original_name="1abc_out_energy.json",
+            step_number=1,
+        ).finalize()
+
+        finalized_artifacts = {
+            "structures": [structure],
+            "metrics": [metric],
+        }
+        lineage = {
+            "metrics": [
+                LineageMapping(
+                    draft_original_name=metric.original_name,
+                    source_original_name=structure.original_name,
+                    source_role="structures",
+                )
+            ]
+        }
+        output_specs = {
+            "structures": OutputSpec(artifact_type=ArtifactTypes.METRIC),
+            "metrics": OutputSpec(artifact_type=ArtifactTypes.METRIC),
+        }
+
+        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+
+        assert len(edges) == 1
+        assert edges[0].source == structure.artifact_id
+        assert edges[0].target == metric.artifact_id
+        assert edges[0].source_role == "structures"
+        assert edges[0].target_role == "metrics"
+
+    def test_missing_source_name_in_role_raises(self):
+        """Unresolvable source_original_name raises ValueError naming the role."""
+        metric = MetricArtifact.draft(
+            content={"energy": -100.0},
+            original_name="1abc_out_energy.json",
+            step_number=1,
+        ).finalize()
+
+        finalized_artifacts = {"metrics": [metric]}
+        lineage = {
+            "metrics": [
+                LineageMapping(
+                    draft_original_name=metric.original_name,
+                    source_original_name="missing",
+                    source_role="structures",
+                )
+            ]
+        }
+        output_specs = {"metrics": OutputSpec(artifact_type=ArtifactTypes.METRIC)}
+
+        with pytest.raises(ValueError) as exc_info:
+            build_edges(lineage, finalized_artifacts, {}, output_specs)
+
+        msg = str(exc_info.value)
+        assert "missing" in msg
+        assert "structures" in msg
+        assert "source_original_name" in msg
+
+    def test_per_role_scoping_resolves_correct_artifact(self):
+        """Same original_name in two roles resolves via source_role only."""
+        same_name_in_structures = MetricArtifact.draft(
+            content={"variant": "structures"},
+            original_name="1abc.json",
+            step_number=1,
+        ).finalize()
+        same_name_in_other = MetricArtifact.draft(
+            content={"variant": "other"},
+            original_name="1abc.json",
+            step_number=1,
+        ).finalize()
+        metric = MetricArtifact.draft(
+            content={"energy": -100.0},
+            original_name="1abc_energy.json",
+            step_number=1,
+        ).finalize()
+
+        finalized_artifacts = {
+            "structures": [same_name_in_structures],
+            "other": [same_name_in_other],
+            "metrics": [metric],
+        }
+        lineage = {
+            "metrics": [
+                LineageMapping(
+                    draft_original_name=metric.original_name,
+                    source_original_name="1abc",
+                    source_role="other",
+                )
+            ]
+        }
+        output_specs = {
+            "structures": OutputSpec(artifact_type=ArtifactTypes.METRIC),
+            "other": OutputSpec(artifact_type=ArtifactTypes.METRIC),
+            "metrics": OutputSpec(artifact_type=ArtifactTypes.METRIC),
+        }
+
+        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+
+        assert len(edges) == 1
+        assert edges[0].source == same_name_in_other.artifact_id
+        assert edges[0].source != same_name_in_structures.artifact_id
 
 
 # =============================================================================
@@ -1080,12 +1194,12 @@ class TestBuildEdgesPerRoleResolution:
         assert role_a_edges[0].target == artifact_a.artifact_id
         assert role_b_edges[0].target == artifact_b.artifact_id
 
-    def test_output_to_output_draft_uses_source_role(self):
-        """Draft source resolution should use mapping.source_role, not current role.
+    def test_output_to_output_uses_source_role(self):
+        """Source resolution should use mapping.source_role, not current role.
 
-        When an Output->Output edge has a __draft__ source, the source should be
-        resolved from the role specified in mapping.source_role, not the role
-        being iterated.
+        When an Output->Output edge references a co-produced source, the
+        source should be resolved from the role specified in
+        mapping.source_role, not the role being iterated.
         """
         # Source output: processed data
         processed_artifact = MetricArtifact.draft(
@@ -1106,7 +1220,7 @@ class TestBuildEdgesPerRoleResolution:
             "energy": [energy_artifact],
         }
 
-        # Lineage with __draft__ reference pointing to source in "processed" role
+        # Lineage referencing a source in the "processed" role
         lineage = {
             "energy": [
                 LineageMapping(

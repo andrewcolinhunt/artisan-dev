@@ -108,11 +108,27 @@ def validate_lineage_integrity(
         for artifacts in output_artifacts.values()
         for artifact in artifacts
     }
+    output_names_by_role: dict[str, set[str]] = {}
+    for role, artifacts in output_artifacts.items():
+        output_names_by_role[role] = {
+            artifact.original_name
+            for artifact in artifacts
+            if getattr(artifact, "original_name", None)
+        }
 
     for mappings in lineage.values():
         seen_drafts: set[str] = set()
         for mapping in mappings:
-            if mapping.source_artifact_id not in all_source_ids:
+            if mapping.source_original_name is not None:
+                role_names = output_names_by_role.get(mapping.source_role, set())
+                if mapping.source_original_name not in role_names:
+                    msg = (
+                        f"Lineage references non-existent output source: "
+                        f"'{mapping.source_original_name}' "
+                        f"in role '{mapping.source_role}'"
+                    )
+                    raise LineageIntegrityError(msg)
+            elif mapping.source_artifact_id not in all_source_ids:
                 msg = f"Lineage references non-existent source: {mapping.source_artifact_id}"
                 raise LineageIntegrityError(msg)
             if mapping.draft_original_name not in output_names:
