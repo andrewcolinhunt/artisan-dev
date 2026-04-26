@@ -30,7 +30,7 @@ class TestCreateRouter:
 
     def test_unknown_config_raises(self):
         config = ComputeConfig()
-        with pytest.raises(ValueError, match="Unknown compute_provider config"):
+        with pytest.raises(ValueError, match="Unknown compute provider config"):
             create_router(config)
 
 

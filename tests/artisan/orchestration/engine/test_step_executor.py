@@ -327,11 +327,16 @@ class TestInstantiateOperationComputeOverrides:
         assert op.compute_provider.active == "modal"
 
     def test_instantiate_operation_compute_dict_merges_existing_modal(self):
-        """Partial dict preserves existing fields on the nested config."""
+        """Partial dict preserves existing fields on the nested config.
+
+        Hardware fields (gpu, memory_gb, timeout) live on
+        ``ComputeResources``; ``ModalComputeConfig`` carries Modal-specific
+        non-hardware fields like ``retries`` and ``min_containers``.
+        """
 
         class _ModalOp(_SimpleCreatorOp):
             compute_provider: ComputeProvider = ComputeProvider(
-                active="modal", modal=ModalComputeConfig(gpu="A10G", memory_gb=16)
+                active="modal", modal=ModalComputeConfig(retries=5, min_containers=2)
             )
 
         result = instantiate_operation(
@@ -339,8 +344,7 @@ class TestInstantiateOperationComputeOverrides:
             params=None,
             compute_provider={"modal": {"min_containers": 4}},
         )
-        assert result.compute_provider.modal.gpu == "A10G"
-        assert result.compute_provider.modal.memory_gb == 16
+        assert result.compute_provider.modal.retries == 5
         assert result.compute_provider.modal.min_containers == 4
 
     def test_instantiate_operation_compute_string_override(self):

@@ -11,8 +11,8 @@ from artisan.execution.models.execution_composite import (
     CompositeIntermediates,
     ExecutionComposite,
 )
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -87,8 +87,8 @@ class TestExecutionComposite:
             inputs={"data": ["a" * 32]},
             step_number=1,
             execution_spec_id="spec456",
-            resources=ResourceConfig(cpus=4),
-            execution=ExecutionConfig(artifacts_per_unit=10),
+            runner_resources=RunnerResources(cpus=4),
+            batch_strategy=BatchStrategy(artifacts_per_unit=10),
             intermediates=CompositeIntermediates.PERSIST,
         )
         data = pickle.dumps(ec)
@@ -97,7 +97,7 @@ class TestExecutionComposite:
         assert restored.composite.name == "test_transport_simple"
         assert restored.inputs == {"data": ["a" * 32]}
         assert restored.step_number == 1
-        assert restored.resources.cpus == 4
+        assert restored.runner_resources.cpus == 4
         assert restored.intermediates == CompositeIntermediates.PERSIST
 
     def test_defaults(self):
@@ -107,6 +107,6 @@ class TestExecutionComposite:
             step_number=0,
             execution_spec_id="x",
         )
-        assert ec.resources.cpus == 1
-        assert ec.execution.artifacts_per_unit == 1
+        assert ec.runner_resources.cpus == 1
+        assert ec.batch_strategy.artifacts_per_unit == 1
         assert ec.intermediates == CompositeIntermediates.DISCARD

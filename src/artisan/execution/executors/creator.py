@@ -121,7 +121,10 @@ def run_creator_lifecycle(
     with phase_timer("execute", prepped.timings):
         if compute_router is None:
             config = prepped.operation.compute_provider.current()
-            compute_router = create_router(config)
+            compute_router = create_router(
+                config,
+                compute_resources=prepped.operation.compute_resources,
+            )
         try:
             raw_result = compute_router.route_execute(
                 prepped.operation,

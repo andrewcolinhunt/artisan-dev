@@ -401,14 +401,14 @@ class TestNoOverrides:
         instance = instantiate_operation(
             MockOpWithParams,
             params=None,
-            resources=None,
-            execution=None,
+            runner_resources=None,
+            batch_strategy=None,
             environment=None,
             tool=None,
         )
         assert instance.params.count == 1
-        assert instance.resources.cpus == 1
-        assert instance.execution.artifacts_per_unit == 1
+        assert instance.runner_resources.cpus == 1
+        assert instance.batch_strategy.artifacts_per_unit == 1
 
 
 # =============================================================================

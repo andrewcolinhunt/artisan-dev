@@ -1,16 +1,16 @@
-"""Tests for ResourceConfig."""
+"""Tests for RunnerResources."""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
-class TestResourceConfig:
+class TestRunnerResources:
     def test_defaults(self):
-        rc = ResourceConfig()
+        rc = RunnerResources()
         assert rc.cpus == 1
         assert rc.memory_gb == 4
         assert rc.gpus == 0
@@ -18,7 +18,7 @@ class TestResourceConfig:
         assert rc.extra == {}
 
     def test_non_default(self):
-        rc = ResourceConfig(
+        rc = RunnerResources(
             cpus=4,
             memory_gb=32,
             gpus=2,
@@ -33,30 +33,30 @@ class TestResourceConfig:
 
     def test_cpus_ge_1(self):
         with pytest.raises(ValidationError):
-            ResourceConfig(cpus=0)
+            RunnerResources(cpus=0)
 
     def test_memory_gb_ge_1(self):
         with pytest.raises(ValidationError):
-            ResourceConfig(memory_gb=0)
+            RunnerResources(memory_gb=0)
 
     def test_gpus_ge_0(self):
         with pytest.raises(ValidationError):
-            ResourceConfig(gpus=-1)
+            RunnerResources(gpus=-1)
 
     def test_model_copy_update(self):
-        rc = ResourceConfig()
+        rc = RunnerResources()
         updated = rc.model_copy(update={"memory_gb": 64})
         assert updated.memory_gb == 64
         assert rc.memory_gb == 4  # original unchanged
 
     def test_round_trip(self):
-        rc = ResourceConfig(cpus=4, gpus=1, memory_gb=16)
+        rc = RunnerResources(cpus=4, gpus=1, memory_gb=16)
         data = rc.model_dump()
-        restored = ResourceConfig.model_validate(data)
+        restored = RunnerResources.model_validate(data)
         assert restored == rc
 
     def test_extra_isolation(self):
-        rc1 = ResourceConfig()
-        rc2 = ResourceConfig()
+        rc1 = RunnerResources()
+        rc2 = RunnerResources()
         rc1.extra["key"] = "value"
         assert rc2.extra == {}

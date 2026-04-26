@@ -23,8 +23,8 @@ from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import GroupByStrategy
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -68,8 +68,8 @@ class DualInputLineage(OperationDefinition):
     }
     group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
 
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="dual_input_lineage")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_lineage")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
@@ -143,8 +143,8 @@ class AssociatedMetricConsumer(OperationDefinition):
         ),
     }
 
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="associated_metric_consumer")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="associated_metric_consumer")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         result = {}

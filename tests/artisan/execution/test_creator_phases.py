@@ -13,7 +13,10 @@ import pytest
 import xxhash
 
 from artisan.execution.compute.local import LocalComputeRouter
-from artisan.execution.executors.creator import LifecycleResult, run_creator_lifecycle
+from artisan.execution.executors.creator import (
+    LifecycleResult,
+    run_creator_lifecycle,
+)
 from artisan.execution.executors.creator_phases import (
     PreppedUnit,
     _is_under_local_dir,

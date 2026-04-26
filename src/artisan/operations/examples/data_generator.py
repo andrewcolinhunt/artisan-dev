@@ -14,9 +14,9 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -72,10 +72,10 @@ class DataGenerator(OperationDefinition):
     params: Params = Params()
 
     # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(  # type: ignore[call-arg]  # pydantic defaults
         units_per_worker=100, job_name="data_generator"
     )
 

@@ -26,11 +26,12 @@ from artisan.operations.base._role_docs import (
     validate_role_enums,
 )
 from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, CuratorResult
-from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.operation_config.compute import ComputeProvider
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -53,8 +54,8 @@ class OperationDefinition(BaseModel):
         description (str): Human-readable summary shown in docs and logs.
         inputs (dict[str, InputSpec]): Named input specifications.
         outputs (dict[str, OutputSpec]): Named output specifications.
-        resources (ResourceConfig): Hardware resource allocation for SLURM jobs.
-        execution (ExecutionConfig): Batching and scheduling configuration.
+        resources (RunnerResources): Hardware resource allocation for SLURM jobs.
+        execution (BatchStrategy): Batching and scheduling configuration.
     """
 
     model_config = ConfigDict(
@@ -174,17 +175,21 @@ class OperationDefinition(BaseModel):
     environments: Environments = Environments()
     """Multi-environment configuration. Selects which runtime wraps commands."""
 
-    # ---------- Compute ----------
+    # ---------- Compute provider ----------
     compute_provider: ComputeProvider = ComputeProvider()
-    """Compute routing configuration. Selects where execute() runs."""
+    """Compute provider routing. Selects where execute() runs (local/Modal)."""
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig()  # type: ignore[call-arg]
-    """Hardware resource allocation for SLURM jobs."""
+    # ---------- Compute resources ----------
+    compute_resources: ComputeResources = ComputeResources()
+    """Hardware resources requested from the compute provider (Modal)."""
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig()  # type: ignore[call-arg]
-    """Batching and scheduling configuration."""
+    # ---------- Runner resources ----------
+    runner_resources: RunnerResources = RunnerResources()  # type: ignore[call-arg]
+    """Hardware resources for the step runner (local / SLURM)."""
+
+    # ---------- Batch strategy ----------
+    batch_strategy: BatchStrategy = BatchStrategy()  # type: ignore[call-arg]
+    """Batching and scheduling — how artifacts are sliced into units/workers."""
 
     # ---------- Lifecycle ----------
     def preprocess(self, _inputs: PreprocessInput) -> dict[str, Any]:

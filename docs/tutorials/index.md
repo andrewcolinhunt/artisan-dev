@@ -44,7 +44,7 @@ configuration.
 - [Resume and Caching](execution/02-resume-and-caching.ipynb) (~15 min) --
   List runs, resume pipelines, and step-level caching
 - [Batching and Performance](execution/03-batching-and-performance.ipynb) (~20 min) --
-  Two-level batching model, ExecutionConfig fields, and tuning guidelines
+  Two-level batching model, BatchStrategy fields, and tuning guidelines
 - [Error Handling in Practice](execution/04-error-visibility.ipynb) (~15 min) --
   Runtime failures, failure logs, FailurePolicy, and empty input cascades
 - [Storage Layout and Logging](execution/05-storage-and-logging.ipynb) (~15 min) --

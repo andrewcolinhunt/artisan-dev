@@ -603,13 +603,13 @@ Set defaults on the class. Override per-step at the pipeline level:
 ```python
 class HeavyOp(OperationDefinition):
     name = "heavy_op"
-    resources: ResourceConfig = ResourceConfig(
+    resources: RunnerResources = RunnerResources(
         cpus=4,
         memory_gb=32,
         gpus=1,
         extra={"partition": "gpu"},
     )
-    execution: ExecutionConfig = ExecutionConfig(
+    execution: BatchStrategy = BatchStrategy(
         artifacts_per_unit=5,
         estimated_seconds=3600.0,
     )

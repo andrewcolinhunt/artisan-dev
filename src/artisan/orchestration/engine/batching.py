@@ -23,11 +23,11 @@ def get_batch_config(
     Returns:
         BatchConfig with artifacts_per_unit and units_per_worker.
     """
-    artifacts_per_unit = operation.execution.artifacts_per_unit
-    units_per_worker = operation.execution.units_per_worker
+    artifacts_per_unit = operation.batch_strategy.artifacts_per_unit
+    units_per_worker = operation.batch_strategy.units_per_worker
 
     # Optional cap from execution config
-    max_artifacts = operation.execution.max_artifacts_per_unit
+    max_artifacts = operation.batch_strategy.max_artifacts_per_unit
     if max_artifacts is not None and artifacts_per_unit > max_artifacts:
         artifacts_per_unit = max_artifacts
 

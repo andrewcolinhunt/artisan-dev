@@ -13,10 +13,10 @@ from pydantic import Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult
-from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
@@ -62,10 +62,10 @@ class IngestPipelineStep(OperationDefinition):
     # ---------- Resources ----------
     # pydantic Field-based defaults aren't recognized by mypy without the plugin;
     # ignore call-arg errors on these config constructors.
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")  # type: ignore[call-arg]
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")  # type: ignore[call-arg]
 
     # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="ingest_pipeline_step")  # type: ignore[call-arg]
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="ingest_pipeline_step")  # type: ignore[call-arg]
 
     # ---------- Lifecycle ----------
     def execute_curator(

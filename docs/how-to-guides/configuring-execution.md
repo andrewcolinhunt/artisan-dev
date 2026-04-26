@@ -6,7 +6,7 @@ is batched — from local development through production SLURM.
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Building a Pipeline](building-a-pipeline.md)
 
-**Key types:** `Backend`, `ResourceConfig`, `ExecutionConfig`, `ToolSpec`,
+**Key types:** `Backend`, `RunnerResources`, `BatchStrategy`, `ToolSpec`,
 `Environments`, `CachePolicy`, `FailurePolicy`, `Compute`, `ModalComputeConfig`
 
 ---
@@ -32,8 +32,8 @@ pipeline.run(
     name="inference",
     inputs={"dataset": pipeline.output("preprocess", "dataset")},
     step_runner=Runner.SLURM,
-    resources={"gpus": 1, "memory_gb": 32, "extra": {"partition": "gpu"}},
-    execution={"artifacts_per_unit": 1},
+    runner_resources={"gpus": 1, "memory_gb": 32, "extra": {"partition": "gpu"}},
+    batch_strategy={"artifacts_per_unit": 1},
 )
 ```
 
@@ -70,14 +70,14 @@ pipeline.run(
     operation=MyOp,
     inputs=...,
     step_runner=Runner.SLURM_INTRA,
-    resources={"gpus": 1, "cpus": 4, "memory_gb": 16},
+    runner_resources={"gpus": 1, "cpus": 4, "memory_gb": 16},
 )
 ```
 
 For `LOCAL`, you can cap the number of concurrent workers per step:
 
 ```python
-pipeline.run(operation=MyOp, inputs=..., execution={"max_workers": 8})
+pipeline.run(operation=MyOp, inputs=..., batch_strategy={"max_workers": 8})
 ```
 
 The default process pool size is 4.
@@ -165,7 +165,7 @@ pipeline.run(
     operation=MyOp,
     inputs=...,
     step_runner=Runner.SLURM,
-    resources={
+    runner_resources={
         "gpus": 1,
         "memory_gb": 32,
         "time_limit": "04:00:00",
@@ -175,7 +175,7 @@ pipeline.run(
 )
 ```
 
-### ResourceConfig fields
+### RunnerResources fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -185,7 +185,7 @@ pipeline.run(
 | `time_limit` | `str` | `"01:00:00"` | Wall-clock time limit (HH:MM:SS) |
 | `extra` | `dict` | `{}` | Backend-specific settings (e.g., `{"partition": "gpu"}`) |
 
-`ResourceConfig` is portable across backends — each backend translates these
+`RunnerResources` is portable across backends — each backend translates these
 fields to its native format. Use `extra` for backend-specific settings like
 SLURM partition or account.
 
@@ -203,7 +203,7 @@ lever for tuning throughput.
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    execution={"artifacts_per_unit": 10},
+    batch_strategy={"artifacts_per_unit": 10},
 )
 ```
 
@@ -234,7 +234,7 @@ processes. Set this based on your operation's workload: 1 for GPU inference
 runs sequentially. Use this to amortize job startup overhead without changing
 your operation's batch logic.
 
-### ExecutionConfig fields
+### BatchStrategy fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -254,21 +254,21 @@ don't repeat the same overrides at every step:
 
 ```python
 from artisan.operations.base import OperationDefinition
-from artisan.schemas.operation_config.resource_config import ResourceConfig
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 
 
 class GpuInference(OperationDefinition):
     name = "gpu_inference"
 
-    resources: ResourceConfig = ResourceConfig(
+    resources: RunnerResources = RunnerResources(
         gpus=1,
         memory_gb=32,
         time_limit="02:00:00",
         extra={"partition": "gpu"},
     )
 
-    execution: ExecutionConfig = ExecutionConfig(
+    execution: BatchStrategy = BatchStrategy(
         artifacts_per_unit=1,
         estimated_seconds=600.0,
     )
@@ -280,7 +280,7 @@ Step-level overrides merge on top of these defaults. For example, to give a
 specific step more memory without changing other settings:
 
 ```python
-pipeline.run(operation=GpuInference, inputs=..., resources={"memory_gb": 64})
+pipeline.run(operation=GpuInference, inputs=..., runner_resources={"memory_gb": 64})
 # gpus, time_limit, extra keep their operation defaults
 ```
 
@@ -524,7 +524,7 @@ pipeline.run(
     operation=FastMetrics,
     inputs=...,
     step_runner=Runner.SLURM,
-    execution={"artifacts_per_unit": 100, "units_per_worker": 5},
+    batch_strategy={"artifacts_per_unit": 100, "units_per_worker": 5},
 )
 ```
 
@@ -533,13 +533,13 @@ parallelism via job arrays.
 
 ### Custom SLURM parameters
 
-Use `extra` for backend-specific parameters not covered by `ResourceConfig`:
+Use `extra` for backend-specific parameters not covered by `RunnerResources`:
 
 ```python
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    resources={
+    runner_resources={
         "extra": {
             "partition": "gpu",
             "constraint": "a100",
@@ -565,7 +565,7 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| SLURM jobs OOM-killed | Default `memory_gb=4` too low | Set `resources={"memory_gb": 32}` or add to operation defaults |
+| SLURM jobs OOM-killed | Default `memory_gb=4` too low | Set `runner_resources={"memory_gb": 32}` or add to operation defaults |
 | Thousands of tiny SLURM jobs | `artifacts_per_unit=1` on a fast operation | Increase `artifacts_per_unit` to batch work |
 | `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` |
 | Step ignores `resources` | Forgot `step_runner=Runner.SLURM` | Resources only apply to SLURM steps |

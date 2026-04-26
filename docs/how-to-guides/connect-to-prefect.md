@@ -121,7 +121,7 @@ pipeline.run(
     name="generate",
     params={"count": 5},
     step_runner=Runner.SLURM,
-    resources={"gpus": 1, "memory_gb": 32},
+    runner_resources={"gpus": 1, "memory_gb": 32},
 )
 ```
 

@@ -49,7 +49,7 @@ def test_invalid_resources_raises(pipeline_env: dict[str, str]):
         pipeline.run(
             DataGenerator,
             params={"count": 2},
-            resources={"bogus_resource": 99},
+            runner_resources={"bogus_resource": 99},
             step_runner=Runner.LOCAL,
         )
 
@@ -67,7 +67,7 @@ def test_invalid_execution_raises(pipeline_env: dict[str, str]):
         pipeline.run(
             DataGenerator,
             params={"count": 2},
-            execution={"nonexistent_key": True},
+            batch_strategy={"nonexistent_key": True},
             step_runner=Runner.LOCAL,
         )
 
@@ -156,8 +156,8 @@ def test_valid_overrides_accepted(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        resources={"cpus": 2, "memory_gb": 8},
-        execution={"artifacts_per_unit": 1},
+        runner_resources={"cpus": 2, "memory_gb": 8},
+        batch_strategy={"artifacts_per_unit": 1},
         step_runner=Runner.LOCAL,
     )
 

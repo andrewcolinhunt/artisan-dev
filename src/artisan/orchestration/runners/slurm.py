@@ -14,10 +14,10 @@ from artisan.orchestration.runners.base import (
     RunnerBase,
     WorkerTraits,
 )
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +115,8 @@ class SlurmRunner(RunnerBase):
 
     def create_dispatch_handle(
         self,
-        resources: ResourceConfig,
-        execution: ExecutionConfig,
+        runner_resources: RunnerResources,
+        batch_strategy: BatchStrategy,
         step_number: int,
         job_name: str,
         log_folder: str | None = None,
@@ -125,20 +125,20 @@ class SlurmRunner(RunnerBase):
         """Build a SLURM dispatch handle for job array submission."""
         from prefect_submitit import SlurmTaskRunner
 
-        slurm_kwargs: dict[str, Any] = dict(resources.extra)
-        if resources.gpus > 0:
-            slurm_kwargs["slurm_gres"] = f"gpu:{resources.gpus}"
+        slurm_kwargs: dict[str, Any] = dict(runner_resources.extra)
+        if runner_resources.gpus > 0:
+            slurm_kwargs["slurm_gres"] = f"gpu:{runner_resources.gpus}"
         if log_folder is not None:
             slurm_kwargs["log_folder"] = log_folder
 
         slurm_job_name = f"s{step_number}_{job_name}"
         task_runner = SlurmTaskRunner(
             partition=slurm_kwargs.pop("partition", "cpu"),
-            time_limit=resources.time_limit,
-            mem_gb=resources.memory_gb,
-            cpus_per_task=resources.cpus,
+            time_limit=runner_resources.time_limit,
+            mem_gb=runner_resources.memory_gb,
+            cpus_per_task=runner_resources.cpus,
             gpus_per_node=slurm_kwargs.pop("gpus_per_node", 0),
-            units_per_worker=execution.units_per_worker,
+            units_per_worker=batch_strategy.units_per_worker,
             slurm_job_name=slurm_job_name,
             **slurm_kwargs,
         )

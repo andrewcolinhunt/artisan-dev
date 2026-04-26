@@ -119,7 +119,9 @@ def run_composite(
         )
 
         # Build execution context for recording
-        from artisan.execution.context.builder import build_creator_execution_context
+        from artisan.execution.context.builder import (
+            build_creator_execution_context,
+        )
 
         working_root = runtime_env.working_root
         if working_root is None:

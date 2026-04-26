@@ -42,7 +42,10 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
-from artisan.schemas.execution.curator_result import ArtifactResult, PassthroughResult
+from artisan.schemas.execution.curator_result import (
+    ArtifactResult,
+    PassthroughResult,
+)
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.output_spec import OutputSpec

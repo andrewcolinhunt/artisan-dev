@@ -503,7 +503,7 @@ def batch_processing_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        execution={"artifacts_per_unit": 2},
+        batch_strategy={"artifacts_per_unit": 2},
         step_runner=Runner.LOCAL,
     )
 

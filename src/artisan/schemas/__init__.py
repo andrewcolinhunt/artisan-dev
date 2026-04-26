@@ -14,13 +14,13 @@ from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
 from artisan.schemas.execution.curator_result import (
     ArtifactResult,
     CuratorResult,
     PassthroughResult,
 )
-from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.execution_record import ExecutionRecord
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
@@ -34,7 +34,7 @@ from artisan.schemas.operation_config.environment_spec import (
     PixiEnvironmentSpec,
 )
 from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.batch_config import BatchConfig
 from artisan.schemas.orchestration.output_reference import OutputReference
@@ -59,6 +59,7 @@ __all__ = [
     "ArtifactResult",
     "ArtifactTypes",
     "BatchConfig",
+    "BatchStrategy",
     "CacheHit",
     "CacheMiss",
     "CuratorResult",
@@ -67,7 +68,6 @@ __all__ = [
     "EnvironmentSpec",
     "Environments",
     "ExecuteInput",
-    "ExecutionConfig",
     "ExecutionConfigArtifact",
     "ExecutionContext",
     "ExecutionEdge",
@@ -85,7 +85,7 @@ __all__ = [
     "PixiEnvironmentSpec",
     "PostprocessInput",
     "PreprocessInput",
-    "ResourceConfig",
+    "RunnerResources",
     "RuntimeEnvironment",
     "SourceTargetPair",
     "StepResult",

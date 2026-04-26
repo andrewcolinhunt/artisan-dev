@@ -24,16 +24,15 @@ class LocalComputeConfig(ComputeConfig):
 
 
 class ModalComputeConfig(ComputeConfig):
-    """Configuration for routing execute() to a Modal container.
+    """Provider-specific configuration for routing execute() to Modal.
 
-    The container image must have artisan installed (transport
-    functions run inside the container).
+    Hardware fields (gpu / memory_gb / timeout) live on
+    ``ComputeResources`` so the same hardware spec can apply to any
+    compute provider; this class carries Modal-specific non-hardware
+    concerns only.
 
     Attributes:
         image: Container image for the Modal function.
-        gpu: GPU type (e.g. "A10G", "A100", "H100").
-        memory_gb: Container memory in GB.
-        timeout: Per-call timeout in seconds.
         retries: Number of retries on preemption.
         min_containers: Containers kept warm even at zero traffic.
             Set to match expected batch parallelism to eliminate
@@ -60,9 +59,6 @@ class ModalComputeConfig(ComputeConfig):
     """
 
     image: str = ARTISAN_WORKER_IMAGE
-    gpu: str | None = None
-    memory_gb: int = 8
-    timeout: int = 3600
     retries: int = 3
     min_containers: int = 0
     scaledown_window: int | None = None

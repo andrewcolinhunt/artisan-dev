@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from artisan.orchestration.engine.dispatch_handle import DispatchHandle
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
 @dataclass(frozen=True)
@@ -88,8 +88,8 @@ class RunnerBase(ABC):
     @abstractmethod
     def create_dispatch_handle(
         self,
-        resources: ResourceConfig,
-        execution: ExecutionConfig,
+        runner_resources: RunnerResources,
+        batch_strategy: BatchStrategy,
         step_number: int,
         job_name: str,
         log_folder: str | None = None,
@@ -98,8 +98,8 @@ class RunnerBase(ABC):
         """Build a configured dispatch handle for this step_runner.
 
         Args:
-            resources: Hardware resource allocation.
-            execution: Batching and scheduling configuration.
+            runner_resources: Hardware resource allocation.
+            batch_strategy: Batching and scheduling configuration.
             step_number: Pipeline step number (for naming).
             job_name: Human-readable name for logging and scheduler labels.
             log_folder: Directory for scheduler log files (e.g. submitit logs).

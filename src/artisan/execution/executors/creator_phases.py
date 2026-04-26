@@ -334,7 +334,10 @@ def post_unit(
     Returns:
         LifecycleResult with artifacts, edges, and timings.
     """
-    from artisan.execution.executors.creator import LifecycleResult, _PostprocessFailure
+    from artisan.execution.executors.creator import (
+        LifecycleResult,
+        _PostprocessFailure,
+    )
 
     operation = prepped.operation
     operation_class = type(operation)

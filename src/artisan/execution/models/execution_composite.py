@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from artisan.composites.base.composite_definition import CompositeDefinition
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
 class CompositeIntermediates(StrEnum):
@@ -38,8 +38,8 @@ class ExecutionComposite:
         inputs: Resolved artifact IDs per input role.
         step_number: Pipeline step number.
         execution_spec_id: Cache key for this execution.
-        resources: Worker resource allocation.
-        execution: Batching/scheduling config.
+        runner_resources: Worker resource allocation.
+        batch_strategy: Batching/scheduling config.
         intermediates: How to handle intermediate artifacts.
     """
 
@@ -47,7 +47,7 @@ class ExecutionComposite:
     inputs: dict[str, list[str]]
     step_number: int
     execution_spec_id: str
-    resources: ResourceConfig = field(default_factory=ResourceConfig)  # type: ignore[arg-type]
-    execution: ExecutionConfig = field(default_factory=ExecutionConfig)  # type: ignore[arg-type]
+    runner_resources: RunnerResources = field(default_factory=RunnerResources)  # type: ignore[arg-type]
+    batch_strategy: BatchStrategy = field(default_factory=BatchStrategy)  # type: ignore[arg-type]
     intermediates: CompositeIntermediates = CompositeIntermediates.DISCARD
     step_run_id: str | None = None

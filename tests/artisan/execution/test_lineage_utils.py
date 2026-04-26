@@ -1588,7 +1588,9 @@ class TestGroupIdFlowThroughEnrichment:
         """group_id from SourceTargetPair appears on ArtifactProvenanceEdge (store path)."""
         from unittest.mock import Mock
 
-        from artisan.execution.lineage.enrich import build_artifact_edges_from_store
+        from artisan.execution.lineage.enrich import (
+            build_artifact_edges_from_store,
+        )
         from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 
         mock_store = Mock()

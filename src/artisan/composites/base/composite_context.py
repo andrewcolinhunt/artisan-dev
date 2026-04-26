@@ -45,8 +45,8 @@ class CompositeContext(ABC):
         operation: type,
         inputs: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | None = None,
+        batch_strategy: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
@@ -127,8 +127,8 @@ class CollapsedCompositeContext(CompositeContext):
         operation: type,
         inputs: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | None = None,
+        batch_strategy: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
@@ -139,8 +139,8 @@ class CollapsedCompositeContext(CompositeContext):
             operation: OperationDefinition or CompositeDefinition subclass.
             inputs: Input wiring as {role: CompositeRef}.
             params: Parameter overrides.
-            resources: Ignored in collapsed mode (logged as debug).
-            execution: Ignored in collapsed mode (logged as debug).
+            runner_resources: Ignored in collapsed mode (logged as debug).
+            batch_strategy: Ignored in collapsed mode (logged as debug).
             step_runner: Ignored in collapsed mode (logged as debug).
             environment: Environment override for the operation.
             tool: Tool overrides for the operation.
@@ -152,10 +152,10 @@ class CollapsedCompositeContext(CompositeContext):
         from artisan.execution.executors.curator import is_curator_operation
         from artisan.operations.base.operation_definition import OperationDefinition
 
-        if resources or step_runner or execution:
+        if runner_resources or step_runner or batch_strategy:
             logger.debug(
-                "Per-operation resources/step_runner/execution overrides ignored "
-                "in collapsed composite mode for %s",
+                "Per-operation runner_resources/step_runner/batch_strategy "
+                "overrides ignored in collapsed composite mode for %s",
                 getattr(operation, "name", operation.__name__),
             )
 
@@ -530,8 +530,8 @@ class ExpandedCompositeContext(CompositeContext):
         operation: type,
         inputs: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | None = None,
+        batch_strategy: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
@@ -542,8 +542,8 @@ class ExpandedCompositeContext(CompositeContext):
             operation: OperationDefinition or CompositeDefinition subclass.
             inputs: Input wiring as {role: CompositeRef}.
             params: Parameter overrides.
-            resources: Resource overrides (forwarded to pipeline.submit).
-            execution: Execution overrides (forwarded to pipeline.submit).
+            runner_resources: Resource overrides (forwarded to pipeline.submit).
+            batch_strategy: Execution overrides (forwarded to pipeline.submit).
             step_runner: Step runner (forwarded to pipeline.submit).
             environment: Environment override.
             tool: Tool overrides.
@@ -566,8 +566,8 @@ class ExpandedCompositeContext(CompositeContext):
                 translated_inputs,
                 params,
                 step_name,
-                resources,
-                execution,
+                runner_resources,
+                batch_strategy,
                 step_runner,
                 environment,
                 tool,
@@ -578,8 +578,8 @@ class ExpandedCompositeContext(CompositeContext):
             operation,
             inputs=translated_inputs,
             params=params,
-            resources=resources,
-            execution=execution,
+            runner_resources=runner_resources,
+            batch_strategy=batch_strategy,
             step_runner=step_runner,
             environment=environment,
             tool=tool,
@@ -658,8 +658,8 @@ class ExpandedCompositeContext(CompositeContext):
         translated_inputs: dict[str, Any],
         params: dict[str, Any] | None,
         step_name: str,
-        resources: dict[str, Any] | None = None,
-        execution: dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | None = None,
+        batch_strategy: dict[str, Any] | None = None,
         step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,

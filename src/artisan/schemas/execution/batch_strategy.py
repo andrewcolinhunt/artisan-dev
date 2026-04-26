@@ -1,11 +1,15 @@
-"""Batching and scheduling configuration for operation execution."""
+"""Batch-strategy configuration for operation execution.
+
+Controls workload slicing — how artifacts are bundled into ExecutionUnits,
+how units are distributed to workers, and the parallelism cap.
+"""
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
 
-class ExecutionConfig(BaseModel):
+class BatchStrategy(BaseModel):
     """Control how work is divided into units and distributed to workers.
 
     ``job_name`` defaults to ``None`` and is resolved to the operation
