@@ -70,6 +70,7 @@ project:
           children:
             - file: tutorials/writing-operations/01-writing-an-operation.ipynb
             - file: tutorials/writing-operations/02-writing-a-composite.ipynb
+            - file: tutorials/writing-operations/03-co-produced-outputs.ipynb
 
     # ── Concepts ──
     - title: Concepts

@@ -16,8 +16,11 @@ def build_edges(
 ) -> list[SourceTargetPair]:
     """Resolve lineage mappings into concrete source-target artifact pairs.
 
-    Draft references (``__draft__`` prefixed IDs) are resolved against
-    finalized artifact names within the appropriate role.
+    Mappings carrying ``source_original_name`` are resolved against
+    finalized output artifact names within the role named by
+    ``source_role``. Mappings carrying ``source_artifact_id`` are used
+    directly. The ``LineageMapping`` schema guarantees exactly one of
+    those two fields is set.
 
     Args:
         lineage: Role-keyed lineage mappings from capture or user code.
@@ -29,11 +32,12 @@ def build_edges(
         List of source-target pairs with role and group metadata.
 
     Raises:
-        ValueError: If a draft reference cannot be resolved.
+        ValueError: If a ``source_original_name`` cannot be resolved
+            against finalized outputs in the declared role.
     """
     # Per-role lookup: role -> (original_name -> artifact_id).
-    # Must be scoped by role because Artifact.draft() strips extensions,
-    # so different roles can have artifacts with the same original_name.
+    # Must be scoped by role because original_name is unique within a role
+    # but not across roles.
     role_name_to_id: dict[str, dict[str, str]] = {}
     for role, artifacts in finalized_artifacts.items():
         lookup: dict[str, str] = {}
@@ -47,17 +51,22 @@ def build_edges(
     for role, mappings in lineage.items():
         for mapping in mappings:
             target_id = role_name_to_id.get(role, {}).get(mapping.draft_original_name)
-            source_id = mapping.source_artifact_id
-            if source_id.startswith("__draft__"):
-                draft_name = source_id[len("__draft__") :]
-                if draft_name == "":
-                    msg = f"Invalid draft name: {source_id} (no draft prefix)"
+            source_id: str | None
+            if mapping.source_original_name is not None:
+                source_id = role_name_to_id.get(mapping.source_role, {}).get(
+                    mapping.source_original_name
+                )
+                if source_id is None:
+                    msg = (
+                        f"Source '{mapping.source_original_name}' not found "
+                        f"in role '{mapping.source_role}'. "
+                        f"source_original_name resolves only against "
+                        f"finalized outputs; use source_artifact_id for "
+                        f"input sources."
+                    )
                     raise ValueError(msg)
-                resolved = role_name_to_id.get(mapping.source_role, {}).get(draft_name)
-                if resolved is None:
-                    msg = f"Draft {draft_name} not found in role {mapping.source_role}"
-                    raise ValueError(msg)
-                source_id = resolved
+            else:
+                source_id = mapping.source_artifact_id
             if target_id:
                 edges.append(
                     SourceTargetPair(

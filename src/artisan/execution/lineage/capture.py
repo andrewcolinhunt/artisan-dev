@@ -210,15 +210,30 @@ def _build_candidates_from_outputs(
     output_artifacts: dict[str, list[Artifact]],
     roles: list[str],
 ) -> list[tuple[str, str, str]]:
-    """Collect (original_name, artifact_id, role) tuples from output roles."""
+    """Collect (original_name, artifact_id, role) tuples from output roles.
+
+    All output artifacts must be finalized (``artifact_id`` set). Both
+    executor paths run ``finalize_artifacts`` before lineage capture, so
+    an unfinalized artifact reaching this helper indicates an ordering
+    bug in the framework.
+
+    Raises:
+        RuntimeError: If an output artifact has no ``artifact_id``.
+    """
     candidates: list[tuple[str, str, str]] = []
     for role in roles:
         for artifact in output_artifacts.get(role, []):
             original_name = getattr(artifact, "original_name", None)
             if original_name is None:
                 continue
-            artifact_id = artifact.artifact_id or f"__draft__{original_name}"
-            candidates.append((original_name, artifact_id, role))
+            if artifact.artifact_id is None:
+                msg = (
+                    f"Output artifact '{original_name}' in role '{role}' "
+                    f"has no artifact_id. Finalize artifacts before "
+                    f"capturing lineage."
+                )
+                raise RuntimeError(msg)
+            candidates.append((original_name, artifact.artifact_id, role))
     return candidates
 
 

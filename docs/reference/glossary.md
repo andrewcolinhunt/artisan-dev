@@ -231,11 +231,12 @@ variable keyed by [role](#glossary-role) name.
 (glossary-lineage-mapping)=
 ## LineageMapping
 
-An explicit declaration of a parent-child relationship between an input artifact
+An explicit declaration of a parent-child relationship between a source artifact
 and an output draft. Used in `ArtifactResult.lineage` when the default
 [stem matching](#glossary-stem-matching) inference is not appropriate. Each
-mapping specifies the draft's `draft_original_name`, the source
-`source_artifact_id`, and the `source_role`.
+mapping specifies the draft's `draft_original_name`, a source reference (one
+of `source_artifact_id` for input parents or `source_original_name` for
+co-produced output parents), and the `source_role`.
 
 ---
 

@@ -572,6 +572,132 @@ class TestValidateLineageIntegrity:
         # Should not raise - drafts without artifact_id are valid outputs
         validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
+    def test_source_original_name_valid_in_role(self):
+        """source_original_name resolving against an output in source_role passes."""
+        structure = MetricArtifact.draft(
+            content={"processed": True},
+            original_name="1abc_out.json",
+            step_number=1,
+        ).finalize()
+        metric = MetricArtifact.draft(
+            content={"energy": -100.0},
+            original_name="1abc_out_energy.json",
+            step_number=1,
+        ).finalize()
+
+        lineage = {
+            "metrics": [
+                LineageMapping(
+                    draft_original_name=metric.original_name,
+                    source_original_name=structure.original_name,
+                    source_role="structures",
+                )
+            ]
+        }
+        output_artifacts = {
+            "structures": [structure],
+            "metrics": [metric],
+        }
+
+        # Should not raise
+        validate_lineage_integrity(lineage, {}, output_artifacts)
+
+    def test_source_original_name_missing_in_role_raises(self):
+        """Unknown source_original_name in declared role raises LineageIntegrityError."""
+        structure = MetricArtifact.draft(
+            content={"processed": True},
+            original_name="1abc_out.json",
+            step_number=1,
+        ).finalize()
+        metric = MetricArtifact.draft(
+            content={"energy": -100.0},
+            original_name="1abc_out_energy.json",
+            step_number=1,
+        ).finalize()
+
+        lineage = {
+            "metrics": [
+                LineageMapping(
+                    draft_original_name=metric.original_name,
+                    source_original_name="not_present",
+                    source_role="structures",
+                )
+            ]
+        }
+        output_artifacts = {
+            "structures": [structure],
+            "metrics": [metric],
+        }
+
+        with pytest.raises(LineageIntegrityError) as exc_info:
+            validate_lineage_integrity(lineage, {}, output_artifacts)
+        msg = str(exc_info.value)
+        assert "not_present" in msg
+        assert "structures" in msg
+
+    def test_source_original_name_role_does_not_exist_raises(self):
+        """Reference to a role with no outputs raises LineageIntegrityError."""
+        metric = MetricArtifact.draft(
+            content={"energy": -100.0},
+            original_name="1abc_out_energy.json",
+            step_number=1,
+        ).finalize()
+
+        lineage = {
+            "metrics": [
+                LineageMapping(
+                    draft_original_name=metric.original_name,
+                    source_original_name="1abc_out",
+                    source_role="structures",
+                )
+            ]
+        }
+        output_artifacts = {"metrics": [metric]}
+
+        with pytest.raises(LineageIntegrityError):
+            validate_lineage_integrity(lineage, {}, output_artifacts)
+
+    def test_duplicate_draft_rejected_with_source_original_name(self):
+        """Duplicate-draft rule still applies when both mappings use source_original_name."""
+        structure_a = MetricArtifact.draft(
+            content={"variant": "a"},
+            original_name="1abc_a.json",
+            step_number=1,
+        ).finalize()
+        structure_b = MetricArtifact.draft(
+            content={"variant": "b"},
+            original_name="1abc_b.json",
+            step_number=1,
+        ).finalize()
+        metric = MetricArtifact.draft(
+            content={"energy": -100.0},
+            original_name="1abc_energy.json",
+            step_number=1,
+        ).finalize()
+
+        lineage = {
+            "metrics": [
+                LineageMapping(
+                    draft_original_name=metric.original_name,
+                    source_original_name=structure_a.original_name,
+                    source_role="structures",
+                ),
+                LineageMapping(
+                    draft_original_name=metric.original_name,
+                    source_original_name=structure_b.original_name,
+                    source_role="structures",
+                ),
+            ]
+        }
+        output_artifacts = {
+            "structures": [structure_a, structure_b],
+            "metrics": [metric],
+        }
+
+        with pytest.raises(LineageIntegrityError) as exc_info:
+            validate_lineage_integrity(lineage, {}, output_artifacts)
+        assert "Duplicate" in str(exc_info.value)
+
 
 # =============================================================================
 # Test Exception Classes
