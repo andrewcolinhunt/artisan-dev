@@ -47,6 +47,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `compute_resources` will miss after this change.
 - `ComputeResources` schema now uses `extra="forbid"` so unknown keys
   raise `ValidationError`.
+- Restructured tutorials with numeric prefixes (`01-` … `09-`) on
+  every top-level category, split the 13-flat `execution/` dir into
+  five peer categories (`03-caching/`, `04-batching/`,
+  `05-errors-and-control/`, `06-storage/`, `07-compute-backends/`),
+  and updated every inbound link in `docs/concepts/`,
+  `docs/how-to-guides/`, `docs/getting-started/`,
+  `docs/contributing/`, `docs/reference/`, peer notebooks, and demo
+  scripts. Disk order now matches the teaching arc; the sidebar
+  mirrors disk one-to-one (no synthetic groupings). Fixes seven
+  occurrences of the broken
+  `pipeline-design/06-composable-operations.ipynb` link (the file is
+  `06-composites.ipynb`) and drops three references to the
+  non-existent `01-run-vs-submit.ipynb`. Use `git log --follow` for
+  history on moved files.
 - Vocabulary sweep: completes the `backend` → `step runner` /
   `BackendBase` → `RunnerBase` rename across `docs/concepts/`,
   `docs/reference/`, `docs/contributing/`, `docs/how-to-guides/`, and
