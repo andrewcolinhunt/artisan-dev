@@ -193,7 +193,7 @@ assert len(metrics) > 0, "No metrics found"
 
 ## Cross-references
 
-- [Exploring Results](../tutorials/getting-started/02-exploring-results.ipynb) —
+- [Exploring Results](../tutorials/01-getting-started/02-exploring-results.ipynb) —
   Interactive tutorial for inspect helpers
 - [Inspect Pipeline Results and Provenance](inspecting-provenance.md) — Lineage
   traversal, graph visualization, and timing analysis

@@ -354,11 +354,11 @@ to make that decision.
 
 ## Cross-references
 
-- [Error Handling in Practice tutorial](../tutorials/execution/04-error-visibility.ipynb) --
+- [Error Handling in Practice tutorial](../tutorials/05-errors-and-control/02-error-visibility.ipynb) --
   Runtime failures, failure logs, and FailurePolicy in action
-- [Pipeline Cancellation tutorial](../tutorials/execution/08-pipeline-cancellation.ipynb) --
+- [Pipeline Cancellation tutorial](../tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb) --
   Cooperative cancellation, signal handling, and cancelled step metadata
-- [Resume and Caching tutorial](../tutorials/execution/02-resume-and-caching.ipynb) --
+- [Resume and Caching tutorial](../tutorials/03-caching/01-resume-and-caching.ipynb) --
   How caching interacts with failures during re-runs
 - [Execution Flow](execution-flow.md) -- Dispatch, execute, commit lifecycle
   where error boundaries live

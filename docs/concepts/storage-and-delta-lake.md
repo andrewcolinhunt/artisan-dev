@@ -409,7 +409,7 @@ can build dashboards, run ad hoc analyses, or feed results into other systems
 without going through the framework's API.
 
 For hands-on examples of querying pipeline results, see the
-[Exploring Results Tutorial](../tutorials/getting-started/02-exploring-results.ipynb).
+[Exploring Results Tutorial](../tutorials/01-getting-started/02-exploring-results.ipynb).
 
 ---
 
@@ -439,6 +439,6 @@ For hands-on examples of querying pipeline results, see the
   dispatch-execute-commit lifecycle
 - [Design Principles](design-principles.md) -- Foundational decisions that
   shaped the storage architecture
-- [Exploring Results Tutorial](../tutorials/getting-started/02-exploring-results.ipynb) -- Query Delta Lake tables and inspect artifacts interactively
+- [Exploring Results Tutorial](../tutorials/01-getting-started/02-exploring-results.ipynb) -- Query Delta Lake tables and inspect artifacts interactively
 - [Creating Artifact Types](../how-to-guides/creating-artifact-types.md) --
   Step-by-step guide to registering new artifact types

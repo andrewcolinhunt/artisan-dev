@@ -259,7 +259,7 @@ pipeline DAG.
   signatures and field tables
 - [Writing Composite Operations](../how-to-guides/writing-composite-operations.md) —
   step-by-step guide
-- [Composable Operations Tutorial](../tutorials/pipeline-design/06-composable-operations.ipynb) —
+- [Composable Operations Tutorial](../tutorials/02-pipeline-design/06-composites.ipynb) —
   interactive examples
 - [Operations Model](operations-model.md) — the operation abstractions that
   composites compose

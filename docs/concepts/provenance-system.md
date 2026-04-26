@@ -471,4 +471,4 @@ derivation edge.
 - [Design Principles](design-principles.md) -- The "provenance is always
   captured, never reconstructed" principle
 - [Inspect Pipeline Results and Provenance](../how-to-guides/inspecting-provenance.md) -- Practical guide to querying and visualizing provenance
-- [Provenance Graphs Tutorial](../tutorials/analysis/01-provenance-graphs.ipynb) -- Interactive macro and micro provenance visualization
+- [Provenance Graphs Tutorial](../tutorials/08-analysis/01-provenance-graphs.ipynb) -- Interactive macro and micro provenance visualization

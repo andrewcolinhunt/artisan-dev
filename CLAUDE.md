@@ -141,17 +141,21 @@ src/artisan/               # Framework (domain-agnostic)
 
 ```
 docs/
-├── getting-started/         # Installation, first pipeline, core concepts
-├── tutorials/               # Interactive notebooks (Diataxis)
-│   ├── getting-started/     # First pipeline, exploring results
-│   ├── pipeline-design/     # Sources, branching, filtering, multi-input, diamonds, composites
-│   ├── execution/           # Run vs submit, caching, batching, errors, overrides, SLURM
-│   ├── analysis/            # Provenance graphs, interactive filter, timing
-│   └── writing-operations/  # Writing operations and composites
-├── concepts/                # Architecture, design principles, provenance, execution flow
-├── how-to-guides/           # Writing operations, configuring execution, provenance
-├── reference/               # Glossary, comparison to alternatives
-└── contributing/            # Writing docs, coding conventions, tooling decisions
+├── getting-started/             # Installation, first pipeline, core concepts
+├── tutorials/                   # Interactive notebooks (Diataxis)
+│   ├── 01-getting-started/      # First pipeline, exploring results
+│   ├── 02-pipeline-design/      # Sources, branching, filtering, multi-input, diamonds, composites
+│   ├── 03-caching/              # Resume, cache lookup, force re-run
+│   ├── 04-batching/             # Two-level batching, per-artifact dispatch
+│   ├── 05-errors-and-control/   # Step overrides, error visibility, pipeline cancellation
+│   ├── 06-storage/              # Layout, logging, external files
+│   ├── 07-compute-backends/     # Compute routing, SLURM, Modal
+│   ├── 08-analysis/             # Provenance graphs, interactive filter, timing
+│   └── 09-writing-operations/   # Writing operations and composites
+├── concepts/                    # Architecture, design principles, provenance, execution flow
+├── how-to-guides/               # Writing operations, configuring execution, provenance
+├── reference/                   # Glossary, comparison to alternatives
+└── contributing/                # Writing docs, coding conventions, tooling decisions
 ```
 
 ---

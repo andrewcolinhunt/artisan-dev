@@ -731,7 +731,7 @@ failures occur — the job name format is `s{step_number}_{operation_name}`.
 ## Cross-references
 
 - [Execution Flow](../concepts/execution-flow.md) — dispatch, execute, commit lifecycle
-- [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) — interactive SLURM walkthrough
+- [SLURM Execution Tutorial](../tutorials/07-compute-backends/02-slurm-execution.ipynb) — interactive SLURM walkthrough
 - [Writing Creator Operations](writing-creator-operations.md) — declaring operation-level defaults
-- [Compute Routing Tutorial](../tutorials/execution/13-compute-routing.ipynb) — interactive compute routing walkthrough
-- [Running on Modal Tutorial](../tutorials/execution/14-modal-execution.ipynb) — Modal-specific configuration and debugging
+- [Compute Routing Tutorial](../tutorials/07-compute-backends/01-compute-routing.ipynb) — interactive compute routing walkthrough
+- [Running on Modal Tutorial](../tutorials/07-compute-backends/04-modal-execution.ipynb) — Modal-specific configuration and debugging

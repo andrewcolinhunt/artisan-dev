@@ -406,7 +406,7 @@ result = pipeline2.finalize()
   composites exist and how they work
 - [CompositeDefinition Reference](../reference/composite-definition.md) — API
   signatures and field tables
-- [Composable Operations Tutorial](../tutorials/pipeline-design/06-composable-operations.ipynb) —
+- [Composable Operations Tutorial](../tutorials/02-pipeline-design/06-composites.ipynb) —
   interactive examples
 - [Writing Creator Operations](writing-creator-operations.md) — the operations
   that composites compose

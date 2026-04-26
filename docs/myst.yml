@@ -35,42 +35,50 @@ project:
         - file: tutorials/index.md
         - title: Getting Started
           children:
-            - file: tutorials/getting-started/01-first-pipeline.ipynb
-            - file: tutorials/getting-started/02-exploring-results.ipynb
+            - file: tutorials/01-getting-started/01-first-pipeline.ipynb
+            - file: tutorials/01-getting-started/02-exploring-results.ipynb
         - title: Pipeline Design
           children:
-            - file: tutorials/pipeline-design/01-sources-and-sequencing.ipynb
-            - file: tutorials/pipeline-design/02-branching-and-merging.ipynb
-            - file: tutorials/pipeline-design/03-metrics-and-filtering.ipynb
-            - file: tutorials/pipeline-design/04-multi-input-operations.ipynb
-            - file: tutorials/pipeline-design/05-diamonds-and-iteration.ipynb
-            - file: tutorials/pipeline-design/06-composites.ipynb
-        - title: Execution
+            - file: tutorials/02-pipeline-design/01-sources-and-sequencing.ipynb
+            - file: tutorials/02-pipeline-design/02-branching-and-merging.ipynb
+            - file: tutorials/02-pipeline-design/03-metrics-and-filtering.ipynb
+            - file: tutorials/02-pipeline-design/04-multi-input-operations.ipynb
+            - file: tutorials/02-pipeline-design/05-diamonds-and-iteration.ipynb
+            - file: tutorials/02-pipeline-design/06-composites.ipynb
+        - title: Caching
           children:
-            - file: tutorials/execution/02-resume-and-caching.ipynb
-            - file: tutorials/execution/03-batching-and-performance.ipynb
-            - file: tutorials/execution/04-error-visibility.ipynb
-            - file: tutorials/execution/05-storage-and-logging.ipynb
-            - file: tutorials/execution/06-step-overrides.ipynb
-            - file: tutorials/execution/07-slurm-execution.ipynb
-            - file: tutorials/execution/08-pipeline-cancellation.ipynb
-            - file: tutorials/execution/09-skip-cache.ipynb
-            - file: tutorials/execution/10-slurm-intra-execution.ipynb
-            - file: tutorials/execution/11-external-file-storage.ipynb
-            - file: tutorials/execution/13-compute-routing.ipynb
-            - file: tutorials/execution/14-modal-execution.ipynb
-            - file: tutorials/execution/15-batch-execute.ipynb
+            - file: tutorials/03-caching/01-resume-and-caching.ipynb
+            - file: tutorials/03-caching/02-skip-cache.ipynb
+        - title: Batching
+          children:
+            - file: tutorials/04-batching/01-batching-and-performance.ipynb
+            - file: tutorials/04-batching/02-batch-execute.ipynb
+        - title: Errors and Control
+          children:
+            - file: tutorials/05-errors-and-control/01-step-overrides.ipynb
+            - file: tutorials/05-errors-and-control/02-error-visibility.ipynb
+            - file: tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb
+        - title: Storage
+          children:
+            - file: tutorials/06-storage/01-storage-and-logging.ipynb
+            - file: tutorials/06-storage/02-external-file-storage.ipynb
+        - title: Compute Backends
+          children:
+            - file: tutorials/07-compute-backends/01-compute-routing.ipynb
+            - file: tutorials/07-compute-backends/02-slurm-execution.ipynb
+            - file: tutorials/07-compute-backends/03-slurm-intra-execution.ipynb
+            - file: tutorials/07-compute-backends/04-modal-execution.ipynb
         - title: Analysis
           children:
-            - file: tutorials/analysis/01-provenance-graphs.ipynb
-            - file: tutorials/analysis/02-lineage-tracing.ipynb
-            - file: tutorials/analysis/03-interactive-filter.ipynb
-            - file: tutorials/analysis/04-timing-analysis.ipynb
+            - file: tutorials/08-analysis/01-provenance-graphs.ipynb
+            - file: tutorials/08-analysis/02-lineage-tracing.ipynb
+            - file: tutorials/08-analysis/03-interactive-filter.ipynb
+            - file: tutorials/08-analysis/04-timing-analysis.ipynb
         - title: Writing Operations
           children:
-            - file: tutorials/writing-operations/01-writing-an-operation.ipynb
-            - file: tutorials/writing-operations/02-writing-a-composite.ipynb
-            - file: tutorials/writing-operations/03-co-produced-outputs.ipynb
+            - file: tutorials/09-writing-operations/01-writing-an-operation.ipynb
+            - file: tutorials/09-writing-operations/02-writing-a-composite.ipynb
+            - file: tutorials/09-writing-operations/03-co-produced-outputs.ipynb
 
     # ── Concepts ──
     - title: Concepts

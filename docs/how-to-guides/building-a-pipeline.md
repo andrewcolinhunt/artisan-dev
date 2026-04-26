@@ -471,6 +471,6 @@ assert step.succeeded_count == 3
 ## Cross-references
 
 - [Configuring Execution](configuring-execution.md) — resources, batching, step runners
-- [First Pipeline Tutorial](../tutorials/getting-started/01-first-pipeline.ipynb) — interactive walkthrough
+- [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) — interactive walkthrough
 - [Execution Flow](../concepts/execution-flow.md) — what happens under the hood
 - [Writing Creator Operations](writing-creator-operations.md) — building custom operations

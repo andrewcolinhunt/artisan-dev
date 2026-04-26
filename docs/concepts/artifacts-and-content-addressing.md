@@ -260,4 +260,4 @@ Change the identity model, and every subsystem would need to change with it.
   artifact IDs
 - [Creating Artifact Types](../how-to-guides/creating-artifact-types.md) --
   Step-by-step guide to adding new artifact types
-- [Exploring Results Tutorial](../tutorials/getting-started/02-exploring-results.ipynb) -- Query artifacts interactively in Delta Lake tables
+- [Exploring Results Tutorial](../tutorials/01-getting-started/02-exploring-results.ipynb) -- Query artifacts interactively in Delta Lake tables
