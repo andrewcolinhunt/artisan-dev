@@ -184,7 +184,7 @@ prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
-test = "pytest -m 'not integration and not notebook' && pytest -m integration -n 4"  # Unit sequential + integration parallel
+test = "pytest -m 'not integration and not notebook' && pytest -m integration -n 4 && pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + tutorial notebooks
 test-seq = "pytest -m 'not notebook'"  # Fully sequential (for debugging test interactions)
 test-unit = "pytest -m 'not integration and not notebook'"  # Run only unit tests
 test-integration = "pytest -m integration -n 4"  # Run only integration tests in parallel
