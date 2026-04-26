@@ -184,11 +184,13 @@ prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
-test = "pytest -m 'not integration and not notebook' && pytest -m integration -n 4 && pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + tutorial notebooks
-test-seq = "pytest -m 'not notebook'"  # Fully sequential (for debugging test interactions)
-test-unit = "pytest -m 'not integration and not notebook'"  # Run only unit tests
+test = "pytest -m 'not integration and not notebook and not modal' && pytest -m integration -n 4 && pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + tutorial notebooks
+test-seq = "pytest -m 'not notebook and not modal'"  # Fully sequential (for debugging test interactions)
+test-unit = "pytest -m 'not integration and not notebook and not modal'"  # Run only unit tests
 test-integration = "pytest -m integration -n 4"  # Run only integration tests in parallel
 test-notebook = "pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Execute every CI-runnable tutorial notebook end-to-end (loadfile keeps all cells of one notebook on one worker)
+test-modal = "pytest -m modal -n 2"  # Real-Modal smoke tests; needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET (or ~/.modal.toml)
+test-modal-seq = "pytest -m modal"  # Sequential variant for debugging Modal tests
 fmt = "ruff format . && ruff check --fix ."
 build-dist = "rm -rf dist/ && python -m build"
 check-dist = "python -m twine check dist/*"
@@ -215,6 +217,7 @@ filterwarnings = ["error"]
 markers = [
     "integration: needs real infra (Delta Lake, Prefect harness) — run with '-m integration'",
     "notebook: executes a tutorial notebook end-to-end via nbval (auto-applied by tests/conftest.py)",
+    "modal: ships work to real Modal cloud — needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET — run with '-m modal'",
 ]
 
 [tool.mypy]
