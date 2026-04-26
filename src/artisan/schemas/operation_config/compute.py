@@ -26,7 +26,7 @@ class LocalComputeConfig(ComputeConfig):
 class ModalComputeConfig(ComputeConfig):
     """Provider-specific configuration for routing execute() to Modal.
 
-    Hardware fields (gpu / memory_gb / timeout) live on
+    Hardware fields (gpu / cpu / memory_gb / timeout) live on
     ``ComputeResources`` so the same hardware spec can apply to any
     compute provider; this class carries Modal-specific non-hardware
     concerns only.
@@ -37,6 +37,10 @@ class ModalComputeConfig(ComputeConfig):
         min_containers: Containers kept warm even at zero traffic.
             Set to match expected batch parallelism to eliminate
             cold starts. 0 means scale-to-zero (Modal default).
+        max_containers: Upper bound on concurrent containers. None uses
+            Modal's workspace-level default. Set when fanning out via
+            ``experimental_spawn_map()`` to avoid spawning one
+            container per input on large batches.
         scaledown_window: Seconds a container idles before shutdown.
             None uses Modal's default (60s). Max 1200s.
         image_registry_secret: Name of a Modal Secret (created via
@@ -44,6 +48,21 @@ class ModalComputeConfig(ComputeConfig):
             and ``REGISTRY_PASSWORD`` for pulling private images. None
             (default) pulls without authentication; set when ``image``
             points at a private registry.
+        secrets: Names of Modal Secrets to inject into the container
+            environment at runtime (e.g. ``["hf-read", "aws-s3"]``).
+            Created via ``modal secret create ...``. Distinct from
+            ``image_registry_secret``, which authenticates the image
+            pull only.
+        volumes: Mount path → volume name mapping
+            (e.g. ``{"/weights": "foundry-weights"}``). Each volume is
+            resolved via
+            ``modal.Volume.from_name(name, create_if_missing=True,
+            version=2)``. Use for model weights and other caches that
+            should survive across cold starts.
+        env: Environment variables to set inside the container
+            (e.g. ``{"HF_XET_HIGH_PERFORMANCE": "1"}``). Applied as
+            an image layer so cache hits survive as long as the dict
+            is stable.
         local_python_sources: Top-level Python package names to overlay
             onto the Modal image via
             ``modal.Image.add_local_python_source``. The default
@@ -61,8 +80,12 @@ class ModalComputeConfig(ComputeConfig):
     image: str = ARTISAN_WORKER_IMAGE
     retries: int = 3
     min_containers: int = 0
+    max_containers: int | None = None
     scaledown_window: int | None = None
     image_registry_secret: str | None = None
+    secrets: list[str] = Field(default_factory=list)
+    volumes: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
     local_python_sources: list[str] = Field(default_factory=lambda: ["artisan"])
 
 

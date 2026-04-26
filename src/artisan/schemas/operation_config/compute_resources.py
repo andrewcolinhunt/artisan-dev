@@ -18,6 +18,11 @@ class ComputeResources(BaseModel):
     Attributes:
         gpu: GPU type string (e.g. ``"A10G"``, ``"A100"``, ``"H100"``).
             None defers to the provider default.
+        cpu: Fractional CPU cores. None defers to the provider default
+            (Modal: 0.125 cores — often too low for non-trivial CPU
+            work; set explicitly for pandas / numpy / shell-invoked
+            ops). Fractional values like ``0.5`` and ``2.5`` are
+            allowed.
         memory_gb: Container memory in GB. None defers to the provider
             default.
         timeout: Per-call timeout in seconds. None defers to the
@@ -29,5 +34,6 @@ class ComputeResources(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     gpu: str | None = Field(default=None)
+    cpu: float | None = Field(default=None, gt=0)
     memory_gb: int | None = Field(default=None, ge=1)
     timeout: int | None = Field(default=None, ge=1)

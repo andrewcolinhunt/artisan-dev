@@ -65,8 +65,12 @@ class TestModalComputeConfig:
         config = ModalComputeConfig(image="img")
         assert config.retries == 3
         assert config.min_containers == 0
+        assert config.max_containers is None
         assert config.scaledown_window is None
         assert config.image_registry_secret is None
+        assert config.secrets == []
+        assert config.volumes == {}
+        assert config.env == {}
         assert config.local_python_sources == ["artisan"]
 
     def test_custom_fields(self):
@@ -74,18 +78,33 @@ class TestModalComputeConfig:
             image="img",
             retries=1,
             min_containers=2,
+            max_containers=50,
             scaledown_window=120,
             image_registry_secret="my-secret",
+            secrets=["hf-read", "aws-s3"],
+            volumes={"/weights": "foundry-weights"},
+            env={"HF_XET_HIGH_PERFORMANCE": "1"},
             local_python_sources=["artisan", "pipelines"],
         )
         assert config.retries == 1
         assert config.min_containers == 2
+        assert config.max_containers == 50
         assert config.scaledown_window == 120
         assert config.image_registry_secret == "my-secret"
+        assert config.secrets == ["hf-read", "aws-s3"]
+        assert config.volumes == {"/weights": "foundry-weights"}
+        assert config.env == {"HF_XET_HIGH_PERFORMANCE": "1"}
         assert config.local_python_sources == ["artisan", "pipelines"]
 
     def test_round_trip(self):
-        config = ModalComputeConfig(image="img", retries=5)
+        config = ModalComputeConfig(
+            image="img",
+            retries=5,
+            max_containers=10,
+            secrets=["hf-read"],
+            volumes={"/v": "vol"},
+            env={"K": "V"},
+        )
         data = config.model_dump()
         restored = ModalComputeConfig.model_validate(data)
         assert restored == config
