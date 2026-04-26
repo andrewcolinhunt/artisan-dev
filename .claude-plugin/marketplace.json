@@ -10,9 +10,9 @@
       "strict": false,
       "description": "Skills for building pipelines and operations with the Artisan framework",
       "skills": [
-        "./skills/write-operation",
-        "./skills/write-pipeline",
-        "./skills/write-composite"
+        "./skills/operation-write",
+        "./skills/pipeline-write",
+        "./skills/composite-write"
       ]
     }
   ]

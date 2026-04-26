@@ -1,5 +1,5 @@
 ---
-name: write-pipeline
+name: pipeline-write
 description: Write or scaffold an Artisan pipeline script. Use this skill when the user asks to create a pipeline, write a pipeline script, scaffold a pipeline, or build a data processing workflow. Trigger on phrases like "write a pipeline", "create a pipeline", "scaffold a pipeline", "build a pipeline script", "pipeline that does X", or any request to compose operations into a runnable pipeline.
 argument-hint: "[description of what the pipeline should do, or list of operations/steps]"
 ---

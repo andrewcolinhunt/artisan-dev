@@ -337,9 +337,9 @@ the inline marketplace pattern (`.claude-plugin/marketplace.json` with
 
 **What's included.** Three skills in `skills/`:
 
-- `write-operation` — scaffold or review an `OperationDefinition` subclass
-- `write-composite` — scaffold or review a `CompositeDefinition` subclass
-- `write-pipeline` — scaffold a pipeline script composing operations
+- `operation-write` — scaffold or review an `OperationDefinition` subclass
+- `composite-write` — scaffold or review a `CompositeDefinition` subclass
+- `pipeline-write` — scaffold a pipeline script composing operations
 
 **Two discovery paths.** Skill definitions live in `skills/` at the repo root —
 this is the single source of truth.

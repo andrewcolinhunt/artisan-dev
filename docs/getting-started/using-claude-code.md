@@ -45,9 +45,9 @@ Code how to write Artisan code that follows project conventions.
 
 | Skill | Description |
 |-------|-------------|
-| `/write-operation` | Scaffold or review an `OperationDefinition` subclass |
-| `/write-composite` | Scaffold or review a `CompositeDefinition` subclass |
-| `/write-pipeline` | Scaffold a pipeline script composing operations |
+| `/operation-write` | Scaffold or review an `OperationDefinition` subclass |
+| `/composite-write` | Scaffold or review a `CompositeDefinition` subclass |
+| `/pipeline-write` | Scaffold a pipeline script composing operations |
 
 ### How skills are discovered
 
@@ -56,9 +56,9 @@ source of truth. Claude Code discovers project-level skills from
 `.claude/skills/`, so the repo maintains symlinks:
 
 ```
-.claude/skills/write-operation  →  ../../skills/write-operation
-.claude/skills/write-composite  →  ../../skills/write-composite
-.claude/skills/write-pipeline   →  ../../skills/write-pipeline
+.claude/skills/operation-write  →  ../../skills/operation-write
+.claude/skills/composite-write  →  ../../skills/composite-write
+.claude/skills/pipeline-write   →  ../../skills/pipeline-write
 ```
 
 ### Downstream repos
@@ -83,7 +83,7 @@ A downstream repo enables it by adding to `.claude/settings.json`:
 }
 ```
 
-Skills appear as `/artisan:write-operation`, etc. Claude Code prompts
+Skills appear as `/artisan:operation-write`, etc. Claude Code prompts
 contributors to trust the marketplace on first launch.
 
 ---
@@ -113,7 +113,7 @@ formatting rules. It follows the same conventions a human contributor would.
 - **Be specific** about what you want ("write an operation that computes
   column statistics from CSV input" not "help me with operations").
 - **Review generated code** before committing — Claude proposes, you decide.
-- **Use skills for scaffolding**, then iterate: `/write-operation` gets
+- **Use skills for scaffolding**, then iterate: `/operation-write` gets
   you most of the way, then refine the details.
 - **Let Claude run checks** — ask it to run the pre-PR checklist (`fmt`, `test`,
   `docs-build`).
