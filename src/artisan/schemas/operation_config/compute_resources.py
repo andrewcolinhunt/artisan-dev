@@ -9,7 +9,7 @@ arguments. ``None`` defers to the provider default.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ComputeResources(BaseModel):
@@ -23,6 +23,10 @@ class ComputeResources(BaseModel):
         timeout: Per-call timeout in seconds. None defers to the
             provider default.
     """
+
+    # Reject unknown keys so ``_validate_compute_resources`` (which calls
+    # ``model_validate``) actually catches typos at the public boundary.
+    model_config = ConfigDict(extra="forbid")
 
     gpu: str | None = Field(default=None)
     memory_gb: int | None = Field(default=None, ge=1)

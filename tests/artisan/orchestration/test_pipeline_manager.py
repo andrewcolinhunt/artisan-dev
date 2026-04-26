@@ -2199,3 +2199,174 @@ class TestCompositeFailFast:
         from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
 
         assert isinstance(result, ExpandedCompositeResult)
+
+
+# =============================================================================
+# Blocking-semantics tests for run_composite (PR-D)
+# =============================================================================
+
+
+class _IngestForCompositeTests(OperationDefinition):
+    """Minimal curator op with one output role for composite blocking tests.
+
+    Has no inputs, so a composite can call ``ctx.run`` repeatedly without
+    plumbing artifact references.
+    """
+
+    class OutputRole(StrEnum):
+        file = auto()
+
+    name: ClassVar[str] = "ingest_for_composite_blocking_tests"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.DATA),
+    }
+
+    def execute_curator(self, *args, **kwargs):
+        from artisan.schemas.execution.curator_result import ArtifactResult
+
+        return ArtifactResult(success=True)
+
+
+class _TwoStepComposite(CompositeDefinition):
+    """Calls ``ctx.run`` twice — drives child-future capture in expanded mode."""
+
+    name: ClassVar[str] = "_two_step_composite_for_blocking_tests"
+    inputs: ClassVar[dict] = {}
+
+    class OutputRole(StrEnum):
+        file = auto()
+
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.DATA),
+    }
+
+    def compose(self, ctx):
+        # Two ctx.run() calls — drives the child-future capture even though
+        # the same op appears twice (each call dispatches its own step).
+        ctx.run(_IngestForCompositeTests)
+        second = ctx.run(_IngestForCompositeTests)
+        ctx.output("file", second.output("file"))
+
+
+def _slow_execute_step(**kwargs):
+    """Mock execute_step — sleep then return a successful StepResult."""
+    import time
+
+    from artisan.orchestration.engine.step_executor import build_step_result
+
+    time.sleep(0.2)
+    return build_step_result(
+        operation=kwargs["operation_class"],
+        step_number=kwargs["step_number"],
+        succeeded_count=1,
+        failed_count=0,
+        failure_policy=kwargs["failure_policy"],
+    )
+
+
+def _slow_execute_composite_step(**kwargs):
+    """Mock execute_composite_step — sleep then return a successful StepResult."""
+    import time
+
+    from artisan.orchestration.engine.step_executor import build_step_result
+
+    time.sleep(0.2)
+    return build_step_result(
+        operation=kwargs["composite_class"],
+        step_number=kwargs["step_number"],
+        succeeded_count=1,
+        failed_count=0,
+        failure_policy=kwargs["failure_policy"],
+    )
+
+
+class TestRunComposite:
+    """Blocking semantics of ``run_composite`` in both modes."""
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_slow_execute_step,
+    )
+    def test_run_composite_expanded_blocks_until_children_done(
+        self, mock_exec, tmp_path
+    ):
+        """Expanded mode: ``run_composite`` returns only after every child future is done."""
+        pipeline = PipelineManager.create(
+            name="test_run_composite_expanded",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        )
+
+        result = pipeline.run_composite(_TwoStepComposite, expand=True)
+
+        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+
+        assert isinstance(result, ExpandedCompositeResult)
+        # Both child futures captured by the expanded context.
+        assert len(result._child_futures) == 2
+        # And every one of them is done after run_composite returns.
+        assert all(f.done for f in result._child_futures)
+
+    @patch(
+        "artisan.orchestration.engine.step_executor.execute_composite_step",
+        side_effect=_slow_execute_composite_step,
+    )
+    def test_run_composite_collapsed_blocks_until_done(self, mock_exec, tmp_path):
+        """Collapsed mode: ``run_composite`` returns the StepResult after blocking.
+
+        The underlying StepFuture (kept on ``pipeline._active_futures``) must
+        be ``done`` once ``run_composite`` returns — that is what blocking
+        through ``StepFuture.result()`` is supposed to guarantee.
+        """
+        pipeline = PipelineManager.create(
+            name="test_run_composite_collapsed",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        )
+
+        result = pipeline.run_composite(_TwoStepComposite, expand=False)
+
+        # Collapsed mode unwraps the StepFuture into a StepResult.
+        assert isinstance(result, StepResult)
+        # The future on _active_futures finished blocking before return.
+        assert pipeline._active_futures[0].done is True
+
+
+# =============================================================================
+# Silent-misconfig rejection (PR-D)
+# =============================================================================
+
+
+class TestSilentMisconfigRejection:
+    """Dict overrides without a matching ``active`` selector must raise.
+
+    Closes the silent-misconfiguration gap PR-A's
+    ``_reject_inactive_provider_config`` was added to catch.
+    """
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_environment_dict_with_inactive_provider_raises(
+        self, mock_tracker_cls, tmp_path
+    ):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(ValueError, match="Configured inactive provider"):
+            pipeline.submit(
+                _OpForTests,
+                environment={"docker": {"image": "biocontainers/samtools:1.17"}},
+            )
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_compute_provider_dict_with_inactive_provider_raises(
+        self, mock_tracker_cls, tmp_path
+    ):
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(ValueError, match="Configured inactive provider"):
+            pipeline.submit(
+                _OpForTests,
+                compute_provider={"modal": {"image": "ghcr.io/x/y:latest"}},
+            )
