@@ -7,8 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `compute_resources` kwarg on `submit_composite` / `run_composite` and
+  on `ExpandedCompositeContext.run` / `_run_nested_composite`, plus
+  `compute_provider`, `skip_cache`, `failure_policy`, and `compact`
+  forwarding through the expanded composite path. Per-`ctx.run()`
+  overrides for these kwargs now match the collapsed-mode surface.
+- Typed-config acceptance on every override kwarg of `submit` / `run` /
+  `submit_composite` / `run_composite`. Each kwarg accepts
+  `dict | TypedModel | None` (plus `str` for the active-selector forms
+  on `environment` and `compute_provider`); a single set of `_coerce_*`
+  helpers normalizes typed models to dicts at the boundary, so the
+  downstream pipeline consumes dicts unchanged.
+- `_validate_compute_provider`, `_validate_compute_resources`, and
+  `_reject_inactive_provider_config` validators on the public surface.
+  Passing `environment={"docker": {...}}` (or a `compute_provider` dict)
+  without the matching `active=` selector now raises `ValueError` at
+  call time, closing a silent misconfiguration case.
+- `tests/artisan/schemas/operation_config/test_compute_resources.py`
+  (field validation, unknown-key rejection, round-trip) and end-to-end
+  hash-stability fixtures that flow through `_merge_config_overrides`
+  rather than calling the hashing primitive directly.
+
 ### Changed
 
+- **Cache invalidation event:** `_merge_config_overrides` now emits
+  `"compute_resources"` as a fourth payload key alongside `"environment"`,
+  `"tool"`, and `"compute_provider"`. Two runs that differ only by
+  `compute_resources` (e.g. A100 vs H100) previously cached to the
+  same `step_spec_id` and silently reused each other's artifacts; they
+  now hash distinctly. Any cached step dispatched with non-default
+  `compute_resources` will miss after this change.
+- `ComputeResources` schema now uses `extra="forbid"` so unknown keys
+  raise `ValidationError`.
+- Vocabulary sweep: completes the `backend` → `step runner` /
+  `BackendBase` → `RunnerBase` rename across `docs/concepts/`,
+  `docs/reference/`, `docs/contributing/`, `docs/how-to-guides/`, and
+  the execution tutorial notebooks. The kwargs `resources` /
+  `execution` / `compute` are renamed to `runner_resources` /
+  `batch_strategy` / `compute_provider` in the corresponding doc
+  examples (the source had already migrated). The `Compute` class is
+  renamed to `ComputeProvider` in code samples. `pipeline.expand()`
+  references in docs are replaced with
+  `pipeline.submit_composite(..., expand=True)`.
 - Renamed pytest marker `slow` to `integration` across `pyproject.toml`,
   pixi tasks, all 17 files in `tests/integration/`, and contributor docs.
   The new name describes the requirement (real infra: Delta Lake + Prefect
