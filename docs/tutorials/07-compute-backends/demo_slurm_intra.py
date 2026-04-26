@@ -6,7 +6,7 @@ dispatch work via srun across your allocated resources.
 
 Usage:
     salloc --cpus-per-node=8 --time=00:30:00
-    pixi run python docs/tutorials/execution/demo_slurm_intra.py
+    pixi run python docs/tutorials/07-compute-backends/demo_slurm_intra.py
 
 What happens:
     - Step 0 generates 8 small datasets locally (fast, no srun overhead)

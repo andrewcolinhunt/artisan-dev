@@ -6,7 +6,7 @@ pipeline. In-flight SLURM jobs are automatically cancelled via
 ``scancel --name``.
 
 Usage:
-    pixi run python docs/tutorials/execution/cancel_demo_slurm.py
+    pixi run python docs/tutorials/05-errors-and-control/cancel_demo_slurm.py
 
 What happens:
     - The pipeline submits Wait steps to SLURM, each sleeping for a

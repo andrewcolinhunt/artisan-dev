@@ -5,7 +5,7 @@ Run this script and press Ctrl+C while it's executing to see graceful
 pipeline cancellation in action.
 
 Usage:
-    pixi run python docs/tutorials/execution/cancel_demo.py
+    pixi run python docs/tutorials/05-errors-and-control/cancel_demo.py
 
 What happens:
     - The pipeline submits 10 Wait steps, each sleeping for 30 seconds
