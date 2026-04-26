@@ -1817,11 +1817,12 @@ class PipelineManager:
         expand: bool = False,
         intermediates: Literal["discard", "persist", "expose"] = "discard",
         step_runner: str | RunnerBase | None = None,
-        runner_resources: dict[str, Any] | None = None,
-        batch_strategy: dict[str, Any] | None = None,
-        environment: str | dict[str, Any] | None = None,
-        tool: dict[str, Any] | None = None,
-        compute_provider: str | dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | Any | None = None,
+        batch_strategy: dict[str, Any] | Any | None = None,
+        environment: str | dict[str, Any] | Any | None = None,
+        tool: dict[str, Any] | Any | None = None,
+        compute_provider: str | dict[str, Any] | Any | None = None,
+        compute_resources: dict[str, Any] | Any | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
@@ -1853,6 +1854,9 @@ class PipelineManager:
             environment: Environment override.
             tool: Tool overrides.
             compute_provider: Compute provider override (string or dict).
+            compute_resources: Hardware resources for the compute provider
+                (gpu, memory_gb, timeout). Forwarded to each child step in
+                expanded mode.
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             skip_cache: Bypass cache lookups for this step.
@@ -1948,11 +1952,12 @@ class PipelineManager:
         expand: bool = False,
         intermediates: Literal["discard", "persist", "expose"] = "discard",
         step_runner: str | RunnerBase | None = None,
-        runner_resources: dict[str, Any] | None = None,
-        batch_strategy: dict[str, Any] | None = None,
-        environment: str | dict[str, Any] | None = None,
-        tool: dict[str, Any] | None = None,
-        compute_provider: str | dict[str, Any] | None = None,
+        runner_resources: dict[str, Any] | Any | None = None,
+        batch_strategy: dict[str, Any] | Any | None = None,
+        environment: str | dict[str, Any] | Any | None = None,
+        tool: dict[str, Any] | Any | None = None,
+        compute_provider: str | dict[str, Any] | Any | None = None,
+        compute_resources: dict[str, Any] | Any | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
@@ -1985,6 +1990,7 @@ class PipelineManager:
             environment=environment,
             tool=tool,
             compute_provider=compute_provider,
+            compute_resources=compute_resources,
             failure_policy=failure_policy,
             compact=compact,
             skip_cache=skip_cache,

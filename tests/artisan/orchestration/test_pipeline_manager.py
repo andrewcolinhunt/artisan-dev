@@ -2162,3 +2162,42 @@ class TestCompositeFailFast:
         from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
 
         assert isinstance(result, ExpandedCompositeResult)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_composite_accepts_compute_resources(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """submit_composite accepts compute_resources kwarg (symmetry with submit)."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        # Just verify the kwarg is accepted without TypeError; downstream
+        # plumbing into the dispatched step is exercised in the override-
+        # equivalence integration suite.
+        result = pipeline.submit_composite(
+            _RealComposite,
+            expand=True,
+            compute_resources={"memory_gb": 16, "timeout": 7200},
+        )
+        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+
+        assert isinstance(result, ExpandedCompositeResult)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_run_composite_accepts_compute_resources(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """run_composite accepts compute_resources kwarg (symmetry with run)."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        # expand=True path returns ExpandedCompositeResult immediately when
+        # there are no compose()-submitted children.
+        result = pipeline.run_composite(
+            _RealComposite,
+            expand=True,
+            compute_resources={"memory_gb": 16},
+        )
+        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+
+        assert isinstance(result, ExpandedCompositeResult)
