@@ -37,7 +37,7 @@ def run_composite(
     Args:
         composite_transport: ExecutionComposite with composite instance,
             resolved inputs, and configuration.
-        runtime_env: Paths and backend configuration.
+        runtime_env: Paths and step_runner configuration.
         worker_id: Numeric worker identifier.
 
     Returns:

@@ -12,7 +12,7 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 
 from .conftest import (
@@ -38,7 +38,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
     step0a = p1.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.run(
         DataTransformer,
@@ -49,7 +49,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -66,7 +66,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
     step0b = p2.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.run(
         DataTransformer,
@@ -77,7 +77,7 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 
@@ -109,13 +109,13 @@ def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, str]):
     step0a = p1.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     step1a = p1.run(
         FailingTransformer,
         inputs={"dataset": step0a.output("datasets")},
         params={"fail_on_index": 1},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -134,13 +134,13 @@ def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, str]):
     step0b = p2.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.run(
         FailingTransformer,
         inputs={"dataset": step0b.output("datasets")},
         params={"fail_on_index": 1},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 
@@ -169,13 +169,13 @@ def test_step_completed_partial_failure_cached(pipeline_env: dict[str, str]):
     step0a = p1.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     step1a = p1.run(
         FailingTransformer,
         inputs={"dataset": step0a.output("datasets")},
         params={"fail_on_index": 1},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -194,13 +194,13 @@ def test_step_completed_partial_failure_cached(pipeline_env: dict[str, str]):
     step0b = p2.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     step1b = p2.run(
         FailingTransformer,
         inputs={"dataset": step0b.output("datasets")},
         params={"fail_on_index": 1},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 

@@ -31,7 +31,6 @@ from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.staging.parquet_writer import StagingResult
 from artisan.execution.staging.recorder import record_execution_failure
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.orchestration.backends.base import BackendBase
 from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
@@ -42,11 +41,15 @@ from artisan.orchestration.engine.results import (
     aggregate_results,
     extract_execution_run_ids,
 )
+from artisan.orchestration.runners.base import RunnerBase
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.compute import (
+    ComputeProvider,
+    ModalComputeConfig,
+)
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
@@ -67,7 +70,7 @@ def instantiate_operation(
     execution: dict[str, Any] | None = None,
     environment: str | dict[str, Any] | None = None,
     tool: dict[str, Any] | None = None,
-    compute: str | dict[str, Any] | None = None,
+    compute_provider: str | dict[str, Any] | None = None,
 ) -> OperationDefinition:
     """Construct an operation instance from class, params, and overrides.
 
@@ -79,7 +82,7 @@ def instantiate_operation(
         environment: Optional environment override. String selects the active
             environment; dict deep-merges nested EnvironmentSpec fields.
         tool: Optional tool overrides (applied via model_copy on instance.tool).
-        compute: Optional compute override. String selects the active
+        compute_provider: Optional compute_provider override. String selects the active
             provider; dict applied via model_copy.
 
     Returns:
@@ -121,17 +124,19 @@ def instantiate_operation(
                 else:
                     base[key] = value
             updates["environments"] = Environments.model_validate(base)
-    if compute is not None:
-        if isinstance(compute, str):
-            updates["compute"] = instance.compute.model_copy(update={"active": compute})
+    if compute_provider is not None:
+        if isinstance(compute_provider, str):
+            updates["compute_provider"] = instance.compute_provider.model_copy(
+                update={"active": compute_provider}
+            )
         else:
-            base = instance.compute.model_dump()
-            for key, value in compute.items():
+            base = instance.compute_provider.model_dump()
+            for key, value in compute_provider.items():
                 if isinstance(value, dict) and isinstance(base.get(key), dict):
                     base[key] = {**base[key], **value}
                 else:
                     base[key] = value
-            updates["compute"] = Compute.model_validate(base)
+            updates["compute_provider"] = ComputeProvider.model_validate(base)
     if updates:
         instance = instance.model_copy(update=updates)
 
@@ -148,7 +153,7 @@ def check_cache_for_batch(
     Args:
         execution_spec_id: Deterministic hash for the batch.
         delta_root: Root URI for Delta Lake tables.
-        config: Pipeline config for storage backend. When None,
+        config: Pipeline config for storage step_runner. When None,
             uses local filesystem defaults.
 
     Returns:
@@ -354,22 +359,22 @@ def _handle_dispatch_exception(
 
 
 def _verify_staging_if_needed(
-    backend: BackendBase,
+    step_runner: RunnerBase,
     results: list[UnitResult],
     config: PipelineConfig,
     step_number: int,
     operation_name: str,
     timings: dict[str, Any],
 ) -> None:
-    """Run staging verification when the backend requires it."""
+    """Run staging verification when the step_runner requires it."""
     with phase_timer("verify_staging", timings):
-        if backend.orchestrator_traits.needs_staging_verification:
+        if step_runner.orchestrator_traits.needs_staging_verification:
             execution_run_ids = extract_execution_run_ids(results)
             try:
                 await_staging_files(
                     staging_root=config.staging_root,
                     execution_run_ids=execution_run_ids,
-                    timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
+                    timeout_seconds=step_runner.orchestrator_traits.staging_verification_timeout,
                     step_number=step_number,
                     operation_name=operation_name,
                 )
@@ -396,9 +401,9 @@ def _finalize_timings(
 def _create_runtime_environment(
     config: PipelineConfig,
     operation: type[OperationDefinition] | OperationDefinition,
-    backend: BackendBase | None = None,
+    step_runner: RunnerBase | None = None,
 ) -> RuntimeEnvironment:
-    """Build a RuntimeEnvironment from pipeline config and backend traits."""
+    """Build a RuntimeEnvironment from pipeline config and step_runner traits."""
     # Curator operations don't need a sandbox (no materialization)
     is_curator = is_curator_operation(operation)
 
@@ -420,9 +425,13 @@ def _create_runtime_environment(
         failure_logs_root=failure_logs_root,
         preserve_staging=config.preserve_staging,
         preserve_working=config.preserve_working,
-        worker_id_env_var=backend.worker_traits.worker_id_env_var if backend else None,
-        shared_filesystem=backend.worker_traits.shared_filesystem if backend else False,
-        compute_backend_name=backend.name if backend else "local",
+        worker_id_env_var=step_runner.worker_traits.worker_id_env_var
+        if step_runner
+        else None,
+        shared_filesystem=step_runner.worker_traits.shared_filesystem
+        if step_runner
+        else False,
+        compute_backend_name=step_runner.name if step_runner else "local",
         storage=config.storage,
     )
 
@@ -431,12 +440,12 @@ def execute_step(
     operation_class: type[OperationDefinition],
     inputs: Any,
     params: dict[str, Any] | None,
-    backend: BackendBase,
+    step_runner: RunnerBase,
     resources: dict[str, Any] | None = None,
     execution: dict[str, Any] | None = None,
     environment: str | dict[str, Any] | None = None,
     tool: dict[str, Any] | None = None,
-    compute: str | dict[str, Any] | None = None,
+    compute_provider: str | dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
@@ -459,12 +468,12 @@ def execute_step(
         operation_class: OperationDefinition subclass to execute.
         inputs: Input specification (see PipelineManager.run() for formats).
         params: Parameter overrides.
-        backend: Backend to use for execution.
+        step_runner: Backend to use for execution.
         resources: Resource overrides (cpus, memory_gb, etc.).
         execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
         environment: Environment override (string or dict).
         tool: Tool overrides (executable, interpreter, etc.).
-        compute: Compute routing override (string or dict).
+        compute_provider: Compute routing override (string or dict).
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: "continue" or "fail_fast".
@@ -481,12 +490,18 @@ def execute_step(
         StepResult with output references and execution metadata.
     """
     operation = instantiate_operation(
-        operation_class, params, resources, execution, environment, tool, compute
+        operation_class,
+        params,
+        resources,
+        execution,
+        environment,
+        tool,
+        compute_provider,
     )
     user_overrides = params or {}
 
-    # Merge environment + tool + compute into config_overrides for hashing
-    config_overrides = _merge_config_overrides(environment, tool, compute)
+    # Merge environment + tool + compute_provider into config_overrides for hashing
+    config_overrides = _merge_config_overrides(environment, tool, compute_provider)
 
     # Check if this is a curator operation
     if is_curator_operation(operation):
@@ -510,7 +525,7 @@ def execute_step(
     return _execute_creator_step(
         operation=operation,
         inputs=inputs,
-        backend=backend,
+        step_runner=step_runner,
         config_overrides=config_overrides,
         step_number=step_number,
         config=config,
@@ -527,9 +542,9 @@ def execute_step(
 def _merge_config_overrides(
     environment: str | dict[str, Any] | None,
     tool: dict[str, Any] | None,
-    compute: str | dict[str, Any] | None = None,
+    compute_provider: str | dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Merge environment, tool, and compute overrides into a single dict for hashing."""
+    """Merge environment, tool, and compute_provider overrides into a single dict for hashing."""
     merged: dict[str, Any] = {}
     if environment is not None:
         if isinstance(environment, str):
@@ -538,8 +553,8 @@ def _merge_config_overrides(
             merged["environment"] = environment
     if tool:
         merged["tool"] = tool
-    if compute is not None:
-        merged["compute"] = compute
+    if compute_provider is not None:
+        merged["compute_provider"] = compute_provider
     return merged or None
 
 
@@ -859,7 +874,7 @@ def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
 def _execute_creator_step(
     operation: OperationDefinition,
     inputs: Any,
-    backend: BackendBase,
+    step_runner: RunnerBase,
     config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
@@ -876,7 +891,7 @@ def _execute_creator_step(
     Args:
         operation: Fully configured creator operation instance.
         inputs: Input specification.
-        backend: Backend for worker dispatch.
+        step_runner: Backend for worker dispatch.
         config_overrides: Merged environment + tool overrides (for hashing only).
         step_number: Pipeline step number.
         config: Pipeline configuration.
@@ -1030,15 +1045,15 @@ def _execute_creator_step(
         # --- execute phase ---
         dispatch_error: str | None = None
         with phase_timer("execute", timings):
-            # Create RuntimeEnvironment with backend traits
-            runtime_env = _create_runtime_environment(config, operation, backend)
+            # Create RuntimeEnvironment with step_runner traits
+            runtime_env = _create_runtime_environment(config, operation, step_runner)
 
             succeeded = 0
             failed = 0
 
             if units_to_dispatch:
                 try:
-                    compute_config = operation.compute.current()
+                    compute_config = operation.compute_provider.current()
 
                     handle: DispatchHandle
                     if isinstance(compute_config, ModalComputeConfig):
@@ -1052,8 +1067,8 @@ def _execute_creator_step(
                             max_workers=operation.execution.max_workers or 4,
                         )
                     else:
-                        backend.validate_operation(operation)
-                        handle = backend.create_dispatch_handle(
+                        step_runner.validate_operation(operation)
+                        handle = step_runner.create_dispatch_handle(
                             operation.resources,
                             operation.execution,
                             step_number,
@@ -1092,7 +1107,7 @@ def _execute_creator_step(
         # --- verify_staging phase ---
         if units_to_dispatch:
             _verify_staging_if_needed(
-                backend, results, config, step_number, operation.name, timings
+                step_runner, results, config, step_number, operation.name, timings
             )
         else:
             with phase_timer("verify_staging", timings):
@@ -1101,7 +1116,7 @@ def _execute_creator_step(
         # --- capture_logs phase ---
         with phase_timer("capture_logs", timings):
             if units_to_dispatch:
-                backend.capture_logs(
+                step_runner.capture_logs(
                     results,
                     config.staging_root,
                     runtime_env.failure_logs_root,
@@ -1150,7 +1165,7 @@ def execute_composite_step(
     composite_class: type,
     inputs: Any,
     params: dict[str, Any] | None,
-    backend: BackendBase,
+    step_runner: RunnerBase,
     composite_resources: Any,  # ResourceConfig
     composite_execution: Any,  # ExecutionConfig
     intermediates: Any,  # CompositeIntermediates
@@ -1163,14 +1178,14 @@ def execute_composite_step(
 ) -> StepResult:
     """Execute a composite operation as a single pipeline step.
 
-    Builds an ExecutionComposite, dispatches it through the backend, and
+    Builds an ExecutionComposite, dispatches it through the step_runner, and
     handles commit and compaction.
 
     Args:
         composite_class: CompositeDefinition subclass.
         inputs: Initial inputs (same formats as execute_step).
         params: Parameter overrides.
-        backend: Backend for worker dispatch.
+        step_runner: Backend for worker dispatch.
         composite_resources: Composite-level ResourceConfig.
         composite_execution: Composite-level ExecutionConfig.
         intermediates: CompositeIntermediates enum value.
@@ -1241,13 +1256,13 @@ def execute_composite_step(
     fs_cleanup = config.storage.filesystem()
     try:
         with phase_timer("execute", timings):
-            runtime_env = _create_runtime_environment(config, instance, backend)
+            runtime_env = _create_runtime_environment(config, instance, step_runner)
 
             succeeded = 0
             failed = 0
 
             try:
-                handle = backend.create_dispatch_handle(
+                handle = step_runner.create_dispatch_handle(
                     composite_resources,
                     composite_execution,
                     step_number,
@@ -1265,7 +1280,7 @@ def execute_composite_step(
                 )
 
         _verify_staging_if_needed(
-            backend, results, config, step_number, instance.name, timings
+            step_runner, results, config, step_number, instance.name, timings
         )
 
         commit_error = _commit_and_compact(

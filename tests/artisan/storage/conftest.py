@@ -1,7 +1,7 @@
 """Shared fixtures for storage-layer tests.
 
 The ``backend_fs`` fixture parametrizes over ``["local", "s3"]`` so the
-same test body runs against both backends without ``if backend == "s3":``
+same test body runs against both backends without ``if step_runner == "s3":``
 branching. S3 params skip cleanly when MinIO is unavailable (the
 session-scoped ``minio_endpoint`` fixture in ``tests/conftest.py``
 yields None on boot failure).

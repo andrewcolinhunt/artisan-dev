@@ -56,7 +56,7 @@ def execute_unit_task(
 
     Args:
         unit: Batch of artifacts to process or a composite.
-        runtime_env: Runtime paths and backend configuration.
+        runtime_env: Runtime paths and step_runner configuration.
 
     Returns:
         UnitResult with execution outcome.
@@ -64,7 +64,7 @@ def execute_unit_task(
     try:
         import os
 
-        # Get worker_id from backend-specific environment variable
+        # Get worker_id from step_runner-specific environment variable
         env_var = runtime_env.worker_id_env_var
         worker_id = int(os.environ.get(env_var, "0")) if env_var else 0
 

@@ -279,7 +279,7 @@ class TestPipelineConfig:
         assert config.working_root == tempfile.gettempdir()  # Default
         assert config.failure_policy == FailurePolicy.CONTINUE  # Default
         assert config.cache_policy == CachePolicy.ALL_SUCCEEDED  # Default
-        assert config.default_backend == "local"  # Default
+        assert config.default_step_runner == "local"  # Default
 
     def test_create_full(self):
         """Test PipelineConfig with all fields."""
@@ -289,11 +289,11 @@ class TestPipelineConfig:
             staging_root="/custom/staging",
             working_root="/tmp/work",
             failure_policy="fail_fast",
-            default_backend="slurm",
+            default_step_runner="slurm",
         )
         assert config.working_root == "/tmp/work"
         assert config.failure_policy == FailurePolicy.FAIL_FAST
-        assert config.default_backend == "slurm"
+        assert config.default_step_runner == "slurm"
 
     def test_pipeline_config_has_pipeline_run_id(self):
         """Test PipelineConfig has pipeline_run_id with empty default."""
@@ -347,11 +347,11 @@ class TestPipelineManager:
             staging_root="/data/staging",
             working_root="/tmp/work",
             failure_policy="fail_fast",
-            backend="slurm",
+            default_step_runner="slurm",
         )
         assert pipeline.config.working_root == "/tmp/work"
         assert pipeline.config.failure_policy == FailurePolicy.FAIL_FAST
-        assert pipeline.config.default_backend == "slurm"
+        assert pipeline.config.default_step_runner == "slurm"
 
     def test_finalize_empty(self):
         """Test finalize() with no steps."""

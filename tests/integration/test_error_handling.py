@@ -12,7 +12,7 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas.enums import FailurePolicy
 
 from .conftest import (
@@ -37,14 +37,14 @@ def test_fail_fast_policy(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     step1 = pipeline.run(
         FailingTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"fail_on_index": 1},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     assert step1.success is False
@@ -72,14 +72,14 @@ def test_continue_policy(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     step1 = pipeline.run(
         FailingTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"fail_on_index": 1},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     assert step1.succeeded_count == 2
@@ -95,7 +95,7 @@ def test_continue_policy(pipeline_env: dict[str, str]):
     step2 = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     assert step2.success is True
@@ -122,14 +122,14 @@ def test_all_executions_fail_continue(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     step1 = pipeline.run(
         FailingTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"fail_on_all": True},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     assert step1.succeeded_count == 0
@@ -139,7 +139,7 @@ def test_all_executions_fail_continue(pipeline_env: dict[str, str]):
     step2 = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     assert step2.metadata.get("skipped") is True
@@ -167,7 +167,7 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
     step0 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     assert step0.success is True
 
@@ -175,7 +175,7 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
         FailingTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"fail_on_all": True},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     assert step1.success is False
     p1.finalize()
@@ -200,7 +200,7 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     assert step1b.success is True
 
@@ -208,7 +208,7 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
     step2 = p2.run(
         MetricCalculator,
         inputs={"dataset": step1b.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     assert step2.success is True
 

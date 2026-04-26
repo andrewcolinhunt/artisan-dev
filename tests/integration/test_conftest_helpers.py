@@ -44,7 +44,7 @@ class TestReadTableLocal:
 
 
 class TestReadTableCloudContract:
-    """URI-path contract — matters even without a live cloud backend."""
+    """URI-path contract — matters even without a live cloud step_runner."""
 
     def test_raises_without_fs_on_cloud_uri(self) -> None:
         with pytest.raises(ValueError, match="fs required for cloud"):

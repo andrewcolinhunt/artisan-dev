@@ -1,4 +1,4 @@
-"""Integration tests for per-artifact batch execute through the local backend.
+"""Integration tests for per-artifact batch execute through the local step_runner.
 
 Verifies that the split lifecycle (prep_unit → route_execute_batch → post_unit)
 produces correct artifacts and lineage when run through real operations with

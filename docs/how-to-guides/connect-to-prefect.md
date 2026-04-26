@@ -120,7 +120,7 @@ pipeline.run(
     operation=DataGenerator,
     name="generate",
     params={"count": 5},
-    backend=Backend.SLURM,
+    step_runner=Runner.SLURM,
     resources={"gpus": 1, "memory_gb": 32},
 )
 ```

@@ -28,7 +28,7 @@ from artisan.operations.base._role_docs import (
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, CuratorResult
 from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.compute import Compute
+from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.operation_config.tool_spec import ToolSpec
@@ -175,7 +175,7 @@ class OperationDefinition(BaseModel):
     """Multi-environment configuration. Selects which runtime wraps commands."""
 
     # ---------- Compute ----------
-    compute: Compute = Compute()
+    compute_provider: ComputeProvider = ComputeProvider()
     """Compute routing configuration. Selects where execute() runs."""
 
     # ---------- Resources ----------

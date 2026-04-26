@@ -50,7 +50,7 @@ class TestExecutionRecord:
         assert "string_too_short" in str(exc_info.value)
 
     def test_compute_backend_default(self):
-        """Default compute backend is LOCAL."""
+        """Default compute_provider step_runner is LOCAL."""
         record = ExecutionRecord(
             execution_run_id="r" * 32,
             execution_spec_id="s" * 32,
@@ -61,7 +61,7 @@ class TestExecutionRecord:
         assert record.compute_backend == "local"
 
     def test_slurm_backend(self):
-        """Test SLURM compute backend."""
+        """Test SLURM compute_provider step_runner."""
         record = ExecutionRecord(
             execution_run_id="r" * 32,
             execution_spec_id="s" * 32,

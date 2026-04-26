@@ -24,7 +24,7 @@ from artisan.operations.examples import (
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas.specs.output_spec import OutputSpec
 
 from .conftest import (
@@ -77,7 +77,7 @@ def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Transform (no noise to ensure distribution.min stays >= 0)
@@ -90,14 +90,14 @@ def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Metrics on transformed data
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Filter (distribution.min >= 0 should pass all; data is 0-10)
@@ -109,7 +109,7 @@ def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
                 {"metric": "distribution.min", "operator": "ge", "value": 0},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 4: Downstream creator on filter output
@@ -122,7 +122,7 @@ def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 200,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -165,7 +165,7 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Filter with impossible criterion on co-produced metrics
@@ -177,7 +177,7 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
                 {"metric": "mean_score", "operator": "gt", "value": 99999},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: DataTransformer (should be skipped — empty inputs)
@@ -190,14 +190,14 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 3: MetricCalculator (should be skipped — pipeline stopped)
     step3_result = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step2_result.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -231,7 +231,7 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     current_data = step0.output("datasets")
@@ -242,7 +242,7 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": current_data},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         # Filter: lenient threshold so we keep some but not all
@@ -254,7 +254,7 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
                     {"metric": "distribution.median", "operator": "gt", "value": 0.3},
                 ],
             },
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         # Transform survivors
@@ -267,7 +267,7 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
                 "variants": 1,
                 "seed": 100 + round_idx,
             },
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         # Reassign for next round
@@ -321,7 +321,7 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     shared_ref = step0.output("datasets")
@@ -337,7 +337,7 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
             "seed": 100,
             "output_prefix": "A",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Branch B (scale=2.0)
@@ -351,7 +351,7 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
             "seed": 200,
             "output_prefix": "B",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Merge
@@ -361,14 +361,14 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
             "branch_a": step1.output("dataset"),
             "branch_b": step2.output("dataset"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 4: Metrics on merged set
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step3.output("merged")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -413,14 +413,14 @@ def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
     # Step 0: collapsed composite (DataGenerator -> DataTransformer)
     composite_step = pipeline.run(
         _GenerateAndTransform,
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: MetricCalculator on composite output
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": composite_step.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -460,7 +460,7 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, str]) -> None:
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Filter with impossible criterion + passthrough_failures
@@ -473,7 +473,7 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, str]) -> None:
             ],
             "passthrough_failures": True,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Downstream transformer (scale != 1.0 to ensure distinct content)
@@ -486,7 +486,7 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

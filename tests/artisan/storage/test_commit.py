@@ -30,7 +30,7 @@ def commit_env(backend_fs):
     fs, storage, root = backend_fs
     delta_root = f"{root}/delta"
     staging_root = f"{root}/staging"
-    # Local backend needs explicit dir creation; s3 buckets use prefixes
+    # Local step_runner needs explicit dir creation; s3 buckets use prefixes
     # and don't require pre-created "directories".
     fs.makedirs(delta_root, exist_ok=True)
     fs.makedirs(staging_root, exist_ok=True)

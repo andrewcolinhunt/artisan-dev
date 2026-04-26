@@ -31,7 +31,7 @@ pipeline.run(
     operation=InferenceOp,
     name="inference",
     inputs={"dataset": pipeline.output("preprocess", "dataset")},
-    backend=Backend.SLURM,
+    step_runner=Runner.SLURM,
     resources={"gpus": 1, "memory_gb": 32, "extra": {"partition": "gpu"}},
     execution={"artifacts_per_unit": 1},
 )
@@ -50,17 +50,17 @@ default:
 from artisan.orchestration import Backend
 
 # Pipeline-wide default
-pipeline = PipelineManager.create(..., backend=Backend.SLURM)
+pipeline = PipelineManager.create(..., step_runner=Runner.SLURM)
 
 # Step-level override
-pipeline.run(operation=MyOp, inputs=..., backend=Backend.LOCAL)
+pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
 ```
 
 | Backend | How it runs | When to use |
 |---------|-------------|-------------|
-| `Backend.LOCAL` (default) | Process pool on your machine | Development, testing, lightweight ops |
-| `Backend.SLURM` | SLURM job array on cluster | Production, GPU work, HPC |
-| `Backend.SLURM_INTRA` | srun within existing SLURM allocation | Interactive salloc sessions, zero queue wait |
+| `Runner.LOCAL` (default) | Process pool on your machine | Development, testing, lightweight ops |
+| `Runner.SLURM` | SLURM job array on cluster | Production, GPU work, HPC |
+| `Runner.SLURM_INTRA` | srun within existing SLURM allocation | Interactive salloc sessions, zero queue wait |
 
 For `SLURM_INTRA`, you must be inside an existing SLURM allocation
 (`salloc` or `sbatch`). Work is distributed via `srun` with no queue wait:
@@ -69,7 +69,7 @@ For `SLURM_INTRA`, you must be inside an existing SLURM allocation
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    backend=Backend.SLURM_INTRA,
+    step_runner=Runner.SLURM_INTRA,
     resources={"gpus": 1, "cpus": 4, "memory_gb": 16},
 )
 ```
@@ -93,10 +93,10 @@ the dispatch backend. Set it per step or as a pipeline-wide default:
 from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
 
 # Pipeline-wide default
-pipeline = PipelineManager.create(..., default_compute="local")
+pipeline = PipelineManager.create(..., default_compute_provider="local")
 
 # Step-level override (string shorthand)
-pipeline.run(operation=MyOp, inputs=..., compute="modal")
+pipeline.run(operation=MyOp, inputs=..., compute_provider="modal")
 
 # Step-level override (dict with inline config)
 pipeline.run(
@@ -164,7 +164,7 @@ Pass a `resources` dict to override resource allocation for a step:
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    backend=Backend.SLURM,
+    step_runner=Runner.SLURM,
     resources={
         "gpus": 1,
         "memory_gb": 32,
@@ -436,14 +436,14 @@ waiting:
 future = pipeline.submit(
     operation=BranchAOp,
     inputs={"data": pipeline.output("preprocess", "data")},
-    backend=Backend.SLURM,
+    step_runner=Runner.SLURM,
 )
 
 # Submit another step concurrently
 pipeline.submit(
     operation=BranchBOp,
     inputs={"data": pipeline.output("preprocess", "data")},
-    backend=Backend.SLURM,
+    step_runner=Runner.SLURM,
 )
 
 # Downstream steps that depend on a submitted step automatically wait
@@ -523,7 +523,7 @@ For operations with fast per-artifact execution (< 1 second), increase
 pipeline.run(
     operation=FastMetrics,
     inputs=...,
-    backend=Backend.SLURM,
+    step_runner=Runner.SLURM,
     execution={"artifacts_per_unit": 100, "units_per_worker": 5},
 )
 ```
@@ -568,9 +568,9 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 | SLURM jobs OOM-killed | Default `memory_gb=4` too low | Set `resources={"memory_gb": 32}` or add to operation defaults |
 | Thousands of tiny SLURM jobs | `artifacts_per_unit=1` on a fast operation | Increase `artifacts_per_unit` to batch work |
 | `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` |
-| Step ignores `resources` | Forgot `backend=Backend.SLURM` | Resources only apply to SLURM steps |
+| Step ignores `resources` | Forgot `step_runner=Runner.SLURM` | Resources only apply to SLURM steps |
 | Workers contend on shared filesystem | Default `working_root` on NFS | Omit `working_root` — default uses `$TMPDIR` (node-local) |
-| GPU/extra resource warning on local | SLURM-specific resources on `Backend.LOCAL` | These are ignored locally — switch to `Backend.SLURM` or remove them |
+| GPU/extra resource warning on local | SLURM-specific resources on `Runner.LOCAL` | These are ignored locally — switch to `Runner.SLURM` or remove them |
 
 ---
 
@@ -579,12 +579,12 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 Confirm your configuration works by running a small test:
 
 ```python
-step = pipeline.run(operation=MyOp, inputs=..., backend=Backend.LOCAL)
+step = pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
 assert step.success
 print(f"Processed {step.succeeded_count} artifacts")
 ```
 
-Then switch to `Backend.SLURM` for production. Check SLURM job logs if
+Then switch to `Runner.SLURM` for production. Check SLURM job logs if
 failures occur — the job name format is `s{step_number}_{operation_name}`.
 
 ---

@@ -13,7 +13,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -26,7 +26,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 class SlowTransformer(OperationDefinition):
     """Sleep per artifact, then write a timing marker.
 
-    Simulates a compute-heavy operation where each artifact takes a
+    Simulates a compute_provider-heavy operation where each artifact takes a
     fixed duration. With per-artifact dispatch on Modal, N artifacts
     execute in parallel (~duration total). Without it, they execute
     sequentially (~N * duration total).
@@ -74,7 +74,7 @@ class SlowTransformer(OperationDefinition):
 
     params: Params = Params()
 
-    compute: Compute = Compute(
+    compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 

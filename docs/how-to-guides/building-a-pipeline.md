@@ -379,7 +379,7 @@ pipeline.run(
     operation=DataTransformer,
     name="transform",
     inputs={"dataset": output("generate", "datasets")},
-    backend=Backend.SLURM,
+    step_runner=Runner.SLURM,
     resources={"gpus": 1, "memory_gb": 16, "extra": {"partition": "gpu"}},
 )
 ```

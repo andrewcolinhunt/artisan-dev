@@ -1,8 +1,8 @@
-"""Backend abstraction base classes.
+"""Step runner abstraction base classes.
 
-Defines the ABC and trait dataclasses that all execution backends
-implement. Users interact with pre-built instances via the ``Backend``
-namespace, not with ``BackendBase`` directly.
+Defines the ABC and trait dataclasses that all step runners implement.
+Users interact with pre-built instances via the ``Runner`` namespace,
+not with ``RunnerBase`` directly.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 @dataclass(frozen=True)
 class WorkerTraits:
-    """Worker-side behavior that varies by backend.
+    """Worker-side behavior that varies by step_runner.
 
     These values are embedded in RuntimeEnvironment and serialized
     to worker processes. They control I/O behavior on the worker.
@@ -59,13 +59,13 @@ class OrchestratorTraits:
         return self.shared_filesystem
 
 
-class BackendBase(ABC):
-    """A complete execution backend.
+class RunnerBase(ABC):
+    """A complete execution step_runner.
 
-    Bundles compute dispatch, storage traits, and worker configuration
-    into a single object. Subclasses implement concrete backends.
-    Users access pre-built instances via the Backend namespace
-    (e.g., Backend.SLURM), not this class directly.
+    Bundles compute_provider dispatch, storage traits, and worker configuration
+    into a single object. Subclasses implement concrete runners.
+    Users access pre-built instances via the Runner namespace
+    (e.g., Runner.SLURM), not this class directly.
 
     Subclasses must define three ClassVar attributes:
         name: Short string identifier (e.g. "local", "slurm").
@@ -82,7 +82,7 @@ class BackendBase(ABC):
         super().__init_subclass__(**kwargs)
         for attr in ("name", "worker_traits", "orchestrator_traits"):
             if not hasattr(cls, attr):
-                msg = f"BackendBase subclass {cls.__name__!r} must define {attr!r}"
+                msg = f"RunnerBase subclass {cls.__name__!r} must define {attr!r}"
                 raise TypeError(msg)
 
     @abstractmethod
@@ -95,7 +95,7 @@ class BackendBase(ABC):
         log_folder: str | None = None,
         staging_root: str | None = None,
     ) -> DispatchHandle:
-        """Build a configured dispatch handle for this backend.
+        """Build a configured dispatch handle for this step_runner.
 
         Args:
             resources: Hardware resource allocation.
@@ -103,7 +103,7 @@ class BackendBase(ABC):
             step_number: Pipeline step number (for naming).
             job_name: Human-readable name for logging and scheduler labels.
             log_folder: Directory for scheduler log files (e.g. submitit logs).
-            staging_root: Root directory for staging files (shared-FS backends).
+            staging_root: Root directory for staging files (shared-FS runners).
 
         Returns:
             Configured dispatch handle.
@@ -119,7 +119,7 @@ class BackendBase(ABC):
         operation_name: str,
         step_number: int,
     ) -> None:
-        """Post-dispatch: capture backend-specific worker logs into results.
+        """Post-dispatch: capture step_runner-specific worker logs into results.
 
         Args:
             results: Unit results from dispatch.
@@ -131,7 +131,7 @@ class BackendBase(ABC):
         ...
 
     def validate_operation(self, operation: Any) -> None:  # noqa: B027
-        """Validate that operation config is compatible with this backend.
+        """Validate that operation config is compatible with this step_runner.
 
         Called before dispatch. Default is a deliberate no-op (not abstract);
         subclasses override to add checks.

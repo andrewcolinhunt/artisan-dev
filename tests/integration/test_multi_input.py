@@ -19,7 +19,7 @@ pytestmark = pytest.mark.integration
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import GroupByStrategy
@@ -215,7 +215,7 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     step1 = pipeline.run(
         DataTransformer,
@@ -226,12 +226,12 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     step2 = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # LINEAGE matches: B1↔M1 (share ancestor A1), B2↔M2 (share ancestor A2)
@@ -241,7 +241,7 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
             "primary": step1.output("dataset"),
             "secondary": step2.output("metrics"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -265,19 +265,19 @@ def test_with_associated(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     # MetricCalc creates artifact_edges: D1→M1, D2→M2
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         AssociatedMetricConsumer,
         inputs={"primary": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

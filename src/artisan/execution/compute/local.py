@@ -1,4 +1,4 @@
-"""Local compute router — direct passthrough (today's behavior)."""
+"""Local compute_provider router — direct passthrough (today's behavior)."""
 
 from __future__ import annotations
 

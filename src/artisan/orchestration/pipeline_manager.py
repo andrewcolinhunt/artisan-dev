@@ -26,12 +26,12 @@ import polars as pl
 
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.orchestration.backends import Backend, BackendBase, resolve_backend
 from artisan.orchestration.engine.step_executor import (
     execute_step,
     instantiate_operation,
 )
 from artisan.orchestration.engine.step_tracker import StepTracker
+from artisan.orchestration.runners import Runner, RunnerBase, resolve_runner
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy
@@ -903,8 +903,8 @@ class PipelineManager:
         files_root: str | None = None,
         failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
         cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
-        backend: str | BackendBase = "local",
-        default_compute: str = "local",
+        default_step_runner: str | RunnerBase = "local",
+        default_compute_provider: str = "local",
         preserve_staging: bool = False,
         preserve_working: bool = False,
         recover_staging: bool = True,
@@ -927,9 +927,9 @@ class PipelineManager:
                 defaults to a sibling "files" directory next to delta_root.
             failure_policy: Default failure handling for steps.
             cache_policy: Controls when completed steps qualify as cache hits.
-            backend: Default backend for step execution. Accepts a BackendBase
-                instance or string name (e.g. "local", "slurm").
-            default_compute: Default compute routing for step execution.
+            default_step_runner: Default step runner for step execution. Accepts a
+                RunnerBase instance or string name (e.g. "local", "slurm").
+            default_compute_provider: Default compute provider for step execution.
             preserve_staging: Debug flag to preserve staging files after commit.
             preserve_working: Debug flag to preserve sandbox after execution.
             recover_staging: Commit leftover staging files from prior crashed
@@ -952,7 +952,7 @@ class PipelineManager:
         server_info = discover_server(prefect_server)
         activate_server(server_info)
 
-        resolved = resolve_backend(backend)
+        resolved = resolve_runner(default_step_runner)
         pipeline_run_id = _generate_run_id(name)
         config = PipelineConfig(
             name=name,
@@ -963,8 +963,8 @@ class PipelineManager:
             **({"files_root": files_root} if files_root is not None else {}),  # type: ignore[arg-type]  # conditional kwarg expansion
             failure_policy=failure_policy,
             cache_policy=cache_policy,
-            default_backend=resolved.name,
-            default_compute=default_compute,
+            default_step_runner=resolved.name,
+            default_compute_provider=default_compute_provider,
             preserve_staging=preserve_staging,
             preserve_working=preserve_working,
             recover_staging=recover_staging,
@@ -1102,12 +1102,12 @@ class PipelineManager:
             | None
         ) = None,
         params: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
+        step_runner: str | RunnerBase | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
-        compute: str | dict[str, Any] | None = None,
+        compute_provider: str | dict[str, Any] | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1123,12 +1123,12 @@ class PipelineManager:
             operation: OperationDefinition or CompositeDefinition subclass.
             inputs: Input specification (dict, list, or None).
             params: Parameter overrides.
-            backend: Backend for execution. None uses pipeline default.
+            step_runner: Step runner for execution. None uses pipeline default.
             resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
             environment: Environment override (operations only).
             tool: Tool overrides (operations only).
-            compute: Compute routing override (string or dict).
+            compute_provider: Compute routing override (string or dict).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
@@ -1143,12 +1143,12 @@ class PipelineManager:
             operation,
             inputs=inputs,
             params=params,
-            backend=backend,
+            step_runner=step_runner,
             resources=resources,
             execution=execution,
             environment=environment,
             tool=tool,
-            compute=compute,
+            compute_provider=compute_provider,
             failure_policy=failure_policy,
             compact=compact,
             name=name,
@@ -1166,12 +1166,12 @@ class PipelineManager:
             | None
         ) = None,
         params: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
+        step_runner: str | RunnerBase | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
-        compute: str | dict[str, Any] | None = None,
+        compute_provider: str | dict[str, Any] | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1186,12 +1186,12 @@ class PipelineManager:
             operation: OperationDefinition or CompositeDefinition subclass.
             inputs: Input specification (dict, list, or None).
             params: Parameter overrides.
-            backend: Backend for execution. None uses pipeline default.
+            step_runner: Step runner for execution. None uses pipeline default.
             resources: Resource overrides (cpus, memory_gb, etc.).
             execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
             environment: Environment override (operations only).
             tool: Tool overrides (operations only).
-            compute: Compute routing override (string or dict).
+            compute_provider: Compute routing override (string or dict).
             failure_policy: Override pipeline-level failure policy.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
@@ -1213,7 +1213,7 @@ class PipelineManager:
                 composite_class=operation,
                 inputs=inputs,
                 params=params,
-                backend=backend,
+                step_runner=step_runner,
                 resources=resources,
                 execution=execution,
                 intermediates=intermediates,
@@ -1248,7 +1248,7 @@ class PipelineManager:
         step_number = self._current_step
 
         # 4. Instantiate the operation with merged defaults + overrides to
-        #    compute a deterministic step_spec_id (content hash of operation
+        #    compute_provider a deterministic step_spec_id (content hash of operation
         #    name, params, input provenance, and config overrides). This ID
         #    drives the step-level cache.
         step_spec_id, temp_instance = self._prepare_step_spec(
@@ -1258,7 +1258,7 @@ class PipelineManager:
             execution,
             environment,
             tool,
-            compute,
+            compute_provider,
             step_number,
             inputs,
         )
@@ -1294,19 +1294,19 @@ class PipelineManager:
                 return file_result
             inputs = file_result  # type: ignore[assignment]
 
-        # 7. Dispatch: register the step, resolve the backend (local vs SLURM),
+        # 7. Dispatch: register the step, resolve the step_runner (local vs SLURM),
         #    record the step start in Delta, and submit the _run() closure to
         #    the thread pool executor for background execution.
         return self._dispatch_step(
             operation=operation,
             inputs=inputs,
             params=params,
-            backend=backend,
+            step_runner=step_runner,
             resources=resources,
             execution=execution,
             environment=environment,
             tool=tool,
-            compute=compute,
+            compute_provider=compute_provider,
             failure_policy=failure_policy,
             compact=compact,
             step_name=step_name,
@@ -1407,11 +1407,11 @@ class PipelineManager:
         execution: dict[str, Any] | None,
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
-        compute: str | dict[str, Any] | None,
+        compute_provider: str | dict[str, Any] | None,
         step_number: int,
         inputs: Any,
     ) -> tuple[str, OperationDefinition]:
-        """Instantiate operation and compute deterministic step spec ID.
+        """Instantiate operation and compute_provider deterministic step spec ID.
 
         The step_spec_id is a content hash of (operation name, step number,
         merged params, upstream spec IDs, and config overrides). Two runs
@@ -1428,7 +1428,7 @@ class PipelineManager:
         # Instantiate with merged defaults + user overrides so we can
         # dump the *full* params (including defaults) for hashing.
         temp_instance = instantiate_operation(
-            operation, params, resources, execution, environment, tool, compute
+            operation, params, resources, execution, environment, tool, compute_provider
         )
         if "params" in type(temp_instance).model_fields:
             full_params = temp_instance.params.model_dump(mode="json")  # type: ignore[attr-defined]
@@ -1445,7 +1445,7 @@ class PipelineManager:
         # TODO: _merge_config_overrides should not start with _
         from artisan.orchestration.engine.step_executor import _merge_config_overrides
 
-        config_overrides = _merge_config_overrides(environment, tool, compute)
+        config_overrides = _merge_config_overrides(environment, tool, compute_provider)
 
         input_spec = self._build_input_spec(inputs)
         step_spec_id = compute_step_spec_id(
@@ -1580,12 +1580,12 @@ class PipelineManager:
         operation: type[OperationDefinition],
         inputs: Any,
         params: dict[str, Any] | None,
-        backend: str | BackendBase | None,
+        step_runner: str | RunnerBase | None,
         resources: dict[str, Any] | None,
         execution: dict[str, Any] | None,
         environment: str | dict[str, Any] | None,
         tool: dict[str, Any] | None,
-        compute: str | dict[str, Any] | None,
+        compute_provider: str | dict[str, Any] | None,
         failure_policy: FailurePolicy | None,
         compact: bool,
         step_name: str,
@@ -1594,7 +1594,7 @@ class PipelineManager:
         temp_instance: OperationDefinition,
         skip_cache: bool = False,
     ) -> StepFuture:
-        """Register step, resolve backend, and submit execution to thread pool.
+        """Register step, resolve step_runner, and submit execution to thread pool.
 
         This is the final phase of submit(). It performs three things
         synchronously on the calling thread, then hands off to the
@@ -1603,7 +1603,7 @@ class PipelineManager:
         1. **Bookkeeping** — registers the step in the step registry,
            advances the step counter, installs signal handlers (first
            dispatch only), and generates a unique step_run_id.
-        2. **Backend resolution** — curator operations are forced to
+        2. **Step runner resolution** — curator operations are forced to
            LOCAL; otherwise per-step override > pipeline default.
         3. **Delta recording** — writes a StepStartRecord to the steps
            delta table for audit/resume.
@@ -1629,20 +1629,22 @@ class PipelineManager:
 
         # Curator operations always run locally (they read/write Delta
         # directly). Non-curator: per-step override > pipeline default.
-        resolved_backend: BackendBase
+        resolved_runner: RunnerBase
         if is_curator_operation(temp_instance):
-            resolved_backend = Backend.LOCAL
-        elif backend is not None:
-            resolved_backend = resolve_backend(backend)
+            resolved_runner = Runner.LOCAL
+        elif step_runner is not None:
+            resolved_runner = resolve_runner(step_runner)
         else:
-            resolved_backend = resolve_backend(self._config.default_backend)
+            resolved_runner = resolve_runner(self._config.default_step_runner)
 
         compute_options_data = {
             "resources": resources or {},
             "execution": execution or {},
             "environment": (environment if environment is not None else {}),
             "tool": tool or {},
-            "compute": (compute if compute is not None else {}),
+            "compute_provider": (
+                compute_provider if compute_provider is not None else {}
+            ),
         }
         start_record = StepStartRecord(
             step_run_id=step_run_id,
@@ -1652,7 +1654,7 @@ class PipelineManager:
             operation_class=_qualified_name(operation),
             params_json=json.dumps(params or {}, default=_set_default),
             input_refs_json=_serialize_input_refs(inputs),
-            compute_backend=resolved_backend.name,
+            compute_backend=resolved_runner.name,
             compute_options_json=json.dumps(compute_options_data, default=_set_default),
             output_roles_json=json.dumps(sorted(operation.outputs.keys())),
             output_types_json=json.dumps(output_types_map),
@@ -1683,10 +1685,10 @@ class PipelineManager:
                 return cancelled_result
 
             logger.info(
-                "Step %d (%s) starting... [backend=%s]",
+                "Step %d (%s) starting... [step_runner=%s]",
                 step_number,
                 step_name,
-                resolved_backend.name,
+                resolved_runner.name,
             )
             start = time.perf_counter()
             try:
@@ -1696,12 +1698,12 @@ class PipelineManager:
                     operation_class=operation,
                     inputs=inputs,
                     params=params,
-                    backend=resolved_backend,
+                    step_runner=resolved_runner,
                     resources=resources,
                     execution=execution,
                     environment=environment,
                     tool=tool,
-                    compute=compute,
+                    compute_provider=compute_provider,
                     step_number=step_number,
                     config=self._config,
                     failure_policy=_failure_policy,
@@ -1810,7 +1812,7 @@ class PipelineManager:
         params: dict[str, Any] | None = None,
         resources: dict[str, Any] | None = None,
         execution: dict[str, Any] | None = None,
-        backend: str | BackendBase | None = None,
+        step_runner: str | RunnerBase | None = None,
         environment: str | dict[str, Any] | None = None,
         tool: dict[str, Any] | None = None,
         name: str | None = None,
@@ -1826,7 +1828,7 @@ class PipelineManager:
             params: Parameter overrides for the composite.
             resources: Per-operation overrides forwarded from compose().
             execution: Per-operation overrides forwarded from compose().
-            backend: Backend override.
+            step_runner: Step runner override.
             environment: Environment override.
             tool: Tool overrides.
             name: Step name prefix. Defaults to composite.name.
@@ -1892,7 +1894,7 @@ class PipelineManager:
         composite_class: type[CompositeDefinition],
         inputs: Any,
         params: dict[str, Any] | None,
-        backend: str | BackendBase | None,
+        step_runner: str | RunnerBase | None,
         resources: dict[str, Any] | None,
         execution: dict[str, Any] | None,
         intermediates: str,
@@ -1906,7 +1908,7 @@ class PipelineManager:
         Args:
             composite_class: CompositeDefinition subclass.
             inputs: Initial inputs.
-            backend: Backend override.
+            step_runner: Step runner override.
             resources: Composite-level resource overrides.
             execution: Composite-level execution overrides.
             intermediates: "discard", "persist", or "expose".
@@ -1991,11 +1993,11 @@ class PipelineManager:
 
         output_types_map = self._build_output_types(composite_class.outputs)
 
-        # Resolve backend
-        if backend is not None:
-            resolved_backend = resolve_backend(backend)
+        # Resolve step_runner
+        if step_runner is not None:
+            resolved_runner = resolve_runner(step_runner)
         else:
-            resolved_backend = resolve_backend(self._config.default_backend)
+            resolved_runner = resolve_runner(self._config.default_step_runner)
 
         _failure_policy = failure_policy or self._config.failure_policy
         composite_intermediates = CompositeIntermediates(intermediates)
@@ -2021,10 +2023,10 @@ class PipelineManager:
                 return cancelled_result
 
             logger.info(
-                "Step %d (%s) starting composite... [backend=%s]",
+                "Step %d (%s) starting composite... [step_runner=%s]",
                 step_number,
                 name,
-                resolved_backend.name,
+                resolved_runner.name,
             )
             composite_step_run_id = _generate_step_run_id(step_spec_id)
             self._step_run_ids[step_number] = composite_step_run_id
@@ -2035,7 +2037,7 @@ class PipelineManager:
                     composite_class=composite_class,
                     inputs=inputs,
                     params=params,
-                    backend=resolved_backend,
+                    step_runner=resolved_runner,
                     composite_resources=composite_resources,
                     composite_execution=composite_execution,
                     intermediates=composite_intermediates,
@@ -2063,7 +2065,7 @@ class PipelineManager:
                         operation_class=f"{composite_class.__module__}.{composite_class.__qualname__}",
                         params_json=json.dumps(full_params or {}),
                         input_refs_json=_serialize_input_refs(inputs),
-                        compute_backend=resolved_backend.name,
+                        compute_backend=resolved_runner.name,
                         compute_options_json="{}",
                         output_roles_json=json.dumps(
                             sorted(composite_class.outputs.keys())

@@ -18,7 +18,7 @@ from artisan.storage.core.table_schemas import (
 
 @pytest.fixture
 def cache_env(backend_fs):
-    """Yield ``(executions_path, fs, storage_options, root)`` per backend.
+    """Yield ``(executions_path, fs, storage_options, root)`` per step_runner.
 
     Seeds ``orchestration/executions`` with one success + one failure,
     and ``provenance/execution_edges`` with one input/output pair, so
@@ -256,7 +256,7 @@ class TestCacheLookupBackendParametrized:
     """
 
     def test_cache_hit_round_trip(self, backend_fs):
-        """Successful execution + edges produce a CacheHit on either backend."""
+        """Successful execution + edges produce a CacheHit on either step_runner."""
         fs, storage, root = backend_fs
         delta_root = f"{root}/delta"
         executions_path = f"{delta_root}/orchestration/executions"

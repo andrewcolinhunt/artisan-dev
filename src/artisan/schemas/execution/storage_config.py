@@ -1,4 +1,4 @@
-"""Storage backend configuration for fsspec and delta-rs."""
+"""Storage step_runner configuration for fsspec and delta-rs."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 
 class StorageConfig(BaseModel):
-    """Storage backend configuration.
+    """Storage step_runner configuration.
 
     Credentials are NOT stored here — they come from the execution
     environment (IAM roles, env vars, service accounts). This config

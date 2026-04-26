@@ -1,4 +1,4 @@
-"""DispatchHandle — lifecycle handle for in-flight backend work."""
+"""DispatchHandle — lifecycle handle for in-flight step_runner work."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class _HandleState(enum.Enum):
 
 
 class DispatchHandle(ABC):
-    """Lifecycle handle for controlling in-flight backend work.
+    """Lifecycle handle for controlling in-flight step_runner work.
 
     Provides start, poll, collect, and cancel semantics. Non-streaming
     pipelines use ``run()`` (blocking template method). The streaming

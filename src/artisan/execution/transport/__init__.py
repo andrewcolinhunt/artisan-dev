@@ -1,4 +1,4 @@
-"""Transport utilities for remote compute routing.
+"""Transport utilities for remote compute_provider routing.
 
 Snapshot and restore sandbox files and tool scripts for shipping
 across process boundaries (e.g. to a Modal container).

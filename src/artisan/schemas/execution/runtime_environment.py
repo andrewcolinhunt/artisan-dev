@@ -19,8 +19,8 @@ class RuntimeEnvironment(BaseModel):
     passed to workers.
 
     The separation of concerns:
-    - ExecutionUnit: What to compute (operation, inputs, params, step_number)
-    - RuntimeEnvironment: Where to compute (URIs/paths, debug flags)
+    - ExecutionUnit: What to compute_provider (operation, inputs, params, step_number)
+    - RuntimeEnvironment: Where to compute_provider (URIs/paths, debug flags)
 
     For curator operations, working_root is None since they
     don't require sandboxing or materialization.
@@ -101,10 +101,10 @@ class RuntimeEnvironment(BaseModel):
         description="Backend name for provenance records.",
     )
 
-    # Storage backend
+    # Storage step_runner
     storage: StorageConfig = Field(
         default_factory=StorageConfig,
-        description="Storage backend configuration for fsspec and delta-rs.",
+        description="Storage step_runner configuration for fsspec and delta-rs.",
     )
 
     model_config = {"frozen": True}  # Config should be immutable

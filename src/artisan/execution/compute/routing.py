@@ -1,4 +1,4 @@
-"""Factory for creating compute routers from provider configs."""
+"""Factory for creating compute_provider routers from provider configs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from artisan.schemas.operation_config.compute import (
 
 
 def create_router(config: ComputeConfig) -> ComputeRouter:
-    """Create a compute router from a provider config.
+    """Create a compute_provider router from a provider config.
 
     Args:
         config: Provider config from ``Compute.current()``.
@@ -29,5 +29,5 @@ def create_router(config: ComputeConfig) -> ComputeRouter:
         from artisan.execution.compute.modal import ModalComputeRouter
 
         return ModalComputeRouter(config)
-    msg = f"Unknown compute config: {type(config).__name__}"
+    msg = f"Unknown compute_provider config: {type(config).__name__}"
     raise ValueError(msg)

@@ -90,14 +90,14 @@ def run_creator_lifecycle(
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and backend configuration for this run.
+        runtime_env: Paths and step_runner configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources keyed by role.
             When provided, hydrate from sources instead of unit.inputs.
             Used by the composite executor for in-memory artifact passing.
         compute_router: Optional pre-created router for execute() dispatch.
-            When None, created from the operation's compute config.
+            When None, created from the operation's compute_provider config.
 
     Returns:
         LifecycleResult with artifacts, edges, and timings.
@@ -120,7 +120,7 @@ def run_creator_lifecycle(
     # --- execute phase ---
     with phase_timer("execute", prepped.timings):
         if compute_router is None:
-            config = prepped.operation.compute.current()
+            config = prepped.operation.compute_provider.current()
             compute_router = create_router(config)
         try:
             raw_result = compute_router.route_execute(
@@ -152,9 +152,9 @@ def run_creator_flow(
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and backend configuration for this run.
+        runtime_env: Paths and step_runner configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
-        compute_router: Shared router for compute dispatch. When provided,
+        compute_router: Shared router for compute_provider dispatch. When provided,
             the lifecycle skips creating its own router. When ``None``,
             each invocation creates a router from the operation's config.
 

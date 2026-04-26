@@ -5,13 +5,13 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
-from artisan.orchestration.backends.local import SIGINTSafeProcessPoolTaskRunner
+from artisan.orchestration.runners.local import SIGINTSafeProcessPoolTaskRunner
 
 
 class TestSIGINTSafeProcessPoolTaskRunner:
     """Fix 2e: process pool workers ignore SIGINT."""
 
-    @patch("artisan.orchestration.backends.local.ProcessPoolExecutor")
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_enter_creates_pool_with_initializer(self, mock_ppe_cls):
         """__enter__ re-creates executor with ignore_sigint initializer."""
         from artisan.utils.spawn import ignore_sigint
@@ -43,7 +43,7 @@ class TestSIGINTSafeProcessPoolTaskRunner:
         # Clean up the spawn guard
         runner.__exit__(None, None, None)
 
-    @patch("artisan.orchestration.backends.local.ProcessPoolExecutor")
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_enter_neuters_main_file(self, mock_ppe_cls):
         """__enter__ neuters __main__.__file__, __exit__ restores it."""
         main_mod = sys.modules["__main__"]
@@ -78,13 +78,13 @@ class TestSIGINTSafeProcessPoolTaskRunner:
         assert issubclass(SIGINTSafeProcessPoolTaskRunner, ProcessPoolTaskRunner)
 
     def test_create_dispatch_handle_uses_sigint_safe_runner(self):
-        """LocalBackend.create_dispatch_handle uses SIGINTSafeProcessPoolTaskRunner."""
-        from artisan.orchestration.backends.local import LocalBackend
+        """LocalRunner.create_dispatch_handle uses SIGINTSafeProcessPoolTaskRunner."""
+        from artisan.orchestration.runners.local import LocalRunner
         from artisan.schemas.execution.execution_config import ExecutionConfig
         from artisan.schemas.operation_config.resource_config import ResourceConfig
 
-        backend = LocalBackend(default_max_workers=2)
-        handle = backend.create_dispatch_handle(
+        step_runner = LocalRunner(default_max_workers=2)
+        handle = step_runner.create_dispatch_handle(
             ResourceConfig(), ExecutionConfig(), step_number=0, job_name="test"
         )
 

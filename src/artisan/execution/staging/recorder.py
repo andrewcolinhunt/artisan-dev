@@ -198,7 +198,7 @@ def _write_failure_log(
         execution_run_id: Execution run ID (used as filename).
         operation_name: Name of the operation that failed.
         step_number: Pipeline step number.
-        compute_backend: Compute backend used (local/slurm).
+        compute_backend: Compute step_runner used (local/slurm).
         error: Full error string (traceback).
         tool_output: Captured tool stdout/stderr.
     """

@@ -1,4 +1,4 @@
-"""SLURM backend — job array submission via submitit."""
+"""SLURM step_runner — job array submission via submitit."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from typing import Any
 
 from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.orchestration.backends.base import (
-    BackendBase,
+from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _HandleState
+from artisan.orchestration.runners.base import (
     OrchestratorTraits,
+    RunnerBase,
     WorkerTraits,
 )
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _HandleState
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
@@ -100,7 +100,7 @@ class SlurmDispatchHandle(DispatchHandle):
             logger.debug("scancel --name %s failed (best-effort)", self._job_name)
 
 
-class SlurmBackend(BackendBase):
+class SlurmRunner(RunnerBase):
     """SLURM job array submission via submitit."""
 
     name = "slurm"

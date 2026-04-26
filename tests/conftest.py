@@ -69,7 +69,7 @@ _MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 
 @pytest.fixture(scope="session")
 def minio_endpoint() -> Iterator[dict[str, str] | None]:
-    """Endpoint + credentials for the session-scoped MinIO backend.
+    """Endpoint + credentials for the session-scoped MinIO step_runner.
 
     Honors ``ARTISAN_S3_ENDPOINT`` for developer-owned instances; otherwise
     boots a MinIO container via testcontainers. Yields ``None`` when boot
@@ -134,7 +134,7 @@ def s3_fs(minio_endpoint):
     MinIO fixture is unavailable.
     """
     if minio_endpoint is None:
-        pytest.skip("MinIO backend unavailable")
+        pytest.skip("MinIO step_runner unavailable")
 
     import s3fs
 

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -57,7 +57,7 @@ class Wait(OperationDefinition):
     params: Params = Params()
 
     # ---------- Compute ----------
-    compute: Compute = Compute(
+    compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 

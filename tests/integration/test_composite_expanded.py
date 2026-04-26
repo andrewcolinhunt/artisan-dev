@@ -16,7 +16,7 @@ pytestmark = pytest.mark.integration
 from artisan.composites import CompositeContext, CompositeDefinition
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -26,10 +26,10 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 
 class GenTransformMetrics(CompositeDefinition):
-    """Generate, transform, compute metrics."""
+    """Generate, transform, compute_provider metrics."""
 
     name = "test_gen_transform_metrics"
-    description = "Generate, transform, compute metrics"
+    description = "Generate, transform, compute_provider metrics"
 
     class OutputRole(StrEnum):
         METRICS = "metrics"
@@ -108,7 +108,7 @@ def test_expand_basic(pipeline_env: dict[str, str]):
 
     result = pipeline.expand(
         GenTransformMetrics,
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # expand() returns ExpandedCompositeResult, not StepResult
@@ -136,7 +136,7 @@ def test_expand_with_upstream(pipeline_env: dict[str, str]):
     gen = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.expand(

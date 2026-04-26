@@ -15,7 +15,7 @@ pytestmark = pytest.mark.integration
 from artisan.composites import CompositeContext, CompositeDefinition
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -122,7 +122,7 @@ def test_composite_creators_only(pipeline_env: dict[str, str]):
 
     step = pipeline.run(
         GenerateAndTransform,
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     pipeline.finalize()
 
@@ -146,13 +146,13 @@ def test_composite_with_upstream(pipeline_env: dict[str, str]):
     gen = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     step = pipeline.run(
         TransformWithInput,
         inputs={"data": gen.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     pipeline.finalize()
 
@@ -174,14 +174,14 @@ def test_composite_to_downstream(pipeline_env: dict[str, str]):
 
     composite_step = pipeline.run(
         GenerateAndTransform,
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Wire composite output to MetricCalculator
     metrics_step = pipeline.run(
         MetricCalculator,
         inputs={"dataset": composite_step.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     pipeline.finalize()
 
@@ -202,7 +202,7 @@ def test_composite_nested(pipeline_env: dict[str, str]):
 
     step = pipeline.run(
         NestedComposite,
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     pipeline.finalize()
 

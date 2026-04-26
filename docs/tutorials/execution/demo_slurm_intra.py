@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """SLURM intra-allocation demo.
 
-Run this script inside an salloc session to see Backend.SLURM_INTRA
+Run this script inside an salloc session to see Runner.SLURM_INTRA
 dispatch work via srun across your allocated resources.
 
 Usage:
@@ -24,7 +24,7 @@ from artisan.operations.examples import (
     DataTransformer,
     MetricCalculator,
 )
-from artisan.orchestration import Backend, PipelineManager
+from artisan.orchestration import Runner, PipelineManager
 from artisan.utils import tutorial_setup
 from artisan.visualization import inspect_pipeline
 
@@ -46,7 +46,7 @@ def main() -> None:
         operation=DataGenerator,
         name="generate",
         params={"count": 8, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     print(f"  Generated {step0.succeeded_count} datasets")
 
@@ -57,7 +57,7 @@ def main() -> None:
         name="transform",
         inputs={"dataset": output("generate", "datasets")},
         params={"scale_factor": 0.5, "variants": 2, "seed": 100},
-        backend=Backend.SLURM_INTRA,
+        step_runner=Runner.SLURM_INTRA,
         resources={"cpus": 2, "memory_gb": 2},
     )
     print(f"  Transformed {step1.succeeded_count} datasets via srun")
@@ -68,7 +68,7 @@ def main() -> None:
         operation=MetricCalculator,
         name="metrics",
         inputs={"dataset": output("transform", "dataset")},
-        backend=Backend.SLURM_INTRA,
+        step_runner=Runner.SLURM_INTRA,
         resources={"cpus": 1, "memory_gb": 1},
     )
     print(f"  Computed metrics for {step2.succeeded_count} datasets via srun")

@@ -16,7 +16,10 @@ from artisan.orchestration.engine.step_executor import (
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.compute import Compute, ModalComputeConfig
+from artisan.schemas.operation_config.compute import (
+    ComputeProvider,
+    ModalComputeConfig,
+)
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.specs.input_spec import InputSpec
@@ -45,7 +48,7 @@ class TestExecuteStepPassesCancelEvent:
             operation_class=MagicMock(),
             inputs=None,
             params=None,
-            backend=MagicMock(),
+            step_runner=MagicMock(),
             cancel_event=event,
         )
 
@@ -71,7 +74,7 @@ class TestExecuteStepPassesCancelEvent:
             operation_class=MagicMock(),
             inputs=None,
             params=None,
-            backend=MagicMock(),
+            step_runner=MagicMock(),
             cancel_event=event,
         )
 
@@ -110,7 +113,7 @@ class TestCreatorCancelChecks:
         result = _execute_creator_step(
             operation=mock_op,
             inputs={"data": ["id1"]},
-            backend=MagicMock(),
+            step_runner=MagicMock(),
             step_number=1,
             config=config,
             cancel_event=event,
@@ -192,7 +195,7 @@ class _SimpleCreatorOp(OperationDefinition):
 
 
 def _make_mock_backend(flow_return_value=None):
-    """Create a mock backend whose dispatch handle captures dispatched units."""
+    """Create a mock step_runner whose dispatch handle captures dispatched units."""
     mock_backend = MagicMock()
     mock_backend.name = "local"
     mock_backend.worker_traits.worker_id_env_var = None
@@ -234,7 +237,9 @@ class TestComputeRoutingSelection:
         )
 
         op = _SimpleCreatorOp(
-            compute=Compute(active="modal", modal=ModalComputeConfig()),
+            compute_provider=ComputeProvider(
+                active="modal", modal=ModalComputeConfig()
+            ),
         )
 
         mock_resolve.return_value = {"data": [_ID]}
@@ -251,7 +256,7 @@ class TestComputeRoutingSelection:
         _execute_creator_step(
             operation=op,
             inputs={"data": [_ID]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             step_number=1,
             config=config,
             compact=False,
@@ -270,7 +275,7 @@ class TestComputeRoutingSelection:
         mock_cache,
         tmp_path,
     ):
-        """LocalComputeConfig uses the standard backend dispatch path."""
+        """LocalComputeConfig uses the standard step_runner dispatch path."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -281,7 +286,7 @@ class TestComputeRoutingSelection:
             working_root=str(tmp_path / "working"),
         )
 
-        op = _SimpleCreatorOp()  # default: compute.active="local"
+        op = _SimpleCreatorOp()  # default: compute_provider.active="local"
 
         mock_resolve.return_value = {"data": [_ID]}
         mock_cache.return_value = None
@@ -297,7 +302,7 @@ class TestComputeRoutingSelection:
         _execute_creator_step(
             operation=op,
             inputs={"data": [_ID]},
-            backend=mock_backend,
+            step_runner=mock_backend,
             step_number=1,
             config=config,
             compact=False,
@@ -308,53 +313,53 @@ class TestComputeRoutingSelection:
 
 
 class TestInstantiateOperationComputeOverrides:
-    """Dict-form compute overrides must coerce into proper Pydantic models."""
+    """Dict-form compute_provider overrides must coerce into proper Pydantic models."""
 
     def test_instantiate_operation_compute_dict_coerces_modal_config(self):
         """Dict override creates ModalComputeConfig when field starts as None."""
         op = instantiate_operation(
             _SimpleCreatorOp,
             params=None,
-            compute={"active": "modal", "modal": {"min_containers": 8}},
+            compute_provider={"active": "modal", "modal": {"min_containers": 8}},
         )
-        assert isinstance(op.compute.modal, ModalComputeConfig)
-        assert op.compute.modal.min_containers == 8
-        assert op.compute.active == "modal"
+        assert isinstance(op.compute_provider.modal, ModalComputeConfig)
+        assert op.compute_provider.modal.min_containers == 8
+        assert op.compute_provider.active == "modal"
 
     def test_instantiate_operation_compute_dict_merges_existing_modal(self):
         """Partial dict preserves existing fields on the nested config."""
 
         class _ModalOp(_SimpleCreatorOp):
-            compute: Compute = Compute(
+            compute_provider: ComputeProvider = ComputeProvider(
                 active="modal", modal=ModalComputeConfig(gpu="A10G", memory_gb=16)
             )
 
         result = instantiate_operation(
             _ModalOp,
             params=None,
-            compute={"modal": {"min_containers": 4}},
+            compute_provider={"modal": {"min_containers": 4}},
         )
-        assert result.compute.modal.gpu == "A10G"
-        assert result.compute.modal.memory_gb == 16
-        assert result.compute.modal.min_containers == 4
+        assert result.compute_provider.modal.gpu == "A10G"
+        assert result.compute_provider.modal.memory_gb == 16
+        assert result.compute_provider.modal.min_containers == 4
 
     def test_instantiate_operation_compute_string_override(self):
-        """String compute override selects the active provider."""
+        """String compute_provider override selects the active provider."""
         op = instantiate_operation(
             _SimpleCreatorOp,
             params=None,
-            compute="modal",
+            compute_provider="modal",
         )
-        assert op.compute.active == "modal"
+        assert op.compute_provider.active == "modal"
 
     def test_instantiate_operation_compute_dict_passes_isinstance_check(self):
-        """Reproduces the bug: compute.current() must return a ModalComputeConfig."""
+        """Reproduces the bug: compute_provider.current() must return a ModalComputeConfig."""
         op = instantiate_operation(
             _SimpleCreatorOp,
             params=None,
-            compute={"active": "modal", "modal": {"min_containers": 8}},
+            compute_provider={"active": "modal", "modal": {"min_containers": 8}},
         )
-        assert isinstance(op.compute.current(), ModalComputeConfig)
+        assert isinstance(op.compute_provider.current(), ModalComputeConfig)
 
 
 class TestInstantiateOperationEnvironmentOverrides:

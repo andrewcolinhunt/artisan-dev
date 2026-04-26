@@ -1,4 +1,4 @@
-"""SLURM intra-allocation backend — srun dispatch within an existing allocation."""
+"""SLURM intra-allocation step_runner — srun dispatch within an existing allocation."""
 
 from __future__ import annotations
 
@@ -6,22 +6,22 @@ import os
 import warnings
 from typing import Any
 
-from artisan.orchestration.backends.base import (
-    BackendBase,
+from artisan.orchestration.engine.dispatch_handle import DispatchHandle
+from artisan.orchestration.runners.base import (
     OrchestratorTraits,
+    RunnerBase,
     WorkerTraits,
 )
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
 
 
-class SlurmIntraBackend(BackendBase):
+class SlurmIntraRunner(RunnerBase):
     """Execute within an existing SLURM allocation via srun.
 
-    Unlike ``SlurmBackend`` which submits independent ``sbatch`` jobs to the
-    SLURM queue, this backend distributes work directly to allocated resources
+    Unlike ``SlurmRunner`` which submits independent ``sbatch`` jobs to the
+    SLURM queue, this step_runner distributes work directly to allocated resources
     using ``srun``. This eliminates queue latency when resources are already
     reserved via ``salloc`` or ``sbatch``.
 
@@ -62,14 +62,14 @@ class SlurmIntraBackend(BackendBase):
         """
         from prefect_submitit import SlurmTaskRunner
 
-        from artisan.orchestration.backends.slurm import SlurmDispatchHandle
+        from artisan.orchestration.runners.slurm import SlurmDispatchHandle
 
         slurm_kwargs: dict[str, Any] = dict(resources.extra)
         if log_folder is not None:
             slurm_kwargs["log_folder"] = log_folder
 
         # Pass gpus directly as gpus_per_node rather than routing through
-        # slurm_gres. The SrunBackend builds --gres=gpu:N from gpus_per_node.
+        # slurm_gres. The SrunRunner builds --gres=gpu:N from gpus_per_node.
         # Partition and slurm_job_name are omitted — srun dispatches within
         # the existing allocation, and srun steps have no independent job names.
         task_runner = SlurmTaskRunner(
@@ -111,7 +111,7 @@ class SlurmIntraBackend(BackendBase):
         """
         if not os.environ.get("SLURM_JOB_ID"):
             warnings.warn(
-                f"Backend 'slurm_intra' selected for {operation.name!r} but "
+                f"Step runner 'slurm_intra' selected for {operation.name!r} but "
                 f"SLURM_JOB_ID is not set. Are you inside an salloc/sbatch?",
                 stacklevel=2,
             )

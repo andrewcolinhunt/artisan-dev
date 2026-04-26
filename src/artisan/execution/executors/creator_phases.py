@@ -125,7 +125,7 @@ def prep_unit(
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and backend configuration.
+        runtime_env: Paths and step_runner configuration.
         worker_id: Numeric worker identifier.
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources.
@@ -499,8 +499,8 @@ def _upload_files_to_root(
         files_dir: Unit's local sandbox files directory, or None
             when no operation in this unit produces file outputs.
         runtime_env: Runtime environment carrying ``files_root`` and
-            the storage backend.
-        execution_run_id: Per-execution ID used to compute the
+            the storage step_runner.
+        execution_run_id: Per-execution ID used to compute_provider the
             sharded destination under ``files_root``.
         step_number: Pipeline step number for sharding.
         operation_name: Operation name for sharding.

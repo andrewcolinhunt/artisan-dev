@@ -11,9 +11,9 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from artisan.orchestration.backends.local import LocalBackend
-from artisan.orchestration.backends.slurm import SlurmDispatchHandle
 from artisan.orchestration.engine.dispatch_handle import _HandleState
+from artisan.orchestration.runners.local import LocalRunner
+from artisan.orchestration.runners.slurm import SlurmDispatchHandle
 from artisan.schemas.execution.execution_config import ExecutionConfig
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.resource_config import ResourceConfig
@@ -49,7 +49,7 @@ class TestLocalDispatchHandleCancelFlow:
     @patch("prefect.flow", side_effect=_fake_flow)
     def test_run_with_pre_set_cancel_event(self, _mock_flow) -> None:
         """run() with an already-set cancel_event completes without hanging."""
-        handle = LocalBackend(default_max_workers=1).create_dispatch_handle(
+        handle = LocalRunner(default_max_workers=1).create_dispatch_handle(
             ResourceConfig(), ExecutionConfig(), step_number=0, job_name="test"
         )
 
@@ -63,7 +63,7 @@ class TestLocalDispatchHandleCancelFlow:
     @patch("prefect.flow", side_effect=_fake_flow)
     def test_run_completes_after_delayed_cancel(self, _mock_flow) -> None:
         """run() returns after cancel_event is set mid-execution."""
-        handle = LocalBackend(default_max_workers=1).create_dispatch_handle(
+        handle = LocalRunner(default_max_workers=1).create_dispatch_handle(
             ResourceConfig(), ExecutionConfig(), step_number=0, job_name="test"
         )
 
@@ -86,7 +86,7 @@ class TestLocalDispatchHandleCancelFlow:
 class TestSlurmDispatchHandleCancelFlow:
     """Cancel-through-run on a real SlurmDispatchHandle."""
 
-    @patch("artisan.orchestration.backends.slurm.subprocess")
+    @patch("artisan.orchestration.runners.slurm.subprocess")
     def test_run_with_pre_set_cancel_calls_scancel(
         self, mock_subprocess: MagicMock
     ) -> None:
@@ -122,7 +122,7 @@ class TestSlurmDispatchHandleCancelFlow:
         )
         assert isinstance(results, list)
 
-    @patch("artisan.orchestration.backends.slurm.subprocess")
+    @patch("artisan.orchestration.runners.slurm.subprocess")
     def test_run_with_delayed_cancel_calls_scancel(
         self, mock_subprocess: MagicMock
     ) -> None:
@@ -167,7 +167,7 @@ class TestSlurmDispatchHandleCancelFlow:
 class TestSlurmDispatchHandleCancelBeforeDispatch:
     """Cancel on a SlurmDispatchHandle that hasn't dispatched yet."""
 
-    @patch("artisan.orchestration.backends.slurm.subprocess")
+    @patch("artisan.orchestration.runners.slurm.subprocess")
     def test_cancel_before_dispatch_calls_scancel(
         self, mock_subprocess: MagicMock
     ) -> None:

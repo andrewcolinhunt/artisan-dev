@@ -12,7 +12,7 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 
 def test_cancel_before_any_steps(pipeline_env: dict[str, str]):
@@ -29,7 +29,7 @@ def test_cancel_before_any_steps(pipeline_env: dict[str, str]):
     result = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     assert (
@@ -55,7 +55,7 @@ def test_cancel_skips_downstream_steps(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     assert step0.success is True
 
@@ -70,7 +70,7 @@ def test_cancel_skips_downstream_steps(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     assert step1.metadata.get("skipped") is True
@@ -92,7 +92,7 @@ def test_cancel_during_submit(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.cancel()
@@ -106,7 +106,7 @@ def test_cancel_during_submit(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = future.result(timeout=10)
@@ -131,7 +131,7 @@ def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, str]):
     pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.cancel()
@@ -191,7 +191,7 @@ def test_cancel_event_reaches_dispatch_handle(pipeline_env: dict[str, str]):
     pipeline.submit(
         Wait,
         params={"duration": 30},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     summary = pipeline.finalize()
     elapsed = time.monotonic() - start

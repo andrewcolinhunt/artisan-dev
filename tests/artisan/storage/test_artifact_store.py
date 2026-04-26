@@ -1041,7 +1041,7 @@ class TestArtifactStoreBackendParametrized:
         )
         assert verify.shape[0] == 1
 
-        # Now exercise ArtifactStore against the same backend.
+        # Now exercise ArtifactStore against the same step_runner.
         store = ArtifactStore(
             delta_root,
             fs=fs,
