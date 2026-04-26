@@ -390,9 +390,10 @@ pipeline2 = PipelineManager.create(
 )
 output2 = pipeline2.output
 pipeline2.run(operation=DataGenerator, name="generate", params={"count": 3})
-expanded = pipeline2.expand(
+expanded = pipeline2.submit_composite(
     TransformAndScore,
     inputs={"dataset": output2("generate", "datasets")},
+    expand=True,
 )
 result = pipeline2.finalize()
 ```

@@ -47,7 +47,6 @@ project:
             - file: tutorials/pipeline-design/06-composites.ipynb
         - title: Execution
           children:
-            - file: tutorials/execution/01-run-vs-submit.ipynb
             - file: tutorials/execution/02-resume-and-caching.ipynb
             - file: tutorials/execution/03-batching-and-performance.ipynb
             - file: tutorials/execution/04-error-visibility.ipynb
