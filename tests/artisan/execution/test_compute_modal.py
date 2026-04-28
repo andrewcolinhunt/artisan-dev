@@ -24,11 +24,11 @@ def _make_mock_modal():
     ``remote_fn`` and ``spawn_map_iter`` can be injected via
     ``mock_modal._captured`` to stub the container-side return values:
 
-    - ``_captured["remote_fn"]``: callable returning the 3-tuple
-      ``(raw_result, output_snapshot, container_timings)``. Default
-      returns ``(None, {}, {})``.
+    - ``_captured["remote_fn"]``: callable returning the 4-tuple
+      ``(raw_result, output_snapshot, container_timings,
+      tool_output_bytes)``. Default returns ``(None, {}, {}, b"")``.
     - ``_captured["spawn_map_iter"]``: iterable (or callable returning
-      one) of 3-tuples yielded by ``function_call.iter()`` for the
+      one) of 4-tuples yielded by ``function_call.iter()`` for the
       batch path. Default yields nothing.
     """
     mock_modal = MagicMock()
@@ -59,7 +59,7 @@ def _make_mock_modal():
     # app.function() returns a decorator that wraps the function and
     # gives it both ``.remote()`` (single-path) and
     # ``.experimental_spawn_map()`` (batch-path) mocks. Return values
-    # are 3-tuples to match the updated container-side wire format;
+    # are 4-tuples to match the container-side wire format;
     # callers can't rely on cloudpickled args being deserialized
     # (MagicMock can't survive cloudpickle round-trips) so injection
     # happens via ``_captured``.
@@ -82,10 +82,10 @@ def _make_mock_modal():
         def decorator(fn):
             wrapped = MagicMock()
             wrapped._original_fn = fn
-            # Default: return (None, {}, {}) — tests override via _captured
+            # Default: return (None, {}, {}, b"") — tests override via _captured
             wrapped.remote = MagicMock(
                 side_effect=lambda **kw: _captured.get(
-                    "remote_fn", lambda **k: (None, {}, {})
+                    "remote_fn", lambda **k: (None, {}, {}, b"")
                 )(**kw)
             )
             wrapped.experimental_spawn_map = MagicMock(
@@ -104,7 +104,12 @@ class TestModalComputeRouter:
     def test_route_execute_serializes_and_calls_remote(self, tmp_path):
         """route_execute cloudpickles args and calls fn.remote."""
         mock_modal = _make_mock_modal()
-        mock_modal._captured["remote_fn"] = lambda **kw: ({"result": 42}, {}, {})
+        mock_modal._captured["remote_fn"] = lambda **kw: (
+            {"result": 42},
+            {},
+            {},
+            b"",
+        )
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
 
@@ -129,7 +134,7 @@ class TestModalComputeRouter:
     def test_route_execute_returns_none(self, tmp_path):
         """route_execute passes through None returns."""
         mock_modal = _make_mock_modal()
-        mock_modal._captured["remote_fn"] = lambda **kw: (None, {}, {})
+        mock_modal._captured["remote_fn"] = lambda **kw: (None, {}, {}, b"")
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
 
@@ -591,6 +596,7 @@ class TestModalComputeRouter:
             {"success": True},
             output_snapshot,
             {},
+            b"",
         )
         config = ModalComputeConfig(image="test:latest")
         router = ModalComputeRouter(config)
@@ -739,7 +745,7 @@ class TestExecuteOnModalCallback:
             ModalComputeConfig(image="test:latest")
         )
 
-        raw_result, output_files, _ = execute_on_modal(
+        raw_result, output_files, _, _tool_output = execute_on_modal(
             operation_bytes=cloudpickle.dumps(_CwdOp()),
             execute_input_bytes=cloudpickle.dumps(fresh_input),
             sandbox=files,
@@ -781,6 +787,8 @@ class TestExecuteOnModalCallback:
             ModalComputeConfig(image="test:latest")
         )
 
+        from artisan.execution.compute.modal import _ContainerFailure
+
         try:
             execute_on_modal(
                 operation_bytes=cloudpickle.dumps(_CwdOp()),
@@ -790,12 +798,15 @@ class TestExecuteOnModalCallback:
                 sandbox_root=str(fresh_root),
                 tool_files={},
             )
-        except FileNotFoundError:
-            pass  # expected
+        except _ContainerFailure as wrapper:
+            # _execute_on_modal wraps the original exception; the
+            # subprocess.Popen failure is what we're validating here.
+            assert isinstance(wrapper.original, FileNotFoundError)
         else:
             msg = (
-                "Expected FileNotFoundError when sandbox_dirs is dropped; "
-                "the execute/artifact_0 shell should not exist on the fresh root."
+                "Expected _ContainerFailure wrapping FileNotFoundError when "
+                "sandbox_dirs is dropped; the execute/artifact_0 shell should "
+                "not exist on the fresh root."
             )
             raise AssertionError(msg)
 
@@ -902,7 +913,7 @@ class TestModalSubPhaseTimings:
         execute_dir.mkdir()
         ei = ExecuteInput(inputs={}, execute_dir=str(execute_dir), log_path="/tmp/log")
 
-        raw_result, output_files, ct = fn._original_fn(
+        raw_result, output_files, ct, tool_output_bytes = fn._original_fn(
             operation_bytes=cloudpickle.dumps(_Op()),
             execute_input_bytes=cloudpickle.dumps(ei),
             sandbox=None,
@@ -913,6 +924,7 @@ class TestModalSubPhaseTimings:
 
         assert raw_result == "ok"
         assert isinstance(output_files, dict)
+        assert tool_output_bytes == b""  # no sandbox_root → no log
         assert set(ct.keys()) == {
             "container_start_epoch",
             "execute_start_epoch",
@@ -943,7 +955,11 @@ class TestModalSubPhaseTimings:
                 "execute_end_epoch": 101.6,
             },
         ]
-        items = [("r0", {}, cts[0]), ("r1", {}, cts[1]), ("r2", {}, cts[2])]
+        items = [
+            ("r0", {}, cts[0], b""),
+            ("r1", {}, cts[1], b""),
+            ("r2", {}, cts[2], b""),
+        ]
 
         fc = MagicMock()
         fc.iter.return_value = iter(items)
@@ -975,8 +991,8 @@ class TestModalSubPhaseTimings:
         ]
 
         def _generator():
-            yield ("r0", {}, cts[0])
-            yield ("r1", {}, cts[1])
+            yield ("r0", {}, cts[0], b"")
+            yield ("r1", {}, cts[1], b"")
             msg = "modal blew up"
             raise RuntimeError(msg)
 
@@ -991,3 +1007,414 @@ class TestModalSubPhaseTimings:
         assert results[1] == "r1"
         assert isinstance(results[2], RuntimeError)
         assert len(handle.container_timings) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tool-output capture: helpers, failure-path, batch concat
+# ---------------------------------------------------------------------------
+
+
+class TestUnitToolOutputRead:
+    """Direct tests of `_read_unit_tool_output`."""
+
+    def test_none_sandbox_root_returns_empty(self):
+        from artisan.execution.compute.modal import _read_unit_tool_output
+
+        assert _read_unit_tool_output(None) == b""
+
+    def test_missing_file_returns_empty(self, tmp_path):
+        from artisan.execution.compute.modal import _read_unit_tool_output
+
+        assert _read_unit_tool_output(str(tmp_path)) == b""
+
+    def test_normal_read(self, tmp_path):
+        from artisan.execution.compute.modal import _read_unit_tool_output
+
+        (tmp_path / "tool_output.log").write_bytes(b"line1\nline2\n")
+        assert _read_unit_tool_output(str(tmp_path)) == b"line1\nline2\n"
+
+    def test_tail_truncation(self, tmp_path):
+        from artisan.execution.compute.modal import _read_unit_tool_output
+        from artisan.execution.transport.log_constants import (
+            MAX_TOOL_OUTPUT_BYTES,
+        )
+
+        oversize = b"x" * (MAX_TOOL_OUTPUT_BYTES + 100)
+        (tmp_path / "tool_output.log").write_bytes(oversize)
+        result = _read_unit_tool_output(str(tmp_path))
+        assert len(result) == MAX_TOOL_OUTPUT_BYTES
+        assert result == oversize[-MAX_TOOL_OUTPUT_BYTES:]
+
+
+class TestWriteToolOutput:
+    """Direct tests of `_write_tool_output`."""
+
+    def test_none_path_noop(self):
+        from artisan.execution.compute.modal import _write_tool_output
+
+        _write_tool_output(None, b"some bytes")  # must not raise
+
+    def test_empty_bytes_noop(self, tmp_path):
+        from artisan.execution.compute.modal import _write_tool_output
+
+        target = tmp_path / "log"
+        _write_tool_output(str(target), b"")
+        assert not target.exists()
+
+    def test_creates_parent_dir(self, tmp_path):
+        from artisan.execution.compute.modal import _write_tool_output
+
+        target = tmp_path / "deep" / "nested" / "tool_output.log"
+        _write_tool_output(str(target), b"hello")
+        assert target.read_bytes() == b"hello"
+
+    def test_overwrites_existing(self, tmp_path):
+        from artisan.execution.compute.modal import _write_tool_output
+
+        target = tmp_path / "tool_output.log"
+        target.write_bytes(b"old")
+        _write_tool_output(str(target), b"new")
+        assert target.read_bytes() == b"new"
+
+
+class TestWriteConcatenatedUnitLog:
+    """Direct tests of `_write_concatenated_unit_log`."""
+
+    def test_separators_and_order(self, tmp_path):
+        from artisan.execution.compute.modal import _write_concatenated_unit_log
+
+        target = tmp_path / "tool_output.log"
+        _write_concatenated_unit_log(
+            str(target),
+            [(0, b"alpha"), (1, b"beta"), (2, b"gamma")],
+        )
+        contents = target.read_bytes()
+        assert contents == (
+            b"=== artifact 0 ===\nalpha\n\n"
+            b"=== artifact 1 ===\nbeta\n\n"
+            b"=== artifact 2 ===\ngamma"
+        )
+
+    def test_truncation_with_prefix(self, tmp_path):
+        from artisan.execution.compute.modal import _write_concatenated_unit_log
+        from artisan.execution.transport.log_constants import (
+            MAX_TOOL_OUTPUT_BYTES,
+        )
+
+        target = tmp_path / "tool_output.log"
+        # Two parts each twice the cap → final blob far exceeds the cap.
+        big = b"x" * (MAX_TOOL_OUTPUT_BYTES * 2)
+        _write_concatenated_unit_log(str(target), [(0, big), (1, big)])
+        contents = target.read_bytes()
+        assert contents.startswith(b"[truncated]\n")
+        # Tail must be the last bytes of the un-truncated blob (all 'x').
+        assert contents[-10:] == b"x" * 10
+        assert len(contents) == len(b"[truncated]\n") + MAX_TOOL_OUTPUT_BYTES
+
+    def test_empty_parts_noop(self, tmp_path):
+        from artisan.execution.compute.modal import _write_concatenated_unit_log
+
+        target = tmp_path / "tool_output.log"
+        _write_concatenated_unit_log(str(target), [])
+        assert not target.exists()
+
+    def test_none_path_noop(self):
+        from artisan.execution.compute.modal import _write_concatenated_unit_log
+
+        _write_concatenated_unit_log(None, [(0, b"x")])  # must not raise
+
+
+class TestContainerFailureRoundTrip:
+    """`_execute_on_modal` wraps execute() failures in `_ContainerFailure`."""
+
+    def _capture(self):
+        mock_modal = _make_mock_modal()
+        router = ModalComputeRouter(ModalComputeConfig(image="t:1"))
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            fn = router._ensure_running("op")
+        return fn._original_fn
+
+    def test_failure_after_partial_log(self, tmp_path):
+        from artisan.execution.compute.modal import _ContainerFailure
+
+        sandbox_root = tmp_path / "sandbox"
+        sandbox_root.mkdir()
+
+        class _Op:
+            name = "op"
+
+            def execute(self, execute_input):
+                # Simulate run_command(stream_output=True) writing a
+                # partial log before the tool blew up.
+                with open(execute_input.log_path, "w") as f:
+                    f.write("start\nmiddle\n")
+                msg = "boom"
+                raise ValueError(msg)
+
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+        ei = ExecuteInput(
+            execute_dir=str(execute_dir),
+            inputs={},
+            log_path=str(sandbox_root / "tool_output.log"),
+        )
+
+        execute_on_modal = self._capture()
+
+        try:
+            execute_on_modal(
+                operation_bytes=cloudpickle.dumps(_Op()),
+                execute_input_bytes=cloudpickle.dumps(ei),
+                sandbox=None,
+                sandbox_dirs=None,
+                sandbox_root=str(sandbox_root),
+                tool_files={},
+            )
+        except _ContainerFailure as wrapper:
+            assert isinstance(wrapper.original, ValueError)
+            assert wrapper.tool_output_bytes == b"start\nmiddle\n"
+        else:
+            msg = "expected _ContainerFailure"
+            raise AssertionError(msg)
+
+    def test_failure_before_writing(self, tmp_path):
+        from artisan.execution.compute.modal import _ContainerFailure
+
+        sandbox_root = tmp_path / "sandbox"
+        sandbox_root.mkdir()
+
+        class _Op:
+            name = "op"
+
+            def execute(self, execute_input):
+                msg = "boom"
+                raise RuntimeError(msg)
+
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+        ei = ExecuteInput(
+            execute_dir=str(execute_dir),
+            inputs={},
+            log_path=str(sandbox_root / "tool_output.log"),
+        )
+
+        execute_on_modal = self._capture()
+
+        try:
+            execute_on_modal(
+                operation_bytes=cloudpickle.dumps(_Op()),
+                execute_input_bytes=cloudpickle.dumps(ei),
+                sandbox=None,
+                sandbox_dirs=None,
+                sandbox_root=str(sandbox_root),
+                tool_files={},
+            )
+        except _ContainerFailure as wrapper:
+            assert isinstance(wrapper.original, RuntimeError)
+            assert wrapper.tool_output_bytes == b""
+        else:
+            msg = "expected _ContainerFailure"
+            raise AssertionError(msg)
+
+
+class TestRouteExecuteToolOutput:
+    """`route_execute` writes bytes on success and on `_ContainerFailure`."""
+
+    def _build(self, tmp_path):
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+        ei = ExecuteInput(
+            inputs={},
+            execute_dir=str(execute_dir),
+            log_path=str(sandbox / "tool_output.log"),
+        )
+        operation = MagicMock()
+        operation.environments = Environments()
+        operation.tool = None
+        return sandbox, ei, operation
+
+    def test_writes_bytes_on_success(self, tmp_path):
+        mock_modal = _make_mock_modal()
+        mock_modal._captured["remote_fn"] = lambda **kw: (
+            "ok",
+            {},
+            {},
+            b"captured stdout\n",
+        )
+        config = ModalComputeConfig(image="t:1")
+        router = ModalComputeRouter(config)
+        sandbox, ei, operation = self._build(tmp_path)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            result = router.route_execute(operation, ei, str(sandbox))
+
+        assert result == "ok"
+        assert (sandbox / "tool_output.log").read_bytes() == b"captured stdout\n"
+
+    def test_writes_partial_and_reraises_on_failure(self, tmp_path):
+        from artisan.execution.compute.modal import _ContainerFailure
+
+        partial = b"partial output before crash\n"
+
+        def _raise(**_kw):
+            raise _ContainerFailure(ValueError("boom"), partial)
+
+        mock_modal = _make_mock_modal()
+        mock_modal._captured["remote_fn"] = _raise
+        config = ModalComputeConfig(image="t:1")
+        router = ModalComputeRouter(config)
+        sandbox, ei, operation = self._build(tmp_path)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            try:
+                router.route_execute(operation, ei, str(sandbox))
+            except ValueError as exc:
+                assert str(exc) == "boom"
+            else:
+                msg = "expected ValueError"
+                raise AssertionError(msg)
+
+        assert (sandbox / "tool_output.log").read_bytes() == partial
+
+
+class TestBatchExecuteHandleToolOutput:
+    """`BatchExecuteHandle.__iter__` writes the concatenated unit log."""
+
+    def _ei(self, tmp_path, name, log_path):
+        d = tmp_path / name
+        d.mkdir()
+        return ExecuteInput(inputs={}, execute_dir=str(d), log_path=log_path)
+
+    def test_concatenates_per_artifact_bytes(self, tmp_path):
+        from artisan.execution.compute.modal import BatchExecuteHandle
+
+        log_path = tmp_path / "tool_output.log"
+        items = [
+            (
+                "r0",
+                {},
+                {
+                    "container_start_epoch": 0,
+                    "execute_start_epoch": 0,
+                    "execute_end_epoch": 0,
+                },
+                b"a-out",
+            ),
+            (
+                "r1",
+                {},
+                {
+                    "container_start_epoch": 0,
+                    "execute_start_epoch": 0,
+                    "execute_end_epoch": 0,
+                },
+                b"b-out",
+            ),
+            (
+                "r2",
+                {},
+                {
+                    "container_start_epoch": 0,
+                    "execute_start_epoch": 0,
+                    "execute_end_epoch": 0,
+                },
+                b"c-out",
+            ),
+        ]
+        fc = MagicMock()
+        fc.iter.return_value = iter(items)
+        eis = [self._ei(tmp_path, f"a{i}", str(log_path)) for i in range(3)]
+        handle = BatchExecuteHandle(function_call=fc, execute_inputs=eis, count=3)
+
+        results = list(handle)
+        assert results == ["r0", "r1", "r2"]
+        contents = log_path.read_bytes()
+        assert b"=== artifact 0 ===\na-out" in contents
+        assert b"=== artifact 1 ===\nb-out" in contents
+        assert b"=== artifact 2 ===\nc-out" in contents
+        # Order preserved
+        assert contents.index(b"artifact 0") < contents.index(b"artifact 1")
+        assert contents.index(b"artifact 1") < contents.index(b"artifact 2")
+
+    def test_partial_log_from_failed_artifact(self, tmp_path):
+        from artisan.execution.compute.modal import (
+            BatchExecuteHandle,
+            _ContainerFailure,
+        )
+
+        log_path = tmp_path / "tool_output.log"
+        ct = {
+            "container_start_epoch": 0,
+            "execute_start_epoch": 0,
+            "execute_end_epoch": 0,
+        }
+
+        def _gen():
+            yield ("r0", {}, ct, b"good-output")
+            raise _ContainerFailure(ValueError("kaboom"), b"partial-output")
+
+        fc = MagicMock()
+        fc.iter.return_value = _gen()
+        eis = [self._ei(tmp_path, f"a{i}", str(log_path)) for i in range(2)]
+        handle = BatchExecuteHandle(function_call=fc, execute_inputs=eis, count=2)
+
+        results = list(handle)
+        assert results[0] == "r0"
+        assert isinstance(results[1], ValueError)
+        contents = log_path.read_bytes()
+        assert b"=== artifact 0 ===\ngood-output" in contents
+        assert b"=== artifact 1 ===\npartial-output" in contents
+
+    def test_finally_fires_on_early_break(self, tmp_path):
+        from artisan.execution.compute.modal import BatchExecuteHandle
+
+        log_path = tmp_path / "tool_output.log"
+        ct = {
+            "container_start_epoch": 0,
+            "execute_start_epoch": 0,
+            "execute_end_epoch": 0,
+        }
+
+        def _gen():
+            yield ("r0", {}, ct, b"first")
+            yield ("r1", {}, ct, b"second")
+            yield ("r2", {}, ct, b"third")
+
+        fc = MagicMock()
+        fc.iter.return_value = _gen()
+        eis = [self._ei(tmp_path, f"a{i}", str(log_path)) for i in range(3)]
+        handle = BatchExecuteHandle(function_call=fc, execute_inputs=eis, count=3)
+
+        # Consume only the first result, then close the generator.
+        gen = iter(handle)
+        first = next(gen)
+        gen.close()  # triggers the `finally` block
+
+        assert first == "r0"
+        # Only the first artifact's bytes were buffered before close.
+        contents = log_path.read_bytes()
+        assert b"=== artifact 0 ===\nfirst" in contents
+        assert b"second" not in contents
+
+    def test_no_write_when_no_parts(self, tmp_path):
+        from artisan.execution.compute.modal import BatchExecuteHandle
+
+        log_path = tmp_path / "tool_output.log"
+        ct = {
+            "container_start_epoch": 0,
+            "execute_start_epoch": 0,
+            "execute_end_epoch": 0,
+        }
+        items = [
+            ("r0", {}, ct, b""),
+            ("r1", {}, ct, b""),
+        ]
+        fc = MagicMock()
+        fc.iter.return_value = iter(items)
+        eis = [self._ei(tmp_path, f"a{i}", str(log_path)) for i in range(2)]
+        handle = BatchExecuteHandle(function_call=fc, execute_inputs=eis, count=2)
+
+        list(handle)
+        assert not log_path.exists()
