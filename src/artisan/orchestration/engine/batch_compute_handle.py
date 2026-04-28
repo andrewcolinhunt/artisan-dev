@@ -185,7 +185,15 @@ def _process_unit(
         timings.update(prepped.timings)
     except (_PostprocessFailure, _ExecuteFailure) as exc:
         error = str(exc)
+        # Per-container Modal failures are surfaced as exceptions
+        # embedded in raw_results (not raised by route_execute_batch),
+        # so the line-163 read above doesn't fire. Read the on-disk
+        # unit log (written by BatchExecuteHandle.__iter__'s finally
+        # block) so partial bytes from failed containers reach the
+        # parquet ``tool_output`` column.
         tool_output = getattr(exc, "tool_output", None)
+        if tool_output is None:
+            tool_output = _read_tool_output(prepped.log_path)
         params_dict = _get_params_dict(operation)
         record_execution_failure(
             execution_context=prepped.execution_context,
@@ -205,6 +213,7 @@ def _process_unit(
         )
     except Exception as exc:
         error = format_error(exc)
+        tool_output = _read_tool_output(prepped.log_path)
         params_dict = _get_params_dict(operation)
         record_execution_failure(
             execution_context=prepped.execution_context,
@@ -213,6 +222,7 @@ def _process_unit(
             timestamp_end=datetime.now(UTC),
             params=params_dict,
             user_overrides=unit.user_overrides,
+            tool_output=tool_output,
             failure_logs_root=runtime_env.failure_logs_root,
         )
         return UnitResult(

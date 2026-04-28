@@ -90,7 +90,9 @@ class ExecuteInput:
         inputs: Prepared inputs from preprocess.
             Keys may differ from original roles after transformation.
         log_path: Path where external tool output should be written.
-            Provided by the framework for automatic capture.
+            Provided by the framework for automatic capture. The
+            filename ``tool_output.log`` is reserved by the framework
+            — do not write a file by that name to ``<sandbox_root>``.
         metadata: Escape hatch for additional data from the engine.
         files_dir: Local sandbox directory for external file output.
             Always a local filesystem path, never a cloud URI. Operations

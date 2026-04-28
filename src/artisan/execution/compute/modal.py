@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -19,6 +20,119 @@ from artisan.utils.timing import phase_timer
 # These match the values previously baked into ModalComputeConfig.
 _MODAL_DEFAULT_MEMORY_GB = 8
 _MODAL_DEFAULT_TIMEOUT = 3600
+
+
+class _ContainerFailure(Exception):
+    """Wraps an in-container exception with its partial unit-log bytes.
+
+    Cloudpickle-serializable: ``original`` is whatever exception
+    ``operation.execute`` raised; ``tool_output_bytes`` is plain
+    bytes. Modal re-raises this wrapper on the local side; the
+    routing layer unwraps it, writes the partial log, and re-raises
+    ``original``.
+
+    Attributes:
+        original: The exception raised inside the Modal container.
+        tool_output_bytes: Up to ``MAX_TOOL_OUTPUT_BYTES`` of
+            tail-truncated log bytes captured before the failure.
+    """
+
+    def __init__(self, original: BaseException, tool_output_bytes: bytes) -> None:
+        super().__init__(str(original))
+        self.original = original
+        self.tool_output_bytes = tool_output_bytes
+
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        # Default Exception pickling uses ``self.args`` which holds only
+        # ``str(original)``, so unpickling would call
+        # ``_ContainerFailure(str_value)`` and fail on the missing
+        # ``tool_output_bytes`` argument. Restore the full ctor.
+        return (self.__class__, (self.original, self.tool_output_bytes))
+
+
+def _read_unit_tool_output(sandbox_root: str | None) -> bytes:
+    """Read the unit tool-output log from inside the Modal container.
+
+    Returns up to the last ``MAX_TOOL_OUTPUT_BYTES`` of
+    ``<sandbox_root>/tool_output.log``. Returns empty bytes when
+    the sandbox doesn't exist (in-memory ops) or no log was
+    produced. Tail-truncation is by bytes, not characters; the
+    recorder later decodes with ``errors="replace"`` so a split
+    multi-byte UTF-8 char surfaces as a leading U+FFFD.
+
+    Args:
+        sandbox_root: Path to the sandbox root inside the container.
+
+    Returns:
+        Up to ``MAX_TOOL_OUTPUT_BYTES`` of log bytes, tail-truncated.
+    """
+    from artisan.execution.transport.log_constants import (
+        MAX_TOOL_OUTPUT_BYTES,
+        TOOL_OUTPUT_FILENAME,
+    )
+
+    if sandbox_root is None:
+        return b""
+    log_path = os.path.join(sandbox_root, TOOL_OUTPUT_FILENAME)
+    if not os.path.isfile(log_path):
+        return b""
+    with open(log_path, "rb") as f:
+        raw = f.read()
+    if len(raw) > MAX_TOOL_OUTPUT_BYTES:
+        return raw[-MAX_TOOL_OUTPUT_BYTES:]
+    return raw
+
+
+def _write_tool_output(log_path: str | None, data: bytes) -> None:
+    """Write tool-output bytes to the unit-level log path.
+
+    No-ops when ``log_path`` is None or ``data`` is empty.
+
+    Args:
+        log_path: Unit-level log path from ``ExecuteInput.log_path``.
+        data: Tool output bytes from ``_execute_on_modal``.
+    """
+    if not log_path or not data:
+        return
+    parent = os.path.dirname(log_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(log_path, "wb") as f:
+        f.write(data)
+
+
+def _write_concatenated_unit_log(
+    log_path: str | None,
+    parts: list[tuple[int, bytes]],
+) -> None:
+    """Write per-artifact bytes to the unit log with separators.
+
+    Format: each part is prefixed with ``=== artifact {i} ===\\n``.
+    Final blob is tail-truncated to ``MAX_TOOL_OUTPUT_BYTES`` with a
+    ``[truncated]\\n`` prefix when over the cap. No-ops when
+    ``log_path`` is None or ``parts`` is empty.
+
+    Args:
+        log_path: Unit-level log path (shared across all artifacts
+            in the unit).
+        parts: ``[(artifact_index, bytes), ...]`` from each
+            container.
+    """
+    from artisan.execution.transport.log_constants import (
+        MAX_TOOL_OUTPUT_BYTES,
+    )
+
+    if not log_path or not parts:
+        return
+    chunks = [f"=== artifact {i} ===\n".encode() + b for i, b in parts]
+    blob = b"\n\n".join(chunks)
+    if len(blob) > MAX_TOOL_OUTPUT_BYTES:
+        blob = b"[truncated]\n" + blob[-MAX_TOOL_OUTPUT_BYTES:]
+    parent = os.path.dirname(log_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(log_path, "wb") as f:
+        f.write(blob)
 
 
 class ModalComputeRouter(ComputeRouter):
@@ -80,18 +194,28 @@ class ModalComputeRouter(ComputeRouter):
         sandbox_files, sandbox_dirs = snapshot_sandbox(sandbox_root)
         tool_files = snapshot_tool_files(operation)
 
-        result, output_snapshot, _container_timings = fn.remote(
-            operation_bytes=cloudpickle.dumps(operation),
-            execute_input_bytes=cloudpickle.dumps(execute_input),
-            sandbox=sandbox_files,
-            sandbox_dirs=sandbox_dirs,
-            sandbox_root=sandbox_root,
-            tool_files=tool_files,
-        )
+        try:
+            (
+                result,
+                output_snapshot,
+                _container_timings,
+                tool_output_bytes,
+            ) = fn.remote(
+                operation_bytes=cloudpickle.dumps(operation),
+                execute_input_bytes=cloudpickle.dumps(execute_input),
+                sandbox=sandbox_files,
+                sandbox_dirs=sandbox_dirs,
+                sandbox_root=sandbox_root,
+                tool_files=tool_files,
+            )
+        except _ContainerFailure as wrapper:
+            _write_tool_output(execute_input.log_path, wrapper.tool_output_bytes)
+            raise wrapper.original from None
 
         if output_snapshot:
             restore_sandbox(execute_input.execute_dir, output_snapshot)
 
+        _write_tool_output(execute_input.log_path, tool_output_bytes)
         return result
 
     def route_execute_batch(
@@ -285,11 +409,15 @@ class ModalComputeRouter(ComputeRouter):
             sandbox_dirs: list[str] | None = None,
             sandbox_root: str | None = None,
             tool_files: dict[str, bytes] | None = None,
-        ) -> tuple[Any, dict[str, bytes], dict[str, float]]:
+        ) -> tuple[Any, dict[str, bytes], dict[str, float], bytes]:
             import time
 
             import cloudpickle as cp
 
+            from artisan.execution.compute.modal import (
+                _ContainerFailure,
+                _read_unit_tool_output,
+            )
             from artisan.execution.transport.sandbox_transport import (
                 restore_sandbox,
                 snapshot_outputs,
@@ -318,16 +446,26 @@ class ModalComputeRouter(ComputeRouter):
             execute_input = cp.loads(execute_input_bytes)
 
             execute_start = time.time()
-            raw_result = operation.execute(execute_input)
+            try:
+                raw_result = operation.execute(execute_input)
+            except BaseException as exc:
+                # Inner try/except so a snapshot read failure doesn't
+                # shadow the original exception that triggered it.
+                try:
+                    partial_bytes = _read_unit_tool_output(sandbox_root)
+                except Exception:
+                    partial_bytes = b""
+                raise _ContainerFailure(exc, partial_bytes) from exc
             execute_end = time.time()
 
             output_files = snapshot_outputs(execute_input.execute_dir)
+            tool_output_bytes = _read_unit_tool_output(sandbox_root)
             container_timings = {
                 "container_start_epoch": container_start,
                 "execute_start_epoch": execute_start,
                 "execute_end_epoch": execute_end,
             }
-            return raw_result, output_files, container_timings
+            return raw_result, output_files, container_timings, tool_output_bytes
 
         self._app = app
         self._fn = _execute_on_modal
@@ -358,21 +496,39 @@ class BatchExecuteHandle:
         self.function_call.cancel(terminate_containers=True)
 
     def __iter__(self) -> Iterator[Any]:
-        """Yield results in input order, restoring sandboxes inline."""
+        """Yield results in input order, restoring sandboxes inline.
+
+        Buffers per-container tool-output bytes and writes the
+        concatenated unit log to ``execute_inputs[0].log_path`` on
+        iteration close (success, break, or generator close), so
+        ``_read_tool_output(prepped.log_path)`` finds it on the
+        recorder's read path.
+        """
         from artisan.execution.transport.sandbox_transport import restore_sandbox
 
+        parts: list[tuple[int, bytes]] = []
         it = self.function_call.iter()
-        for i in range(self.count):
-            try:
-                raw_result, output_snap, ct = next(it)
-                self.container_timings.append(ct)
-                if output_snap:
-                    restore_sandbox(
-                        self.execute_inputs[i].execute_dir,
-                        output_snap,
-                    )
-                yield raw_result
-            except StopIteration:
-                yield RuntimeError("Batch ended early")
-            except Exception as exc:
-                yield exc
+        try:
+            for i in range(self.count):
+                try:
+                    raw_result, output_snap, ct, tool_output_bytes = next(it)
+                    self.container_timings.append(ct)
+                    if output_snap:
+                        restore_sandbox(
+                            self.execute_inputs[i].execute_dir,
+                            output_snap,
+                        )
+                    if tool_output_bytes:
+                        parts.append((i, tool_output_bytes))
+                    yield raw_result
+                except StopIteration:
+                    yield RuntimeError("Batch ended early")
+                except _ContainerFailure as wrapper:
+                    if wrapper.tool_output_bytes:
+                        parts.append((i, wrapper.tool_output_bytes))
+                    yield wrapper.original
+                except Exception as exc:
+                    yield exc
+        finally:
+            if parts and self.execute_inputs:
+                _write_concatenated_unit_log(self.execute_inputs[0].log_path, parts)
