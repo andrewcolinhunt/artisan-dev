@@ -49,6 +49,12 @@ class OperationDefinition(BaseModel):
     (preprocess, execute/execute_curator, postprocess), and are automatically
     validated and registered on definition.
 
+    The framework synthesizes a unit-level log at
+    ``<sandbox_root>/tool_output.log`` and exposes it as
+    ``ExecuteInput.log_path``. The filename ``tool_output.log`` is
+    reserved by the framework — do not write a file by that name to
+    ``<sandbox_root>``.
+
     Attributes:
         name (str): Unique operation identifier used for registry lookup.
         description (str): Human-readable summary shown in docs and logs.

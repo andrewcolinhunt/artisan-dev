@@ -41,6 +41,7 @@ from artisan.execution.lineage.validation import (
 )
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.execution.transport.log_constants import TOOL_OUTPUT_FILENAME
 from artisan.execution.utils import finalize_artifacts, generate_execution_run_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
@@ -176,7 +177,7 @@ def prep_unit(
             sandbox_path_str
         )
 
-        log_path = os.path.join(sandbox_path_str, "tool_output.log")
+        log_path = os.path.join(sandbox_path_str, TOOL_OUTPUT_FILENAME)
         materialized_dir = os.path.join(sandbox_path_str, "materialized_inputs")
         os.makedirs(materialized_dir, exist_ok=True)
 
