@@ -13,14 +13,24 @@ Gated by ``@pytest.mark.modal`` plus the ``modal_credentials`` fixture
 from __future__ import annotations
 
 import os
+import sys
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
+import cloudpickle
 import polars as pl
 import pytest
 
 from artisan.operations.base.operation_definition import OperationDefinition
+
+# The Modal container can't import this test module by qualname (it's
+# only on the local Python path), so cloudpickle would fall back to
+# pickle-by-reference and the container would fail with
+# ModuleNotFoundError when deserializing the cloudpickled op. Register
+# the module for pickle-by-value so the class definitions get inlined
+# into the wire payload.
+cloudpickle.register_pickle_by_value(sys.modules[__name__])
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
 from artisan.schemas import ArtifactResult
@@ -227,6 +237,11 @@ def test_batch_dispatch_concatenates_per_artifact(pipeline_env, modal_credential
         operation=_LoggingEcho,
         name="echo",
         inputs={"dataset": pipeline.output("generate", "datasets")},
+        # artifacts_per_unit=3 packs all 3 generated datasets into a
+        # single unit so per_artifact_dispatch=True splits them across
+        # 3 Modal containers via experimental_spawn_map. This is the
+        # within-unit batching path that exercises the concat write.
+        batch_strategy={"artifacts_per_unit": 3},
         compute_provider={"active": "modal", "modal": {"min_containers": 2}},
     )
     summary = pipeline.finalize()

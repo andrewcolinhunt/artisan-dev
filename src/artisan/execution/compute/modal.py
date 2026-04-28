@@ -42,6 +42,13 @@ class _ContainerFailure(Exception):
         self.original = original
         self.tool_output_bytes = tool_output_bytes
 
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        # Default Exception pickling uses ``self.args`` which holds only
+        # ``str(original)``, so unpickling would call
+        # ``_ContainerFailure(str_value)`` and fail on the missing
+        # ``tool_output_bytes`` argument. Restore the full ctor.
+        return (self.__class__, (self.original, self.tool_output_bytes))
+
 
 def _read_unit_tool_output(sandbox_root: str | None) -> bytes:
     """Read the unit tool-output log from inside the Modal container.
