@@ -357,11 +357,12 @@ class ModalComputeRouter(ComputeRouter):
                 self._config.image_registry_secret
             )
 
-        image = modal.Image.from_registry(
-            self._config.image, **image_kwargs
-        ).add_local_python_source(*self._config.local_python_sources)
+        # Modal forbids further build steps after `add_local_*` because adding
+        # local files locks the layered build. Apply `image.env(...)` first.
+        image = modal.Image.from_registry(self._config.image, **image_kwargs)
         if self._config.env:
             image = image.env(self._config.env)
+        image = image.add_local_python_source(*self._config.local_python_sources)
 
         memory_gb = (
             self._compute_resources.memory_gb

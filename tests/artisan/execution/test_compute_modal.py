@@ -561,6 +561,28 @@ class TestModalComputeRouter:
         mock_image = mock_modal.Image.from_registry.return_value
         mock_image.env.assert_called_once_with({"HF_XET_HIGH_PERFORMANCE": "1"})
 
+    def test_env_applied_before_add_local_python_source(self):
+        """``image.env(...)`` must precede ``add_local_python_source(...)``.
+
+        Modal forbids further build steps after ``add_local_*``; reversing
+        the order raises ``modal.exception.InvalidError`` at image build.
+        """
+        mock_modal = _make_mock_modal()
+        config = ModalComputeConfig(
+            image="test:latest",
+            env={"K": "V"},
+            local_python_sources=["pkg"],
+        )
+        router = ModalComputeRouter(config)
+
+        with patch.dict("sys.modules", {"modal": mock_modal}):
+            router._ensure_running("test_op")
+
+        mock_image = mock_modal.Image.from_registry.return_value
+        names = [c[0] for c in mock_image.method_calls]
+        assert "env" in names and "add_local_python_source" in names
+        assert names.index("env") < names.index("add_local_python_source")
+
     def test_env_skipped_when_empty(self):
         """Empty ``env`` → no ``image.env(...)`` call, image cache stays clean."""
         mock_modal = _make_mock_modal()
