@@ -185,6 +185,70 @@ class _FailingLogger(OperationDefinition):
         return ArtifactResult(success=True, artifacts={"dataset": []})
 
 
+class _EnvProbe(OperationDefinition):
+    """Read ``ARTISAN_TEST_ENV`` from ``os.environ`` and write to ``log_path``.
+
+    Verifies that ``ModalComputeConfig.env`` injects vars into the
+    container image. Pre-fix, a non-empty ``env`` raised
+    ``modal.exception.InvalidError`` at image build because
+    ``image.env(...)`` ran after ``add_local_python_source(...)``.
+    """
+
+    name: ClassVar[str] = "env_probe"
+    description: ClassVar[str] = "Probe ModalComputeConfig.env reaches the container"
+
+    class InputRole(StrEnum):
+        DATASET = "dataset"
+
+    class OutputRole(StrEnum):
+        DATASET = "dataset"
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.DATASET: InputSpec(
+            artifact_type="data",
+            materialize=True,
+            required=True,
+        ),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.DATASET: OutputSpec(
+            artifact_type="data",
+            infer_lineage_from={"inputs": ["dataset"]},
+        ),
+    }
+
+    environments: Environments = Environments(local=LocalEnvironmentSpec())
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:05:00")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="env_probe")
+    compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        return {}
+
+    def execute(self, inputs: ExecuteInput) -> Any:
+        value = os.environ.get("ARTISAN_TEST_ENV", "<unset>")
+        with open(inputs.log_path, "w") as f:
+            f.write(f"ARTISAN_TEST_ENV={value}\n")
+        return None
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        # Mirror inputs as outputs so postprocess succeeds without
+        # producing new files (this op exists only to probe env delivery).
+        drafts = []
+        for artifacts in inputs.input_artifacts.values():
+            for a in artifacts:
+                with open(a.materialized_path, "rb") as fh:
+                    content = fh.read()
+                drafts.append(
+                    DataArtifact.draft(
+                        content=content,
+                        original_name=a.original_name,
+                        step_number=inputs.step_number,
+                    )
+                )
+        return ArtifactResult(success=True, artifacts={"dataset": drafts})
+
+
 def _find_unit_log(working_root: str) -> Path:
     """Locate the single ``tool_output.log`` under a sandbox tree."""
     matches = list(Path(working_root).rglob("tool_output.log"))
@@ -294,3 +358,39 @@ def test_failure_captures_partial_log(pipeline_env, modal_credentials):
     # All ten lines should have made it into the partial log.
     assert "line 0" in captured[0]
     assert "line 9" in captured[0]
+
+
+def test_modal_compute_config_env_reaches_container(pipeline_env, modal_credentials):
+    """``ModalComputeConfig.env={...}`` actually applies inside the container.
+
+    Pre-fix, the image build raised ``modal.exception.InvalidError`` when
+    ``env`` was non-empty — ``image.env(...)`` ran after
+    ``add_local_python_source(...)``. This test exercises the success
+    path: a non-empty env builds, dispatches, and the container reads
+    the var via ``os.environ``.
+    """
+    pipeline = PipelineManager.create(
+        name="modal_env_probe",
+        preserve_working=True,
+        **pipeline_env,
+    )
+    pipeline.run(
+        operation=DataGenerator,
+        name="generate",
+        params={"count": 1, "seed": 0},
+    )
+    pipeline.run(
+        operation=_EnvProbe,
+        name="probe",
+        inputs={"dataset": pipeline.output("generate", "datasets")},
+        compute_provider={
+            "active": "modal",
+            "modal": {"env": {"ARTISAN_TEST_ENV": "MODAL_PROOF"}},
+        },
+    )
+    summary = pipeline.finalize()
+    assert summary["overall_success"] is True
+
+    log_file = _find_unit_log(pipeline_env["working_root"])
+    contents = log_file.read_text()
+    assert "ARTISAN_TEST_ENV=MODAL_PROOF" in contents

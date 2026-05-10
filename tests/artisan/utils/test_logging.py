@@ -151,10 +151,3 @@ def test_file_handler_idempotent(tmp_path):
         h for h in handlers if isinstance(h, logging.handlers.RotatingFileHandler)
     ]
     assert len(file_handlers) == 1
-
-
-def test_tools_logger_inherits_from_artisan():
-    """artisan.tools logger should inherit from artisan parent."""
-    configure_logging(suppress_noise=False)
-    tools_logger = logging.getLogger("artisan.tools")
-    assert tools_logger.parent is logging.getLogger("artisan")

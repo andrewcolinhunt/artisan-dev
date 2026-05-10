@@ -21,6 +21,7 @@ from artisan.operations.examples.slow_transformer import (
     SequentialSlowTransformer,
     SlowTransformer,
 )
+from artisan.operations.examples.streaming_echo import StreamingEcho
 from artisan.operations.examples.wait import Wait
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     "SequentialDataTransformer",
     "SequentialSlowTransformer",
     "SlowTransformer",
+    "StreamingEcho",
     "Wait",
 ]
