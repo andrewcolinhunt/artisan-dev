@@ -376,3 +376,71 @@ class TestRunCommand:
             run_command(env, ["python", "run.py"])
 
         mock_kill.assert_called_once_with(mock_proc)
+
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_captured_writes_log_path_on_success(self, mock_popen, tmp_path):
+        """``_run_captured`` writes captured stdout to ``log_path`` after success."""
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("captured output\n", "")
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        log_path = tmp_path / "out.log"
+        env = LocalEnvironmentSpec()
+        run_command(env, ["python", "run.py"], log_path=str(log_path))
+
+        assert log_path.read_text() == "captured output\n"
+
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_captured_skips_log_path_when_unset(self, mock_popen, tmp_path):
+        """Without ``log_path`` no file is created in captured mode."""
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("captured output\n", "")
+        mock_proc.returncode = 0
+        mock_popen.return_value = mock_proc
+
+        env = LocalEnvironmentSpec()
+        run_command(env, ["python", "run.py"])
+
+        assert list(tmp_path.iterdir()) == []
+
+    @patch("artisan.utils.external_tools._kill_process_group")
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_captured_writes_log_path_on_timeout(
+        self, mock_popen, mock_kill, tmp_path
+    ):
+        """``TimeoutExpired`` with buffered stdout writes ``log_path`` before re-raise."""
+        mock_proc = MagicMock()
+        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd=["test"], timeout=5, output="partial output\n", stderr=""
+        )
+        mock_popen.return_value = mock_proc
+
+        log_path = tmp_path / "out.log"
+        env = LocalEnvironmentSpec()
+        with pytest.raises(ExternalToolError) as exc_info:
+            run_command(env, ["cmd"], timeout=5, log_path=str(log_path))
+
+        assert exc_info.value.return_code == -1
+        assert log_path.read_text() == "partial output\n"
+        mock_kill.assert_called_once_with(mock_proc)
+
+    @patch("artisan.utils.external_tools._kill_process_group")
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_captured_skips_log_path_on_timeout_with_no_buffered_stdout(
+        self, mock_popen, mock_kill, tmp_path
+    ):
+        """``TimeoutExpired`` with ``e.stdout=None`` does not crash and writes nothing."""
+        mock_proc = MagicMock()
+        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd=["test"], timeout=5, output=None, stderr=None
+        )
+        mock_popen.return_value = mock_proc
+
+        log_path = tmp_path / "out.log"
+        env = LocalEnvironmentSpec()
+        with pytest.raises(ExternalToolError):
+            run_command(env, ["cmd"], timeout=5, log_path=str(log_path))
+
+        assert not log_path.exists()
+        mock_kill.assert_called_once_with(mock_proc)

@@ -210,7 +210,7 @@ def run_command(
         if stream_output:
             result = _run_with_streaming(full_cmd, cwd, timeout, log_path, env)
         else:
-            result = _run_captured(full_cmd, cwd, timeout, env)
+            result = _run_captured(full_cmd, cwd, timeout, log_path, env)
     except subprocess.TimeoutExpired as e:
         # text=True is used everywhere in this module, so stdout/stderr are str
         # at runtime even though typeshed declares them as `bytes | None`.
@@ -322,14 +322,29 @@ def _run_captured(
     cmd: Command,
     cwd: str | None,
     timeout: float | None,
+    log_path: str | None,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run command with captured output and process group cleanup.
+
+    Parameter order mirrors :func:`_run_with_streaming` so
+    :func:`run_command` can dispatch positionally to either path.
+
+    When ``log_path`` is set, captured stdout is written to it after
+    the process completes. On timeout, whatever stdout was buffered on
+    the ``TimeoutExpired`` exception is written before the exception
+    propagates — this gives the Modal compute router something to ferry
+    back from a container that hit its timeout. Stderr stays on the
+    returned ``CompletedProcess`` and surfaces via
+    :attr:`ExternalToolError.stderr` on non-zero exit; it is not written
+    to ``log_path`` (asymmetric with streaming mode, which merges via
+    ``stderr=subprocess.STDOUT``).
 
     Args:
         cmd: Command to execute.
         cwd: Working directory.
         timeout: Timeout in seconds.
+        log_path: Optional file to write captured stdout.
         env: Environment variables.
 
     Returns:
@@ -346,9 +361,20 @@ def _run_captured(
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        _kill_process_group(process)
+        if log_path and e.stdout:
+            with open(log_path, "w") as f:
+                f.write(e.stdout)  # type: ignore[arg-type]  # text=True → str
+        raise
     except BaseException:
         _kill_process_group(process)
         raise
+
+    if log_path:
+        with open(log_path, "w") as f:
+            f.write(stdout)
+
     return subprocess.CompletedProcess(
         args=cmd.parts,
         returncode=process.returncode,
