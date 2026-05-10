@@ -406,9 +406,7 @@ class TestRunCommand:
 
     @patch("artisan.utils.external_tools._kill_process_group")
     @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_captured_writes_log_path_on_timeout(
-        self, mock_popen, mock_kill, tmp_path
-    ):
+    def test_captured_writes_log_path_on_timeout(self, mock_popen, mock_kill, tmp_path):
         """``TimeoutExpired`` with buffered stdout writes ``log_path`` before re-raise."""
         mock_proc = MagicMock()
         mock_proc.communicate.side_effect = subprocess.TimeoutExpired(

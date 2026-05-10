@@ -580,7 +580,8 @@ class TestModalComputeRouter:
 
         mock_image = mock_modal.Image.from_registry.return_value
         names = [c[0] for c in mock_image.method_calls]
-        assert "env" in names and "add_local_python_source" in names
+        assert "env" in names
+        assert "add_local_python_source" in names
         assert names.index("env") < names.index("add_local_python_source")
 
     def test_env_skipped_when_empty(self):
