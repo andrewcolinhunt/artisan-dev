@@ -9,17 +9,14 @@ Key exports: :func:`format_args`, :func:`run_command`.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shlex
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
-
-_tool_logger = logging.getLogger("artisan.tools")
-
 
 # =============================================================================
 # COMMAND DATACLASS
@@ -249,6 +246,19 @@ def _run_with_streaming(
 ) -> subprocess.CompletedProcess[str]:
     """Run command with real-time output streaming.
 
+    Each child stdout line is written to three sinks:
+
+    - ``log_path`` (when set): the recoverable file. The Modal compute
+      router ferries this back post-execute and the recorder reads it
+      into the parquet ``tool_output`` column.
+    - ``sys.stdout``: live emission. Visible on the operator's terminal
+      locally, on Modal's dashboard remotely (the parent process's
+      stdout *is* the container's stdout, which Modal captures), and
+      in the Jupyter cell in notebooks. Note: child-side buffering is
+      the child's concern — set ``PYTHONUNBUFFERED=1`` (or equivalent)
+      on Python tools that block-buffer stdout when piped.
+    - Accumulator: returned in ``CompletedProcess.stdout``.
+
     Args:
         cmd: Command to execute.
         cwd: Working directory.
@@ -290,7 +300,8 @@ def _run_with_streaming(
                     log_file.write(line)
                     log_file.flush()
 
-                _tool_logger.debug("%s", line.rstrip("\n"))
+                sys.stdout.write(line)
+                sys.stdout.flush()
 
                 stdout_lines.append(line)
 

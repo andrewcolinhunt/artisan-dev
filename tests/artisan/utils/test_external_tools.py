@@ -329,6 +329,40 @@ class TestRunCommand:
 
         mock_kill.assert_called()
 
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_streaming_writes_each_line_to_stdout(self, mock_popen, capsys):
+        """Each child stdout line is written to ``sys.stdout`` for live emission."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(["hello\n", "world\n"])
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        env = LocalEnvironmentSpec()
+        run_command(env, ["python", "run.py"], stream_output=True)
+
+        captured = capsys.readouterr().out
+        assert "hello\n" in captured
+        assert "world\n" in captured
+
+    @patch("artisan.utils.external_tools.subprocess.Popen")
+    def test_streaming_writes_log_path_and_stdout(self, mock_popen, capsys, tmp_path):
+        """Streaming writes each line to both ``log_path`` and ``sys.stdout``."""
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(["one\n", "two\n"])
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+
+        log_path = tmp_path / "out.log"
+        env = LocalEnvironmentSpec()
+        run_command(
+            env, ["python", "run.py"], stream_output=True, log_path=str(log_path)
+        )
+
+        captured = capsys.readouterr().out
+        assert "one\n" in captured
+        assert "two\n" in captured
+        assert log_path.read_text() == "one\ntwo\n"
+
     @patch("artisan.utils.external_tools._kill_process_group")
     @patch("artisan.utils.external_tools.subprocess.Popen")
     def test_captured_interrupt_kills_group(self, mock_popen, mock_kill):
