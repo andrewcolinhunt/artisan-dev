@@ -52,6 +52,7 @@ from artisan.schemas.specs.input_models import (
     PreprocessInput,
 )
 from artisan.schemas.specs.input_spec import InputSpec
+from artisan.utils.filename import strip_extensions
 from artisan.utils.path import shard_uri
 from artisan.utils.timing import phase_timer
 
@@ -353,7 +354,7 @@ def post_unit(
 
     # --- postprocess phase ---
     with phase_timer("postprocess", timings):
-        memory_outputs, file_outputs = _reassemble_results(
+        memory_outputs, file_outputs, output_pair_map = _reassemble_results(
             raw_results, prepped.artifact_execute_dirs
         )
 
@@ -412,6 +413,7 @@ def post_unit(
                 group_by=operation.group_by,
                 group_ids=prepped.unit.group_ids,
                 filesystem_match_map=filesystem_match_map,
+                output_pair_map=output_pair_map,
             )
         else:
             validate_lineage_integrity(
@@ -660,32 +662,43 @@ def _split_prepared_inputs(
 def _reassemble_results(
     per_artifact_results: list[Any],
     artifact_execute_dirs: list[str],
-) -> tuple[Any, list[str]]:
+) -> tuple[Any, list[str], dict[str, int]]:
     """Merge per-artifact execute results for batched postprocess.
 
     Reassembles memory_outputs and file_outputs so postprocess sees
     the same data shapes as when execute processes all artifacts at
-    once.
+    once. Also returns a stem -> slot-index map so lineage capture
+    can recover the per-output pair index for grouped multi-input ops
+    (Bug A — fixes the ``primary_id_to_idx`` clobber for repeated
+    primaries under CROSS_PRODUCT + ``artifacts_per_unit > 1``).
 
     Args:
         per_artifact_results: One raw result per artifact.
             Exceptions at failed indices are filtered out.
         artifact_execute_dirs: Per-artifact execute sub-directory
-            paths.
+            paths. Index in this list is the pair index.
 
     Returns:
-        Tuple of (merged_memory_outputs, file_outputs).
+        Tuple of (merged_memory_outputs, file_outputs, output_pair_map).
+        ``output_pair_map`` keys are the extension-stripped basename of
+        each emitted file (matching ``artifact.original_name`` after
+        draft, which also strips extensions) and values are the slot
+        index of the dir the file came from.
     """
-    # Collect file_outputs from all sub-directories
     file_outputs: list[str] = []
-    for d in artifact_execute_dirs:
-        file_outputs.extend(output_snapshot(d))
+    output_pair_map: dict[str, int] = {}
+    for slot_idx, d in enumerate(artifact_execute_dirs):
+        slot_files = output_snapshot(d)
+        for fpath in slot_files:
+            stem = strip_extensions(os.path.basename(fpath))
+            output_pair_map[stem] = slot_idx
+        file_outputs.extend(slot_files)
 
     # Filter exceptions, merge memory_outputs
     successes = [r for r in per_artifact_results if not isinstance(r, Exception)]
 
     if not successes or all(r is None for r in successes):
-        return None, file_outputs
+        return None, file_outputs, output_pair_map
 
     if all(isinstance(r, dict) for r in successes):
         merged: dict[str, Any] = {}
@@ -695,9 +708,9 @@ def _reassemble_results(
                 merged[key] = [item for v in values for item in v]
             else:
                 merged[key] = values
-        return merged, file_outputs
+        return merged, file_outputs, output_pair_map
 
-    return successes, file_outputs
+    return successes, file_outputs, output_pair_map
 
 
 def _extract_inputs(unit: ExecutionUnit) -> dict[str, list[str]]:

@@ -530,3 +530,18 @@ def test_cross_product_default_preserves_classvar_behavior(
     result = pipeline.finalize()
     assert result["overall_success"]
     _assert_cross_product_provenance(delta_root, op_step_number=3)
+
+
+# Note on Bug A end-to-end coverage:
+# The CROSS_PRODUCT + ``artifacts_per_unit > 1`` + per-artifact-dispatch
+# code path only fans out in the Modal/batch compute backend (see
+# ``orchestration/engine/batch_compute_handle.py``). The local runner uses
+# the monolithic ``run_creator_lifecycle`` path which calls execute exactly
+# once per unit, so the framework cannot recover pair-index automatically
+# under any local batched run — that case is documented as op-author
+# responsibility on ``OperationDefinition.group_by``. The Bug A
+# ``output_pair_map`` mechanism is covered by unit tests in
+# ``tests/artisan/execution/test_creator_phases.py::TestReassembleResults``
+# (production side) and
+# ``tests/artisan/execution/test_lineage_utils.py::TestCaptureLineageOutputPairMap``
+# (consumption side).

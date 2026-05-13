@@ -169,11 +169,15 @@ class OperationDefinition(BaseModel):
           depend on **all** inputs in the pair; otherwise outputs from distinct
           pairs collide to a single ``artifact_id`` and only one row survives
           commit.
-        - **CROSS_PRODUCT lineage under batching.** Lineage capture is correct
-          under the default ``batch_strategy.artifacts_per_unit=1`` (one pair
-          per unit). For ``artifacts_per_unit > 1`` with ``group_by`` set,
-          ``capture.py`` clobbers repeated-primary indices (tracked in
-          ``_dev/todo.md``).
+        - **CROSS_PRODUCT lineage automatic recovery.** Lineage capture
+          recovers pair indices from the per-slot execute directory layout
+          when ``per_artifact_dispatch=True`` (the default) **and** every
+          output draft is backed by a file under its slot's ``execute_dir``.
+          When ``per_artifact_dispatch=False`` + CROSS_PRODUCT +
+          ``artifacts_per_unit > 1``, or for memory-only outputs (no file
+          on disk), the framework cannot recover pair-index automatically;
+          the operation author must set ``ArtifactResult.lineage``
+          explicitly when ``group_by`` is active.
     """
 
     per_artifact_dispatch: ClassVar[bool] = True
