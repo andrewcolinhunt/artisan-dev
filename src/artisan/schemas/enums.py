@@ -57,6 +57,7 @@ class GroupByStrategy(Enum):
     LINEAGE = "lineage"  # Match artifacts sharing a common ancestor
     CROSS_PRODUCT = "cross_product"  # All combinations of inputs
     ZIP = "zip"  # Positional matching (1st with 1st, etc.)
+    NAME = "name"  # Match artifacts whose ``original_name`` shares a stem
 
 
 class TablePath(str, Enum):
