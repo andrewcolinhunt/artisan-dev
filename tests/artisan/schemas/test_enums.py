@@ -13,14 +13,15 @@ class TestGroupByStrategy:
     """Tests for GroupByStrategy enum."""
 
     def test_strategies_defined(self):
-        """Verify all grouping strategies from v3 design."""
+        """Verify all grouping strategies are present."""
         assert GroupByStrategy.LINEAGE.value == "lineage"
         assert GroupByStrategy.CROSS_PRODUCT.value == "cross_product"
         assert GroupByStrategy.ZIP.value == "zip"
+        assert GroupByStrategy.NAME.value == "name"
 
     def test_enum_count(self):
-        """Ensure exactly 3 strategies."""
-        assert len(GroupByStrategy) == 3
+        """Ensure exactly 4 strategies."""
+        assert len(GroupByStrategy) == 4
 
 
 class TestCacheValidationReason:
