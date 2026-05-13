@@ -309,11 +309,19 @@ The `group_by` ClassVar controls how inputs from different roles are matched:
 | `LINEAGE` | Pairs inputs that share provenance ancestry | Inputs from different steps that process the same original artifact |
 | `ZIP` | Pairs inputs by position (index-aligned) | Inputs in a known, consistent order |
 | `CROSS_PRODUCT` | Every combination of inputs across roles | When every input should be combined with every other |
+| `NAME` | Pairs inputs whose `original_name` stems match exactly | Independently-ingested streams that share a filename convention but no ancestry |
 | `None` | No pairing (single-role or independent) | Operations with one input role |
 
 Pairing happens between the resolve and batch phases in the orchestrator. The
 operation iterates paired inputs via the `grouped()` method on
 `PreprocessInput`.
+
+`NAME` strips all extensions before matching (`sample_001.csv` and
+`sample_001.json` both reduce to the stem `sample_001`), so different
+formats of the same logical entity pair naturally. Each role must have
+unique stems among artifacts that carry an `original_name`; duplicates
+raise `ValueError`. Stems present in some but not all roles are skipped
+and logged at WARNING.
 
 ### Behavioral flags
 

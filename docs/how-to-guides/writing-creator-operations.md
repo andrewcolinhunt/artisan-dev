@@ -662,6 +662,32 @@ class AlignOp(OperationDefinition):
 | `LINEAGE` | Pairs artifacts sharing provenance ancestry | Inputs from different steps that process the same original |
 | `ZIP` | Pairs by position (index-aligned) | Inputs in a known, consistent order |
 | `CROSS_PRODUCT` | Every combination across roles | Every input combined with every other |
+| `NAME` | Pairs artifacts whose `original_name` stems match | Independently-ingested streams that share filename conventions but no ancestry |
+
+#### Pairing by name
+
+Use `NAME` when two (or more) input roles come from independent ingest
+operations — no shared ancestry — but their artifacts share filename
+conventions. Stems are computed by stripping all extensions
+(`data.tar.gz` → `data`, `data.csv` → `data`), so artifacts that
+represent the same logical entity in different formats pair naturally.
+
+```python
+class JoinByName(OperationDefinition):
+    name = "join_by_name"
+    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.NAME
+
+    class InputRole(StrEnum):
+        sequences = "sequences"
+        annotations = "annotations"
+```
+
+Each role must have unique stems among artifacts with an
+`original_name`; duplicates raise `ValueError` at the pairing phase.
+Note that `run.log` and `run.cfg` collide to the stem `run` and will
+trip the uniqueness check — encode semantic suffixes in the base name
+(`run_log.txt`, `run_cfg.txt`) when they need to coexist within one
+role.
 
 ### Resources and execution config
 
