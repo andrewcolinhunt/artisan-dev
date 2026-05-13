@@ -229,6 +229,37 @@ def count_artifacts_by_type(
     return df_index.filter(pl.col("artifact_type") == artifact_type).height
 
 
+def load_artifact_edges(
+    delta_root: str,
+    target_ids: list[str] | set[str],
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> pl.DataFrame:
+    """Load artifact_edges rows whose target_artifact_id is in target_ids.
+
+    Args:
+        delta_root: Root directory or URI for Delta Lake tables.
+        target_ids: Target artifact IDs to filter on.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
+
+    Returns:
+        Polars DataFrame with columns from the artifact_edges table
+        (source_artifact_id, target_artifact_id, group_id, etc.).
+        Empty DataFrame if the table doesn't exist or no matches.
+    """
+    df = read_table(
+        delta_root,
+        "provenance/artifact_edges",
+        fs=fs,
+        storage_options=storage_options,
+    )
+    if df.is_empty():
+        return df
+    return df.filter(pl.col("target_artifact_id").is_in(list(target_ids)))
+
+
 def get_execution_outputs(
     delta_root: str,
     step_number: int,
