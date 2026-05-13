@@ -17,6 +17,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
@@ -75,7 +76,7 @@ class DualInputLineage(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 
@@ -334,7 +335,7 @@ class DualInputCrossProduct(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 
@@ -531,6 +532,21 @@ def test_cross_product_default_preserves_classvar_behavior(
     _assert_cross_product_provenance(delta_root, op_step_number=3)
 
 
+# Note on Bug A end-to-end coverage:
+# The CROSS_PRODUCT + ``artifacts_per_unit > 1`` + per-artifact-dispatch
+# code path only fans out in the Modal/batch compute backend (see
+# ``orchestration/engine/batch_compute_handle.py``). The local runner uses
+# the monolithic ``run_creator_lifecycle`` path which calls execute exactly
+# once per unit, so the framework cannot recover pair-index automatically
+# under any local batched run — that case is documented as op-author
+# responsibility on ``OperationDefinition.group_by``. The Bug A
+# ``output_pair_map`` mechanism is covered by unit tests in
+# ``tests/artisan/execution/test_creator_phases.py::TestReassembleResults``
+# (production side) and
+# ``tests/artisan/execution/test_lineage_utils.py::TestCaptureLineageOutputPairMap``
+# (consumption side).
+
+
 # =============================================================================
 # NAME grouping
 # =============================================================================
@@ -570,7 +586,7 @@ class DualInputName(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 

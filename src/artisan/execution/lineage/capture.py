@@ -20,6 +20,7 @@ def capture_lineage_metadata(
     group_by: GroupByStrategy | None = None,
     group_ids: list[str] | None = None,
     filesystem_match_map: dict[str, str] | None = None,
+    output_pair_map: dict[str, int] | None = None,
 ) -> dict[str, list[LineageMapping]]:
     """Capture lineage metadata from infer_lineage_from configuration.
 
@@ -40,6 +41,14 @@ def capture_lineage_metadata(
         filesystem_match_map: Optional dict mapping output filename stems
             to input artifact_ids. When an output stem has an entry,
             the mapped input_id is used directly instead of stem matching.
+        output_pair_map: Optional ``basename -> pair_index`` map built by
+            the executor when ``per_artifact_dispatch=True``. When set,
+            grouped lineage uses ``pair_index`` directly to resolve
+            primary and co-input edges, bypassing the
+            ``primary_id_to_idx`` lookup that would otherwise collapse
+            repeated-primary CROSS_PRODUCT batches (Bug A). Drafts
+            without an entry (e.g. memory-only outputs) fall back to the
+            legacy stem-match path.
 
     Returns:
         Dict mapping output role to list of LineageMapping entries.
@@ -106,12 +115,69 @@ def capture_lineage_metadata(
                 id_to_role[cand_id] = cand_role
 
         role_mappings = []
+        primary_artifacts = input_artifacts.get(primary_role, [])
         for artifact in artifacts:
             original_name = getattr(artifact, "original_name", None)
             if original_name is None:
                 continue
 
-            # Try filesystem match map first, fall back to stem matching
+            # Bug A path: when a per-output pair index is available
+            # (grouped + filesystem-output + per_artifact_dispatch=True),
+            # resolve both the primary edge and all co-input edges
+            # directly from ``input_artifacts[role][pair_idx]``. This
+            # bypasses ``primary_id_to_idx`` which collapses to a single
+            # entry under CROSS_PRODUCT + repeated primaries.
+            pair_idx: int | None = None
+            if (
+                group_by is not None
+                and output_pair_map is not None
+                and original_name in output_pair_map
+            ):
+                pair_idx = output_pair_map[original_name]
+
+            if pair_idx is not None and pair_idx < len(primary_artifacts):
+                primary_artifact = primary_artifacts[pair_idx]
+                primary_id = primary_artifact.artifact_id
+                if primary_id is None:
+                    continue
+
+                edge_group_id: str | None = None
+                if group_ids is not None and pair_idx < len(group_ids):
+                    edge_group_id = group_ids[pair_idx]
+
+                role_mappings.append(
+                    LineageMapping(
+                        draft_original_name=original_name,
+                        source_artifact_id=primary_id,
+                        source_role=primary_role,
+                        group_id=edge_group_id,
+                    )
+                )
+                for co_role, co_artifacts in input_artifacts.items():
+                    if co_role == primary_role:
+                        continue
+                    if pair_idx >= len(co_artifacts):
+                        continue
+                    co_artifact = co_artifacts[pair_idx]
+                    if co_artifact.artifact_id is None:
+                        continue
+                    role_mappings.append(
+                        LineageMapping(
+                            draft_original_name=original_name,
+                            source_artifact_id=co_artifact.artifact_id,
+                            source_role=co_role,
+                            group_id=edge_group_id,
+                        )
+                    )
+                continue
+
+            # Legacy path: stem-match the output to an input candidate,
+            # then look up the pair index via ``primary_id_to_idx``.
+            # Used for (a) ungrouped ops, (b) the curator path (no
+            # output_pair_map), and (c) memory-only outputs that have
+            # no entry in output_pair_map. The clobber for repeated
+            # primaries persists here for case (c) — documented as an
+            # op-author responsibility on ``OperationDefinition.group_by``.
             matched: tuple[str, str] | None = None
             if filesystem_match_map and original_name in filesystem_match_map:
                 fs_input_id = filesystem_match_map[original_name]
@@ -125,28 +191,25 @@ def capture_lineage_metadata(
 
             matched_id, matched_src_role = matched
 
-            # Determine group_id for this match
             matched_idx = primary_id_to_idx.get(matched_id)
-            edge_group_id: str | None = None
+            legacy_group_id: str | None = None
             if (
                 group_by is not None
                 and matched_idx is not None
                 and group_ids is not None
                 and matched_idx < len(group_ids)
             ):
-                edge_group_id = group_ids[matched_idx]
+                legacy_group_id = group_ids[matched_idx]
 
-            # Primary edge (stem-matched role)
             role_mappings.append(
                 LineageMapping(
                     draft_original_name=original_name,
                     source_artifact_id=matched_id,
                     source_role=matched_src_role,
-                    group_id=edge_group_id,
+                    group_id=legacy_group_id,
                 )
             )
 
-            # Co-input edges from all other roles at the same index
             if group_by is not None and matched_idx is not None:
                 for co_role, co_artifacts in input_artifacts.items():
                     if co_role == primary_role:
@@ -159,7 +222,7 @@ def capture_lineage_metadata(
                                     draft_original_name=original_name,
                                     source_artifact_id=co_artifact.artifact_id,
                                     source_role=co_role,
-                                    group_id=edge_group_id,
+                                    group_id=legacy_group_id,
                                 )
                             )
 

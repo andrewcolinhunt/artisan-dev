@@ -16,6 +16,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.curator import Filter
 from artisan.operations.examples import (
     DataGenerator,
@@ -86,7 +87,7 @@ class DualInputConfigConsumer(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 

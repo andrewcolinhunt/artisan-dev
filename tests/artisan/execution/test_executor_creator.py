@@ -32,6 +32,7 @@ from artisan.execution.lineage.enrich import (
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.utils import generate_execution_run_id
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.curator_result import ArtifactResult
@@ -104,7 +105,7 @@ class MetricCopyTestOp(OperationDefinition):
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths from input artifacts."""
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 

@@ -28,6 +28,7 @@ from artisan.execution.executors.creator_phases import (
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
@@ -82,7 +83,7 @@ class _SimpleOp(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 
@@ -177,8 +178,11 @@ def delta_env(tmp_path: Path):
 
 
 class TestSplitPreparedInputs:
-    def test_slices_lists_matching_batch_size(self):
-        prepared = {"data": ["/a.csv", "/b.csv"], "config": "shared"}
+    def test_per_artifact_slices_and_wraps(self):
+        prepared = {
+            "data": PerArtifact(["/a.csv", "/b.csv"]),
+            "config": "shared",
+        }
         assert _split_prepared_inputs(prepared, 0, 2) == {
             "data": ["/a.csv"],
             "config": "shared",
@@ -188,27 +192,27 @@ class TestSplitPreparedInputs:
             "config": "shared",
         }
 
-    def test_passthrough_non_list(self):
+    def test_per_artifact_wrong_length_raises(self):
+        prepared = {"data": PerArtifact(["/a.csv"])}
+        with pytest.raises(ValueError, match="batch_size is 3"):
+            _split_prepared_inputs(prepared, 0, 3)
+
+    def test_raw_list_not_sliced(self):
+        """Raw lists pass through unchanged regardless of length.
+
+        Regression: confirms the legacy coincidence-slicing path
+        (``len(value) == batch_size``) is removed.
+        """
+        prepared = {"data": ["/a.csv", "/b.csv", "/c.csv"], "config": "shared"}
+        for index in range(3):
+            result = _split_prepared_inputs(prepared, index, 3)
+            assert result["data"] == ["/a.csv", "/b.csv", "/c.csv"]
+            assert result["config"] == "shared"
+
+    def test_passthrough_non_list_and_dict(self):
         prepared = {"count": 5, "options": {"key": "val"}}
         result = _split_prepared_inputs(prepared, 0, 3)
         assert result == {"count": 5, "options": {"key": "val"}}
-
-    def test_passthrough_different_length_list(self):
-        prepared = {"stages": ["a", "b", "c"], "data": ["/x.csv"]}
-        result = _split_prepared_inputs(prepared, 0, 2)
-        assert result["stages"] == ["a", "b", "c"]
-        assert result["data"] == ["/x.csv"]
-
-    def test_nested_dict_list(self):
-        """Pattern B: list of dicts, each representing per-artifact config."""
-        prepared = {
-            "items": [
-                {"config_path": "/a.json", "name": "a"},
-                {"config_path": "/b.json", "name": "b"},
-            ]
-        }
-        result = _split_prepared_inputs(prepared, 0, 2)
-        assert result["items"] == [{"config_path": "/a.json", "name": "a"}]
 
     def test_empty_dict(self):
         assert _split_prepared_inputs({}, 0, 1) == {}
@@ -223,7 +227,9 @@ class TestReassembleResults:
     def test_all_none(self, tmp_path):
         d0 = tmp_path / "artifact_0"
         d0.mkdir()
-        memory, _files = _reassemble_results([None, None], [str(d0), str(d0)])
+        memory, _files, _pair_map = _reassemble_results(
+            [None, None], [str(d0), str(d0)]
+        )
         assert memory is None
 
     def test_dict_concatenates_lists(self, tmp_path):
@@ -236,7 +242,7 @@ class TestReassembleResults:
             {"created_files": ["a.txt"]},
             {"created_files": ["b.txt"]},
         ]
-        memory, _ = _reassemble_results(results, [str(d0), str(d1)])
+        memory, _, _ = _reassemble_results(results, [str(d0), str(d1)])
         assert memory == {"created_files": ["a.txt", "b.txt"]}
 
     def test_filters_exceptions(self, tmp_path):
@@ -249,14 +255,14 @@ class TestReassembleResults:
             RuntimeError("boom"),
             {"results": ["ok"]},
         ]
-        memory, _ = _reassemble_results(results, [str(d0), str(d1)])
+        memory, _, _ = _reassemble_results(results, [str(d0), str(d1)])
         assert memory == {"results": ["ok"]}
 
     def test_all_exceptions_returns_none(self, tmp_path):
         d0 = tmp_path / "artifact_0"
         d0.mkdir()
         results = [RuntimeError("a"), ValueError("b")]
-        memory, _ = _reassemble_results(results, [str(d0), str(d0)])
+        memory, _, _ = _reassemble_results(results, [str(d0), str(d0)])
         assert memory is None
 
     def test_collects_files_from_all_dirs(self, tmp_path):
@@ -268,7 +274,7 @@ class TestReassembleResults:
         d1.mkdir()
         (d1 / "out_1.csv").write_text("data1")
 
-        _, files = _reassemble_results([None, None], [str(d0), str(d1)])
+        _, files, _ = _reassemble_results([None, None], [str(d0), str(d1)])
         basenames = sorted(os.path.basename(f) for f in files)
         assert basenames == ["out_0.csv", "out_1.csv"]
 
@@ -276,8 +282,27 @@ class TestReassembleResults:
         d0 = tmp_path / "artifact_0"
         d0.mkdir()
         results = ["result_a", "result_b"]
-        memory, _ = _reassemble_results(results, [str(d0), str(d0)])
+        memory, _, _ = _reassemble_results(results, [str(d0), str(d0)])
         assert memory == ["result_a", "result_b"]
+
+    def test_output_pair_map_keyed_by_stem_to_slot(self, tmp_path):
+        """Each file's extension-stripped stem maps to its slot/pair index.
+
+        Stems (not raw basenames) so the keys match ``artifact.original_name``
+        after draft strips extensions. Regression for Bug A —
+        ``capture_lineage_metadata`` uses this map to recover the correct
+        pair index for grouped multi-input batches with repeated primaries.
+        """
+        d0 = tmp_path / "artifact_0"
+        d0.mkdir()
+        (d0 / "out_0.bin").write_text("a")
+
+        d1 = tmp_path / "artifact_1"
+        d1.mkdir()
+        (d1 / "out_1.bin").write_text("b")
+
+        _, _, pair_map = _reassemble_results([None, None], [str(d0), str(d1)])
+        assert pair_map == {"out_0": 0, "out_1": 1}
 
 
 # ---------------------------------------------------------------------------

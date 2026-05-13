@@ -221,7 +221,7 @@ def _match_cross_product(inputs: dict[str, list[str]]) -> list[dict[str, str]]:
 
     matched_sets: list[dict[str, str]] = []
     for combo in product(*lists):
-        matched_sets.append(dict(zip(roles, combo, strict=False)))
+        matched_sets.append(dict(zip(roles, combo, strict=True)))
 
     return matched_sets
 

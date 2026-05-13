@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
@@ -106,10 +107,12 @@ class DataTransformerConfig(OperationDefinition):
             d for d in inputs.input_artifacts["dataset"] if isinstance(d, DataArtifact)
         ]
         return {
-            "dataset_artifact_ids": [d.artifact_id for d in datasets],
-            "dataset_stems": [
-                os.path.splitext(d.original_name or "")[0] for d in datasets
-            ],
+            "dataset_artifact_ids": PerArtifact(
+                [d.artifact_id for d in datasets]
+            ),
+            "dataset_stems": PerArtifact(
+                [os.path.splitext(d.original_name or "")[0] for d in datasets]
+            ),
         }
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
