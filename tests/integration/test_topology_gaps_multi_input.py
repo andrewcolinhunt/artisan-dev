@@ -79,7 +79,7 @@ class DualInputConfigConsumer(OperationDefinition):
             infer_lineage_from={"inputs": ["dataset", "config"]},
         ),
     }
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+    group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
     runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
     batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_config_consumer")

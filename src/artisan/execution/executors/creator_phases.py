@@ -402,7 +402,7 @@ def post_unit(
                 output_artifacts=finalized_artifacts,
                 input_artifacts=flat_input_artifacts,
                 output_specs=operation_class.outputs,
-                group_by=getattr(operation_class, "group_by", None),
+                group_by=operation.group_by,
                 group_ids=prepped.unit.group_ids,
                 filesystem_match_map=filesystem_match_map,
             )

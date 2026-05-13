@@ -251,7 +251,7 @@ class MockMultiInputCreatorOp(OperationDefinition):
         output = auto()
 
     name: ClassVar[str] = "mock_multi_creator"
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.ZIP
+    group_by: GroupByStrategy | None = GroupByStrategy.ZIP
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.data: InputSpec(artifact_type=ArtifactTypes.FILE_REF, required=True),
         InputRole.config: InputSpec(artifact_type=ArtifactTypes.CONFIG, required=True),
@@ -308,7 +308,7 @@ class MockMultiInputCuratorOp(OperationDefinition):
         output = auto()
 
     name: ClassVar[str] = "mock_multi_curator"
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.ZIP
+    group_by: GroupByStrategy | None = GroupByStrategy.ZIP
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.data: InputSpec(artifact_type=ArtifactTypes.FILE_REF, required=True),
         InputRole.config: InputSpec(artifact_type=ArtifactTypes.CONFIG, required=True),

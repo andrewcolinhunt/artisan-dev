@@ -77,7 +77,7 @@ class DataTransformerScript(OperationDefinition):
     }
 
     # ---------- Behavior ----------
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+    group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
     # ---------- Tool ----------
     tool: ToolSpec = ToolSpec(executable=str(SCRIPT_PATH), interpreter="python")
