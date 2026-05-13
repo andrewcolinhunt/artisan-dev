@@ -367,6 +367,65 @@ class ArtifactStore:
 
         return result if not result.is_empty() else empty
 
+    def load_original_names(self, artifact_ids: list[str]) -> dict[str, str]:
+        """Bulk-load ``original_name`` values for the given artifact IDs.
+
+        Used by name-based input pairing (``GroupByStrategy.NAME``) to
+        obtain the source filenames needed for stem matching. Two-phase
+        lookup: an index scan resolves each artifact's type, then per-type
+        content tables are scanned with an ``is_in`` filter to fetch
+        ``(artifact_id, original_name)`` pairs.
+
+        Types whose schema does not declare ``original_name`` are skipped
+        silently. Artifacts whose row exists but whose ``original_name``
+        is ``None`` are also omitted.
+
+        Args:
+            artifact_ids: IDs to look up. An empty list returns ``{}``
+                immediately without scanning.
+
+        Returns:
+            Mapping of artifact ID to ``original_name``. IDs missing
+            from the index, missing from their content table, or with a
+            null ``original_name`` are omitted.
+        """
+        if not artifact_ids:
+            return {}
+
+        type_map = self.load_artifact_type_map(artifact_ids)
+        if not type_map:
+            return {}
+
+        ids_by_type: dict[str, list[str]] = {}
+        for artifact_id, artifact_type in type_map.items():
+            ids_by_type.setdefault(artifact_type, []).append(artifact_id)
+
+        names: dict[str, str] = {}
+        for artifact_type, ids in ids_by_type.items():
+            schema = ArtifactTypeDef.get_schema(artifact_type)
+            if "original_name" not in schema:
+                continue
+
+            table_path = uri_join(
+                self.base_path, ArtifactTypeDef.get_table_path(artifact_type)
+            )
+            if not self._fs.exists(table_path):
+                continue
+
+            df = (
+                pl.scan_delta(table_path, storage_options=self._storage_options)
+                .filter(pl.col("artifact_id").is_in(ids))
+                .select(["artifact_id", "original_name"])
+                .collect()
+            )
+
+            for row in df.iter_rows(named=True):
+                name = row["original_name"]
+                if name:
+                    names[row["artifact_id"]] = name
+
+        return names
+
     # -------------------------------------------------------------------------
     # Write preparation (returns DataFrames for staging)
     # -------------------------------------------------------------------------

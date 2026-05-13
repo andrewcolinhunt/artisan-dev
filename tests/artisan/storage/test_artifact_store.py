@@ -339,6 +339,133 @@ class TestGetArtifactsByType:
         assert result["c1" + "a" * 30].content == b'{"key": "val"}'
 
 
+class TestLoadOriginalNames:
+    """Tests for load_original_names() used by NAME-based input pairing."""
+
+    @pytest.fixture
+    def store_with_names(self, backend_fs):
+        """Store with two metrics + two configs, all with original_name."""
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
+
+        metric_ids = ["m1" + "a" * 30, "m2" + "b" * 30]
+        config_ids = ["c1" + "a" * 30, "c2" + "b" * 30]
+
+        index_data = {
+            "artifact_id": metric_ids + config_ids,
+            "artifact_type": ["metric", "metric", "config", "config"],
+            "origin_step_number": [1, 1, 2, 2],
+            "metadata": ["{}"] * 4,
+        }
+        pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
+            f"{root}/artifacts/index", storage_options=opts
+        )
+
+        metrics_data = {
+            "artifact_id": metric_ids,
+            "origin_step_number": [1, 1],
+            "content": [b"{}", b"{}"],
+            "original_name": ["sample_001.json", "sample_002.json"],
+            "extension": [".json", ".json"],
+            "metadata": ["{}", "{}"],
+            "external_path": [None, None],
+        }
+        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(
+            f"{root}/artifacts/metrics", storage_options=opts
+        )
+
+        configs_data = {
+            "artifact_id": config_ids,
+            "origin_step_number": [2, 2],
+            "content": [b"{}", b"{}"],
+            "original_name": ["sample_001.cfg", "sample_002.cfg"],
+            "extension": [".cfg", ".cfg"],
+            "metadata": ["{}", "{}"],
+            "external_path": [None, None],
+        }
+        pl.DataFrame(configs_data, schema=CONFIGS_SCHEMA).write_delta(
+            f"{root}/artifacts/configs", storage_options=opts
+        )
+
+        return store, metric_ids, config_ids
+
+    def test_empty_input(self, store_with_names):
+        """Empty list returns empty dict without scanning."""
+        store, _metric_ids, _config_ids = store_with_names
+        assert store.load_original_names([]) == {}
+
+    def test_single_type(self, store_with_names):
+        """Returns names for IDs in a single content table."""
+        store, metric_ids, _config_ids = store_with_names
+        result = store.load_original_names(metric_ids)
+        assert result == {
+            metric_ids[0]: "sample_001.json",
+            metric_ids[1]: "sample_002.json",
+        }
+
+    def test_multi_type(self, store_with_names):
+        """Returns names spanning multiple content tables in one call."""
+        store, metric_ids, config_ids = store_with_names
+        result = store.load_original_names([metric_ids[0], config_ids[0]])
+        assert result == {
+            metric_ids[0]: "sample_001.json",
+            config_ids[0]: "sample_001.cfg",
+        }
+
+    def test_missing_ids_omitted(self, store_with_names):
+        """IDs not in the index are omitted, no raise."""
+        store, metric_ids, _config_ids = store_with_names
+        result = store.load_original_names([metric_ids[0], "z" * 32])
+        assert result == {metric_ids[0]: "sample_001.json"}
+
+    def test_all_missing_returns_empty(self, store_with_names):
+        """When no IDs are found in the index, returns empty dict."""
+        store, _metric_ids, _config_ids = store_with_names
+        assert store.load_original_names(["x" * 32, "y" * 32]) == {}
+
+    def test_no_index_table(self, backend_fs):
+        """Returns empty dict when the artifact_index table is absent."""
+        fs, storage, root = backend_fs
+        store = ArtifactStore(
+            root, fs=fs, storage_options=storage.delta_storage_options()
+        )
+        assert store.load_original_names(["a" * 32]) == {}
+
+    def test_null_original_name_omitted(self, backend_fs):
+        """Rows with null original_name are silently omitted."""
+        fs, storage, root = backend_fs
+        opts = storage.delta_storage_options()
+        store = ArtifactStore(root, fs=fs, storage_options=opts)
+
+        ids = ["m1" + "a" * 30, "m2" + "b" * 30]
+        index_data = {
+            "artifact_id": ids,
+            "artifact_type": ["metric", "metric"],
+            "origin_step_number": [1, 1],
+            "metadata": ["{}", "{}"],
+        }
+        pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
+            f"{root}/artifacts/index", storage_options=opts
+        )
+
+        metrics_data = {
+            "artifact_id": ids,
+            "origin_step_number": [1, 1],
+            "content": [b"{}", b"{}"],
+            "original_name": ["named.json", None],
+            "extension": [".json", ".json"],
+            "metadata": ["{}", "{}"],
+            "external_path": [None, None],
+        }
+        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(
+            f"{root}/artifacts/metrics", storage_options=opts
+        )
+
+        result = store.load_original_names(ids)
+        assert result == {ids[0]: "named.json"}
+
+
 class TestArtifactStoreProvenanceQueries:
     """Tests for provenance and step number query methods."""
 
