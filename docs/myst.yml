@@ -43,8 +43,9 @@ project:
             - file: tutorials/02-pipeline-design/02-branching-and-merging.ipynb
             - file: tutorials/02-pipeline-design/03-metrics-and-filtering.ipynb
             - file: tutorials/02-pipeline-design/04-multi-input-operations.ipynb
-            - file: tutorials/02-pipeline-design/05-diamonds-and-iteration.ipynb
-            - file: tutorials/02-pipeline-design/06-composites.ipynb
+            - file: tutorials/02-pipeline-design/05-name-based-pairing.ipynb
+            - file: tutorials/02-pipeline-design/06-diamonds-and-iteration.ipynb
+            - file: tutorials/02-pipeline-design/07-composites.ipynb
         - title: Caching
           children:
             - file: tutorials/03-caching/01-resume-and-caching.ipynb
