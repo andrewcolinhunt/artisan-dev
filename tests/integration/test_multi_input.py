@@ -529,3 +529,166 @@ def test_cross_product_default_preserves_classvar_behavior(
     result = pipeline.finalize()
     assert result["overall_success"]
     _assert_cross_product_provenance(delta_root, op_step_number=3)
+
+
+# =============================================================================
+# NAME grouping
+# =============================================================================
+
+
+class DualInputName(OperationDefinition):
+    """Dual-input op pairing two data streams by ``original_name`` stem.
+
+    Output bytes concatenate the two inputs so each pair produces a
+    distinct ``artifact_id``.
+    """
+
+    name = "dual_input_name"
+    description = "Name-paired join of two independent data streams"
+
+    class InputRole(StrEnum):
+        from_a = "from_a"
+        from_b = "from_b"
+
+    class OutputRole(StrEnum):
+        result = "result"
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.from_a: InputSpec(artifact_type="data"),
+        InputRole.from_b: InputSpec(artifact_type="data"),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type="data",
+            infer_lineage_from={"inputs": ["from_a", "from_b"]},
+        ),
+    }
+    group_by: GroupByStrategy | None = GroupByStrategy.NAME
+
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_name")
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        return {
+            role: [a.materialized_path for a in artifacts]
+            for role, artifacts in inputs.input_artifacts.items()
+        }
+
+    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+        out_dir = inputs.execute_dir
+        os.makedirs(out_dir, exist_ok=True)
+
+        from_a = inputs.inputs.get("from_a", [])
+        from_b = inputs.inputs.get("from_b", [])
+        if isinstance(from_a, (str, Path)):
+            from_a = [from_a]
+        if isinstance(from_b, (str, Path)):
+            from_b = [from_b]
+
+        a_path = Path(from_a[0])
+        b_path = Path(from_b[0])
+        # Bytes depend on both inputs so paired artifact_ids are distinct.
+        out_path = Path(out_dir) / f"{a_path.stem}.csv"
+        out_path.write_bytes(a_path.read_bytes() + b"\n---\n" + b_path.read_bytes())
+        return {}
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        drafts = []
+        for f in inputs.file_outputs:
+            if f.endswith(".csv"):
+                drafts.append(
+                    DataArtifact.draft(
+                        content=Path(f).read_bytes(),
+                        original_name=os.path.basename(f),
+                        step_number=inputs.step_number,
+                    )
+                )
+        return ArtifactResult(success=True, artifacts={"result": drafts})
+
+
+def test_name_grouping_creates_co_input_edges(pipeline_env: dict[str, str]):
+    """NAME grouping pairs two independent ingest streams by filename stem.
+
+    Two ``DataGenerator`` steps run with different seeds but identical
+    ``count``, so they produce artifacts with **matching** ``original_name``
+    values (``dataset_00000.csv``, ``dataset_00001.csv``) and **no shared
+    ancestry**. The downstream NAME-paired op must:
+      - Produce one output per matched stem (2 total).
+      - Materialize co-input edges from BOTH input roles to each output.
+      - Edges within a pair share a ``group_id``; group_ids differ across pairs.
+
+    This locks in the design's "no changes to capture.py" claim: with
+    aligned inputs + group_ids from the NAME pairing layer, the existing
+    lineage capture machinery materializes co-input edges automatically.
+    """
+    delta_root = pipeline_env["delta_root"]
+    pipeline = PipelineManager.create(
+        name="test_name_grouping",
+        delta_root=delta_root,
+        staging_root=pipeline_env["staging_root"],
+        working_root=pipeline_env["working_root"],
+    )
+
+    step_a = pipeline.run(
+        DataGenerator,
+        params={"count": 2, "seed": 42},
+        step_runner=Runner.LOCAL,
+    )
+    step_b = pipeline.run(
+        DataGenerator,
+        params={"count": 2, "seed": 99},
+        step_runner=Runner.LOCAL,
+    )
+    pipeline.run(
+        DualInputName,
+        inputs={
+            "from_a": step_a.output("datasets"),
+            "from_b": step_b.output("datasets"),
+        },
+        step_runner=Runner.LOCAL,
+    )
+
+    result = pipeline.finalize()
+    assert result["overall_success"]
+
+    assert count_artifacts_by_step(delta_root, 2) == 2
+    assert count_executions_by_step(delta_root, 2) == 2
+
+    output_ids = get_execution_outputs(delta_root, 2, "result")
+    assert len(set(output_ids)) == 2, (
+        "NAME outputs collided on artifact_id — execute() bytes must depend "
+        "on both inputs."
+    )
+
+    a_ids = set(get_execution_outputs(delta_root, 0, "datasets"))
+    b_ids = set(get_execution_outputs(delta_root, 1, "datasets"))
+    assert len(a_ids) == 2
+    assert len(b_ids) == 2
+    assert not a_ids & b_ids, "Independent ingests must produce distinct IDs"
+
+    edges = load_artifact_edges(delta_root, output_ids)
+    assert edges.height == 4, (
+        f"Expected 4 incoming edges (2 outputs x 2 sources), got {edges.height}"
+    )
+
+    by_output: dict[str, list[dict]] = {}
+    for row in edges.iter_rows(named=True):
+        by_output.setdefault(row["target_artifact_id"], []).append(row)
+    assert len(by_output) == 2
+
+    pair_group_ids: set[str] = set()
+    for tid, in_edges in by_output.items():
+        sources = {e["source_artifact_id"] for e in in_edges}
+        assert sources & a_ids, f"output {tid} missing from_a edge"
+        assert sources & b_ids, f"output {tid} missing from_b edge"
+
+        gids = {e["group_id"] for e in in_edges}
+        assert len(gids) == 1, (
+            f"Edges for output {tid} must share a single group_id, got {gids}"
+        )
+        assert None not in gids, f"output {tid} has a null group_id"
+        pair_group_ids.update(gids)
+
+    assert len(pair_group_ids) == 2, (
+        f"Each pair must have a distinct group_id, got {pair_group_ids}"
+    )
