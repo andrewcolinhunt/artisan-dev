@@ -17,6 +17,7 @@ from prefect.testing.utilities import prefect_test_harness
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -578,11 +579,13 @@ class FailingTransformer(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths and original names from input artifacts."""
-        prepared = {}
+        prepared: dict[str, Any] = {}
         for role, artifacts in inputs.input_artifacts.items():
-            prepared[role] = [a.materialized_path for a in artifacts]
+            prepared[role] = PerArtifact([a.materialized_path for a in artifacts])
             # Pass original names for index extraction (filenames are artifact_ids)
-            prepared[f"{role}_names"] = [a.original_name for a in artifacts]
+            prepared[f"{role}_names"] = PerArtifact(
+                [a.original_name for a in artifacts]
+            )
         return prepared
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:

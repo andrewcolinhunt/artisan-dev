@@ -43,6 +43,7 @@ from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.transport.log_constants import TOOL_OUTPUT_FILENAME
 from artisan.execution.utils import finalize_artifacts, generate_execution_run_id
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.input_models import (
@@ -258,11 +259,17 @@ def prep_unit(
     )
 
     if not should_split:
-        # Single ExecuteInput with full prepared_inputs (monolithic)
+        # Single ExecuteInput with full prepared_inputs (monolithic).
+        # Unwrap PerArtifact markers so execute() sees raw lists — the
+        # sentinel only signals slicing intent, never reaches op code.
+        monolithic_inputs = {
+            k: list(v) if isinstance(v, PerArtifact) else v
+            for k, v in prepared_inputs.items()
+        }
         artifact_execute_dirs.append(execute_dir)
         artifact_execute_inputs.append(
             ExecuteInput(
-                inputs=prepared_inputs,
+                inputs=monolithic_inputs,
                 execute_dir=execute_dir,
                 log_path=log_path,
                 files_dir=files_dir,
@@ -615,31 +622,35 @@ def _split_prepared_inputs(
 ) -> dict[str, Any]:
     """Extract per-artifact inputs at the given index.
 
-    Convention: list-valued entries whose length matches the batch
-    size are per-artifact and sliced at ``index``. The sliced item
-    is wrapped in a single-element list to preserve the list interface
-    that operations expect when iterating inputs. All other entries
-    (scalars, dicts, lists of different length) are passed through
-    unchanged (shared across artifacts).
-
-    Edge case: a shared list that coincidentally has the same length
-    as batch_size will be incorrectly sliced. In practice this does
-    not arise — shared configuration is returned as dicts or scalars,
-    and per-artifact lists are always batch-sized by construction.
+    Per-artifact data MUST be wrapped in ``PerArtifact(...)`` in
+    preprocess; the framework slices the wrapper at ``index`` and re-wraps
+    the item in a single-element list (preserves the list interface that
+    operations expect when iterating inputs). Raw lists pass through
+    unchanged as shared data regardless of length.
 
     Args:
-        prepared_inputs: Output from operation.preprocess().
+        prepared_inputs: Output from ``operation.preprocess()``.
         index: Artifact index within the unit.
-        batch_size: Number of artifacts in the unit. Used to
-            distinguish per-artifact lists from shared lists.
+        batch_size: Number of artifacts in the unit. Used to validate
+            ``PerArtifact`` lengths.
 
     Returns:
-        Dict with per-artifact values at ``index``, where sliced
-        items are wrapped in single-element lists.
+        Dict with per-artifact values at ``index``, where ``PerArtifact``
+        values are sliced and wrapped in a single-element list.
+
+    Raises:
+        ValueError: If a ``PerArtifact`` value's length does not match
+            ``batch_size``.
     """
     result: dict[str, Any] = {}
     for key, value in prepared_inputs.items():
-        if isinstance(value, list) and len(value) == batch_size:
+        if isinstance(value, PerArtifact):
+            if len(value) != batch_size:
+                msg = (
+                    f"PerArtifact({key!r}) has length {len(value)} but "
+                    f"batch_size is {batch_size}."
+                )
+                raise ValueError(msg)
             result[key] = [value[index]]
         else:
             result[key] = value
