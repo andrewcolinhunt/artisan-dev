@@ -1844,3 +1844,102 @@ class TestCreateRuntimeEnvironmentFailureLogsRoot:
         assert env.failure_logs_root is not None
         assert not env.failure_logs_root.startswith("s3://")
         assert env.failure_logs_root == str(tmp_path / "working" / "logs" / "failures")
+
+
+# =============================================================================
+# Per-step group_by override
+# =============================================================================
+
+
+class TestInstantiateOperationGroupByOverride:
+    """``instantiate_operation`` applies a per-step ``group_by`` override
+    via ``model_copy``, mirroring every other per-step knob."""
+
+    def test_override_replaces_class_default(self):
+        """An op declaring ``group_by=ZIP`` is overridden to CROSS_PRODUCT."""
+        from artisan.orchestration.engine.step_executor import instantiate_operation
+
+        # MockMultiInputCreatorOp declares group_by = ZIP at class level.
+        instance = instantiate_operation(
+            MockMultiInputCreatorOp,
+            params=None,
+            group_by=GroupByStrategy.CROSS_PRODUCT,
+        )
+        assert instance.group_by is GroupByStrategy.CROSS_PRODUCT
+
+    def test_override_none_preserves_class_default(self):
+        """Without an override, the class-declared default is preserved."""
+        from artisan.orchestration.engine.step_executor import instantiate_operation
+
+        instance = instantiate_operation(
+            MockMultiInputCreatorOp,
+            params=None,
+            group_by=None,
+        )
+        assert instance.group_by is GroupByStrategy.ZIP
+
+    def test_override_applies_to_op_with_no_class_default(self):
+        """An op declaring no class-level ``group_by`` (default ``None``)
+        still accepts the override — symmetric with every other knob."""
+        from artisan.orchestration.engine.step_executor import instantiate_operation
+
+        # MockNoGroupByCreatorOp declares no class-level group_by.
+        instance = instantiate_operation(
+            MockNoGroupByCreatorOp,
+            params=None,
+            group_by=GroupByStrategy.CROSS_PRODUCT,
+        )
+        assert instance.group_by is GroupByStrategy.CROSS_PRODUCT
+
+
+class TestMergeConfigOverridesGroupBy:
+    """``_merge_config_overrides`` emits ``group_by.value`` into the
+    config-overrides payload only when an override is set, so existing
+    cache rows hashed without ``group_by`` are preserved."""
+
+    def test_group_by_none_omits_key(self):
+        from artisan.orchestration.engine.step_executor import _merge_config_overrides
+
+        # All inputs None → merged result is None.
+        result = _merge_config_overrides(None, None, group_by=None)
+        assert result is None
+
+    def test_group_by_set_emits_value_as_string(self):
+        from artisan.orchestration.engine.step_executor import _merge_config_overrides
+
+        result = _merge_config_overrides(
+            None, None, group_by=GroupByStrategy.CROSS_PRODUCT
+        )
+        assert result == {"group_by": "cross_product"}
+
+    def test_distinct_strategies_produce_distinct_step_spec_ids(self):
+        """Two strategies → two ``step_spec_id`` values. Locks in
+        Design Criterion: per-step cache key reflects the override."""
+        from artisan.orchestration.engine.step_executor import _merge_config_overrides
+        from artisan.utils.hashing import compute_step_spec_id
+
+        common = {
+            "operation_name": "x",
+            "step_number": 0,
+            "params": {"a": 1},
+            "input_spec": {"data": ("upstream", "out")},
+        }
+        spec_a = compute_step_spec_id(
+            **common,
+            config_overrides=_merge_config_overrides(
+                None, None, group_by=GroupByStrategy.LINEAGE
+            ),
+        )
+        spec_b = compute_step_spec_id(
+            **common,
+            config_overrides=_merge_config_overrides(
+                None, None, group_by=GroupByStrategy.CROSS_PRODUCT
+            ),
+        )
+        spec_none = compute_step_spec_id(
+            **common,
+            config_overrides=_merge_config_overrides(None, None, group_by=None),
+        )
+        assert spec_a != spec_b
+        # ``None`` preserves legacy hashes (no group_by in payload).
+        assert spec_none not in {spec_a, spec_b}
