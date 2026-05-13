@@ -79,13 +79,20 @@ def compute_execution_spec_id(
 
     The spec_id uniquely identifies an execution based on:
     - operation_name: The operation's name attribute
-    - inputs: All artifact IDs being processed
+    - inputs: All artifact IDs being processed, keyed by role
     - params: Merged parameters (defaults + overrides)
     - config_overrides: Runtime config overrides (environment, tool, etc.)
+
+    Inputs are canonicalized as a role-sorted list of sorted IDs.
+    Multiplicity within a role is preserved (``[A, A]`` differs from
+    ``[A]``) and role assignment matters (``{primary:[A], secondary:[B]}``
+    differs from ``{primary:[B], secondary:[A]}``). Role-key ordering of
+    the input dict is irrelevant — roles are sorted before hashing.
 
     Args:
         operation_name: The operation's name attribute.
         inputs: Dict mapping role to list of artifact IDs (the batch).
+            Multiplicity within each role list is preserved.
         params: Merged parameters dict (defaults + runtime overrides).
             Will be JSON-canonicalized for deterministic hashing.
         config_overrides: Optional config overrides that affect execution
@@ -94,20 +101,19 @@ def compute_execution_spec_id(
     Returns:
         32-character xxh3_128 hex string.
     """
-    # Collect all artifact IDs from all roles, deduplicate, sort
-    all_ids: set[str] = set()
-    for role_ids in inputs.values():
-        all_ids.update(role_ids)
-    sorted_ids = ",".join(sorted(all_ids)) if all_ids else ""
+    if inputs:
+        parts = [
+            f"{role}=[{','.join(sorted(inputs[role]))}]"
+            for role in sorted(inputs.keys())
+        ]
+        inputs_str = "|".join(parts)
+    else:
+        inputs_str = ""
 
-    # Canonicalize params dict
     params_json = _canonicalize_dict(params)
-
-    # Canonicalize config overrides
     config_json = _canonicalize_dict(config_overrides)
 
-    # Hash: operation_name | sorted_artifact_ids | params_json | config_json
-    hash_input = f"{operation_name}|{sorted_ids}|{params_json}|{config_json}"
+    hash_input = f"{operation_name}|{inputs_str}|{params_json}|{config_json}"
 
     return digest_utf8(hash_input)
 

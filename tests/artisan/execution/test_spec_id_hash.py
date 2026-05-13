@@ -38,8 +38,13 @@ class TestComputeExecutionSpecId:
         )
         assert spec1 == spec2
 
-    def test_multi_role_inputs_combined(self):
-        """Artifact IDs from all roles are combined and sorted."""
+    def test_multi_role_inputs_role_order_irrelevant(self):
+        """Role-key ordering of the inputs dict doesn't affect the hash.
+
+        Roles are sorted before hashing, so the dict-construction order
+        is irrelevant. Role *assignment* of each artifact_id still matters
+        — see ``test_execution_spec_id_differs_per_role_assignment``.
+        """
         spec1 = compute_execution_spec_id(
             operation_name="transform",
             inputs={
@@ -54,7 +59,27 @@ class TestComputeExecutionSpecId:
                 "primary": ["aaa" + "0" * 29],
             },
         )
-        assert spec1 == spec2  # Role order doesn't matter
+        assert spec1 == spec2
+
+    def test_execution_spec_id_differs_per_role_assignment(self):
+        """Swapping which role an artifact_id belongs to changes the spec_id.
+
+        Regression for Bug C: the legacy implementation deduplicated IDs
+        into a flat set across roles, so two batches with identical ID
+        multisets but different role assignments produced identical
+        spec_ids. Multi-input ops where the same artifact may appear in
+        multiple roles relied on this masking a latent collision.
+        """
+        a, b = "a" * 32, "b" * 32
+        spec_a_primary = compute_execution_spec_id(
+            operation_name="transform",
+            inputs={"primary": [a], "reference": [b]},
+        )
+        spec_b_primary = compute_execution_spec_id(
+            operation_name="transform",
+            inputs={"primary": [b], "reference": [a]},
+        )
+        assert spec_a_primary != spec_b_primary
 
     def test_params_key_order_irrelevant(self):
         """Params dict key order doesn't affect hash."""
@@ -117,17 +142,22 @@ class TestComputeExecutionSpecId:
         )
         assert spec1 != spec2
 
-    def test_duplicate_artifact_ids_deduplicated(self):
-        """Duplicate artifact IDs are deduplicated before hashing."""
+    def test_duplicate_artifact_ids_preserve_multiplicity(self):
+        """Multiplicity within a role is preserved (not deduped) in the hash.
+
+        ``[A, A]`` and ``[A]`` produce different spec_ids — repeated
+        artifacts reflect the actual unit shape (e.g. aligned CROSS_PRODUCT
+        primaries) rather than collapsing into a content-only fingerprint.
+        """
         spec1 = compute_execution_spec_id(
             operation_name="relax",
-            inputs={"data": ["a" * 32, "a" * 32]},  # Duplicate
+            inputs={"data": ["a" * 32, "a" * 32]},
         )
         spec2 = compute_execution_spec_id(
             operation_name="relax",
-            inputs={"data": ["a" * 32]},  # Single
+            inputs={"data": ["a" * 32]},
         )
-        assert spec1 == spec2
+        assert spec1 != spec2
 
     def test_config_overrides_none_same_as_empty(self):
         """config_overrides=None produces same spec_id as empty dict."""
