@@ -42,7 +42,7 @@ from artisan.orchestration.engine.results import (
     extract_execution_run_ids,
 )
 from artisan.orchestration.runners.base import RunnerBase
-from artisan.schemas.enums import FailurePolicy, TablePath
+from artisan.schemas.enums import FailurePolicy, GroupByStrategy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
@@ -72,6 +72,7 @@ def instantiate_operation(
     tool: dict[str, Any] | Any | None = None,
     compute_provider: str | dict[str, Any] | Any | None = None,
     compute_resources: dict[str, Any] | Any | None = None,
+    group_by: GroupByStrategy | None = None,
 ) -> OperationDefinition:
     """Construct an operation instance from class, params, and overrides.
 
@@ -85,6 +86,9 @@ def instantiate_operation(
         tool: Optional tool overrides (applied via model_copy on instance.tool).
         compute_provider: Optional compute_provider override. String selects the active
             provider; dict applied via model_copy.
+        compute_resources: Optional compute resources override.
+        group_by: Optional per-step pairing-strategy override applied via
+            ``model_copy``. ``None`` (default) preserves the class-level default.
 
     Returns:
         Fully configured operation instance.
@@ -173,6 +177,8 @@ def instantiate_operation(
             updates["compute_resources"] = instance.compute_resources.model_copy(
                 update=compute_resources
             )
+    if group_by is not None:
+        updates["group_by"] = group_by
     if updates:
         instance = instance.model_copy(update=updates)
 
@@ -492,6 +498,7 @@ def execute_step(
     skip_cache: bool = False,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
+    group_by: GroupByStrategy | None = None,
 ) -> StepResult:
     """Execute a single pipeline step.
 
@@ -535,13 +542,14 @@ def execute_step(
         tool,
         compute_provider,
         compute_resources=compute_resources,
+        group_by=group_by,
     )
     user_overrides = params or {}
 
     # Merge environment + tool + compute_provider + compute_resources into
     # config_overrides for hashing
     config_overrides = _merge_config_overrides(
-        environment, tool, compute_provider, compute_resources
+        environment, tool, compute_provider, compute_resources, group_by=group_by
     )
 
     # Check if this is a curator operation
@@ -585,13 +593,19 @@ def _merge_config_overrides(
     tool: dict[str, Any] | Any | None,
     compute_provider: str | dict[str, Any] | Any | None = None,
     compute_resources: dict[str, Any] | Any | None = None,
+    *,
+    group_by: GroupByStrategy | None = None,
 ) -> dict[str, Any] | None:
-    """Merge environment, tool, compute_provider, and compute_resources
-    overrides into a single dict for hashing.
+    """Merge environment, tool, compute_provider, compute_resources, and
+    group_by overrides into a single dict for hashing.
 
     Typed Pydantic models are normalized to dicts via ``model_dump`` so the
     hash payload remains JSON-serializable and dict-vs-model forms produce
-    identical step_spec_ids.
+    identical step_spec_ids. ``group_by`` is serialized via its ``.value``
+    because the canonical JSON encoder does not handle ``Enum`` natively.
+
+    ``group_by`` is only emitted when an explicit override is set; this
+    preserves existing cache rows that were hashed without it.
     """
     from pydantic import BaseModel as _BaseModel
 
@@ -609,6 +623,8 @@ def _merge_config_overrides(
         merged["compute_provider"] = _to_dict(compute_provider)
     if compute_resources is not None:
         merged["compute_resources"] = _to_dict(compute_resources)
+    if group_by is not None:
+        merged["group_by"] = group_by.value
     return merged or None
 
 

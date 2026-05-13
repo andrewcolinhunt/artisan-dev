@@ -34,7 +34,7 @@ from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.runners import Runner, RunnerBase, resolve_runner
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.enums import CachePolicy, FailurePolicy
+from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.compute_resources import ComputeResources
@@ -1296,6 +1296,7 @@ class PipelineManager:
         compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
         compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
+        group_by: GroupByStrategy | None = None,
         compact: bool = True,
         name: str | None = None,
         skip_cache: bool = False,
@@ -1316,6 +1317,10 @@ class PipelineManager:
             tool: Tool overrides.
             compute_provider: Compute provider override (string or dict).
             failure_policy: Override pipeline-level failure policy.
+            group_by: Override the operation's class-level ``group_by`` for
+                this step only. ``None`` (default) preserves the operation's
+                declared default. A ``GroupByStrategy`` member switches
+                pairing strategy and wins over any class-level default.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
             skip_cache: Bypass cache lookups for this step.
@@ -1338,6 +1343,7 @@ class PipelineManager:
             compute_provider=compute_provider,
             compute_resources=compute_resources,
             failure_policy=failure_policy,
+            group_by=group_by,
             compact=compact,
             name=name,
             skip_cache=skip_cache,
@@ -1362,6 +1368,7 @@ class PipelineManager:
         compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
         compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
+        group_by: GroupByStrategy | None = None,
         compact: bool = True,
         name: str | None = None,
         skip_cache: bool = False,
@@ -1381,6 +1388,10 @@ class PipelineManager:
             tool: Tool overrides.
             compute_provider: Compute provider override (string or dict).
             failure_policy: Override pipeline-level failure policy.
+            group_by: Override the operation's class-level ``group_by`` for
+                this step only. ``None`` (default) preserves the operation's
+                declared default. A ``GroupByStrategy`` member switches
+                pairing strategy and wins over any class-level default.
             compact: Run Delta Lake compaction after commit.
             name: Custom step name. Defaults to operation.name.
             skip_cache: Bypass cache lookups for this step.
@@ -1389,7 +1400,8 @@ class PipelineManager:
             StepFuture for wiring to downstream steps.
 
         Raises:
-            TypeError: If ``operation`` is a CompositeDefinition subclass.
+            TypeError: If ``operation`` is a CompositeDefinition subclass,
+                or if ``group_by`` is not a ``GroupByStrategy`` member.
             ValueError: If any override keys are unrecognized.
         """
         from artisan.composites.base.composite_definition import CompositeDefinition
@@ -1427,6 +1439,7 @@ class PipelineManager:
             tool,
             compute_provider,
             compute_resources,
+            group_by,
         )
 
         step_name = name or operation.name
@@ -1455,6 +1468,7 @@ class PipelineManager:
             compute_resources,
             step_number,
             inputs,
+            group_by,
         )
 
         # 5. Cache check: if a prior run produced identical spec_id, return
@@ -1509,6 +1523,7 @@ class PipelineManager:
             step_spec_id=step_spec_id,
             temp_instance=temp_instance,
             skip_cache=skip_cache,
+            group_by=group_by,
         )
 
     # =========================================================================
@@ -1526,6 +1541,7 @@ class PipelineManager:
         tool: dict[str, Any] | None,
         compute_provider: str | dict[str, Any] | None = None,
         compute_resources: dict[str, Any] | None = None,
+        group_by: GroupByStrategy | None = None,
     ) -> None:
         """Validate all overrides against the operation (fail-fast).
 
@@ -1549,6 +1565,13 @@ class PipelineManager:
             _validate_compute_provider(compute_provider)
         if isinstance(compute_resources, dict):
             _validate_compute_resources(compute_resources)
+        if group_by is not None and not isinstance(group_by, GroupByStrategy):
+            msg = (
+                f"group_by must be a GroupByStrategy member, got "
+                f"{type(group_by).__name__}: {group_by!r}. Valid members: "
+                f"{[s.name for s in GroupByStrategy]}."
+            )
+            raise TypeError(msg)
         _validate_input_roles(operation, inputs)
         _validate_required_inputs(operation, inputs)
         _validate_input_types(operation, inputs)
@@ -1612,6 +1635,7 @@ class PipelineManager:
         compute_resources: dict[str, Any] | None,
         step_number: int,
         inputs: Any,
+        group_by: GroupByStrategy | None = None,
     ) -> tuple[str, OperationDefinition]:
         """Instantiate operation and compute deterministic step spec ID.
 
@@ -1638,6 +1662,7 @@ class PipelineManager:
             tool,
             compute_provider,
             compute_resources=compute_resources,
+            group_by=group_by,
         )
         if "params" in type(temp_instance).model_fields:
             full_params = temp_instance.params.model_dump(mode="json")  # type: ignore[attr-defined]
@@ -1655,7 +1680,7 @@ class PipelineManager:
         from artisan.orchestration.engine.step_executor import _merge_config_overrides
 
         config_overrides = _merge_config_overrides(
-            environment, tool, compute_provider, compute_resources
+            environment, tool, compute_provider, compute_resources, group_by=group_by
         )
 
         input_spec = self._build_input_spec(inputs)
@@ -1805,6 +1830,7 @@ class PipelineManager:
         temp_instance: OperationDefinition,
         skip_cache: bool = False,
         compute_resources: dict[str, Any] | Any | None = None,
+        group_by: GroupByStrategy | None = None,
     ) -> StepFuture:
         """Register step, resolve step_runner, and submit execution to thread pool.
 
@@ -1867,6 +1893,7 @@ class PipelineManager:
             "compute_provider": (
                 _to_dict(compute_provider) if compute_provider is not None else {}
             ),
+            "group_by": (group_by.value if group_by is not None else None),
         }
         start_record = StepStartRecord(
             step_run_id=step_run_id,
@@ -1936,6 +1963,7 @@ class PipelineManager:
                     skip_cache=skip_cache or self._config.skip_cache,
                     step_run_id=step_run_id,
                     step_run_ids=upstream_step_run_ids,
+                    group_by=group_by,
                 )
                 elapsed = time.perf_counter() - start
                 result = result.model_copy(
