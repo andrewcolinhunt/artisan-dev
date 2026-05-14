@@ -43,6 +43,7 @@ from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.transport.log_constants import TOOL_OUTPUT_FILENAME
 from artisan.execution.utils import finalize_artifacts, generate_execution_run_id
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.input_models import (
@@ -51,6 +52,7 @@ from artisan.schemas.specs.input_models import (
     PreprocessInput,
 )
 from artisan.schemas.specs.input_spec import InputSpec
+from artisan.utils.filename import strip_extensions
 from artisan.utils.path import shard_uri
 from artisan.utils.timing import phase_timer
 
@@ -258,11 +260,17 @@ def prep_unit(
     )
 
     if not should_split:
-        # Single ExecuteInput with full prepared_inputs (monolithic)
+        # Single ExecuteInput with full prepared_inputs (monolithic).
+        # Unwrap PerArtifact markers so execute() sees raw lists — the
+        # sentinel only signals slicing intent, never reaches op code.
+        monolithic_inputs = {
+            k: list(v) if isinstance(v, PerArtifact) else v
+            for k, v in prepared_inputs.items()
+        }
         artifact_execute_dirs.append(execute_dir)
         artifact_execute_inputs.append(
             ExecuteInput(
-                inputs=prepared_inputs,
+                inputs=monolithic_inputs,
                 execute_dir=execute_dir,
                 log_path=log_path,
                 files_dir=files_dir,
@@ -346,7 +354,7 @@ def post_unit(
 
     # --- postprocess phase ---
     with phase_timer("postprocess", timings):
-        memory_outputs, file_outputs = _reassemble_results(
+        memory_outputs, file_outputs, output_pair_map = _reassemble_results(
             raw_results, prepped.artifact_execute_dirs
         )
 
@@ -402,9 +410,10 @@ def post_unit(
                 output_artifacts=finalized_artifacts,
                 input_artifacts=flat_input_artifacts,
                 output_specs=operation_class.outputs,
-                group_by=getattr(operation_class, "group_by", None),
+                group_by=operation.group_by,
                 group_ids=prepped.unit.group_ids,
                 filesystem_match_map=filesystem_match_map,
+                output_pair_map=output_pair_map,
             )
         else:
             validate_lineage_integrity(
@@ -615,31 +624,35 @@ def _split_prepared_inputs(
 ) -> dict[str, Any]:
     """Extract per-artifact inputs at the given index.
 
-    Convention: list-valued entries whose length matches the batch
-    size are per-artifact and sliced at ``index``. The sliced item
-    is wrapped in a single-element list to preserve the list interface
-    that operations expect when iterating inputs. All other entries
-    (scalars, dicts, lists of different length) are passed through
-    unchanged (shared across artifacts).
-
-    Edge case: a shared list that coincidentally has the same length
-    as batch_size will be incorrectly sliced. In practice this does
-    not arise — shared configuration is returned as dicts or scalars,
-    and per-artifact lists are always batch-sized by construction.
+    Per-artifact data MUST be wrapped in ``PerArtifact(...)`` in
+    preprocess; the framework slices the wrapper at ``index`` and re-wraps
+    the item in a single-element list (preserves the list interface that
+    operations expect when iterating inputs). Raw lists pass through
+    unchanged as shared data regardless of length.
 
     Args:
-        prepared_inputs: Output from operation.preprocess().
+        prepared_inputs: Output from ``operation.preprocess()``.
         index: Artifact index within the unit.
-        batch_size: Number of artifacts in the unit. Used to
-            distinguish per-artifact lists from shared lists.
+        batch_size: Number of artifacts in the unit. Used to validate
+            ``PerArtifact`` lengths.
 
     Returns:
-        Dict with per-artifact values at ``index``, where sliced
-        items are wrapped in single-element lists.
+        Dict with per-artifact values at ``index``, where ``PerArtifact``
+        values are sliced and wrapped in a single-element list.
+
+    Raises:
+        ValueError: If a ``PerArtifact`` value's length does not match
+            ``batch_size``.
     """
     result: dict[str, Any] = {}
     for key, value in prepared_inputs.items():
-        if isinstance(value, list) and len(value) == batch_size:
+        if isinstance(value, PerArtifact):
+            if len(value) != batch_size:
+                msg = (
+                    f"PerArtifact({key!r}) has length {len(value)} but "
+                    f"batch_size is {batch_size}."
+                )
+                raise ValueError(msg)
             result[key] = [value[index]]
         else:
             result[key] = value
@@ -649,32 +662,43 @@ def _split_prepared_inputs(
 def _reassemble_results(
     per_artifact_results: list[Any],
     artifact_execute_dirs: list[str],
-) -> tuple[Any, list[str]]:
+) -> tuple[Any, list[str], dict[str, int]]:
     """Merge per-artifact execute results for batched postprocess.
 
     Reassembles memory_outputs and file_outputs so postprocess sees
     the same data shapes as when execute processes all artifacts at
-    once.
+    once. Also returns a stem -> slot-index map so lineage capture
+    can recover the per-output pair index for grouped multi-input ops
+    (Bug A — fixes the ``primary_id_to_idx`` clobber for repeated
+    primaries under CROSS_PRODUCT + ``artifacts_per_unit > 1``).
 
     Args:
         per_artifact_results: One raw result per artifact.
             Exceptions at failed indices are filtered out.
         artifact_execute_dirs: Per-artifact execute sub-directory
-            paths.
+            paths. Index in this list is the pair index.
 
     Returns:
-        Tuple of (merged_memory_outputs, file_outputs).
+        Tuple of (merged_memory_outputs, file_outputs, output_pair_map).
+        ``output_pair_map`` keys are the extension-stripped basename of
+        each emitted file (matching ``artifact.original_name`` after
+        draft, which also strips extensions) and values are the slot
+        index of the dir the file came from.
     """
-    # Collect file_outputs from all sub-directories
     file_outputs: list[str] = []
-    for d in artifact_execute_dirs:
-        file_outputs.extend(output_snapshot(d))
+    output_pair_map: dict[str, int] = {}
+    for slot_idx, d in enumerate(artifact_execute_dirs):
+        slot_files = output_snapshot(d)
+        for fpath in slot_files:
+            stem = strip_extensions(os.path.basename(fpath))
+            output_pair_map[stem] = slot_idx
+        file_outputs.extend(slot_files)
 
     # Filter exceptions, merge memory_outputs
     successes = [r for r in per_artifact_results if not isinstance(r, Exception)]
 
     if not successes or all(r is None for r in successes):
-        return None, file_outputs
+        return None, file_outputs, output_pair_map
 
     if all(isinstance(r, dict) for r in successes):
         merged: dict[str, Any] = {}
@@ -684,9 +708,9 @@ def _reassemble_results(
                 merged[key] = [item for v in values for item in v]
             else:
                 merged[key] = values
-        return merged, file_outputs
+        return merged, file_outputs, output_pair_map
 
-    return successes, file_outputs
+    return successes, file_outputs, output_pair_map
 
 
 def _extract_inputs(unit: ExecutionUnit) -> dict[str, list[str]]:

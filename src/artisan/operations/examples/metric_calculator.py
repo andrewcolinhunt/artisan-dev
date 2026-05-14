@@ -9,6 +9,7 @@ from enum import StrEnum, auto
 from typing import Any, ClassVar
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -85,7 +86,7 @@ class MetricCalculator(OperationDefinition):
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths from input artifacts."""
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 

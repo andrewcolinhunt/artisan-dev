@@ -34,6 +34,7 @@ import pytest
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -49,11 +50,18 @@ SUBMIT_OVERRIDE_KWARGS = frozenset(
         "tool",
         "compute_provider",
         "compute_resources",
+        "group_by",
     }
 )
 
 # Composite-only kwargs that exist on submit_composite but not submit.
 COMPOSITE_ONLY_KWARGS = frozenset({"expand", "intermediates"})
+
+# Operation-only kwargs that exist on submit but not on submit_composite.
+# ``group_by`` is a pairing strategy specific to multi-input operations
+# (composites don't pair their own role inputs — internal ``ctx.run()``
+# calls handle per-step pairing).
+OPERATION_ONLY_KWARGS = frozenset({"group_by"})
 
 
 # ---------------------------------------------------------------------------
@@ -109,15 +117,15 @@ def test_run_kwargs_match_submit() -> None:
 
 
 def test_submit_composite_kwargs_match_submit_plus_composite_only() -> None:
-    """submit_composite = submit kwargs + {expand, intermediates}.
+    """submit_composite = (submit kwargs - OPERATION_ONLY) + {expand, intermediates}.
 
     Symmetry guard: every override kwarg on submit must also exist on
-    submit_composite (the split surface still needs to expose the same
-    config knobs to composite users).
+    submit_composite, except for kwargs explicitly carved out as
+    OPERATION_ONLY_KWARGS (those that have no composite-level analogue).
     """
     submit_kwargs = _kwarg_names(PipelineManager.submit)
     submit_composite_kwargs = _kwarg_names(PipelineManager.submit_composite)
-    expected = submit_kwargs | COMPOSITE_ONLY_KWARGS
+    expected = (submit_kwargs - OPERATION_ONLY_KWARGS) | COMPOSITE_ONLY_KWARGS
     assert submit_composite_kwargs == expected, (
         f"submit_composite kwarg drift.\n"
         f"  Missing from submit_composite: "
@@ -192,6 +200,7 @@ SENTINELS: dict[str, Any] = {
     "tool": None,  # tool is rarely overridden; tested via a separate path
     "compute_provider": "local",
     "step_runner": "local",
+    "group_by": GroupByStrategy.CROSS_PRODUCT,
 }
 
 

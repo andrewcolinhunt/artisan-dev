@@ -16,6 +16,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.curator import Filter
 from artisan.operations.examples import (
     DataGenerator,
@@ -79,14 +80,14 @@ class DualInputConfigConsumer(OperationDefinition):
             infer_lineage_from={"inputs": ["dataset", "config"]},
         ),
     }
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+    group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
     runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
     batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_config_consumer")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 

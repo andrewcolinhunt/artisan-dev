@@ -22,6 +22,7 @@ from artisan.execution.executors.creator import (
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
@@ -78,7 +79,7 @@ class _SuffixOp(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 

@@ -158,7 +158,7 @@ def _handle_artifact_result(
             finalized,
             input_artifacts,
             output_specs,
-            group_by=getattr(type(operation), "group_by", None),
+            group_by=operation.group_by,
             group_ids=unit.group_ids,
         )
     else:

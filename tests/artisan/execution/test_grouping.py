@@ -593,6 +593,174 @@ class TestGroupInputsLineage:
 
 
 # ---------------------------------------------------------------------------
+# Tests: group_inputs - NAME strategy
+# ---------------------------------------------------------------------------
+
+
+def _make_name_store(name_map: dict[str, str]) -> Mock:
+    """Build a Mock ArtifactStore that returns ``name_map`` for any subset."""
+    store = Mock()
+    store.load_original_names.side_effect = lambda ids: {
+        aid: name_map[aid] for aid in ids if aid in name_map
+    }
+    return store
+
+
+class TestGroupInputsName:
+    """Tests for group_inputs() with NAME strategy."""
+
+    def test_basic_two_roles(self):
+        """Two roles with matching stems pair correctly."""
+        store = _make_name_store(
+            {
+                "a1": "sample_001.json",
+                "a2": "sample_002.json",
+                "b1": "sample_001.cfg",
+                "b2": "sample_002.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1", "b2"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"data": ["a1", "a2"], "config": ["b1", "b2"]}
+        assert len(group_ids) == 2
+        assert all(len(gid) == 32 for gid in group_ids)
+
+    def test_three_roles_intersection(self):
+        """3-role intersection only emits stems present in all three roles."""
+        store = _make_name_store(
+            {
+                "a1": "s1.txt",
+                "a2": "s2.txt",
+                "b1": "s1.json",
+                "b2": "s2.json",
+                "c1": "s1.cfg",
+                "c2": "s2.cfg",
+            }
+        )
+        inputs = {"r1": ["a1", "a2"], "r2": ["b1", "b2"], "r3": ["c1", "c2"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned["r1"] == ["a1", "a2"]
+        assert aligned["r2"] == ["b1", "b2"]
+        assert aligned["r3"] == ["c1", "c2"]
+        assert len(group_ids) == 2
+
+    def test_missing_stem_skipped(self):
+        """Stems missing from any role are not emitted."""
+        store = _make_name_store(
+            {
+                "a1": "shared.txt",
+                "a2": "only_in_a.txt",
+                "b1": "shared.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1"]}
+
+        aligned, _ = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"data": ["a1"], "config": ["b1"]}
+
+    def test_duplicate_stem_raises(self):
+        """Duplicate stems within a role raise ValueError."""
+        store = _make_name_store(
+            {
+                "a1": "dup.txt",
+                "a2": "dup.json",
+                "b1": "dup.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1"]}
+
+        with pytest.raises(ValueError, match="duplicate original_name"):
+            group_inputs(inputs, GroupByStrategy.NAME, store)
+
+    def test_empty_role_returns_no_matches(self):
+        """One empty role short-circuits to empty result."""
+        store = _make_name_store({"a1": "x.txt"})
+        inputs: dict[str, list[str]] = {"data": ["a1"], "config": []}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"data": [], "config": []}
+        assert group_ids == []
+
+    def test_none_store_raises_runtime_error(self):
+        """NAME without an artifact_store raises RuntimeError."""
+        inputs = {"data": ["a1"], "config": ["b1"]}
+
+        with pytest.raises(RuntimeError, match="artifact_store"):
+            group_inputs(inputs, GroupByStrategy.NAME, None)
+
+    def test_greedy_extension_stripping(self):
+        """Multi-extension stems strip greedily: data.tar.gz and data.csv collide."""
+        store = _make_name_store(
+            {
+                "a1": "data.tar.gz",
+                "b1": "data.csv",
+            }
+        )
+        inputs = {"r1": ["a1"], "r2": ["b1"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"r1": ["a1"], "r2": ["b1"]}
+        assert len(group_ids) == 1
+
+    def test_case_sensitive(self):
+        """Stems with different case do not match."""
+        store = _make_name_store(
+            {
+                "a1": "Sample.txt",
+                "b1": "sample.cfg",
+            }
+        )
+        inputs = {"r1": ["a1"], "r2": ["b1"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"r1": [], "r2": []}
+        assert group_ids == []
+
+    def test_artifact_without_original_name_skipped(self):
+        """Artifacts missing from name_map are silently skipped."""
+        store = _make_name_store(
+            {
+                "a1": "shared.txt",
+                # a2 has no entry — load_original_names omits it
+                "b1": "shared.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1"]}
+
+        aligned, _ = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"data": ["a1"], "config": ["b1"]}
+
+    def test_group_id_deterministic_and_sorted(self):
+        """group_ids are deterministic and emitted in sorted-stem order."""
+        store = _make_name_store(
+            {
+                "a1": "zeta.txt",
+                "a2": "alpha.txt",
+                "b1": "zeta.cfg",
+                "b2": "alpha.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1", "b2"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        # Sorted by stem: alpha then zeta
+        assert aligned == {"data": ["a2", "a1"], "config": ["b2", "b1"]}
+        # Same group_ids on second call
+        _, group_ids_again = group_inputs(inputs, GroupByStrategy.NAME, store)
+        assert group_ids == group_ids_again
+
+
+# ---------------------------------------------------------------------------
 # Tests: group_id role-order independence
 # ---------------------------------------------------------------------------
 
@@ -795,11 +963,129 @@ class TestMatchInputsToPrimary:
             match_inputs_to_primary("primary", inputs, GroupByStrategy.LINEAGE)
 
     def test_unsupported_strategy_raises(self):
-        """Non-LINEAGE strategy raises ValueError."""
+        """ZIP / CROSS_PRODUCT strategies raise ValueError."""
         inputs = {"primary": ["id1"], "other": ["id2"]}
 
-        with pytest.raises(ValueError, match="LINEAGE"):
+        with pytest.raises(ValueError, match="LINEAGE and NAME"):
             match_inputs_to_primary("primary", inputs, GroupByStrategy.ZIP)
+
+        with pytest.raises(ValueError, match="LINEAGE and NAME"):
+            match_inputs_to_primary("primary", inputs, GroupByStrategy.CROSS_PRODUCT)
+
+
+# ---------------------------------------------------------------------------
+# Tests: match_inputs_to_primary - NAME strategy
+# ---------------------------------------------------------------------------
+
+
+class TestMatchInputsToPrimaryName:
+    """Tests for match_inputs_to_primary() with NAME strategy."""
+
+    def test_basic_anchor_two_roles(self):
+        """Primary stems pair against one other role."""
+        store = _make_name_store(
+            {
+                "p1": "s1.fasta",
+                "p2": "s2.fasta",
+                "m1": "s1.json",
+                "m2": "s2.json",
+            }
+        )
+        inputs = {"primary": ["p1", "p2"], "metrics": ["m1", "m2"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        assert aligned == {"primary": ["p1", "p2"], "metrics": ["m1", "m2"]}
+
+    def test_anchor_three_roles_intersection(self):
+        """Primary anchored against two other roles."""
+        store = _make_name_store(
+            {
+                "p1": "s1.x",
+                "p2": "s2.x",
+                "a1": "s1.y",
+                "a2": "s2.y",
+                "b1": "s1.z",
+                "b2": "s2.z",
+            }
+        )
+        inputs = {"primary": ["p1", "p2"], "a": ["a1", "a2"], "b": ["b1", "b2"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        assert aligned == {
+            "primary": ["p1", "p2"],
+            "a": ["a1", "a2"],
+            "b": ["b1", "b2"],
+        }
+
+    def test_primary_unmatched_in_one_role_dropped(self):
+        """Primary artifact missing a match in any other role is excluded."""
+        store = _make_name_store(
+            {
+                "p1": "s1.x",
+                "p2": "s2.x",
+                "m1": "s1.y",
+                # m2 absent -- p2's stem s2 has no match in metrics
+            }
+        )
+        inputs = {"primary": ["p1", "p2"], "metrics": ["m1"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        assert aligned == {"primary": ["p1"], "metrics": ["m1"]}
+
+    def test_preserves_primary_order(self):
+        """Output preserves the input order of the primary role."""
+        store = _make_name_store(
+            {
+                "p1": "zeta.x",
+                "p2": "alpha.x",
+                "p3": "mid.x",
+                "m1": "zeta.y",
+                "m2": "alpha.y",
+                "m3": "mid.y",
+            }
+        )
+        inputs = {"primary": ["p1", "p2", "p3"], "metrics": ["m1", "m2", "m3"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        # Primary order preserved, not sorted by stem
+        assert aligned["primary"] == ["p1", "p2", "p3"]
+        assert aligned["metrics"] == ["m1", "m2", "m3"]
+
+    def test_primary_without_original_name_skipped(self):
+        """Primary artifacts without an original_name are dropped."""
+        store = _make_name_store(
+            {
+                "p1": "shared.x",
+                # p2 absent
+                "m1": "shared.y",
+            }
+        )
+        inputs = {"primary": ["p1", "p2"], "metrics": ["m1"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        assert aligned == {"primary": ["p1"], "metrics": ["m1"]}
+
+    def test_none_store_raises_runtime_error(self):
+        """NAME anchor mode without a store raises RuntimeError."""
+        inputs = {"primary": ["p1"], "other": ["o1"]}
+
+        with pytest.raises(RuntimeError, match="artifact_store"):
+            match_inputs_to_primary("primary", inputs, GroupByStrategy.NAME, None)
 
 
 # ---------------------------------------------------------------------------
@@ -861,8 +1147,9 @@ class TestGroupInputsEdgeCases:
         # Instead verify all valid strategies are handled without raising
         # "Unknown group_by strategy".
         inputs = {"a": ["x"], "b": ["y"]}
+        store_required = {GroupByStrategy.LINEAGE, GroupByStrategy.NAME}
         for strategy in GroupByStrategy:
-            if strategy == GroupByStrategy.LINEAGE:
+            if strategy in store_required:
                 continue  # Needs artifact_store
             group_inputs(inputs, strategy)
 

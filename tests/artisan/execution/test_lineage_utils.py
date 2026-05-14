@@ -1624,6 +1624,119 @@ class TestCaptureLineageMultiRoleCoInputs:
             assert m.group_id == "gid_triple"
 
 
+class TestCaptureLineageOutputPairMap:
+    """Tests for capture_lineage_metadata with ``output_pair_map`` (Bug A)."""
+
+    def test_cross_product_lineage_repeated_primary(self):
+        """Each output's pair index resolves via ``output_pair_map``, bypassing
+        the ``primary_id_to_idx`` clobber for repeated primaries.
+
+        Configuration: ``primary=[A, A, A]`` (aligned CROSS_PRODUCT input
+        when one primary fans out across three secondaries) and
+        ``secondary=[B1, B2, B3]``. Without the map, every output would
+        match the same primary slot and pick the same secondary; with
+        the map, each output reaches the correct (A, B_i) pair.
+        """
+        primary_a = _make_metric_from_name("primary_a")
+        primary_artifacts = [primary_a, primary_a, primary_a]
+
+        secondaries = [_make_metric_from_name(f"secondary_{i}") for i in range(3)]
+
+        outputs = [
+            MetricArtifact.draft(
+                content={"pair": i},
+                original_name=f"out_{i}.json",
+                step_number=1,
+            ).finalize()
+            for i in range(3)
+        ]
+
+        input_artifacts = {"primary": primary_artifacts, "secondary": secondaries}
+        output_artifacts = {"result": outputs}
+        output_specs = {
+            "result": OutputSpec(
+                artifact_type=ArtifactTypes.METRIC,
+                infer_lineage_from={"inputs": ["primary", "secondary"]},
+            )
+        }
+        group_ids = ["g0", "g1", "g2"]
+        # Keys are extension-stripped stems matching ``artifact.original_name``
+        # after ``draft()`` (and the value emitted by ``_reassemble_results``).
+        output_pair_map = {"out_0": 0, "out_1": 1, "out_2": 2}
+
+        lineage = capture_lineage_metadata(
+            output_artifacts,
+            input_artifacts,
+            output_specs,
+            group_by=GroupByStrategy.CROSS_PRODUCT,
+            group_ids=group_ids,
+            output_pair_map=output_pair_map,
+        )
+
+        # 3 outputs x 2 edges (primary + secondary co-input) = 6 mappings
+        assert len(lineage["result"]) == 6
+
+        by_output: dict[str, list[LineageMapping]] = {}
+        for m in lineage["result"]:
+            by_output.setdefault(m.draft_original_name, []).append(m)
+        assert set(by_output) == {"out_0", "out_1", "out_2"}
+
+        for i in range(3):
+            edges = by_output[f"out_{i}"]
+            roles = {e.source_role for e in edges}
+            assert roles == {"primary", "secondary"}, (
+                f"out_{i} expected primary+secondary edges, got {roles}"
+            )
+
+            primary_edge = next(e for e in edges if e.source_role == "primary")
+            secondary_edge = next(e for e in edges if e.source_role == "secondary")
+            assert primary_edge.source_artifact_id == primary_a.artifact_id
+            assert secondary_edge.source_artifact_id == secondaries[i].artifact_id
+            # Both edges of a pair share the same group_id.
+            assert primary_edge.group_id == f"g{i}"
+            assert secondary_edge.group_id == f"g{i}"
+
+    def test_missing_basename_falls_back_to_legacy_path(self):
+        """Drafts not in ``output_pair_map`` (e.g. memory-only outputs) fall
+        back to stem-match + ``primary_id_to_idx`` — the legacy clobber
+        persists here, documented as op-author responsibility."""
+        primary_a = _make_metric_from_name("primary_a")
+        primary_b = _make_metric_from_name("primary_b")
+        # Two distinct primaries — clobber doesn't manifest, so the
+        # legacy path still produces a correct edge.
+        output = MetricArtifact.draft(
+            content={"output": 0},
+            original_name="primary_a_out.json",
+            step_number=1,
+        ).finalize()
+
+        input_artifacts = {"primary": [primary_a, primary_b]}
+        output_artifacts = {"result": [output]}
+        output_specs = {
+            "result": OutputSpec(
+                artifact_type=ArtifactTypes.METRIC,
+                infer_lineage_from={"inputs": ["primary"]},
+            )
+        }
+
+        # The map exists but doesn't contain this output's basename —
+        # forces fallback to stem-matching.
+        lineage = capture_lineage_metadata(
+            output_artifacts,
+            input_artifacts,
+            output_specs,
+            group_by=GroupByStrategy.LINEAGE,
+            group_ids=["g0", "g1"],
+            output_pair_map={"some_other_basename.json": 0},
+        )
+
+        assert len(lineage["result"]) == 1
+        edge = lineage["result"][0]
+        assert edge.source_artifact_id == primary_a.artifact_id
+        assert edge.source_role == "primary"
+        assert edge.group_id == "g0"
+
+
 class TestGroupIdFlowThroughBuildEdges:
     """Tests that group_id flows from LineageMapping through build_edges to SourceTargetPair."""
 

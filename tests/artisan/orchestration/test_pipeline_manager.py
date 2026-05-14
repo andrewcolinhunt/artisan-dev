@@ -1857,6 +1857,59 @@ class TestValidateOperationOverrides:
                 None,
             )
 
+    def test_invalid_group_by_raises_type_error(self):
+        """Passing a non-GroupByStrategy value raises with valid-member listing."""
+        from artisan.schemas.enums import GroupByStrategy
+
+        with pytest.raises(TypeError, match="GroupByStrategy") as exc_info:
+            PipelineManager._validate_operation_overrides(
+                _MockOp,
+                {"data": ["a" * 32]},
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "cross_product",  # str instead of enum
+            )
+        # Error message must enumerate valid members for usability.
+        for member in GroupByStrategy:
+            assert member.name in str(exc_info.value)
+
+    def test_valid_group_by_passes(self):
+        """A GroupByStrategy member is accepted without error."""
+        from artisan.schemas.enums import GroupByStrategy
+
+        PipelineManager._validate_operation_overrides(
+            _MockOp,
+            {"data": ["a" * 32]},
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            GroupByStrategy.CROSS_PRODUCT,
+        )
+
+    def test_group_by_none_passes(self):
+        """``None`` is a valid value and means 'preserve class default'."""
+        PipelineManager._validate_operation_overrides(
+            _MockOp,
+            {"data": ["a" * 32]},
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
 
 # =============================================================================
 # CheckEarlyExit

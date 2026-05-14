@@ -23,8 +23,9 @@ illustrations.
 - [Branching and Merging](02-pipeline-design/02-branching-and-merging.ipynb) (~10 min) -- Fan-out and fan-in patterns
 - [Metrics and Filtering](02-pipeline-design/03-metrics-and-filtering.ipynb) (~10 min) -- Score-based filtering with auto-discovered metrics
 - [Multi-Input Operations](02-pipeline-design/04-multi-input-operations.ipynb) (~15 min) -- Operations that consume multiple input roles
-- [Diamonds and Iteration](02-pipeline-design/05-diamonds-and-iteration.ipynb) (~15 min) -- Diamond DAGs, output lineage, and iterative refinement
-- [Composites](02-pipeline-design/06-composites.ipynb) (~15 min) -- Compose operations into reusable units with collapsed or expanded execution
+- [Name-Based Pairing](02-pipeline-design/05-name-based-pairing.ipynb) (~15 min) -- Pair multi-input streams by `original_name` stem when they share no ancestry
+- [Diamonds and Iteration](02-pipeline-design/06-diamonds-and-iteration.ipynb) (~15 min) -- Diamond DAGs, output lineage, and iterative refinement
+- [Composites](02-pipeline-design/07-composites.ipynb) (~15 min) -- Compose operations into reusable units with collapsed or expanded execution
 
 ## Caching
 

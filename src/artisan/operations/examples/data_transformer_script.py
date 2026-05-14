@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
@@ -77,7 +78,7 @@ class DataTransformerScript(OperationDefinition):
     }
 
     # ---------- Behavior ----------
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+    group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
     # ---------- Tool ----------
     tool: ToolSpec = ToolSpec(executable=str(SCRIPT_PATH), interpreter="python")
@@ -114,7 +115,7 @@ class DataTransformerScript(OperationDefinition):
                 "design_name": config.original_name,
             })
 
-        return {"items": prepared_inputs}
+        return {"items": PerArtifact(prepared_inputs)}
 
     def execute(self, inputs: ExecuteInput) -> Any:
         """Invoke transform_data.py for each config in the batch."""

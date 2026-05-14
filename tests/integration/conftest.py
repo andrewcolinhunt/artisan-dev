@@ -17,6 +17,7 @@ from prefect.testing.utilities import prefect_test_harness
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -227,6 +228,37 @@ def count_artifacts_by_type(
     if df_index.is_empty():
         return 0
     return df_index.filter(pl.col("artifact_type") == artifact_type).height
+
+
+def load_artifact_edges(
+    delta_root: str,
+    target_ids: list[str] | set[str],
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> pl.DataFrame:
+    """Load artifact_edges rows whose target_artifact_id is in target_ids.
+
+    Args:
+        delta_root: Root directory or URI for Delta Lake tables.
+        target_ids: Target artifact IDs to filter on.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
+
+    Returns:
+        Polars DataFrame with columns from the artifact_edges table
+        (source_artifact_id, target_artifact_id, group_id, etc.).
+        Empty DataFrame if the table doesn't exist or no matches.
+    """
+    df = read_table(
+        delta_root,
+        "provenance/artifact_edges",
+        fs=fs,
+        storage_options=storage_options,
+    )
+    if df.is_empty():
+        return df
+    return df.filter(pl.col("target_artifact_id").is_in(list(target_ids)))
 
 
 def get_execution_outputs(
@@ -547,11 +579,13 @@ class FailingTransformer(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths and original names from input artifacts."""
-        prepared = {}
+        prepared: dict[str, Any] = {}
         for role, artifacts in inputs.input_artifacts.items():
-            prepared[role] = [a.materialized_path for a in artifacts]
+            prepared[role] = PerArtifact([a.materialized_path for a in artifacts])
             # Pass original names for index extraction (filenames are artifact_ids)
-            prepared[f"{role}_names"] = [a.original_name for a in artifacts]
+            prepared[f"{role}_names"] = PerArtifact(
+                [a.original_name for a in artifacts]
+            )
         return prepared
 
     def execute(self, inputs: ExecuteInput) -> dict[str, Any]:

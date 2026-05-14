@@ -23,6 +23,7 @@ import polars as pl
 import pytest
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 
 # The Modal container can't import this test module by qualname (it's
 # only on the local Python path), so cloudpickle would fall back to
@@ -101,8 +102,8 @@ class _LoggingEcho(OperationDefinition):
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         artifacts = inputs.input_artifacts.get("dataset", [])
         return {
-            "paths": [str(a.materialized_path) for a in artifacts],
-            "names": [a.original_name for a in artifacts],
+            "paths": PerArtifact([str(a.materialized_path) for a in artifacts]),
+            "names": PerArtifact([a.original_name for a in artifacts]),
         }
 
     def execute(self, inputs: ExecuteInput) -> Any:

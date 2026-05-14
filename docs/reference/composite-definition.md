@@ -270,5 +270,5 @@ produces it.
 
 - [Composites and Composition](../concepts/composites-and-composition.md) — conceptual overview
 - [Writing Composite Operations](../how-to-guides/writing-composite-operations.md) — step-by-step guide
-- [Composable Operations Tutorial](../tutorials/02-pipeline-design/06-composites.ipynb) — interactive examples
+- [Composable Operations Tutorial](../tutorials/02-pipeline-design/07-composites.ipynb) — interactive examples
 - [Glossary](glossary.md) — key terms

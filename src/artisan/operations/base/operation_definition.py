@@ -154,11 +154,30 @@ class OperationDefinition(BaseModel):
             independent_input_streams = True  # Unions streams of any size
     """
 
-    group_by: ClassVar[GroupByStrategy | None] = None
+    group_by: GroupByStrategy | None = None
     """Strategy for pairing multiple input streams before delivery to the operation.
 
-    None for single-input operations. ZIP, LINEAGE, or CROSS_PRODUCT for
-    multi-input operations.
+    Default ``None`` for single-input operations; subclasses set ``LINEAGE``,
+    ``ZIP``, or ``CROSS_PRODUCT`` for multi-input operations. Per-step callers
+    override via ``pipeline.run(..., group_by=...)``; the override wins over
+    any class-level default.
+
+    Notes:
+        - **CROSS_PRODUCT output collisions.** Outputs are content-addressed by
+          ``xxh3_128`` of their bytes. CROSS_PRODUCT operation authors MUST
+          ensure each ``(input_pair → output)`` produces output bytes that
+          depend on **all** inputs in the pair; otherwise outputs from distinct
+          pairs collide to a single ``artifact_id`` and only one row survives
+          commit.
+        - **CROSS_PRODUCT lineage automatic recovery.** Lineage capture
+          recovers pair indices from the per-slot execute directory layout
+          when ``per_artifact_dispatch=True`` (the default) **and** every
+          output draft is backed by a file under its slot's ``execute_dir``.
+          When ``per_artifact_dispatch=False`` + CROSS_PRODUCT +
+          ``artifacts_per_unit > 1``, or for memory-only outputs (no file
+          on disk), the framework cannot recover pair-index automatically;
+          the operation author must set ``ArtifactResult.lineage``
+          explicitly when ``group_by`` is active.
     """
 
     per_artifact_dispatch: ClassVar[bool] = True
