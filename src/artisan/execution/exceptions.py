@@ -28,7 +28,9 @@ class LineageIntegrityError(Exception):
     This includes:
     - Source artifact_id references a non-existent input or output artifact
     - Draft original_name references a non-existent output artifact
-    - Duplicate lineage mappings for the same draft artifact
+    - Multiple lineage mappings for the same draft within a single
+      source_role (whether identical sources, or distinct sources both
+      in that role — split into separate source_roles instead)
     """
 
 

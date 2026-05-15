@@ -472,7 +472,7 @@ class TestValidateLineageIntegrity:
         }
         output_artifacts = {"outputs": [draft_artifact]}
 
-        with pytest.raises(LineageIntegrityError, match="Duplicate lineage mapping"):
+        with pytest.raises(LineageIntegrityError, match="Conflicting lineage mappings"):
             validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_output_to_output_lineage_valid(self):
@@ -696,7 +696,133 @@ class TestValidateLineageIntegrity:
 
         with pytest.raises(LineageIntegrityError) as exc_info:
             validate_lineage_integrity(lineage, {}, output_artifacts)
-        assert "Duplicate" in str(exc_info.value)
+        assert "Conflicting lineage mappings" in str(exc_info.value)
+
+    def test_co_input_mappings_different_source_roles_pass(
+        self,
+        draft_artifact,
+        finalized_artifact,
+        finalized_artifact_2,
+    ):
+        """Two mappings for one draft pass when source_roles differ."""
+        lineage = {
+            "outputs": [
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact.artifact_id,
+                    source_role="primary",
+                ),
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact_2.artifact_id,
+                    source_role="co_input",
+                ),
+            ]
+        }
+        input_artifacts = {
+            "primary": [finalized_artifact],
+            "co_input": [finalized_artifact_2],
+        }
+        output_artifacts = {"outputs": [draft_artifact]}
+
+        # Should not raise — distinct source_roles permit co-input edges.
+        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
+
+    def test_co_input_with_source_original_name_passes(self):
+        """Co-input mapping mixing source_artifact_id and source_original_name passes."""
+        input_structure = MetricArtifact.draft(
+            content={"structure": True},
+            original_name="input_structure.json",
+            step_number=0,
+        ).finalize()
+        co_output = MetricArtifact.draft(
+            content={"co_produced": True},
+            original_name="co_output.json",
+            step_number=1,
+        ).finalize()
+        derived = MetricArtifact.draft(
+            content={"energy": -100.0},
+            original_name="derived_metric.json",
+            step_number=1,
+        ).finalize()
+
+        lineage = {
+            "metrics": [
+                LineageMapping(
+                    draft_original_name=derived.original_name,
+                    source_artifact_id=input_structure.artifact_id,
+                    source_role="structures",
+                ),
+                LineageMapping(
+                    draft_original_name=derived.original_name,
+                    source_original_name=co_output.original_name,
+                    source_role="co_outputs",
+                ),
+            ]
+        }
+        input_artifacts = {"structures": [input_structure]}
+        output_artifacts = {
+            "co_outputs": [co_output],
+            "metrics": [derived],
+        }
+
+        # Should not raise — one input source, one co-output source, distinct roles.
+        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
+
+    def test_duplicate_draft_same_role_different_source_raises(
+        self,
+        draft_artifact,
+        finalized_artifact,
+        finalized_artifact_2,
+    ):
+        """Same draft + same source_role + different sources is a modeling error."""
+        lineage = {
+            "outputs": [
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact.artifact_id,
+                    source_role="primary",
+                ),
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact_2.artifact_id,
+                    source_role="primary",
+                ),
+            ]
+        }
+        input_artifacts = {
+            "primary": [finalized_artifact, finalized_artifact_2],
+        }
+        output_artifacts = {"outputs": [draft_artifact]}
+
+        with pytest.raises(LineageIntegrityError, match="Conflicting lineage mappings"):
+            validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
+
+    def test_true_duplicate_same_draft_same_role_same_source_raises(
+        self,
+        draft_artifact,
+        finalized_artifact,
+    ):
+        """Literal duplicate mapping (same triple) is still rejected."""
+        lineage = {
+            "outputs": [
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact.artifact_id,
+                    source_role="primary",
+                ),
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact.artifact_id,
+                    source_role="primary",
+                ),
+            ]
+        }
+        input_artifacts = {"primary": [finalized_artifact]}
+        output_artifacts = {"outputs": [draft_artifact]}
+
+        with pytest.raises(LineageIntegrityError, match="Duplicate lineage mapping"):
+            validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
 
 # =============================================================================
