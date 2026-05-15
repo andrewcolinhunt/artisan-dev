@@ -472,7 +472,7 @@ class TestValidateLineageIntegrity:
         }
         output_artifacts = {"outputs": [draft_artifact]}
 
-        with pytest.raises(LineageIntegrityError, match="Duplicate lineage mapping"):
+        with pytest.raises(LineageIntegrityError, match="Conflicting lineage mappings"):
             validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_output_to_output_lineage_valid(self):
@@ -696,7 +696,7 @@ class TestValidateLineageIntegrity:
 
         with pytest.raises(LineageIntegrityError) as exc_info:
             validate_lineage_integrity(lineage, {}, output_artifacts)
-        assert "Duplicate" in str(exc_info.value)
+        assert "Conflicting lineage mappings" in str(exc_info.value)
 
 
 # =============================================================================

@@ -80,6 +80,65 @@ def validate_lineage_completeness(
                 raise LineageCompletenessError(msg)
 
 
+def _check_mapping_uniqueness(
+    mapping: LineageMapping,
+    seen_triples: set[tuple[str, str, str]],
+) -> None:
+    """Reject duplicate or same-role-conflicting mappings within a role.
+
+    Multiple mappings per draft are allowed when ``source_role`` differs —
+    the canonical co-input edge shape that auto-detect already emits (see
+    ``capture.py``). Same draft + same ``source_role`` is a modeling
+    error whether the source is identical (literal duplicate) or distinct
+    (ambiguous parent-in-role); both are rejected with distinct messages.
+
+    Args:
+        mapping: The mapping to check.
+        seen_triples: Accumulator of ``(draft, source_role, source_identity)``
+            triples already accepted in this role. Mutated by appending the
+            new triple when accepted.
+
+    Raises:
+        LineageIntegrityError: If the mapping duplicates a triple already in
+            ``seen_triples`` or conflicts with a same-(draft, source_role)
+            entry that points at a different source.
+    """
+    # _require_one_source_ref on LineageMapping guarantees exactly one of
+    # source_artifact_id or source_original_name is set.
+    source_identity: str = (
+        mapping.source_artifact_id
+        if mapping.source_artifact_id is not None
+        else mapping.source_original_name
+    )
+    triple = (
+        mapping.draft_original_name,
+        mapping.source_role,
+        source_identity,
+    )
+    if triple in seen_triples:
+        msg = (
+            f"Duplicate lineage mapping for "
+            f"draft '{mapping.draft_original_name}': "
+            f"source_role={mapping.source_role!r}, "
+            f"source={source_identity!r}"
+        )
+        raise LineageIntegrityError(msg)
+    for seen_draft, seen_role, _seen_source in seen_triples:
+        if (
+            seen_draft == mapping.draft_original_name
+            and seen_role == mapping.source_role
+        ):
+            msg = (
+                f"Conflicting lineage mappings for "
+                f"draft '{mapping.draft_original_name}': "
+                f"source_role={mapping.source_role!r} appears "
+                "twice with different sources. A draft may have "
+                "multiple parents only across distinct source_roles."
+            )
+            raise LineageIntegrityError(msg)
+    seen_triples.add(triple)
+
+
 def validate_lineage_integrity(
     lineage: dict[str, list[LineageMapping]],
     input_artifacts: dict[str, list[Artifact]],
@@ -88,8 +147,10 @@ def validate_lineage_integrity(
     """Verify lineage references point to real artifacts with no duplicates.
 
     Raises:
-        LineageIntegrityError: On non-existent source/target references
-            or duplicate mappings for the same draft.
+        LineageIntegrityError: On non-existent source/target references,
+            literal duplicate mappings, or two mappings for the same draft
+            within a single ``source_role`` (split into separate roles
+            instead).
     """
     input_ids = {
         artifact.artifact_id
@@ -117,7 +178,7 @@ def validate_lineage_integrity(
         }
 
     for mappings in lineage.values():
-        seen_drafts: set[str] = set()
+        seen_triples: set[tuple[str, str, str]] = set()
         for mapping in mappings:
             if mapping.source_original_name is not None:
                 role_names = output_names_by_role.get(mapping.source_role, set())
@@ -134,7 +195,4 @@ def validate_lineage_integrity(
             if mapping.draft_original_name not in output_names:
                 msg = f"Lineage references non-existent output: {mapping.draft_original_name}"
                 raise LineageIntegrityError(msg)
-            if mapping.draft_original_name in seen_drafts:
-                msg = f"Duplicate lineage mapping for: {mapping.draft_original_name}"
-                raise LineageIntegrityError(msg)
-            seen_drafts.add(mapping.draft_original_name)
+            _check_mapping_uniqueness(mapping, seen_triples)
