@@ -58,7 +58,7 @@ class DeclareLineage(OperationDefinition):
 
     - ``GroupByStrategy.ZIP``: 1:1 positional; lengths must match.
     - ``GroupByStrategy.NAME``: 1:1 by ``original_name`` stem.
-    - ``GroupByStrategy.CROSS_PRODUCT``: every parent × every child.
+    - ``GroupByStrategy.CROSS_PRODUCT``: every parent x every child.
 
     ``GroupByStrategy.LINEAGE`` is not supported as a pairing strategy
     — DeclareLineage *creates* lineage edges, so matching against
@@ -240,9 +240,7 @@ class DeclareLineage(OperationDefinition):
 def _extract_ids(inputs: dict[str, pl.DataFrame], *, role: str) -> list[str]:
     """Return the artifact_id column for the named input role."""
     if role not in inputs:
-        msg = (
-            f"DeclareLineage requires '{role}' input role; got: {list(inputs)}"
-        )
+        msg = f"DeclareLineage requires '{role}' input role; got: {list(inputs)}"
         raise ValueError(msg)
     return inputs[role]["artifact_id"].to_list()
 

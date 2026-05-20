@@ -21,6 +21,7 @@ from artisan.operations.curator.declare_lineage import DeclareLineage
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 
+
 # A 32-char hex-like ID is what ArtifactProvenanceEdge expects.
 def _id(seed: str) -> str:
     """Build a deterministic 32-char ID for tests."""
@@ -78,8 +79,7 @@ class TestDeclareLineageZIP:
         parents = [_id(c) for c in "abc"]
         children = [_id(c) for c in "xyz"]
         store = _make_store(
-            types={pid: "data" for pid in parents}
-            | {cid: "data" for cid in children},
+            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
         )
 
         op = _make_op(GroupByStrategy.ZIP)
@@ -94,8 +94,7 @@ class TestDeclareLineageZIP:
         assert result.lineage_edges is not None
         assert len(result.lineage_edges) == 3
         pairs = [
-            (e.source_artifact_id, e.target_artifact_id)
-            for e in result.lineage_edges
+            (e.source_artifact_id, e.target_artifact_id) for e in result.lineage_edges
         ]
         assert pairs == list(zip(parents, children, strict=True))
 
@@ -127,8 +126,7 @@ class TestDeclareLineageZIP:
         parents = [_id(c) for c in "abc"]
         children = [_id(c) for c in "xy"]
         store = _make_store(
-            types={pid: "data" for pid in parents}
-            | {cid: "data" for cid in children},
+            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
         )
 
         op = _make_op(GroupByStrategy.ZIP)
@@ -165,8 +163,7 @@ class TestDeclareLineageNAME:
             children[2]: "c.tsv",
         }
         store = _make_store(
-            types={pid: "data" for pid in parents}
-            | {cid: "data" for cid in children},
+            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
             original_names=names,
         )
 
@@ -181,12 +178,9 @@ class TestDeclareLineageNAME:
         assert result.lineage_edges is not None
         assert len(result.lineage_edges) == 3
         pairs = {
-            (e.source_artifact_id, e.target_artifact_id)
-            for e in result.lineage_edges
+            (e.source_artifact_id, e.target_artifact_id) for e in result.lineage_edges
         }
-        expected = {
-            (parents[i], children[i]) for i in range(3)
-        }
+        expected = {(parents[i], children[i]) for i in range(3)}
         assert pairs == expected
 
     def test_should_raise_on_duplicate_stem_in_parents(self):
@@ -199,8 +193,7 @@ class TestDeclareLineageNAME:
             children[0]: "shared.csv",
         }
         store = _make_store(
-            types={pid: "data" for pid in parents}
-            | {cid: "data" for cid in children},
+            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
             original_names=names,
         )
 
@@ -222,12 +215,11 @@ class TestDeclareLineageCrossProduct:
     """Cartesian-product pairing tests."""
 
     def test_should_emit_cartesian_pairs(self):
-        """2 parents × 3 children → 6 edges."""
+        """2 parents x 3 children -> 6 edges."""
         parents = [_id("a"), _id("b")]
         children = [_id(c) for c in "xyz"]
         store = _make_store(
-            types={pid: "data" for pid in parents}
-            | {cid: "data" for cid in children},
+            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
         )
 
         op = _make_op(GroupByStrategy.CROSS_PRODUCT)
@@ -240,8 +232,7 @@ class TestDeclareLineageCrossProduct:
         assert result.lineage_edges is not None
         assert len(result.lineage_edges) == 6
         pairs = {
-            (e.source_artifact_id, e.target_artifact_id)
-            for e in result.lineage_edges
+            (e.source_artifact_id, e.target_artifact_id) for e in result.lineage_edges
         }
         expected = {(p, c) for p in parents for c in children}
         assert pairs == expected
@@ -251,8 +242,7 @@ class TestDeclareLineageCrossProduct:
         parents = [_id("a")]
         children = [_id(c) for c in "xyz"]
         store = _make_store(
-            types={pid: "data" for pid in parents}
-            | {cid: "data" for cid in children},
+            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
         )
 
         op = _make_op(GroupByStrategy.CROSS_PRODUCT)
@@ -350,7 +340,7 @@ class TestDeclareLineagePassthrough:
         parents = [_id("a")]
         children = [_id("x"), _id("y"), _id("z")]
         store = _make_store(
-            types={parents[0]: "data"} | {cid: "data" for cid in children},
+            types={parents[0]: "data"} | dict.fromkeys(children, "data"),
         )
 
         op = _make_op(GroupByStrategy.CROSS_PRODUCT)
@@ -425,8 +415,7 @@ class TestDeclareLineageIdempotence:
             },
         )
         store = _make_store(
-            types={pid: "data" for pid in parents}
-            | {cid: "data" for cid in children},
+            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
             existing_edges=existing,
             step_range=(0, 5),
         )
@@ -465,8 +454,7 @@ class TestDeclareLineageIdempotence:
             },
         )
         store = _make_store(
-            types={pid: "data" for pid in parents}
-            | {cid: "data" for cid in children},
+            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
             existing_edges=existing,
             step_range=(0, 5),
         )
@@ -481,8 +469,7 @@ class TestDeclareLineageIdempotence:
         assert result.lineage_edges is not None
         assert len(result.lineage_edges) == 2
         pairs = {
-            (e.source_artifact_id, e.target_artifact_id)
-            for e in result.lineage_edges
+            (e.source_artifact_id, e.target_artifact_id) for e in result.lineage_edges
         }
         assert pairs == {(parents[1], children[1]), (parents[2], children[2])}
 
@@ -561,5 +548,5 @@ class TestDeclareLineageShape:
 
     def test_pairing_is_required(self):
         """Constructing DeclareLineage without pairing raises."""
-        with pytest.raises(Exception):  # noqa: B017 — pydantic ValidationError
+        with pytest.raises(Exception):
             DeclareLineage(params=DeclareLineage.Params())  # type: ignore[call-arg]
