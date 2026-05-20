@@ -279,7 +279,7 @@ class ProvenanceStore:
             return empty
 
         query = pl.scan_delta(prov_path, storage_options=self._storage_options).filter(
-            pl.col("source_artifact_id").is_in(source_ids)
+            pl.col("source_artifact_id").is_in(source_ids.to_list())
         )
 
         if target_artifact_type is not None:
@@ -320,18 +320,18 @@ class ProvenanceStore:
         step_number: int = result["origin_step_number"][0]
         return step_number
 
-    def get_step_range(self, artifact_ids: pl.Series) -> tuple[int, int] | None:
+    def get_step_range(self, artifact_ids: list[str]) -> tuple[int, int] | None:
         """Return the min and max origin step numbers for the given IDs.
 
         Args:
-            artifact_ids: Artifact IDs to query. An empty Series
+            artifact_ids: Artifact IDs to query. An empty list
                 returns None immediately.
 
         Returns:
             ``(step_min, step_max)`` tuple, or None if no matches exist
             or the artifact_index table is missing.
         """
-        if artifact_ids.is_empty():
+        if not artifact_ids:
             return None
 
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)

@@ -273,7 +273,7 @@ module = [
 ignore_missing_imports = true
 
 [tool.ruff]
-extend-exclude = ["examples", "_dev", ".pixi", "demos"]
+extend-exclude = ["examples", "_dev", ".pixi", "demos", ".claude"]
 
 [tool.ruff.lint]
 extend-select = [

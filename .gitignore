@@ -78,3 +78,6 @@ docs/_build/
 # Dev-only files (symlinked from ~/git/notes/)
 _dev
 CLAUDE.local.md
+
+# Claude Code worktrees and local state
+.claude/worktrees/

@@ -280,7 +280,7 @@ class ArtifactStore:
         """Delegates to ``self.provenance.load_step_map``."""
         return self.provenance.load_step_map(artifact_ids)
 
-    def get_step_range(self, artifact_ids: pl.Series) -> tuple[int, int] | None:
+    def get_step_range(self, artifact_ids: list[str]) -> tuple[int, int] | None:
         """Delegates to ``self.provenance.get_step_range``."""
         return self.provenance.get_step_range(artifact_ids)
 

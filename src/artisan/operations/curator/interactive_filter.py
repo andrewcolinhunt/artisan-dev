@@ -166,7 +166,9 @@ class InteractiveFilter:
         # ── Metric discovery via forward provenance walk ──
         # Use ALL artifact IDs for step range (not just primaries) so metrics
         # at higher steps are included in the edge scan.
-        step_range = self._store.provenance.get_step_range(all_index["artifact_id"])
+        step_range = self._store.provenance.get_step_range(
+            all_index["artifact_id"].to_list()
+        )
         if step_range is None:
             msg = "No metrics found derived from the primary artifacts"
             raise ValueError(msg)
