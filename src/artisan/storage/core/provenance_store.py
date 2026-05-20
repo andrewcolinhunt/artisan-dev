@@ -450,6 +450,7 @@ class ProvenanceStore:
         step_max: int,
         *,
         include_target_type: bool = False,
+        include_roles: bool = False,
     ) -> pl.DataFrame:
         """Load provenance edges where both endpoints fall within a step range.
 
@@ -458,16 +459,25 @@ class ProvenanceStore:
             step_max: Maximum step number (inclusive).
             include_target_type: When True, include ``target_artifact_type``
                 column in the output.
+            include_roles: When True, include ``source_role``,
+                ``target_role``, and ``group_id`` columns. Used by
+                callers that need to dedup edges by their full identity
+                tuple (e.g. ``DeclareLineage``).
 
         Returns:
             DataFrame with columns ``[source_artifact_id,
             target_artifact_id]`` (plus ``target_artifact_type`` when
-            requested). Empty with correct schema when no edges match.
+            ``include_target_type`` is True; plus ``source_role``,
+            ``target_role``, ``group_id`` when ``include_roles`` is True).
+            Empty with correct schema when no edges match.
         """
         base_cols = ["source_artifact_id", "target_artifact_id"]
-        output_cols = (
-            [*base_cols, "target_artifact_type"] if include_target_type else base_cols
-        )
+        extra_cols: list[str] = []
+        if include_target_type:
+            extra_cols.append("target_artifact_type")
+        if include_roles:
+            extra_cols.extend(["source_role", "target_role", "group_id"])
+        output_cols = [*base_cols, *extra_cols]
         empty = pl.DataFrame(schema=dict.fromkeys(output_cols, pl.String))
 
         prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
@@ -476,11 +486,8 @@ class ProvenanceStore:
         if not self._fs.exists(prov_path) or not self._fs.exists(index_path):
             return empty
 
-        edge_select = (
-            [*base_cols, "target_artifact_type"] if include_target_type else base_cols
-        )
         edges = pl.scan_delta(prov_path, storage_options=self._storage_options).select(
-            edge_select
+            output_cols
         )
         index = pl.scan_delta(index_path, storage_options=self._storage_options).select(
             ["artifact_id", "origin_step_number"]
