@@ -17,7 +17,6 @@ import logging
 from itertools import product
 from typing import TYPE_CHECKING
 
-import polars as pl
 import xxhash
 
 from artisan.execution.inputs.lineage_matching import match_by_ancestry
@@ -275,7 +274,7 @@ def _match_by_ancestry(
     candidate_ids_by_role = {candidate_role: inputs[candidate_role]}
 
     # Load edges scoped to the step range of the involved artifacts
-    all_ids = pl.Series(list(inputs[role_a]) + list(inputs[role_b]))
+    all_ids = list(inputs[role_a]) + list(inputs[role_b])
     step_range = artifact_store.provenance.get_step_range(all_ids)
     if step_range is None:
         return []
@@ -351,7 +350,7 @@ def _match_primary_by_ancestry(
     all_id_list = list(inputs[primary_role])
     for role in other_roles:
         all_id_list.extend(inputs[role])
-    step_range = artifact_store.provenance.get_step_range(pl.Series(all_id_list))
+    step_range = artifact_store.provenance.get_step_range(all_id_list)
     if step_range is None:
         return {role: [] for role in inputs}
     edges = artifact_store.provenance.load_edges_df(*step_range)

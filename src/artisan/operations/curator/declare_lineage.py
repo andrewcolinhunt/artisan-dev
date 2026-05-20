@@ -296,7 +296,7 @@ def _dedup_against_existing(
     """
     if not pairs:
         return []
-    all_ids = pl.Series(list({*parent_ids, *child_ids}))
+    all_ids = list({*parent_ids, *child_ids})
     step_range = artifact_store.provenance.get_step_range(all_ids)
     if step_range is None:
         # No artifacts known → no existing edges → nothing to dedup against.

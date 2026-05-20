@@ -498,7 +498,9 @@ class Filter(OperationDefinition):
 
             # Filter metric pairs to this chunk
             chunk_pairs = (
-                all_metric_pairs.filter(pl.col("passthrough_id").is_in(chunk_ids))
+                all_metric_pairs.filter(
+                    pl.col("passthrough_id").is_in(chunk_ids.to_list())
+                )
                 if not all_metric_pairs.is_empty()
                 else all_metric_pairs
             )
@@ -624,7 +626,7 @@ class Filter(OperationDefinition):
         from artisan.provenance.traversal import walk_forward
 
         step_range = artifact_store.provenance.get_step_range(
-            passthrough_df["artifact_id"]
+            passthrough_df["artifact_id"].to_list()
         )
         if step_range is None:
             return empty
@@ -709,7 +711,10 @@ class Filter(OperationDefinition):
         metrics_df = pl.DataFrame({"artifact_id": sorted(metric_ids)})
 
         # Get step range covering both passthrough and metrics
-        all_ids = pl.concat([passthrough_df["artifact_id"], metrics_df["artifact_id"]])
+        all_ids = (
+            passthrough_df["artifact_id"].to_list()
+            + metrics_df["artifact_id"].to_list()
+        )
         step_range = artifact_store.provenance.get_step_range(all_ids)
         if step_range is None:
             return empty

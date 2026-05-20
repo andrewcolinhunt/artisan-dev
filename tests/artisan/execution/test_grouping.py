@@ -69,9 +69,8 @@ def _make_mock_store(
         {k: v for k, v in step_numbers.items() if ids is None or k in ids}
     )
 
-    def _get_step_range(artifact_ids: pl.Series) -> tuple[int, int] | None:
-        id_list = artifact_ids.to_list()
-        steps = [step_numbers[aid] for aid in id_list if aid in step_numbers]
+    def _get_step_range(artifact_ids: list[str]) -> tuple[int, int] | None:
+        steps = [step_numbers[aid] for aid in artifact_ids if aid in step_numbers]
         if not steps:
             return None
         return (min(steps), max(steps))
