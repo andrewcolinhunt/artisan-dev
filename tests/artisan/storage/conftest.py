@@ -21,7 +21,7 @@ from artisan.schemas.execution.storage_config import StorageConfig
         pytest.param("s3", marks=pytest.mark.integration),
     ]
 )
-def backend_fs(request, tmp_path, s3_fs):
+def backend_fs(request, tmp_path):
     """Yield ``(fs, storage_config, uri_prefix)`` for both backends.
 
     Tests that use this fixture run twice — once against
@@ -31,8 +31,12 @@ def backend_fs(request, tmp_path, s3_fs):
     The ``s3`` param carries the ``integration`` marker so
     ``pixi run -e dev test-unit`` (``pytest -m 'not integration'``)
     collects only the local branch and never boots MinIO. The s3
-    branch runs under ``test-integration``.
+    branch runs under ``test-integration``. ``s3_fs`` is resolved
+    lazily via ``request.getfixturevalue`` so the local-only run
+    never instantiates MinIO via testcontainers — that path leaks
+    a Docker UNIX socket on session teardown when the daemon isn't
+    reachable.
     """
     if request.param == "local":
         return LocalFileSystem(), StorageConfig(), str(tmp_path)
-    return s3_fs  # already (fs, storage, uri_prefix)
+    return request.getfixturevalue("s3_fs")  # already (fs, storage, uri_prefix)

@@ -165,9 +165,20 @@ class TestNumFiles:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(params=["local", "s3"])
-def backend_env(request, tmp_path, s3_fs):
-    """Yield ``(fs, storage, files_root, working_root)`` for both backends."""
+@pytest.fixture(
+    params=[
+        pytest.param("local"),
+        pytest.param("s3", marks=pytest.mark.integration),
+    ]
+)
+def backend_env(request, tmp_path):
+    """Yield ``(fs, storage, files_root, working_root)`` for both backends.
+
+    ``s3_fs`` is resolved lazily via ``request.getfixturevalue`` so the
+    local-only run never instantiates MinIO via testcontainers (which
+    leaks a Docker UNIX socket on session teardown when the daemon
+    isn't reachable).
+    """
     working = tmp_path / "working"
     working.mkdir()
     if request.param == "local":
@@ -179,7 +190,7 @@ def backend_env(request, tmp_path, s3_fs):
             str(files_root),
             str(working),
         )
-    fs, storage, uri_prefix = s3_fs
+    fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
     return fs, storage, f"{uri_prefix}/files", str(working)
 
 
