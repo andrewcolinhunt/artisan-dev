@@ -549,9 +549,8 @@ class ProvenanceStore:
         frontier = {artifact_id}
 
         while frontier:
-            frontier_s = pl.Series(sorted(frontier))
             parents = (
-                edges.filter(pl.col("target_artifact_id").is_in(frontier_s))
+                edges.filter(pl.col("target_artifact_id").is_in(sorted(frontier)))
                 .select("source_artifact_id")
                 .to_series()
                 .to_list()
@@ -613,8 +612,9 @@ class ProvenanceStore:
         frontier = {artifact_id}
 
         while frontier:
-            frontier_s = pl.Series(sorted(frontier))
-            children_df = edges.filter(pl.col("source_artifact_id").is_in(frontier_s))
+            children_df = edges.filter(
+                pl.col("source_artifact_id").is_in(sorted(frontier))
+            )
             child_ids = set(children_df["target_artifact_id"].to_list())
             new = child_ids - collected - {artifact_id}
 
