@@ -456,9 +456,7 @@ def test_lineage_grouping_sibling_collision_deterministic(
     grandchild_to_parent: dict[str, str] = {}
     for row in grandchild_edges.iter_rows(named=True):
         if row["source_artifact_id"] in siblings:
-            grandchild_to_parent[row["target_artifact_id"]] = row[
-                "source_artifact_id"
-            ]
+            grandchild_to_parent[row["target_artifact_id"]] = row["source_artifact_id"]
     assert len(grandchild_to_parent) == 9, (
         "Each grandchild must have exactly one sibling parent edge"
     )

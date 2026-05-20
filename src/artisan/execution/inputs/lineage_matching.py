@@ -136,9 +136,7 @@ def match_by_ancestry(
                 )
                 continue
             target_id, _depth = result
-            matches.setdefault(target_id, {}).setdefault(role, []).append(
-                candidate_id
-            )
+            matches.setdefault(target_id, {}).setdefault(role, []).append(candidate_id)
 
     n_roles = len(candidate_ids_by_role)
     return {t: rm for t, rm in matches.items() if len(rm) == n_roles}
