@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
 
 
@@ -62,6 +63,10 @@ class PassthroughResult(BaseModel):
         error: Error message if success is False.
         passthrough: Output role -> artifact ID list.
             e.g. {"filtered": ["abc123...", "def456..."]}
+        lineage_edges: Optional list of directed provenance edges to
+            stage alongside the passthrough. Used by operations like
+            ``DeclareLineage`` that emit edges without producing new
+            artifacts. When None or empty, no edges are staged.
         metadata: Extensibility escape hatch for additional data.
 
     Example:
@@ -75,6 +80,7 @@ class PassthroughResult(BaseModel):
     success: bool = True
     error: str | None = None
     passthrough: dict[str, list[str]] = Field(default_factory=dict)
+    lineage_edges: list[ArtifactProvenanceEdge] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

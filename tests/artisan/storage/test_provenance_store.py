@@ -246,6 +246,76 @@ class TestGetDescendantIds:
         assert store.get_descendant_ids(C) == []
 
 
+class TestLoadEdgesDf:
+    """Tests for ProvenanceStore.load_edges_df, especially the optional flags."""
+
+    def test_returns_empty_when_table_missing(self, prov_env):
+        """No artifact_edges table → empty DataFrame with the expected schema."""
+        store, _fs, _opts, _root = prov_env
+        result = store.load_edges_df(0, 10)
+        assert result.is_empty()
+        assert result.columns == ["source_artifact_id", "target_artifact_id"]
+
+    def test_returns_base_columns_by_default(self, prov_env):
+        """Default call returns only source/target IDs, no roles or types."""
+        store, _fs, opts, root = prov_env
+        edges = _make_edges([(A, B, "data")])
+        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _write_delta(f"{root}/artifacts/index", index, opts)
+
+        result = store.load_edges_df(0, 10)
+        assert result.columns == ["source_artifact_id", "target_artifact_id"]
+        assert result.height == 1
+        assert result["source_artifact_id"][0] == A
+        assert result["target_artifact_id"][0] == B
+
+    def test_include_target_type_adds_column(self, prov_env):
+        """include_target_type=True adds target_artifact_type."""
+        store, _fs, opts, root = prov_env
+        edges = _make_edges([(A, B, "metric")])
+        index = _make_index([(A, "data", 1), (B, "metric", 2)])
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _write_delta(f"{root}/artifacts/index", index, opts)
+
+        result = store.load_edges_df(0, 10, include_target_type=True)
+        assert "target_artifact_type" in result.columns
+        assert result["target_artifact_type"][0] == "metric"
+
+    def test_include_roles_adds_role_and_group_columns(self, prov_env):
+        """include_roles=True surfaces source_role, target_role, group_id."""
+        store, _fs, opts, root = prov_env
+        edges = _make_edges([(A, B, "data")])
+        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _write_delta(f"{root}/artifacts/index", index, opts)
+
+        result = store.load_edges_df(0, 10, include_roles=True)
+        assert {"source_role", "target_role", "group_id"} <= set(result.columns)
+        # _make_edges seeds source_role='input', target_role='output'.
+        assert result["source_role"][0] == "input"
+        assert result["target_role"][0] == "output"
+        assert result["group_id"][0] is None
+
+    def test_include_both_flags_returns_all_extra_columns(self, prov_env):
+        """Combining include_target_type and include_roles returns all extras."""
+        store, _fs, opts, root = prov_env
+        edges = _make_edges([(A, B, "data")])
+        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _write_delta(f"{root}/artifacts/index", index, opts)
+
+        result = store.load_edges_df(
+            0, 10, include_target_type=True, include_roles=True
+        )
+        assert {
+            "target_artifact_type",
+            "source_role",
+            "target_role",
+            "group_id",
+        } <= set(result.columns)
+
+
 class TestProvenanceStoreBackendParametrized:
     """Smoke test: seed a small provenance graph and read it back on each step_runner.
 
