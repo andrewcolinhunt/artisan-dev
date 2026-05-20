@@ -45,14 +45,15 @@ def provenance_graph():
 
     Simulates provenance graph::
 
-        Step 0: A ------------------- B
-                |                     |
-        Step 1: A1                    B1
-               /  \\                 /  \\
-        Step 2: A1a  M_A1           B1a  M_B1
+        Step 0: A         B
+                |         |
+        Step 1: A1        B1
+                |         |
+        Step 2: A1a       B1a
+                |         |
+        Step 3: M_A1      M_B1
 
-    A1a and M_A1 share ancestor A1 (step 1)
-    B1a and M_B1 share ancestor B1 (step 1)
+    M_A1 is a direct descendant of A1a; M_B1 of B1a.
     """
     A = "a" * 32
     B = "b" * 32
@@ -69,8 +70,8 @@ def provenance_graph():
         B1: [B],
         A1a: [A1],
         B1a: [B1],
-        M_A1: [A1],
-        M_B1: [B1],
+        M_A1: [A1a],
+        M_B1: [B1a],
     }
 
     edges = _provenance_map_to_edges(provenance_map)
@@ -107,10 +108,10 @@ class TestMatchByAncestry:
         assert ids["B1"] in result
         assert result[ids["B1"]]["results"] == [ids["B1a"]]
 
-    def test_sibling_matching(self, provenance_graph):
-        """Candidates share common ancestor with targets (same step case)."""
+    def test_descendant_matching(self, provenance_graph):
+        """Candidates are direct descendants of targets via the directed graph."""
         edges, ids = provenance_graph
-        # A1a and M_A1 are siblings (both step 2, share ancestor A1)
+        # M_A1 walks back through A1a (target); M_B1 through B1a.
         result = match_by_ancestry(
             target_ids={ids["A1a"], ids["B1a"]},
             candidate_ids_by_role={"metrics": [ids["M_A1"], ids["M_B1"]]},
@@ -154,7 +155,7 @@ class TestMatchByAncestry:
         assert len(result) == 0
 
     def test_unmatched_candidate_warns(self, provenance_graph, caplog):
-        """Warning logged with 'no common ancestor' for unmatched candidate."""
+        """Warning logged with 'no directed path' for unmatched candidate."""
         edges, ids = provenance_graph
         match_by_ancestry(
             target_ids={ids["A1a"]},
@@ -162,7 +163,7 @@ class TestMatchByAncestry:
             edges=edges,
         )
 
-        assert "no common ancestor" in caplog.text.lower()
+        assert "no directed path" in caplog.text.lower()
 
     def test_multiple_candidates_same_target_accumulates(self):
         """Two candidates resolving to same target are both accumulated."""
@@ -184,7 +185,8 @@ class TestMatchByAncestry:
     def test_one_to_n_matching(self):
         """1 target with N candidates produces list of N in result.
 
-        Simulates parameter sweep: 1 dataset -> N configs via a shared root.
+        Simulates parameter sweep: 1 dataset -> N configs, each a direct
+        descendant of the dataset.
         """
         root = "root" + "0" * 28
         dataset = "ds" + "0" * 30
@@ -194,9 +196,9 @@ class TestMatchByAncestry:
         edges = _provenance_map_to_edges(
             {
                 dataset: [root],
-                c1: [root],
-                c2: [root],
-                c3: [root],
+                c1: [dataset],
+                c2: [dataset],
+                c3: [dataset],
             }
         )
 
@@ -230,6 +232,96 @@ class TestMatchByAncestry:
         )
 
         assert result == {}
+
+    def test_multi_target_sibling_collision_resolved(self):
+        """N sibling targets sharing one root, each with K descendants.
+
+        Reproduces the bug case the directional matcher fixes: every
+        descendant shares the root with every sibling, so the symmetric
+        matcher non-deterministically picks among the N targets. The
+        directional matcher pairs each descendant with its direct-parent
+        sibling deterministically.
+        """
+        root = "root" + "0" * 28
+        targets = [f"t{i}" + "0" * 30 for i in range(1, 4)]
+        # 3 candidates per target = 9 total
+        candidates = {
+            t: [f"c{i}_{j}" + "0" * (32 - 4) for j in range(3)]
+            for i, t in enumerate(targets, 1)
+        }
+        provenance_map: dict[str, list[str]] = {t: [root] for t in targets}
+        for target, cs in candidates.items():
+            for c in cs:
+                provenance_map[c] = [target]
+        edges = _provenance_map_to_edges(provenance_map)
+
+        all_candidates = [c for cs in candidates.values() for c in cs]
+
+        # Run the matcher 5 times; results must be identical every time.
+        prior_result: dict[str, dict[str, list[str]]] | None = None
+        for _ in range(5):
+            result = match_by_ancestry(
+                target_ids=set(targets),
+                candidate_ids_by_role={"items": all_candidates},
+                edges=edges,
+            )
+            if prior_result is not None:
+                assert result == prior_result
+            prior_result = result
+
+        # Each target paired only with its own direct-descendant candidates.
+        assert set(result.keys()) == set(targets)
+        for target, expected_cs in candidates.items():
+            assert set(result[target]["items"]) == set(expected_cs)
+
+    def test_tie_at_same_hop_raises(self):
+        """Candidate with two distinct targets at hop 1 on different branches."""
+        t1 = "t1" + "0" * 30
+        t2 = "t2" + "0" * 30
+        c = "c1" + "0" * 30
+        # c has both t1 and t2 as parents at hop 1.
+        edges = _provenance_map_to_edges({c: [t1, t2]})
+
+        with pytest.raises(RuntimeError, match="multiple targets at hop depth 1"):
+            match_by_ancestry(
+                target_ids={t1, t2},
+                candidate_ids_by_role={"items": [c]},
+                edges=edges,
+            )
+
+    def test_closer_target_wins(self):
+        """Two targets in candidate's directed lineage at different depths."""
+        # Chain: C ← A ← B. Both A and B are targets; A is closer to C.
+        c = "c1" + "0" * 30
+        a = "a1" + "0" * 30
+        b = "b1" + "0" * 30
+        edges = _provenance_map_to_edges({c: [a], a: [b]})
+
+        result = match_by_ancestry(
+            target_ids={a, b},
+            candidate_ids_by_role={"items": [c]},
+            edges=edges,
+        )
+
+        # Closer target (A at hop 1) wins; B (hop 2) is never visited.
+        assert a in result
+        assert b not in result
+        assert result[a]["items"] == [c]
+
+    def test_self_match_at_depth_zero(self):
+        """Candidate that IS a target self-matches at depth 0."""
+        t = "t1" + "0" * 30
+        # No edges needed; self-match should resolve before any walk.
+        edges = _provenance_map_to_edges({})
+
+        result = match_by_ancestry(
+            target_ids={t},
+            candidate_ids_by_role={"items": [t]},
+            edges=edges,
+        )
+
+        assert t in result
+        assert result[t]["items"] == [t]
 
 
 def _edges_df(

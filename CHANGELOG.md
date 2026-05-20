@@ -32,6 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`GroupByStrategy.LINEAGE` contract narrowed to directed ancestry.**
+  `match_by_ancestry` now requires a directed path from candidate back
+  to target, not just a shared ancestor. This eliminates a
+  sibling-collision nondeterminism bug where multiple targets sharing
+  one upstream ancestor produced run-to-run-varying pair assignments.
+  The known production user of LINEAGE pairing (single-anchor 1:N where
+  the anchor is upstream of each item) is unaffected because the anchor
+  is in each item's directed ancestry. Pipelines that depended on
+  sibling-shared-ancestor pairing — none known — will see candidates
+  dropped with WARNING-level logs ("LINEAGE matching: candidate %s...
+  from role '%s' has no directed path to any target"). The matcher
+  additionally raises `RuntimeError` when a candidate has multiple
+  targets at the same hop depth on different branches; previously this
+  case silently picked an arbitrary target. `IngestPipelineStep`
+  re-rooting becomes an optional cleanup (no longer needed as a
+  workaround for matcher ambiguity).
 - **BREAKING — Skill renames:** The artisan plugin's skill names are inverted
   to noun-first for tab-completion grouping. `write-operation` →
   `operation-write`, `write-composite` → `composite-write`, `write-pipeline`

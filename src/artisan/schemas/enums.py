@@ -54,7 +54,7 @@ class GroupByStrategy(Enum):
     from different input roles are matched before dispatch.
     """
 
-    LINEAGE = "lineage"  # Match artifacts sharing a common ancestor
+    LINEAGE = "lineage"  # Match candidates to their closest directed ancestor in the target role
     CROSS_PRODUCT = "cross_product"  # All combinations of inputs
     ZIP = "zip"  # Positional matching (1st with 1st, etc.)
     NAME = "name"  # Match artifacts whose ``original_name`` shares a stem

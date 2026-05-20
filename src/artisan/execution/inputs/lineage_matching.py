@@ -1,7 +1,9 @@
 """Provenance-based artifact lineage matching.
 
-DataFrame-based backward matching for multi-input grouping, using
-common-ancestor resolution through provenance edges.
+Per-candidate BFS through directed provenance edges. For each candidate,
+walks backward from the candidate node until hitting a target; the first
+target reached at the shortest hop depth is the match. Multiple targets
+at the same hop depth on different branches raise.
 
 Re-exports ``walk_backward`` and ``walk_forward`` under their legacy
 names for backwards compatibility during migration.
@@ -26,87 +28,63 @@ __all__ = [
 ]
 
 
-def _collect_ancestors(
-    nodes: pl.DataFrame,
+def _walk_to_target(
+    candidate_id: str,
+    target_ids: set[str],
     edges: pl.DataFrame,
-    id_col: str = "node_id",
-) -> pl.DataFrame:
-    """Walk backward from nodes collecting all visited ancestors.
+) -> tuple[str, int] | None:
+    """Walk backward from a candidate until a target is reached.
 
-    Returns DataFrame with [node_id, ancestor_id] — each node maps to
-    itself and all transitive ancestors reachable via backward edges.
+    A candidate that is itself a target self-matches at depth 0.
 
     Args:
-        nodes: DataFrame with ``artifact_id`` column.
-        edges: DataFrame with ``source_artifact_id``, ``target_artifact_id``.
-        id_col: Name for the tracking column in the output.
+        candidate_id: Artifact ID to walk back from.
+        target_ids: Set of artifact IDs to test against at each hop.
+        edges: DataFrame with ``source_artifact_id`` (parent) and
+            ``target_artifact_id`` (child) columns.
 
     Returns:
-        DataFrame with columns [<id_col>, ancestor_id].
+        ``(target_id, depth)`` for the closest target reached, or ``None``
+        if no directed path to any target exists.
+
+    Raises:
+        RuntimeError: If the candidate has multiple distinct targets at
+            the same hop depth on different branches.
     """
-    empty = pl.DataFrame(schema={id_col: pl.String, "ancestor_id": pl.String})
+    frontier: set[str] = {candidate_id}
+    visited: set[str] = {candidate_id}
+    depth = 0
 
-    if nodes.is_empty() or edges.is_empty():
-        # Still include self-mapping for non-empty nodes
-        if not nodes.is_empty():
-            return pl.DataFrame(
-                {
-                    id_col: nodes["artifact_id"],
-                    "ancestor_id": nodes["artifact_id"],
-                }
+    while frontier:
+        hits = frontier & target_ids
+        if len(hits) > 1:
+            msg = (
+                f"LINEAGE matching: candidate {candidate_id} has multiple "
+                f"targets at hop depth {depth}: {sorted(hits)}. The pipeline "
+                "graph is ambiguous at this candidate; either restructure "
+                "inputs or use a more specific GroupByStrategy."
             )
-        return empty
+            raise RuntimeError(msg)
+        if hits:
+            return next(iter(hits)), depth
 
-    # frontier: (id_col, current_node)
-    frontier = pl.DataFrame(
-        {
-            id_col: nodes["artifact_id"],
-            "current_node": nodes["artifact_id"],
-        }
-    )
+        if edges.is_empty():
+            return None
 
-    # Start: each node is its own ancestor
-    all_ancestors = frontier.select(
-        pl.col(id_col), pl.col("current_node").alias("ancestor_id")
-    )
-    visited = frontier.select(id_col, pl.col("current_node").alias("node"))
-
-    while not frontier.is_empty():
-        stepped = frontier.join(
-            edges,
-            left_on="current_node",
-            right_on="target_artifact_id",
-            how="inner",
-        ).select(
-            pl.col(id_col),
-            pl.col("source_artifact_id").alias("current_node"),
+        parents_series = (
+            edges.filter(pl.col("target_artifact_id").is_in(list(frontier)))
+            .get_column("source_artifact_id")
+            .unique()
         )
+        parents = set(parents_series.to_list()) - visited
+        if not parents:
+            return None
 
-        if stepped.is_empty():
-            break
+        visited |= parents
+        frontier = parents
+        depth += 1
 
-        stepped = stepped.join(
-            visited,
-            left_on=[id_col, "current_node"],
-            right_on=[id_col, "node"],
-            how="anti",
-        )
-
-        if stepped.is_empty():
-            break
-
-        visited = pl.concat(
-            [visited, stepped.select(id_col, pl.col("current_node").alias("node"))]
-        )
-        all_ancestors = pl.concat(
-            [
-                all_ancestors,
-                stepped.select(id_col, pl.col("current_node").alias("ancestor_id")),
-            ]
-        )
-        frontier = stepped
-
-    return all_ancestors
+    return None
 
 
 def match_by_ancestry(
@@ -114,80 +92,51 @@ def match_by_ancestry(
     candidate_ids_by_role: dict[str, list[str]],
     edges: pl.DataFrame,
 ) -> dict[str, dict[str, list[str]]]:
-    """Match candidates to targets via common-ancestor resolution.
+    """Match candidates to targets via directed ancestor walk.
 
-    For each role, collects the full ancestry set of both targets and
-    candidates, then joins on shared ancestors to find which target
-    each candidate is related to. First-claim-wins for candidates
-    reachable from multiple targets via different ancestors.
+    For each candidate, walks backward through directed provenance edges
+    until a target is encountered. The closest target by hop count wins.
+    Multiple targets at the same hop depth on different branches raise.
+    Candidates with no directed path to any target are dropped with a
+    WARNING log.
 
-    Supports 1:N matching — multiple candidates in the same role can
-    map to the same target (e.g., parameter sweep producing N configs
-    from 1 dataset).
+    Supports 1:N matching — multiple candidates in the same role can map
+    to the same target (e.g., one anchor with N items each having the
+    anchor in their directed ancestry).
 
     Args:
         target_ids: Artifact IDs of the target role (lower step number,
             or the anchor/primary role).
-        candidate_ids_by_role: {role_name: [artifact_ids]} for other roles.
-        edges: DataFrame with ``source_artifact_id``, ``target_artifact_id``
-            columns (from ``load_provenance_edges_df``).
+        candidate_ids_by_role: ``{role_name: [artifact_ids]}`` for other roles.
+        edges: DataFrame with ``source_artifact_id`` (parent),
+            ``target_artifact_id`` (child) columns.
 
     Returns:
-        {target_id: {role: [candidate_ids]}} for targets with matches
-        in all roles. Each role maps to a list of matched candidates.
+        ``{target_id: {role: [candidate_ids]}}`` for targets with matches
+        in every role. Each role maps to a list of matched candidates.
+
+    Raises:
+        RuntimeError: If any candidate has multiple targets at the same
+            hop depth on different branches.
     """
     if not target_ids or not candidate_ids_by_role:
         return {}
 
-    # Collect ancestors of all targets once
-    targets_df = pl.DataFrame({"artifact_id": sorted(target_ids)})
-    target_ancestors = _collect_ancestors(targets_df, edges, id_col="target_id")
-
     matches: dict[str, dict[str, list[str]]] = {}
 
     for role, candidate_ids in candidate_ids_by_role.items():
-        candidates_df = pl.DataFrame({"artifact_id": candidate_ids})
-        candidate_ancestors = _collect_ancestors(
-            candidates_df, edges, id_col="candidate_id"
-        )
-
-        # Join on shared ancestors
-        joined = candidate_ancestors.join(
-            target_ancestors,
-            on="ancestor_id",
-            how="inner",
-        )
-
-        if joined.is_empty():
-            for candidate_id in candidate_ids:
+        for candidate_id in candidate_ids:
+            result = _walk_to_target(candidate_id, target_ids, edges)
+            if result is None:
                 logger.warning(
                     "LINEAGE matching: candidate %s... from role '%s' has "
-                    "no common ancestor with any target",
+                    "no directed path to any target",
                     candidate_id[:8],
                     role,
                 )
-            continue
-
-        # First-claim-wins per candidate: keep first match
-        resolved = joined.unique(subset=["candidate_id"], keep="first").select(
-            "candidate_id", "target_id"
-        )
-
-        matched_candidates = set()
-        for row in resolved.iter_rows(named=True):
-            candidate_id = row["candidate_id"]
-            target_id = row["target_id"]
-            matched_candidates.add(candidate_id)
+                continue
+            target_id, _depth = result
             matches.setdefault(target_id, {}).setdefault(role, []).append(candidate_id)
-
-        unmatched = set(candidate_ids) - matched_candidates
-        for candidate_id in unmatched:
-            logger.warning(
-                "LINEAGE matching: candidate %s... from role '%s' has "
-                "no common ancestor with any target",
-                candidate_id[:8],
-                role,
-            )
 
     n_roles = len(candidate_ids_by_role)
     return {t: rm for t, rm in matches.items() if len(rm) == n_roles}

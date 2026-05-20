@@ -94,14 +94,15 @@ def mock_artifact_store():
 
     Simulates provenance graph::
 
-        Step 0: A ------------------- B
-                |                     |
-        Step 1: A1                    B1
-               /  \\                 /  \\
-        Step 2: A1a  M_A1           B1a  M_B1
+        Step 0: A         B
+                |         |
+        Step 1: A1        B1
+                |         |
+        Step 2: A1a       B1a
+                |         |
+        Step 3: M_A1      M_B1
 
-    A1a and M_A1 share ancestor A1 (step 1).
-    B1a and M_B1 share ancestor B1 (step 1).
+    M_A1 is a direct descendant of A1a; M_B1 of B1a.
     """
     A = "a" * 32
     B = "b" * 32
@@ -117,8 +118,8 @@ def mock_artifact_store():
         B1: [B],
         A1a: [A1],
         B1a: [B1],
-        M_A1: [A1],
-        M_B1: [B1],
+        M_A1: [A1a],
+        M_B1: [B1a],
     }
 
     step_numbers = {
@@ -128,8 +129,8 @@ def mock_artifact_store():
         B1: 1,
         A1a: 2,
         B1a: 2,
-        M_A1: 2,
-        M_B1: 2,
+        M_A1: 3,
+        M_B1: 3,
     }
 
     return _make_mock_store(
@@ -158,13 +159,12 @@ def mock_artifact_store_three_lineages():
                 |         |         |
         Step 1: S1        S2        S3
                 |         |         |
-        Step 2: P1  MA1   P2  MA2   P3  MA3
-                      |         |         |
-        Step 3:      MB1       MB2       MB3
+        Step 2: P1        P2        P3
+                / \\       / \\       / \\
+        Step 3: MA1 MB1   MA2 MB2   MA3 MB3
 
-    P = passthrough, MA/MB = metrics from roles A and B respectively.
-    S = intermediate (e.g., processing step output).
-    R = root ingest.
+    P = passthrough, MA/MB = metrics from roles A and B respectively;
+    each metric is a direct descendant of its passthrough.
     """
     R1 = "r1" + "0" * 30
     R2 = "r2" + "0" * 30
@@ -189,12 +189,12 @@ def mock_artifact_store_three_lineages():
         P1: [S1],
         P2: [S2],
         P3: [S3],
-        MA1: [S1],
-        MA2: [S2],
-        MA3: [S3],
-        MB1: [S1],
-        MB2: [S2],
-        MB3: [S3],
+        MA1: [P1],
+        MA2: [P2],
+        MA3: [P3],
+        MB1: [P1],
+        MB2: [P2],
+        MB3: [P3],
     }
 
     step_numbers = {
@@ -207,9 +207,9 @@ def mock_artifact_store_three_lineages():
         P1: 2,
         P2: 2,
         P3: 2,
-        MA1: 2,
-        MA2: 2,
-        MA3: 2,
+        MA1: 3,
+        MA2: 3,
+        MA3: 3,
         MB1: 3,
         MB2: 3,
         MB3: 3,
@@ -234,18 +234,17 @@ def mock_artifact_store_three_lineages():
 
 @pytest.fixture
 def mock_artifact_store_one_to_n():
-    """Mock store with 1:N lineage (1 dataset -> N configs via shared root).
+    """Mock store with 1:N lineage (1 dataset -> N configs directly descended).
 
     Provenance graph::
 
         Step 0: Root
                 |
         Step 1: Dataset
-                |  (shared ancestor Root)
-        Step 2: C1  C2  C3  C4  C5  C6
+                |
+        Step 2: C1  C2  C3  C4  C5  C6  (all direct children of Dataset)
 
-    Dataset and all configs share ancestor Root.
-    Dataset is the target (lower step), configs are candidates.
+    Dataset is the target (lower step); each config walks back directly to it.
     """
     root = "root" + "0" * 28
     dataset = "ds" + "0" * 30
@@ -253,7 +252,7 @@ def mock_artifact_store_one_to_n():
 
     provenance_map = {dataset: [root]}
     for c in configs:
-        provenance_map[c] = [root]
+        provenance_map[c] = [dataset]
 
     step_numbers = {root: 0, dataset: 1}
     for c in configs:
@@ -462,8 +461,8 @@ class TestGroupInputsCrossProduct:
 class TestGroupInputsLineage:
     """Tests for group_inputs() with LINEAGE strategy."""
 
-    def test_matched_by_shared_ancestor(self, mock_artifact_store):
-        """Artifacts with shared ancestor are paired correctly."""
+    def test_matched_by_directed_ancestry(self, mock_artifact_store):
+        """Candidates pair with the target in their directed ancestry."""
         ids = mock_artifact_store._test_ids
 
         inputs = {
@@ -486,10 +485,10 @@ class TestGroupInputsLineage:
     def test_unmatched_artifacts_excluded_with_warning(
         self, mock_artifact_store, caplog
     ):
-        """Artifacts without common ancestor are excluded; warning logged."""
+        """Artifacts with no directed path are excluded; warning logged."""
         ids = mock_artifact_store._test_ids
 
-        # A1a has no common ancestor with M_B1
+        # M_B1 has no directed path back to A1a (different lineage chain).
         inputs = {
             "results": [ids["A1a"]],
             "metrics": [ids["M_B1"]],
@@ -501,7 +500,7 @@ class TestGroupInputsLineage:
 
         assert len(aligned["results"]) == 0
         assert len(group_ids) == 0
-        assert "no common ancestor" in caplog.text.lower()
+        assert "no directed path" in caplog.text.lower()
 
     def test_requires_artifact_store(self):
         """LINEAGE without artifact_store raises RuntimeError."""
@@ -539,7 +538,7 @@ class TestGroupInputsLineage:
             inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
-        # Only A1a<->M_A1 should match (M_B1 has no common ancestor with A1a)
+        # Only A1a<->M_A1 should match (M_B1 has no directed path to A1a)
         assert len(aligned["results"]) == 1
         assert aligned["metrics"][0] == ids["M_A1"]
 
@@ -555,7 +554,7 @@ class TestGroupInputsLineage:
         assert len(group_ids) == 0
 
     def test_one_to_n_produces_n_matched_sets(self, mock_artifact_store_one_to_n):
-        """1 dataset + 6 configs with shared ancestor -> 6 matched sets."""
+        """1 dataset + 6 configs all directly descended -> 6 matched sets."""
         ids = mock_artifact_store_one_to_n._test_ids
 
         inputs = {
@@ -845,8 +844,8 @@ class TestMatchInputsToPrimary:
         """Primary artifact matched in one role but not another is excluded."""
         ids = mock_artifact_store._test_ids
 
-        # A1a can match M_A1 in "metrics" but has no match for M_B1 in "other"
-        # since we only provide M_B1 in "other" and A1a shares no ancestor with M_B1
+        # A1a can match M_A1 in "metrics" (M_A1 is its direct descendant)
+        # but has no match for M_B1 in "other" (different lineage chain).
         inputs = {
             "passthrough": [ids["A1a"]],
             "metrics": [ids["M_A1"]],
@@ -857,8 +856,8 @@ class TestMatchInputsToPrimary:
             "passthrough", inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
-        # A1a matches M_A1 in "metrics" but M_B1 in "other" has no common
-        # ancestor with A1a, so the match is incomplete -> excluded
+        # A1a matches M_A1 in "metrics" but M_B1 in "other" has no directed
+        # path to A1a, so the match is incomplete -> excluded
         assert len(result["passthrough"]) == 0
         assert len(result["metrics"]) == 0
         assert len(result["other"]) == 0
@@ -867,7 +866,7 @@ class TestMatchInputsToPrimary:
         """No matches at all returns empty aligned lists."""
         ids = mock_artifact_store._test_ids
 
-        # A1a vs M_B1: no common ancestor
+        # A1a vs M_B1: no directed path between them
         inputs = {
             "passthrough": [ids["A1a"]],
             "metrics": [ids["M_B1"]],
