@@ -1,10 +1,11 @@
-"""Artisan curator operations: Filter, Merge, Ingest, InteractiveFilter."""
+"""Artisan curator operations: Filter, Merge, Ingest, InteractiveFilter, DeclareLineage."""
 
 from __future__ import annotations
 
 from artisan.operations.curator.consolidate_appendables import (
     ConsolidateAppendables,
 )
+from artisan.operations.curator.declare_lineage import DeclareLineage
 from artisan.operations.curator.filter import Filter
 from artisan.operations.curator.ingest_data import IngestData
 from artisan.operations.curator.ingest_files import IngestFiles
@@ -14,6 +15,7 @@ from artisan.operations.curator.merge import Merge
 
 __all__ = [
     "ConsolidateAppendables",
+    "DeclareLineage",
     "Filter",
     "IngestData",
     "IngestFiles",

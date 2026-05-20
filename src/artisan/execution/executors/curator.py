@@ -214,6 +214,7 @@ def _handle_passthrough_result(
     from artisan.execution.staging.parquet_writer import (
         StagingResult,
         _create_staging_path,
+        _stage_artifact_edges,
         _stage_execution,
     )
 
@@ -225,6 +226,18 @@ def _handle_passthrough_result(
         operation_name=execution_context.operation_name,
         fs=execution_context.fs,
     )
+    if result.lineage_edges:
+        # Stamp the executor-assigned execution_run_id onto each edge.
+        # Ops build edges with a sentinel run_id (they don't know it yet)
+        # and the executor finalizes it here, mirroring the artifact-result
+        # path where the run_id is also injected after the op returns.
+        stamped_edges = [
+            edge.model_copy(
+                update={"execution_run_id": execution_context.execution_run_id}
+            )
+            for edge in result.lineage_edges
+        ]
+        _stage_artifact_edges(stamped_edges, staging_path, execution_context.fs)
     execution_edges = build_execution_edges(
         execution_run_id=execution_context.execution_run_id,
         inputs=inputs,

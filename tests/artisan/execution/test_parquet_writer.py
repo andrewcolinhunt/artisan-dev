@@ -556,16 +556,20 @@ class TestJsonDefault:
         pytest.param("s3", marks=pytest.mark.integration),
     ]
 )
-def backend_fs(request, tmp_path, s3_fs):
+def backend_fs(request, tmp_path):
     """Yield ``(fs, uri_prefix)`` for both local and s3 backends.
 
     Inlined here because ``tests/artisan/execution/`` does not share the
     storage-layer ``backend_fs`` fixture. The ``s3`` param carries the
-    ``integration`` marker so ``test-unit`` stays MinIO-free.
+    ``integration`` marker so ``test-unit`` stays MinIO-free. ``s3_fs``
+    is resolved lazily via ``request.getfixturevalue`` so the local-only
+    run never instantiates MinIO via testcontainers (which leaks a
+    Docker UNIX socket on session teardown when the daemon isn't
+    reachable).
     """
     if request.param == "local":
         return LocalFileSystem(), str(tmp_path)
-    fs, _, uri_prefix = s3_fs
+    fs, _, uri_prefix = request.getfixturevalue("s3_fs")
     return fs, uri_prefix
 
 

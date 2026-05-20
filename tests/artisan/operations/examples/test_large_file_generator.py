@@ -111,13 +111,21 @@ class TestLargeFileGenerator:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(params=["local", "s3"])
-def backend_env(request, tmp_path, s3_fs):
+@pytest.fixture(
+    params=[
+        pytest.param("local"),
+        pytest.param("s3", marks=pytest.mark.integration),
+    ]
+)
+def backend_env(request, tmp_path):
     """Yield ``(fs, storage, files_root, working_root)`` for both backends.
 
     Inline here because ``tests/artisan/operations/examples/`` does not
-    share the storage-layer ``backend_fs`` fixture. The s3 param skips
-    cleanly when MinIO is unavailable via ``s3_fs``.
+    share the storage-layer ``backend_fs`` fixture. ``s3_fs`` is
+    resolved lazily via ``request.getfixturevalue`` so the local-only
+    run never instantiates MinIO via testcontainers — that path leaks
+    a Docker UNIX socket on session teardown when the daemon isn't
+    reachable. The s3 param skips cleanly when MinIO is unavailable.
     """
     working = tmp_path / "working"
     working.mkdir()
@@ -130,7 +138,7 @@ def backend_env(request, tmp_path, s3_fs):
             str(files_root),
             str(working),
         )
-    fs, storage, uri_prefix = s3_fs
+    fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
     return fs, storage, f"{uri_prefix}/files", str(working)
 
 

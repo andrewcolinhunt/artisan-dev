@@ -24,20 +24,22 @@ from artisan.utils.hashing import compute_content_hash
         pytest.param("s3", marks=pytest.mark.integration),
     ]
 )
-def backend_fs(request, tmp_path, s3_fs):
+def backend_fs(request, tmp_path):
     """Yield ``(fs, StorageConfig, uri_prefix)`` for both backends.
 
     Module-level so ``TestConsolidateBasicExecution`` and
     ``TestConsolidateAppendablesBackendParametrized`` share the same
     parametrization. Inlined here because this test file lives outside
     ``tests/artisan/storage/`` (where the shared fixture is defined);
-    only ``s3_fs`` (from the root ``tests/conftest.py``) is needed to
-    stay in scope. The ``s3`` param carries the ``integration`` marker
-    so ``test-unit`` stays MinIO-free.
+    ``s3_fs`` (from the root ``tests/conftest.py``) is resolved lazily
+    via ``request.getfixturevalue`` only on the ``s3`` branch so the
+    ``local`` runs (under ``test-unit``) don't boot MinIO via
+    testcontainers — that path leaks a Docker UNIX socket on session
+    teardown when the daemon isn't reachable.
     """
     if request.param == "local":
         return LocalFileSystem(), StorageConfig(), str(tmp_path)
-    return s3_fs
+    return request.getfixturevalue("s3_fs")
 
 
 def _df(artifact_ids: list[str]) -> pl.DataFrame:

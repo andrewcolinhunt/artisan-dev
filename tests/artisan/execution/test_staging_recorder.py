@@ -108,17 +108,25 @@ class TestRecordExecutionFailure:
         assert result.execution_run_id == "a" * 32
 
 
-@pytest.fixture(params=["local", "s3"])
-def backend_fs(request, tmp_path, s3_fs):
+@pytest.fixture(
+    params=[
+        pytest.param("local"),
+        pytest.param("s3", marks=pytest.mark.integration),
+    ]
+)
+def backend_fs(request, tmp_path):
     """Yield ``(fs, uri_prefix)`` for both local and s3 backends.
 
     Inlined here because ``tests/artisan/execution/`` does not share the
-    storage-layer ``backend_fs`` fixture. S3 params skip cleanly when MinIO
-    is unavailable (handled by the session-scoped ``s3_fs`` fixture).
+    storage-layer ``backend_fs`` fixture. ``s3_fs`` is resolved lazily
+    via ``request.getfixturevalue`` so the local-only run never
+    instantiates MinIO via testcontainers (which leaks a Docker UNIX
+    socket on session teardown when the daemon isn't reachable). S3
+    params skip cleanly when MinIO is unavailable.
     """
     if request.param == "local":
         return LocalFileSystem(), str(tmp_path)
-    fs, _, uri_prefix = s3_fs
+    fs, _, uri_prefix = request.getfixturevalue("s3_fs")
     return fs, uri_prefix
 
 
