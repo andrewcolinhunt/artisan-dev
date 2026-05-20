@@ -293,6 +293,203 @@ def test_with_associated(pipeline_env: dict[str, str]):
     assert len(output_ids) == 2
 
 
+class DualInputDataLineage(OperationDefinition):
+    """Dual-input op accepting two data roles; pairing driven by per-step group_by.
+
+    Used by the sibling-collision regression test, where both primary and
+    secondary are data artifacts from chained ``DataTransformer`` steps.
+    Output bytes concatenate both inputs so each (primary, secondary) pair
+    produces a distinct ``artifact_id``.
+    """
+
+    name = "dual_input_data_lineage"
+    description = "Pair two data inputs with the chosen grouping strategy"
+
+    class InputRole(StrEnum):
+        primary = "primary"
+        secondary = "secondary"
+
+    class OutputRole(StrEnum):
+        result = "result"
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.primary: InputSpec(artifact_type="data"),
+        InputRole.secondary: InputSpec(artifact_type="data"),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type="data",
+            infer_lineage_from={"inputs": ["primary", "secondary"]},
+        ),
+    }
+
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_data_lineage")
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        return {
+            role: PerArtifact([a.materialized_path for a in artifacts])
+            for role, artifacts in inputs.input_artifacts.items()
+        }
+
+    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+        out_dir = inputs.execute_dir
+        os.makedirs(out_dir, exist_ok=True)
+
+        primary_paths = inputs.inputs.get("primary", [])
+        secondary_paths = inputs.inputs.get("secondary", [])
+        if isinstance(primary_paths, (str, Path)):
+            primary_paths = [primary_paths]
+        if isinstance(secondary_paths, (str, Path)):
+            secondary_paths = [secondary_paths]
+
+        primary = Path(primary_paths[0])
+        secondary = Path(secondary_paths[0])
+        out_path = Path(out_dir) / f"{primary.stem}__{secondary.stem}.bin"
+        out_path.write_bytes(primary.read_bytes() + b"\n---\n" + secondary.read_bytes())
+        return {}
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        drafts = []
+        for f in inputs.file_outputs:
+            if f.endswith(".bin"):
+                drafts.append(
+                    DataArtifact.draft(
+                        content=Path(f).read_bytes(),
+                        original_name=os.path.basename(f),
+                        step_number=inputs.step_number,
+                    )
+                )
+        return ArtifactResult(success=True, artifacts={"result": drafts})
+
+
+def test_lineage_grouping_sibling_collision_deterministic(
+    pipeline_env: dict[str, str],
+):
+    """LINEAGE pairs each grandchild with its direct-parent sibling.
+
+    Pipeline shape (the bug case the directional matcher fixes):
+
+        Step 0: DataGenerator(count=1)            → 1 root R
+        Step 1: DataTransformer(variants=3) on R  → 3 siblings S_1..S_3
+                                                     (each ← R)
+        Step 2: DataTransformer(variants=3)
+                  on [S_1, S_2, S_3]              → 9 grandchildren G_i_j
+                                                     (each ← its S_i)
+        Step 3: DualInputCrossProduct with
+                  group_by=LINEAGE,
+                  primary=siblings,
+                  secondary=grandchildren        → 9 pairs
+
+    Under the old symmetric matcher, every grandchild shared the root
+    R with every sibling, so pair assignment was nondeterministic. The
+    directional matcher walks back from each grandchild through its
+    one directed-parent sibling, producing deterministic pairings.
+
+    Assertion: every step-3 output has incoming edges from both its
+    secondary grandchild AND that grandchild's actual parent sibling
+    (not a different sibling sharing only the root).
+    """
+    delta_root = pipeline_env["delta_root"]
+
+    pipeline = PipelineManager.create(
+        name="test_lineage_sibling_collision",
+        delta_root=delta_root,
+        staging_root=pipeline_env["staging_root"],
+        working_root=pipeline_env["working_root"],
+    )
+
+    step0 = pipeline.run(
+        DataGenerator,
+        params={"count": 1, "seed": 42},
+        step_runner=Runner.LOCAL,
+    )
+    # noise_amplitude > 0 so each variant produces distinct content
+    # (and therefore a distinct content-addressed artifact_id).
+    step1 = pipeline.run(
+        DataTransformer,
+        inputs={"dataset": step0.output("datasets")},
+        params={
+            "scale_factor": 1.5,
+            "noise_amplitude": 0.1,
+            "variants": 3,
+            "seed": 100,
+        },
+        step_runner=Runner.LOCAL,
+    )
+    step2 = pipeline.run(
+        DataTransformer,
+        inputs={"dataset": step1.output("dataset")},
+        params={
+            "scale_factor": 2.0,
+            "noise_amplitude": 0.1,
+            "variants": 3,
+            "seed": 200,
+        },
+        step_runner=Runner.LOCAL,
+    )
+    pipeline.run(
+        DualInputDataLineage,
+        inputs={
+            "primary": step1.output("dataset"),
+            "secondary": step2.output("dataset"),
+        },
+        group_by=GroupByStrategy.LINEAGE,
+        step_runner=Runner.LOCAL,
+    )
+
+    result = pipeline.finalize()
+    assert result["overall_success"]
+
+    # 3 siblings, 9 grandchildren, 9 pairings = 9 step-3 executions/outputs.
+    assert count_executions_by_step(delta_root, 3) == 9
+    assert count_artifacts_by_step(delta_root, 3) == 9
+
+    # Build the actual parent map from artifact_edges: each grandchild
+    # (step 2) has exactly one direct sibling parent (step 1).
+    siblings = set(get_execution_outputs(delta_root, 1, "dataset"))
+    grandchildren = set(get_execution_outputs(delta_root, 2, "dataset"))
+    assert len(siblings) == 3
+    assert len(grandchildren) == 9
+
+    grandchild_edges = load_artifact_edges(delta_root, list(grandchildren))
+    grandchild_to_parent: dict[str, str] = {}
+    for row in grandchild_edges.iter_rows(named=True):
+        if row["source_artifact_id"] in siblings:
+            grandchild_to_parent[row["target_artifact_id"]] = row[
+                "source_artifact_id"
+            ]
+    assert len(grandchild_to_parent) == 9, (
+        "Each grandchild must have exactly one sibling parent edge"
+    )
+
+    # Each step-3 output's incoming edges identify which (primary, secondary)
+    # pair the matcher chose. Assert primary IS grandchild's actual parent
+    # sibling — not a different sibling that only shares the root.
+    pair_outputs = get_execution_outputs(delta_root, 3, "result")
+    pair_edges = load_artifact_edges(delta_root, pair_outputs)
+    by_output: dict[str, dict[str, str]] = {}
+    for row in pair_edges.iter_rows(named=True):
+        src = row["source_artifact_id"]
+        tgt = row["target_artifact_id"]
+        if src in siblings:
+            by_output.setdefault(tgt, {})["primary"] = src
+        elif src in grandchildren:
+            by_output.setdefault(tgt, {})["secondary"] = src
+
+    assert len(by_output) == 9
+    for output_id, roles in by_output.items():
+        assert "primary" in roles, f"output {output_id} missing primary edge"
+        assert "secondary" in roles, f"output {output_id} missing secondary edge"
+        expected_parent = grandchild_to_parent[roles["secondary"]]
+        assert roles["primary"] == expected_parent, (
+            f"output {output_id}: secondary grandchild {roles['secondary']} "
+            f"was paired with sibling {roles['primary']}, but its actual "
+            f"parent sibling is {expected_parent}. The matcher chose a "
+            "different sibling — the sibling-collision bug is back."
+        )
+
+
 # =============================================================================
 # CROSS_PRODUCT grouping via per-step override
 # =============================================================================
