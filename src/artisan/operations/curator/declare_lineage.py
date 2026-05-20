@@ -21,11 +21,12 @@ from artisan.execution.inputs.grouping import (
     _match_cross_product,
     _match_zip,
 )
+from artisan.execution.lineage.enrich import build_artifact_edges_from_store
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_result import PassthroughResult
+from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -173,22 +174,23 @@ class DeclareLineage(OperationDefinition):
             pairs, parent_ids, child_ids, artifact_store
         )
 
-        type_map = artifact_store.provenance.load_type_map(
-            list({*parent_ids, *child_ids})
-        )
-        edges = [
-            ArtifactProvenanceEdge(
-                execution_run_id=_SENTINEL_RUN_ID,
-                source_artifact_id=parent_id,
-                target_artifact_id=child_id,
-                source_artifact_type=type_map.get(parent_id, "UNKNOWN"),
-                target_artifact_type=type_map.get(child_id, "UNKNOWN"),
+        # Reuse the framework's edge builder so type resolution and the
+        # UNKNOWN fallback match every other edge-emitting code path.
+        source_target_pairs = [
+            SourceTargetPair(
+                source=parent_id,
+                target=child_id,
                 source_role=_SOURCE_ROLE,
                 target_role=_TARGET_ROLE,
                 group_id=None,
             )
             for parent_id, child_id in new_pairs
         ]
+        edges = build_artifact_edges_from_store(
+            source_target_pairs=source_target_pairs,
+            execution_run_id=_SENTINEL_RUN_ID,
+            artifact_store=artifact_store,
+        )
 
         return PassthroughResult(
             success=True,
