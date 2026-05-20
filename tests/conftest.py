@@ -66,6 +66,78 @@ sys.unraisablehook = _quiet_socket_resourcewarning_hook
 # modern boto3 sends only CRC32, breaking recursive bucket cleanup).
 _MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
 
+# Common Docker UNIX socket locations, in probe order. Used by
+# ``_detect_minio_unavailable`` to tell the user which runtime is missing.
+_DOCKER_SOCKET_CANDIDATES: tuple[str, ...] = (
+    os.path.expanduser("~/.docker/run/docker.sock"),  # Docker Desktop (macOS)
+    "/var/run/docker.sock",  # Linux default / Docker Desktop classic
+    os.path.expanduser("~/.colima/default/docker.sock"),  # Colima
+    os.path.expanduser("~/.orbstack/run/docker.sock"),  # OrbStack
+)
+
+# Set by ``minio_endpoint`` when it yields None, read by ``s3_fs`` to
+# produce a specific skip reason. Module-level so it survives across the
+# session-scoped fixture's yield without re-running setup.
+_MINIO_SKIP_REASON: dict[str, str] = {}
+
+# Boilerplate appended to every skip reason so the message is actionable
+# at a glance.
+_MINIO_HOWTO = (
+    "Start Docker Desktop / OrbStack / Colima, or "
+    "`brew install minio/stable/minio && minio server ~/minio-data &` "
+    "and `export ARTISAN_S3_ENDPOINT=http://127.0.0.1:9000` to bypass."
+)
+
+
+def _probe_docker_socket() -> str | None:
+    """Return the path of a reachable Docker UNIX socket, or None."""
+    docker_host = os.environ.get("DOCKER_HOST", "")
+    candidates: list[str] = []
+    if docker_host.startswith("unix://"):
+        candidates.append(docker_host.removeprefix("unix://"))
+    candidates.extend(_DOCKER_SOCKET_CANDIDATES)
+
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(1.0)
+            sock.connect(path)
+            sock.close()
+            return path
+        except OSError:
+            continue
+    return None
+
+
+def _detect_minio_unavailable() -> str | None:
+    """Return a skip reason if MinIO can't be brought up locally, else None.
+
+    Classifies the failure mode so the user knows what to fix:
+    testcontainers missing, Docker daemon unreachable, or the MinIO
+    container itself failing to come up.
+    """
+    try:
+        import testcontainers.minio  # noqa: F401
+    except ImportError as exc:
+        return (
+            f"testcontainers package not installed ({exc.name}). "
+            f"Install dev deps (`pixi install -e dev`), or set "
+            f"ARTISAN_S3_ENDPOINT to a long-lived MinIO/S3 instance."
+        )
+
+    docker_host = os.environ.get("DOCKER_HOST", "")
+    if docker_host and not docker_host.startswith("unix://"):
+        # TCP-based Docker context — can't easily probe without docker-py;
+        # let MinioContainer try and bubble up its error if it fails.
+        return None
+
+    if _probe_docker_socket() is None:
+        tried = ", ".join(_DOCKER_SOCKET_CANDIDATES)
+        return f"No Docker daemon detected (probed {tried}). {_MINIO_HOWTO}"
+    return None
+
 
 @pytest.fixture(scope="session")
 def minio_endpoint() -> Iterator[dict[str, str] | None]:
@@ -73,8 +145,9 @@ def minio_endpoint() -> Iterator[dict[str, str] | None]:
 
     Honors ``ARTISAN_S3_ENDPOINT`` for developer-owned instances; otherwise
     boots a MinIO container via testcontainers. Yields ``None`` when boot
-    fails so dependent fixtures can ``pytest.skip`` cleanly without
-    breaking unit tests that don't need S3.
+    fails — and stashes a specific skip reason in ``_MINIO_SKIP_REASON``
+    so dependent fixtures surface *why* MinIO is unavailable (no Docker,
+    no testcontainers, image pull failed) instead of just "unavailable".
     """
     # Disable EC2 IMDS probing in this test process so s3fs/boto3 don't
     # spend ~3 s timing out against 169.254.169.254 on every fixture
@@ -100,11 +173,14 @@ def minio_endpoint() -> Iterator[dict[str, str] | None]:
         }
         return
 
-    try:
-        from testcontainers.minio import MinioContainer
-    except ImportError:
+    skip_reason = _detect_minio_unavailable()
+    if skip_reason is not None:
+        _MINIO_SKIP_REASON["reason"] = skip_reason
+        logging.getLogger(__name__).warning(skip_reason)
         yield None
         return
+
+    from testcontainers.minio import MinioContainer
 
     try:
         with MinioContainer(image=_MINIO_IMAGE) as minio:
@@ -116,12 +192,12 @@ def minio_endpoint() -> Iterator[dict[str, str] | None]:
                 "secret_key": minio.secret_key,
             }
     except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "MinIO container failed to start: %s. S3-parametrized tests "
-            "will skip. Set ARTISAN_S3_ENDPOINT to use a long-running "
-            "MinIO instance instead.",
-            exc,
+        reason = (
+            f"MinIO container failed to start ({type(exc).__name__}: {exc}). "
+            f"{_MINIO_HOWTO}"
         )
+        _MINIO_SKIP_REASON["reason"] = reason
+        logging.getLogger(__name__).warning(reason)
         yield None
 
 
@@ -130,11 +206,14 @@ def s3_fs(minio_endpoint):
     """Per-test S3 filesystem with an isolated bucket on the session MinIO.
 
     Returns a ``(fs, storage_config, uri_prefix)`` tuple. Bucket is created
-    in setup and torn down at test end. Skips cleanly when the session
-    MinIO fixture is unavailable.
+    in setup and torn down at test end. Skips with a specific reason
+    (no Docker, no testcontainers, image pull failed, etc.) read from
+    ``_MINIO_SKIP_REASON`` so the user knows what to fix.
     """
     if minio_endpoint is None:
-        pytest.skip("MinIO step_runner unavailable")
+        pytest.skip(
+            _MINIO_SKIP_REASON.get("reason", "MinIO unavailable (reason unknown)")
+        )
 
     import s3fs
 
