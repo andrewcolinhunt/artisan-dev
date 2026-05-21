@@ -81,7 +81,9 @@ class ArtisanError(Exception):
     Extends ``Exception`` (not ``ValueError``) to avoid MRO surprises when
     callers catch ``ValueError`` for unrelated reasons. Use
     ``raise ArtisanError(...) from caught_exc`` to chain causes; ``to_dict``
-    walks ``__cause__`` one level and serializes it under the ``cause`` key.
+    serializes ``__cause__`` under the ``cause`` key — recursively when the
+    cause is another ``ArtisanError`` (depth-capped at 5) so the inner
+    envelope's ``code`` and ``recovery_hint`` survive wrapping.
 
     Domain-specific subclasses (e.g. ``ArtifactValidationError``) inherit
     from this and supply their own ``code`` / ``recovery_hint`` in
@@ -147,22 +149,42 @@ class ArtisanError(Exception):
         """The coarse error category."""
         return self.envelope.error_type
 
-    def to_dict(self, include_cause: bool = True) -> dict[str, Any]:
+    def to_dict(
+        self,
+        include_cause: bool = True,
+        _depth: int = 0,
+        _max_depth: int = 5,
+    ) -> dict[str, Any]:
         """Serialize the envelope (and optional cause) to a plain dict.
+
+        When ``__cause__`` is itself an ``ArtisanError``, its envelope is
+        serialized recursively (depth capped at ``_max_depth``) so the
+        inner ``code`` / ``recovery_hint`` / ``suggestions`` survive
+        wrapping. Other causes serialize as ``{type, message, traceback}``.
 
         Args:
             include_cause: When True and ``__cause__`` is set, include the
-                cause type, message, and traceback under the ``cause`` key.
+                cause under the ``cause`` key.
+            _depth: Current recursion depth (internal; do not pass).
+            _max_depth: Maximum recursion depth for nested ArtisanError
+                causes (internal; do not pass).
 
         Returns:
             A dict shaped like the envelope, with an optional ``cause`` key.
         """
         data = self.envelope.model_dump(exclude_none=False)
-        if include_cause and self.__cause__ is not None:
+        if not include_cause or self.__cause__ is None:
+            return data
+        cause = self.__cause__
+        if isinstance(cause, ArtisanError) and _depth + 1 < _max_depth:
+            data["cause"] = cause.to_dict(
+                include_cause=True, _depth=_depth + 1, _max_depth=_max_depth
+            )
+        else:
             data["cause"] = {
-                "type": type(self.__cause__).__name__,
-                "message": str(self.__cause__),
-                "traceback": format_error(self.__cause__),
+                "type": type(cause).__name__,
+                "message": str(cause),
+                "traceback": format_error(cause),
             }
         return data
 
@@ -188,6 +210,15 @@ class ErrorCode:
     MISSING_REQUIRED_INPUT = "missing_required_input"
     INPUT_TYPE_MISMATCH = "input_type_mismatch"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
+    UNKNOWN_RESOURCE_KEY = "unknown_resource_key"
+    UNKNOWN_EXECUTION_KEY = "unknown_execution_key"
+    UNKNOWN_ENVIRONMENT_KEY = "unknown_environment_key"
+    UNKNOWN_TOOL_KEY = "unknown_tool_key"
+    UNKNOWN_COMPUTE_PROVIDER_KEY = "unknown_compute_provider_key"
+    UNKNOWN_COMPUTE_RESOURCES_KEY = "unknown_compute_resources_key"
+    ENVIRONMENT_NOT_CONFIGURED = "environment_not_configured"
+    NO_TOOL_TO_OVERRIDE = "no_tool_to_override"
+    INACTIVE_PROVIDER_CONFIGURED = "inactive_provider_configured"
 
     # config — environment/setup
     OP_PARAMS_UNDOCUMENTED = "op_params_undocumented"
@@ -197,6 +228,9 @@ class ErrorCode:
     OP_EXECUTE_FAILED = "op_execute_failed"
     ARTIFACT_VALIDATION_FAILED = "artifact_validation_failed"
     LINEAGE_INCOMPLETE = "lineage_incomplete"
+    LINEAGE_INTEGRITY_FAILED = "lineage_integrity_failed"
+    PASSTHROUGH_VALIDATION_FAILED = "passthrough_validation_failed"
+    EXTERNAL_TOOL_FAILED = "external_tool_failed"
 
     # io
     ARTIFACT_NOT_FOUND = "artifact_not_found"
