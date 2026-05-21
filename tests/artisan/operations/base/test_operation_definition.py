@@ -407,3 +407,56 @@ class TestRoleEnumValidation:
         # Should appear exactly once
         assert doc.count("Input Roles:") == 1
         assert doc.count("Output Roles:") == 1
+
+
+class TestKindDerivation:
+    """``_kind`` classifies ops by whether ``execute_curator`` is overridden."""
+
+    def test_creator_when_only_execute_overridden(self) -> None:
+        from artisan.operations.examples.data_generator import DataGenerator
+        from artisan.operations.examples.data_transformer import DataTransformer
+
+        assert DataTransformer._kind() == "creator"
+        assert DataGenerator._kind() == "creator"
+
+    def test_curator_when_execute_curator_overridden(self) -> None:
+        from artisan.operations.curator.filter import Filter
+        from artisan.operations.curator.merge import Merge
+
+        assert Filter._kind() == "curator"
+        assert Merge._kind() == "curator"
+
+
+class TestIntrospectionPayloads:
+    """``to_summary`` and ``to_metadata`` shape the agent-facing payloads."""
+
+    def test_to_summary_carries_roles_and_kind(self) -> None:
+        from artisan.operations.examples.data_transformer import DataTransformer
+
+        summary = DataTransformer.to_summary()
+        assert summary.name == "data_transformer"
+        assert summary.kind == "creator"
+        assert summary.input_roles == ["dataset"]
+        assert summary.output_roles == ["dataset"]
+        assert summary.schema_version == "1"
+
+    def test_to_metadata_includes_params_schema_and_source_module(self) -> None:
+        from artisan.operations.examples.data_transformer import DataTransformer
+
+        meta = DataTransformer.to_metadata()
+        assert meta.source_module.startswith("artisan.operations.examples")
+        assert "scale_factor" in meta.params_schema["properties"]
+        assert meta.inputs["dataset"].artifact_type == "data"
+        assert meta.inputs["dataset"].materialize is True
+        assert meta.outputs["dataset"].artifact_type == "data"
+
+    def test_to_metadata_parameter_less_op_yields_empty_params_schema(self) -> None:
+        from artisan.operations.curator.merge import Merge
+
+        meta = Merge.to_metadata()
+        assert meta.kind == "curator"
+        assert meta.params_schema == {
+            "type": "object",
+            "title": "Params",
+            "properties": {},
+        }
