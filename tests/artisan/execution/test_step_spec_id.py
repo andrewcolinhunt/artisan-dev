@@ -195,11 +195,25 @@ class TestComputeStepSpecId:
 
 
 class _ParamsV1(BaseModel):
+    """Mock params for ``_OpV1``.
+
+    Attributes:
+        temperature: Mock temperature.
+        max_steps: Mock max steps.
+    """
+
     temperature: float = Field(default=0.5)
     max_steps: int = Field(default=100)
 
 
 class _ParamsV2(BaseModel):
+    """Mock params for ``_OpV2``.
+
+    Attributes:
+        temperature: Mock temperature.
+        max_steps: Mock max steps.
+    """
+
     temperature: float = Field(default=0.8)
     max_steps: int = Field(default=100)
 

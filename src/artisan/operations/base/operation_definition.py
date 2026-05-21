@@ -11,20 +11,28 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
+    Literal,
 )
 
 if TYPE_CHECKING:
     import polars as pl
 
+    from artisan.registry.models import OperationMetadata, OperationSummary
     from artisan.storage.core.artifact_store import ArtifactStore
 
 from pydantic import BaseModel, ConfigDict
 
+from artisan.errors import ArtisanError, ErrorCode
+from artisan.operations.base._param_docs import (
+    _extract_arg_descriptions,
+    _params_class,
+)
 from artisan.operations.base._role_docs import (
     append_role_docs,
     get_registered,
     validate_role_enums,
 )
+from artisan.operations.base.operation_example import OperationExample
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, CuratorResult
@@ -70,10 +78,23 @@ class OperationDefinition(BaseModel):
     )
 
     _registry: ClassVar[dict[str, type[OperationDefinition]]] = {}
+    _name_collisions: ClassVar[list[tuple[str, str, str]]] = []
+    """Dropped registration attempts: (name, first_module, second_module).
+
+    Populated by ``__pydantic_init_subclass__`` whenever a second class tries
+    to register under an existing name. First registration wins; the second
+    is dropped. ``artisan.registry.discover()`` reads this list to populate
+    ``DiscoveryReport.name_collisions``.
+    """
 
     # ---------- Metadata ----------
     name: ClassVar[str] = ""
     description: ClassVar[str] = ""
+    examples: ClassVar[list[OperationExample]] = []
+    """Author-declared usage examples. Surfaced by ``artisan.registry.examples(name)``."""
+
+    tags: ClassVar[list[str]] = []
+    """Free-form tags for agent-side filtering (e.g. ``"source"``, ``"transform"``)."""
 
     # ---------- Inputs ----------
     inputs: ClassVar[dict[str, InputSpec]] = {}
@@ -358,10 +379,110 @@ class OperationDefinition(BaseModel):
 
         validate_role_enums(cls, "operation")
         append_role_docs(cls)
+        cls._validate_params_documented()
 
-        # Register in operation registry (concrete ops only)
+        # Register in operation registry (concrete ops only). First
+        # registration wins; collisions are recorded for discovery.
         if cls.name:
-            OperationDefinition._registry[cls.name] = cls
+            existing = OperationDefinition._registry.get(cls.name)
+            if existing is None:
+                OperationDefinition._registry[cls.name] = cls
+            elif existing is not cls:
+                OperationDefinition._name_collisions.append(
+                    (cls.name, existing.__module__, cls.__module__)
+                )
+
+    @classmethod
+    def _validate_params_documented(cls) -> None:
+        """Fail-fast if any ``Params`` field lacks a description source.
+
+        A description must come from either ``Field(description=...)`` or
+        the class docstring (``Attributes:`` or ``Args:`` section). Parameter-less
+        ops and ops with empty ``Params`` short-circuit; otherwise import
+        fails with ``ArtisanError(code=OP_PARAMS_UNDOCUMENTED)`` before the
+        op reaches the registry — so the gap surfaces at the contributor's
+        editor, not on the agent wire.
+        """
+        params_cls = _params_class(cls)
+        if params_cls is None or not params_cls.model_fields:
+            return
+        described = _extract_arg_descriptions(params_cls)
+        missing = [
+            name
+            for name, f in params_cls.model_fields.items()
+            if not f.description and name not in described
+        ]
+        if not missing:
+            return
+        raise ArtisanError(
+            code=ErrorCode.OP_PARAMS_UNDOCUMENTED,
+            error_type="config",
+            operation_name=cls.name,
+            message=(
+                f"Operation {cls.name!r}: Params fields {missing} have no "
+                f"description. Add a Google-style 'Attributes:' section to "
+                f"the Params docstring (or 'Args:'), or use "
+                f"Field(description=...) per field."
+            ),
+            hint="Document each Params field.",
+            recovery_hint="CHECK_INPUT",
+        )
+
+    # ---------- Introspection (agent-facing) ----------
+    @classmethod
+    def _kind(cls) -> Literal["creator", "curator"]:
+        """Return ``"curator"`` if ``execute_curator`` is overridden, else ``"creator"``."""
+        if cls.execute_curator is not OperationDefinition.execute_curator:
+            return "curator"
+        return "creator"
+
+    @classmethod
+    def to_summary(cls) -> OperationSummary:
+        """Return the lightweight ``OperationSummary`` for ``list_operations()``."""
+        from artisan.registry.models import OperationSummary
+
+        return OperationSummary(
+            name=cls.name,
+            kind=cls._kind(),
+            description=cls.description,
+            input_roles=list(cls.inputs.keys()),
+            output_roles=list(cls.outputs.keys()),
+            tags=list(cls.tags),
+        )
+
+    @classmethod
+    def to_metadata(cls) -> OperationMetadata:
+        """Return the full ``OperationMetadata`` for ``describe(name)``."""
+        from artisan.registry.models import (
+            InputSpecMetadata,
+            OperationMetadata,
+            OutputSpecMetadata,
+        )
+        from artisan.registry.schemas import params_schema_for
+
+        return OperationMetadata(
+            **cls.to_summary().model_dump(),
+            inputs={
+                role: InputSpecMetadata(
+                    artifact_type=spec.artifact_type,
+                    required=spec.required,
+                    description=spec.description,
+                    materialize=spec.materialize,
+                )
+                for role, spec in cls.inputs.items()
+            },
+            outputs={
+                role: OutputSpecMetadata(
+                    artifact_type=spec.artifact_type,
+                    required=spec.required,
+                    description=spec.description,
+                )
+                for role, spec in cls.outputs.items()
+            },
+            params_schema=params_schema_for(cls),
+            examples=list(cls.examples),
+            source_module=cls.__module__,
+        )
 
     # ---------- Registry ----------
     @classmethod

@@ -305,14 +305,16 @@ def _validate_params(
     operation: _OpLike,
     params: dict[str, Any],
 ) -> None:
-    """Raise ValueError if any param keys are unrecognized by the operation."""
-    if "params" in operation.model_fields:
-        params_cls = operation.model_fields["params"].annotation
-        valid_keys = set(params_cls.model_fields) if params_cls is not None else set()
-    else:
-        # Flat fields — exclude ClassVar and base fields
-        base_fields = set(OperationDefinition.model_fields)
-        valid_keys = set(operation.model_fields) - base_fields
+    """Raise ValueError if any param keys are unrecognized by the operation.
+
+    Delegates the ``Params`` lookup to
+    ``operations.base._param_docs._params_class`` so all three consumers
+    (registry, fail-fast check, this validator) share one rule.
+    """
+    from artisan.operations.base._param_docs import _params_class
+
+    params_cls = _params_class(operation)
+    valid_keys = set(params_cls.model_fields) if params_cls is not None else set()
     unknown = set(params) - valid_keys
     if unknown:
         msg = (

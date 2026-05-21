@@ -88,6 +88,7 @@ rich = "*"
 beartype = "*"
 pydantic = "*"
 fsspec = "*"
+griffe = "*"          # Google-style docstring parsing for agent-facing schemas
 
 # Workflow orchestration
 prefect = { version = ">=3.6,<4.0", extras = ["dask"] }
