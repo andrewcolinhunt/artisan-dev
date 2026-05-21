@@ -1,9 +1,18 @@
-"""Execution-layer exceptions for artifact, lineage, and passthrough validation."""
+"""Execution-layer exceptions for artifact, lineage, and passthrough validation.
+
+All four classes are ``ArtisanError`` subclasses so they carry the
+agent-recoverable envelope (``code``, ``error_type``, ``recovery_hint``,
+etc.) without changing their existing ``raise <Name>(msg)`` call sites.
+"""
 
 from __future__ import annotations
 
+from typing import Any
 
-class ArtifactValidationError(Exception):
+from artisan.errors import ArtisanError, ErrorCode
+
+
+class ArtifactValidationError(ArtisanError):
     """Raised when artifacts don't match output specs.
 
     This includes:
@@ -13,16 +22,34 @@ class ArtifactValidationError(Exception):
     - Unexpected output roles not declared in specs
     """
 
+    def __init__(self, message: str, **fields: Any) -> None:
+        super().__init__(
+            code=ErrorCode.ARTIFACT_VALIDATION_FAILED,
+            error_type="runtime",
+            message=message,
+            recovery_hint="REPORT_TO_USER",
+            **fields,
+        )
 
-class LineageCompletenessError(Exception):
+
+class LineageCompletenessError(ArtisanError):
     """Raised when artifacts are missing lineage mappings.
 
     Non-orphan outputs (those without infer_lineage_from={"inputs": []})
     must have lineage mappings declaring their source artifacts.
     """
 
+    def __init__(self, message: str, **fields: Any) -> None:
+        super().__init__(
+            code=ErrorCode.LINEAGE_INCOMPLETE,
+            error_type="runtime",
+            message=message,
+            recovery_hint="REPORT_TO_USER",
+            **fields,
+        )
 
-class LineageIntegrityError(Exception):
+
+class LineageIntegrityError(ArtisanError):
     """Raised when lineage references are invalid.
 
     This includes:
@@ -33,8 +60,17 @@ class LineageIntegrityError(Exception):
       in that role — split into separate source_roles instead)
     """
 
+    def __init__(self, message: str, **fields: Any) -> None:
+        super().__init__(
+            code=ErrorCode.LINEAGE_INTEGRITY_FAILED,
+            error_type="runtime",
+            message=message,
+            recovery_hint="REPORT_TO_USER",
+            **fields,
+        )
 
-class PassthroughValidationError(Exception):
+
+class PassthroughValidationError(ArtisanError):
     """Raised when passthrough result validation fails.
 
     This includes:
@@ -42,3 +78,12 @@ class PassthroughValidationError(Exception):
     - Empty artifact ID list for a required output role
     - Invalid artifact ID references
     """
+
+    def __init__(self, message: str, **fields: Any) -> None:
+        super().__init__(
+            code=ErrorCode.PASSTHROUGH_VALIDATION_FAILED,
+            error_type="runtime",
+            message=message,
+            recovery_hint="REPORT_TO_USER",
+            **fields,
+        )
