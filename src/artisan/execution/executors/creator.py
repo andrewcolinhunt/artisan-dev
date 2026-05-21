@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.compute.base import ComputeRouter
 from artisan.execution.compute.routing import create_router
 from artisan.execution.context.builder import build_creator_execution_context
@@ -43,11 +44,38 @@ class _UploadFailure(_PostprocessFailure):
     """
 
 
-class _ExecuteFailure(Exception):
-    """Raised when execute() throws, carrying the formatted error and tool output."""
+class _ExecuteFailure(ArtisanError):
+    """Raised when execute() throws, carrying the formatted error and tool output.
 
-    def __init__(self, error: str, tool_output: str | None = None) -> None:
-        super().__init__(error)
+    Subclass of :class:`ArtisanError` so the failure record persists the
+    structured envelope (``code=OP_EXECUTE_FAILED``,
+    ``recovery_hint=REPORT_TO_USER``) alongside the existing
+    ``tool_output`` attribute. The outer
+    ``except (_PostprocessFailure, _ExecuteFailure)`` route keeps its
+    custom ``tool_output`` extraction; envelope serialization is wired
+    separately via ``record_execution_failure(error_envelope=...)``.
+    """
+
+    def __init__(
+        self,
+        error: str,
+        *,
+        operation_name: str | None = None,
+        step_name: str | None = None,
+        tool_output: str | None = None,
+    ) -> None:
+        super().__init__(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            error_type="runtime",
+            message=error,
+            operation_name=operation_name,
+            step_name=step_name,
+            hint=(
+                "Inspect step logs via artisan_get_step_logs; if the "
+                "underlying error is transient, retry."
+            ),
+            recovery_hint="REPORT_TO_USER",
+        )
         self.tool_output = tool_output
 
 
@@ -131,13 +159,24 @@ def run_creator_lifecycle(
                 prepped.artifact_execute_inputs[0],
                 prepped.sandbox_path,
             )
+        except ArtisanError:
+            # Op raised its own structured error — preserve the inner
+            # envelope (its code / recovery_hint is the actionable one;
+            # wrapping in OP_EXECUTE_FAILED would flatten CHECK_INPUT to
+            # REPORT_TO_USER).
+            raise
         except Exception as exc:
             error = format_error(exc)
             if hasattr(exc, "stdout") and exc.stdout:
                 tail = "\n".join(exc.stdout.splitlines()[-30:])
                 error += f"\n--- tool stdout (last 30 lines) ---\n{tail}"
             tool_output = _read_tool_output(prepped.log_path)
-            raise _ExecuteFailure(error, tool_output=tool_output) from exc
+            raise _ExecuteFailure(
+                error,
+                operation_name=type(prepped.operation).name,
+                step_name=str(unit.step_number),
+                tool_output=tool_output,
+            ) from exc
 
     return post_unit(prepped, [raw_result], runtime_env)
 
@@ -230,6 +269,10 @@ def run_creator_flow(
             operation,
         )
         params_dict = _get_params_dict(operation)
+        # _ExecuteFailure is an ArtisanError; _PostprocessFailure is not
+        # (yet). Persist the envelope where available so the agent gets
+        # the structured shape from artisan_get_step_logs.
+        envelope = exc.to_dict() if isinstance(exc, ArtisanError) else None
         staging_result = record_execution_failure(
             execution_context=execution_context,
             error=error,
@@ -239,9 +282,12 @@ def run_creator_flow(
             user_overrides=user_overrides,
             tool_output=tool_output,
             failure_logs_root=runtime_env.failure_logs_root,
+            error_envelope=envelope,
         )
-    except Exception as exc:
-        error = format_error(exc)
+    except ArtisanError as exc:
+        # Op raised a structured error directly (e.g. INPUT_TYPE_MISMATCH).
+        # Preserve the inner envelope on the failure row.
+        error = str(exc)
         execution_context = _try_build_execution_context(
             execution_run_id,
             unit,
@@ -268,6 +314,52 @@ def run_creator_flow(
                 params=params_dict,
                 user_overrides=user_overrides,
                 failure_logs_root=runtime_env.failure_logs_root,
+                error_envelope=exc.to_dict(),
+            )
+    except Exception as exc:
+        error = format_error(exc)
+        execution_context = _try_build_execution_context(
+            execution_run_id,
+            unit,
+            timestamp_start,
+            worker_id,
+            runtime_env,
+            operation,
+        )
+        if execution_context is None:
+            logger.error("Creator setup failed: %s", error)
+            staging_result = StagingResult(
+                success=False,
+                error=error,
+                execution_run_id=execution_run_id,
+                artifact_ids=[],
+            )
+        else:
+            params_dict = _get_params_dict(operation)
+            # Wrap the unexpected exception in OP_EXECUTE_FAILED so the
+            # agent sees a structured shape on the failure row. Inner
+            # exception preserved as __cause__.
+            wrapped = ArtisanError(
+                code=ErrorCode.OP_EXECUTE_FAILED,
+                error_type="runtime",
+                message=(
+                    f"Operation {type(operation).name!r} failed during "
+                    f"creator setup or unexpected exception."
+                ),
+                operation_name=type(operation).name,
+                step_name=str(unit.step_number),
+                recovery_hint="REPORT_TO_USER",
+            )
+            wrapped.__cause__ = exc
+            staging_result = record_execution_failure(
+                execution_context=execution_context,
+                error=error,
+                inputs=original_inputs,
+                timestamp_end=datetime.now(UTC),
+                params=params_dict,
+                user_overrides=user_overrides,
+                failure_logs_root=runtime_env.failure_logs_root,
+                error_envelope=wrapped.to_dict(),
             )
 
     timings["total"] = round(time.perf_counter() - total_start, 4)
