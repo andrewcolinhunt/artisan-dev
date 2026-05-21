@@ -998,6 +998,7 @@ class TestLoadStepNameMap:
                 "compute_backend": ["local"],
                 "success": [True],
                 "error": [None],
+                "error_envelope": [None],
                 "tool_output": [None],
                 "worker_log": [None],
                 "metadata": ["{}"],
