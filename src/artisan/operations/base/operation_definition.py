@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, ConfigDict
 
+from artisan.errors import ArtisanError, ErrorCode
+from artisan.operations.base._param_docs import _extract_arg_descriptions
 from artisan.operations.base._role_docs import (
     append_role_docs,
     get_registered,
@@ -374,6 +376,7 @@ class OperationDefinition(BaseModel):
 
         validate_role_enums(cls, "operation")
         append_role_docs(cls)
+        cls._validate_params_documented()
 
         # Register in operation registry (concrete ops only). First
         # registration wins; collisions are recorded for discovery.
@@ -385,6 +388,45 @@ class OperationDefinition(BaseModel):
                 OperationDefinition._name_collisions.append(
                     (cls.name, existing.__module__, cls.__module__)
                 )
+
+    @classmethod
+    def _validate_params_documented(cls) -> None:
+        """Fail-fast if any ``Params`` field lacks a description source.
+
+        A description must come from either ``Field(description=...)`` or
+        the class docstring (``Attributes:`` or ``Args:`` section). Parameter-less
+        ops and ops with empty ``Params`` short-circuit; otherwise import
+        fails with ``ArtisanError(code=OP_PARAMS_UNDOCUMENTED)`` before the
+        op reaches the registry — so the gap surfaces at the contributor's
+        editor, not on the agent wire.
+        """
+        field = cls.model_fields.get("params")
+        if field is None or field.annotation is None:
+            return
+        params_cls = field.annotation
+        if not getattr(params_cls, "model_fields", None):
+            return
+        described = _extract_arg_descriptions(params_cls)
+        missing = [
+            name
+            for name, f in params_cls.model_fields.items()
+            if not f.description and name not in described
+        ]
+        if not missing:
+            return
+        raise ArtisanError(
+            code=ErrorCode.OP_PARAMS_UNDOCUMENTED,
+            error_type="config",
+            operation_name=cls.name,
+            message=(
+                f"Operation {cls.name!r}: Params fields {missing} have no "
+                f"description. Add a Google-style 'Attributes:' section to "
+                f"the Params docstring (or 'Args:'), or use "
+                f"Field(description=...) per field."
+            ),
+            hint="Document each Params field.",
+            recovery_hint="CHECK_INPUT",
+        )
 
     # ---------- Introspection (agent-facing) ----------
     @classmethod

@@ -305,14 +305,13 @@ def _validate_params(
     operation: _OpLike,
     params: dict[str, Any],
 ) -> None:
-    """Raise ValueError if any param keys are unrecognized by the operation."""
-    if "params" in operation.model_fields:
-        params_cls = operation.model_fields["params"].annotation
-        valid_keys = set(params_cls.model_fields) if params_cls is not None else set()
-    else:
-        # Flat fields — exclude ClassVar and base fields
-        base_fields = set(OperationDefinition.model_fields)
-        valid_keys = set(operation.model_fields) - base_fields
+    """Raise ValueError if any param keys are unrecognized by the operation.
+
+    Single resolution rule: ``cls.model_fields.get("params")``. If the
+    field is absent the op has no parameters and ``params`` must be empty.
+    """
+    field = operation.model_fields.get("params")
+    valid_keys = set(field.annotation.model_fields) if field is not None else set()
     unknown = set(params) - valid_keys
     if unknown:
         msg = (

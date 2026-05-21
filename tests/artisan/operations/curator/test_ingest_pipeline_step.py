@@ -110,7 +110,9 @@ class TestIngestPipelineStepBasic:
             index_entries=[make_index_entry(aid, "data", step_number=2)],
         )
 
-        op = IngestPipelineStep(source_delta_root=str(source_root), source_step=2)
+        op = IngestPipelineStep(
+            params={"source_delta_root": str(source_root), "source_step": 2}
+        )
         result = op.execute_curator(
             inputs={}, step_number=5, artifact_store=_mock_store()
         )
@@ -142,7 +144,9 @@ class TestIngestPipelineStepBasic:
             ],
         )
 
-        op = IngestPipelineStep(source_delta_root=str(source_root), source_step=1)
+        op = IngestPipelineStep(
+            params={"source_delta_root": str(source_root), "source_step": 1}
+        )
         result = op.execute_curator(
             inputs={}, step_number=5, artifact_store=_mock_store()
         )
@@ -170,7 +174,9 @@ class TestIngestPipelineStepBasic:
             ],
         )
 
-        op = IngestPipelineStep(source_delta_root=str(source_root), source_step=2)
+        op = IngestPipelineStep(
+            params={"source_delta_root": str(source_root), "source_step": 2}
+        )
         result = op.execute_curator(
             inputs={}, step_number=10, artifact_store=_mock_store()
         )
@@ -201,9 +207,11 @@ class TestIngestPipelineStepTypeFilter:
         )
 
         op = IngestPipelineStep(
-            source_delta_root=str(source_root),
-            source_step=1,
-            artifact_type="data",
+            params={
+                "source_delta_root": str(source_root),
+                "source_step": 1,
+                "artifact_type": "data",
+            }
         )
         result = op.execute_curator(
             inputs={}, step_number=5, artifact_store=_mock_store()
@@ -230,7 +238,9 @@ class TestIngestPipelineStepTypeFilter:
             ],
         )
 
-        op = IngestPipelineStep(source_delta_root=str(source_root), source_step=1)
+        op = IngestPipelineStep(
+            params={"source_delta_root": str(source_root), "source_step": 1}
+        )
         result = op.execute_curator(
             inputs={}, step_number=5, artifact_store=_mock_store()
         )
@@ -257,7 +267,9 @@ class TestIngestPipelineStepTypeFilter:
             ],
         )
 
-        op = IngestPipelineStep(source_delta_root=str(source_root), source_step=2)
+        op = IngestPipelineStep(
+            params={"source_delta_root": str(source_root), "source_step": 2}
+        )
         result = op.execute_curator(
             inputs={}, step_number=5, artifact_store=_mock_store()
         )
@@ -274,7 +286,9 @@ class TestIngestPipelineStepErrorHandling:
         """Test failure when source_delta_root does not exist."""
         fake_path = tmp_path / "nonexistent"
 
-        op = IngestPipelineStep(source_delta_root=str(fake_path), source_step=0)
+        op = IngestPipelineStep(
+            params={"source_delta_root": str(fake_path), "source_step": 0}
+        )
         result = op.execute_curator(
             inputs={}, step_number=5, artifact_store=_mock_store()
         )
@@ -295,7 +309,9 @@ class TestIngestPipelineStepErrorHandling:
         )
 
         # Request step 99 which has nothing
-        op = IngestPipelineStep(source_delta_root=str(source_root), source_step=99)
+        op = IngestPipelineStep(
+            params={"source_delta_root": str(source_root), "source_step": 99}
+        )
         result = op.execute_curator(
             inputs={}, step_number=5, artifact_store=_mock_store()
         )
@@ -315,9 +331,11 @@ class TestIngestPipelineStepErrorHandling:
         )
 
         op = IngestPipelineStep(
-            source_delta_root=str(source_root),
-            source_step=1,
-            artifact_type="metric",
+            params={
+                "source_delta_root": str(source_root),
+                "source_step": 1,
+                "artifact_type": "metric",
+            }
         )
         result = op.execute_curator(
             inputs={}, step_number=5, artifact_store=_mock_store()
@@ -342,7 +360,9 @@ class TestIngestPipelineStepMetadata:
             index_entries=[make_index_entry(aid, "data", step_number=3)],
         )
 
-        op = IngestPipelineStep(source_delta_root=str(source_root), source_step=3)
+        op = IngestPipelineStep(
+            params={"source_delta_root": str(source_root), "source_step": 3}
+        )
         result = op.execute_curator(
             inputs={}, step_number=7, artifact_store=_mock_store()
         )
@@ -375,9 +395,9 @@ class TestIngestPipelineStepClassAttributes:
     def test_should_require_source_delta_root(self):
         """Test source_delta_root is a required field."""
         with pytest.raises(Exception):
-            IngestPipelineStep(source_step=0)
+            IngestPipelineStep(params={"source_step": 0})
 
     def test_should_require_source_step(self):
         """Test source_step is a required field."""
         with pytest.raises(Exception):
-            IngestPipelineStep(source_delta_root="/tmp/test")
+            IngestPipelineStep(params={"source_delta_root": "/tmp/test"})

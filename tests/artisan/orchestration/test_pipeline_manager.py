@@ -1313,6 +1313,13 @@ class _ParamsOp(OperationDefinition):
     """Op with a params model for validation testing."""
 
     class Params(BaseModel):
+        """Params for ``_ParamsOp``.
+
+        Attributes:
+            alpha: Mock parameter.
+            beta: Mock parameter.
+        """
+
         alpha: float = 1.0
         beta: int = 2
 
@@ -1381,8 +1388,12 @@ class TestValidateParams:
         with pytest.raises(ValueError, match="Unknown params.*gamma"):
             _validate_params(_ParamsOp, {"gamma": 99})
 
-    def test_flat_field_operation(self):
+    def test_parameter_less_op_accepts_empty_params(self):
         _validate_params(_MockOp, {})
+
+    def test_parameter_less_op_rejects_any_key(self):
+        with pytest.raises(ValueError, match="Unknown params"):
+            _validate_params(_MockOp, {"anything": 1})
 
 
 class TestValidateResources:
