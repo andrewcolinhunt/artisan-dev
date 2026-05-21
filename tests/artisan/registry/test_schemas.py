@@ -8,10 +8,11 @@ from typing import Any, ClassVar
 import pytest
 from pydantic import BaseModel, Field
 
+from artisan.operations.base._param_docs import _params_class
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.curator.merge import Merge
 from artisan.operations.examples.data_transformer import DataTransformer
-from artisan.registry.schemas import _params_class, params_schema_for
+from artisan.registry.schemas import params_schema_for
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.specs.input_models import (
