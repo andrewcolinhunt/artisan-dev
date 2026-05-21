@@ -6,19 +6,19 @@ the docstring-derived description merge. ``Field(description=...)``
 descriptions are written by Pydantic and take precedence — the docstring
 extractor only fills gaps.
 
-Resolution rule for "what are this op's params?" is centralized in
-``_params_class``: ``cls.model_fields.get("params")``. Absent or
-non-``BaseModel`` annotation -> no params; ``params_schema_for`` returns
-the empty ``Params`` schema. No flat-form branch.
+The "what are this op's params?" lookup is centralized in
+``_params_class``. Parameter-less ops receive the empty ``Params`` shape;
+there is no flat-form branch in any consumer.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
-
-from artisan.operations.base._param_docs import _extract_arg_descriptions
+from artisan.operations.base._param_docs import (
+    _extract_arg_descriptions,
+    _params_class,
+)
 from artisan.operations.base.operation_definition import OperationDefinition
 
 
@@ -43,28 +43,3 @@ def params_schema_for(op_cls: type[OperationDefinition]) -> dict[str, Any]:
         if "description" not in schema and prop_name in descriptions:
             schema["description"] = descriptions[prop_name]
     return base
-
-
-def _params_class(op_cls: type[OperationDefinition]) -> type[BaseModel] | None:
-    """Resolve the op's ``Params`` class via the single lookup rule.
-
-    Args:
-        op_cls: The ``OperationDefinition`` subclass to inspect.
-
-    Returns:
-        The ``Params`` ``BaseModel`` subclass, or ``None`` for
-        parameter-less ops.
-    """
-    field = op_cls.model_fields.get("params")
-    if field is None:
-        return None
-    annotation = field.annotation
-    if annotation is None:
-        return None
-    try:
-        if not issubclass(annotation, BaseModel):
-            return None
-    except TypeError:
-        # Non-class annotations (e.g. Optional[X], generic aliases).
-        return None
-    return annotation

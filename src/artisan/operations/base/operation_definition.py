@@ -23,7 +23,10 @@ if TYPE_CHECKING:
 from pydantic import BaseModel, ConfigDict
 
 from artisan.errors import ArtisanError, ErrorCode
-from artisan.operations.base._param_docs import _extract_arg_descriptions
+from artisan.operations.base._param_docs import (
+    _extract_arg_descriptions,
+    _params_class,
+)
 from artisan.operations.base._role_docs import (
     append_role_docs,
     get_registered,
@@ -400,11 +403,8 @@ class OperationDefinition(BaseModel):
         op reaches the registry — so the gap surfaces at the contributor's
         editor, not on the agent wire.
         """
-        field = cls.model_fields.get("params")
-        if field is None or field.annotation is None:
-            return
-        params_cls = field.annotation
-        if not getattr(params_cls, "model_fields", None):
+        params_cls = _params_class(cls)
+        if params_cls is None or not params_cls.model_fields:
             return
         described = _extract_arg_descriptions(params_cls)
         missing = [

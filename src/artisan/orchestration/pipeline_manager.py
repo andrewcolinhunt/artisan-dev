@@ -307,11 +307,14 @@ def _validate_params(
 ) -> None:
     """Raise ValueError if any param keys are unrecognized by the operation.
 
-    Single resolution rule: ``cls.model_fields.get("params")``. If the
-    field is absent the op has no parameters and ``params`` must be empty.
+    Delegates the ``Params`` lookup to
+    ``operations.base._param_docs._params_class`` so all three consumers
+    (registry, fail-fast check, this validator) share one rule.
     """
-    field = operation.model_fields.get("params")
-    valid_keys = set(field.annotation.model_fields) if field is not None else set()
+    from artisan.operations.base._param_docs import _params_class
+
+    params_cls = _params_class(operation)
+    valid_keys = set(params_cls.model_fields) if params_cls is not None else set()
     unknown = set(params) - valid_keys
     if unknown:
         msg = (

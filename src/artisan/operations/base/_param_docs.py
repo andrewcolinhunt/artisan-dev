@@ -1,27 +1,56 @@
-"""Docstring-derived parameter descriptions for ``Params`` classes.
+"""Introspection helpers for ``OperationDefinition.Params``.
 
-Pydantic's ``Params.model_json_schema()`` only carries
-``Field(description=...)`` text. For agent-facing schemas we want the
-class docstring to be the source of descriptions too. This helper parses
-the Google-style docstring of a Pydantic ``BaseModel`` and returns the
-``{field_name: description}`` map the schema generator merges in.
+Two related helpers:
 
-Reads both ``Attributes:`` and ``Args:`` sections — ``Attributes:`` is the
-semantically correct Google section for class fields (and the convention
-in existing Artisan ``Params`` classes), but ``Args:`` is also accepted
-for contributors arriving from function-style ecosystems (PydanticAI tool
-wrappers, Sphinx tutorials). When both sections define the same name,
-``Attributes:`` wins.
+- ``_params_class(op_cls)`` — the single resolution rule for "what is
+  this op's ``Params`` class?". Returns the Pydantic ``BaseModel``
+  subclass, or ``None`` for parameter-less ops. Used by registry schema
+  generation, the fail-fast undocumented-params check, and
+  pipeline-side validation.
+- ``_extract_arg_descriptions(model_cls)`` — pulls
+  ``{field_name: description}`` from a Pydantic class's Google-style
+  ``Attributes:`` / ``Args:`` docstring sections.
 
 Placed in ``operations/base/`` rather than ``registry/`` so the
 fail-fast subclass check on ``OperationDefinition.__pydantic_init_subclass__``
-can use it without ``operations`` having to import ``registry``.
+can use these without ``operations`` having to import ``registry``.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import griffe
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from artisan.operations.base.operation_definition import OperationDefinition
+
+
+def _params_class(op_cls: type[OperationDefinition]) -> type[BaseModel] | None:
+    """Resolve the op's ``Params`` class via the single lookup rule.
+
+    Args:
+        op_cls: The ``OperationDefinition`` subclass to inspect.
+
+    Returns:
+        The ``Params`` ``BaseModel`` subclass, or ``None`` for
+        parameter-less ops (no ``params`` field, ``None`` annotation, or
+        annotation that isn't a ``BaseModel`` subclass).
+    """
+    field = op_cls.model_fields.get("params")
+    if field is None:
+        return None
+    annotation = field.annotation
+    if annotation is None:
+        return None
+    try:
+        if not issubclass(annotation, BaseModel):
+            return None
+    except TypeError:
+        # Non-class annotations (e.g. Optional[X], generic aliases).
+        return None
+    return annotation
 
 
 def _extract_arg_descriptions(model_cls: type[BaseModel]) -> dict[str, str]:
