@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 import polars as pl
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
@@ -42,22 +42,27 @@ class IngestPipelineStep(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {}
 
     # ---------- Parameters ----------
-    source_delta_root: str = Field(
-        ..., description="Path to the source pipeline's delta_root"
-    )
-    source_step: int = Field(
-        ..., ge=0, description="Step number to import artifacts from"
-    )
-    artifact_type: str | None = Field(
-        default=None,
-        description="Optional filter: import only this artifact type. "
-        "If None, imports all types found at the source step.",
-    )
-    source_storage: StorageConfig = Field(
-        default_factory=StorageConfig,
-        description="Storage config for the source pipeline. "
-        "Default (local) works for local/NFS source pipelines.",
-    )
+    class Params(BaseModel):
+        """Cross-pipeline import parameters."""
+
+        source_delta_root: str = Field(
+            ..., description="Path to the source pipeline's delta_root"
+        )
+        source_step: int = Field(
+            ..., ge=0, description="Step number to import artifacts from"
+        )
+        artifact_type: str | None = Field(
+            default=None,
+            description="Optional filter: import only this artifact type. "
+            "If None, imports all types found at the source step.",
+        )
+        source_storage: StorageConfig = Field(
+            default_factory=StorageConfig,
+            description="Storage config for the source pipeline. "
+            "Default (local) works for local/NFS source pipelines.",
+        )
+
+    params: Params
 
     # ---------- Resources ----------
     # pydantic Field-based defaults aren't recognized by mypy without the plugin;
@@ -84,26 +89,30 @@ class IngestPipelineStep(OperationDefinition):
         Returns:
             ArtifactResult with imported artifacts keyed by type.
         """
-        fs = self.source_storage.filesystem()
+        fs = self.params.source_storage.filesystem()
 
-        if not fs.exists(self.source_delta_root):
+        if not fs.exists(self.params.source_delta_root):
             return ArtifactResult(
                 success=False,
-                error=f"Source delta root does not exist: {self.source_delta_root}",
+                error=f"Source delta root does not exist: {self.params.source_delta_root}",
             )
 
         source_store = ArtifactStore(
-            self.source_delta_root,
+            self.params.source_delta_root,
             fs=fs,
-            storage_options=self.source_storage.delta_storage_options(),
+            storage_options=self.params.source_storage.delta_storage_options(),
         )
         types_to_import = self._resolve_types(source_store)
 
         if not types_to_import:
             return ArtifactResult(
                 success=False,
-                error=f"No artifacts found at step {self.source_step}"
-                + (f" with type {self.artifact_type!r}" if self.artifact_type else ""),
+                error=f"No artifacts found at step {self.params.source_step}"
+                + (
+                    f" with type {self.params.artifact_type!r}"
+                    if self.params.artifact_type
+                    else ""
+                ),
             )
 
         all_drafts: dict[str, list[Artifact]] = {}
@@ -115,7 +124,7 @@ class IngestPipelineStep(OperationDefinition):
         if not all_drafts:
             return ArtifactResult(
                 success=False,
-                error=f"No artifacts loaded from step {self.source_step}",
+                error=f"No artifacts loaded from step {self.params.source_step}",
             )
 
         return ArtifactResult(success=True, artifacts=all_drafts)
@@ -129,12 +138,12 @@ class IngestPipelineStep(OperationDefinition):
         Returns:
             List of artifact type strings to import.
         """
-        if self.artifact_type is not None:
+        if self.params.artifact_type is not None:
             # User specified a type — check it exists at the step
             ids = source_store.provenance.load_artifact_ids_by_type(
-                self.artifact_type, step_numbers=[self.source_step]
+                self.params.artifact_type, step_numbers=[self.params.source_step]
             )
-            return [self.artifact_type] if ids else []
+            return [self.params.artifact_type] if ids else []
 
         # Discover all types at the step
         type_map = source_store.provenance.load_type_map()
@@ -142,7 +151,7 @@ class IngestPipelineStep(OperationDefinition):
 
         types_at_step: set[str] = set()
         for aid, atype in type_map.items():
-            if step_map.get(aid) == self.source_step:
+            if step_map.get(aid) == self.params.source_step:
                 types_at_step.add(atype)
 
         return list(types_at_step)
@@ -164,7 +173,7 @@ class IngestPipelineStep(OperationDefinition):
             List of finalized draft artifacts.
         """
         artifact_ids = source_store.provenance.load_artifact_ids_by_type(
-            artifact_type, step_numbers=[self.source_step]
+            artifact_type, step_numbers=[self.params.source_step]
         )
         if not artifact_ids:
             return []

@@ -8,6 +8,7 @@ from typing import ClassVar
 from unittest.mock import patch
 
 import polars as pl
+from pydantic import BaseModel
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
@@ -60,7 +61,16 @@ class IngestMockOp(OperationDefinition):
         OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
-    seed: int = 42
+    class Params(BaseModel):
+        """Params for ``IngestMockOp``.
+
+        Attributes:
+            seed: Mock RNG seed for cache-invalidation tests.
+        """
+
+        seed: int = 42
+
+    params: Params = Params()
 
     def execute_curator(self, execute_input):
         from artisan.schemas.execution.curator_result import ArtifactResult

@@ -170,6 +170,13 @@ class TwoInputParity(OperationDefinition):
     description = "Two-input ZIP op toggling auto-detect vs explicit lineage"
 
     class Params(BaseModel):
+        """Params for ``TwoInputParity``.
+
+        Attributes:
+            use_explicit_lineage: When True, return explicit primary +
+                co-input ``LineageMapping`` instead of auto-detect.
+        """
+
         use_explicit_lineage: bool = False
 
     params: Params = Params()

@@ -42,6 +42,13 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 
 class MockParams(BaseModel):
+    """Mock params for ``MockOpWithParams``.
+
+    Attributes:
+        count: Mock counter.
+        seed: Mock RNG seed.
+    """
+
     count: int = 1
     seed: int = 42
 
@@ -60,28 +67,6 @@ class MockOpWithParams(OperationDefinition):
         ),
     }
     params: MockParams = MockParams()
-
-    def execute_curator(self, execute_input: Any) -> Any:
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-class MockFlatFieldsOp(OperationDefinition):
-    """Operation with flat fields (no params sub-model)."""
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "mock_flat_fields"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
-    }
-
-    flavor: str = "vanilla"
 
     def execute_curator(self, execute_input: Any) -> Any:
         from artisan.schemas.execution.curator_result import ArtifactResult
@@ -239,14 +224,18 @@ class TestValidateParams:
         with pytest.raises(ValueError, match="Unknown params.*bogus"):
             _validate_params(MockOpWithParams, {"count": 5, "bogus": True})
 
-    def test_valid_flat_fields(self):
-        """Valid flat field keys should not raise."""
-        _validate_params(MockFlatFieldsOp, {"flavor": "chocolate"})
+    def test_parameter_less_op_accepts_empty_dict(self):
+        """Ops without a ``params`` field have no valid keys; ``{}`` passes."""
+        from artisan.operations.curator.merge import Merge
 
-    def test_unknown_flat_field_raises(self):
-        """Unknown flat field key should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown params.*bogus"):
-            _validate_params(MockFlatFieldsOp, {"bogus": True})
+        _validate_params(Merge, {})
+
+    def test_parameter_less_op_rejects_any_key(self):
+        """Ops without a ``params`` field reject any provided key."""
+        from artisan.operations.curator.merge import Merge
+
+        with pytest.raises(ValueError, match="Unknown params.*flavor"):
+            _validate_params(Merge, {"flavor": "vanilla"})
 
 
 # =============================================================================
