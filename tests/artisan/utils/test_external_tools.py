@@ -165,6 +165,40 @@ class TestExternalToolError:
         assert "line 99" in result
         assert "line 0\n" not in result
 
+    def test_is_artisan_error_with_envelope(self):
+        """ExternalToolError is now an ArtisanError carrying the envelope."""
+        from artisan.errors import ArtisanError, ErrorCode
+
+        err = ExternalToolError(
+            message="Command failed",
+            command=["tool"],
+            return_code=2,
+            stdout="",
+            stderr="boom",
+            runtime=None,
+        )
+        assert isinstance(err, ArtisanError)
+        assert err.envelope.code == ErrorCode.EXTERNAL_TOOL_FAILED
+        assert err.envelope.error_type == "runtime"
+        # Non-zero exit: not retryable.
+        assert err.envelope.recovery_hint == "REPORT_TO_USER"
+        # Structured attributes preserved on the instance.
+        assert err.command == ["tool"]
+        assert err.return_code == 2
+        assert err.stderr == "boom"
+
+    def test_timeout_sentinel_marks_retry_later(self):
+        """return_code == -1 is the timeout sentinel — agent can retry."""
+        err = ExternalToolError(
+            message="Command timed out after 5s",
+            command=["tool"],
+            return_code=-1,
+            stdout="",
+            stderr="",
+            runtime=None,
+        )
+        assert err.envelope.recovery_hint == "RETRY_LATER"
+
 
 class TestProcessCleanup:
     """Tests for subprocess process group cleanup."""

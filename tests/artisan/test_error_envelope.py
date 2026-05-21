@@ -146,6 +146,76 @@ class TestCauseChain:
         except ArtisanError as err:
             assert "cause" not in err.to_dict(include_cause=False)
 
+    def test_nested_artisan_error_cause_recurses(self) -> None:
+        """When __cause__ is itself an ArtisanError, recurse so the inner
+        envelope's code and recovery_hint survive wrapping."""
+        try:
+            try:
+                raise ArtisanError(
+                    code=ErrorCode.INPUT_TYPE_MISMATCH,
+                    error_type="validation",
+                    message="Type mismatch on input 'data'",
+                    field="inputs.data",
+                    recovery_hint="CHECK_INPUT",
+                )
+            except ArtisanError as inner:
+                raise ArtisanError(
+                    code=ErrorCode.OP_EXECUTE_FAILED,
+                    error_type="runtime",
+                    message="Composite 'design_loop' aborted on step 'filter'",
+                    recovery_hint="REPORT_TO_USER",
+                ) from inner
+        except ArtisanError as err:
+            payload = err.to_dict()
+
+        assert payload["code"] == "op_execute_failed"
+        assert payload["recovery_hint"] == "REPORT_TO_USER"
+        # Inner envelope is serialized as the nested cause — full envelope
+        # shape, not the (type, message, traceback) fallback.
+        cause = payload["cause"]
+        assert cause["code"] == "input_type_mismatch"
+        assert cause["error_type"] == "validation"
+        assert cause["recovery_hint"] == "CHECK_INPUT"
+        assert cause["field"] == "inputs.data"
+        assert "traceback" not in cause
+
+    def test_cause_chain_depth_cap_falls_back_at_max(self) -> None:
+        """Chains deeper than _max_depth=5 serialize via the non-ArtisanError
+        fallback so payload size is bounded."""
+        # Build a 6-deep chain of ArtisanError-wrapping-ArtisanError, then
+        # check that the deepest level appears as the {type, message,
+        # traceback} fallback rather than recursing again.
+        innermost = ArtisanError(
+            code=ErrorCode.UNKNOWN_PARAM,
+            error_type="validation",
+            message="level 6 (deepest)",
+        )
+        current: ArtisanError = innermost
+        for level in range(5, 0, -1):
+            try:
+                raise current
+            except ArtisanError as inner:
+                outer = ArtisanError(
+                    code=ErrorCode.OP_EXECUTE_FAILED,
+                    error_type="runtime",
+                    message=f"level {level}",
+                )
+                outer.__cause__ = inner
+                current = outer
+
+        payload = current.to_dict()
+        # Walk down: level 1 → 2 → 3 → 4 → 5 (envelope shape), then level 6
+        # should appear as the fallback shape.
+        node = payload
+        for _ in range(4):
+            node = node["cause"]
+            assert "code" in node  # still envelope shape
+        # Fifth level down (depth boundary): fallback dict
+        fallback = node["cause"]
+        assert set(fallback.keys()) == {"type", "message", "traceback"}
+        assert fallback["type"] == "ArtisanError"
+        assert "level 6" in fallback["message"]
+
 
 class TestSuggest:
     """``suggest`` provides did-you-mean candidates."""

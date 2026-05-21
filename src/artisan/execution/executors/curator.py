@@ -15,6 +15,7 @@ from typing import Any
 
 import polars as pl
 
+from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.context.builder import build_curator_execution_context
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.capture import capture_lineage_metadata
@@ -346,7 +347,35 @@ def run_curator_flow(
                     step_number=unit.step_number,
                     artifact_store=artifact_store,
                 )
+            except ArtisanError as exc:
+                # Curator op raised its own structured error — record the
+                # inner envelope directly so the agent sees its code /
+                # recovery_hint, not a generic OP_EXECUTE_FAILED wrapper.
+                return record_execution_failure(
+                    execution_context=execution_context,
+                    error=str(exc),
+                    inputs=inputs,
+                    timestamp_end=datetime.now(UTC),
+                    params=params_dict,
+                    user_overrides=user_overrides,
+                    failure_logs_root=runtime_env.failure_logs_root,
+                    error_envelope=exc.to_dict(),
+                )
             except Exception as exc:
+                # Wrap unstructured failures in OP_EXECUTE_FAILED. Inner
+                # exception preserved as __cause__ for the cause chain.
+                wrapped = ArtisanError(
+                    code=ErrorCode.OP_EXECUTE_FAILED,
+                    error_type="runtime",
+                    message=(
+                        f"Operation {type(operation).name!r} failed during "
+                        f"execute_curator()."
+                    ),
+                    operation_name=type(operation).name,
+                    step_name=str(unit.step_number),
+                    recovery_hint="REPORT_TO_USER",
+                )
+                wrapped.__cause__ = exc
                 return record_execution_failure(
                     execution_context=execution_context,
                     error=format_error(exc),
@@ -355,6 +384,7 @@ def run_curator_flow(
                     params=params_dict,
                     user_overrides=user_overrides,
                     failure_logs_root=runtime_env.failure_logs_root,
+                    error_envelope=wrapped.to_dict(),
                 )
 
         # --- record phase ---

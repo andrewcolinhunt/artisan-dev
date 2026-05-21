@@ -1385,14 +1385,14 @@ class TestValidateParams:
         _validate_params(_ParamsOp, {"alpha": 2.0})
 
     def test_unknown_param_raises(self):
-        with pytest.raises(ValueError, match="Unknown params.*gamma"):
+        with pytest.raises(ArtisanError, match="Unknown params.*gamma"):
             _validate_params(_ParamsOp, {"gamma": 99})
 
     def test_parameter_less_op_accepts_empty_params(self):
         _validate_params(_MockOp, {})
 
     def test_parameter_less_op_rejects_any_key(self):
-        with pytest.raises(ValueError, match="Unknown params"):
+        with pytest.raises(ArtisanError, match="Unknown params"):
             _validate_params(_MockOp, {"anything": 1})
 
 
@@ -1403,7 +1403,7 @@ class TestValidateResources:
         _validate_resources({"cpus": 4, "memory_gb": 8})
 
     def test_unknown_key_raises(self):
-        with pytest.raises(ValueError, match="Unknown resource keys.*bogus"):
+        with pytest.raises(ArtisanError, match="Unknown resource keys.*bogus"):
             _validate_resources({"bogus": 42})
 
 
@@ -1414,7 +1414,7 @@ class TestValidateExecution:
         _validate_execution({"artifacts_per_unit": 10, "max_workers": 4})
 
     def test_unknown_key_raises(self):
-        with pytest.raises(ValueError, match="Unknown execution keys.*bad_key"):
+        with pytest.raises(ArtisanError, match="Unknown execution keys.*bad_key"):
             _validate_execution({"bad_key": True})
 
 
@@ -1425,7 +1425,7 @@ class TestValidateInputRoles:
         _validate_input_roles(_MultiInputOp, {"primary": "something"})
 
     def test_unknown_role_raises(self):
-        with pytest.raises(ValueError, match="Unknown input roles.*bogus"):
+        with pytest.raises(ArtisanError, match="Unknown input roles.*bogus"):
             _validate_input_roles(_MultiInputOp, {"bogus": "val"})
 
     def test_non_dict_is_noop(self):
@@ -1442,7 +1442,7 @@ class TestValidateRequiredInputs:
         _validate_required_inputs(_MultiInputOp, {"primary": "val"})
 
     def test_missing_required_raises(self):
-        with pytest.raises(ValueError, match="Missing required input.*primary"):
+        with pytest.raises(ArtisanError, match="Missing required input.*primary"):
             _validate_required_inputs(_MultiInputOp, {"reference": "val"})
 
     def test_optional_can_be_omitted(self):
@@ -1467,7 +1467,7 @@ class TestValidateInputTypes:
                 source_step=0, role="out", artifact_type="metric"
             )
         }
-        with pytest.raises(ValueError, match="Type mismatch on input 'primary'"):
+        with pytest.raises(ArtisanError, match="Type mismatch on input 'primary'"):
             _validate_input_types(_MultiInputOp, inputs)
 
     def test_any_type_always_accepted(self):
@@ -1821,7 +1821,7 @@ class TestValidateOperationOverrides:
         )
 
     def test_invalid_params_raises(self):
-        with pytest.raises(ValueError, match="Unknown params"):
+        with pytest.raises(ArtisanError, match="Unknown params"):
             PipelineManager._validate_operation_overrides(
                 _ParamsOp,
                 None,
@@ -1833,7 +1833,7 @@ class TestValidateOperationOverrides:
             )
 
     def test_invalid_resources_raises(self):
-        with pytest.raises(ValueError, match="Unknown resource"):
+        with pytest.raises(ArtisanError, match="Unknown resource"):
             PipelineManager._validate_operation_overrides(
                 _MockOp,
                 None,
@@ -1845,7 +1845,7 @@ class TestValidateOperationOverrides:
             )
 
     def test_invalid_execution_raises(self):
-        with pytest.raises(ValueError, match="Unknown execution"):
+        with pytest.raises(ArtisanError, match="Unknown execution"):
             PipelineManager._validate_operation_overrides(
                 _MockOp,
                 None,
@@ -1857,7 +1857,7 @@ class TestValidateOperationOverrides:
             )
 
     def test_invalid_input_roles_raises(self):
-        with pytest.raises(ValueError, match="Unknown input roles"):
+        with pytest.raises(ArtisanError, match="Unknown input roles"):
             PipelineManager._validate_operation_overrides(
                 _MockOp,
                 {"bad_role": "val"},
@@ -2161,6 +2161,7 @@ class _CompositeForTests:
 from artisan.composites.base.composite_definition import (
     CompositeDefinition,
 )
+from artisan.errors import ArtisanError
 
 
 class _RealComposite(CompositeDefinition):
@@ -2416,7 +2417,7 @@ class TestSilentMisconfigRejection:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
 
-        with pytest.raises(ValueError, match="Configured inactive provider"):
+        with pytest.raises(ArtisanError, match="Configured inactive provider"):
             pipeline.submit(
                 _OpForTests,
                 environment={"docker": {"image": "biocontainers/samtools:1.17"}},
@@ -2429,7 +2430,7 @@ class TestSilentMisconfigRejection:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
 
-        with pytest.raises(ValueError, match="Configured inactive provider"):
+        with pytest.raises(ArtisanError, match="Configured inactive provider"):
             pipeline.submit(
                 _OpForTests,
                 compute_provider={"modal": {"image": "ghcr.io/x/y:latest"}},

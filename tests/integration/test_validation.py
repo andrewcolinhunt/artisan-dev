@@ -1,6 +1,6 @@
 """Integration tests for fail-fast input/override validation.
 
-Validates that PipelineManager.run()/submit() raise ValueError
+Validates that PipelineManager.run()/submit() raise ArtisanError
 for bad params, resources, execution, input roles, required inputs,
 and input type mismatches — all BEFORE any predecessor wait or execution.
 """
@@ -11,13 +11,14 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
+from artisan.errors import ArtisanError
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 
 
 def test_invalid_params_raises(pipeline_env: dict[str, str]):
-    """Unknown param keys raise ValueError before execution."""
+    """Unknown param keys raise ArtisanError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_params",
         delta_root=pipeline_env["delta_root"],
@@ -25,7 +26,7 @@ def test_invalid_params_raises(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    with pytest.raises(ValueError, match="Unknown params"):
+    with pytest.raises(ArtisanError, match="Unknown params"):
         pipeline.run(
             DataGenerator,
             params={"count": 2, "nonexistent_param": 42},
@@ -37,7 +38,7 @@ def test_invalid_params_raises(pipeline_env: dict[str, str]):
 
 
 def test_invalid_resources_raises(pipeline_env: dict[str, str]):
-    """Unknown resource keys raise ValueError before execution."""
+    """Unknown resource keys raise ArtisanError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_resources",
         delta_root=pipeline_env["delta_root"],
@@ -45,7 +46,7 @@ def test_invalid_resources_raises(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    with pytest.raises(ValueError, match="Unknown resource keys"):
+    with pytest.raises(ArtisanError, match="Unknown resource keys"):
         pipeline.run(
             DataGenerator,
             params={"count": 2},
@@ -55,7 +56,7 @@ def test_invalid_resources_raises(pipeline_env: dict[str, str]):
 
 
 def test_invalid_execution_raises(pipeline_env: dict[str, str]):
-    """Unknown execution keys raise ValueError before execution."""
+    """Unknown execution keys raise ArtisanError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_execution",
         delta_root=pipeline_env["delta_root"],
@@ -63,7 +64,7 @@ def test_invalid_execution_raises(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    with pytest.raises(ValueError, match="Unknown execution keys"):
+    with pytest.raises(ArtisanError, match="Unknown execution keys"):
         pipeline.run(
             DataGenerator,
             params={"count": 2},
@@ -73,7 +74,7 @@ def test_invalid_execution_raises(pipeline_env: dict[str, str]):
 
 
 def test_invalid_input_role_raises(pipeline_env: dict[str, str]):
-    """Unknown input role raises ValueError before execution."""
+    """Unknown input role raises ArtisanError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_input_role",
         delta_root=pipeline_env["delta_root"],
@@ -87,7 +88,7 @@ def test_invalid_input_role_raises(pipeline_env: dict[str, str]):
         step_runner=Runner.LOCAL,
     )
 
-    with pytest.raises(ValueError, match="Unknown input roles"):
+    with pytest.raises(ArtisanError, match="Unknown input roles"):
         pipeline.run(
             DataTransformer,
             inputs={"nonexistent_role": step0.output("datasets")},
@@ -96,7 +97,7 @@ def test_invalid_input_role_raises(pipeline_env: dict[str, str]):
 
 
 def test_missing_required_input_raises(pipeline_env: dict[str, str]):
-    """Missing required input role raises ValueError before execution."""
+    """Missing required input role raises ArtisanError before execution."""
     pipeline = PipelineManager.create(
         name="test_missing_required",
         delta_root=pipeline_env["delta_root"],
@@ -104,7 +105,7 @@ def test_missing_required_input_raises(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    with pytest.raises(ValueError, match="Missing required input"):
+    with pytest.raises(ArtisanError, match="Missing required input"):
         pipeline.run(
             DataTransformer,
             inputs={},
@@ -113,7 +114,7 @@ def test_missing_required_input_raises(pipeline_env: dict[str, str]):
 
 
 def test_input_type_mismatch_raises(pipeline_env: dict[str, str]):
-    """Type mismatch between upstream output and downstream input raises ValueError."""
+    """Type mismatch between upstream output and downstream input raises ArtisanError."""
     pipeline = PipelineManager.create(
         name="test_type_mismatch",
         delta_root=pipeline_env["delta_root"],
@@ -136,7 +137,7 @@ def test_input_type_mismatch_raises(pipeline_env: dict[str, str]):
     # MetricCalculator outputs "metrics" (type=metric), but DataTransformer
     # expects "dataset" (type=data). Wiring metric output to data input
     # should fail type validation.
-    with pytest.raises(ValueError, match="Type mismatch"):
+    with pytest.raises(ArtisanError, match="Type mismatch"):
         pipeline.run(
             DataTransformer,
             inputs={"dataset": step1.output("metrics")},
