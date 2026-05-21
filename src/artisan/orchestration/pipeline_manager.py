@@ -24,6 +24,7 @@ from uuid import uuid4
 
 import polars as pl
 
+from artisan.errors import ArtisanError, ErrorCode, suggest
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.step_executor import (
@@ -305,7 +306,7 @@ def _validate_params(
     operation: _OpLike,
     params: dict[str, Any],
 ) -> None:
-    """Raise ValueError if any param keys are unrecognized by the operation.
+    """Raise ArtisanError if any param keys are unrecognized by the operation.
 
     Delegates the ``Params`` lookup to
     ``operations.base._param_docs._params_class`` so all three consumers
@@ -317,15 +318,25 @@ def _validate_params(
     valid_keys = set(params_cls.model_fields) if params_cls is not None else set()
     unknown = set(params) - valid_keys
     if unknown:
+        bad = next(iter(sorted(unknown)))
         msg = (
             f"Unknown params for {operation.name}: {sorted(unknown)}. "
             f"Valid keys: {sorted(valid_keys)}"
         )
-        raise ValueError(msg)
+        raise ArtisanError(
+            code=ErrorCode.UNKNOWN_PARAM,
+            error_type="validation",
+            message=msg,
+            operation_name=operation.name,
+            field=f"params.{bad}",
+            suggestions=suggest(bad, valid_keys),
+            fix_example=f"# Replace {bad!r} with one of {sorted(valid_keys)}",
+            recovery_hint="CHECK_INPUT",
+        )
 
 
 def _validate_resources(resources: dict[str, Any] | Any) -> None:
-    """Raise ValueError if any resource keys are unrecognized.
+    """Raise ArtisanError if any resource keys are unrecognized.
 
     A ``RunnerResources`` instance is already valid by construction;
     this function only checks raw dicts.
@@ -337,15 +348,24 @@ def _validate_resources(resources: dict[str, Any] | Any) -> None:
     valid_keys = set(RunnerResources.model_fields)
     unknown = set(resources) - valid_keys
     if unknown:
+        bad = next(iter(sorted(unknown)))
         msg = (
             f"Unknown resource keys: {sorted(unknown)}. "
             f"Valid keys: {sorted(valid_keys)}"
         )
-        raise ValueError(msg)
+        raise ArtisanError(
+            code=ErrorCode.UNKNOWN_RESOURCE_KEY,
+            error_type="validation",
+            message=msg,
+            field=bad,
+            suggestions=suggest(bad, valid_keys),
+            fix_example=f"# Replace {bad!r} with one of {sorted(valid_keys)}",
+            recovery_hint="CHECK_INPUT",
+        )
 
 
 def _validate_execution(execution: dict[str, Any] | Any) -> None:
-    """Raise ValueError if any execution keys are unrecognized.
+    """Raise ArtisanError if any execution keys are unrecognized.
 
     A ``BatchStrategy`` instance is already valid by construction;
     this function only checks raw dicts.
@@ -357,18 +377,27 @@ def _validate_execution(execution: dict[str, Any] | Any) -> None:
     valid_keys = set(BatchStrategy.model_fields)
     unknown = set(execution) - valid_keys
     if unknown:
+        bad = next(iter(sorted(unknown)))
         msg = (
             f"Unknown execution keys: {sorted(unknown)}. "
             f"Valid keys: {sorted(valid_keys)}"
         )
-        raise ValueError(msg)
+        raise ArtisanError(
+            code=ErrorCode.UNKNOWN_EXECUTION_KEY,
+            error_type="validation",
+            message=msg,
+            field=bad,
+            suggestions=suggest(bad, valid_keys),
+            fix_example=f"# Replace {bad!r} with one of {sorted(valid_keys)}",
+            recovery_hint="CHECK_INPUT",
+        )
 
 
 def _validate_environment(
     operation: type[OperationDefinition],
     environment: str | dict[str, Any] | Any,
 ) -> None:
-    """Raise ValueError if environment override is invalid for this operation.
+    """Raise ArtisanError if environment override is invalid for this operation.
 
     A typed ``Environments`` instance is already valid by construction;
     this function only checks raw dict / string forms.
@@ -377,12 +406,21 @@ def _validate_environment(
         return
     if isinstance(environment, str):
         temp = operation()
-        if environment not in temp.environments.available():
+        available = temp.environments.available()
+        if environment not in available:
             msg = (
                 f"Environment '{environment}' not configured on {operation.name}. "
-                f"Available: {temp.environments.available()}"
+                f"Available: {available}"
             )
-            raise ValueError(msg)
+            raise ArtisanError(
+                code=ErrorCode.ENVIRONMENT_NOT_CONFIGURED,
+                error_type="validation",
+                message=msg,
+                operation_name=operation.name,
+                field="environment",
+                suggestions=suggest(environment, available),
+                recovery_hint="CHECK_INPUT",
+            )
     else:
         from pydantic import BaseModel
 
@@ -396,11 +434,21 @@ def _validate_environment(
         valid_keys = set(Environments.model_fields)
         unknown = set(environment) - valid_keys
         if unknown:
+            bad = next(iter(sorted(unknown)))
             msg = (
                 f"Unknown environment keys: {sorted(unknown)}. "
                 f"Valid keys: {sorted(valid_keys)}"
             )
-            raise ValueError(msg)
+            raise ArtisanError(
+                code=ErrorCode.UNKNOWN_ENVIRONMENT_KEY,
+                error_type="validation",
+                message=msg,
+                operation_name=operation.name,
+                field=f"environment.{bad}",
+                suggestions=suggest(bad, valid_keys),
+                fix_example=f"# Replace {bad!r} with one of {sorted(valid_keys)}",
+                recovery_hint="CHECK_INPUT",
+            )
         # Validate nested dicts against their EnvironmentSpec subclass
         env_field_types: dict[str, type[BaseModel]] = {
             "local": LocalEnvironmentSpec,
@@ -414,13 +462,25 @@ def _validate_environment(
             spec_cls = env_field_types.get(key)
             if spec_cls:
                 valid_spec_keys = set(spec_cls.model_fields)
-                bad = set(value) - valid_spec_keys
-                if bad:
+                bad_keys = set(value) - valid_spec_keys
+                if bad_keys:
+                    bad = next(iter(sorted(bad_keys)))
                     msg = (
-                        f"Unknown keys for {key} environment: {sorted(bad)}. "
+                        f"Unknown keys for {key} environment: {sorted(bad_keys)}. "
                         f"Valid: {sorted(valid_spec_keys)}"
                     )
-                    raise ValueError(msg)
+                    raise ArtisanError(
+                        code=ErrorCode.UNKNOWN_ENVIRONMENT_KEY,
+                        error_type="validation",
+                        message=msg,
+                        operation_name=operation.name,
+                        field=f"environment.{key}.{bad}",
+                        suggestions=suggest(bad, valid_spec_keys),
+                        fix_example=(
+                            f"# Replace {bad!r} with one of {sorted(valid_spec_keys)}"
+                        ),
+                        recovery_hint="CHECK_INPUT",
+                    )
         _reject_inactive_provider_config(environment, kwarg="environment")
 
 
@@ -431,7 +491,7 @@ def _validate_compute_provider(value: dict[str, Any]) -> None:
         value: User-supplied compute_provider override dict.
 
     Raises:
-        ValueError: If keys are unrecognized or if the dict configures
+        ArtisanError: If keys are unrecognized or if the dict configures
             a provider that is not the active one.
     """
     from pydantic import ValidationError
@@ -440,7 +500,13 @@ def _validate_compute_provider(value: dict[str, Any]) -> None:
         ComputeProvider.model_validate(value)
     except ValidationError as e:
         msg = f"Unknown compute_provider override key(s): {e}"
-        raise ValueError(msg) from e
+        raise ArtisanError(
+            code=ErrorCode.UNKNOWN_COMPUTE_PROVIDER_KEY,
+            error_type="validation",
+            message=msg,
+            field="compute_provider",
+            recovery_hint="CHECK_INPUT",
+        ) from e
     _reject_inactive_provider_config(value, kwarg="compute_provider")
 
 
@@ -451,7 +517,7 @@ def _validate_compute_resources(value: dict[str, Any]) -> None:
         value: User-supplied compute_resources override dict.
 
     Raises:
-        ValueError: If keys are unrecognized.
+        ArtisanError: If keys are unrecognized.
     """
     from pydantic import ValidationError
 
@@ -459,7 +525,13 @@ def _validate_compute_resources(value: dict[str, Any]) -> None:
         ComputeResources.model_validate(value)
     except ValidationError as e:
         msg = f"Unknown compute_resources override key(s): {e}"
-        raise ValueError(msg) from e
+        raise ArtisanError(
+            code=ErrorCode.UNKNOWN_COMPUTE_RESOURCES_KEY,
+            error_type="validation",
+            message=msg,
+            field="compute_resources",
+            recovery_hint="CHECK_INPUT",
+        ) from e
 
 
 def _reject_inactive_provider_config(value: dict[str, Any], *, kwarg: str) -> None:
@@ -474,7 +546,7 @@ def _reject_inactive_provider_config(value: dict[str, Any], *, kwarg: str) -> No
         kwarg: The kwarg name (for the error message).
 
     Raises:
-        ValueError: If a provider key carries a non-empty config dict
+        ArtisanError: If a provider key carries a non-empty config dict
             and ``active`` is not set to that provider.
     """
     provider_keys_with_config = {
@@ -490,14 +562,24 @@ def _reject_inactive_provider_config(value: dict[str, Any], *, kwarg: str) -> No
             f"to configure, or pass a string to select without "
             f"configuring."
         )
-        raise ValueError(msg)
+        raise ArtisanError(
+            code=ErrorCode.INACTIVE_PROVIDER_CONFIGURED,
+            error_type="validation",
+            message=msg,
+            field=kwarg,
+            hint=(
+                f"Set {kwarg}['active'] to the provider you want to configure, "
+                f"or pass a string to select without configuring."
+            ),
+            recovery_hint="CHECK_INPUT",
+        )
 
 
 def _validate_tool(
     operation: type[OperationDefinition],
     tool: dict[str, Any] | Any,
 ) -> None:
-    """Raise ValueError if tool overrides are invalid for this operation.
+    """Raise ArtisanError if tool overrides are invalid for this operation.
 
     A ``ToolSpec`` instance is already valid by construction; this
     function only checks raw dicts.
@@ -509,12 +591,33 @@ def _validate_tool(
     temp = operation()
     if temp.tool is None:
         msg = f"Operation '{operation.name}' has no tool to override"
-        raise ValueError(msg)
+        raise ArtisanError(
+            code=ErrorCode.NO_TOOL_TO_OVERRIDE,
+            error_type="validation",
+            message=msg,
+            operation_name=operation.name,
+            field="tool",
+            hint=(
+                f"Operation {operation.name!r} does not declare a tool; "
+                f"omit the 'tool' override."
+            ),
+            recovery_hint="CHECK_INPUT",
+        )
     valid_keys = set(ToolSpec.model_fields)
     unknown = set(tool) - valid_keys
     if unknown:
+        bad = next(iter(sorted(unknown)))
         msg = f"Unknown tool keys: {sorted(unknown)}. Valid keys: {sorted(valid_keys)}"
-        raise ValueError(msg)
+        raise ArtisanError(
+            code=ErrorCode.UNKNOWN_TOOL_KEY,
+            error_type="validation",
+            message=msg,
+            operation_name=operation.name,
+            field=f"tool.{bad}",
+            suggestions=suggest(bad, valid_keys),
+            fix_example=f"# Replace {bad!r} with one of {sorted(valid_keys)}",
+            recovery_hint="CHECK_INPUT",
+        )
 
 
 def _coerce_runner_resources(
@@ -633,7 +736,7 @@ def _validate_input_roles(
     operation: _OpLike,
     inputs: Any,
 ) -> None:
-    """Raise ValueError if dict input roles are not declared by the operation.
+    """Raise ArtisanError if dict input roles are not declared by the operation.
 
     No-op for non-dict inputs or runtime_defined_inputs operations.
     """
@@ -644,18 +747,28 @@ def _validate_input_roles(
     valid_roles = set(operation.inputs)
     unknown = set(inputs) - valid_roles
     if unknown:
+        bad = next(iter(sorted(unknown)))
         msg = (
             f"Unknown input roles for {operation.name}: {sorted(unknown)}. "
             f"Valid roles: {sorted(valid_roles)}"
         )
-        raise ValueError(msg)
+        raise ArtisanError(
+            code=ErrorCode.UNKNOWN_ROLE,
+            error_type="validation",
+            message=msg,
+            operation_name=operation.name,
+            field=f"inputs.{bad}",
+            suggestions=suggest(bad, valid_roles),
+            fix_example=f"# Replace input role {bad!r} with one of {sorted(valid_roles)}",
+            recovery_hint="CHECK_INPUT",
+        )
 
 
 def _validate_required_inputs(
     operation: _OpLike,
     inputs: Any,
 ) -> None:
-    """Raise ValueError if any required input roles are missing."""
+    """Raise ArtisanError if any required input roles are missing."""
     if getattr(operation, "runtime_defined_inputs", False):
         return
     if not operation.inputs:
@@ -675,14 +788,25 @@ def _validate_required_inputs(
             f"Missing required input(s) for {operation.name}: {sorted(missing)}. "
             f"Declared inputs: {sorted(operation.inputs.keys())}"
         )
-        raise ValueError(msg)
+        raise ArtisanError(
+            code=ErrorCode.MISSING_REQUIRED_INPUT,
+            error_type="validation",
+            message=msg,
+            operation_name=operation.name,
+            field=f"inputs.{sorted(missing)[0]}",
+            hint=(
+                f"Provide an upstream OutputReference for the missing "
+                f"input role(s) {sorted(missing)}."
+            ),
+            recovery_hint="CHECK_INPUT",
+        )
 
 
 def _validate_input_types(
     operation: _OpLike,
     inputs: Any,
 ) -> None:
-    """Raise ValueError if upstream output types don't match input specs."""
+    """Raise ArtisanError if upstream output types don't match input specs."""
     if not isinstance(inputs, dict):
         return
     for role, ref in inputs.items():
@@ -699,7 +823,20 @@ def _validate_input_types(
                 f"upstream step {ref.source_step} produces '{ref.artifact_type}', "
                 f"but '{role}' expects '{input_spec.artifact_type}'"
             )
-            raise ValueError(msg)
+            raise ArtisanError(
+                code=ErrorCode.INPUT_TYPE_MISMATCH,
+                error_type="validation",
+                message=msg,
+                operation_name=operation.name,
+                field=f"inputs.{role}",
+                hint=(
+                    f"Route an upstream output of type "
+                    f"{input_spec.artifact_type!r} into role {role!r}, or "
+                    f"insert a curator that converts "
+                    f"{ref.artifact_type!r} → {input_spec.artifact_type!r}."
+                ),
+                recovery_hint="TRY_ALTERNATIVE",
+            )
 
 
 # =============================================================================
