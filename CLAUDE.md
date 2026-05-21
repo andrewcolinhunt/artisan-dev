@@ -16,12 +16,12 @@ Project conventions for contributors (human and AI).
 IMPORTANT: Always use the full pixi path (`~/.pixi/bin/pixi`) when running
 commands. The short `pixi` form is for user-facing docs only.
 
-**Pixi locked-by-default.** This repo commits a `.envrc` that sets
-`PIXI_LOCKED=true`. Every shell that enters the repo (with direnv installed)
-gets `pixi run` / `pixi install` in locked mode — the lockfile is sealed
-and pixi aborts on drift. Refresh the lock deliberately with `pixi update`
-when you change deps; escape with `pixi install --no-locked` if you must.
-Without direnv, add `export PIXI_LOCKED=true` to your shell init.
+**Pixi locked mode (recommended).** Add `export PIXI_LOCKED=true` to
+your shell init (`~/.zshrc` / `~/.bashrc`). With it set, `pixi run` and
+`pixi install` abort on lockfile / manifest drift instead of silently
+regenerating `pixi.lock`. Refresh the lock deliberately with `pixi
+update` when you change deps; escape with `pixi install --no-locked` if
+you must.
 
 ---
 

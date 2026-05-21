@@ -121,13 +121,12 @@ Pixi manages three environments, all sharing a single dependency solve:
 | `dev` | `pixi run -e dev …` | Testing, linting, formatting, notebooks |
 | `docs` | `pixi run -e docs …` | Documentation building (Jupyter Book 2) |
 
-### Pixi behavior
+### Pixi locked mode (recommended)
 
-This repo defaults to `PIXI_LOCKED=true` via a committed `.envrc`. Install
-[direnv](https://direnv.net) to pick this up automatically, or add
-`export PIXI_LOCKED=true` to your shell init. `pixi run` will error on
-lockfile / manifest drift instead of silently regenerating `pixi.lock` —
-run `pixi update` to refresh the lock when deps change.
+Add `export PIXI_LOCKED=true` to your shell init (`~/.zshrc` /
+`~/.bashrc`). With this set, `pixi run` aborts on lockfile / manifest
+drift instead of silently regenerating `pixi.lock` — run `pixi update`
+to refresh the lock when you change deps.
 
 ### Running Tests
 
