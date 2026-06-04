@@ -831,41 +831,22 @@ class TestValidateLineageIntegrity:
 
 
 class TestExceptions:
-    """Tests for exception classes (re-parented to ArtisanError)."""
+    """Tests for exception classes."""
 
-    def test_artifact_validation_error_envelope(self):
-        from artisan.errors import ArtisanError, ErrorCode
-
+    def test_artifact_validation_error_is_exception(self):
+        """ArtifactValidationError should be an Exception."""
         error = ArtifactValidationError("test message")
-        assert isinstance(error, ArtisanError)
         assert isinstance(error, Exception)
         assert str(error) == "test message"
-        assert error.envelope.code == ErrorCode.ARTIFACT_VALIDATION_FAILED
-        assert error.envelope.error_type == "runtime"
-        assert error.envelope.recovery_hint == "REPORT_TO_USER"
 
-    def test_lineage_completeness_error_envelope(self):
-        from artisan.errors import ArtisanError, ErrorCode
-
+    def test_lineage_completeness_error_is_exception(self):
+        """LineageCompletenessError should be an Exception."""
         error = LineageCompletenessError("test message")
-        assert isinstance(error, ArtisanError)
-        assert error.envelope.code == ErrorCode.LINEAGE_INCOMPLETE
-        assert error.envelope.error_type == "runtime"
-        assert error.envelope.recovery_hint == "REPORT_TO_USER"
+        assert isinstance(error, Exception)
+        assert str(error) == "test message"
 
-    def test_lineage_integrity_error_envelope(self):
-        from artisan.errors import ArtisanError, ErrorCode
-
+    def test_lineage_integrity_error_is_exception(self):
+        """LineageIntegrityError should be an Exception."""
         error = LineageIntegrityError("test message")
-        assert isinstance(error, ArtisanError)
-        assert error.envelope.code == ErrorCode.LINEAGE_INTEGRITY_FAILED
-        assert error.envelope.error_type == "runtime"
-
-    def test_passthrough_validation_error_envelope(self):
-        from artisan.errors import ArtisanError, ErrorCode
-        from artisan.execution.exceptions import PassthroughValidationError
-
-        error = PassthroughValidationError("test message")
-        assert isinstance(error, ArtisanError)
-        assert error.envelope.code == ErrorCode.PASSTHROUGH_VALIDATION_FAILED
-        assert error.envelope.error_type == "runtime"
+        assert isinstance(error, Exception)
+        assert str(error) == "test message"

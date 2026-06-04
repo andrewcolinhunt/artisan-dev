@@ -18,7 +18,6 @@ import pytest
 # =============================================================================
 from pydantic import BaseModel
 
-from artisan.errors import ArtisanError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import (
     _validate_environment,
@@ -222,7 +221,7 @@ class TestValidateParams:
 
     def test_unknown_param_with_sub_model_raises(self):
         """Unknown key in params sub-model should raise ValueError."""
-        with pytest.raises(ArtisanError, match="Unknown params.*bogus"):
+        with pytest.raises(ValueError, match="Unknown params.*bogus"):
             _validate_params(MockOpWithParams, {"count": 5, "bogus": True})
 
     def test_parameter_less_op_accepts_empty_dict(self):
@@ -235,7 +234,7 @@ class TestValidateParams:
         """Ops without a ``params`` field reject any provided key."""
         from artisan.operations.curator.merge import Merge
 
-        with pytest.raises(ArtisanError, match="Unknown params.*flavor"):
+        with pytest.raises(ValueError, match="Unknown params.*flavor"):
             _validate_params(Merge, {"flavor": "vanilla"})
 
 
@@ -253,12 +252,12 @@ class TestValidateResources:
 
     def test_unknown_resource_raises(self):
         """Unknown resource key should raise with valid keys listed."""
-        with pytest.raises(ArtisanError, match="Unknown resource keys.*mem_Gb"):
+        with pytest.raises(ValueError, match="Unknown resource keys.*mem_Gb"):
             _validate_resources({"mem_Gb": 32})
 
     def test_error_lists_valid_keys(self):
         """Error message should list valid keys."""
-        with pytest.raises(ArtisanError, match="Valid keys:.*memory_gb"):
+        with pytest.raises(ValueError, match="Valid keys:.*memory_gb"):
             _validate_resources({"bogus": True})
 
 
@@ -276,7 +275,7 @@ class TestValidateExecution:
 
     def test_unknown_execution_raises(self):
         """Unknown execution key should raise ValueError."""
-        with pytest.raises(ArtisanError, match="Unknown execution keys.*batch_size"):
+        with pytest.raises(ValueError, match="Unknown execution keys.*batch_size"):
             _validate_execution({"batch_size": 10})
 
 
@@ -294,7 +293,7 @@ class TestValidateEnvironment:
 
     def test_unknown_string_environment_raises(self):
         """Unknown environment string should raise ValueError."""
-        with pytest.raises(ArtisanError, match="not configured"):
+        with pytest.raises(ValueError, match="not configured"):
             _validate_environment(MockCreatorOp, "pixi")
 
     def test_valid_dict_environment(self):
@@ -303,12 +302,12 @@ class TestValidateEnvironment:
 
     def test_unknown_environment_key_raises(self):
         """Unknown environment key should raise ValueError."""
-        with pytest.raises(ArtisanError, match="Unknown environment keys.*bogus"):
+        with pytest.raises(ValueError, match="Unknown environment keys.*bogus"):
             _validate_environment(MockCreatorOp, {"bogus": True})
 
     def test_unknown_nested_key_raises(self):
         """Unknown key in nested environment spec should raise."""
-        with pytest.raises(ArtisanError, match="Unknown keys for docker.*bogus"):
+        with pytest.raises(ValueError, match="Unknown keys for docker.*bogus"):
             _validate_environment(MockCreatorOp, {"docker": {"bogus": True}})
 
     def test_empty_dict_accepted(self):
@@ -330,12 +329,12 @@ class TestValidateTool:
 
     def test_unknown_tool_key_raises(self):
         """Unknown tool key should raise ValueError."""
-        with pytest.raises(ArtisanError, match="Unknown tool keys.*bogus"):
+        with pytest.raises(ValueError, match="Unknown tool keys.*bogus"):
             _validate_tool(MockCreatorOp, {"bogus": True})
 
     def test_no_tool_raises(self):
         """Operation without tool should raise on tool override."""
-        with pytest.raises(ArtisanError, match="has no tool to override"):
+        with pytest.raises(ValueError, match="has no tool to override"):
             _validate_tool(MockCuratorOp, {"executable": "/new"})
 
     def test_empty_tool_accepted(self):
@@ -359,7 +358,7 @@ class TestValidateInputRoles:
     def test_unknown_input_role_raises(self):
         """Unknown input role should raise ValueError."""
         ref = MagicMock()
-        with pytest.raises(ArtisanError, match="Unknown input roles.*bogus"):
+        with pytest.raises(ValueError, match="Unknown input roles.*bogus"):
             _validate_input_roles(MockCuratorOp, {"bogus": ref})
 
     def test_runtime_defined_inputs_skips_validation(self):
@@ -411,7 +410,7 @@ class TestValidateRequiredInputs:
 
     def test_missing_required_role_raises(self):
         """Missing a required role should raise ValueError."""
-        with pytest.raises(ArtisanError, match="Missing required input.*data"):
+        with pytest.raises(ValueError, match="Missing required input.*data"):
             _validate_required_inputs(MockCuratorOp, {})
 
     def test_all_required_provided(self):
@@ -451,7 +450,7 @@ class TestValidateInputTypes:
         ref = OutputReference(
             source_step=0, role="metrics", artifact_type=ArtifactTypes.METRIC
         )
-        with pytest.raises(ArtisanError, match="Type mismatch.*data"):
+        with pytest.raises(ValueError, match="Type mismatch.*data"):
             _validate_input_types(MockCuratorOp, {"data": ref})
 
     def test_type_match_no_error(self):

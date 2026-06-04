@@ -30,7 +30,6 @@ def _create_executions_df(**overrides) -> pl.DataFrame:
         "params": ["{}"],
         "user_overrides": ["{}"],
         "compute_backend": ["local"],
-        "error_envelope": [None],
         "tool_output": [None],
         "worker_log": [None],
         "metadata": ["{}"],

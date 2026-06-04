@@ -244,7 +244,6 @@ def record_execution_failure(
     user_overrides: dict[str, Any] | None = None,
     tool_output: str | None = None,
     failure_logs_root: str | None = None,
-    error_envelope: dict[str, Any] | None = None,
 ) -> StagingResult:
     """Stage an execution record for a failed run and write a failure log.
 
@@ -260,11 +259,6 @@ def record_execution_failure(
         user_overrides: User-provided parameter overrides before default merge.
         tool_output: Captured tool stdout/stderr.
         failure_logs_root: Directory for human-readable failure logs.
-        error_envelope: Optional ``ArtisanError.to_dict()`` payload. When
-            provided, persisted as JSON on the failure row so the MCP
-            ``artisan_get_step_logs`` tool can hand the structured
-            envelope to the agent. ``None`` for legacy callers that have
-            not adopted the envelope yet.
 
     Returns:
         StagingResult with ``success=False``.
@@ -308,7 +302,6 @@ def record_execution_failure(
             user_overrides=user_overrides,
             tool_output=tool_output,
             step_run_id=execution_context.step_run_id,
-            error_envelope=error_envelope,
         )
         _write_failure_log(
             failure_logs_root=failure_logs_root,

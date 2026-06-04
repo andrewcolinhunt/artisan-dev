@@ -46,7 +46,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "compute_backend": ["local", "local"],
         "success": [True, True],
         "error": [None, None],
-        "error_envelope": [None],
         "tool_output": [None, None],
         "worker_log": [None, None],
         "metadata": ["{}", "{}"],

@@ -42,7 +42,6 @@ def delta_root_with_steps(tmp_path: Path) -> Path:
         "compute_backend": ["local", "local", "local"],
         "success": [True, True, True],
         "error": [None, None, None],
-        "error_envelope": [None],
         "tool_output": [None, None, None],
         "worker_log": [None, None, None],
         "metadata": ["{}", "{}", "{}"],
