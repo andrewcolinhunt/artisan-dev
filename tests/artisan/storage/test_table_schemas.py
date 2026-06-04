@@ -102,7 +102,6 @@ class TestFrameworkSchemaDefinitions:
             "compute_backend",
             "success",
             "error",
-            "error_envelope",
             "tool_output",
             "worker_log",
             "metadata",
@@ -279,13 +278,12 @@ class TestDataFrameCreation:
             "compute_backend": ["local"],
             "success": [True],
             "error": [None],
-            "error_envelope": [None],
             "tool_output": [None],
             "worker_log": [None],
             "metadata": ["{}"],
         }
         df = pl.DataFrame(data, schema=EXECUTIONS_SCHEMA)
-        assert df.shape == (1, 17)  # 17 columns, no inputs/outputs
+        assert df.shape == (1, 16)  # 16 columns, no inputs/outputs
 
     def test_create_execution_edges_dataframe(self):
         """Create execution_edges DataFrame with input/output edges."""

@@ -18,8 +18,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from artisan.errors import ArtisanError, ErrorCode
-
 # =============================================================================
 # COMMAND DATACLASS
 # =============================================================================
@@ -46,17 +44,15 @@ class Command:
 # =============================================================================
 
 
-class ExternalToolError(ArtisanError):
+@dataclass
+class ExternalToolError(Exception):
     """Structured error for external tool failures.
 
     Raised when an external tool exits with non-zero status or times out.
-    Carries the same five structured attributes as the prior dataclass
-    form plus the ``ArtisanError`` envelope (``code``, ``recovery_hint``,
-    etc.). ``return_code == -1`` is the timeout sentinel and maps to
-    ``recovery_hint="RETRY_LATER"``; non-zero exits map to
-    ``"REPORT_TO_USER"``.
+    Contains all context needed to diagnose the failure.
 
     Attributes:
+        message: Human-readable error description.
         command: The command that was executed (as list of parts).
         return_code: Exit code (-1 for timeout).
         stdout: Captured standard output.
@@ -64,36 +60,23 @@ class ExternalToolError(ArtisanError):
         runtime: The EnvironmentSpec or context that was executed.
     """
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        command: list[str],
-        return_code: int,
-        stdout: str,
-        stderr: str,
-        runtime: Any,
-    ) -> None:
-        composed = f"{message} (exit code {return_code})"
-        composed += f"\nCommand: {' '.join(command)}"
-        if stderr:
-            tail = "\n".join(stderr.splitlines()[-20:])
-            composed += f"\n--- stderr (last 20 lines) ---\n{tail}"
-        if stdout:
-            tail = "\n".join(stdout.splitlines()[-20:])
-            composed += f"\n--- stdout (last 20 lines) ---\n{tail}"
+    message: str
+    command: list[str]
+    return_code: int
+    stdout: str
+    stderr: str
+    runtime: Any
 
-        super().__init__(
-            code=ErrorCode.EXTERNAL_TOOL_FAILED,
-            error_type="runtime",
-            message=composed,
-            recovery_hint="RETRY_LATER" if return_code == -1 else "REPORT_TO_USER",
-        )
-        self.command = command
-        self.return_code = return_code
-        self.stdout = stdout
-        self.stderr = stderr
-        self.runtime = runtime
+    def __str__(self) -> str:
+        parts = [f"{self.message} (exit code {self.return_code})"]
+        parts.append(f"Command: {' '.join(self.command)}")
+        if self.stderr:
+            tail = "\n".join(self.stderr.splitlines()[-20:])
+            parts.append(f"--- stderr (last 20 lines) ---\n{tail}")
+        if self.stdout:
+            tail = "\n".join(self.stdout.splitlines()[-20:])
+            parts.append(f"--- stdout (last 20 lines) ---\n{tail}")
+        return "\n".join(parts)
 
 
 # =============================================================================
