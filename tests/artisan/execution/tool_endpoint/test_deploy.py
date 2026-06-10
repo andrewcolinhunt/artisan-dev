@@ -129,6 +129,8 @@ class TestBuildApp:
         assert app.function.call_count == 2  # worker + endpoint
 
         worker_kwargs = app.function.call_args_list[0].kwargs
+        assert worker_kwargs["name"] == "worker"
+        assert app.function.call_args_list[1].kwargs["name"] == "endpoint"
         assert worker_kwargs["serialized"] is True
         assert worker_kwargs["gpu"] == "A100"
         assert worker_kwargs["memory"] == 8192
@@ -138,8 +140,9 @@ class TestBuildApp:
         assert "max_containers" not in worker_kwargs  # None → omitted
 
         mock_modal.concurrent.assert_called_once_with(max_inputs=1)
+        # webhook labels allow only [a-z0-9-] — underscores sanitized
         mock_modal.asgi_app.assert_called_once_with(
-            label="artisan-tool-gpu_tool_test", requires_proxy_auth=True
+            label="artisan-tool-gpu-tool-test", requires_proxy_auth=True
         )
 
     def test_images_mount_local_sources(self, mock_modal: MagicMock):
