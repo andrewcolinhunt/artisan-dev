@@ -48,6 +48,7 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.external_tools import run_command
 
 
 class OperationDefinition(BaseModel):
@@ -261,12 +262,41 @@ class OperationDefinition(BaseModel):
         """
         return {}
 
+    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+        """Assemble the tool command from params + prepared inputs.
+
+        Tool ops override this instead of ``execute()``; the framework runs
+        the returned argv — locally as a subprocess, or on the deployed tool
+        endpoint's worker under ``compute_provider='modal'``.
+
+        Args:
+            inputs: Prepared inputs from ``preprocess()``
+                (``ExecuteInput.inputs``).
+
+        Returns:
+            The argv list, typically ``[*self.tool.parts(), ...]``.
+
+        Raises:
+            NotImplementedError: If the subclass does not override this method.
+        """
+        msg = f"{self.__class__.__name__} does not implement build_command()"
+        raise NotImplementedError(msg)
+
     def execute(self, inputs: ExecuteInput) -> Any:
         """Run the core computation for a creator operation.
 
-        Override to implement the operation's logic. Receives prepared inputs
-        from preprocess and writes output files to ``inputs.execute_dir``.
-        Config parameters are accessed via ``self``.
+        Pure-Python creator ops override this method: receive prepared inputs
+        from preprocess, write output files to ``inputs.execute_dir``, access
+        config parameters via ``self``.
+
+        Tool ops — subclasses declaring a ``tool`` plus ``build_command()`` —
+        inherit this framework implementation instead. It dispatches on
+        ``compute_provider`` and runs the tool: locally as a subprocess via
+        ``run_command`` (wrapped by the active environment), or remotely via
+        the deployed tool endpoint. Under both providers it returns ``None``;
+        a tool op's products are the files written to ``inputs.execute_dir``
+        plus the tool log. Memory results and post-run glue belong in
+        ``postprocess()``.
 
         The framework calls this method; direct calls bypass orchestration
         (sandboxing, lineage, caching) and should only be used for testing.
@@ -276,12 +306,34 @@ class OperationDefinition(BaseModel):
 
         Returns:
             Raw result of any type, passed to postprocess as memory_outputs.
+            The framework tool-op implementation returns ``None``.
 
         Raises:
-            NotImplementedError: If the subclass does not override this method.
+            NotImplementedError: If the subclass neither overrides this
+                method nor declares a ToolSpec + ``build_command()``.
         """
-        msg = f"{self.__class__.__name__} must implement execute() method"
-        raise NotImplementedError(msg)
+        is_tool_op = (
+            type(self).build_command is not OperationDefinition.build_command
+            and self.tool is not None
+        )
+        if not is_tool_op:
+            msg = f"{self.__class__.__name__} must implement execute() method"
+            raise NotImplementedError(msg)
+        if self.compute_provider.active == "modal":
+            # Tool-endpoint dispatch replaces the retired ephemeral-app
+            # path; the client PR wires it up.
+            msg = (
+                "compute_provider='modal' is being reworked as deployed tool "
+                "endpoints and is not available in this build; run with "
+                "compute_provider='local'."
+            )
+            raise NotImplementedError(msg)
+        run_command(
+            self.environments.current(),
+            self.build_command(inputs.inputs),
+            cwd=inputs.execute_dir,
+            log_path=inputs.log_path,
+        )
 
     def execute_curator(
         self,
@@ -345,20 +397,44 @@ class OperationDefinition(BaseModel):
         if not cls.name:
             return
 
-        # Check if either execute or execute_curator is implemented
+        # Check that execute, execute_curator, or a tool command is implemented
         has_execute = cls.execute is not OperationDefinition.execute
         has_execute_curator = (
             cls.execute_curator is not OperationDefinition.execute_curator
         )
-        if not has_execute and not has_execute_curator:
+        has_build_command = cls.build_command is not OperationDefinition.build_command
+        if has_build_command and cls.model_fields["tool"].default is None:
             msg = (
-                f"{cls.__name__} must implement either execute() (creator ops) "
-                "or execute_curator() (curator ops)"
+                f"{cls.__name__} implements build_command() but declares no "
+                "ToolSpec — set the `tool` field"
+            )
+            raise TypeError(msg)
+        if not has_execute and not has_execute_curator and not has_build_command:
+            msg = (
+                f"{cls.__name__} must implement execute() (creator ops), "
+                "execute_curator() (curator ops), or declare a ToolSpec + "
+                "build_command() (tool ops)"
             )
             raise TypeError(msg)
 
-        # Creator ops must declare explicit lineage for all outputs
-        if has_execute:
+        # Modal compute runs build_command on a deployed tool endpoint —
+        # a class whose default provider is modal must be a tool op.
+        provider_default = cls.model_fields["compute_provider"].default
+        if (
+            isinstance(provider_default, ComputeProvider)
+            and provider_default.active == "modal"
+            and not has_build_command
+        ):
+            msg = (
+                f"{cls.__name__} defaults compute_provider.active='modal' but "
+                "modal requires a ToolSpec + build_command() (tool op)"
+            )
+            raise TypeError(msg)
+
+        # Creator ops (custom execute or tool command) must declare explicit
+        # lineage for all outputs
+        is_creator = has_execute or has_build_command
+        if is_creator:
             for role_name, spec in cls.outputs.items():
                 if spec.infer_lineage_from is None:
                     msg = (
@@ -368,7 +444,7 @@ class OperationDefinition(BaseModel):
                     raise TypeError(msg)
 
         # Creator ops with inputs must implement preprocess
-        if has_execute and cls.inputs:
+        if is_creator and cls.inputs:
             has_preprocess = cls.preprocess is not OperationDefinition.preprocess
             if not has_preprocess:
                 msg = (

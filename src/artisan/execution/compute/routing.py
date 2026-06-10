@@ -29,11 +29,15 @@ def create_router(
     Raises:
         ValueError: If the config type is not recognized.
     """
+    del compute_resources  # accepted for signature stability; local routing ignores it
     if isinstance(config, LocalComputeConfig):
         return LocalComputeRouter()
     if isinstance(config, ModalComputeConfig):
-        from artisan.execution.compute.modal import ModalComputeRouter
-
-        return ModalComputeRouter(config, compute_resources=compute_resources)
+        msg = (
+            "ModalComputeConfig no longer creates a router — modal compute "
+            "runs through deployed tool endpoints, dispatched by the step "
+            "executor (not yet wired)."
+        )
+        raise ValueError(msg)
     msg = f"Unknown compute provider config: {type(config).__name__}"
     raise ValueError(msg)

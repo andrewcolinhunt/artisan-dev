@@ -1,25 +1,13 @@
-"""Transport utilities for remote compute_provider routing.
-
-Snapshot and restore sandbox files and tool scripts for shipping
-across process boundaries (e.g. to a Modal container).
-"""
+"""Tool-log transport constants shared by the lifecycle and tool endpoints."""
 
 from __future__ import annotations
 
-from artisan.execution.transport.sandbox_transport import (
-    restore_sandbox,
-    snapshot_outputs,
-    snapshot_sandbox,
-)
-from artisan.execution.transport.tool_transport import (
-    restore_tool_files,
-    snapshot_tool_files,
+from artisan.execution.transport.log_constants import (
+    MAX_TOOL_OUTPUT_BYTES,
+    TOOL_OUTPUT_FILENAME,
 )
 
 __all__ = [
-    "restore_sandbox",
-    "restore_tool_files",
-    "snapshot_outputs",
-    "snapshot_sandbox",
-    "snapshot_tool_files",
+    "MAX_TOOL_OUTPUT_BYTES",
+    "TOOL_OUTPUT_FILENAME",
 ]
