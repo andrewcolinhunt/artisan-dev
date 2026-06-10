@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum, auto
 from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 from pydantic import Field, ValidationError
@@ -495,13 +496,16 @@ class TestToolOps:
         assert (tmp_path / "marker.txt").read_text().strip() == "hi"
         assert (tmp_path / "tool_output.log").exists()
 
-    def test_modal_active_raises_not_wired(self):
-        """Modal dispatch fails fast until the endpoint client lands."""
+    def test_modal_active_dispatches_to_endpoint_client(self):
+        """Modal dispatch routes through the tool-endpoint client."""
         op = ShellTool(
             compute_provider=ComputeProvider(active="modal", modal=ModalComputeConfig())
         )
-        with pytest.raises(NotImplementedError, match="tool endpoints"):
-            op.execute(ExecuteInput(execute_dir="/tmp"))
+        execute_input = ExecuteInput(execute_dir="/tmp")
+        with patch("artisan.execution.tool_endpoint.client.call_endpoint") as mock_call:
+            result = op.execute(execute_input)
+        assert result is None
+        mock_call.assert_called_once_with(op, execute_input)
 
     def test_unnamed_non_tool_base_execute_raises(self):
         """Base execute() still raises for abstract non-tool subclasses."""

@@ -198,6 +198,9 @@ class ErrorCode:
     ARTIFACT_VALIDATION_FAILED = "artifact_validation_failed"
     LINEAGE_INCOMPLETE = "lineage_incomplete"
 
+    # compute — tool endpoints
+    TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
+
     # io
     ARTIFACT_NOT_FOUND = "artifact_not_found"
 

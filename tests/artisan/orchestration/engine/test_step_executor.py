@@ -7,8 +7,6 @@ from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.step_executor import (
     _cancelled_result,
@@ -24,6 +22,7 @@ from artisan.schemas.operation_config.compute import (
 )
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -196,6 +195,35 @@ class _SimpleCreatorOp(OperationDefinition):
         return {}
 
 
+class _SimpleToolOp(OperationDefinition):
+    """Minimal tool op for endpoint dispatch routing tests."""
+
+    class InputRole(StrEnum):
+        data = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "routing_tool_op"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.FILE_REF, required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.FILE_REF,
+            infer_lineage_from={"inputs": ["data"]},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+    def preprocess(self, _inputs):
+        return {}
+
+    def build_command(self, inputs):
+        return [*self.tool.parts(), "-c", "true"]
+
+
 def _make_mock_backend(flow_return_value=None):
     """Create a mock step_runner whose dispatch handle captures dispatched units."""
     mock_backend = MagicMock()
@@ -213,17 +241,70 @@ def _make_mock_backend(flow_return_value=None):
 
 
 class TestComputeRoutingSelection:
-    """_execute_creator_step fails fast for Modal until endpoint dispatch lands."""
+    """_execute_creator_step routes Modal tool ops to the endpoint handle."""
+
+    @patch(
+        "artisan.orchestration.engine.tool_endpoint_handle.ToolEndpointDispatchHandle"
+    )
+    @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
+    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
+    def test_modal_tool_op_uses_endpoint_handle(
+        self,
+        mock_resolve,
+        mock_cache,
+        mock_handle_cls,
+        tmp_path,
+    ):
+        """A Modal tool op dispatches via ToolEndpointDispatchHandle."""
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+
+        op = _SimpleToolOp(
+            compute_provider=ComputeProvider(
+                active="modal", modal=ModalComputeConfig()
+            ),
+        )
+
+        mock_resolve.return_value = {"data": [_ID]}
+        mock_cache.return_value = None
+
+        mock_handle = MagicMock()
+        mock_handle.run.return_value = [
+            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
+        ]
+        mock_handle_cls.return_value = mock_handle
+
+        mock_backend, _ = _make_mock_backend()
+
+        _execute_creator_step(
+            operation=op,
+            inputs={"data": [_ID]},
+            step_runner=mock_backend,
+            step_number=1,
+            config=config,
+            compact=False,
+        )
+
+        mock_handle_cls.assert_called_once()
+        mock_handle.run.assert_called_once()
+        mock_backend.create_dispatch_handle.assert_not_called()
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_modal_compute_raises_not_wired(
+    def test_modal_non_tool_op_fails_step(
         self,
         mock_resolve,
         mock_cache,
         tmp_path,
     ):
-        """ModalComputeConfig aborts dispatch with a clear not-wired error."""
+        """Modal on a non-tool op records a config failure, never dispatches."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -245,16 +326,16 @@ class TestComputeRoutingSelection:
 
         mock_backend, _ = _make_mock_backend()
 
-        with pytest.raises(NotImplementedError, match="tool endpoints"):
-            _execute_creator_step(
-                operation=op,
-                inputs={"data": [_ID]},
-                step_runner=mock_backend,
-                step_number=1,
-                config=config,
-                compact=False,
-            )
+        result = _execute_creator_step(
+            operation=op,
+            inputs={"data": [_ID]},
+            step_runner=mock_backend,
+            step_number=1,
+            config=config,
+            compact=False,
+        )
 
+        assert result.success is False
         mock_backend.create_dispatch_handle.assert_not_called()
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
