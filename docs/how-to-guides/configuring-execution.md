@@ -110,7 +110,15 @@ pipeline.run(
 | Compute target | How it runs | When to use |
 |----------------|-------------|-------------|
 | `"local"` (default) | Direct call inside the worker | Development, testing, CPU-only ops |
-| `"modal"` | Route to a Modal container | GPU work, cloud burst, isolated environments |
+| `"modal"` | Call the tool's deployed Modal endpoint | GPU work, cloud burst, isolated environments |
+
+The modal provider runs **tool ops** only — operations declaring a
+`ToolSpec` + `build_command()` instead of `execute()` — and requires the
+tool's endpoint to be deployed first:
+
+```bash
+artisan modal deploy <operation-name>
+```
 
 Hardware fields (`gpu`, `cpu`, `memory_gb`, `timeout`) live on
 `ComputeResources` so the same hardware spec applies to any future compute
@@ -139,85 +147,80 @@ Modal-specific provider configuration. Hardware fields (`gpu`, `cpu`,
 | `image` | `str` | `ARTISAN_WORKER_IMAGE` | Container image for the Modal function. |
 | `retries` | `int` | `3` | Retries on preemption. |
 | `min_containers` | `int` | `0` | Containers kept warm at zero traffic. Set to expected batch parallelism to eliminate cold starts; `0` means scale-to-zero. |
-| `max_containers` | `int \| None` | `None` | Upper bound on concurrent containers. Set when fanning out via `experimental_spawn_map()` to avoid spawning one container per input on large batches. |
+| `max_containers` | `int \| None` | `None` | Upper bound on concurrent worker containers — caps per-artifact fan-out on large batches. |
 | `scaledown_window` | `int \| None` | `None` | Seconds a container idles before shutdown. Modal's default is 60s; max 1200s. |
 | `image_registry_secret` | `str \| None` | `None` | Name of a Modal Secret holding `REGISTRY_USERNAME` / `REGISTRY_PASSWORD` for pulling private images. |
 | `secrets` | `list[str]` | `[]` | Names of Modal Secrets to inject into the runtime environment (e.g. `["hf-read", "aws-s3"]`). Created via `modal secret create ...`. Distinct from `image_registry_secret`, which authenticates the image pull only. |
 | `volumes` | `dict[str, str]` | `{}` | Mount path → volume name (e.g. `{"/weights": "foundry-weights"}`). Each volume is resolved via `modal.Volume.from_name(name, create_if_missing=True, version=2)` — surviving across cold starts is the point. |
 | `env` | `dict[str, str]` | `{}` | Environment variables set inside the container (e.g. `{"HF_XET_HIGH_PERFORMANCE": "1"}`). Applied as an image layer; cache hits survive as long as the dict is stable. |
-| `local_python_sources` | `list[str]` | `["artisan"]` | Top-level Python package names overlaid onto the Modal image at cold-start. Defaults to `["artisan"]` (ships dev-host artisan source live, shadowing the image's pinned version). Pass `[]` to use the image's pinned version. |
+| `local_python_sources` | `list[str]` | `["artisan"]` | Top-level Python package names overlaid onto both deployed images. Defaults to `["artisan"]` (ships dev-host artisan source live, shadowing the image's pinned version). Ops defined outside the artisan package must add their own package name. |
+| `endpoint_url` | `str \| None` | `None` | Base URL of an externally-deployed tool endpoint. `None` resolves the Artisan-deployed app `artisan-tool-<op.name>` via the Modal SDK. |
+| `auth_secret` | `str \| None` | `None` | Env-var prefix for the proxy-auth token pair (`<prefix>_TOKEN_ID` / `<prefix>_TOKEN_SECRET`). `None` uses `MODAL_PROXY`. |
+| `poll_interval` | `float` | `2.0` | Seconds between `/result` polls while a tool job runs. |
 
-The container image must have artisan installed. Transport functions run
-inside the container.
+The worker image must be able to run the tool's executable; artisan and
+the op's module ride along via `local_python_sources`, so `build_command`
+runs on the worker without shipping code per call.
 
 #### GPU op with weights, secrets, and runtime env
 
-Typical pattern: a private image, a secret for HF auth, weights on a
-warm Modal Volume, and one runtime env var:
+Typical pattern: a private image, a secret for HF auth, weights on a warm
+Modal Volume, and one runtime env var. The config lives on the operation
+class — deploy reads it from there, never from an instance:
 
 ```python
-from artisan.schemas.operation_config.compute import (
-    ComputeProvider,
-    ModalComputeConfig,
-)
-from artisan.schemas.operation_config.compute_resources import ComputeResources
-
-compute_provider = ComputeProvider(
-    active="modal",
-    modal=ModalComputeConfig(
-        image="ghcr.io/your-org/foundry-artisan:latest",
-        image_registry_secret="ghcr-pat",
-        secrets=["hf-read"],
-        volumes={"/weights": "foundry-weights"},
-        env={"HF_XET_HIGH_PERFORMANCE": "1"},
-        max_containers=50,
-    ),
-)
-
-compute_resources = ComputeResources(
-    gpu="A100",
-    cpu=4.0,
-    memory_gb=64,
-    timeout=7200,
-)
-
-pipeline.run(
-    operation=GpuInference,
-    inputs=...,
-    compute_provider=compute_provider,
-    compute_resources=compute_resources,
-)
+class GpuInference(OperationDefinition):
+    name = "gpu_inference"
+    tool = ToolSpec(executable="inference")
+    compute_provider = ComputeProvider(
+        modal=ModalComputeConfig(
+            image="ghcr.io/your-org/foundry-artisan:latest",
+            image_registry_secret="ghcr-pat",
+            secrets=["hf-read"],
+            volumes={"/weights": "foundry-weights"},
+            env={"HF_XET_HIGH_PERFORMANCE": "1"},
+            max_containers=50,
+        ),
+    )
+    compute_resources = ComputeResources(gpu="A100", cpu=4.0, memory_gb=64, timeout=7200)
+    ...
 ```
 
-### Validating operations for remote compute
-
-Use `validate_remote_execute()` in your test suite to catch serialization
-issues before they reach production:
+```bash
+artisan modal deploy gpu_inference
+```
 
 ```python
-from artisan.execution.compute import validate_remote_execute
-
-op = MyOperation()
-assert validate_remote_execute(op)  # checks cloudpickle + tool paths
+pipeline.run(operation=GpuInference, inputs=..., compute_provider="modal")
 ```
 
-The validator checks two things:
+Hardware is part of the deployed worker — changing `ComputeResources`
+means redeploying; a per-step `compute_resources` override does not
+reconfigure an already-deployed endpoint.
 
-- **Cloudpickle round-trip:** serializes and deserializes the operation
-  instance. Fails if the operation has unpicklable attributes (file handles,
-  lambdas, etc.).
-- **ToolSpec path check:** warns if `tool.executable` points to a local-only
-  absolute path that won't exist on the remote container.
+### Authentication
+
+The deployed endpoint requires Modal proxy-auth tokens (dashboard →
+*Proxy Auth Tokens*). The client reads them from the environment:
+
+```bash
+export MODAL_PROXY_TOKEN_ID="wk-..."
+export MODAL_PROXY_TOKEN_SECRET="ws-..."
+```
+
+Override the variable prefix per op via `ModalComputeConfig.auth_secret`.
 
 ### Transport limits
 
-File-based operations transport sandbox files to and from the remote
-container. The transport limit is 50 MB per direction. For larger data,
-put files on object storage (S3, GCS) and pass URIs as operation
-parameters.
+Input files ship inline in the submit request and outputs return as a
+tar — bounded at 100 MB per direction. Inputs that already live on object
+storage pass their `s3://` URI by reference (no re-upload, no bound).
+Large static data (model weights) belongs on Modal Volumes
+(`ModalComputeConfig.volumes`), not in the request.
 
-Python scripts referenced by ToolSpec are shipped automatically. External
-binaries (compiled tools) must be pre-installed in the container image.
+External binaries (compiled tools) must be pre-installed in the worker
+image; artisan and the op's Python module are overlaid via
+`local_python_sources`.
 
 ---
 
