@@ -6,7 +6,7 @@ selector. Pipeline-level overrides change ``active`` via ``model_copy()``.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ARTISAN_WORKER_IMAGE = "ghcr.io/dexterity-systems/artisan-worker:latest"
 
@@ -75,6 +75,17 @@ class ModalComputeConfig(ComputeConfig):
             overlay nothing. Mounted at cold-start rather than baked
             into the image — upload bandwidth scales with total source
             size.
+        endpoint_url: Base URL of an externally-deployed tool endpoint.
+            None (default) resolves the Artisan-deployed app
+            ``artisan-tool-<op.name>`` via the Modal SDK; set this to
+            consume an endpoint Artisan did not deploy.
+        auth_secret: Environment-variable prefix for the proxy-auth
+            token pair (``<prefix>_TOKEN_ID`` / ``<prefix>_TOKEN_SECRET``),
+            sent as ``Modal-Key`` / ``Modal-Secret`` headers. None falls
+            back to ``MODAL_TOKEN_ID`` / ``MODAL_TOKEN_SECRET`` — the
+            same pair that already reaches workers.
+        poll_interval: Seconds between ``/result`` polls while a tool
+            job runs.
     """
 
     image: str = ARTISAN_WORKER_IMAGE
@@ -87,6 +98,9 @@ class ModalComputeConfig(ComputeConfig):
     volumes: dict[str, str] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
     local_python_sources: list[str] = Field(default_factory=lambda: ["artisan"])
+    endpoint_url: str | None = None
+    auth_secret: str | None = None
+    poll_interval: float = Field(default=2.0, gt=0)
 
 
 class ComputeProvider(BaseModel):
@@ -106,6 +120,15 @@ class ComputeProvider(BaseModel):
         default_factory=LocalComputeConfig,
     )
     modal: ModalComputeConfig | None = None
+
+    @field_validator("active")
+    @classmethod
+    def _validate_active(cls, value: str) -> str:
+        """Constrain ``active`` to the known provider names."""
+        if value not in ("local", "modal"):
+            msg = f"Unknown compute provider {value!r}; expected 'local' or 'modal'"
+            raise ValueError(msg)
+        return value
 
     def current(self) -> ComputeConfig:
         """Return the active provider config.

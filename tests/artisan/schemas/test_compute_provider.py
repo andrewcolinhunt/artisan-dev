@@ -38,6 +38,10 @@ class TestCompute:
         assert updated.active == "modal"
         assert compute_provider.active == "local"
 
+    def test_unknown_active_raises(self):
+        with pytest.raises(ValueError, match="Unknown compute provider"):
+            ComputeProvider(active="slurm")
+
     def test_round_trip(self):
         compute_provider = ComputeProvider()
         data = compute_provider.model_dump()
@@ -72,6 +76,24 @@ class TestModalComputeConfig:
         assert config.volumes == {}
         assert config.env == {}
         assert config.local_python_sources == ["artisan"]
+        assert config.endpoint_url is None
+        assert config.auth_secret is None
+        assert config.poll_interval == 2.0
+
+    def test_endpoint_client_fields(self):
+        config = ModalComputeConfig(
+            image="img",
+            endpoint_url="https://my-org--tool.modal.run",
+            auth_secret="MY_PROXY_AUTH",
+            poll_interval=0.5,
+        )
+        assert config.endpoint_url == "https://my-org--tool.modal.run"
+        assert config.auth_secret == "MY_PROXY_AUTH"
+        assert config.poll_interval == 0.5
+
+    def test_poll_interval_must_be_positive(self):
+        with pytest.raises(ValueError, match="poll_interval"):
+            ModalComputeConfig(image="img", poll_interval=0)
 
     def test_custom_fields(self):
         config = ModalComputeConfig(
