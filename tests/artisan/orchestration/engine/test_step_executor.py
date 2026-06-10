@@ -324,9 +324,12 @@ class TestInstantiateOperationComputeOverrides:
         non-hardware fields like ``retries`` and ``min_containers``.
         """
 
+        # active stays "local": a class-level modal *default* now requires a
+        # tool op (ToolSpec + build_command); the dict-merge under test only
+        # needs an existing nested modal config.
         class _ModalOp(_SimpleCreatorOp):
             compute_provider: ComputeProvider = ComputeProvider(
-                active="modal", modal=ModalComputeConfig(retries=5, min_containers=2)
+                modal=ModalComputeConfig(retries=5, min_containers=2)
             )
 
         result = instantiate_operation(
