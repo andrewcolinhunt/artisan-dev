@@ -9,7 +9,7 @@ not of artisan. Importing this module requires the ``modal`` SDK.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import modal
 from pydantic import BaseModel
@@ -232,7 +232,7 @@ def _build_fastapi(spec: EndpointSpec, worker: Any) -> Any:
         res = _retained_result(call_id)
         if isinstance(res, str):
             return ResultResponse(status=res)  # type: ignore[arg-type]
-        status = "failed" if res.manifest.error else "done"
+        status: Literal["done", "failed"] = "failed" if res.manifest.error else "done"
         return ResultResponse(status=status, manifest=res.manifest)
 
     @web.get("/download")
