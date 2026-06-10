@@ -20,6 +20,7 @@ from typing import Any, cast
 
 from fsspec import AbstractFileSystem
 
+from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.context.builder import build_curator_execution_context
 from artisan.execution.executors.curator import (
     _get_params,
@@ -1125,28 +1126,40 @@ def _execute_creator_step(
                 try:
                     compute_config = operation.compute_provider.current()
 
-                    if isinstance(compute_config, ModalComputeConfig):
-                        # Tool-endpoint dispatch replaces the retired
-                        # ephemeral-app path; the client PR wires it up.
-                        msg = (
-                            "compute_provider='modal' is being reworked as "
-                            "deployed tool endpoints and is not available in "
-                            "this build; run with compute_provider='local'."
-                        )
-                        raise NotImplementedError(msg)
-
                     handle: DispatchHandle
-                    step_runner.validate_operation(operation)
-                    handle = step_runner.create_dispatch_handle(
-                        operation.runner_resources,
-                        operation.batch_strategy,
-                        step_number,
-                        job_name=operation.batch_strategy.job_name or operation.name,
-                        log_folder=uri_join(
-                            uri_parent(config.delta_root), "logs", "slurm"
-                        ),
-                        staging_root=config.staging_root,
-                    )
+                    if isinstance(compute_config, ModalComputeConfig):
+                        if not operation.is_tool_op():
+                            raise ArtisanError(
+                                code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+                                message=(
+                                    "compute_provider='modal' requires a tool "
+                                    "op (ToolSpec + build_command()); "
+                                    f"{operation.name} declares neither"
+                                ),
+                                error_type="config",
+                                operation_name=operation.name,
+                                recovery_hint="CHECK_INPUT",
+                            )
+                        from artisan.orchestration.engine.tool_endpoint_handle import (
+                            ToolEndpointDispatchHandle,
+                        )
+
+                        handle = ToolEndpointDispatchHandle(
+                            max_workers=operation.batch_strategy.max_workers or 4,
+                        )
+                    else:
+                        step_runner.validate_operation(operation)
+                        handle = step_runner.create_dispatch_handle(
+                            operation.runner_resources,
+                            operation.batch_strategy,
+                            step_number,
+                            job_name=operation.batch_strategy.job_name
+                            or operation.name,
+                            log_folder=uri_join(
+                                uri_parent(config.delta_root), "logs", "slurm"
+                            ),
+                            staging_root=config.staging_root,
+                        )
 
                     results = handle.run(
                         units_to_dispatch,  # type: ignore[arg-type]  # list[ExecutionUnit] vs invariant list[ExecutionUnit | ExecutionComposite]; widening is safe — DispatchHandle.run does not mutate
