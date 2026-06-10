@@ -11,9 +11,12 @@ endpoint image (fastapi, jsonschema, modal). Artisan is never imported in
 the endpoint container — unpickling any artisan object there would require
 artisan's full dependency stack. Boundary validation runs against the baked
 JSON schema instead. Importing this module requires the ``modal`` SDK.
-"""
 
-from __future__ import annotations
+No ``from __future__ import annotations`` here: the endpoint's route
+handlers are cloudpickled and rebuilt in-container, where FastAPI resolves
+their signatures — deferred (string) annotations cannot be looked up in an
+unpickled function's globals, so annotations must be real objects.
+"""
 
 from typing import Any
 
