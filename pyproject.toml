@@ -108,7 +108,6 @@ graphviz = "*"          # Python bindings for Graphviz (provenance graph visuali
 
 # Cloud compute routing
 modal = "*"             # Modal SDK for remote compute routing
-cloudpickle = "*"       # Serialization for remote execute()
 
 # =============================================================================
 # DEV FEATURE - Development tools (testing, linting, debugging, notebooks)
@@ -261,7 +260,6 @@ ignore_errors = true
 module = [
     "fsspec.*",
     "graphviz",
-    "cloudpickle",
     "prefect_submitit.*",
     "ipywidgets",
     "matplotlib",
