@@ -125,7 +125,7 @@ def delta_with_named_input(tmp_path: Path):
                 "artifact_id": aid,
                 "origin_step_number": 0,
                 "content": content,
-                "original_name": "protein_001",
+                "original_name": "sample_001",
                 "extension": ".json",
                 "metadata": "{}",
                 "external_path": None,
@@ -177,7 +177,7 @@ class TestCreatorLifecycleNameDerivation:
 
         # The output should have the human-readable derived name
         output_art = outputs[0]
-        assert output_art.original_name == "protein_001_scored"
+        assert output_art.original_name == "sample_001_scored"
         assert output_art.artifact_id is not None
 
         # Lineage edge should exist

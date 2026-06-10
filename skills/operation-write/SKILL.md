@@ -235,7 +235,7 @@ transforms, preserve the input filename stem in the output name.
 | `artifact_type` | `str` | `"any"` | Type constraint on accepted artifacts |
 | `required` | `bool` | `True` | Pipeline fails if input is missing |
 | `materialize` | `bool` | `True` | `True`: write to disk (file path). `False`: in-memory access only |
-| `materialize_as` | `str \| None` | `None` | Target format for materialization (e.g. `".pdb"`). Requires `materialize=True` |
+| `materialize_as` | `str \| None` | `None` | Target format for materialization (e.g. `".csv"`). Requires `materialize=True` |
 | `hydrate` | `bool` | `True` | `True`: load content. `False`: ID-only mode |
 | `with_associated` | `tuple[str, ...]` | `()` | Auto-resolve related artifacts via provenance |
 

@@ -983,8 +983,8 @@ class TestMatchInputsToPrimaryName:
         """Primary stems pair against one other role."""
         store = _make_name_store(
             {
-                "p1": "s1.fasta",
-                "p2": "s2.fasta",
+                "p1": "s1.csv",
+                "p2": "s2.csv",
                 "m1": "s1.json",
                 "m2": "s2.json",
             }

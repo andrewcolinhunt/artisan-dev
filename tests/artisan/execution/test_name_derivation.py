@@ -42,13 +42,13 @@ class TestSuffixExtraction:
     def test_suffix_appended_to_input_name(self):
         input_id = "a" * 32
         output_id = "x" * 32
-        inp = _make_input(input_id, "protein_001")
+        inp = _make_input(input_id, "sample_001")
         out = _make_output(output_id, f"{input_id}_scored")
 
         match_map = {f"{input_id}_scored": input_id}
         derive_human_names({"data": [out]}, [], {"data": [inp]}, match_map)
 
-        assert out.original_name == "protein_001_scored"
+        assert out.original_name == "sample_001_scored"
 
     def test_empty_suffix(self):
         """When output stem exactly equals input artifact_id, suffix is empty."""
@@ -69,8 +69,8 @@ class TestHumanNameDerivation:
     def test_multiple_outputs_derived(self):
         id_a = "a" * 32
         id_b = "b" * 32
-        inp_a = _make_input(id_a, "protein_001")
-        inp_b = _make_input(id_b, "protein_002")
+        inp_a = _make_input(id_a, "sample_001")
+        inp_b = _make_input(id_b, "sample_002")
 
         out_a = _make_output("x" * 32, f"{id_a}_scored")
         out_b = _make_output("y" * 32, f"{id_b}_scored")
@@ -86,15 +86,15 @@ class TestHumanNameDerivation:
             match_map,
         )
 
-        assert out_a.original_name == "protein_001_scored"
-        assert out_b.original_name == "protein_002_scored"
+        assert out_a.original_name == "sample_001_scored"
+        assert out_b.original_name == "sample_002_scored"
 
 
 class TestUnmatchedOutputsPreserved:
     """Outputs not in the match map keep their original_name unchanged."""
 
     def test_unmatched_output_unchanged(self):
-        inp = _make_input("a" * 32, "protein_001")
+        inp = _make_input("a" * 32, "sample_001")
         out = _make_output("z" * 32, "summary_report")
 
         # Empty match map - no filesystem matches
@@ -104,7 +104,7 @@ class TestUnmatchedOutputsPreserved:
 
     def test_output_with_none_name_skipped(self):
         """Artifacts with original_name=None are skipped without error."""
-        inp = _make_input("a" * 32, "protein_001")
+        inp = _make_input("a" * 32, "sample_001")
         out = _make_output("z" * 32, "temp")
         out.original_name = None
 
@@ -115,7 +115,7 @@ class TestUnmatchedOutputsPreserved:
     def test_mixed_matched_and_unmatched(self):
         """Only matched outputs get renamed; unmatched are preserved."""
         input_id = "a" * 32
-        inp = _make_input(input_id, "protein_001")
+        inp = _make_input(input_id, "sample_001")
 
         matched_out = _make_output("x" * 32, f"{input_id}_scored")
         unmatched_out = _make_output("y" * 32, "custom_report")
@@ -128,5 +128,5 @@ class TestUnmatchedOutputsPreserved:
             match_map,
         )
 
-        assert matched_out.original_name == "protein_001_scored"
+        assert matched_out.original_name == "sample_001_scored"
         assert unmatched_out.original_name == "custom_report"
