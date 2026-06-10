@@ -143,4 +143,5 @@ def _resolve_fs(uri: str, fs: Any) -> tuple[Any, str]:
         return fs, uri
     import fsspec
 
-    return fsspec.core.url_to_fs(uri)
+    derived_fs, path = fsspec.core.url_to_fs(uri)
+    return derived_fs, path

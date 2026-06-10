@@ -11,6 +11,7 @@ import importlib
 import os
 import tempfile
 from functools import reduce
+from typing import Any
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.tool_endpoint.protocol import (
@@ -41,7 +42,7 @@ def resolve_op(module: str, qualname: str) -> type[OperationDefinition]:
     Raises:
         TypeError: If the resolved object is not an OperationDefinition.
     """
-    obj = reduce(getattr, qualname.split("."), importlib.import_module(module))
+    obj: Any = reduce(getattr, qualname.split("."), importlib.import_module(module))
     if not (isinstance(obj, type) and issubclass(obj, OperationDefinition)):
         msg = f"{module}:{qualname} is not an OperationDefinition"
         raise TypeError(msg)
@@ -102,10 +103,11 @@ def _instantiate(
     op_cls: type[OperationDefinition], request: ToolRequest
 ) -> OperationDefinition:
     """Instantiate the op from request params (nested ``Params`` when present)."""
+    op_any: Any = op_cls  # subclass fields (params, …) are invisible on the base
     params_cls = getattr(op_cls, "Params", None)
     if params_cls is None:
-        return op_cls(**request.params)
-    return op_cls(params=params_cls(**request.params))
+        return op_any(**request.params)  # type: ignore[no-any-return]
+    return op_any(params=params_cls(**request.params))  # type: ignore[no-any-return]
 
 
 def _envelope(operation_name: str, exc: ExternalToolError) -> ArtisanErrorEnvelope:
