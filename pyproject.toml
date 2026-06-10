@@ -111,6 +111,7 @@ graphviz = "*"          # Python bindings for Graphviz (provenance graph visuali
 
 # Cloud compute routing
 modal = "*"             # Modal SDK for remote compute routing
+httpx = "*"             # Tool-endpoint client (submit/poll/download/cancel)
 
 # =============================================================================
 # DEV FEATURE - Development tools (testing, linting, debugging, notebooks)
