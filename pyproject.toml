@@ -25,6 +25,9 @@ s3 = ["s3fs"]
 gcs = ["gcsfs"]
 modal = ["modal"]
 
+[project.scripts]
+artisan = "artisan.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/dexterity-systems/artisan"
 Repository = "https://github.com/dexterity-systems/artisan"
@@ -258,6 +261,8 @@ ignore_errors = true
 # import-not-found even though `pixi run -e dev mypy` sees them via the dev env.
 [[tool.mypy.overrides]]
 module = [
+    "fastapi",
+    "fastapi.*",
     "fsspec.*",
     "graphviz",
     "prefect_submitit.*",
