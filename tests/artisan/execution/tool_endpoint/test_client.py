@@ -52,8 +52,7 @@ def _tar_payload(tmp_path: Path) -> bytes:
     src = tmp_path / "worker_outputs"
     src.mkdir()
     (src / "out.txt").write_text("hi\n")
-    (src / "tool_output.log").write_text("ran fine\n")
-    return InlineTransport().pack_outputs(str(src), ["out.txt", "tool_output.log"])
+    return InlineTransport().pack_outputs(str(src), ["out.txt"])
 
 
 @pytest.fixture
@@ -72,9 +71,7 @@ class TestCallEndpointHappyPath:
     def test_submit_poll_download(self, mock_http, tmp_path):
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})
-        manifest = ToolManifest(
-            output_names=["out.txt", "tool_output.log"], log_tail="ran fine\n"
-        )
+        manifest = ToolManifest(output_names=["out.txt"], log_tail="ran fine\n")
         client.get.side_effect = [
             _response({"status": "pending", "manifest": None}),
             _response({"status": "done", "manifest": manifest.model_dump()}),

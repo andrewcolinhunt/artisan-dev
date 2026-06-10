@@ -87,10 +87,12 @@ class TestRunToolRequest:
             EchoTool, ToolRequest(params={"text": "yo", "filename": "f.txt"})
         )
         assert result.manifest.error is None
-        assert "f.txt" in result.manifest.output_names
-        assert "tool_output.log" in result.manifest.output_names
+        assert result.manifest.output_names == ["f.txt"]
+        # the log travels as log_tail, never on the data plane — locally
+        # it lives outside execute_dir, so the tar must not leak it in
+        assert result.manifest.log_tail is not None
         assert result.output_tar is not None
-        assert _tar_names(result.output_tar) == sorted(result.manifest.output_names)
+        assert _tar_names(result.output_tar) == ["f.txt"]
 
     def test_inputs_resolved_outside_outputs(self, tmp_path):
         src = tmp_path / "in.txt"
