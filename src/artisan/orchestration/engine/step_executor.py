@@ -1141,8 +1141,7 @@ def _execute_creator_step(
                         operation.runner_resources,
                         operation.batch_strategy,
                         step_number,
-                        job_name=operation.batch_strategy.job_name
-                        or operation.name,
+                        job_name=operation.batch_strategy.job_name or operation.name,
                         log_folder=uri_join(
                             uri_parent(config.delta_root), "logs", "slurm"
                         ),

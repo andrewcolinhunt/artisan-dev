@@ -498,9 +498,7 @@ class TestToolOps:
     def test_modal_active_raises_not_wired(self):
         """Modal dispatch fails fast until the endpoint client lands."""
         op = ShellTool(
-            compute_provider=ComputeProvider(
-                active="modal", modal=ModalComputeConfig()
-            )
+            compute_provider=ComputeProvider(active="modal", modal=ModalComputeConfig())
         )
         with pytest.raises(NotImplementedError, match="tool endpoints"):
             op.execute(ExecuteInput(execute_dir="/tmp"))
