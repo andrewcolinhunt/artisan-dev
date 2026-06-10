@@ -2,19 +2,27 @@
 
 ``build_app`` reads only class-level defaults — it never instantiates the
 operation (params arrive per request). The HTTP surface is one
-``@modal.asgi_app`` function whose FastAPI app is built in-container
-(``_build_fastapi``), so fastapi is a dependency of the endpoint image,
-not of artisan. Importing this module requires the ``modal`` SDK.
+``@modal.asgi_app`` function whose FastAPI app is built in-container.
+
+The endpoint function is **self-contained**: its closure carries only plain
+data (op name, module path, the op's ``Params`` JSON schema) plus the worker
+function handle, and its body imports only packages installed in the slim
+endpoint image (fastapi, jsonschema, modal). Artisan is never imported in
+the endpoint container — unpickling any artisan object there would require
+artisan's full dependency stack. Boundary validation runs against the baked
+JSON schema instead. Importing this module requires the ``modal`` SDK.
+
+No ``from __future__ import annotations`` here: the endpoint's route
+handlers are cloudpickled and rebuilt in-container, where FastAPI resolves
+their signatures — deferred (string) annotations cannot be looked up in an
+unpickled function's globals, so annotations must be real objects.
 """
 
-from __future__ import annotations
-
-from typing import Any, Literal
+from typing import Any
 
 import modal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from artisan.execution.tool_endpoint.protocol import ToolRequest
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
@@ -45,6 +53,7 @@ class EndpointSpec(BaseModel):
     cpu: float | None
     memory_mb: int | None
     timeout: int | None
+    params_schema: dict[str, Any] = Field(default_factory=dict)
 
 
 def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
@@ -54,7 +63,8 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
         op_cls: The registered operation class to deploy.
 
     Returns:
-        The deploy spec read from class-level field defaults.
+        The deploy spec read from class-level field defaults, including the
+        op's ``Params`` JSON schema for boundary validation.
 
     Raises:
         ValueError: If the op is not a tool op (ToolSpec + build_command)
@@ -78,6 +88,12 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
     resources = op_cls.model_fields["compute_resources"].default
     if not isinstance(resources, ComputeResources):
         resources = ComputeResources()
+    params_cls = getattr(op_cls, "Params", None)
+    params_schema = (
+        params_cls.model_json_schema()
+        if isinstance(params_cls, type) and issubclass(params_cls, BaseModel)
+        else {}
+    )
     return EndpointSpec(
         op_module=op_cls.__module__,
         op_qualname=op_cls.__qualname__,
@@ -96,6 +112,7 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
         cpu=resources.cpu,
         memory_mb=resources.memory_gb * 1024 if resources.memory_gb else None,
         timeout=resources.timeout,
+        params_schema=params_schema,
     )
 
 
@@ -105,9 +122,10 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
     One app per tool: a GPU **worker** (resolves the deployed op class,
     builds the command, runs the tool) behind a lightweight **endpoint**
     (FastAPI routes ``/submit`` → ``/result`` → ``/download`` → ``/cancel``,
-    Swagger at ``/docs``). Both images mount ``local_python_sources`` so the
-    worker can run ``build_command`` and the endpoint can validate request
-    params against the op's ``Params``.
+    Swagger at ``/docs``). The worker image mounts ``local_python_sources``
+    so ``build_command`` runs without shipping code per call; the endpoint
+    image carries no artisan at all and validates request params against
+    the op's baked ``Params`` JSON schema.
 
     Args:
         op_cls: The registered operation class to deploy.
@@ -121,14 +139,11 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
     worker_image = modal.Image.from_registry(
         spec.image, secret=_registry_secret(spec.image_registry_secret)
     ).env(spec.env)
-    endpoint_image = modal.Image.debian_slim(
-        python_version=ENDPOINT_PYTHON_VERSION
-    ).uv_pip_install("fastapi[standard]", "pydantic>=2")
     if spec.local_python_sources:
         worker_image = worker_image.add_local_python_source(*spec.local_python_sources)
-        endpoint_image = endpoint_image.add_local_python_source(
-            *spec.local_python_sources
-        )
+    endpoint_image = modal.Image.debian_slim(
+        python_version=ENDPOINT_PYTHON_VERSION
+    ).uv_pip_install("fastapi[standard]", "jsonschema")
 
     worker_kwargs: dict[str, Any] = {
         "image": worker_image,
@@ -146,116 +161,110 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
     if spec.memory_mb is not None:
         worker_kwargs["memory"] = spec.memory_mb
 
+    # Plain values only — anything richer in these closures must be
+    # unpicklable without artisan (endpoint) at container start.
+    op_module = spec.op_module
+    op_qualname = spec.op_qualname
+    op_name = spec.name
+    params_schema = spec.params_schema
+
     @app.function(**worker_kwargs)
     @modal.concurrent(max_inputs=1)  # one job per container; fan out, don't pack
     def worker(request: dict[str, Any]) -> dict[str, Any]:
+        from artisan.execution.tool_endpoint.protocol import ToolRequest
         from artisan.execution.tool_endpoint.server import (
             resolve_op,
             run_tool_request,
         )
 
-        resolved = resolve_op(spec.op_module, spec.op_qualname)
+        resolved = resolve_op(op_module, op_qualname)
         return run_tool_request(resolved, ToolRequest(**request)).model_dump()
 
     # webhook labels allow only [a-z0-9-]; op names may carry underscores
-    label = f"artisan-tool-{spec.name}".replace("_", "-")
+    label = f"artisan-tool-{op_name}".replace("_", "-")
 
     @app.function(image=endpoint_image, name="endpoint", serialized=True)
     @modal.asgi_app(label=label, requires_proxy_auth=True)
     def endpoint() -> Any:
-        return _build_fastapi(spec, worker)
+        # Runs in the slim endpoint image: imports must resolve there, and
+        # responses are plain dicts shaped like the protocol models.
+        import io
+        import json
 
-    return app
+        import jsonschema
+        import modal as modal_rt
+        from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+        from fastapi.responses import StreamingResponse
 
-
-def _build_fastapi(spec: EndpointSpec, worker: Any) -> Any:
-    """Build the FastAPI app served by the endpoint container.
-
-    Imports fastapi and modal locally — both available in the endpoint
-    image; neither required on a client machine importing this module.
-    """
-    import io
-    import json
-
-    import modal as modal_rt
-    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-    from fastapi.responses import StreamingResponse
-    from pydantic import ValidationError
-
-    from artisan.execution.tool_endpoint.protocol import (
-        InputRef,
-        ResultResponse,
-        SubmitResponse,
-        WorkerResult,
-    )
-    from artisan.execution.tool_endpoint.server import resolve_op
-
-    op_cls = resolve_op(spec.op_module, spec.op_qualname)
-    web = FastAPI(
-        title=f"artisan-tool-{spec.name}",
-        description=f"Tool endpoint for the '{spec.name}' operation.",
-    )
-
-    @web.post("/submit", response_model=SubmitResponse)
-    async def submit(
-        params: str = Form("{}"),
-        input_uris: str = Form("{}"),
-        files: list[UploadFile] = File(default=[]),  # noqa: B008 — FastAPI DI idiom
-    ) -> SubmitResponse:
-        """Submit a tool job: params JSON + input files (multipart)."""
-        try:
-            parsed = json.loads(params)
-            uris: dict[str, str] = json.loads(input_uris)
-            params_cls = getattr(op_cls, "Params", None)
-            if params_cls is not None:
-                params_cls(**parsed)  # boundary validation
-        except (ValueError, ValidationError, TypeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        refs = [
-            InputRef(name=f.filename or "input", data=await f.read()) for f in files
-        ]
-        refs += [InputRef(name=name, uri=uri) for name, uri in uris.items()]
-        request = ToolRequest(params=parsed, inputs=refs)
-        call = worker.spawn(request.model_dump())
-        return SubmitResponse(call_id=call.object_id)
-
-    def _retained_result(call_id: str) -> WorkerResult | str:
-        """The worker's retained result, or a non-done status string."""
-        fc = modal_rt.FunctionCall.from_id(call_id)
-        try:
-            raw = fc.get(timeout=0)
-        except TimeoutError:
-            return "pending"
-        except modal_rt.exception.OutputExpiredError:
-            return "expired"
-        return WorkerResult(**raw)
-
-    @web.get("/result", response_model=ResultResponse)
-    def result(call_id: str) -> ResultResponse:
-        """Poll a job: pending/done/failed/expired + the control manifest."""
-        res = _retained_result(call_id)
-        if isinstance(res, str):
-            return ResultResponse(status=res)  # type: ignore[arg-type]
-        status: Literal["done", "failed"] = "failed" if res.manifest.error else "done"
-        return ResultResponse(status=status, manifest=res.manifest)
-
-    @web.get("/download")
-    def download(call_id: str) -> Any:
-        """Stream the output tar of a completed job."""
-        res = _retained_result(call_id)
-        if isinstance(res, str) or res.output_tar is None:
-            raise HTTPException(status_code=404, detail="no output tar for call")
-        return StreamingResponse(
-            io.BytesIO(res.output_tar), media_type="application/x-tar"
+        web = FastAPI(
+            title=f"artisan-tool-{op_name}",
+            description=f"Tool endpoint for the '{op_name}' operation.",
         )
 
-    @web.post("/cancel")
-    def cancel(call_id: str) -> dict[str, bool]:
-        """Cancel a running job, terminating its container."""
-        modal_rt.FunctionCall.from_id(call_id).cancel(terminate_containers=True)
-        return {"cancelled": True}
+        @web.post("/submit")
+        async def submit(
+            params: str = Form("{}"),
+            input_uris: str = Form("{}"),
+            files: list[UploadFile] = File(default=[]),  # noqa: B008 — FastAPI DI idiom
+        ) -> dict[str, str]:
+            """Submit a tool job: params JSON + input files (multipart)."""
+            try:
+                parsed = json.loads(params)
+                uris: dict[str, str] = json.loads(input_uris)
+                if params_schema:
+                    jsonschema.validate(parsed, params_schema)
+            except (ValueError, jsonschema.ValidationError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            refs: list[dict[str, Any]] = [
+                {"name": f.filename or "input", "uri": None, "data": await f.read()}
+                for f in files
+            ]
+            refs += [
+                {"name": name, "uri": uri, "data": None} for name, uri in uris.items()
+            ]
+            call = worker.spawn({"params": parsed, "inputs": refs})
+            return {"call_id": call.object_id}
 
-    return web
+        def _retained(call_id: str) -> dict[str, Any] | str:
+            """The worker's retained result dict, or a non-done status string."""
+            fc = modal_rt.FunctionCall.from_id(call_id)
+            try:
+                raw: dict[str, Any] = fc.get(timeout=0)
+            except TimeoutError:
+                return "pending"
+            except modal_rt.exception.OutputExpiredError:
+                return "expired"
+            return raw
+
+        @web.get("/result")
+        def result(call_id: str) -> dict[str, Any]:
+            """Poll a job: pending/done/failed/expired + the control manifest."""
+            raw = _retained(call_id)
+            if isinstance(raw, str):
+                return {"status": raw, "manifest": None}
+            manifest = raw["manifest"]
+            status = "failed" if manifest.get("error") else "done"
+            return {"status": status, "manifest": manifest}
+
+        @web.get("/download")
+        def download(call_id: str) -> Any:
+            """Stream the output tar of a completed job."""
+            raw = _retained(call_id)
+            if isinstance(raw, str) or raw.get("output_tar") is None:
+                raise HTTPException(status_code=404, detail="no output tar for call")
+            return StreamingResponse(
+                io.BytesIO(raw["output_tar"]), media_type="application/x-tar"
+            )
+
+        @web.post("/cancel")
+        def cancel(call_id: str) -> dict[str, bool]:
+            """Cancel a running job, terminating its container."""
+            modal_rt.FunctionCall.from_id(call_id).cancel(terminate_containers=True)
+            return {"cancelled": True}
+
+        return web
+
+    return app
 
 
 def _registry_secret(name: str | None) -> Any:

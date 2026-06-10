@@ -91,6 +91,12 @@ class TestEndpointSpec:
         assert spec.image == ARTISAN_WORKER_IMAGE
         assert spec.local_python_sources == ["artisan"]
 
+    def test_bakes_params_json_schema(self):
+        """Boundary validation uses the baked schema — no artisan on the endpoint."""
+        spec = endpoint_spec(EchoTool)
+        assert set(spec.params_schema["properties"]) == {"text", "filename"}
+        assert spec.params_schema["additionalProperties"] is False  # extra="forbid"
+
     def test_hardware_from_compute_resources(self):
         spec = endpoint_spec(GpuTool)
         assert spec.gpu == "A100"
@@ -145,7 +151,9 @@ class TestBuildApp:
             label="artisan-tool-gpu-tool-test", requires_proxy_auth=True
         )
 
-    def test_images_mount_local_sources(self, mock_modal: MagicMock):
+    def test_worker_mounts_sources_endpoint_stays_artisan_free(
+        self, mock_modal: MagicMock
+    ):
         build_app(GpuTool)
 
         mock_modal.Image.from_registry.assert_called_once()
@@ -154,11 +162,10 @@ class TestBuildApp:
         worker_chain.return_value.add_local_python_source.assert_called_once_with(
             "artisan"
         )
+        # the endpoint container must never import artisan — slim image only
         endpoint_chain = mock_modal.Image.debian_slim.return_value.uv_pip_install
-        endpoint_chain.assert_called_once_with("fastapi[standard]", "pydantic>=2")
-        endpoint_chain.return_value.add_local_python_source.assert_called_once_with(
-            "artisan"
-        )
+        endpoint_chain.assert_called_once_with("fastapi[standard]", "jsonschema")
+        endpoint_chain.return_value.add_local_python_source.assert_not_called()
 
     def test_volumes_and_secrets_resolved_by_name(self, mock_modal: MagicMock):
         build_app(GpuTool)
