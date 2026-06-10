@@ -265,6 +265,8 @@ module = [
     "fastapi",
     "fastapi.*",
     "fsspec.*",
+    "jsonschema",
+    "jsonschema.*",
     "graphviz",
     "prefect_submitit.*",
     "ipywidgets",
@@ -322,6 +324,9 @@ isort.required-imports = ["from __future__ import annotations"]
 # relies on the signature shape, so renaming the arg or dropping it is
 # not an option.
 "src/**" = ["ARG001", "ARG002"]
+# No future-annotations: cloudpickled route handlers are rebuilt in the
+# endpoint container, where string annotations cannot resolve.
+"src/artisan/execution/tool_endpoint/deploy.py" = ["I002"]
 # Tests: allow unused fixture args (ARG — capsys/monkeypatch declared to
 # activate), late imports (E402 — rootutils setup before project imports),
 # prints (T20 — diagnostic output in debugging tests), pytest-style rules
