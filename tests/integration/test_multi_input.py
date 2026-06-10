@@ -729,8 +729,8 @@ def test_cross_product_default_preserves_classvar_behavior(
 
 # Note on Bug A end-to-end coverage:
 # The CROSS_PRODUCT + ``artifacts_per_unit > 1`` + per-artifact-dispatch
-# code path only fans out in the Modal/batch compute backend (see
-# ``orchestration/engine/batch_compute_handle.py``). The local runner uses
+# code path only fans out in a per-artifact batch dispatch handle (the
+# Modal tool-endpoint path). The local runner uses
 # the monolithic ``run_creator_lifecycle`` path which calls execute exactly
 # once per unit, so the framework cannot recover pair-index automatically
 # under any local batched run — that case is documented as op-author

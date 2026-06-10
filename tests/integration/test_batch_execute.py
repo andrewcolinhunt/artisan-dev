@@ -1,6 +1,6 @@
 """Integration tests for per-artifact batch execute through the local step_runner.
 
-Verifies that the split lifecycle (prep_unit → route_execute_batch → post_unit)
+Verifies that the split lifecycle (prep_unit → per-artifact execute → post_unit)
 produces correct artifacts and lineage when run through real operations with
 real Delta Lake tables.
 """
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import pytest
 
-from artisan.execution.compute.local import LocalComputeRouter
 from artisan.execution.executors.creator import run_creator_lifecycle
 from artisan.execution.executors.creator_phases import post_unit, prep_unit
 from artisan.execution.models.execution_unit import ExecutionUnit
@@ -61,7 +60,7 @@ def test_split_lifecycle_matches_monolithic(pipeline_env):
     )
     mono_result = run_creator_lifecycle(unit_mono, runtime_env)
 
-    # --- split path: prep_unit → route_execute_batch → post_unit ---
+    # --- split path: prep_unit → per-artifact execute → post_unit ---
     unit_split = ExecutionUnit(
         operation=DataTransformer(params={"scale_factor": 0.5, "variants": 1}),
         inputs={"dataset": source_ids},
@@ -71,14 +70,9 @@ def test_split_lifecycle_matches_monolithic(pipeline_env):
 
     prepped = prep_unit(unit_split, runtime_env)
 
-    router = LocalComputeRouter()
-    raw_results = list(
-        router.route_execute_batch(
-            prepped.operation,
-            prepped.artifact_execute_inputs,
-            prepped.sandbox_path,
-        )
-    )
+    raw_results = [
+        prepped.operation.execute(ei) for ei in prepped.artifact_execute_inputs
+    ]
 
     split_result = post_unit(prepped, raw_results, runtime_env)
 
