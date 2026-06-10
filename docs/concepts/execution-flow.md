@@ -260,10 +260,11 @@ target controls where execute() runs inside that worker.
 
 When compute is `"local"` (the default), execute() runs as a direct call
 inside the worker process -- today's behavior. When compute is `"modal"`,
-the framework serializes the operation and inputs via cloudpickle, ships
-them to a Modal container, runs execute() there, and returns the results.
-File-based operations additionally transport sandbox files (up to 50 MB per
-direction).
+execute() becomes an HTTP client of the operation's deployed tool endpoint:
+it submits the op's params + input files, polls until the tool finishes,
+and downloads the output files back into the execute dir. Only tool ops
+(`ToolSpec` + `build_command()`) can route to modal. Inline transfers are
+bounded at 100 MB per direction; `s3://` inputs pass by reference.
 
 ---
 
