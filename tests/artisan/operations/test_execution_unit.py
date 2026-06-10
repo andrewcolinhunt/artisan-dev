@@ -338,7 +338,7 @@ class TestOperationDefinitionValidation:
         # the error is raised during class definition, not when calling validate_execution_spec()
         with pytest.raises(
             TypeError,
-            match="must implement either execute\\(\\) \\(creator ops\\) or execute_curator\\(\\)",
+            match="must implement execute\\(\\) \\(creator ops\\)",
         ):
 
             class BadOp(OperationDefinition):
