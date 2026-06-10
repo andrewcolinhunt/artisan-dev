@@ -60,8 +60,10 @@ def run_tool_request(
     + tool-log tail. Tool failures return an ``OP_EXECUTE_FAILED`` envelope.
 
     Inputs and outputs live in separate dirs so the tar never sweeps input
-    files; the tool log is written inside ``outputs/`` so the downloaded
-    layout matches a local run's ``execute_dir``.
+    files. The tool log is excluded from the manifest and tar — locally the
+    log lives at the sandbox level, not in ``execute_dir``, so shipping it
+    in the tar would leak it into ``file_outputs``; the client receives the
+    tail via the manifest and appends it to the unit log instead.
 
     Args:
         op_cls: The deployed operation class.
@@ -132,10 +134,14 @@ def _log_tail(log_path: str) -> str | None:
 
 
 def _list_outputs(outputs_dir: str) -> list[str]:
-    """Relative paths of all files under ``outputs_dir``, sorted."""
+    """Relative paths of all files under ``outputs_dir``, sorted.
+
+    Excludes the tool log — it travels as ``log_tail`` on the manifest,
+    not on the data plane (local runs keep it outside ``execute_dir``).
+    """
     names: list[str] = []
     for root, _dirs, files in os.walk(outputs_dir):
         names.extend(
             os.path.relpath(os.path.join(root, fname), outputs_dir) for fname in files
         )
-    return sorted(names)
+    return sorted(name for name in names if name != TOOL_OUTPUT_FILENAME)
