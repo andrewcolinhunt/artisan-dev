@@ -12,6 +12,10 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.operation_config.compute import (
+    ComputeProvider,
+    ModalComputeConfig,
+)
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -53,6 +57,8 @@ class EchoTool(OperationDefinition):
     class Params(BaseModel):
         """Parameters for EchoTool."""
 
+        model_config = {"extra": "forbid"}  # the endpoint's typed schema
+
         text: str = Field(
             default="hello from echo_tool",
             description="Text written to the output file.",
@@ -66,6 +72,9 @@ class EchoTool(OperationDefinition):
 
     # ---------- Tool ----------
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+    # ---------- Compute ----------
+    compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
 
     # ---------- Lifecycle ----------
     def build_command(self, inputs: dict[str, Any]) -> list[str]:
