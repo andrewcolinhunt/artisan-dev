@@ -1,0 +1,258 @@
+"""Tests for the tool-endpoint HTTP client (httpx mocked)."""
+
+from __future__ import annotations
+
+import json
+import threading
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from artisan.errors import ArtisanError, ErrorCode
+from artisan.execution.tool_endpoint import client as client_mod
+from artisan.execution.tool_endpoint.client import (
+    call_endpoint,
+    cancel_scope,
+)
+from artisan.execution.tool_endpoint.protocol import ToolManifest
+from artisan.execution.tool_endpoint.transport import InlineTransport
+from artisan.operations.examples import EchoTool
+from artisan.schemas.operation_config.compute import (
+    ComputeProvider,
+    ModalComputeConfig,
+)
+from artisan.schemas.specs.input_models import ExecuteInput
+
+_URL = "https://tool.example"
+
+
+def _op(**modal_kwargs: Any) -> EchoTool:
+    modal_kwargs.setdefault("endpoint_url", _URL)
+    modal_kwargs.setdefault("poll_interval", 0.001)
+    return EchoTool(
+        params=EchoTool.Params(text="hi", filename="out.txt"),
+        compute_provider=ComputeProvider(
+            active="modal", modal=ModalComputeConfig(**modal_kwargs)
+        ),
+    )
+
+
+def _response(json_data: Any = None, status: int = 200, content: bytes = b""):
+    response = MagicMock()
+    response.status_code = status
+    response.json.return_value = json_data
+    response.content = content
+    response.text = str(json_data)
+    return response
+
+
+def _tar_payload(tmp_path: Path) -> bytes:
+    src = tmp_path / "worker_outputs"
+    src.mkdir()
+    (src / "out.txt").write_text("hi\n")
+    (src / "tool_output.log").write_text("ran fine\n")
+    return InlineTransport().pack_outputs(str(src), ["out.txt", "tool_output.log"])
+
+
+@pytest.fixture
+def mock_http(monkeypatch) -> MagicMock:
+    """Patch httpx; returns the client mock entered by the context manager."""
+    mock_httpx = MagicMock()
+    monkeypatch.setattr(client_mod, "httpx", mock_httpx)
+    return mock_httpx
+
+
+def _client_of(mock_httpx: MagicMock) -> MagicMock:
+    return mock_httpx.Client.return_value.__enter__.return_value
+
+
+class TestCallEndpointHappyPath:
+    def test_submit_poll_download(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        manifest = ToolManifest(
+            output_names=["out.txt", "tool_output.log"], log_tail="ran fine\n"
+        )
+        client.get.side_effect = [
+            _response({"status": "pending", "manifest": None}),
+            _response({"status": "done", "manifest": manifest.model_dump()}),
+            _response(content=_tar_payload(tmp_path)),
+        ]
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+        log_path = tmp_path / "tool_output.log"
+
+        result = call_endpoint(
+            _op(),
+            ExecuteInput(
+                inputs={},
+                execute_dir=str(execute_dir),
+                log_path=str(log_path),
+            ),
+        )
+
+        assert result is None
+        assert (execute_dir / "out.txt").read_text() == "hi\n"
+        assert "ran fine" in log_path.read_text()
+        submit_kwargs = client.post.call_args_list[0].kwargs
+        assert json.loads(submit_kwargs["data"]["params"])["text"] == "hi"
+        mock_http.Client.assert_called_once()
+        assert mock_http.Client.call_args.kwargs["base_url"] == _URL
+
+    def test_input_files_packed_inline(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+        source = tmp_path / "input.pdb"
+        source.write_bytes(b"ATOM")
+
+        call_endpoint(
+            _op(),
+            ExecuteInput(
+                inputs={"pdb": str(source), "ref": "s3://bucket/key"},
+                execute_dir=str(tmp_path),
+            ),
+        )
+
+        submit_kwargs = client.post.call_args_list[0].kwargs
+        assert submit_kwargs["files"] == [("files", ("pdb", b"ATOM"))]
+        assert json.loads(submit_kwargs["data"]["input_uris"]) == {
+            "ref": "s3://bucket/key"
+        }
+
+
+class TestCallEndpointFailures:
+    def test_worker_envelope_reraised(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        envelope = ArtisanError(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            message="tool exploded",
+            error_type="compute",
+            operation_name="echo_tool",
+        ).envelope
+        manifest = ToolManifest(error=envelope, log_tail="boom\n")
+        client.get.return_value = _response(
+            {"status": "failed", "manifest": manifest.model_dump()}
+        )
+        log_path = tmp_path / "tool_output.log"
+
+        with pytest.raises(ArtisanError, match="tool exploded") as exc_info:
+            call_endpoint(
+                _op(),
+                ExecuteInput(
+                    inputs={},
+                    execute_dir=str(tmp_path),
+                    log_path=str(log_path),
+                ),
+            )
+        assert exc_info.value.code == "op_execute_failed"
+        assert "boom" in log_path.read_text()  # tail lands before the raise
+
+    def test_expired_result_raises(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response({"status": "expired", "manifest": None})
+
+        with pytest.raises(ArtisanError, match="expired"):
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+    def test_http_error_raises(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"detail": "bad params"}, status=422)
+
+        with pytest.raises(ArtisanError, match="422"):
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+    def test_non_file_input_raises(self, mock_http, tmp_path):
+        with pytest.raises(ArtisanError, match="not a\\s+file path"):
+            call_endpoint(
+                _op(),
+                ExecuteInput(inputs={"n": 3}, execute_dir=str(tmp_path)),
+            )
+        _client_of(mock_http).post.assert_not_called()
+
+    def test_missing_modal_config_raises(self, mock_http, tmp_path):
+        op = EchoTool(
+            compute_provider=ComputeProvider(modal=None),
+        )
+        with pytest.raises(ArtisanError, match="no compute_provider.modal"):
+            call_endpoint(op, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+
+class TestCancellation:
+    def test_cancel_event_posts_cancel_and_raises(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        event = threading.Event()
+        event.set()
+
+        with cancel_scope(event), pytest.raises(RuntimeError, match="cancelled"):
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        cancel_calls = [
+            c for c in client.post.call_args_list if c.args and c.args[0] == "/cancel"
+        ]
+        assert len(cancel_calls) == 1
+        assert cancel_calls[0].kwargs["params"] == {"call_id": "fc-1"}
+
+
+class TestAuthAndUrl:
+    def test_default_proxy_auth_headers_from_env(
+        self, mock_http, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-id")
+        monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-secret")
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+
+        call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        headers = mock_http.Client.call_args.kwargs["headers"]
+        assert headers == {"Modal-Key": "wk-id", "Modal-Secret": "ws-secret"}
+
+    def test_auth_secret_prefix_override(self, mock_http, tmp_path, monkeypatch):
+        monkeypatch.setenv("MY_AUTH_TOKEN_ID", "id2")
+        monkeypatch.setenv("MY_AUTH_TOKEN_SECRET", "secret2")
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+
+        call_endpoint(
+            _op(auth_secret="MY_AUTH"),
+            ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
+        )
+
+        headers = mock_http.Client.call_args.kwargs["headers"]
+        assert headers["Modal-Key"] == "id2"
+
+    @patch("modal.Function.from_name")
+    def test_url_resolved_from_modal_when_unset(
+        self, mock_from_name, mock_http, tmp_path
+    ):
+        mock_from_name.return_value.get_web_url.return_value = (
+            "https://ws--artisan-tool-echo-tool.modal.run"
+        )
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+
+        call_endpoint(
+            _op(endpoint_url=None),
+            ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
+        )
+
+        mock_from_name.assert_called_once_with("artisan-tool-echo_tool", "endpoint")
+        base_url = mock_http.Client.call_args.kwargs["base_url"]
+        assert base_url == "https://ws--artisan-tool-echo-tool.modal.run"

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from artisan.execution.tool_endpoint.client import call_endpoint, cancel_scope
 from artisan.execution.tool_endpoint.protocol import (
     InputRef,
     ResultResponse,
@@ -32,6 +33,8 @@ __all__ = [
     "ToolManifest",
     "ToolRequest",
     "WorkerResult",
+    "call_endpoint",
+    "cancel_scope",
     "resolve_op",
     "run_tool_request",
 ]

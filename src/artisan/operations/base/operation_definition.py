@@ -282,6 +282,17 @@ class OperationDefinition(BaseModel):
         msg = f"{self.__class__.__name__} does not implement build_command()"
         raise NotImplementedError(msg)
 
+    def is_tool_op(self) -> bool:
+        """True when this op runs via the framework tool path.
+
+        Tool ops declare a ``ToolSpec`` (``tool``) and override
+        ``build_command()`` instead of ``execute()``.
+        """
+        return (
+            type(self).build_command is not OperationDefinition.build_command
+            and self.tool is not None
+        )
+
     def execute(self, inputs: ExecuteInput) -> Any:
         """Run the core computation for a creator operation.
 
@@ -312,28 +323,23 @@ class OperationDefinition(BaseModel):
             NotImplementedError: If the subclass neither overrides this
                 method nor declares a ToolSpec + ``build_command()``.
         """
-        is_tool_op = (
-            type(self).build_command is not OperationDefinition.build_command
-            and self.tool is not None
-        )
-        if not is_tool_op:
+        if not self.is_tool_op():
             msg = f"{self.__class__.__name__} must implement execute() method"
             raise NotImplementedError(msg)
         if self.compute_provider.active == "modal":
-            # Tool-endpoint dispatch replaces the retired ephemeral-app
-            # path; the client PR wires it up.
-            msg = (
-                "compute_provider='modal' is being reworked as deployed tool "
-                "endpoints and is not available in this build; run with "
-                "compute_provider='local'."
+            # Deferred: operations/ may not import execution/ at module
+            # level (dependency direction); the client is the one exception,
+            # reached only on the modal path.
+            from artisan.execution.tool_endpoint.client import call_endpoint
+
+            call_endpoint(self, inputs)
+        else:
+            run_command(
+                self.environments.current(),
+                self.build_command(inputs.inputs),
+                cwd=inputs.execute_dir,
+                log_path=inputs.log_path,
             )
-            raise NotImplementedError(msg)
-        run_command(
-            self.environments.current(),
-            self.build_command(inputs.inputs),
-            cwd=inputs.execute_dir,
-            log_path=inputs.log_path,
-        )
 
     def execute_curator(
         self,
