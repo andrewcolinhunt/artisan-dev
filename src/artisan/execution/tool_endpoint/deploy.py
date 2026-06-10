@@ -132,6 +132,7 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
 
     worker_kwargs: dict[str, Any] = {
         "image": worker_image,
+        "name": "worker",  # closure-defined: explicit tag for from_name lookup
         "serialized": True,
         "retries": spec.retries,
         "min_containers": spec.min_containers,
@@ -156,8 +157,11 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
         resolved = resolve_op(spec.op_module, spec.op_qualname)
         return run_tool_request(resolved, ToolRequest(**request)).model_dump()
 
-    @app.function(image=endpoint_image, serialized=True)
-    @modal.asgi_app(label=f"artisan-tool-{spec.name}", requires_proxy_auth=True)
+    # webhook labels allow only [a-z0-9-]; op names may carry underscores
+    label = f"artisan-tool-{spec.name}".replace("_", "-")
+
+    @app.function(image=endpoint_image, name="endpoint", serialized=True)
+    @modal.asgi_app(label=label, requires_proxy_auth=True)
     def endpoint() -> Any:
         return _build_fastapi(spec, worker)
 
