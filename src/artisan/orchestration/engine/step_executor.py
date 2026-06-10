@@ -1125,31 +1125,29 @@ def _execute_creator_step(
                 try:
                     compute_config = operation.compute_provider.current()
 
-                    handle: DispatchHandle
                     if isinstance(compute_config, ModalComputeConfig):
-                        from artisan.orchestration.engine.batch_compute_handle import (
-                            BatchComputeDispatchHandle,
+                        # Tool-endpoint dispatch replaces the retired
+                        # ephemeral-app path; the client PR wires it up.
+                        msg = (
+                            "compute_provider='modal' is being reworked as "
+                            "deployed tool endpoints and is not available in "
+                            "this build; run with compute_provider='local'."
                         )
+                        raise NotImplementedError(msg)
 
-                        handle = BatchComputeDispatchHandle(
-                            compute_config=compute_config,
-                            cancel_event=cancel_event,
-                            max_workers=operation.batch_strategy.max_workers or 4,
-                            compute_resources=operation.compute_resources,
-                        )
-                    else:
-                        step_runner.validate_operation(operation)
-                        handle = step_runner.create_dispatch_handle(
-                            operation.runner_resources,
-                            operation.batch_strategy,
-                            step_number,
-                            job_name=operation.batch_strategy.job_name
-                            or operation.name,
-                            log_folder=uri_join(
-                                uri_parent(config.delta_root), "logs", "slurm"
-                            ),
-                            staging_root=config.staging_root,
-                        )
+                    handle: DispatchHandle
+                    step_runner.validate_operation(operation)
+                    handle = step_runner.create_dispatch_handle(
+                        operation.runner_resources,
+                        operation.batch_strategy,
+                        step_number,
+                        job_name=operation.batch_strategy.job_name
+                        or operation.name,
+                        log_folder=uri_join(
+                            uri_parent(config.delta_root), "logs", "slurm"
+                        ),
+                        staging_root=config.staging_root,
+                    )
 
                     results = handle.run(
                         units_to_dispatch,  # type: ignore[arg-type]  # list[ExecutionUnit] vs invariant list[ExecutionUnit | ExecutionComposite]; widening is safe — DispatchHandle.run does not mutate
