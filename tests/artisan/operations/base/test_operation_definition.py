@@ -12,7 +12,13 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import (
+    ComputeProvider,
+    ModalComputeConfig,
+)
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -63,6 +69,29 @@ class PositionalOperation(OperationDefinition):
 
     def execute(self, inputs: dict[str, Any], output_dir):
         return ArtifactResult(success=True)
+
+
+class ShellTool(OperationDefinition):
+    """Tool op for testing the framework execute()."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "shell_tool_test"
+    description: ClassVar[str] = "Writes a marker file via bash"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": []},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+    message: str = Field(default="hello")
+
+    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [*self.tool.parts(), "-c", f'echo "{self.message}" > marker.txt']
 
 
 class TestOperationDefinitionValidation:
@@ -407,6 +436,92 @@ class TestRoleEnumValidation:
         # Should appear exactly once
         assert doc.count("Input Roles:") == 1
         assert doc.count("Output Roles:") == 1
+
+
+class TestToolOps:
+    """Tool ops: ToolSpec + build_command() in place of execute()."""
+
+    def test_tool_op_passes_subclass_validation(self):
+        """A ToolSpec + build_command() satisfies the must-implement check."""
+        assert "shell_tool_test" in OperationDefinition.get_all()
+        assert ShellTool._kind() == "creator"
+
+    def test_build_command_without_tool_raises(self):
+        """build_command() without a ToolSpec fails at class definition."""
+        with pytest.raises(TypeError, match="declares no ToolSpec"):
+
+            class NoToolSpec(OperationDefinition):
+                name: ClassVar[str] = "no_tool_spec_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                def build_command(self, inputs: dict[str, Any]) -> list[str]:
+                    return ["true"]
+
+    def test_neither_execute_nor_tool_raises(self):
+        """No execute, no execute_curator, no tool command fails."""
+        with pytest.raises(TypeError, match="must implement execute"):
+
+            class Neither(OperationDefinition):
+                name: ClassVar[str] = "neither_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+    def test_modal_default_requires_tool_op(self):
+        """A class defaulting to modal must declare ToolSpec + build_command."""
+        with pytest.raises(TypeError, match="modal requires a ToolSpec"):
+
+            class ModalPurePython(OperationDefinition):
+                name: ClassVar[str] = "modal_pure_python_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+                compute_provider: ComputeProvider = ComputeProvider(
+                    active="modal", modal=ModalComputeConfig()
+                )
+
+                def execute(self, inputs):
+                    return None
+
+    def test_local_execute_runs_tool_and_returns_none(self, tmp_path):
+        """Framework execute() runs the tool locally; products are files."""
+        op = ShellTool(message="hi")
+        result = op.execute(
+            ExecuteInput(
+                execute_dir=str(tmp_path),
+                log_path=str(tmp_path / "tool_output.log"),
+            )
+        )
+        assert result is None
+        assert (tmp_path / "marker.txt").read_text().strip() == "hi"
+        assert (tmp_path / "tool_output.log").exists()
+
+    def test_modal_active_raises_not_wired(self):
+        """Modal dispatch fails fast until the endpoint client lands."""
+        op = ShellTool(
+            compute_provider=ComputeProvider(
+                active="modal", modal=ModalComputeConfig()
+            )
+        )
+        with pytest.raises(NotImplementedError, match="tool endpoints"):
+            op.execute(ExecuteInput(execute_dir="/tmp"))
+
+    def test_unnamed_non_tool_base_execute_raises(self):
+        """Base execute() still raises for abstract non-tool subclasses."""
+
+        class AbstractOp(OperationDefinition):
+            pass  # no name — skips registration and validation
+
+        with pytest.raises(NotImplementedError, match="must implement execute"):
+            AbstractOp().execute(ExecuteInput(execute_dir="/tmp"))
+
+    def test_build_command_stub_raises(self):
+        """Base build_command() raises for non-tool subclasses."""
+
+        class AbstractOp2(OperationDefinition):
+            pass
+
+        with pytest.raises(NotImplementedError, match="build_command"):
+            AbstractOp2().build_command({})
 
 
 class TestKindDerivation:
