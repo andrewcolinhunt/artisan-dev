@@ -147,6 +147,18 @@ class ToolEndpointDispatchHandle(DispatchHandle):
                 format_error(exc), _read_tool_output(prepped.log_path)
             )
 
+        # Per-artifact failures land as exception entries (the batch
+        # contract); surface them here — downstream _reassemble_results
+        # silently filters them, which masks the real error as an
+        # empty-artifact validation failure.
+        failures = [r for r in raw_results if isinstance(r, Exception)]
+        if failures:
+            msg = (
+                f"{len(failures)}/{len(raw_results)} artifact executions "
+                f"failed; first: {format_error(failures[0])}"
+            )
+            return _record_failure(msg, _read_tool_output(prepped.log_path))
+
         # --- post ---
         try:
             lifecycle_result = post_unit(prepped, raw_results, runtime_env)
