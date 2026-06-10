@@ -89,16 +89,18 @@ class TestProcessUnit:
         # both per-artifact calls must be in flight at once to pass the barrier
         assert results[0].success is True
 
-    def test_per_artifact_failure_lands_in_results(self):
+    def test_per_artifact_failure_fails_unit_with_real_error(self):
+        """An embedded exception must surface, not vanish into post_unit."""
         operation = MagicMock()
-        failure = ValueError("container died")
-        operation.execute.side_effect = [{"r": 0}, failure]
+        operation.execute.side_effect = [{"r": 0}, ValueError("container died")]
 
-        _, mocks = _run_one_unit(operation)
+        results, mocks = _run_one_unit(operation)
 
-        raw_results = mocks["post"].call_args.args[1]
-        assert raw_results[0] == {"r": 0}
-        assert raw_results[1] is failure
+        assert results[0].success is False
+        assert "1/2 artifact executions failed" in results[0].error
+        assert "container died" in results[0].error
+        mocks["post"].assert_not_called()  # never reaches postprocess
+        mocks["rec_fail"].assert_called_once()
 
     def test_post_failure_records_failure(self):
         operation = MagicMock()
