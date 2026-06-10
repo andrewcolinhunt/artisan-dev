@@ -536,7 +536,7 @@ return ArtifactResult(
             LineageMapping(
                 draft_original_name=structures[0].original_name,
                 source_artifact_id=input_artifact.artifact_id,
-                source_role="proteins",
+                source_role="records",
             ),
         ],
         "metrics": [
