@@ -7,6 +7,8 @@ from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.step_executor import (
     _cancelled_result,
@@ -211,21 +213,17 @@ def _make_mock_backend(flow_return_value=None):
 
 
 class TestComputeRoutingSelection:
-    """_execute_creator_step routes to BatchComputeDispatchHandle for Modal."""
+    """_execute_creator_step fails fast for Modal until endpoint dispatch lands."""
 
-    @patch(
-        "artisan.orchestration.engine.batch_compute_handle.BatchComputeDispatchHandle"
-    )
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_modal_compute_uses_routing_handle(
+    def test_modal_compute_raises_not_wired(
         self,
         mock_resolve,
         mock_cache,
-        mock_handle_cls,
         tmp_path,
     ):
-        """ModalComputeConfig triggers BatchComputeDispatchHandle."""
+        """ModalComputeConfig aborts dispatch with a clear not-wired error."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -245,26 +243,18 @@ class TestComputeRoutingSelection:
         mock_resolve.return_value = {"data": [_ID]}
         mock_cache.return_value = None
 
-        mock_handle = MagicMock()
-        mock_handle.run.return_value = [
-            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
-        ]
-        mock_handle_cls.return_value = mock_handle
-
         mock_backend, _ = _make_mock_backend()
 
-        _execute_creator_step(
-            operation=op,
-            inputs={"data": [_ID]},
-            step_runner=mock_backend,
-            step_number=1,
-            config=config,
-            compact=False,
-        )
+        with pytest.raises(NotImplementedError, match="tool endpoints"):
+            _execute_creator_step(
+                operation=op,
+                inputs={"data": [_ID]},
+                step_runner=mock_backend,
+                step_number=1,
+                config=config,
+                compact=False,
+            )
 
-        mock_handle_cls.assert_called_once()
-        call_kwargs = mock_handle_cls.call_args.kwargs
-        assert isinstance(call_kwargs["compute_config"], ModalComputeConfig)
         mock_backend.create_dispatch_handle.assert_not_called()
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
@@ -334,9 +324,12 @@ class TestInstantiateOperationComputeOverrides:
         non-hardware fields like ``retries`` and ``min_containers``.
         """
 
+        # active stays "local": a class-level modal *default* now requires a
+        # tool op (ToolSpec + build_command); the dict-merge under test only
+        # needs an existing nested modal config.
         class _ModalOp(_SimpleCreatorOp):
             compute_provider: ComputeProvider = ComputeProvider(
-                active="modal", modal=ModalComputeConfig(retries=5, min_containers=2)
+                modal=ModalComputeConfig(retries=5, min_containers=2)
             )
 
         result = instantiate_operation(
