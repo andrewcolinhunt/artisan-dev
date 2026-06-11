@@ -80,7 +80,11 @@ class StreamingEcho(OperationDefinition):
     environments: Environments = Environments(local=LocalEnvironmentSpec())
 
     # ---------- Compute ----------
-    compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
+    # overlay deliberately on: example ops exercise in-development artisan,
+    # and the integration suite deploys them from the working branch
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(local_python_sources=["artisan"])
+    )
 
     # ---------- Lifecycle ----------
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:

@@ -22,126 +22,32 @@ unpickled function's globals, so annotations must be real objects.
 from typing import Any
 
 import modal
-from pydantic import BaseModel, Field
 
+from artisan.execution.tool_endpoint.spec import endpoint_spec
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.operation_config.compute import (
-    ComputeProvider,
-    ModalComputeConfig,
-)
-from artisan.schemas.operation_config.compute_resources import ComputeResources
 
 ENDPOINT_PYTHON_VERSION = "3.12"
 
 
-class EndpointSpec(BaseModel):
-    """Flattened class-level deploy config for one tool endpoint."""
-
-    op_module: str
-    op_qualname: str
-    name: str
-    image: str
-    image_registry_secret: str | None
-    env: dict[str, str]
-    volumes: dict[str, str]
-    secrets: list[str]
-    retries: int
-    min_containers: int
-    max_containers: int | None
-    scaledown_window: int | None
-    local_python_sources: list[str]
-    gpu: str | None
-    cpu: float | None
-    memory_mb: int | None
-    timeout: int | None
-    params_schema: dict[str, Any] = Field(default_factory=dict)
-    description: str = ""
-    input_roles: dict[str, dict[str, Any]] = Field(default_factory=dict)
-
-
-def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
-    """Flatten the op's class-level tool + compute config into a deploy spec.
-
-    Args:
-        op_cls: The registered operation class to deploy.
-
-    Returns:
-        The deploy spec read from class-level field defaults, including the
-        op's ``Params`` JSON schema for boundary validation.
-
-    Raises:
-        ValueError: If the op is not a tool op (ToolSpec + execute_command)
-            or declares no ``compute_provider.modal`` config.
-    """
-    has_execute_command = (
-        op_cls.execute_command is not OperationDefinition.execute_command
-    )
-    if not has_execute_command or op_cls.model_fields["tool"].default is None:
-        msg = (
-            f"{op_cls.__name__} is not a tool op — deploying an endpoint "
-            "requires a ToolSpec + execute_command()"
-        )
-        raise ValueError(msg)
-    provider = op_cls.model_fields["compute_provider"].default
-    modal_cfg = provider.modal if isinstance(provider, ComputeProvider) else None
-    if not isinstance(modal_cfg, ModalComputeConfig):
-        msg = (
-            f"{op_cls.__name__} declares no compute_provider.modal config — "
-            "set one with the worker image to deploy"
-        )
-        raise ValueError(msg)
-    resources = op_cls.model_fields["compute_resources"].default
-    if not isinstance(resources, ComputeResources):
-        resources = ComputeResources()
-    params_cls = getattr(op_cls, "Params", None)
-    params_schema = (
-        params_cls.model_json_schema()
-        if isinstance(params_cls, type) and issubclass(params_cls, BaseModel)
-        else {}
-    )
-    return EndpointSpec(
-        op_module=op_cls.__module__,
-        op_qualname=op_cls.__qualname__,
-        name=op_cls.name,
-        image=modal_cfg.image,
-        image_registry_secret=modal_cfg.image_registry_secret,
-        env=modal_cfg.env,
-        volumes=modal_cfg.volumes,
-        secrets=modal_cfg.secrets,
-        retries=modal_cfg.retries,
-        min_containers=modal_cfg.min_containers,
-        max_containers=modal_cfg.max_containers,
-        scaledown_window=modal_cfg.scaledown_window,
-        local_python_sources=modal_cfg.local_python_sources,
-        gpu=resources.gpu,
-        cpu=resources.cpu,
-        memory_mb=resources.memory_gb * 1024 if resources.memory_gb else None,
-        timeout=resources.timeout,
-        params_schema=params_schema,
-        description=op_cls.description,
-        # str(role) — role keys may be StrEnum members; an enum instance in
-        # the baked dict would drag its artisan-defined class into the
-        # endpoint closure at cloudpickle time
-        input_roles={
-            str(role): {"required": s.required, "description": s.description}
-            for role, s in op_cls.inputs.items()
-        },
-    )
-
-
-def build_app(op_cls: type[OperationDefinition]) -> modal.App:
+def build_app(
+    op_cls: type[OperationDefinition], overlay: list[str] | None = None
+) -> modal.App:
     """Build the deployable Modal app for an operation's tool endpoint.
 
     One app per tool: a GPU **worker** (resolves the deployed op class,
     builds the command, runs the tool) behind a lightweight **endpoint**
     (FastAPI routes ``/schema``, ``/submit`` → ``/result`` → ``/download``
-    → ``/cancel``, Swagger at ``/docs``). The worker image mounts ``local_python_sources``
-    so ``execute_command`` runs without shipping code per call; the endpoint
-    image carries no artisan at all and validates request params against
-    the op's baked ``Params`` JSON schema.
+    → ``/cancel``, Swagger at ``/docs``). The worker runs the registry
+    image as baked; in dev mode (``local_python_sources`` config or the
+    ``overlay`` argument) local package sources are mounted on top,
+    shadowing the image's versions. The endpoint image carries no artisan
+    at all and validates request params against the op's baked ``Params``
+    JSON schema.
 
     Args:
         op_cls: The registered operation class to deploy.
+        overlay: Extra dev-mode source packages to mount, appended to the
+            config's ``local_python_sources`` (the ``--overlay`` CLI flag).
 
     Returns:
         A deployable ``modal.App`` named ``artisan-tool-<name>``.
@@ -152,8 +58,9 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
     worker_image = modal.Image.from_registry(
         spec.image, secret=_registry_secret(spec.image_registry_secret)
     ).env(spec.env)
-    if spec.local_python_sources:
-        worker_image = worker_image.add_local_python_source(*spec.local_python_sources)
+    sources = list(dict.fromkeys([*spec.local_python_sources, *(overlay or [])]))
+    if sources:
+        worker_image = worker_image.add_local_python_source(*sources)
     endpoint_image = modal.Image.debian_slim(
         python_version=ENDPOINT_PYTHON_VERSION
     ).uv_pip_install("fastapi[standard]", "jsonschema")
