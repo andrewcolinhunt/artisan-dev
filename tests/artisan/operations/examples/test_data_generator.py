@@ -15,7 +15,7 @@ class TestDataGenerator:
         execute_dir = str(output_dir / "execute")
         os.makedirs(execute_dir, exist_ok=True)
 
-        result = op.execute(ExecuteInput(inputs={}, execute_dir=execute_dir))
+        result = op.execute_function(ExecuteInput(inputs={}, execute_dir=execute_dir))
         files = sorted(
             f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
             if os.path.isfile(f)

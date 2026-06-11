@@ -91,7 +91,7 @@ class DualInputConfigConsumer(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)
 

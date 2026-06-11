@@ -21,7 +21,7 @@ def _run(tmp_path: Path, **params: str) -> tuple[EchoTool, str]:
     op = EchoTool(params=EchoTool.Params(**params))
     execute_dir = str(tmp_path / "execute")
     os.makedirs(execute_dir, exist_ok=True)
-    result = op.execute(
+    result = op.execute_function(
         ExecuteInput(
             inputs={},
             execute_dir=execute_dir,
@@ -35,7 +35,7 @@ def _run(tmp_path: Path, **params: str) -> tuple[EchoTool, str]:
 class TestEchoTool:
     def test_build_command_uses_tool_parts(self):
         op = EchoTool(params=EchoTool.Params(text="hi", filename="out.txt"))
-        cmd = op.build_command({})
+        cmd = op.execute_command({})
         assert cmd[0] == "bash"
         assert cmd[1] == "-c"
         assert "hi" in cmd[2]

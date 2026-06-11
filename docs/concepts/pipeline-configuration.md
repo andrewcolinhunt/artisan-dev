@@ -37,7 +37,7 @@ print(pipeline.config.default_step_runner)
 | `failure_policy`            | `FailurePolicy`  | Default behavior on step failure: `CONTINUE` (default) or `FAIL_FAST`.                     |
 | `cache_policy`              | `CachePolicy`    | When completed steps qualify as cache hits. `ALL_SUCCEEDED` (default).                     |
 | `default_step_runner`       | `str`            | Default runner for step dispatch (`"local"`, `"slurm"`, `"slurm_intra"`).                  |
-| `default_compute_provider`  | `str`            | Default compute provider for `execute()` routing (`"local"` or `"modal"`).                 |
+| `default_compute_provider`  | `str`            | Default compute provider for execute-phase routing (`"local"` or `"modal"`).                 |
 | `preserve_staging`          | `bool`           | Debug flag — keep staging files after commit.                                              |
 | `preserve_working`          | `bool`           | Debug flag — keep worker sandboxes after execution.                                        |
 | `recover_staging`           | `bool`           | At pipeline init, commit leftover staging files from a prior crashed run. Default `True`.  |

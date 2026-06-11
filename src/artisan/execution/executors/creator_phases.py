@@ -261,7 +261,7 @@ def prep_unit(
 
     if not should_split:
         # Single ExecuteInput with full prepared_inputs (monolithic).
-        # Unwrap PerArtifact markers so execute() sees raw lists — the
+        # Unwrap PerArtifact markers so execute_function() sees raw lists — the
         # sentinel only signals slicing intent, never reaches op code.
         monolithic_inputs = {
             k: list(v) if isinstance(v, PerArtifact) else v

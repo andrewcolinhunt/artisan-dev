@@ -18,14 +18,14 @@ class ExecuteRouter(ABC):
         execute_input: ExecuteInput,
         sandbox_root: str,
     ) -> Any:
-        """Run operation.execute() on the configured target.
+        """Run operation.execute_function() on the configured target.
 
         Args:
             operation: The operation instance.
-            execute_input: Frozen input container for execute().
+            execute_input: Frozen input container for the execute phase.
             sandbox_root: Path to the sandbox directory tree.
 
         Returns:
-            The raw result from execute().
+            The raw result from the execute phase.
         """
         ...

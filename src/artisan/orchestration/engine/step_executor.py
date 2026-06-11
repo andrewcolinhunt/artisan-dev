@@ -36,8 +36,8 @@ from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
 )
-from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.inputs import resolve_inputs
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
     aggregate_results,
     extract_execution_run_ids,
@@ -1128,12 +1128,12 @@ def _execute_creator_step(
 
                     router: LifecycleRouter
                     if isinstance(compute_config, ModalComputeConfig):
-                        if not operation.is_tool_op():
+                        if not operation.is_command_op():
                             raise ArtisanError(
                                 code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
                                 message=(
                                     "compute_provider='modal' requires a tool "
-                                    "op (ToolSpec + build_command()); "
+                                    "op (ToolSpec + execute_command()); "
                                     f"{operation.name} declares neither"
                                 ),
                                 error_type="config",

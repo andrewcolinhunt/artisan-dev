@@ -24,7 +24,7 @@ class LocalComputeConfig(ComputeConfig):
 
 
 class ModalComputeConfig(ComputeConfig):
-    """Provider-specific configuration for routing execute() to Modal.
+    """Provider-specific configuration for routing the execute phase to Modal.
 
     Hardware fields (gpu / cpu / memory_gb / timeout) live on
     ``ComputeResources`` so the same hardware spec can apply to any

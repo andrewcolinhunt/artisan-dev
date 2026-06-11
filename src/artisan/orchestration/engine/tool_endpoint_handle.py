@@ -214,6 +214,6 @@ class ToolEndpointDispatchHandle(LifecycleRouter):
         """
         try:
             with cancel_scope(self._cancel):
-                return operation.execute(execute_input)
+                return operation.execute_function(execute_input)
         except Exception as exc:
             return exc

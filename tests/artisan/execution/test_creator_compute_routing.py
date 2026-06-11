@@ -75,7 +75,7 @@ class _SimpleOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict:
+    def execute_function(self, inputs: ExecuteInput) -> dict:
         for path in inputs.inputs["source"]:
             with open(path) as fh:
                 content = json.loads(fh.read())

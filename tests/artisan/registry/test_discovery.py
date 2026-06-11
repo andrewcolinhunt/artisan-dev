@@ -121,7 +121,7 @@ class TestNameCollision:
                 def preprocess(self, _inputs: PreprocessInput) -> dict[str, Any]:
                     return {}
 
-                def execute(self, _inputs: ExecuteInput) -> Any:
+                def execute_function(self, _inputs: ExecuteInput) -> Any:
                     return {}
 
                 def postprocess(self, _inputs: PostprocessInput) -> ArtifactResult:

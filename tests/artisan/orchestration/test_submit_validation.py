@@ -103,7 +103,7 @@ class MockCreatorOp(OperationDefinition):
     def preprocess(self, inputs: Any) -> dict:
         return {}
 
-    def execute(self, inputs: Any) -> Any:
+    def execute_function(self, inputs: Any) -> Any:
         return None
 
 

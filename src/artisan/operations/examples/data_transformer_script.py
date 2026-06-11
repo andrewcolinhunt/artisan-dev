@@ -117,7 +117,7 @@ class DataTransformerScript(OperationDefinition):
 
         return {"items": PerArtifact(prepared_inputs)}
 
-    def execute(self, inputs: ExecuteInput) -> Any:
+    def execute_function(self, inputs: ExecuteInput) -> Any:
         """Invoke transform_data.py for each config in the batch."""
         execute_dir = inputs.execute_dir
         env = self.environments.current()

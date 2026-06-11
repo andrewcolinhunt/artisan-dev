@@ -17,4 +17,4 @@ class LocalExecuteRouter(ExecuteRouter):
         execute_input: ExecuteInput,
         sandbox_root: str,
     ) -> Any:
-        return operation.execute(execute_input)
+        return operation.execute_function(execute_input)

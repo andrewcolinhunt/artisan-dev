@@ -44,7 +44,7 @@ class _UploadFailure(_PostprocessFailure):
 
 
 class _ExecuteFailure(Exception):
-    """Raised when execute() throws, carrying the formatted error and tool output."""
+    """Raised when the execute phase throws, carrying the formatted error and tool output."""
 
     def __init__(self, error: str, tool_output: str | None = None) -> None:
         super().__init__(error)
@@ -96,7 +96,7 @@ def run_creator_lifecycle(
         sources: Optional pre-resolved artifact sources keyed by role.
             When provided, hydrate from sources instead of unit.inputs.
             Used by the composite executor for in-memory artifact passing.
-        execute_router: Optional pre-created router for execute() dispatch.
+        execute_router: Optional pre-created router for execute-phase dispatch.
             When None, created from the operation's compute_provider config.
 
     Returns:

@@ -80,7 +80,7 @@ class DualInputLineage(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)
 
@@ -158,7 +158,7 @@ class AssociatedMetricConsumer(OperationDefinition):
         result["count"] = len(inputs.input_artifacts["primary"])
         return result
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)
 
@@ -332,7 +332,7 @@ class DualInputDataLineage(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         out_dir = inputs.execute_dir
         os.makedirs(out_dir, exist_ok=True)
 
@@ -534,7 +534,7 @@ class DualInputCrossProduct(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         out_dir = inputs.execute_dir
         os.makedirs(out_dir, exist_ok=True)
 
@@ -785,7 +785,7 @@ class DualInputName(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         out_dir = inputs.execute_dir
         os.makedirs(out_dir, exist_ok=True)
 

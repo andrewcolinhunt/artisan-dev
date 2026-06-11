@@ -67,14 +67,16 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
         op's ``Params`` JSON schema for boundary validation.
 
     Raises:
-        ValueError: If the op is not a tool op (ToolSpec + build_command)
+        ValueError: If the op is not a tool op (ToolSpec + execute_command)
             or declares no ``compute_provider.modal`` config.
     """
-    has_build_command = op_cls.build_command is not OperationDefinition.build_command
-    if not has_build_command or op_cls.model_fields["tool"].default is None:
+    has_execute_command = (
+        op_cls.execute_command is not OperationDefinition.execute_command
+    )
+    if not has_execute_command or op_cls.model_fields["tool"].default is None:
         msg = (
             f"{op_cls.__name__} is not a tool op — deploying an endpoint "
-            "requires a ToolSpec + build_command()"
+            "requires a ToolSpec + execute_command()"
         )
         raise ValueError(msg)
     provider = op_cls.model_fields["compute_provider"].default
@@ -123,7 +125,7 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
     builds the command, runs the tool) behind a lightweight **endpoint**
     (FastAPI routes ``/submit`` → ``/result`` → ``/download`` → ``/cancel``,
     Swagger at ``/docs``). The worker image mounts ``local_python_sources``
-    so ``build_command`` runs without shipping code per call; the endpoint
+    so ``execute_command`` runs without shipping code per call; the endpoint
     image carries no artisan at all and validates request params against
     the op's baked ``Params`` JSON schema.
 

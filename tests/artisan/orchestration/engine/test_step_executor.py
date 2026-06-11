@@ -191,7 +191,7 @@ class _SimpleCreatorOp(OperationDefinition):
     def preprocess(self, _inputs):
         return {}
 
-    def execute(self, _inputs):
+    def execute_function(self, _inputs):
         return {}
 
 
@@ -220,7 +220,7 @@ class _SimpleToolOp(OperationDefinition):
     def preprocess(self, _inputs):
         return {}
 
-    def build_command(self, inputs):
+    def execute_command(self, inputs):
         return [*self.tool.parts(), "-c", "true"]
 
 
@@ -406,7 +406,7 @@ class TestInstantiateOperationComputeOverrides:
         """
 
         # active stays "local": a class-level modal *default* now requires a
-        # tool op (ToolSpec + build_command); the dict-merge under test only
+        # tool op (ToolSpec + execute_command); the dict-merge under test only
         # needs an existing nested modal config.
         class _ModalOp(_SimpleCreatorOp):
             compute_provider: ComputeProvider = ComputeProvider(

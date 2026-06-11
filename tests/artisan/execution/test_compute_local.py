@@ -15,7 +15,7 @@ class TestLocalComputeRouter:
         """route_execute delegates to operation.execute and returns its result."""
         router = LocalExecuteRouter()
         operation = MagicMock()
-        operation.execute.return_value = {"key": "value"}
+        operation.execute_function.return_value = {"key": "value"}
 
         execute_input = ExecuteInput(
             inputs={},
@@ -25,14 +25,14 @@ class TestLocalComputeRouter:
 
         result = router.route_execute(operation, execute_input, "/tmp/sandbox")
 
-        operation.execute.assert_called_once_with(execute_input)
+        operation.execute_function.assert_called_once_with(execute_input)
         assert result == {"key": "value"}
 
     def test_passthrough_returns_none(self):
         """route_execute passes through None returns."""
         router = LocalExecuteRouter()
         operation = MagicMock()
-        operation.execute.return_value = None
+        operation.execute_function.return_value = None
 
         execute_input = ExecuteInput(
             inputs={},
@@ -47,7 +47,7 @@ class TestLocalComputeRouter:
         """route_execute does not catch exceptions from execute."""
         router = LocalExecuteRouter()
         operation = MagicMock()
-        operation.execute.side_effect = RuntimeError("boom")
+        operation.execute_function.side_effect = RuntimeError("boom")
 
         execute_input = ExecuteInput(
             inputs={},

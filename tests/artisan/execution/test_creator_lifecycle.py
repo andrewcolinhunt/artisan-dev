@@ -83,7 +83,7 @@ class _SuffixOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict:
+    def execute_function(self, inputs: ExecuteInput) -> dict:
         source_paths = inputs.inputs["source"]
         for path in source_paths:
             with open(path) as fh:
