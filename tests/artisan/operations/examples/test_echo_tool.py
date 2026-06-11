@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from artisan.execution.compute.invoke import invoke_op_work
 from artisan.operations.examples import EchoTool
 from artisan.schemas import ExecuteInput, PostprocessInput
 
@@ -21,12 +22,13 @@ def _run(tmp_path: Path, **params: str) -> tuple[EchoTool, str]:
     op = EchoTool(params=EchoTool.Params(**params))
     execute_dir = str(tmp_path / "execute")
     os.makedirs(execute_dir, exist_ok=True)
-    result = op.execute_function(
+    result = invoke_op_work(
+        op,
         ExecuteInput(
             inputs={},
             execute_dir=execute_dir,
             log_path=str(tmp_path / "tool_output.log"),
-        )
+        ),
     )
     assert result is None  # tool-op contract: products are files
     return op, execute_dir

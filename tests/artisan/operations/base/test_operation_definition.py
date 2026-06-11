@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from enum import StrEnum, auto
 from typing import Any, ClassVar
-from unittest.mock import patch
 
 import pytest
 from pydantic import Field, ValidationError
@@ -483,29 +482,11 @@ class TestToolOps:
                 def execute_function(self, inputs):
                     return None
 
-    def test_local_execute_runs_tool_and_returns_none(self, tmp_path):
-        """Framework execute() runs the tool locally; products are files."""
+    def test_execute_function_stub_raises_for_command_op(self):
+        """Slots are empty override points — command ops don't inherit a body."""
         op = ShellTool(message="hi")
-        result = op.execute_function(
-            ExecuteInput(
-                execute_dir=str(tmp_path),
-                log_path=str(tmp_path / "tool_output.log"),
-            )
-        )
-        assert result is None
-        assert (tmp_path / "marker.txt").read_text().strip() == "hi"
-        assert (tmp_path / "tool_output.log").exists()
-
-    def test_modal_active_dispatches_to_endpoint_client(self):
-        """Modal dispatch routes through the tool-endpoint client."""
-        op = ShellTool(
-            compute_provider=ComputeProvider(active="modal", modal=ModalComputeConfig())
-        )
-        execute_input = ExecuteInput(execute_dir="/tmp")
-        with patch("artisan.execution.tool_endpoint.client.call_endpoint") as mock_call:
-            result = op.execute_function(execute_input)
-        assert result is None
-        mock_call.assert_called_once_with(op, execute_input)
+        with pytest.raises(NotImplementedError, match="execute_function"):
+            op.execute_function(ExecuteInput(execute_dir="/tmp"))
 
     def test_unnamed_non_tool_base_execute_raises(self):
         """Base execute_function() still raises for abstract non-tool subclasses."""
@@ -513,28 +494,8 @@ class TestToolOps:
         class AbstractOp(OperationDefinition):
             pass  # no name — skips registration and validation
 
-        with pytest.raises(NotImplementedError, match="must implement execute"):
+        with pytest.raises(NotImplementedError, match="execute_function"):
             AbstractOp().execute_function(ExecuteInput(execute_dir="/tmp"))
-
-    def test_build_command_receives_unwrapped_per_artifact_inputs(self, tmp_path):
-        """Per-artifact one-element lists are unwrapped before execute_command."""
-        from artisan.operations.base.operation_definition import tool_command_inputs
-
-        assert tool_command_inputs({"dataset": ["/a.csv"]}) == {"dataset": "/a.csv"}
-        assert tool_command_inputs({"many": ["/a", "/b"]}) == {"many": ["/a", "/b"]}
-        assert tool_command_inputs({"plain": "/a"}) == {"plain": "/a"}
-
-        seen: list[dict[str, Any]] = []
-
-        class _Spy(ShellTool):
-            def execute_command(self, inputs: dict[str, Any]) -> list[str]:
-                seen.append(inputs)
-                return [*self.tool.parts(), "-c", "true"]
-
-        _Spy().execute_function(
-            ExecuteInput(inputs={"dataset": ["/one.csv"]}, execute_dir=str(tmp_path))
-        )
-        assert seen == [{"dataset": "/one.csv"}]
 
     def test_build_command_stub_raises(self):
         """Base execute_command() raises for non-tool subclasses."""
@@ -544,6 +505,50 @@ class TestToolOps:
 
         with pytest.raises(NotImplementedError, match="execute_command"):
             AbstractOp2().execute_command({})
+
+
+class TestExactlyOneSlot:
+    """A concrete op must fill exactly one execute slot."""
+
+    def test_function_plus_command_raises(self):
+        """A function body plus a command builder is dead code — TypeError."""
+        with pytest.raises(TypeError, match="exactly one"):
+
+            class FunctionAndCommand(OperationDefinition):
+                name: ClassVar[str] = "function_and_command_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+                tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+                def execute_function(self, inputs):
+                    return None
+
+                def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+                    return ["true"]
+
+    def test_function_plus_curator_raises(self):
+        """A creator body plus a curator body is two slots — TypeError."""
+        with pytest.raises(TypeError, match="exactly one"):
+
+            class FunctionAndCurator(OperationDefinition):
+                name: ClassVar[str] = "function_and_curator_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                def execute_function(self, inputs):
+                    return None
+
+                def execute_curator(self, inputs, step_number, artifact_store):
+                    return None
+
+    def test_each_single_slot_is_valid(self):
+        """One slot per op passes: function (SimpleOperation), command
+        (ShellTool), curator (framework Filter op)."""
+        from artisan.operations.curator.filter import Filter
+
+        assert SimpleOperation._kind() == "creator"
+        assert ShellTool._kind() == "creator"
+        assert Filter._kind() == "curator"
 
 
 class TestKindDerivation:

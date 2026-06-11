@@ -45,6 +45,7 @@ def _run_one_unit(operation: Any, **mocks: Any) -> tuple[Any, dict[str, MagicMoc
         patch(f"{_MODULE}._extract_inputs", return_value={}),
         patch(f"{_MODULE}.prep_unit", return_value=prepped) as prep,
         patch(f"{_MODULE}.post_unit") as post,
+        patch(f"{_MODULE}.call_endpoint") as call,
         patch(f"{_MODULE}.record_execution_success") as rec_ok,
         patch(f"{_MODULE}.record_execution_failure") as rec_fail,
         patch(f"{_MODULE}._read_tool_output", return_value=None),
@@ -55,10 +56,13 @@ def _run_one_unit(operation: Any, **mocks: Any) -> tuple[Any, dict[str, MagicMoc
             post.side_effect = mocks.pop("post_side_effect")
         if "prep_side_effect" in mocks:
             prep.side_effect = mocks.pop("prep_side_effect")
+        if "call_side_effect" in mocks:
+            call.side_effect = mocks.pop("call_side_effect")
         results = handle.run([_unit()], MagicMock())  # runtime_env stand-in
     return results, {
         "prep": prep,
         "post": post,
+        "call": call,
         "rec_ok": rec_ok,
         "rec_fail": rec_fail,
     }
@@ -67,24 +71,24 @@ def _run_one_unit(operation: Any, **mocks: Any) -> tuple[Any, dict[str, MagicMoc
 class TestProcessUnit:
     def test_success_runs_all_artifacts_and_records(self):
         operation = MagicMock()
-        operation.execute_function.side_effect = [{"r": 0}, {"r": 1}]
 
         results, mocks = _run_one_unit(operation)
 
         assert len(results) == 1
         assert results[0].success is True
-        assert operation.execute_function.call_count == 2
+        assert mocks["call"].call_count == 2
         raw_results = mocks["post"].call_args.args[1]
-        assert raw_results == [{"r": 0}, {"r": 1}]
+        assert raw_results == [None, None]  # endpoint products are files
         mocks["rec_ok"].assert_called_once()
         mocks["rec_fail"].assert_not_called()
 
     def test_artifacts_execute_concurrently(self):
         barrier = threading.Barrier(2, timeout=5)
         operation = MagicMock()
-        operation.execute_function.side_effect = lambda _ei: barrier.wait()
 
-        results, _ = _run_one_unit(operation)
+        results, _ = _run_one_unit(
+            operation, call_side_effect=lambda _op, _ei: barrier.wait()
+        )
 
         # both per-artifact calls must be in flight at once to pass the barrier
         assert results[0].success is True
@@ -92,12 +96,10 @@ class TestProcessUnit:
     def test_per_artifact_failure_fails_unit_with_real_error(self):
         """An embedded exception must surface, not vanish into post_unit."""
         operation = MagicMock()
-        operation.execute_function.side_effect = [
-            {"r": 0},
-            ValueError("container died"),
-        ]
 
-        results, mocks = _run_one_unit(operation)
+        results, mocks = _run_one_unit(
+            operation, call_side_effect=[None, ValueError("container died")]
+        )
 
         assert results[0].success is False
         assert "1/2 artifact executions failed" in results[0].error
@@ -107,7 +109,6 @@ class TestProcessUnit:
 
     def test_post_failure_records_failure(self):
         operation = MagicMock()
-        operation.execute_function.return_value = {}
 
         results, mocks = _run_one_unit(
             operation, post_side_effect=_ExecuteFailure("1/2 artifacts failed")
@@ -133,21 +134,23 @@ class TestProcessUnit:
 
 class TestCancellation:
     def test_cancel_scope_carries_handle_event(self):
-        """execute() sees the handle's cancel event; cancel() trips it."""
+        """The endpoint call sees the handle's cancel event; cancel() trips it."""
         handle = ToolEndpointDispatchHandle(max_workers=1)
         seen: list[threading.Event] = []
 
         operation = MagicMock()
 
-        def _capture(_ei: ExecuteInput) -> dict[str, Any]:
+        def _capture(_op: Any, _ei: ExecuteInput) -> None:
             event = _cancel_event.get()
             assert event is not None
             seen.append(event)
-            return {}
 
-        operation.execute_function.side_effect = _capture
-
-        _run_one_unit(operation, handle=handle, prepped=_prepped(operation, 1))
+        _run_one_unit(
+            operation,
+            handle=handle,
+            prepped=_prepped(operation, 1),
+            call_side_effect=_capture,
+        )
 
         assert len(seen) == 1
         assert not seen[0].is_set()
