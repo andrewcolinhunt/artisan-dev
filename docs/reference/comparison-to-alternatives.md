@@ -168,8 +168,8 @@ Understanding this relationship clarifies every comparison above.
 ```
 PipelineManager                                (Artisan: step sequencing, caching, provenance)
   └─ execute_step()
-       └─ RunnerBase.create_dispatch_handle() (Artisan: step-runner abstraction)
-            └─ DispatchHandle.run()            (handle owns dispatch lifecycle + cancellation)
+       └─ RunnerBase.create_lifecycle_router() (Artisan: step-runner abstraction)
+            └─ LifecycleRouter.run()          (router owns dispatch lifecycle + cancellation)
                  └─ @flow(task_runner=...)      (Prefect: parallel dispatch + observability)
                       └─ execute_unit_task.map(units)
                            ├─ run_creator_flow()    (Artisan: single operation lifecycle)
@@ -200,7 +200,7 @@ Workers run the same execution code regardless of step runner — Prefect is the
 transport, not the brain. Curator operations bypass Prefect dispatch and
 execute locally in a subprocess on the orchestrator. Custom step runners can be
 created by subclassing
-`RunnerBase` and implementing `create_dispatch_handle()` and `capture_logs()`.
+`RunnerBase` and implementing `create_lifecycle_router()` and `capture_logs()`.
 
 ---
 

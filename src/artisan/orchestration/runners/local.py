@@ -11,7 +11,7 @@ from prefect.task_runners import ProcessPoolTaskRunner
 
 from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _HandleState
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter, _RouterState
 from artisan.orchestration.runners.base import (
     OrchestratorTraits,
     RunnerBase,
@@ -59,8 +59,8 @@ class SIGINTSafeProcessPoolTaskRunner(ProcessPoolTaskRunner):
             self._spawn_guard.__exit__(None, None, None)
 
 
-class LocalDispatchHandle(DispatchHandle):
-    """Dispatch handle for local ProcessPool execution.
+class LocalLifecycleRouter(LifecycleRouter):
+    """Lifecycle router for local ProcessPool execution.
 
     Units are passed to workers in-memory via multiprocessing pickle
     serialization — no intermediate pickle file is written.
@@ -80,7 +80,7 @@ class LocalDispatchHandle(DispatchHandle):
     ) -> None:
         """Start local ProcessPool execution in a background thread."""
         self._assert_idle()
-        self._state = _HandleState.DISPATCHED
+        self._state = _RouterState.DISPATCHED
 
         task_runner = self._task_runner
 
@@ -122,7 +122,7 @@ class LocalRunner(RunnerBase):
     def __init__(self, default_max_workers: int = 4) -> None:
         self._default_max_workers = default_max_workers
 
-    def create_dispatch_handle(
+    def create_lifecycle_router(
         self,
         runner_resources: RunnerResources,
         batch_strategy: BatchStrategy,
@@ -130,8 +130,8 @@ class LocalRunner(RunnerBase):
         job_name: str,
         log_folder: str | None = None,
         staging_root: str | None = None,
-    ) -> DispatchHandle:
-        """Build a local ProcessPool dispatch handle.
+    ) -> LifecycleRouter:
+        """Build a local ProcessPool lifecycle router.
 
         GPU operations default to sequential execution (max_workers=1) to
         avoid GPU memory contention and CUDA context conflicts. CPU
@@ -144,7 +144,7 @@ class LocalRunner(RunnerBase):
         else:
             max_workers = self._default_max_workers
 
-        return LocalDispatchHandle(
+        return LocalLifecycleRouter(
             SIGINTSafeProcessPoolTaskRunner(max_workers=max_workers)
         )
 

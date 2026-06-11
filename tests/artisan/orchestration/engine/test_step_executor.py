@@ -225,7 +225,7 @@ class _SimpleToolOp(OperationDefinition):
 
 
 def _make_mock_backend(flow_return_value=None):
-    """Create a mock step_runner whose dispatch handle captures dispatched units."""
+    """Create a mock step_runner whose lifecycle router captures dispatched units."""
     mock_backend = MagicMock()
     mock_backend.name = "local"
     mock_backend.worker_traits.worker_id_env_var = None
@@ -236,7 +236,7 @@ def _make_mock_backend(flow_return_value=None):
     mock_handle = MagicMock()
     return_value = flow_return_value if flow_return_value is not None else []
     mock_handle.run.return_value = return_value
-    mock_backend.create_dispatch_handle.return_value = mock_handle
+    mock_backend.create_lifecycle_router.return_value = mock_handle
     return mock_backend, mock_handle
 
 
@@ -294,7 +294,7 @@ class TestComputeRoutingSelection:
 
         mock_handle_cls.assert_called_once()
         mock_handle.run.assert_called_once()
-        mock_backend.create_dispatch_handle.assert_not_called()
+        mock_backend.create_lifecycle_router.assert_not_called()
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
@@ -336,7 +336,7 @@ class TestComputeRoutingSelection:
         )
 
         assert result.success is False
-        mock_backend.create_dispatch_handle.assert_not_called()
+        mock_backend.create_lifecycle_router.assert_not_called()
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
@@ -379,7 +379,7 @@ class TestComputeRoutingSelection:
             compact=False,
         )
 
-        mock_backend.create_dispatch_handle.assert_called_once()
+        mock_backend.create_lifecycle_router.assert_called_once()
         mock_handle.run.assert_called_once()
 
 

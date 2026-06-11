@@ -1,4 +1,8 @@
-"""DispatchHandle — lifecycle handle for in-flight step_runner work."""
+"""LifecycleRouter — places and controls the lifecycle of step_runner work.
+
+The LifecycleRouter places the operation *lifecycle* (prep → execute →
+post → record); the ExecuteRouter places the execute phase within it.
+"""
 
 from __future__ import annotations
 
@@ -15,14 +19,14 @@ from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 
 
-class _HandleState(enum.Enum):
+class _RouterState(enum.Enum):
     IDLE = "idle"
     DISPATCHED = "dispatched"
     DONE = "done"
 
 
-class DispatchHandle(ABC):
-    """Lifecycle handle for controlling in-flight step_runner work.
+class LifecycleRouter(ABC):
+    """Places and controls the lifecycle of in-flight step_runner work.
 
     Provides start, poll, collect, and cancel semantics. Non-streaming
     pipelines use ``run()`` (blocking template method). The streaming
@@ -37,7 +41,7 @@ class DispatchHandle(ABC):
     """
 
     def __init__(self) -> None:
-        self._state = _HandleState.IDLE
+        self._state = _RouterState.IDLE
         self._thread: threading.Thread | None = None
         self._results: list[UnitResult] | None = None
         self._error: Exception | None = None
@@ -84,7 +88,7 @@ class DispatchHandle(ABC):
             self._thread.join()
         if self._error is not None:
             raise self._error
-        self._state = _HandleState.DONE
+        self._state = _RouterState.DONE
         return self._results  # type: ignore[return-value]
 
     def run(
@@ -114,7 +118,7 @@ class DispatchHandle(ABC):
 
     def _assert_idle(self) -> None:
         """Raise if ``dispatch()`` was already called."""
-        if self._state is not _HandleState.IDLE:
+        if self._state is not _RouterState.IDLE:
             msg = "dispatch() already called"
             raise RuntimeError(msg)
 

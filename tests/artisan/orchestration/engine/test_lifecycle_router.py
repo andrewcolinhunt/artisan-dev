@@ -1,4 +1,4 @@
-"""Tests for DispatchHandle ABC and state machine."""
+"""Tests for LifecycleRouter ABC and state machine."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import threading
 
 import pytest
 
-from artisan.orchestration.engine.dispatch_handle import (
-    DispatchHandle,
-    _HandleState,
+from artisan.orchestration.engine.lifecycle_router import (
+    LifecycleRouter,
+    _RouterState,
 )
 from artisan.schemas.execution.unit_result import UnitResult
 
@@ -24,7 +24,7 @@ def _result(**overrides: object) -> UnitResult:
     return UnitResult(**{**defaults, **overrides})
 
 
-class _StubHandle(DispatchHandle):
+class _StubHandle(LifecycleRouter):
     """Minimal concrete handle for state machine tests."""
 
     def __init__(self, results: list[UnitResult] | None = None) -> None:
@@ -35,7 +35,7 @@ class _StubHandle(DispatchHandle):
 
     def dispatch(self, units, runtime_env) -> None:
         self._assert_idle()
-        self._state = _HandleState.DISPATCHED
+        self._state = _RouterState.DISPATCHED
         self.dispatch_called = True
         self._results = self._stub_results
         self._done.set()
@@ -44,7 +44,7 @@ class _StubHandle(DispatchHandle):
         self.cancel_count += 1
 
 
-class _SlowStubHandle(DispatchHandle):
+class _SlowStubHandle(LifecycleRouter):
     """Stub that doesn't complete until explicitly told to."""
 
     def __init__(self) -> None:
@@ -53,7 +53,7 @@ class _SlowStubHandle(DispatchHandle):
 
     def dispatch(self, units, runtime_env) -> None:
         self._assert_idle()
-        self._state = _HandleState.DISPATCHED
+        self._state = _RouterState.DISPATCHED
         # Don't set _done or _results — stays in DISPATCHED state
 
     def cancel(self) -> None:
@@ -65,7 +65,7 @@ class _SlowStubHandle(DispatchHandle):
         self._done.set()
 
 
-class TestDispatchHandleStateMachine:
+class TestLifecycleRouterStateMachine:
     def test_dispatch_then_collect(self) -> None:
         handle = _StubHandle()
         handle.dispatch([], None)
@@ -139,10 +139,10 @@ class TestRunTemplateMethod:
         assert results[0].error == "Cancelled"
 
     def test_run_propagates_errors(self) -> None:
-        class _ErrorHandle(DispatchHandle):
+        class _ErrorHandle(LifecycleRouter):
             def dispatch(self, units, runtime_env):
                 self._assert_idle()
-                self._state = _HandleState.DISPATCHED
+                self._state = _RouterState.DISPATCHED
                 self._error = ValueError("boom")
                 self._done.set()
 
