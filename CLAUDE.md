@@ -34,6 +34,8 @@ pixi run -e dev test-unit                 # Run only unit tests (no external ser
 pixi run -e dev test-integration          # End-to-end pipeline tests (parallel, no external services)
 pixi run -e dev test-s3                   # S3-backend tests (parallel; needs Docker/MinIO or ARTISAN_S3_ENDPOINT)
 pixi run -e dev test-notebook             # Run every CI-runnable tutorial notebook (needs `pixi run prefect-start`)
+pixi run -e dev test-notebook-modal       # Modal tutorial notebooks (needs Modal credentials + prefect-start)
+pixi run -e dev test-notebook-slurm       # SLURM tutorial notebooks (run on a cluster + prefect-start)
 pixi run -e dev test-seq                  # All tests sequentially (for debugging)
 pixi run -e dev fmt                       # Format and lint
 pixi run -e docs docs-build              # Build docs
