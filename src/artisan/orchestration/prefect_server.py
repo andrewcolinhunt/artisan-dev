@@ -249,9 +249,13 @@ def _resolve_from_prefect_settings() -> str | None:
     try:
         from prefect.settings import get_current_settings
 
-        url = str(get_current_settings().api.url)
-        if url:
-            return _normalize_url(url)
+        # Guard before str(): an unset profile yields None, and
+        # str(None) == "None" is truthy — it would "resolve" to the
+        # garbage URL "None/api" instead of falling through to the
+        # actionable PrefectServerNotFound message.
+        url = get_current_settings().api.url
+        if url is not None and str(url):
+            return _normalize_url(str(url))
     except Exception:
         pass
     return None
