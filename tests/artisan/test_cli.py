@@ -3,12 +3,68 @@
 from __future__ import annotations
 
 import json
+from enum import StrEnum, auto
+from pathlib import Path
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import BaseModel, Field
 
 from artisan.cli import _CONTAINER_VIEW_FIELDS, main
+from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.operation_config.compute import ARTISAN_WORKER_IMAGE
+from artisan.schemas.specs.input_models import ExecuteInput
+from artisan.schemas.specs.input_spec import InputSpec
+from artisan.schemas.specs.output_spec import OutputSpec
+
+_RUNNER_OUTPUTS: dict[str, OutputSpec] = {
+    "result": OutputSpec(
+        artifact_type=ArtifactTypes.DATA,
+        infer_lineage_from={"inputs": []},
+    ),
+}
+
+
+class RunnerOp(OperationDefinition):
+    """op-run fixture: records its inputs and writes a marker file."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "cli_runner_op_test"
+    description: ClassVar[str] = "Writes marker.txt and records its inputs"
+    execute_as_tool: ClassVar[bool] = True
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = _RUNNER_OUTPUTS
+
+    seen: ClassVar[list[dict[str, Any]]] = []
+
+    class Params(BaseModel):
+        text: str = Field(default="hi", description="Marker file content.")
+
+    params: Params = Params()
+
+    def execute_function(self, inputs: ExecuteInput) -> None:
+        type(self).seen.append(dict(inputs.inputs))
+        Path(inputs.execute_dir, "marker.txt").write_text(self.params.text)
+
+
+class ReturningOp(OperationDefinition):
+    """op-run fixture violating the None-return contract."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "cli_returning_op_test"
+    description: ClassVar[str] = "Returns a value — contract violation"
+    execute_as_tool: ClassVar[bool] = True
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = _RUNNER_OUTPUTS
+
+    def execute_function(self, inputs: ExecuteInput) -> Any:
+        return {"oops": 1}
 
 
 class TestModalDeploy:
@@ -94,7 +150,7 @@ class TestOpImage:
         rc = main(["op", "image", "data_generator"])
 
         assert rc == 1
-        assert "not a tool op" in capsys.readouterr().err
+        assert "not a command op" in capsys.readouterr().err
 
 
 class TestDockerBuild:
@@ -122,3 +178,102 @@ class TestDockerBuild:
 
         assert rc == 1
         assert "No Dockerfile" in capsys.readouterr().err
+
+
+class TestOpRun:
+    """The execute_as_tool runner — module:Qualname, no registry discovery."""
+
+    def test_happy_path_writes_to_execute_dir(self, tmp_path):
+        rc = main(
+            [
+                "op",
+                "run",
+                f"{__name__}:RunnerOp",
+                "--params",
+                '{"text": "from-params"}',
+                "--inputs",
+                '{"source": ["/a.csv"]}',
+                "--execute-dir",
+                str(tmp_path),
+            ]
+        )
+
+        assert rc == 0
+        assert (tmp_path / "marker.txt").read_text() == "from-params"
+        # the runner's log tempfile lives outside execute_dir
+        assert [p.name for p in tmp_path.iterdir()] == ["marker.txt"]
+
+    def test_bare_str_input_delivered_as_one_element_list(self, tmp_path):
+        """The wire's one-file-per-role shape is re-wrapped: str -> [str]."""
+        RunnerOp.seen.clear()
+
+        rc = main(
+            [
+                "op",
+                "run",
+                f"{__name__}:RunnerOp",
+                "--inputs",
+                '{"source": "/a.csv"}',
+                "--execute-dir",
+                str(tmp_path),
+            ]
+        )
+
+        assert rc == 0
+        assert RunnerOp.seen == [{"source": ["/a.csv"]}]
+
+    def test_list_input_passes_through_unchanged(self, tmp_path):
+        RunnerOp.seen.clear()
+
+        rc = main(
+            [
+                "op",
+                "run",
+                f"{__name__}:RunnerOp",
+                "--inputs",
+                '{"source": ["/a.csv", "/b.csv"]}',
+                "--execute-dir",
+                str(tmp_path),
+            ]
+        )
+
+        assert rc == 0
+        assert RunnerOp.seen == [{"source": ["/a.csv", "/b.csv"]}]
+
+    def test_non_path_input_value_rejected(self, tmp_path, capsys):
+        rc = main(
+            [
+                "op",
+                "run",
+                f"{__name__}:RunnerOp",
+                "--inputs",
+                '{"source": 5}',
+                "--execute-dir",
+                str(tmp_path),
+            ]
+        )
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "source" in err
+        assert "file path" in err
+
+    def test_non_none_return_rejected(self, tmp_path, capsys):
+        rc = main(
+            ["op", "run", f"{__name__}:ReturningOp", "--execute-dir", str(tmp_path)]
+        )
+
+        assert rc == 1
+        assert "return None" in capsys.readouterr().err
+
+    def test_bad_target_exits_nonzero(self, capsys):
+        rc = main(["op", "run", "no.such.module:Nope"])
+
+        assert rc == 1
+        assert capsys.readouterr().err
+
+    def test_target_without_colon_exits_nonzero(self, capsys):
+        rc = main(["op", "run", "not-a-target"])
+
+        assert rc == 1
+        assert "module:Qualname" in capsys.readouterr().err

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tarfile
 from enum import StrEnum, auto
 from io import BytesIO
 from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 
@@ -135,6 +137,31 @@ class TestRunToolRequest:
     def test_invalid_params_raise(self):
         with pytest.raises(Exception, match="(?i)extra"):
             run_tool_request(WaitTool, ToolRequest(params={"no_such_param": 1}))
+
+    def test_flag_op_spawns_op_run_with_wire_params_and_inputs(self):
+        """The worker path composes for execute_as_tool ops: instantiate
+        from wire params, then spawn the generated op-run argv whose
+        --inputs carry the protocol's bare-str paths (the runner re-wraps
+        them — the str→[str] leg of the local/remote symmetry)."""
+        from fixtures.endpoint_ops import FlagTool
+
+        with patch("artisan.execution.compute.invoke.run_command") as mock_run:
+            result = run_tool_request(
+                FlagTool,
+                ToolRequest(
+                    params={"batch_size": 2},
+                    inputs=[InputRef(name="source", data=b"x")],
+                ),
+            )
+
+        assert result.manifest.error is None
+        argv = mock_run.call_args.args[1]
+        assert argv[:3] == ["artisan", "op", "run"]
+        assert argv[3] == "fixtures.endpoint_ops:FlagTool"
+        assert json.loads(argv[argv.index("--params") + 1]) == {"batch_size": 2}
+        inputs = json.loads(argv[argv.index("--inputs") + 1])
+        assert isinstance(inputs["source"], str)  # wire shape: one file per role
+        assert inputs["source"].endswith("source")
 
 
 class TestResolveOp:
