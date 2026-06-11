@@ -1,0 +1,52 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docker/artisan-worker/**
+      - src/**
+      - pyproject.toml
+      - pixi.lock
+      - README.md # the Dockerfile COPYs it
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  artisan-worker:
+    # Publish only from the upstream repo — forks lack push rights to the
+    # dexterity-systems ghcr namespace, and a fork's main is a sync mirror.
+    if: github.repository == 'dexterity-systems/artisan'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # latest = dev default; sha-<short> = the immutable handle
+      # production configs pin (see ModalComputeConfig.image docstring)
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/dexterity-systems/artisan-worker
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/artisan-worker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
