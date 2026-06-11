@@ -26,9 +26,18 @@ from artisan.execution.tool_endpoint.protocol import ResultResponse, ToolManifes
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.schemas.operation_config.compute import ModalComputeConfig
 from artisan.schemas.specs.input_models import ExecuteInput
+from artisan.utils.env_file import env_or_dotenv
 
 DEFAULT_AUTH_PREFIX = "MODAL_PROXY"
 """Default env-var prefix for the proxy-auth token pair."""
+
+_ENV_HINT = (
+    "Create a proxy-auth token (Modal dashboard → Settings → Proxy Auth "
+    "Tokens) and put it in a .env file at the repo root:\n"
+    "  MODAL_PROXY_TOKEN_ID=wk-...\n"
+    "  MODAL_PROXY_TOKEN_SECRET=ws-...\n"
+    "(see .env.example; env vars of the same names also work)"
+)
 
 _HTTP_TIMEOUT = 120.0
 
@@ -68,6 +77,18 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
             operation_name=operation.name,
             recovery_hint="CHECK_INPUT",
         )
+    headers = _auth_headers(cfg.auth_secret)
+    if not headers and cfg.endpoint_url is None:
+        # Artisan-deployed endpoints always require proxy auth; fail here,
+        # before any network round-trip, with the fix in hand.
+        raise ArtisanError(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message="no proxy-auth tokens found for the tool endpoint",
+            error_type="config",
+            operation_name=operation.name,
+            hint=_ENV_HINT,
+            recovery_hint="CHECK_INPUT",
+        )
     base_url = cfg.endpoint_url or _resolve_url(operation.name)
     transport = InlineTransport()
     refs = transport.pack_inputs(_file_inputs(operation.name, inputs.inputs))
@@ -78,7 +99,7 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
 
     with httpx.Client(
         base_url=base_url,
-        headers=_auth_headers(cfg.auth_secret),
+        headers=headers,
         timeout=_HTTP_TIMEOUT,
     ) as client:
         response = client.post(
@@ -186,10 +207,15 @@ def _resolve_url(op_name: str) -> str:
 
 
 def _auth_headers(auth_secret: str | None) -> dict[str, str]:
-    """Proxy-auth headers from ``<prefix>_TOKEN_ID`` / ``<prefix>_TOKEN_SECRET``."""
+    """Proxy-auth headers from ``<prefix>_TOKEN_ID`` / ``<prefix>_TOKEN_SECRET``.
+
+    Tokens are discovered from the process environment first, then the
+    nearest ``.env`` file — so Jupyter kernels and cron jobs work without
+    shell-inherited exports.
+    """
     prefix = auth_secret or DEFAULT_AUTH_PREFIX
-    token_id = os.environ.get(f"{prefix}_TOKEN_ID")
-    token_secret = os.environ.get(f"{prefix}_TOKEN_SECRET")
+    token_id = env_or_dotenv(f"{prefix}_TOKEN_ID")
+    token_secret = env_or_dotenv(f"{prefix}_TOKEN_SECRET")
     if token_id and token_secret:
         return {"Modal-Key": token_id, "Modal-Secret": token_secret}
     return {}
@@ -204,6 +230,17 @@ def _append_log(log_path: str, tail: str) -> None:
 
 def _check(response: httpx.Response, op_name: str) -> None:
     """Raise a compute-typed ArtisanError on a non-2xx endpoint response."""
+    # Verified 2026-06-10: Modal's proxy answers missing/invalid tokens
+    # with a fast 401 response (not a connection error); 407 defensively.
+    if response.status_code in (401, 407):
+        raise ArtisanError(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message=(f"tool endpoint rejected authentication ({response.status_code})"),
+            error_type="config",
+            operation_name=op_name,
+            hint=_ENV_HINT,
+            recovery_hint="CHECK_INPUT",
+        )
     if response.status_code >= 400:
         raise ArtisanError(
             code=ErrorCode.OP_EXECUTE_FAILED,

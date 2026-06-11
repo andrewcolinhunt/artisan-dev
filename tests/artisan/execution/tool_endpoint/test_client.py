@@ -198,6 +198,68 @@ class TestCancellation:
         assert cancel_calls[0].kwargs["params"] == {"call_id": "fc-1"}
 
 
+class TestTokenDiscovery:
+    def test_auth_headers_fall_back_to_dotenv_file(self, tmp_path, monkeypatch):
+        from artisan.execution.tool_endpoint.client import _auth_headers
+
+        (tmp_path / ".env").write_text(
+            "MODAL_PROXY_TOKEN_ID=wk-file\nMODAL_PROXY_TOKEN_SECRET=ws-file\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("MODAL_PROXY_TOKEN_ID", raising=False)
+        monkeypatch.delenv("MODAL_PROXY_TOKEN_SECRET", raising=False)
+
+        assert _auth_headers(None) == {
+            "Modal-Key": "wk-file",
+            "Modal-Secret": "ws-file",
+        }
+
+    def test_no_tokens_artisan_endpoint_raises_locally(
+        self, mock_http, monkeypatch, tmp_path
+    ):
+        """endpoint_url unset + no tokens anywhere → fail before any request."""
+        monkeypatch.setattr(client_mod, "env_or_dotenv", lambda _name: None)
+
+        with pytest.raises(ArtisanError, match="no proxy-auth tokens") as exc_info:
+            call_endpoint(
+                _op(endpoint_url=None),
+                ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
+            )
+
+        assert exc_info.value.code == "tool_endpoint_misconfigured"
+        assert ".env" in (exc_info.value.envelope.hint or "")
+        mock_http.Client.assert_not_called()
+
+    def test_no_tokens_external_endpoint_proceeds(
+        self, mock_http, monkeypatch, tmp_path
+    ):
+        """endpoint_url set → missing proxy tokens are not an error."""
+        monkeypatch.setattr(client_mod, "env_or_dotenv", lambda _name: None)
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+
+        call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert mock_http.Client.call_args.kwargs["headers"] == {}
+        client.post.assert_called_once()
+
+    def test_401_raises_actionable_config_error(self, mock_http, tmp_path, monkeypatch):
+        monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-bad")
+        monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-bad")
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"detail": "unauthorized"}, status=401)
+
+        with pytest.raises(ArtisanError, match="rejected authentication") as exc_info:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc_info.value.code == "tool_endpoint_misconfigured"
+        assert exc_info.value.error_type == "config"
+        assert "Proxy Auth Tokens" in (exc_info.value.envelope.hint or "")
+
+
 class TestAuthAndUrl:
     def test_default_proxy_auth_headers_from_env(
         self, mock_http, tmp_path, monkeypatch
@@ -234,8 +296,11 @@ class TestAuthAndUrl:
 
     @patch("modal.Function.from_name")
     def test_url_resolved_from_modal_when_unset(
-        self, mock_from_name, mock_http, tmp_path
+        self, mock_from_name, mock_http, tmp_path, monkeypatch
     ):
+        # tokens present so the local no-tokens guard lets resolution run
+        monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-x")
+        monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-x")
         mock_from_name.return_value.get_web_url.return_value = (
             "https://ws--artisan-tool-echo-tool.modal.run"
         )
