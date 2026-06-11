@@ -29,10 +29,11 @@ you must.
 
 ```bash
 pixi install                              # Install dependencies
-pixi run -e dev test                      # Run all tests (unit seq + integration parallel + tutorial notebooks)
-pixi run -e dev test-unit                 # Run only unit tests
-pixi run -e dev test-integration          # Run only integration tests (parallel)
-pixi run -e dev test-notebook             # Run every CI-runnable tutorial notebook end-to-end
+pixi run -e dev test                      # Run all tests (unit seq + integration + s3 parallel + tutorial notebooks)
+pixi run -e dev test-unit                 # Run only unit tests (no external services)
+pixi run -e dev test-integration          # End-to-end pipeline tests (parallel, no external services)
+pixi run -e dev test-s3                   # S3-backend tests (parallel; needs Docker/MinIO or ARTISAN_S3_ENDPOINT)
+pixi run -e dev test-notebook             # Run every CI-runnable tutorial notebook (needs `pixi run prefect-start`)
 pixi run -e dev test-seq                  # All tests sequentially (for debugging)
 pixi run -e dev fmt                       # Format and lint
 pixi run -e docs docs-build              # Build docs
@@ -77,8 +78,10 @@ Tests mirror source structure: `tests/artisan/{module}/`
 - Files: `test_<module>.py`
 - Functions: `test_<function>_<scenario>`
 - Cover: happy path, edge cases, error conditions
-- `@pytest.mark.integration` for integration tests
-- Integration tests in `tests/integration/` run in parallel via pytest-xdist
+- Markers separate test type from resource needs:
+  - `@pytest.mark.integration` — end-to-end pipeline tests (live in `tests/integration/`)
+  - `@pytest.mark.s3` — needs MinIO/S3 (auto-applied to `s3_fs` users; `[local, s3]` backend params mark the s3 param explicitly)
+- Integration and s3 tests run in parallel via pytest-xdist
 
 ---
 
@@ -106,8 +109,9 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`
 1. `pixi run -e dev fmt`
 2. `pixi run -e dev test-unit`
 3. `pixi run -e dev test-integration`
-4. `pixi run -e dev test-notebook`
-5. `pixi run -e docs docs-build`
+4. `pixi run -e dev test-s3`
+5. `pixi run -e dev test-notebook`
+6. `pixi run -e docs docs-build`
 
 ---
 
