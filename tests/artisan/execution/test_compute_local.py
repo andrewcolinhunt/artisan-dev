@@ -18,50 +18,41 @@ def _function_op(**kwargs) -> MagicMock:
     return operation
 
 
+def _inputs(n: int) -> list[ExecuteInput]:
+    return [
+        ExecuteInput(inputs={}, execute_dir=f"/tmp/test/a{i}", log_path="/tmp/log")
+        for i in range(n)
+    ]
+
+
 class TestLocalExecuteRouter:
-    def test_routes_through_invoke_to_execute_function(self):
-        """route_execute performs the function slot and returns its result."""
+    def test_sequential_loop_preserves_order(self):
+        """One invoke per artifact, results positionally aligned."""
         router = LocalExecuteRouter()
-        operation = _function_op(return_value={"key": "value"})
+        operation = _function_op(side_effect=[{"i": 0}, {"i": 1}, {"i": 2}])
 
-        execute_input = ExecuteInput(
-            inputs={},
-            execute_dir="/tmp/test",
-            log_path="/tmp/test/log",
-        )
+        results = router.route_execute(operation, _inputs(3), "/tmp/sandbox")
 
-        result = router.route_execute(operation, execute_input, "/tmp/sandbox")
-
-        operation.execute_function.assert_called_once_with(execute_input)
-        assert result == {"key": "value"}
+        assert results == [{"i": 0}, {"i": 1}, {"i": 2}]
+        called_with = [c.args[0] for c in operation.execute_function.call_args_list]
+        assert [ei.execute_dir for ei in called_with] == [
+            "/tmp/test/a0",
+            "/tmp/test/a1",
+            "/tmp/test/a2",
+        ]
 
     def test_passthrough_returns_none(self):
         """route_execute passes through None returns."""
         router = LocalExecuteRouter()
         operation = _function_op(return_value=None)
 
-        execute_input = ExecuteInput(
-            inputs={},
-            execute_dir="/tmp/test",
-            log_path="/tmp/test/log",
-        )
-
-        result = router.route_execute(operation, execute_input, "/tmp/sandbox")
-        assert result is None
+        results = router.route_execute(operation, _inputs(1), "/tmp/sandbox")
+        assert results == [None]
 
     def test_passthrough_propagates_exception(self):
         """route_execute does not catch exceptions from the slot body."""
         router = LocalExecuteRouter()
         operation = _function_op(side_effect=RuntimeError("boom"))
 
-        execute_input = ExecuteInput(
-            inputs={},
-            execute_dir="/tmp/test",
-            log_path="/tmp/test/log",
-        )
-
-        try:
-            router.route_execute(operation, execute_input, "/tmp/sandbox")
-            pytest.fail("Should have raised")
-        except RuntimeError as exc:
-            assert str(exc) == "boom"
+        with pytest.raises(RuntimeError, match="boom"):
+            router.route_execute(operation, _inputs(1), "/tmp/sandbox")
