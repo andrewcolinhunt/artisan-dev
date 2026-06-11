@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import tarfile
 import time
 
@@ -22,13 +21,16 @@ pytestmark = pytest.mark.modal
 
 @pytest.fixture(autouse=True)
 def _require_proxy_auth_tokens() -> None:
+    from artisan.utils.env_file import env_or_dotenv
+
     if not (
-        os.environ.get("MODAL_PROXY_TOKEN_ID")
-        and os.environ.get("MODAL_PROXY_TOKEN_SECRET")
+        env_or_dotenv("MODAL_PROXY_TOKEN_ID")
+        and env_or_dotenv("MODAL_PROXY_TOKEN_SECRET")
     ):
         pytest.skip(
-            "MODAL_PROXY_TOKEN_ID/MODAL_PROXY_TOKEN_SECRET unset "
-            "(create a proxy-auth token in the Modal dashboard)"
+            "MODAL_PROXY_TOKEN_ID/MODAL_PROXY_TOKEN_SECRET not found in the "
+            "environment or a .env file (copy .env.example to .env and fill "
+            "in a dashboard-created proxy-auth token)"
         )
 
 
@@ -58,10 +60,12 @@ def test_endpoint_serves_non_artisan_clients():
     import httpx
     import modal
 
+    from artisan.utils.env_file import env_or_dotenv
+
     url = modal.Function.from_name("artisan-tool-echo_tool", "endpoint").get_web_url()
     headers = {
-        "Modal-Key": os.environ["MODAL_PROXY_TOKEN_ID"],
-        "Modal-Secret": os.environ["MODAL_PROXY_TOKEN_SECRET"],
+        "Modal-Key": env_or_dotenv("MODAL_PROXY_TOKEN_ID") or "",
+        "Modal-Secret": env_or_dotenv("MODAL_PROXY_TOKEN_SECRET") or "",
     }
     with httpx.Client(base_url=url, headers=headers, timeout=120) as client:
         submitted = client.post(
