@@ -205,22 +205,40 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
         async def submit(
             params: str = Form("{}"),
             input_uris: str = Form("{}"),
+            input_filenames: str = Form("{}"),
             files: list[UploadFile] = File(default=[]),  # noqa: B008 — FastAPI DI idiom
         ) -> dict[str, str]:
-            """Submit a tool job: params JSON + input files (multipart)."""
+            """Submit a tool job: params JSON + input files (multipart).
+
+            ``input_filenames`` (JSON, role → original file name) lets the
+            worker materialize each input under its real name; omitted
+            entries fall back to the role.
+            """
             try:
                 parsed = json.loads(params)
                 uris: dict[str, str] = json.loads(input_uris)
+                filenames: dict[str, str] = json.loads(input_filenames)
                 if params_schema:
                     jsonschema.validate(parsed, params_schema)
             except (ValueError, jsonschema.ValidationError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             refs: list[dict[str, Any]] = [
-                {"name": f.filename or "input", "uri": None, "data": await f.read()}
+                {
+                    "name": f.filename or "input",
+                    "filename": filenames.get(f.filename or "input"),
+                    "uri": None,
+                    "data": await f.read(),
+                }
                 for f in files
             ]
             refs += [
-                {"name": name, "uri": uri, "data": None} for name, uri in uris.items()
+                {
+                    "name": name,
+                    "filename": filenames.get(name),
+                    "uri": uri,
+                    "data": None,
+                }
+                for name, uri in uris.items()
             ]
             call = worker.spawn({"params": parsed, "inputs": refs})
             return {"call_id": call.object_id}
