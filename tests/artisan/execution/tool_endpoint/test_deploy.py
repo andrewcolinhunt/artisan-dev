@@ -252,9 +252,7 @@ class TestEndpointRoutes:
         }
         SchemaResponse(**body)  # served dict matches the documented wire shape
 
-    def test_conforming_params_pass_submit(
-        self, client: TestClient, worker: MagicMock
-    ):
+    def test_conforming_params_pass_submit(self, client: TestClient, worker: MagicMock):
         """The served schema and the /submit-enforced schema are the same dict."""
         worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
         served = client.get("/schema").json()["params_schema"]
