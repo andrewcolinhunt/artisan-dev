@@ -159,12 +159,24 @@ class LocalRunner(RunnerBase):
         """No-op — local logs are in the orchestrator's stdout."""
 
     def validate_operation(self, operation: Any) -> None:
-        """Warn if SLURM-specific resources are configured on a local step_runner."""
+        """Warn on local-runner config that is likely a mistake."""
         r = operation.runner_resources
         if r.extra:
             warnings.warn(
                 f"Operation {operation.name!r} has SLURM-specific resources "
                 f"(extra={r.extra!r}) but step_runner is 'local'. "
                 f"These will be ignored.",
+                stacklevel=2,
+            )
+        # runner_resources.gpus > 0 serializes the local pool to one worker —
+        # correct when execute runs locally on a GPU, surprising when execute
+        # ships to Modal (the container GPU belongs in compute_resources.gpu).
+        if r.gpus > 0 and operation.compute_provider.active == "modal":
+            warnings.warn(
+                f"Operation {operation.name!r} sets runner_resources.gpus="
+                f"{r.gpus} with compute_provider='modal'. The GPU request "
+                f"serializes the local lifecycle pool, but execute runs on "
+                f"Modal — request the container GPU via "
+                f"compute_resources.gpu instead.",
                 stacklevel=2,
             )

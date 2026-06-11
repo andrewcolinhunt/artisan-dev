@@ -114,3 +114,14 @@ class TestSlurmIntraRunnerValidateOperation:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             step_runner.validate_operation(mock_op)
+
+    @patch.dict("os.environ", {"SLURM_JOB_ID": "12345"})
+    def test_modal_command_op_passes_validation(self) -> None:
+        """The unified path validates modal steps — warns at most, never raises."""
+        step_runner = SlurmIntraRunner()
+        mock_op = MagicMock()
+        mock_op.name = "test_op"
+        mock_op.compute_provider.active = "modal"
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            step_runner.validate_operation(mock_op)

@@ -27,6 +27,7 @@ def mock_operation() -> MagicMock:
     op.batch_strategy.max_workers = None
     op.runner_resources.gpus = 0
     op.runner_resources.extra = {}
+    op.compute_provider.active = "local"
     return op
 
 
@@ -128,6 +129,22 @@ class TestLocalRunnerValidateOperation:
         mock_operation.runner_resources.extra = {"partition": "gpu"}
         with pytest.warns(UserWarning, match="SLURM-specific resources"):
             local_runner.validate_operation(mock_operation)
+
+    def test_warns_on_runner_gpus_with_modal_provider(
+        self, local_runner: LocalRunner, mock_operation: MagicMock
+    ) -> None:
+        """runner_resources.gpus serializes the pool — wrong knob for modal."""
+        mock_operation.runner_resources.gpus = 1
+        mock_operation.compute_provider.active = "modal"
+        with pytest.warns(UserWarning, match="compute_resources.gpu"):
+            local_runner.validate_operation(mock_operation)
+
+    def test_modal_command_op_passes_validation(
+        self, local_runner: LocalRunner, mock_operation: MagicMock
+    ) -> None:
+        """The unified path validates modal steps — warns at most, never raises."""
+        mock_operation.compute_provider.active = "modal"
+        local_runner.validate_operation(mock_operation)
 
 
 class TestLocalRunnerCaptureLogs:

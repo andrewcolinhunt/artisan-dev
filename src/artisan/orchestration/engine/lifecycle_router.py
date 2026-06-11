@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextvars
 import enum
+import logging
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -17,6 +18,9 @@ from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.utils.path import cancel_sentinel_path, uri_parent
+
+logger = logging.getLogger(__name__)
 
 
 class _RouterState(enum.Enum):
@@ -100,17 +104,45 @@ class LifecycleRouter(ABC):
         """Execute the step. Blocks until completion or cancellation.
 
         Concrete template method: ``dispatch()`` → poll ``is_done()``
-        → ``collect()``. Checks *cancel_event* between polls and calls
-        ``cancel()`` when set.
+        → ``collect()``. Checks *cancel_event* between polls; when it
+        fires, writes the cancel sentinel (so worker-held execute calls
+        can observe cancellation across the process boundary) and calls
+        ``cancel()``.
         """
         self.dispatch(units, runtime_env)
         cancelled = False
         while not self.is_done():
             if not cancelled and cancel_event is not None and cancel_event.is_set():
+                self._write_cancel_sentinel(units, runtime_env)
                 self.cancel()
                 cancelled = True
             time.sleep(0.1)
         return self.collect()
+
+    @staticmethod
+    def _write_cancel_sentinel(
+        units: list[ExecutionUnit | ExecutionComposite],
+        runtime_env: RuntimeEnvironment,
+    ) -> None:
+        """Best-effort cancel sentinel on the staging filesystem.
+
+        Workers holding remote execute calls cannot see the orchestrator's
+        cancel event; they poll for this file instead. A failed write is
+        logged, never raised — cancellation must not abort the poll loop.
+        """
+        step_run_id = next(
+            (sid for sid in (getattr(u, "step_run_id", None) for u in units) if sid),
+            None,
+        )
+        if step_run_id is None or runtime_env.staging_root is None:
+            return
+        try:
+            sentinel = cancel_sentinel_path(runtime_env.staging_root, step_run_id)
+            fs = runtime_env.storage.filesystem()
+            fs.makedirs(uri_parent(sentinel), exist_ok=True)
+            fs.touch(sentinel)
+        except Exception as exc:
+            logger.warning("Failed to write cancel sentinel: %s", exc)
 
     # ------------------------------------------------------------------
     # Protected helpers for subclasses

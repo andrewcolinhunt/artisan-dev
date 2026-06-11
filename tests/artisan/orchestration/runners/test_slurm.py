@@ -134,3 +134,13 @@ class TestSlurmRunnerCaptureLogs:
         ]
         step_runner.capture_logs(results, "/staging", "/logs", "test_op", 1)
         mock_patch.assert_called_once_with(results, "/staging", "/logs", "test_op", 1)
+
+
+class TestSlurmRunnerValidateOperation:
+    def test_modal_command_op_passes_validation(self) -> None:
+        """The unified path validates modal steps — never raises (base no-op)."""
+        step_runner = SlurmRunner()
+        mock_op = MagicMock()
+        mock_op.name = "test_op"
+        mock_op.compute_provider.active = "modal"
+        step_runner.validate_operation(mock_op)

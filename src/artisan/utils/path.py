@@ -195,3 +195,23 @@ def uri_parent(uri: str) -> str:
         Parent directory URI string.
     """
     return posixpath.dirname(uri)
+
+
+def cancel_sentinel_path(staging_root: str, step_run_id: str) -> str:
+    """Path of the cancel sentinel file for one step attempt.
+
+    The orchestrator's lifecycle router writes this empty file when the
+    pipeline cancel event fires; worker-side execute routers poll for it.
+    It rides the staging filesystem — the one channel every runner shares
+    with its workers — and lives in the step's ``_dispatch`` directory,
+    which the step executor removes when the step finishes. A sentinel
+    orphaned by a crash is inert: ``step_run_id`` is unique per attempt.
+
+    Args:
+        staging_root: Staging root (local path or cloud URI).
+        step_run_id: Unique ID of the step attempt being cancelled.
+
+    Returns:
+        Sentinel URI string.
+    """
+    return uri_join(staging_root, "_dispatch", f"cancel-{step_run_id}")

@@ -259,3 +259,194 @@ class TestCreatorLifecycleNameDerivation:
         # But they have different artifact_ids
         ids = {a.artifact_id for a in outputs}
         assert len(ids) == 2
+
+
+@pytest.fixture
+def delta_with_two_inputs(tmp_path: Path):
+    """Create a Delta root with two metric artifacts."""
+    base = tmp_path / "delta"
+    contents = [
+        json.dumps({"value": i}, sort_keys=True).encode("utf-8") for i in (1, 2)
+    ]
+    aids = [_compute_id(c) for c in contents]
+
+    _setup_delta(
+        base,
+        metrics=[
+            {
+                "artifact_id": aid,
+                "origin_step_number": 0,
+                "content": content,
+                "original_name": f"sample_{i}",
+                "extension": ".json",
+                "metadata": "{}",
+                "external_path": None,
+            }
+            for i, (aid, content) in enumerate(zip(aids, contents, strict=True))
+        ],
+        index=[
+            {
+                "artifact_id": aid,
+                "artifact_type": "metric",
+                "origin_step_number": 0,
+                "metadata": "{}",
+            }
+            for aid in aids
+        ],
+    )
+
+    working = tmp_path / "working"
+    working.mkdir()
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    runtime_env = RuntimeEnvironment(
+        delta_root=str(base),
+        working_root=str(working),
+        staging_root=str(staging),
+    )
+    return runtime_env, aids
+
+
+class _MonolithicSuffixOp(_SuffixOp):
+    """Same body, monolithic dispatch — for split-parity comparison."""
+
+    name: ClassVar[str] = "suffix_test_monolithic"
+    per_artifact_dispatch: ClassVar[bool] = False
+
+
+class TestPerArtifactSplitParity:
+    def test_split_matches_monolithic_results(self, delta_with_two_inputs):
+        """per_artifact_dispatch True and False produce equivalent outputs."""
+        runtime_env, aids = delta_with_two_inputs
+
+        split_result = run_creator_lifecycle(
+            ExecutionUnit(
+                operation=_SuffixOp(),
+                inputs={"source": aids},
+                execution_spec_id="spec_sp" + "0" * 26,
+                step_number=1,
+            ),
+            runtime_env,
+        )
+        mono_result = run_creator_lifecycle(
+            ExecutionUnit(
+                operation=_MonolithicSuffixOp(),
+                inputs={"source": aids},
+                execution_spec_id="spec_mo" + "0" * 26,
+                step_number=1,
+            ),
+            runtime_env,
+        )
+
+        assert isinstance(split_result, LifecycleResult)
+        assert len(split_result.artifacts["output"]) == 2
+        assert len(mono_result.artifacts["output"]) == 2
+        assert {a.artifact_id for a in split_result.artifacts["output"]} == {
+            a.artifact_id for a in mono_result.artifacts["output"]
+        }
+        assert len(split_result.edges) == len(mono_result.edges)
+
+
+class _StubRouter:
+    """Injected router returning canned per-artifact results."""
+
+    def __init__(self, results: list[Any]) -> None:
+        self._results = results
+
+    def route_execute(self, operation, execute_inputs, sandbox_root):
+        return self._results[: len(execute_inputs)]
+
+
+class TestPerArtifactFailureSurfacing:
+    def test_exception_entries_raise_execute_failure(self, delta_with_two_inputs):
+        """Exception entries surface as _ExecuteFailure with the N/M message."""
+        from artisan.execution.executors.creator import _ExecuteFailure
+
+        runtime_env, aids = delta_with_two_inputs
+        unit = ExecutionUnit(
+            operation=_SuffixOp(),
+            inputs={"source": aids},
+            execution_spec_id="spec_fa" + "0" * 26,
+            step_number=1,
+        )
+
+        with pytest.raises(_ExecuteFailure, match="1/2 artifact executions failed"):
+            run_creator_lifecycle(
+                unit,
+                runtime_env,
+                execute_router=_StubRouter([{}, ValueError("container died")]),
+            )
+
+
+_seen_memory_outputs: list[Any] = []
+
+
+class _ReturningOp(_SuffixOp):
+    """Function op whose per-artifact returns must reassemble in order."""
+
+    name: ClassVar[str] = "suffix_test_returning"
+
+    def execute_function(self, inputs: ExecuteInput) -> dict:
+        super().execute_function(inputs)
+        return {"stems": [os.path.basename(p) for p in inputs.inputs["source"]]}
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        _seen_memory_outputs.append(inputs.memory_outputs)
+        return super().postprocess(inputs)
+
+
+class TestFunctionReturnsReassembled:
+    def test_per_artifact_returns_merge_into_memory_outputs(
+        self, delta_with_two_inputs
+    ):
+        """Per-artifact dict returns merge to the batch shape for postprocess."""
+        runtime_env, aids = delta_with_two_inputs
+        _seen_memory_outputs.clear()
+
+        run_creator_lifecycle(
+            ExecutionUnit(
+                operation=_ReturningOp(),
+                inputs={"source": aids},
+                execution_spec_id="spec_me" + "0" * 26,
+                step_number=1,
+            ),
+            runtime_env,
+        )
+
+        assert len(_seen_memory_outputs) == 1
+        memory_outputs = _seen_memory_outputs[0]
+        # Two single-artifact returns reassemble into one batch-shaped dict
+        assert sorted(memory_outputs["stems"]) == sorted(f"{aid}.json" for aid in aids)
+
+
+class TestCancelCheck:
+    def test_none_step_run_id_disables_cancel_check(self, tmp_path: Path):
+        """Composite-internal lifecycles (no step_run_id) get no probe."""
+        from artisan.execution.executors.creator import _cancel_check
+
+        runtime_env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            working_root=str(tmp_path / "working"),
+            staging_root=str(tmp_path / "staging"),
+        )
+        assert _cancel_check(runtime_env, None) is None
+
+    def test_probe_flips_when_sentinel_appears(self, tmp_path: Path):
+        from artisan.execution.executors.creator import _cancel_check
+        from artisan.utils.path import cancel_sentinel_path
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        runtime_env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            working_root=str(tmp_path / "working"),
+            staging_root=str(staging),
+        )
+        probe = _cancel_check(runtime_env, "step-xyz")
+        assert probe is not None
+        assert probe() is False
+
+        sentinel = Path(cancel_sentinel_path(str(staging), "step-xyz"))
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        assert probe() is True

@@ -152,3 +152,83 @@ class TestRunTemplateMethod:
         handle = _ErrorHandle()
         with pytest.raises(ValueError, match="boom"):
             handle.run([], None)
+
+
+class TestCancelSentinel:
+    """run() writes the cancel sentinel before cancelling the router."""
+
+    def test_run_writes_sentinel_on_cancel(self, tmp_path) -> None:
+        from types import SimpleNamespace
+
+        from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+        from artisan.utils.path import cancel_sentinel_path
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        runtime_env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            working_root=str(tmp_path / "working"),
+            staging_root=str(staging),
+        )
+        unit = SimpleNamespace(step_run_id="step-abc123")
+
+        handle = _SlowStubHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        def _complete_after_cancel():
+            while handle.cancel_count == 0:
+                pass
+            handle.complete([_result()])
+
+        t = threading.Thread(target=_complete_after_cancel, daemon=True)
+        t.start()
+        handle.run([unit], runtime_env, cancel_event=cancel_event)
+        t.join(timeout=2)
+
+        sentinel = cancel_sentinel_path(str(staging), "step-abc123")
+        assert runtime_env.storage.filesystem().exists(sentinel)
+
+    def test_failing_sentinel_write_is_logged_not_raised(self, caplog) -> None:
+        from unittest.mock import MagicMock
+
+        runtime_env = MagicMock()
+        runtime_env.staging_root = "/tmp/staging"
+        runtime_env.storage.filesystem.side_effect = RuntimeError("fs down")
+        unit = MagicMock()
+        unit.step_run_id = "step-abc123"
+
+        handle = _SlowStubHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        def _complete_after_cancel():
+            while handle.cancel_count == 0:
+                pass
+            handle.complete([_result()])
+
+        t = threading.Thread(target=_complete_after_cancel, daemon=True)
+        t.start()
+        results = handle.run([unit], runtime_env, cancel_event=cancel_event)
+        t.join(timeout=2)
+
+        assert len(results) == 1  # cancellation path completed despite the failure
+        assert handle.cancel_count >= 1
+        assert any("cancel sentinel" in record.message for record in caplog.records)
+
+    def test_no_step_run_id_skips_sentinel(self) -> None:
+        """Units without step_run_id (composites) write nothing and don't raise."""
+        handle = _SlowStubHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        def _complete_after_cancel():
+            while handle.cancel_count == 0:
+                pass
+            handle.complete([_result()])
+
+        t = threading.Thread(target=_complete_after_cancel, daemon=True)
+        t.start()
+        results = handle.run([], None, cancel_event=cancel_event)
+        t.join(timeout=2)
+        assert len(results) == 1

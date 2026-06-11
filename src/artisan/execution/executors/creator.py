@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -25,6 +26,7 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.utils.errors import format_error
+from artisan.utils.path import cancel_sentinel_path
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
@@ -83,10 +85,9 @@ def run_creator_lifecycle(
     cleanup.
 
     Internally delegates to ``prep_unit()`` (setup + preprocess) and
-    ``post_unit()`` (postprocess + lineage). The execute phase runs inline
-    here using the first (and only) ExecuteInput from prep_unit — the
-    per-artifact fan-out path is wired separately via the batch dispatch
-    handle.
+    ``post_unit()`` (postprocess + lineage). Prep splits per artifact
+    (honoring the op's ``per_artifact_dispatch``); the execute router
+    receives the full per-artifact list and owns the iteration strategy.
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
@@ -108,14 +109,7 @@ def run_creator_lifecycle(
     """
     from artisan.execution.executors.creator_phases import post_unit, prep_unit
 
-    prepped = prep_unit(
-        unit,
-        runtime_env,
-        worker_id,
-        execution_run_id,
-        sources,
-        split_per_artifact=False,
-    )
+    prepped = prep_unit(unit, runtime_env, worker_id, execution_run_id, sources)
 
     # --- execute phase ---
     with phase_timer("execute", prepped.timings):
@@ -123,12 +117,14 @@ def run_creator_lifecycle(
             config = prepped.operation.compute_provider.current()
             execute_router = create_execute_router(
                 config,
+                prepped.operation,
                 compute_resources=prepped.operation.compute_resources,
+                cancel_check=_cancel_check(runtime_env, unit.step_run_id),
             )
         try:
-            raw_result = execute_router.route_execute(
+            raw_results = execute_router.route_execute(
                 prepped.operation,
-                prepped.artifact_execute_inputs[0],
+                prepped.artifact_execute_inputs,
                 prepped.sandbox_path,
             )
         except Exception as exc:
@@ -138,8 +134,37 @@ def run_creator_lifecycle(
                 error += f"\n--- tool stdout (last 30 lines) ---\n{tail}"
             tool_output = _read_tool_output(prepped.log_path)
             raise _ExecuteFailure(error, tool_output=tool_output) from exc
+        # Per-artifact failures land as exception entries (the batch
+        # contract); surface them here — downstream _reassemble_results
+        # silently filters them, which masks the real error as an
+        # empty-artifact validation failure.
+        failures = [r for r in raw_results if isinstance(r, Exception)]
+        if failures:
+            msg = (
+                f"{len(failures)}/{len(raw_results)} artifact executions "
+                f"failed; first: {format_error(failures[0])}"
+            )
+            raise _ExecuteFailure(msg, tool_output=_read_tool_output(prepped.log_path))
 
-    return post_unit(prepped, [raw_result], runtime_env)
+    return post_unit(prepped, raw_results, runtime_env)
+
+
+def _cancel_check(
+    runtime_env: RuntimeEnvironment, step_run_id: str | None
+) -> Callable[[], bool] | None:
+    """Existence probe for the orchestrator's cancel sentinel.
+
+    The lifecycle router writes the sentinel on the staging filesystem
+    when the pipeline cancel event fires; execute routers whose calls
+    outlive the orchestrator's threads poll this probe. None when the
+    unit carries no ``step_run_id`` (composite-internal lifecycles) or
+    no staging root is configured.
+    """
+    if step_run_id is None or runtime_env.staging_root is None:
+        return None
+    sentinel = cancel_sentinel_path(runtime_env.staging_root, step_run_id)
+    fs = runtime_env.storage.filesystem()
+    return lambda: bool(fs.exists(sentinel))
 
 
 def run_creator_flow(
