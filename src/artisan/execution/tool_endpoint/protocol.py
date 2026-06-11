@@ -58,6 +58,20 @@ class WorkerResult(BaseModel):
     output_tar: bytes | None = None
 
 
+class SchemaResponse(BaseModel):
+    """``GET /schema`` response: the endpoint's request contract.
+
+    ``params_schema`` is the same dict the ``/submit`` validator enforces;
+    empty means the op declares no ``Params``. ``inputs`` maps each input
+    role to ``{"required": bool, "description": str}``.
+    """
+
+    operation: str
+    description: str = ""
+    params_schema: dict[str, Any] = Field(default_factory=dict)
+    inputs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
 class SubmitResponse(BaseModel):
     """``POST /submit`` response."""
 

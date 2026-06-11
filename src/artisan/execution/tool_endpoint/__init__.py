@@ -11,6 +11,7 @@ from artisan.execution.tool_endpoint.client import call_endpoint, cancel_scope
 from artisan.execution.tool_endpoint.protocol import (
     InputRef,
     ResultResponse,
+    SchemaResponse,
     SubmitResponse,
     ToolManifest,
     ToolRequest,
@@ -29,6 +30,7 @@ __all__ = [
     "InlineTransport",
     "InputRef",
     "ResultResponse",
+    "SchemaResponse",
     "SubmitResponse",
     "ToolManifest",
     "ToolRequest",
