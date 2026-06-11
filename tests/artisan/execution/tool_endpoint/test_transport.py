@@ -29,11 +29,13 @@ class TestPackInputs:
         src = tmp_path / "input.pdb"
         src.write_bytes(b"ATOM")
         refs = InlineTransport().pack_inputs({"pdb": str(src)})
-        assert refs == [InputRef(name="pdb", data=b"ATOM")]
+        assert refs == [InputRef(name="pdb", filename="input.pdb", data=b"ATOM")]
 
     def test_uri_passes_through_without_reading(self):
         refs = InlineTransport().pack_inputs({"pdb": "s3://bucket/key.pdb"})
-        assert refs == [InputRef(name="pdb", uri="s3://bucket/key.pdb")]
+        assert refs == [
+            InputRef(name="pdb", filename="key.pdb", uri="s3://bucket/key.pdb")
+        ]
 
     def test_over_limit_raises(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 4)
@@ -62,11 +64,25 @@ class TestUnpackInputs:
         assert fs.calls == [("s3://bucket/key.pdb", paths["pdb"])]
         assert Path(paths["pdb"]).read_bytes() == b"remote-bytes"
 
+    def test_original_filename_preserved_on_disk(self, tmp_path: Path):
+        """Lineage stem-matching needs the worker-side basename to match local."""
+        src = tmp_path / "dataset_00001.csv"
+        src.write_bytes(b"a,b\n1,2\n")
+        refs = InlineTransport().pack_inputs({"dataset": str(src)})
+        paths = InlineTransport().unpack_inputs(refs, str(tmp_path / "inputs"))
+        assert Path(paths["dataset"]).name == "dataset_00001.csv"
+
     def test_name_is_sanitized_to_basename(self, tmp_path: Path):
         paths = InlineTransport().unpack_inputs(
             [InputRef(name="../evil.txt", data=b"x")], str(tmp_path)
         )
         assert Path(paths["../evil.txt"]).parent == tmp_path
+
+    def test_filename_is_sanitized_to_basename(self, tmp_path: Path):
+        paths = InlineTransport().unpack_inputs(
+            [InputRef(name="x", filename="../../evil.txt", data=b"x")], str(tmp_path)
+        )
+        assert Path(paths["x"]).parent == tmp_path
 
     def test_empty_ref_raises(self, tmp_path: Path):
         with pytest.raises(ValueError, match="neither uri nor data"):
