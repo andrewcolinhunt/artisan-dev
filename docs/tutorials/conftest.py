@@ -10,9 +10,12 @@ Three responsibilities:
    ``pytest -m notebook`` selects them and ``pytest -m 'not notebook'``
    excludes them.
 
-2. Skip notebooks that require external infrastructure (SLURM, Modal,
-   real S3) — they cannot run on the local CI machine. Listed by path
-   relative to this conftest's directory so the deny-list is auditable.
+2. Auto-apply infrastructure markers (``modal``, ``slurm``) to notebooks
+   that need external infrastructure. ``test-notebook`` excludes them via
+   ``-m 'notebook and not modal and not slurm'``; the opt-in tasks
+   ``test-notebook-modal`` / ``test-notebook-slurm`` select them where
+   the infrastructure exists. Listed by path relative to this conftest's
+   directory so the mapping is auditable.
 
 3. Preflight the self-hosted Prefect server. Every runnable notebook
    calls ``PipelineManager.create()``, which discovers and health-checks
@@ -28,20 +31,17 @@ import pytest
 
 _TUTORIALS_DIR = Path(__file__).parent
 
-# Notebooks that require external infrastructure (SLURM/Modal/S3) and
-# can't be exercised in the local CI environment. Paths are relative
-# to docs/tutorials/.
-SKIP_NOTEBOOKS_INFRA = {
-    "07-compute-backends/02-slurm-execution.ipynb",
-    "07-compute-backends/03-slurm-intra-execution.ipynb",
-    "06-storage/02-external-file-storage.ipynb",
-    "07-compute-backends/01-compute-routing.ipynb",
-    "07-compute-backends/04-modal-execution.ipynb",
-    # 04-batching/02-batch-execute genuinely runs against Modal (header
-    # says "Modal account required: Yes"). The kwarg syntax in its
-    # cells is now correct (compute_provider=, batch_strategy=) so
-    # when a CI job gains Modal credentials it can be un-skipped.
-    "04-batching/02-batch-execute.ipynb",
+# Notebooks that require external infrastructure, mapped to the marker
+# naming what they need. They are excluded from the default notebook run
+# and selected by the opt-in tasks (test-notebook-modal on a Modal-
+# credentialed machine, test-notebook-slurm on a cluster). Paths are
+# relative to docs/tutorials/.
+INFRA_NOTEBOOKS = {
+    "07-compute-backends/04-modal-execution.ipynb": "modal",
+    "04-batching/02-batch-execute.ipynb": "modal",
+    "07-compute-backends/02-slurm-execution.ipynb": "slurm",
+    # slurm-intra additionally needs an active salloc/sbatch allocation.
+    "07-compute-backends/03-slurm-intra-execution.ipynb": "slurm",
 }
 
 # Notebooks with pre-existing runtime bugs to fix as separate work.
@@ -105,10 +105,7 @@ def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
-    """Apply the ``notebook`` marker; skip deny-lists; preflight Prefect."""
-    skip_infra = pytest.mark.skip(
-        reason="Notebook needs external infrastructure (SLURM/Modal/S3)"
-    )
+    """Apply ``notebook`` + infra markers; skip broken; preflight Prefect."""
     skip_broken = pytest.mark.skip(
         reason="Notebook has pre-existing runtime bugs; tracked separately"
     )
@@ -120,12 +117,16 @@ def pytest_collection_modifyitems(
         if rel is None:
             continue
         item.add_marker(notebook_marker)
-        if rel in SKIP_NOTEBOOKS_INFRA:
-            item.add_marker(skip_infra)
-        elif rel in SKIP_NOTEBOOKS_BROKEN:
+        if rel in SKIP_NOTEBOOKS_BROKEN:
             item.add_marker(skip_broken)
-        else:
-            runnable.append(item)
+            continue
+        infra = INFRA_NOTEBOOKS.get(rel)
+        if infra is not None:
+            item.add_marker(getattr(pytest.mark, infra))
+        # Infra notebooks stay in `runnable`: when their opt-in task
+        # selects them they need the Prefect preflight just like the
+        # default set (-m deselection happens after this hook).
+        runnable.append(item)
 
     if not runnable:
         return
