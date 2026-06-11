@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum, auto
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
@@ -59,6 +60,27 @@ class _FunctionOp(OperationDefinition):
 
     def execute_function(self, inputs: ExecuteInput) -> Any:
         return {"echo": inputs.inputs}
+
+
+class _FlagOp(OperationDefinition):
+    """execute_as_tool op: Python body shipped via the generated argv."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "invoke_flag_op_test"
+    description: ClassVar[str] = "Writes nothing; exercises the shim argv"
+    execute_as_tool: ClassVar[bool] = True
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": []},
+        ),
+    }
+
+    def execute_function(self, inputs: ExecuteInput) -> None:
+        return None
 
 
 class TestToolCommandInputs:
@@ -145,6 +167,33 @@ class TestInvokeCommandOp:
         with patch("artisan.execution.compute.invoke.run_command") as mock_run:
             invoke_op_work(op, ExecuteInput(execute_dir=str(tmp_path)))
         assert mock_run.call_args.args[0] == op.environments.current()
+
+
+class TestInvokeFlagOp:
+    """execute_as_tool form: generated argv with raw (list-shaped) inputs."""
+
+    def test_run_command_receives_op_run_argv_with_raw_inputs(self, tmp_path):
+        """No unwrap for flag-ops — the JSON embeds the list shape."""
+        with patch("artisan.execution.compute.invoke.run_command") as mock_run:
+            result = invoke_op_work(
+                _FlagOp(),
+                ExecuteInput(
+                    inputs={"dataset": ["/one.csv"]}, execute_dir=str(tmp_path)
+                ),
+            )
+        assert result is None
+        argv = mock_run.call_args.args[1]
+        assert argv[:3] == ["artisan", "op", "run"]
+        assert argv[3] == f"{_FlagOp.__module__}:_FlagOp"
+        assert json.loads(argv[argv.index("--inputs") + 1]) == {"dataset": ["/one.csv"]}
+
+    def test_non_serializable_input_raises_naming_role(self, tmp_path):
+        """The argv builder enforces the file-paths contract loudly."""
+        with pytest.raises(TypeError, match="dataset"):
+            invoke_op_work(
+                _FlagOp(),
+                ExecuteInput(inputs={"dataset": object()}, execute_dir=str(tmp_path)),
+            )
 
 
 class TestInvokeFunctionOp:
