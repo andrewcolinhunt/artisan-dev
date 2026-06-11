@@ -20,7 +20,8 @@ def _load_root_conftest():
     """
     path = Path(__file__).with_name("conftest.py")
     spec = importlib.util.spec_from_file_location("_tests_root_conftest", path)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
