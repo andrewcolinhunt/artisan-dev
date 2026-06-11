@@ -16,7 +16,7 @@ from artisan.execution.tool_endpoint.server import (
     run_tool_request,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.operations.examples import EchoTool
+from artisan.operations.examples import WaitTool
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -91,15 +91,22 @@ def _tar_names(payload: bytes) -> list[str]:
 class TestRunToolRequest:
     def test_success_returns_manifest_and_tar(self):
         result = run_tool_request(
-            EchoTool, ToolRequest(params={"text": "yo", "filename": "f.txt"})
+            WaitTool,
+            ToolRequest(
+                params={"seconds": 1},
+                inputs=[
+                    InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")
+                ],
+            ),
         )
         assert result.manifest.error is None
-        assert result.manifest.output_names == ["f.txt"]
+        assert result.manifest.output_names == ["in_waited.csv"]
         # the log travels as log_tail, never on the data plane — locally
         # it lives outside execute_dir, so the tar must not leak it in
         assert result.manifest.log_tail is not None
+        assert "tick 1 / 1" in result.manifest.log_tail
         assert result.output_tar is not None
-        assert _tar_names(result.output_tar) == ["f.txt"]
+        assert _tar_names(result.output_tar) == ["in_waited.csv"]
 
     def test_inputs_resolved_outside_outputs(self, tmp_path):
         src = tmp_path / "in.txt"
@@ -127,12 +134,12 @@ class TestRunToolRequest:
 
     def test_invalid_params_raise(self):
         with pytest.raises(Exception, match="(?i)extra"):
-            run_tool_request(EchoTool, ToolRequest(params={"no_such_param": 1}))
+            run_tool_request(WaitTool, ToolRequest(params={"no_such_param": 1}))
 
 
 class TestResolveOp:
     def test_round_trip(self):
-        assert resolve_op(EchoTool.__module__, EchoTool.__qualname__) is EchoTool
+        assert resolve_op(WaitTool.__module__, WaitTool.__qualname__) is WaitTool
 
     def test_non_operation_raises(self):
         with pytest.raises(TypeError, match="not an OperationDefinition"):

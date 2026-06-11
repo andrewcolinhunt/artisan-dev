@@ -53,7 +53,7 @@ class TestToolManifest:
             code=ErrorCode.OP_EXECUTE_FAILED,
             message="tool exploded",
             error_type="compute",
-            operation_name="echo_tool",
+            operation_name="wait_tool",
         ).envelope
         manifest = ToolManifest(error=envelope)
         restored = ToolManifest(**manifest.model_dump())

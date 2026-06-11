@@ -30,7 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "deploy", help="Deploy an operation's tool endpoint to Modal"
     )
     deploy.add_argument(
-        "operation", help="Registered operation name (e.g. 'echo_tool')"
+        "operation", help="Registered operation name (e.g. 'wait_tool')"
     )
     return parser
 
