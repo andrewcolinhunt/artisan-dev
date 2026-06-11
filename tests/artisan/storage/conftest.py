@@ -18,7 +18,7 @@ from artisan.schemas.execution.storage_config import StorageConfig
 @pytest.fixture(
     params=[
         pytest.param("local"),
-        pytest.param("s3", marks=pytest.mark.integration),
+        pytest.param("s3", marks=pytest.mark.s3),
     ]
 )
 def backend_fs(request, tmp_path):
@@ -28,14 +28,14 @@ def backend_fs(request, tmp_path):
     ``LocalFileSystem`` rooted at ``tmp_path``, once against the
     per-test S3 bucket on MinIO.
 
-    The ``s3`` param carries the ``integration`` marker so
-    ``pixi run -e dev test-unit`` (``pytest -m 'not integration'``)
-    collects only the local branch and never boots MinIO. The s3
-    branch runs under ``test-integration``. ``s3_fs`` is resolved
-    lazily via ``request.getfixturevalue`` so the local-only run
-    never instantiates MinIO via testcontainers — that path leaks
-    a Docker UNIX socket on session teardown when the daemon isn't
-    reachable.
+    The ``s3`` param carries the ``s3`` resource marker so
+    ``pixi run -e dev test-unit`` (``-m '... and not s3'``) collects
+    only the local branch and never boots MinIO; the s3 branch runs
+    under ``test-s3``. The marker is explicit on the param (not
+    auto-derived) because ``s3_fs`` is resolved lazily via
+    ``request.getfixturevalue`` — the local-only run never
+    instantiates MinIO via testcontainers, and lazy resolution is
+    invisible to the fixture closure the auto-marker inspects.
     """
     if request.param == "local":
         return LocalFileSystem(), StorageConfig(), str(tmp_path)

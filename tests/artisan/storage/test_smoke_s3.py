@@ -12,13 +12,11 @@ from __future__ import annotations
 import time
 
 import polars as pl
-import pytest
 
 from artisan.storage.io.commit import DeltaCommitter
 from artisan.storage.io.staging import StagingManager
 
 
-@pytest.mark.integration
 def test_delta_commit_roundtrip_on_minio(s3_fs):
     """End-to-end DeltaCommitter round-trip against per-test MinIO bucket."""
     fs, storage, uri_prefix = s3_fs

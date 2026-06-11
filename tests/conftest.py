@@ -253,3 +253,29 @@ def s3_fs(minio_endpoint):
     # acceptable since the container itself is torn down at session end.
     with contextlib.suppress(Exception):
         fs.rm(bucket, recursive=True)
+
+
+# =============================================================================
+# Resource markers — auto-applied by fixture usage
+# =============================================================================
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,  # pytest hook signature
+    items: list[pytest.Item],
+) -> None:
+    """Auto-apply the ``s3`` resource marker to MinIO-backed tests.
+
+    Any test whose fixture closure pulls in the MinIO-backed fixtures
+    needs an S3 endpoint (Docker/MinIO, or ``ARTISAN_S3_ENDPOINT``).
+    Marking by fixture usage cannot drift the way per-test marks can.
+    The ``backend_fs``-style ``[local, s3]`` params carry an explicit
+    ``pytest.param("s3", marks=pytest.mark.s3)`` instead — they resolve
+    ``s3_fs`` lazily via ``request.getfixturevalue``, which is invisible
+    to the fixture closure inspected here.
+    """
+    s3_marker = pytest.mark.s3
+    for item in items:
+        fixtures = getattr(item, "fixturenames", ())
+        if "s3_fs" in fixtures or "minio_endpoint" in fixtures:
+            item.add_marker(s3_marker)
