@@ -20,13 +20,18 @@ from artisan.errors import ArtisanErrorEnvelope
 class InputRef(BaseModel):
     """A tool input file: inline bytes or an object-store URI.
 
-    Clients send inline bytes as multipart parts keyed by ``name``; the
-    endpoint repacks them into ``data`` for the worker hop. ``uri`` refs
-    (e.g. ``s3://bucket/key``) are fetched worker-side via fsspec and
-    bypass the inline bound — already-external artifacts re-upload nothing.
+    ``name`` is the input role; ``filename`` preserves the original file
+    name across the wire — the worker materializes the file under it, so
+    ``build_command`` and lineage stem-matching see the same basename as a
+    local run. Clients send inline bytes as multipart parts keyed by
+    ``name``; the endpoint repacks them into ``data`` for the worker hop.
+    ``uri`` refs (e.g. ``s3://bucket/key``) are fetched worker-side via
+    fsspec and bypass the inline bound — already-external artifacts
+    re-upload nothing.
     """
 
     name: str
+    filename: str | None = None
     uri: str | None = None
     data: bytes | None = None
 

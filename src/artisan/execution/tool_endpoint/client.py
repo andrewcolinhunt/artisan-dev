@@ -96,6 +96,7 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
         ("files", (ref.name, ref.data)) for ref in refs if ref.data is not None
     ]
     uris = {ref.name: ref.uri for ref in refs if ref.uri is not None}
+    filenames = {ref.name: ref.filename for ref in refs if ref.filename}
 
     with httpx.Client(
         base_url=base_url,
@@ -107,6 +108,7 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
             data={
                 "params": _params_json(operation),
                 "input_uris": json.dumps(uris),
+                "input_filenames": json.dumps(filenames),
             },
             files=multipart or None,
         )
@@ -162,8 +164,10 @@ def _poll(
 
 def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
     """Validate that prepared inputs are file paths / URIs (v1 contract)."""
+    from artisan.operations.base.operation_definition import tool_command_inputs
+
     files: dict[str, str] = {}
-    for name, value in prepared.items():
+    for name, value in tool_command_inputs(prepared).items():
         if not isinstance(value, str):
             raise ArtisanError(
                 code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
