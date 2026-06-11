@@ -201,14 +201,21 @@ reconfigure an already-deployed endpoint.
 ### Authentication
 
 The deployed endpoint requires Modal proxy-auth tokens (dashboard →
-*Proxy Auth Tokens*). The client reads them from the environment:
+*Proxy Auth Tokens*). Recommended setup — a gitignored `.env` at the repo
+root, copied from the committed template:
 
 ```bash
-export MODAL_PROXY_TOKEN_ID="wk-..."
-export MODAL_PROXY_TOKEN_SECRET="ws-..."
+cp .env.example .env
+# MODAL_PROXY_TOKEN_ID=wk-...
+# MODAL_PROXY_TOKEN_SECRET=ws-...
 ```
 
-Override the variable prefix per op via `ModalComputeConfig.auth_secret`.
+Discovery order: process environment variables first (CI injects secrets
+this way and always wins), then the nearest `.env` walking up from the
+working directory — so Jupyter kernels and cron jobs work without
+shell-inherited exports. Override the variable prefix per op via
+`ModalComputeConfig.auth_secret`. Missing tokens fail fast with the setup
+instructions in the error, before any network call.
 
 ### Transport limits
 
