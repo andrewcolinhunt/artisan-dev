@@ -74,7 +74,7 @@ class DeclareLineage(OperationDefinition):
         >>> pipeline.run(
         ...     operation=DeclareLineage,
         ...     inputs={"parents": designs, "children": anchored_msas},
-        ...     params=DeclareLineage.Params(pairing=GroupByStrategy.ZIP),
+        ...     params={"pairing": GroupByStrategy.ZIP},
         ...     name="link_anchored_msas_to_designs",
         ... )
     """
