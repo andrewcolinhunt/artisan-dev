@@ -21,6 +21,7 @@ class TestEndpointSpec:
         assert spec.op_module == WaitTool.__module__
         assert spec.op_qualname == "WaitTool"
         assert spec.image == ARTISAN_WORKER_IMAGE
+        # WaitTool pins the overlay explicitly — the field default is []
         assert spec.local_python_sources == ["artisan"]
 
     def test_bakes_params_json_schema(self):

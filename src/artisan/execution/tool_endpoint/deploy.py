@@ -29,19 +29,25 @@ from artisan.operations.base.operation_definition import OperationDefinition
 ENDPOINT_PYTHON_VERSION = "3.12"
 
 
-def build_app(op_cls: type[OperationDefinition]) -> modal.App:
+def build_app(
+    op_cls: type[OperationDefinition], overlay: list[str] | None = None
+) -> modal.App:
     """Build the deployable Modal app for an operation's tool endpoint.
 
     One app per tool: a GPU **worker** (resolves the deployed op class,
     builds the command, runs the tool) behind a lightweight **endpoint**
     (FastAPI routes ``/schema``, ``/submit`` → ``/result`` → ``/download``
-    → ``/cancel``, Swagger at ``/docs``). The worker image mounts ``local_python_sources``
-    so ``execute_command`` runs without shipping code per call; the endpoint
-    image carries no artisan at all and validates request params against
-    the op's baked ``Params`` JSON schema.
+    → ``/cancel``, Swagger at ``/docs``). The worker runs the registry
+    image as baked; in dev mode (``local_python_sources`` config or the
+    ``overlay`` argument) local package sources are mounted on top,
+    shadowing the image's versions. The endpoint image carries no artisan
+    at all and validates request params against the op's baked ``Params``
+    JSON schema.
 
     Args:
         op_cls: The registered operation class to deploy.
+        overlay: Extra dev-mode source packages to mount, appended to the
+            config's ``local_python_sources`` (the ``--overlay`` CLI flag).
 
     Returns:
         A deployable ``modal.App`` named ``artisan-tool-<name>``.
@@ -52,8 +58,9 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
     worker_image = modal.Image.from_registry(
         spec.image, secret=_registry_secret(spec.image_registry_secret)
     ).env(spec.env)
-    if spec.local_python_sources:
-        worker_image = worker_image.add_local_python_source(*spec.local_python_sources)
+    sources = list(dict.fromkeys([*spec.local_python_sources, *(overlay or [])]))
+    if sources:
+        worker_image = worker_image.add_local_python_source(*sources)
     endpoint_image = modal.Image.debian_slim(
         python_version=ENDPOINT_PYTHON_VERSION
     ).uv_pip_install("fastapi[standard]", "jsonschema")
