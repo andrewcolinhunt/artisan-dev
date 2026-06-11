@@ -87,6 +87,9 @@ def run_tool_request(
             op.build_command(inputs),
             cwd=outputs_dir,
             log_path=log_path,
+            # container stdout IS the Modal dashboard log — stream so
+            # tool progress (ticks, progress bars) is visible live
+            stream_output=True,
         )
     except ExternalToolError as exc:
         return WorkerResult(
