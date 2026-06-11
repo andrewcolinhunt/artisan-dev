@@ -1,7 +1,7 @@
 """Real-Modal integration: pipelines and plain HTTP over a deployed tool endpoint.
 
 Prerequisites:
-- ``artisan modal deploy echo_tool`` has been run against the workspace
+- ``artisan modal deploy wait_tool`` has been run against the workspace
 - Modal credentials (``MODAL_TOKEN_ID``/``MODAL_TOKEN_SECRET`` or ``~/.modal.toml``)
 - A proxy-auth token pair (Modal dashboard → Proxy Auth Tokens) in
   ``MODAL_PROXY_TOKEN_ID`` / ``MODAL_PROXY_TOKEN_SECRET``
@@ -36,7 +36,7 @@ def _require_proxy_auth_tokens() -> None:
 
 def test_pipeline_commits_artifacts_via_endpoint(tmp_path):
     """A pipeline step with compute_provider='modal' commits artifacts."""
-    from artisan.operations.examples import EchoTool
+    from artisan.operations.examples import DataGenerator, WaitTool
     from artisan.orchestration import PipelineManager
 
     pipeline = PipelineManager.create(
@@ -45,10 +45,16 @@ def test_pipeline_commits_artifacts_via_endpoint(tmp_path):
         staging_root=str(tmp_path / "staging"),
         working_root=str(tmp_path / "working"),
     )
+    step0 = pipeline.run(
+        operation=DataGenerator,
+        name="generate",
+        params={"count": 1, "seed": 42},
+    )
     pipeline.run(
-        operation=EchoTool,
-        name="echo",
-        params={"text": "from modal", "filename": "echo.txt"},
+        operation=WaitTool,
+        name="wait",
+        inputs={"dataset": step0.output("datasets")},
+        params={"seconds": 1},
         compute_provider="modal",
     )
     result = pipeline.finalize()
@@ -62,15 +68,22 @@ def test_endpoint_serves_non_artisan_clients():
 
     from artisan.utils.env_file import env_or_dotenv
 
-    url = modal.Function.from_name("artisan-tool-echo_tool", "endpoint").get_web_url()
+    url = modal.Function.from_name("artisan-tool-wait_tool", "endpoint").get_web_url()
     headers = {
         "Modal-Key": env_or_dotenv("MODAL_PROXY_TOKEN_ID") or "",
         "Modal-Secret": env_or_dotenv("MODAL_PROXY_TOKEN_SECRET") or "",
     }
     with httpx.Client(base_url=url, headers=headers, timeout=120) as client:
+        # Multipart contract: each part's filename is the input ROLE;
+        # input_filenames maps role -> real file name so the worker
+        # materializes the input under its original stem.
         submitted = client.post(
             "/submit",
-            data={"params": json.dumps({"text": "curl", "filename": "c.txt"})},
+            data={
+                "params": json.dumps({"seconds": 1}),
+                "input_filenames": json.dumps({"dataset": "sample.csv"}),
+            },
+            files=[("files", ("dataset", b"a,b\n1,2\n"))],
         )
         submitted.raise_for_status()
         call_id = submitted.json()["call_id"]
@@ -84,11 +97,13 @@ def test_endpoint_serves_non_artisan_clients():
             time.sleep(2)
 
         assert body["status"] == "done"
-        assert "c.txt" in body["manifest"]["output_names"]
+        assert "sample_waited.csv" in body["manifest"]["output_names"]
 
         download = client.get("/download", params={"call_id": call_id})
         download.raise_for_status()
         with tarfile.open(fileobj=io.BytesIO(download.content)) as tar:
-            extracted = tar.extractfile("c.txt")
+            extracted = tar.extractfile("sample_waited.csv")
             assert extracted is not None
-            assert extracted.read() == b"curl\n"
+            marker = extracted.read().decode()
+            assert marker.startswith("seconds,host,source\n1,")
+            assert marker.rstrip().endswith("sample.csv")

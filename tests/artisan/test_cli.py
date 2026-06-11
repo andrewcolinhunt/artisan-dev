@@ -13,18 +13,18 @@ class TestModalDeploy:
     @patch("artisan.registry.discovery.discover")
     @patch("artisan.execution.tool_endpoint.deploy.build_app")
     def test_deploys_registered_op(self, mock_build_app, mock_discover, capsys):
-        from artisan.operations.examples import EchoTool
+        from artisan.operations.examples import WaitTool
 
         mock_app = MagicMock()
         mock_build_app.return_value = mock_app
 
-        rc = main(["modal", "deploy", "echo_tool"])
+        rc = main(["modal", "deploy", "wait_tool"])
 
         assert rc == 0
         mock_discover.assert_called_once()
-        mock_build_app.assert_called_once_with(EchoTool)
+        mock_build_app.assert_called_once_with(WaitTool)
         mock_app.deploy.assert_called_once()
-        assert "artisan-tool-echo_tool" in capsys.readouterr().out
+        assert "artisan-tool-wait_tool" in capsys.readouterr().out
 
     @patch("artisan.registry.discovery.discover")
     @patch("artisan.execution.tool_endpoint.deploy.build_app")

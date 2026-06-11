@@ -22,7 +22,6 @@ import httpx
 from pydantic import BaseModel
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
-from artisan.execution.compute.invoke import tool_command_inputs
 from artisan.execution.tool_endpoint.protocol import ResultResponse, ToolManifest
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.schemas.operation_config.compute import ModalComputeConfig
@@ -165,6 +164,11 @@ def _poll(
 
 def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
     """Validate that prepared inputs are file paths / URIs (v1 contract)."""
+    # Deferred: importing artisan.execution.compute.invoke at module level
+    # runs the compute package __init__, whose endpoint re-export imports
+    # this module back — a cycle for any client-first import order.
+    from artisan.execution.compute.invoke import tool_command_inputs
+
     files: dict[str, str] = {}
     for name, value in tool_command_inputs(prepared).items():
         if not isinstance(value, str):

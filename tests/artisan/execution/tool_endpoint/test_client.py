@@ -18,7 +18,7 @@ from artisan.execution.tool_endpoint.client import (
 )
 from artisan.execution.tool_endpoint.protocol import ToolManifest
 from artisan.execution.tool_endpoint.transport import InlineTransport
-from artisan.operations.examples import EchoTool
+from artisan.operations.examples import WaitTool
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
     ModalComputeConfig,
@@ -28,11 +28,11 @@ from artisan.schemas.specs.input_models import ExecuteInput
 _URL = "https://tool.example"
 
 
-def _op(**modal_kwargs: Any) -> EchoTool:
+def _op(**modal_kwargs: Any) -> WaitTool:
     modal_kwargs.setdefault("endpoint_url", _URL)
     modal_kwargs.setdefault("poll_interval", 0.001)
-    return EchoTool(
-        params=EchoTool.Params(text="hi", filename="out.txt"),
+    return WaitTool(
+        params=WaitTool.Params(seconds=1),
         compute_provider=ComputeProvider(
             active="modal", modal=ModalComputeConfig(**modal_kwargs)
         ),
@@ -94,7 +94,7 @@ class TestCallEndpointHappyPath:
         assert (execute_dir / "out.txt").read_text() == "hi\n"
         assert "ran fine" in log_path.read_text()
         submit_kwargs = client.post.call_args_list[0].kwargs
-        assert json.loads(submit_kwargs["data"]["params"])["text"] == "hi"
+        assert json.loads(submit_kwargs["data"]["params"])["seconds"] == 1
         mock_http.Client.assert_called_once()
         assert mock_http.Client.call_args.kwargs["base_url"] == _URL
 
@@ -156,7 +156,7 @@ class TestCallEndpointFailures:
             code=ErrorCode.OP_EXECUTE_FAILED,
             message="tool exploded",
             error_type="compute",
-            operation_name="echo_tool",
+            operation_name="wait_tool",
         ).envelope
         manifest = ToolManifest(error=envelope, log_tail="boom\n")
         client.get.return_value = _response(
@@ -200,7 +200,7 @@ class TestCallEndpointFailures:
         _client_of(mock_http).post.assert_not_called()
 
     def test_missing_modal_config_raises(self, mock_http, tmp_path):
-        op = EchoTool(
+        op = WaitTool(
             compute_provider=ComputeProvider(modal=None),
         )
         with pytest.raises(ArtisanError, match="no compute_provider.modal"):
@@ -328,7 +328,7 @@ class TestAuthAndUrl:
         monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-x")
         monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-x")
         mock_from_name.return_value.get_web_url.return_value = (
-            "https://ws--artisan-tool-echo-tool.modal.run"
+            "https://ws--artisan-tool-wait-tool.modal.run"
         )
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})
@@ -341,6 +341,6 @@ class TestAuthAndUrl:
             ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
         )
 
-        mock_from_name.assert_called_once_with("artisan-tool-echo_tool", "endpoint")
+        mock_from_name.assert_called_once_with("artisan-tool-wait_tool", "endpoint")
         base_url = mock_http.Client.call_args.kwargs["base_url"]
-        assert base_url == "https://ws--artisan-tool-echo-tool.modal.run"
+        assert base_url == "https://ws--artisan-tool-wait-tool.modal.run"
