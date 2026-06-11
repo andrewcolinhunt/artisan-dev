@@ -17,10 +17,12 @@ def tool_command_inputs(prepared: dict[str, Any]) -> dict[str, Any]:
     """Normalize prepared inputs for ``execute_command``.
 
     Per-artifact dispatch delivers each sliced role as a one-element list
-    (the list interface ``execute_function()`` implementations expect); a
-    tool command addresses one artifact's files, so the framework unwraps
-    single-element lists before ``execute_command`` — identically under the
-    local subprocess and the endpoint client.
+    (the list interface ``execute_function()`` implementations expect); an
+    external tool's argv addresses one artifact's files, so the framework
+    unwraps single-element lists before ``execute_command`` — identically
+    under the local subprocess and the endpoint client. ``execute_as_tool``
+    ops skip the unwrap: their generated argv embeds the dict as JSON, and
+    the runner must re-deliver the exact list shape preprocess produced.
 
     Args:
         prepared: ``ExecuteInput.inputs`` for one artifact.
@@ -67,9 +69,14 @@ def invoke_op_work(
         tool log.
     """
     if operation.is_command_op():
+        prepared = (
+            execute_input.inputs
+            if operation.execute_as_tool
+            else tool_command_inputs(execute_input.inputs)
+        )
         run_command(
             environment or operation.environments.current(),
-            operation.execute_command(tool_command_inputs(execute_input.inputs)),
+            operation.execute_command(prepared),
             cwd=execute_input.execute_dir,
             log_path=execute_input.log_path,
             log_mode="a",
