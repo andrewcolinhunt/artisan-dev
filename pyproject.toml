@@ -189,10 +189,11 @@ prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
-test = "pytest -m 'not integration and not notebook and not modal' && pytest -m integration -n 4 && pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + tutorial notebooks
+test = "pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 4 && pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + s3 parallel + tutorial notebooks
 test-seq = "pytest -m 'not notebook and not modal'"  # Fully sequential (for debugging test interactions)
-test-unit = "pytest -m 'not integration and not notebook and not modal'"  # Run only unit tests
-test-integration = "pytest -m integration -n 4"  # Run only integration tests in parallel
+test-unit = "pytest -m 'not integration and not notebook and not modal and not s3'"  # Run only unit tests (no external services)
+test-integration = "pytest -m 'integration and not s3' -n 4"  # End-to-end pipeline tests in parallel (no external services)
+test-s3 = "pytest -m s3 -n 4"  # S3-backend tests in parallel; needs Docker (MinIO) or ARTISAN_S3_ENDPOINT
 test-notebook = "pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Execute every CI-runnable tutorial notebook end-to-end (loadfile keeps all cells of one notebook on one worker)
 test-modal = "pytest -m modal -n 2"  # Real-Modal smoke tests; needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET (or ~/.modal.toml)
 test-modal-seq = "pytest -m modal"  # Sequential variant for debugging Modal tests
@@ -220,8 +221,9 @@ xfail_strict = true
 addopts = ["-ra", "--strict-config", "--strict-markers"]
 filterwarnings = ["error"]
 markers = [
-    "integration: needs real infra (Delta Lake, Prefect harness) — run with '-m integration'",
-    "notebook: executes a tutorial notebook end-to-end via nbval (auto-applied by tests/conftest.py)",
+    "integration: end-to-end pipeline tests (self-booted Prefect harness, local FS) — run with '-m integration'",
+    "s3: needs an S3 backend — MinIO via Docker, or ARTISAN_S3_ENDPOINT — run with '-m s3' (auto-applied to s3_fs/minio_endpoint users by tests/conftest.py)",
+    "notebook: executes a tutorial notebook end-to-end via nbval (auto-applied by docs/tutorials/conftest.py)",
     "modal: ships work to real Modal cloud — needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET — run with '-m modal'",
 ]
 

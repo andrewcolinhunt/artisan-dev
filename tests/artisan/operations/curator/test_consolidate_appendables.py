@@ -21,7 +21,7 @@ from artisan.utils.hashing import compute_content_hash
 @pytest.fixture(
     params=[
         pytest.param("local"),
-        pytest.param("s3", marks=pytest.mark.integration),
+        pytest.param("s3", marks=pytest.mark.s3),
     ]
 )
 def backend_fs(request, tmp_path):
