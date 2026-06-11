@@ -240,7 +240,9 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
                 }
                 for name, uri in uris.items()
             ]
-            call = worker.spawn({"params": parsed, "inputs": refs})
+            # async variant — submit runs on the event loop; the blocking
+            # spawn would stall every concurrent request on this container
+            call = await worker.spawn.aio({"params": parsed, "inputs": refs})
             return {"call_id": call.object_id}
 
         def _retained(call_id: str) -> dict[str, Any] | str:
