@@ -86,7 +86,7 @@ The default process pool size is 4.
 
 ## Configure compute routing
 
-Compute routing controls where the execute() phase runs, independently of
+Compute routing controls where the execute phase runs, independently of
 the step runner. Set it per step or as a pipeline-wide default:
 
 ```python
@@ -113,7 +113,7 @@ pipeline.run(
 | `"modal"` | Call the tool's deployed Modal endpoint | GPU work, cloud burst, isolated environments |
 
 The modal provider runs **tool ops** only — operations declaring a
-`ToolSpec` + `build_command()` instead of `execute()` — and requires the
+`ToolSpec` + `execute_command()` instead of `execute()` — and requires the
 tool's endpoint to be deployed first:
 
 ```bash
@@ -159,7 +159,7 @@ Modal-specific provider configuration. Hardware fields (`gpu`, `cpu`,
 | `poll_interval` | `float` | `2.0` | Seconds between `/result` polls while a tool job runs. |
 
 The worker image must be able to run the tool's executable; artisan and
-the op's module ride along via `local_python_sources`, so `build_command`
+the op's module ride along via `local_python_sources`, so `execute_command`
 runs on the worker without shipping code per call.
 
 #### GPU op with weights, secrets, and runtime env

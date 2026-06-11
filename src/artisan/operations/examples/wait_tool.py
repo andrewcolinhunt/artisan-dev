@@ -96,7 +96,7 @@ class WaitTool(OperationDefinition):
             ),
         }
 
-    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         """Assemble the bash count-up loop for one artifact.
 
         The marker is named ``<input-stem>_waited.csv`` so lineage stem

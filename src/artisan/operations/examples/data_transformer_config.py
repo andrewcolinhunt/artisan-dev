@@ -115,7 +115,7 @@ class DataTransformerConfig(OperationDefinition):
             ),
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Build configs for each (dataset, scale_factor, noise_amplitude) combo."""
         artifact_ids = inputs.inputs["dataset_artifact_ids"]
         stems = inputs.inputs["dataset_stems"]

@@ -1,9 +1,9 @@
 """HTTP client for deployed tool endpoints — the ``compute_provider='modal'`` path.
 
-``call_endpoint`` is invoked by the framework ``execute()``: it submits the
+``call_endpoint`` runs a command op's execute phase remotely: it submits the
 op's params + input files, polls ``/result``, downloads the output tar into
 ``execute_dir`` (recreating the local layout), and appends the tool-log tail
-to ``log_path``. The dispatch handle exposes pipeline cancellation to the
+to ``log_path``. The caller exposes pipeline cancellation to the
 poll loop via ``cancel_scope``.
 """
 
@@ -22,6 +22,7 @@ import httpx
 from pydantic import BaseModel
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+from artisan.execution.compute.invoke import tool_command_inputs
 from artisan.execution.tool_endpoint.protocol import ResultResponse, ToolManifest
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.schemas.operation_config.compute import ModalComputeConfig
@@ -164,8 +165,6 @@ def _poll(
 
 def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
     """Validate that prepared inputs are file paths / URIs (v1 contract)."""
-    from artisan.operations.base.operation_definition import tool_command_inputs
-
     files: dict[str, str] = {}
     for name, value in tool_command_inputs(prepared).items():
         if not isinstance(value, str):
@@ -174,7 +173,7 @@ def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
                 message=(
                     f"prepared input {name!r} is {type(value).__name__}, not a "
                     "file path — tool ops under modal ship Params + input "
-                    "files only; derive scalars in Params or build_command"
+                    "files only; derive scalars in Params or execute_command"
                 ),
                 error_type="config",
                 operation_name=op_name,

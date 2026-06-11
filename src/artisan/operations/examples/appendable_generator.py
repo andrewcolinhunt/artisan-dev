@@ -76,7 +76,7 @@ class AppendableGenerator(OperationDefinition):
         modal=ModalComputeConfig(),
     )
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write JSONL file(s) with random records to files_dir."""
         if inputs.files_dir is None:
             msg = "files_dir required for AppendableGenerator"

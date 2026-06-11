@@ -63,7 +63,7 @@ class MockCreatorOp(OperationDefinition):
     def preprocess(self, inputs: Any) -> dict[str, Any]:
         return {}
 
-    def execute(self, inputs):
+    def execute_function(self, inputs):
         return {"status": "ok"}
 
 
@@ -90,7 +90,7 @@ class MockFileRefInputOp(OperationDefinition):
     def preprocess(self, inputs: Any) -> dict[str, Any]:
         return {}
 
-    def execute(self, inputs):
+    def execute_function(self, inputs):
         return {"status": "ok"}
 
 
@@ -101,7 +101,7 @@ class MockNoDefaultsOp(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {}
 
-    def execute(self, inputs):
+    def execute_function(self, inputs):
         return {}
 
 

@@ -234,7 +234,7 @@ class _OpV1(OperationDefinition):
     }
     params: _ParamsV1 = _ParamsV1()
 
-    def execute(self, inputs: Any) -> dict[str, Any]:
+    def execute_function(self, inputs: Any) -> dict[str, Any]:
         return {}
 
     def postprocess(self, inputs: Any) -> Any:
@@ -257,7 +257,7 @@ class _OpV2(OperationDefinition):
     }
     params: _ParamsV2 = _ParamsV2()
 
-    def execute(self, inputs: Any) -> dict[str, Any]:
+    def execute_function(self, inputs: Any) -> dict[str, Any]:
         return {}
 
     def postprocess(self, inputs: Any) -> Any:

@@ -86,7 +86,7 @@ class SlowTransformer(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Sleep for the configured duration per artifact, write timing markers."""
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -141,7 +141,7 @@ class SlowTransformer(OperationDefinition):
 class SequentialSlowTransformer(SlowTransformer):
     """SlowTransformer with per-artifact dispatch disabled.
 
-    All artifacts process sequentially in a single execute() call.
+    All artifacts process sequentially in a single execute_function() call.
     """
 
     name: ClassVar[str] = "sequential_slow_transformer"

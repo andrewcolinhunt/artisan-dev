@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 # =============================================================================
 # COMMAND DATACLASS
@@ -182,6 +182,7 @@ def run_command(
     timeout: float | None = None,
     stream_output: bool = False,
     log_path: str | None = None,
+    log_mode: Literal["w", "a"] = "w",
 ) -> subprocess.CompletedProcess[str]:
     """Execute a command in the given environment.
 
@@ -195,6 +196,8 @@ def run_command(
         timeout: Timeout in seconds.
         stream_output: If True, print output lines in real-time.
         log_path: If provided, write output to this file.
+        log_mode: Open mode for ``log_path`` — ``"w"`` truncates (default),
+            ``"a"`` appends so sequential calls sharing one log accumulate.
 
     Returns:
         CompletedProcess with captured stdout/stderr.
@@ -208,9 +211,11 @@ def run_command(
 
     try:
         if stream_output:
-            result = _run_with_streaming(full_cmd, cwd, timeout, log_path, env)
+            result = _run_with_streaming(
+                full_cmd, cwd, timeout, log_path, log_mode, env
+            )
         else:
-            result = _run_captured(full_cmd, cwd, timeout, log_path, env)
+            result = _run_captured(full_cmd, cwd, timeout, log_path, log_mode, env)
     except subprocess.TimeoutExpired as e:
         # text=True is used everywhere in this module, so stdout/stderr are str
         # at runtime even though typeshed declares them as `bytes | None`.
@@ -242,6 +247,7 @@ def _run_with_streaming(
     cwd: str | None,
     timeout: float | None,
     log_path: str | None,
+    log_mode: Literal["w", "a"] = "w",
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run command with real-time output streaming.
@@ -264,6 +270,7 @@ def _run_with_streaming(
         cwd: Working directory.
         timeout: Approximate timeout (checked between lines, not during).
         log_path: Optional file to write output.
+        log_mode: Open mode for ``log_path`` (``"w"`` or ``"a"``).
         env: Environment variables.
 
     Returns:
@@ -271,7 +278,7 @@ def _run_with_streaming(
     """
     from contextlib import nullcontext
 
-    log_context = open(log_path, "w") if log_path else nullcontext()  # noqa: SIM115 — conditional; held via `with log_context` below
+    log_context = open(log_path, log_mode) if log_path else nullcontext()  # noqa: SIM115 — conditional; held via `with log_context` below
 
     with log_context as log_file:
         process = subprocess.Popen(
@@ -323,6 +330,7 @@ def _run_captured(
     cwd: str | None,
     timeout: float | None,
     log_path: str | None,
+    log_mode: Literal["w", "a"] = "w",
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run command with captured output and process group cleanup.
@@ -345,6 +353,7 @@ def _run_captured(
         cwd: Working directory.
         timeout: Timeout in seconds.
         log_path: Optional file to write captured stdout.
+        log_mode: Open mode for ``log_path`` (``"w"`` or ``"a"``).
         env: Environment variables.
 
     Returns:
@@ -364,7 +373,7 @@ def _run_captured(
     except subprocess.TimeoutExpired as e:
         _kill_process_group(process)
         if log_path and e.stdout:
-            with open(log_path, "w") as f:
+            with open(log_path, log_mode) as f:
                 f.write(e.stdout)  # type: ignore[arg-type]  # text=True → str
         raise
     except BaseException:
@@ -372,7 +381,7 @@ def _run_captured(
         raise
 
     if log_path:
-        with open(log_path, "w") as f:
+        with open(log_path, log_mode) as f:
             f.write(stdout)
 
     return subprocess.CompletedProcess(

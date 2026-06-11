@@ -173,7 +173,7 @@ class _StubOp(OperationDefinition):
     def preprocess(self, inputs: Any) -> dict:
         return {}
 
-    def execute(self, inputs: Any, output_dir: Any) -> Any:
+    def execute_function(self, inputs: Any, output_dir: Any) -> Any:
         return None
 
 

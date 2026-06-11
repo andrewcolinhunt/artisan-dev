@@ -85,7 +85,7 @@ class DataGenerator(OperationDefinition):
     )
 
     # ---------- Lifecycle ----------
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write CSV files with columns id, x, y, z, score to execute_dir."""
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)

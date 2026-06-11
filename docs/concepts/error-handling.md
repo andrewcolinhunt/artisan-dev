@@ -86,7 +86,7 @@ Here is the complete journey of a single failure, from the moment an operation
 raises an exception to the moment you see the result:
 
 ```
-1. operation.execute() raises ValueError("invalid input format")
+1. operation.execute_function() raises ValueError("invalid input format")
        │
 2. Worker catches the exception
    │   Formats error with full traceback via format_error()

@@ -54,7 +54,7 @@ class TestGetBatchConfig:
             outputs: ClassVar[dict[str, OutputSpec]] = {}
             batch_strategy: BatchStrategy = BatchStrategy(artifacts_per_unit=5)
 
-            def execute(self, inputs, output_dir):
+            def execute_function(self, inputs, output_dir):
                 pass
 
         config = get_batch_config(MockOp())
@@ -78,7 +78,7 @@ class TestGetBatchConfig:
                 artifacts_per_unit=10, units_per_worker=4
             )
 
-            def execute(self, inputs, output_dir):
+            def execute_function(self, inputs, output_dir):
                 pass
 
         config = get_batch_config(MockOp())
@@ -98,7 +98,7 @@ class TestGetBatchConfig:
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {}
 
-            def execute(self, inputs, output_dir):
+            def execute_function(self, inputs, output_dir):
                 pass
 
         config = get_batch_config(MockOp())
@@ -122,7 +122,7 @@ class TestGetBatchConfig:
                 artifacts_per_unit=100, max_artifacts_per_unit=5
             )
 
-            def execute(self, inputs, output_dir):
+            def execute_function(self, inputs, output_dir):
                 pass
 
         config = get_batch_config(MockOp())

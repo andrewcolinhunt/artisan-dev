@@ -15,7 +15,7 @@ class ComputeConfig(BaseModel):
     """Base class for compute_provider provider configs.
 
     Mirrors the ``EnvironmentSpec`` hierarchy — each provider
-    extends this base and ``create_router()`` dispatches by type.
+    extends this base and ``create_execute_router()`` dispatches by type.
     """
 
 
@@ -24,7 +24,7 @@ class LocalComputeConfig(ComputeConfig):
 
 
 class ModalComputeConfig(ComputeConfig):
-    """Provider-specific configuration for routing execute() to Modal.
+    """Provider-specific configuration for routing the execute phase to Modal.
 
     Hardware fields (gpu / cpu / memory_gb / timeout) live on
     ``ComputeResources`` so the same hardware spec can apply to any
@@ -88,6 +88,11 @@ class ModalComputeConfig(ComputeConfig):
             the nearest ``.env`` file (see ``.env.example``).
         poll_interval: Seconds between ``/result`` polls while a tool
             job runs.
+        max_concurrent_calls: Client-side cap on concurrent endpoint
+            calls per unit. The execute router fans one thread per
+            artifact out to ``min(max_concurrent_calls, artifacts)``;
+            excess artifacts queue and results stay positionally
+            aligned. The server-side sibling is ``max_containers``.
     """
 
     image: str = ARTISAN_WORKER_IMAGE
@@ -103,6 +108,7 @@ class ModalComputeConfig(ComputeConfig):
     endpoint_url: str | None = None
     auth_secret: str | None = None
     poll_interval: float = Field(default=2.0, gt=0)
+    max_concurrent_calls: int = Field(default=64, gt=0)
 
 
 class ComputeProvider(BaseModel):
