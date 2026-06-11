@@ -77,7 +77,7 @@ class TestBuildImage:
     def test_non_tool_op_raises_before_any_build(self, tmp_path: Path):
         with (
             patch("artisan.execution.tool_endpoint.docker.subprocess.run") as run,
-            pytest.raises(ValueError, match="not a tool op"),
+            pytest.raises(ValueError, match="not a command op"),
         ):
             build_image(DataGenerator, tmp_path)
         run.assert_not_called()

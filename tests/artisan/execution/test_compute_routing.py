@@ -65,6 +65,27 @@ class _RoutingCommandOp(OperationDefinition):
         return [*self.tool.parts(), "-c", "true"]
 
 
+class _RoutingFlagOp(OperationDefinition):
+    """execute_as_tool op — a command op, routable to modal."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "routing_flag_op_test"
+    description: ClassVar[str] = "Flag-op for router factory tests"
+    execute_as_tool: ClassVar[bool] = True
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": []},
+        ),
+    }
+
+    def execute_function(self, inputs):
+        return None
+
+
 class TestCreateExecuteRouter:
     def test_local_config_creates_local_router(self):
         config = LocalComputeConfig()
@@ -87,13 +108,19 @@ class TestCreateExecuteRouter:
         assert isinstance(router, EndpointExecuteRouter)
         assert router._cancel_check is probe
 
+    def test_modal_flag_op_creates_endpoint_router(self):
+        """execute_as_tool makes a function body modal-routable."""
+        config = ModalComputeConfig(image="test-image")
+        router = create_execute_router(config, _RoutingFlagOp())
+        assert isinstance(router, EndpointExecuteRouter)
+
     def test_modal_function_op_fails_fast(self):
         """Modal requires a command op — function ops are misconfigured."""
         config = ModalComputeConfig(image="test-image")
         with pytest.raises(ArtisanError) as exc_info:
             create_execute_router(config, _RoutingFunctionOp())
         assert exc_info.value.code == ErrorCode.TOOL_ENDPOINT_MISCONFIGURED
-        assert "command op" in str(exc_info.value)
+        assert "execute_as_tool" in str(exc_info.value)
 
     def test_unknown_config_raises(self):
         config = ComputeConfig()
