@@ -1,14 +1,14 @@
-"""Local compute_provider router — direct passthrough (today's behavior)."""
+"""Local execute router — direct passthrough (today's behavior)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from artisan.execution.compute.base import ComputeRouter
+from artisan.execution.compute.base import ExecuteRouter
 from artisan.schemas.specs.input_models import ExecuteInput
 
 
-class LocalComputeRouter(ComputeRouter):
+class LocalExecuteRouter(ExecuteRouter):
     """Direct call — today's behavior."""
 
     def route_execute(

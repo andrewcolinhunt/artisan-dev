@@ -1,4 +1,4 @@
-"""ComputeRouter abstract base class."""
+"""ExecuteRouter abstract base class."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from typing import Any
 from artisan.schemas.specs.input_models import ExecuteInput
 
 
-class ComputeRouter(ABC):
-    """Route execute() to a compute_provider target."""
+class ExecuteRouter(ABC):
+    """Route the execute phase to a compute_provider target."""
 
     @abstractmethod
     def route_execute(
