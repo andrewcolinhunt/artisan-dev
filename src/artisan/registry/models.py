@@ -22,7 +22,7 @@ class OperationSummary(BaseModel):
             ``kind`` literals or optional fields does not bump the version;
             removing or renaming does.
         name: Operation identifier used for registry lookup.
-        kind: Whether the op fans out via ``execute()`` (creator) or runs
+        kind: Whether the op fans out via the execute phase (creator) or runs
             in-process via ``execute_curator()`` (curator).
         description: Human-readable summary from ``OperationDefinition.description``.
         input_roles: Role names declared in ``inputs``.

@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle
-from artisan.orchestration.runners.slurm import SlurmDispatchHandle
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
+from artisan.orchestration.runners.slurm import SlurmLifecycleRouter
 from artisan.orchestration.runners.slurm_intra import SlurmIntraRunner
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
@@ -32,20 +32,20 @@ class TestSlurmIntraRunnerTraits:
         assert traits.staging_verification_timeout == 60.0
 
 
-class TestSlurmIntraRunnerCreateDispatchHandle:
+class TestSlurmIntraRunnerCreateLifecycleRouter:
     @patch("prefect_submitit.SlurmTaskRunner")
-    def test_returns_slurm_dispatch_handle(self, mock_slurm_runner: MagicMock) -> None:
+    def test_returns_slurm_lifecycle_router(self, mock_slurm_runner: MagicMock) -> None:
         step_runner = SlurmIntraRunner()
         runner_resources = RunnerResources(
             cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00"
         )
         batch_strategy = BatchStrategy(units_per_worker=1)
 
-        handle = step_runner.create_dispatch_handle(
+        handle = step_runner.create_lifecycle_router(
             runner_resources, batch_strategy, step_number=3, job_name="test_op"
         )
-        assert isinstance(handle, DispatchHandle)
-        assert isinstance(handle, SlurmDispatchHandle)
+        assert isinstance(handle, LifecycleRouter)
+        assert isinstance(handle, SlurmLifecycleRouter)
 
     @patch("prefect_submitit.SlurmTaskRunner")
     def test_uses_srun_execution_mode(self, mock_slurm_runner: MagicMock) -> None:
@@ -55,7 +55,7 @@ class TestSlurmIntraRunnerCreateDispatchHandle:
         )
         batch_strategy = BatchStrategy(units_per_worker=1)
 
-        step_runner.create_dispatch_handle(
+        step_runner.create_lifecycle_router(
             runner_resources, batch_strategy, step_number=3, job_name="test_op"
         )
 
@@ -78,7 +78,7 @@ class TestSlurmIntraRunnerCreateDispatchHandle:
         runner_resources = RunnerResources(extra={"constraint": "a100"})
         batch_strategy = BatchStrategy()
 
-        step_runner.create_dispatch_handle(
+        step_runner.create_lifecycle_router(
             runner_resources, batch_strategy, step_number=1, job_name="test"
         )
 
@@ -111,6 +111,17 @@ class TestSlurmIntraRunnerValidateOperation:
         step_runner = SlurmIntraRunner()
         mock_op = MagicMock()
         mock_op.name = "test_op"
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            step_runner.validate_operation(mock_op)
+
+    @patch.dict("os.environ", {"SLURM_JOB_ID": "12345"})
+    def test_modal_command_op_passes_validation(self) -> None:
+        """The unified path validates modal steps — warns at most, never raises."""
+        step_runner = SlurmIntraRunner()
+        mock_op = MagicMock()
+        mock_op.name = "test_op"
+        mock_op.compute_provider.active = "modal"
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             step_runner.validate_operation(mock_op)

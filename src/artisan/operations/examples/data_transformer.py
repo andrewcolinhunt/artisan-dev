@@ -118,7 +118,7 @@ class DataTransformer(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Apply scale factor and noise to numeric columns of input CSVs."""
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -209,7 +209,7 @@ class DataTransformer(OperationDefinition):
 class SequentialDataTransformer(DataTransformer):
     """DataTransformer with per-artifact dispatch disabled.
 
-    All artifacts in a unit are sent to a single execute() call.
+    All artifacts in a unit are sent to a single execute_function() call.
     Use this when the operation wraps an external tool that loads
     model weights per invocation — batching amortizes the cost.
     """

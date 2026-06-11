@@ -2,7 +2,7 @@
 
 Distinct from ``RunnerResources`` — runner resources govern the SLURM
 job / local process; compute resources govern the per-call container
-allocation when ``compute_provider`` routes ``execute()`` to a remote
+allocation when ``compute_provider`` routes the execute phase to a remote
 provider. Modal's API translates these directly into ``modal.App.function``
 arguments. ``None`` defers to the provider default.
 """

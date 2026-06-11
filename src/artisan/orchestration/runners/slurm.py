@@ -8,7 +8,7 @@ from typing import Any
 
 from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _HandleState
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter, _RouterState
 from artisan.orchestration.runners.base import (
     OrchestratorTraits,
     RunnerBase,
@@ -22,8 +22,8 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 logger = logging.getLogger(__name__)
 
 
-class SlurmDispatchHandle(DispatchHandle):
-    """Dispatch handle for SLURM job array execution.
+class SlurmLifecycleRouter(LifecycleRouter):
+    """Lifecycle router for SLURM job array execution.
 
     Writes units to a pickle file on the shared filesystem, then
     dispatches via a Prefect ``SlurmTaskRunner``. Cancellation calls
@@ -56,7 +56,7 @@ class SlurmDispatchHandle(DispatchHandle):
     ) -> None:
         """Write units to shared FS, then submit via SLURM task runner."""
         self._assert_idle()
-        self._state = _HandleState.DISPATCHED
+        self._state = _RouterState.DISPATCHED
 
         from artisan.orchestration.engine.dispatch import _save_units
 
@@ -113,7 +113,7 @@ class SlurmRunner(RunnerBase):
         staging_verification_timeout=60.0,
     )
 
-    def create_dispatch_handle(
+    def create_lifecycle_router(
         self,
         runner_resources: RunnerResources,
         batch_strategy: BatchStrategy,
@@ -121,8 +121,8 @@ class SlurmRunner(RunnerBase):
         job_name: str,
         log_folder: str | None = None,
         staging_root: str | None = None,
-    ) -> DispatchHandle:
-        """Build a SLURM dispatch handle for job array submission."""
+    ) -> LifecycleRouter:
+        """Build a SLURM lifecycle router for job array submission."""
         from prefect_submitit import SlurmTaskRunner
 
         slurm_kwargs: dict[str, Any] = dict(runner_resources.extra)
@@ -142,7 +142,7 @@ class SlurmRunner(RunnerBase):
             slurm_job_name=slurm_job_name,
             **slurm_kwargs,
         )
-        return SlurmDispatchHandle(
+        return SlurmLifecycleRouter(
             task_runner=task_runner,
             job_name=slurm_job_name,
             staging_root=staging_root,

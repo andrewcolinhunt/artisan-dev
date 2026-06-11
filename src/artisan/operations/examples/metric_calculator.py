@@ -90,7 +90,7 @@ class MetricCalculator(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Compute score distribution statistics for each input CSV."""
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:

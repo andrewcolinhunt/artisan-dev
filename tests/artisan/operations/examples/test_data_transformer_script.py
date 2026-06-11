@@ -85,7 +85,7 @@ class TestDataTransformerScript:
                 preprocess_dir=str(tmp_path / "pre"),
             )
         )
-        op.execute(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
+        op.execute_function(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
 
         output_files = [
             f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
@@ -122,7 +122,7 @@ class TestDataTransformerScript:
                 preprocess_dir=str(tmp_path / "pre"),
             )
         )
-        op.execute(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
+        op.execute_function(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
 
         output_files = [
             f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
@@ -154,7 +154,7 @@ class TestDataTransformerScript:
                 preprocess_dir=str(tmp_path / "pre"),
             )
         )
-        op.execute(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
+        op.execute_function(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
 
         output_files = [
             f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)

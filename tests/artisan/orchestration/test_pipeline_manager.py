@@ -66,7 +66,7 @@ class _MockOp(OperationDefinition):
     def preprocess(self, inputs: Any) -> dict:
         return {}
 
-    def execute(self, inputs: Any, output_dir: Any) -> Any:
+    def execute_function(self, inputs: Any, output_dir: Any) -> Any:
         return None
 
 
@@ -1345,7 +1345,7 @@ class _ParamsOp(OperationDefinition):
     def preprocess(self, inputs: Any) -> dict:
         return {}
 
-    def execute(self, inputs: Any, output_dir: Any) -> Any:
+    def execute_function(self, inputs: Any, output_dir: Any) -> Any:
         return None
 
 
@@ -1374,7 +1374,7 @@ class _MultiInputOp(OperationDefinition):
     def preprocess(self, inputs: Any) -> dict:
         return {}
 
-    def execute(self, inputs: Any, output_dir: Any) -> Any:
+    def execute_function(self, inputs: Any, output_dir: Any) -> Any:
         return None
 
 
@@ -2141,7 +2141,7 @@ class _OpForTests(OperationDefinition):
     inputs: ClassVar[dict] = {}
     outputs: ClassVar[dict] = {}
 
-    def execute(self, _inputs):
+    def execute_function(self, _inputs):
         return {}
 
 

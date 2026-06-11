@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle
-from artisan.orchestration.runners.slurm import SlurmDispatchHandle, SlurmRunner
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
+from artisan.orchestration.runners.slurm import SlurmLifecycleRouter, SlurmRunner
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -28,18 +28,18 @@ class TestSlurmRunnerTraits:
         assert traits.staging_verification_timeout == 60.0
 
 
-class TestSlurmRunnerCreateDispatchHandle:
+class TestSlurmRunnerCreateLifecycleRouter:
     @patch("prefect_submitit.SlurmTaskRunner")
-    def test_returns_slurm_dispatch_handle(self, mock_slurm_runner: MagicMock) -> None:
+    def test_returns_slurm_lifecycle_router(self, mock_slurm_runner: MagicMock) -> None:
         step_runner = SlurmRunner()
         runner_resources = RunnerResources()
         batch_strategy = BatchStrategy(units_per_worker=1)
 
-        handle = step_runner.create_dispatch_handle(
+        handle = step_runner.create_lifecycle_router(
             runner_resources, batch_strategy, step_number=0, job_name="test_op"
         )
-        assert isinstance(handle, DispatchHandle)
-        assert isinstance(handle, SlurmDispatchHandle)
+        assert isinstance(handle, LifecycleRouter)
+        assert isinstance(handle, SlurmLifecycleRouter)
 
     @patch("prefect_submitit.SlurmTaskRunner")
     def test_configures_slurm_task_runner(self, mock_slurm_runner: MagicMock) -> None:
@@ -53,7 +53,7 @@ class TestSlurmRunnerCreateDispatchHandle:
         )
         batch_strategy = BatchStrategy(units_per_worker=1)
 
-        step_runner.create_dispatch_handle(
+        step_runner.create_lifecycle_router(
             runner_resources,
             batch_strategy,
             step_number=3,
@@ -75,7 +75,7 @@ class TestSlurmRunnerCreateDispatchHandle:
         runner_resources = RunnerResources()
         batch_strategy = BatchStrategy(units_per_worker=1)
 
-        handle = step_runner.create_dispatch_handle(
+        handle = step_runner.create_lifecycle_router(
             runner_resources, batch_strategy, step_number=5, job_name="custom_name"
         )
 
@@ -85,10 +85,10 @@ class TestSlurmRunnerCreateDispatchHandle:
         assert handle._job_name == "s5_custom_name"
 
 
-class TestSlurmDispatchHandleCancel:
+class TestSlurmLifecycleRouterCancel:
     @patch("artisan.orchestration.runners.slurm.subprocess")
     def test_cancel_calls_scancel(self, mock_subprocess: MagicMock) -> None:
-        handle = SlurmDispatchHandle(
+        handle = SlurmLifecycleRouter(
             task_runner=MagicMock(),
             job_name="s3_test_op",
             staging_root="/staging",
@@ -103,7 +103,7 @@ class TestSlurmDispatchHandleCancel:
 
     @patch("artisan.orchestration.runners.slurm.subprocess")
     def test_cancel_is_idempotent(self, mock_subprocess: MagicMock) -> None:
-        handle = SlurmDispatchHandle(
+        handle = SlurmLifecycleRouter(
             task_runner=MagicMock(),
             job_name="s1_op",
             staging_root="/staging",
@@ -116,7 +116,7 @@ class TestSlurmDispatchHandleCancel:
     @patch("artisan.orchestration.runners.slurm.subprocess")
     def test_cancel_swallows_exceptions(self, mock_subprocess: MagicMock) -> None:
         mock_subprocess.run.side_effect = FileNotFoundError("scancel not found")
-        handle = SlurmDispatchHandle(
+        handle = SlurmLifecycleRouter(
             task_runner=MagicMock(),
             job_name="s1_op",
             staging_root="/staging",
@@ -134,3 +134,13 @@ class TestSlurmRunnerCaptureLogs:
         ]
         step_runner.capture_logs(results, "/staging", "/logs", "test_op", 1)
         mock_patch.assert_called_once_with(results, "/staging", "/logs", "test_op", 1)
+
+
+class TestSlurmRunnerValidateOperation:
+    def test_modal_command_op_passes_validation(self) -> None:
+        """The unified path validates modal steps — never raises (base no-op)."""
+        step_runner = SlurmRunner()
+        mock_op = MagicMock()
+        mock_op.name = "test_op"
+        mock_op.compute_provider.active = "modal"
+        step_runner.validate_operation(mock_op)

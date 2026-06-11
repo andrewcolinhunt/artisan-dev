@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 import xxhash
 
-from artisan.execution.compute.local import LocalComputeRouter
+from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executors.creator import (
     LifecycleResult,
     run_creator_flow,
@@ -75,7 +75,7 @@ class _SimpleOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict:
+    def execute_function(self, inputs: ExecuteInput) -> dict:
         for path in inputs.inputs["source"]:
             with open(path) as fh:
                 content = json.loads(fh.read())
@@ -147,7 +147,7 @@ def delta_env(tmp_path: Path):
 
 class TestCreatorComputeRouting:
     def test_explicit_local_router_matches_baseline(self, delta_env):
-        """Passing an explicit LocalComputeRouter produces identical results."""
+        """Passing an explicit LocalExecuteRouter produces identical results."""
         runtime_env, input_id = delta_env
 
         unit = ExecutionUnit(
@@ -160,7 +160,7 @@ class TestCreatorComputeRouting:
         result = run_creator_lifecycle(
             unit,
             runtime_env,
-            compute_router=LocalComputeRouter(),
+            execute_router=LocalExecuteRouter(),
         )
 
         assert isinstance(result, LifecycleResult)
@@ -170,7 +170,7 @@ class TestCreatorComputeRouting:
         assert len(result.edges) >= 1
 
     def test_default_router_from_operation_config(self, delta_env):
-        """When compute_router is None, router is created from operation config."""
+        """When execute_router is None, router is created from operation config."""
         runtime_env, input_id = delta_env
 
         unit = ExecutionUnit(
@@ -180,7 +180,7 @@ class TestCreatorComputeRouting:
             step_number=1,
         )
 
-        # No compute_router — should auto-create from operation.compute_provider
+        # No execute_router — should auto-create from operation.compute_provider
         result = run_creator_lifecycle(unit, runtime_env)
 
         assert isinstance(result, LifecycleResult)
@@ -189,11 +189,11 @@ class TestCreatorComputeRouting:
 
 
 class TestRunCreatorFlowRouterForwarding:
-    """Verify run_creator_flow forwards the compute_router parameter."""
+    """Verify run_creator_flow forwards the execute_router parameter."""
 
     @patch("artisan.execution.executors.creator.run_creator_lifecycle")
     def test_forwards_explicit_router(self, mock_lifecycle):
-        """An explicit compute_router is forwarded to run_creator_lifecycle."""
+        """An explicit execute_router is forwarded to run_creator_lifecycle."""
         mock_lifecycle.return_value = LifecycleResult(
             input_artifacts={},
             artifacts={},
@@ -207,14 +207,14 @@ class TestRunCreatorFlowRouterForwarding:
         runtime_env = MagicMock()
         router = MagicMock()
 
-        run_creator_flow(unit, runtime_env, compute_router=router)
+        run_creator_flow(unit, runtime_env, execute_router=router)
 
         _, kwargs = mock_lifecycle.call_args
-        assert kwargs["compute_router"] is router
+        assert kwargs["execute_router"] is router
 
     @patch("artisan.execution.executors.creator.run_creator_lifecycle")
     def test_default_forwards_none(self, mock_lifecycle):
-        """Without compute_router, None is forwarded (lifecycle auto-creates)."""
+        """Without execute_router, None is forwarded (lifecycle auto-creates)."""
         mock_lifecycle.return_value = LifecycleResult(
             input_artifacts={},
             artifacts={},
@@ -230,4 +230,4 @@ class TestRunCreatorFlowRouterForwarding:
         run_creator_flow(unit, runtime_env)
 
         _, kwargs = mock_lifecycle.call_args
-        assert kwargs["compute_router"] is None
+        assert kwargs["execute_router"] is None

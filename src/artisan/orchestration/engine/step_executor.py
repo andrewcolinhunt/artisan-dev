@@ -20,7 +20,6 @@ from typing import Any, cast
 
 from fsspec import AbstractFileSystem
 
-from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.context.builder import build_curator_execution_context
 from artisan.execution.executors.curator import (
     _get_params,
@@ -36,8 +35,8 @@ from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
 )
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle
 from artisan.orchestration.engine.inputs import resolve_inputs
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
     aggregate_results,
     extract_execution_run_ids,
@@ -47,10 +46,7 @@ from artisan.schemas.enums import FailurePolicy, GroupByStrategy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.compute import (
-    ComputeProvider,
-    ModalComputeConfig,
-)
+from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
@@ -1124,45 +1120,23 @@ def _execute_creator_step(
 
             if units_to_dispatch:
                 try:
-                    compute_config = operation.compute_provider.current()
+                    # Axis 1 only: every creator step rides the step_runner's
+                    # lifecycle router. The compute provider (axis 2) is
+                    # consulted inside the lifecycle, in create_execute_router.
+                    step_runner.validate_operation(operation)
+                    router: LifecycleRouter = step_runner.create_lifecycle_router(
+                        operation.runner_resources,
+                        operation.batch_strategy,
+                        step_number,
+                        job_name=operation.batch_strategy.job_name or operation.name,
+                        log_folder=uri_join(
+                            uri_parent(config.delta_root), "logs", "slurm"
+                        ),
+                        staging_root=config.staging_root,
+                    )
 
-                    handle: DispatchHandle
-                    if isinstance(compute_config, ModalComputeConfig):
-                        if not operation.is_tool_op():
-                            raise ArtisanError(
-                                code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-                                message=(
-                                    "compute_provider='modal' requires a tool "
-                                    "op (ToolSpec + build_command()); "
-                                    f"{operation.name} declares neither"
-                                ),
-                                error_type="config",
-                                operation_name=operation.name,
-                                recovery_hint="CHECK_INPUT",
-                            )
-                        from artisan.orchestration.engine.tool_endpoint_handle import (
-                            ToolEndpointDispatchHandle,
-                        )
-
-                        handle = ToolEndpointDispatchHandle(
-                            max_workers=operation.batch_strategy.max_workers or 4,
-                        )
-                    else:
-                        step_runner.validate_operation(operation)
-                        handle = step_runner.create_dispatch_handle(
-                            operation.runner_resources,
-                            operation.batch_strategy,
-                            step_number,
-                            job_name=operation.batch_strategy.job_name
-                            or operation.name,
-                            log_folder=uri_join(
-                                uri_parent(config.delta_root), "logs", "slurm"
-                            ),
-                            staging_root=config.staging_root,
-                        )
-
-                    results = handle.run(
-                        units_to_dispatch,  # type: ignore[arg-type]  # list[ExecutionUnit] vs invariant list[ExecutionUnit | ExecutionComposite]; widening is safe — DispatchHandle.run does not mutate
+                    results = router.run(
+                        units_to_dispatch,  # type: ignore[arg-type]  # list[ExecutionUnit] vs invariant list[ExecutionUnit | ExecutionComposite]; widening is safe — LifecycleRouter.run does not mutate
                         runtime_env,
                         cancel_event=cancel_event,
                     )
@@ -1344,7 +1318,7 @@ def execute_composite_step(
             failed = 0
 
             try:
-                handle = step_runner.create_dispatch_handle(
+                router = step_runner.create_lifecycle_router(
                     composite_resources,
                     composite_execution,
                     step_number,
@@ -1352,7 +1326,7 @@ def execute_composite_step(
                     log_folder=uri_join(uri_parent(config.delta_root), "logs", "slurm"),
                     staging_root=config.staging_root,
                 )
-                results = handle.run([composite_transport], runtime_env)
+                results = router.run([composite_transport], runtime_env)
                 succeeded, failed = aggregate_results(results, failure_policy)
             except RuntimeError:
                 raise

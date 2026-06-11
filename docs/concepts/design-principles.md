@@ -130,7 +130,7 @@ The framework enforces this through the three-phase creator lifecycle:
   draft artifacts.
 
 At no point does the operation touch the artifact store, the cache, or the
-pipeline definition. The `ExecuteInput` provided to `execute()` contains the
+pipeline definition. The `ExecuteInput` provided to the execute phase contains the
 prepared inputs dict, an `execute_dir` path for file I/O, a `log_path`
 for tool output, and a `metadata` dict for engine-provided context.
 

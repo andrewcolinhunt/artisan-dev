@@ -12,7 +12,7 @@ import polars as pl
 import pytest
 import xxhash
 
-from artisan.execution.compute.local import LocalComputeRouter
+from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executors.creator import (
     LifecycleResult,
     run_creator_lifecycle,
@@ -87,7 +87,7 @@ class _SimpleOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict:
+    def execute_function(self, inputs: ExecuteInput) -> dict:
         for path in inputs.inputs["source"]:
             with open(path) as fh:
                 content = json.loads(fh.read())
@@ -371,11 +371,11 @@ class TestPrepUnit:
 
 
 class TestRoundTripEquivalence:
-    def test_split_path_matches_monolithic(self, delta_env):
-        """prep_unit → execute per-artifact → post_unit produces same results."""
+    def test_manual_phases_match_lifecycle(self, delta_env):
+        """prep_unit → route_execute → post_unit matches run_creator_lifecycle."""
         runtime_env, ids = delta_env
 
-        # --- monolithic path ---
+        # --- full lifecycle ---
         unit_mono = ExecutionUnit(
             operation=_SimpleOp(),
             inputs={"source": ids},
@@ -393,12 +393,11 @@ class TestRoundTripEquivalence:
         )
         prepped = prep_unit(unit_split, runtime_env)
 
-        # Execute each artifact individually
-        router = LocalComputeRouter()
-        raw_results = []
-        for ei in prepped.artifact_execute_inputs:
-            result = router.route_execute(prepped.operation, ei, prepped.sandbox_path)
-            raw_results.append(result)
+        # Route the unit's full per-artifact list; the router iterates
+        router = LocalExecuteRouter()
+        raw_results = router.route_execute(
+            prepped.operation, prepped.artifact_execute_inputs, prepped.sandbox_path
+        )
 
         split_result = post_unit(prepped, raw_results, runtime_env)
 

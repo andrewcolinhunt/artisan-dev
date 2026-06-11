@@ -62,7 +62,7 @@ class _FilesDirCapture(OperationDefinition):
         ),
     }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         content = json.dumps({"value": 1})
         output_path = os.path.join(inputs.execute_dir, "out.json")
         with open(output_path, "w") as fh:

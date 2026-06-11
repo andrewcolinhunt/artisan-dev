@@ -232,9 +232,9 @@ For the full conceptual model of composites, see
 
 ### Compute routing
 
-The execute() call is the routing boundary for compute targets. Everything
+The execute phase is the routing boundary for compute targets. Everything
 before it (sandbox setup, input materialization) and after it (lineage capture,
-staging to Parquet) runs on the worker. Only the execute() call itself can be
+staging to Parquet) runs on the worker. Only the execute phase itself can be
 routed to a remote target.
 
 ```
@@ -245,7 +245,7 @@ routed to a remote target.
 │  Set up sandbox          │
 │  Materialize inputs      │
 │  ┌────────────────────┐  │
-│  │  execute() ────────│──│──→ [Compute target]
+│  │  execute ──────────│──│──→ [Compute target]
 │  │  (routing boundary)│  │     Local | Modal
 │  └────────────────────┘  │
 │  Capture lineage         │
@@ -254,16 +254,16 @@ routed to a remote target.
 ```
 
 Compute routing is orthogonal to the step runner. A local worker can
-route execute() to Modal; a SLURM worker can also route execute() to Modal.
+route the execute phase to Modal; a SLURM worker can also route the execute phase to Modal.
 The step runner controls where the worker process runs. The compute
-target controls where execute() runs inside that worker.
+target controls where the execute phase runs inside that worker.
 
-When compute is `"local"` (the default), execute() runs as a direct call
+When compute is `"local"` (the default), the execute phase runs as a direct call
 inside the worker process -- today's behavior. When compute is `"modal"`,
-execute() becomes an HTTP client of the operation's deployed tool endpoint:
+the execute phase becomes an HTTP client of the operation's deployed tool endpoint:
 it submits the op's params + input files, polls until the tool finishes,
 and downloads the output files back into the execute dir. Only tool ops
-(`ToolSpec` + `build_command()`) can route to modal. Inline transfers are
+(`ToolSpec` + `execute_command()`) can route to modal. Inline transfers are
 bounded at 100 MB per direction; `s3://` inputs pass by reference.
 
 ---
@@ -465,4 +465,4 @@ re-executes cancelled steps while completed steps load from cache.
 - [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) -- See the execution flow in action
 - [SLURM Execution Tutorial](../tutorials/07-compute-backends/02-slurm-execution.ipynb) -- Run operations on a SLURM cluster
 - [Pipeline Cancellation Tutorial](../tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb) -- Cooperative cancellation in action
-- [Compute Routing Tutorial](../tutorials/07-compute-backends/01-compute-routing.ipynb) -- Route execute() to local or remote compute targets
+- [Compute Routing Tutorial](../tutorials/07-compute-backends/01-compute-routing.ipynb) -- Route the execute phase to local or remote compute targets

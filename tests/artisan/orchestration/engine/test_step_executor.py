@@ -191,7 +191,7 @@ class _SimpleCreatorOp(OperationDefinition):
     def preprocess(self, _inputs):
         return {}
 
-    def execute(self, _inputs):
+    def execute_function(self, _inputs):
         return {}
 
 
@@ -220,12 +220,12 @@ class _SimpleToolOp(OperationDefinition):
     def preprocess(self, _inputs):
         return {}
 
-    def build_command(self, inputs):
+    def execute_command(self, inputs):
         return [*self.tool.parts(), "-c", "true"]
 
 
 def _make_mock_backend(flow_return_value=None):
-    """Create a mock step_runner whose dispatch handle captures dispatched units."""
+    """Create a mock step_runner whose lifecycle router captures dispatched units."""
     mock_backend = MagicMock()
     mock_backend.name = "local"
     mock_backend.worker_traits.worker_id_env_var = None
@@ -236,26 +236,27 @@ def _make_mock_backend(flow_return_value=None):
     mock_handle = MagicMock()
     return_value = flow_return_value if flow_return_value is not None else []
     mock_handle.run.return_value = return_value
-    mock_backend.create_dispatch_handle.return_value = mock_handle
+    mock_backend.create_lifecycle_router.return_value = mock_handle
     return mock_backend, mock_handle
 
 
 class TestComputeRoutingSelection:
-    """_execute_creator_step routes Modal tool ops to the endpoint handle."""
+    """_execute_creator_step routes every creator step through the runner.
 
-    @patch(
-        "artisan.orchestration.engine.tool_endpoint_handle.ToolEndpointDispatchHandle"
-    )
+    The compute provider (axis 2) is consulted inside the lifecycle, in
+    create_execute_router — modal misconfiguration coverage lives in
+    tests/artisan/execution/test_compute_routing.py.
+    """
+
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_modal_tool_op_uses_endpoint_handle(
+    def test_modal_tool_op_uses_runner_dispatch(
         self,
         mock_resolve,
         mock_cache,
-        mock_handle_cls,
         tmp_path,
     ):
-        """A Modal tool op dispatches via ToolEndpointDispatchHandle."""
+        """Modal ops ride the same lifecycle-router path as local ops."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -275,13 +276,13 @@ class TestComputeRoutingSelection:
         mock_resolve.return_value = {"data": [_ID]}
         mock_cache.return_value = None
 
-        mock_handle = MagicMock()
-        mock_handle.run.return_value = [
-            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
-        ]
-        mock_handle_cls.return_value = mock_handle
-
-        mock_backend, _ = _make_mock_backend()
+        mock_backend, mock_handle = _make_mock_backend(
+            flow_return_value=[
+                UnitResult(
+                    success=True, error=None, item_count=1, execution_run_ids=[]
+                ),
+            ]
+        )
 
         _execute_creator_step(
             operation=op,
@@ -292,51 +293,9 @@ class TestComputeRoutingSelection:
             compact=False,
         )
 
-        mock_handle_cls.assert_called_once()
+        mock_backend.validate_operation.assert_called_once_with(op)
+        mock_backend.create_lifecycle_router.assert_called_once()
         mock_handle.run.assert_called_once()
-        mock_backend.create_dispatch_handle.assert_not_called()
-
-    @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_modal_non_tool_op_fails_step(
-        self,
-        mock_resolve,
-        mock_cache,
-        tmp_path,
-    ):
-        """Modal on a non-tool op records a config failure, never dispatches."""
-        from artisan.orchestration.engine.step_executor import _execute_creator_step
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-            working_root=str(tmp_path / "working"),
-        )
-
-        op = _SimpleCreatorOp(
-            compute_provider=ComputeProvider(
-                active="modal", modal=ModalComputeConfig()
-            ),
-        )
-
-        mock_resolve.return_value = {"data": [_ID]}
-        mock_cache.return_value = None
-
-        mock_backend, _ = _make_mock_backend()
-
-        result = _execute_creator_step(
-            operation=op,
-            inputs={"data": [_ID]},
-            step_runner=mock_backend,
-            step_number=1,
-            config=config,
-            compact=False,
-        )
-
-        assert result.success is False
-        mock_backend.create_dispatch_handle.assert_not_called()
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
@@ -379,7 +338,7 @@ class TestComputeRoutingSelection:
             compact=False,
         )
 
-        mock_backend.create_dispatch_handle.assert_called_once()
+        mock_backend.create_lifecycle_router.assert_called_once()
         mock_handle.run.assert_called_once()
 
 
@@ -406,7 +365,7 @@ class TestInstantiateOperationComputeOverrides:
         """
 
         # active stays "local": a class-level modal *default* now requires a
-        # tool op (ToolSpec + build_command); the dict-merge under test only
+        # tool op (ToolSpec + execute_command); the dict-merge under test only
         # needs an existing nested modal config.
         class _ModalOp(_SimpleCreatorOp):
             compute_provider: ComputeProvider = ComputeProvider(

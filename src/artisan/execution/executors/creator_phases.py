@@ -121,10 +121,13 @@ def prep_unit(
     worker_id: int = 0,
     execution_run_id: str | None = None,
     sources: dict[str, ArtifactSource] | None = None,
-    *,
-    split_per_artifact: bool = True,
 ) -> PreppedUnit:
-    """Run setup, preprocess, and optionally split per-artifact.
+    """Run setup, preprocess, and per-artifact splitting.
+
+    Preprocess output is split into per-artifact ExecuteInputs when the
+    operation declares ``per_artifact_dispatch=True`` (the default);
+    otherwise a single monolithic ExecuteInput carries the full
+    prepared_inputs.
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
@@ -132,11 +135,6 @@ def prep_unit(
         worker_id: Numeric worker identifier.
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources.
-        split_per_artifact: When True (default), split preprocess
-            output into per-artifact ExecuteInputs based on the
-            operation's ``per_artifact_dispatch`` setting. When False,
-            produce a single ExecuteInput with the full prepared_inputs
-            (monolithic behavior for ``run_creator_lifecycle``).
 
     Returns:
         PreppedUnit with ExecuteInputs ready for dispatch.
@@ -255,13 +253,11 @@ def prep_unit(
     artifact_execute_inputs: list[ExecuteInput] = []
     artifact_execute_dirs: list[str] = []
 
-    should_split = split_per_artifact and getattr(
-        operation, "per_artifact_dispatch", True
-    )
+    should_split = getattr(operation, "per_artifact_dispatch", True)
 
     if not should_split:
         # Single ExecuteInput with full prepared_inputs (monolithic).
-        # Unwrap PerArtifact markers so execute() sees raw lists — the
+        # Unwrap PerArtifact markers so execute_function() sees raw lists — the
         # sentinel only signals slicing intent, never reaches op code.
         monolithic_inputs = {
             k: list(v) if isinstance(v, PerArtifact) else v
@@ -277,7 +273,14 @@ def prep_unit(
             )
         )
     else:
-        batch_size = unit.get_batch_size() or 1
+        # Composite-internal units carry artifacts via `sources`, not
+        # `unit.inputs` — fall back to the hydrated artifact count so
+        # per-artifact splitting works on both paths.
+        batch_size = (
+            unit.get_batch_size()
+            or (len(next(iter(input_artifacts.values()))) if input_artifacts else 0)
+            or 1
+        )
         for i in range(batch_size):
             artifact_exec_dir = os.path.join(execute_dir, f"artifact_{i}")
             os.makedirs(artifact_exec_dir, exist_ok=True)

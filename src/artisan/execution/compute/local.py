@@ -1,20 +1,21 @@
-"""Local compute_provider router — direct passthrough (today's behavior)."""
+"""Local execute router — direct passthrough (today's behavior)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from artisan.execution.compute.base import ComputeRouter
+from artisan.execution.compute.base import ExecuteRouter
+from artisan.execution.compute.invoke import invoke_op_work
 from artisan.schemas.specs.input_models import ExecuteInput
 
 
-class LocalComputeRouter(ComputeRouter):
-    """Direct call — today's behavior."""
+class LocalExecuteRouter(ExecuteRouter):
+    """Run the execute phase here: in-process Python or a local subprocess."""
 
     def route_execute(
         self,
         operation: Any,
-        execute_input: ExecuteInput,
+        execute_inputs: list[ExecuteInput],
         sandbox_root: str,
-    ) -> Any:
-        return operation.execute(execute_input)
+    ) -> list[Any]:
+        return [invoke_op_work(operation, ei) for ei in execute_inputs]

@@ -162,12 +162,12 @@ def test_cancel_idempotent(pipeline_env: dict[str, str]):
     assert "pipeline_name" in summary
 
 
-def test_cancel_event_reaches_dispatch_handle(pipeline_env: dict[str, str]):
+def test_cancel_event_reaches_lifecycle_router(pipeline_env: dict[str, str]):
     """cancel() during a running step flows through handle.run(cancel_event).
 
     Submits a slow Wait step (30s), cancels after 1s, and verifies the
     pipeline finishes quickly — proving the cancel_event reached the
-    dispatch handle's run() poll loop rather than blocking for 30s.
+    lifecycle router's run() poll loop rather than blocking for 30s.
     """
     import threading
     import time

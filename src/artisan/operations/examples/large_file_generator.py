@@ -73,7 +73,7 @@ class LargeFileGenerator(OperationDefinition):
         modal=ModalComputeConfig(),
     )
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Generate deterministic binary files in files_dir."""
         if inputs.files_dir is None:
             msg = "files_dir required for LargeFileGenerator"

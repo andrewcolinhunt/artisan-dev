@@ -206,7 +206,7 @@ class TwoInputParity(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         out_dir = inputs.execute_dir
         os.makedirs(out_dir, exist_ok=True)
 

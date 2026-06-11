@@ -128,7 +128,7 @@ def run_operation_lifecycle(
         inputs=prepared_inputs,
         execute_dir=execute_dir_str,
     )
-    raw_result = operation.execute(execute_input)
+    raw_result = operation.execute_function(execute_input)
 
     new_files = [
         p for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
@@ -170,7 +170,7 @@ def run_operation_lifecycle_with_exception(
         execute_dir=execute_dir_str,
     )
     try:
-        raw_result = operation.execute(execute_input)
+        raw_result = operation.execute_function(execute_input)
     except Exception as e:
         return ArtifactResult(success=False, error=str(e))
 
@@ -211,7 +211,7 @@ def run_inmemory_operation_lifecycle(
         inputs=prepared_inputs,
         execute_dir=execute_dir_str,
     )
-    raw_result = operation.execute(execute_input)
+    raw_result = operation.execute_function(execute_input)
 
     new_files = [
         p for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
@@ -251,7 +251,7 @@ def run_inmemory_operation_lifecycle_with_exception(
         execute_dir=execute_dir_str,
     )
     try:
-        raw_result = operation.execute(execute_input)
+        raw_result = operation.execute_function(execute_input)
     except Exception as e:
         return ArtifactResult(success=False, error=str(e))
 

@@ -42,7 +42,7 @@ class HelloGenerator(OperationDefinition):
         ),
     }
 
-    def execute(self, inputs: ExecuteInput) -> None:
+    def execute_function(self, inputs: ExecuteInput) -> None:
         (inputs.execute_dir / "hello.csv").write_text("id,value\n1,42\n")
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
@@ -114,7 +114,7 @@ class ScaleData(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> None:
+    def execute_function(self, inputs: ExecuteInput) -> None:
         for path_str in inputs.inputs["dataset"]:
             path = Path(path_str)
             lines = path.read_text().splitlines()
@@ -266,7 +266,7 @@ params: Params = Params()
 Access in lifecycle methods via `self.params`:
 
 ```python
-def execute(self, inputs: ExecuteInput) -> Any:
+def execute_function(self, inputs: ExecuteInput) -> Any:
     value = some_value * self.params.scale_factor
     ...
 ```
@@ -351,7 +351,7 @@ Write output files to `inputs.execute_dir`. Access parameters via
 rather than file-based.
 
 ```python
-def execute(self, inputs: ExecuteInput) -> Any:
+def execute_function(self, inputs: ExecuteInput) -> Any:
     for path_str in inputs.inputs["dataset"]:
         data = Path(path_str).read_text()
         transformed = do_something(data)
@@ -433,7 +433,7 @@ When `execute` computes values rather than writing files, return them and
 construct artifacts from `memory_outputs` in postprocess:
 
 ```python
-def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
     return {"accuracy": 0.95, "f1": 0.87}
 
 
@@ -618,7 +618,7 @@ In `execute`, use `self.tool.parts()` to build the command prefix and
 from artisan.utils.external_tools import format_args, run_command
 
 
-def execute(self, inputs: ExecuteInput) -> Any:
+def execute_function(self, inputs: ExecuteInput) -> Any:
     env = self.environments.current()
     args = format_args(
         {"input": inputs.inputs["data_path"], "output-dir": str(inputs.execute_dir)}
@@ -757,7 +757,7 @@ with TemporaryDirectory() as tmp:
         execute_dir=execute_dir,
         inputs={"dataset": [str(test_csv)]},
     )
-    result = op.execute(execute_input)
+    result = op.execute_function(execute_input)
 
     # Run postprocess
     post_input = PostprocessInput(

@@ -58,9 +58,9 @@ Where artifacts live on disk and how to manage external files.
 
 ## Compute Backends
 
-Choosing where the execute() phase runs.
+Choosing where the execute phase runs.
 
-- [Compute Routing](07-compute-backends/01-compute-routing.ipynb) (~15 min) -- Route execute() to local or remote compute targets independently of the dispatch backend
+- [Compute Routing](07-compute-backends/01-compute-routing.ipynb) (~15 min) -- Route the execute phase to local or remote compute targets independently of the dispatch backend
 - [Running on SLURM](07-compute-backends/02-slurm-execution.ipynb) (~10 min) -- Run operations on a SLURM cluster
 - [Running Inside a SLURM Allocation](07-compute-backends/03-slurm-intra-execution.ipynb) (~10 min) -- Dispatch work via srun within an existing SLURM allocation
 - [Running on Modal](07-compute-backends/04-modal-execution.ipynb) (~15 min) -- Route operations to Modal containers with GPU, automatic sandbox transport, and tool shipping

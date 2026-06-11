@@ -109,7 +109,7 @@ class MetricCopyTestOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict:
+    def execute_function(self, inputs: ExecuteInput) -> dict:
         source_paths = inputs.inputs["source"]
         source_path = (
             source_paths[0] if isinstance(source_paths, list) else source_paths
@@ -167,7 +167,7 @@ class GenerativeTestOp(OperationDefinition):
         """Generative operation - no inputs to preprocess."""
         return {}
 
-    def execute(self, inputs: ExecuteInput) -> dict:
+    def execute_function(self, inputs: ExecuteInput) -> dict:
         for i in range(self.count):
             content = json.dumps({"value": i})
             output_path = os.path.join(inputs.execute_dir, f"generated_{i:03d}.json")
@@ -204,7 +204,7 @@ class FailingTestOp(OperationDefinition):
         """No inputs to preprocess."""
         return {}
 
-    def execute(self, inputs: ExecuteInput) -> dict:
+    def execute_function(self, inputs: ExecuteInput) -> dict:
         return {"failed": True}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
@@ -222,7 +222,7 @@ class ExceptionTestOp(OperationDefinition):
         """No inputs to preprocess."""
         return {}
 
-    def execute(self, inputs: ExecuteInput) -> Any:
+    def execute_function(self, inputs: ExecuteInput) -> Any:
         msg = "Intentional exception"
         raise RuntimeError(msg)
 
@@ -253,7 +253,7 @@ class MetricOutputTestOp(OperationDefinition):
         """No inputs to preprocess."""
         return {}
 
-    def execute(self, inputs: ExecuteInput) -> dict:
+    def execute_function(self, inputs: ExecuteInput) -> dict:
         return {"score": 0.95, "confidence": 0.87}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:

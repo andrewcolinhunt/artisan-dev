@@ -588,7 +588,7 @@ class FailingTransformer(OperationDefinition):
             )
         return prepared
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Transform CSV (prepend marker line) with controllable failure injection."""
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)

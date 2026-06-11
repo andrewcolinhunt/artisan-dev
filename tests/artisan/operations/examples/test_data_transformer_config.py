@@ -33,7 +33,7 @@ def _run_config_op(operation, artifacts, output_dir: Path):
     prepared = operation.preprocess(
         PreprocessInput(input_artifacts=input_artifacts, preprocess_dir=output_dir / "pre")
     )
-    raw = operation.execute(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
+    raw = operation.execute_function(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
     return operation.postprocess(
         PostprocessInput(
             file_outputs=[],

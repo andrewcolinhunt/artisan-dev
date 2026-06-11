@@ -1,9 +1,14 @@
-"""DispatchHandle — lifecycle handle for in-flight step_runner work."""
+"""LifecycleRouter — places and controls the lifecycle of step_runner work.
+
+The LifecycleRouter places the operation *lifecycle* (prep → execute →
+post → record); the ExecuteRouter places the execute phase within it.
+"""
 
 from __future__ import annotations
 
 import contextvars
 import enum
+import logging
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -13,16 +18,19 @@ from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.utils.path import cancel_sentinel_path, uri_parent
+
+logger = logging.getLogger(__name__)
 
 
-class _HandleState(enum.Enum):
+class _RouterState(enum.Enum):
     IDLE = "idle"
     DISPATCHED = "dispatched"
     DONE = "done"
 
 
-class DispatchHandle(ABC):
-    """Lifecycle handle for controlling in-flight step_runner work.
+class LifecycleRouter(ABC):
+    """Places and controls the lifecycle of in-flight step_runner work.
 
     Provides start, poll, collect, and cancel semantics. Non-streaming
     pipelines use ``run()`` (blocking template method). The streaming
@@ -37,7 +45,7 @@ class DispatchHandle(ABC):
     """
 
     def __init__(self) -> None:
-        self._state = _HandleState.IDLE
+        self._state = _RouterState.IDLE
         self._thread: threading.Thread | None = None
         self._results: list[UnitResult] | None = None
         self._error: Exception | None = None
@@ -84,7 +92,7 @@ class DispatchHandle(ABC):
             self._thread.join()
         if self._error is not None:
             raise self._error
-        self._state = _HandleState.DONE
+        self._state = _RouterState.DONE
         return self._results  # type: ignore[return-value]
 
     def run(
@@ -96,17 +104,45 @@ class DispatchHandle(ABC):
         """Execute the step. Blocks until completion or cancellation.
 
         Concrete template method: ``dispatch()`` → poll ``is_done()``
-        → ``collect()``. Checks *cancel_event* between polls and calls
-        ``cancel()`` when set.
+        → ``collect()``. Checks *cancel_event* between polls; when it
+        fires, writes the cancel sentinel (so worker-held execute calls
+        can observe cancellation across the process boundary) and calls
+        ``cancel()``.
         """
         self.dispatch(units, runtime_env)
         cancelled = False
         while not self.is_done():
             if not cancelled and cancel_event is not None and cancel_event.is_set():
+                self._write_cancel_sentinel(units, runtime_env)
                 self.cancel()
                 cancelled = True
             time.sleep(0.1)
         return self.collect()
+
+    @staticmethod
+    def _write_cancel_sentinel(
+        units: list[ExecutionUnit | ExecutionComposite],
+        runtime_env: RuntimeEnvironment,
+    ) -> None:
+        """Best-effort cancel sentinel on the staging filesystem.
+
+        Workers holding remote execute calls cannot see the orchestrator's
+        cancel event; they poll for this file instead. A failed write is
+        logged, never raised — cancellation must not abort the poll loop.
+        """
+        step_run_id = next(
+            (sid for sid in (getattr(u, "step_run_id", None) for u in units) if sid),
+            None,
+        )
+        if step_run_id is None or runtime_env.staging_root is None:
+            return
+        try:
+            sentinel = cancel_sentinel_path(runtime_env.staging_root, step_run_id)
+            fs = runtime_env.storage.filesystem()
+            fs.makedirs(uri_parent(sentinel), exist_ok=True)
+            fs.touch(sentinel)
+        except Exception as exc:
+            logger.warning("Failed to write cancel sentinel: %s", exc)
 
     # ------------------------------------------------------------------
     # Protected helpers for subclasses
@@ -114,7 +150,7 @@ class DispatchHandle(ABC):
 
     def _assert_idle(self) -> None:
         """Raise if ``dispatch()`` was already called."""
-        if self._state is not _HandleState.IDLE:
+        if self._state is not _RouterState.IDLE:
             msg = "dispatch() already called"
             raise RuntimeError(msg)
 

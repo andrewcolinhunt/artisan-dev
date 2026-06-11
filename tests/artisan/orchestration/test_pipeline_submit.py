@@ -39,7 +39,7 @@ class MockOp(OperationDefinition):
     def preprocess(self, inputs):
         return {}
 
-    def execute(self, inputs, output_dir):
+    def execute_function(self, inputs, output_dir):
         pass
 
 

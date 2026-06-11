@@ -77,14 +77,14 @@ class TestSIGINTSafeProcessPoolTaskRunner:
 
         assert issubclass(SIGINTSafeProcessPoolTaskRunner, ProcessPoolTaskRunner)
 
-    def test_create_dispatch_handle_uses_sigint_safe_runner(self):
-        """LocalRunner.create_dispatch_handle uses SIGINTSafeProcessPoolTaskRunner."""
+    def test_create_lifecycle_router_uses_sigint_safe_runner(self):
+        """LocalRunner.create_lifecycle_router uses SIGINTSafeProcessPoolTaskRunner."""
         from artisan.orchestration.runners.local import LocalRunner
         from artisan.schemas.execution.batch_strategy import BatchStrategy
         from artisan.schemas.operation_config.runner_resources import RunnerResources
 
         step_runner = LocalRunner(default_max_workers=2)
-        handle = step_runner.create_dispatch_handle(
+        handle = step_runner.create_lifecycle_router(
             RunnerResources(), BatchStrategy(), step_number=0, job_name="test"
         )
 

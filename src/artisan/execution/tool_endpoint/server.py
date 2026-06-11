@@ -1,7 +1,7 @@
 """Worker-side execution of tool requests.
 
 Runs inside the deployed worker image: resolve the deployed operation
-class, materialize input refs, run ``build_command`` as a local subprocess,
+class, materialize input refs, run ``execute_command`` as a local subprocess,
 and return the manifest + output tar. No Modal imports — locally testable.
 """
 
@@ -14,6 +14,7 @@ from functools import reduce
 from typing import Any
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+from artisan.execution.compute.invoke import invoke_op_work
 from artisan.execution.tool_endpoint.protocol import (
     ToolManifest,
     ToolRequest,
@@ -26,7 +27,8 @@ from artisan.execution.transport.log_constants import (
 )
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
-from artisan.utils.external_tools import ExternalToolError, run_command
+from artisan.schemas.specs.input_models import ExecuteInput
+from artisan.utils.external_tools import ExternalToolError
 
 
 def resolve_op(module: str, qualname: str) -> type[OperationDefinition]:
@@ -55,7 +57,7 @@ def run_tool_request(
     """Build the command from the op + request params and run the tool.
 
     Instantiates ``op_cls`` from the request params, resolves input refs
-    into the job's ``inputs/`` dir, runs ``op.build_command`` as a local
+    into the job's ``inputs/`` dir, runs ``op.execute_command`` as a local
     subprocess with ``cwd=outputs/``, and returns the manifest + output tar
     + tool-log tail. Tool failures return an ``OP_EXECUTE_FAILED`` envelope.
 
@@ -82,13 +84,14 @@ def run_tool_request(
     inputs = transport.unpack_inputs(request.inputs, inputs_dir)
     log_path = os.path.join(outputs_dir, TOOL_OUTPUT_FILENAME)
     try:
-        run_command(
-            LocalEnvironmentSpec(),
-            op.build_command(inputs),
-            cwd=outputs_dir,
-            log_path=log_path,
-            # container stdout IS the Modal dashboard log — stream so
-            # tool progress (ticks, progress bars) is visible live
+        # The shared primitive — the same invocation as the local execute
+        # router, so the two sides cannot drift. The container is the
+        # environment; stream so tool progress (ticks, progress bars) is
+        # visible live on container stdout (the Modal dashboard log).
+        invoke_op_work(
+            op,
+            ExecuteInput(execute_dir=outputs_dir, inputs=inputs, log_path=log_path),
+            environment=LocalEnvironmentSpec(),
             stream_output=True,
         )
     except ExternalToolError as exc:
