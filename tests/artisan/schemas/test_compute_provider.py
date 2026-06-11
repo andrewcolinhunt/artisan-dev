@@ -75,7 +75,8 @@ class TestModalComputeConfig:
         assert config.secrets == []
         assert config.volumes == {}
         assert config.env == {}
-        assert config.local_python_sources == ["artisan"]
+        # baked-by-default: no source overlay unless explicitly configured
+        assert config.local_python_sources == []
         assert config.endpoint_url is None
         assert config.auth_secret is None
         assert config.poll_interval == 2.0
