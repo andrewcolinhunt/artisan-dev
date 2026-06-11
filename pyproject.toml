@@ -190,12 +190,14 @@ prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
-test = "pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 4 && pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + s3 parallel + tutorial notebooks
+test = "pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 4 && pytest -m 'notebook and not modal and not slurm' -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + s3 parallel + tutorial notebooks
 test-seq = "pytest -m 'not notebook and not modal'"  # Fully sequential (for debugging test interactions)
 test-unit = "pytest -m 'not integration and not notebook and not modal and not s3'"  # Run only unit tests (no external services)
 test-integration = "pytest -m 'integration and not s3' -n 4"  # End-to-end pipeline tests in parallel (no external services)
 test-s3 = "pytest -m s3 -n 4"  # S3-backend tests in parallel; needs Docker (MinIO) or ARTISAN_S3_ENDPOINT
-test-notebook = "pytest -m notebook -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Execute every CI-runnable tutorial notebook end-to-end (loadfile keeps all cells of one notebook on one worker)
+test-notebook = "pytest -m 'notebook and not modal and not slurm' -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Execute every CI-runnable tutorial notebook end-to-end (loadfile keeps all cells of one notebook on one worker)
+test-notebook-modal = "pytest -m 'notebook and modal' --nbval-lax docs/tutorials/"  # Modal tutorial notebooks; needs Modal credentials + prefect-start (sequential: notebooks may target the same deployed app)
+test-notebook-slurm = "pytest -m 'notebook and slurm' --nbval-lax docs/tutorials/"  # SLURM tutorial notebooks; run on a cluster + prefect-start (slurm-intra also needs an active allocation)
 test-modal = "pytest -m modal -n 2"  # Real-Modal smoke tests; needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET (or ~/.modal.toml)
 test-modal-seq = "pytest -m modal"  # Sequential variant for debugging Modal tests
 fmt = "ruff format . && ruff check --fix ."
@@ -225,7 +227,8 @@ markers = [
     "integration: end-to-end pipeline tests (self-booted Prefect harness, local FS) — run with '-m integration'",
     "s3: needs an S3 backend — MinIO via Docker, or ARTISAN_S3_ENDPOINT — run with '-m s3' (auto-applied to s3_fs/minio_endpoint users by tests/conftest.py)",
     "notebook: executes a tutorial notebook end-to-end via nbval (auto-applied by docs/tutorials/conftest.py)",
-    "modal: ships work to real Modal cloud — needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET — run with '-m modal'",
+    "modal: ships work to real Modal cloud — needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET — run with '-m modal' (also auto-applied to Modal tutorial notebooks by docs/tutorials/conftest.py)",
+    "slurm: tutorial notebook needs SLURM cluster access — run with '-m \"notebook and slurm\"' on a cluster (auto-applied by docs/tutorials/conftest.py)",
 ]
 
 [tool.mypy]
