@@ -100,14 +100,19 @@ def _probe_docker_socket() -> str | None:
     for path in candidates:
         if not os.path.exists(path):
             continue
+        # Close on every exit path: a stale socket file (daemon stopped)
+        # makes connect() raise, and a leaked socket later surfaces as a
+        # ResourceWarning that pytest's unraisable hook pins on whatever
+        # unrelated test is running at GC time.
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             sock.settimeout(1.0)
             sock.connect(path)
-            sock.close()
             return path
         except OSError:
             continue
+        finally:
+            sock.close()
     return None
 
 
