@@ -5,8 +5,9 @@ operation (params arrive per request). The HTTP surface is one
 ``@modal.asgi_app`` function whose FastAPI app is built in-container.
 
 The endpoint function is **self-contained**: its closure carries only plain
-data (op name, module path, the op's ``Params`` JSON schema) plus the worker
-function handle, and its body imports only packages installed in the slim
+data (op name, description, module path, the op's ``Params`` JSON schema,
+input roles) plus the worker function handle, and its body imports only
+packages installed in the slim
 endpoint image (fastapi, jsonschema, modal). Artisan is never imported in
 the endpoint container — unpickling any artisan object there would require
 artisan's full dependency stack. Boundary validation runs against the baked
@@ -54,6 +55,8 @@ class EndpointSpec(BaseModel):
     memory_mb: int | None
     timeout: int | None
     params_schema: dict[str, Any] = Field(default_factory=dict)
+    description: str = ""
+    input_roles: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
@@ -115,6 +118,14 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
         memory_mb=resources.memory_gb * 1024 if resources.memory_gb else None,
         timeout=resources.timeout,
         params_schema=params_schema,
+        description=op_cls.description,
+        # str(role) — role keys may be StrEnum members; an enum instance in
+        # the baked dict would drag its artisan-defined class into the
+        # endpoint closure at cloudpickle time
+        input_roles={
+            str(role): {"required": s.required, "description": s.description}
+            for role, s in op_cls.inputs.items()
+        },
     )
 
 
@@ -123,8 +134,8 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
 
     One app per tool: a GPU **worker** (resolves the deployed op class,
     builds the command, runs the tool) behind a lightweight **endpoint**
-    (FastAPI routes ``/submit`` → ``/result`` → ``/download`` → ``/cancel``,
-    Swagger at ``/docs``). The worker image mounts ``local_python_sources``
+    (FastAPI routes ``/schema``, ``/submit`` → ``/result`` → ``/download``
+    → ``/cancel``, Swagger at ``/docs``). The worker image mounts ``local_python_sources``
     so ``execute_command`` runs without shipping code per call; the endpoint
     image carries no artisan at all and validates request params against
     the op's baked ``Params`` JSON schema.
@@ -168,7 +179,9 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
     op_module = spec.op_module
     op_qualname = spec.op_qualname
     op_name = spec.name
+    op_description = spec.description
     params_schema = spec.params_schema
+    input_roles = spec.input_roles
 
     @app.function(**worker_kwargs)
     @modal.concurrent(max_inputs=1)  # one job per container; fan out, don't pack
@@ -202,6 +215,21 @@ def build_app(op_cls: type[OperationDefinition]) -> modal.App:
             title=f"artisan-tool-{op_name}",
             description=f"Tool endpoint for the '{op_name}' operation.",
         )
+
+        @web.get("/schema")
+        def schema() -> dict[str, Any]:
+            """The request contract: params JSON-schema + input roles.
+
+            ``params_schema`` is the same dict ``/submit`` validates
+            against; an empty dict means the op declares no ``Params``
+            (nothing is validated), not that the schema is unknown.
+            """
+            return {
+                "operation": op_name,
+                "description": op_description,
+                "params_schema": params_schema,
+                "inputs": input_roles,
+            }
 
         @web.post("/submit")
         async def submit(
