@@ -9,6 +9,7 @@ from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.tool_endpoint.protocol import (
     InputRef,
     ResultResponse,
+    SchemaResponse,
     SubmitResponse,
     ToolManifest,
     ToolRequest,
@@ -79,6 +80,12 @@ class TestWorkerResult:
 class TestResponses:
     def test_submit_response(self):
         assert SubmitResponse(call_id="fc-123").call_id == "fc-123"
+
+    def test_schema_response_defaults(self):
+        response = SchemaResponse(operation="wait_tool")
+        assert response.description == ""
+        assert response.params_schema == {}
+        assert response.inputs == {}
 
     @pytest.mark.parametrize("status", ["pending", "done", "failed", "expired"])
     def test_result_response_statuses(self, status):

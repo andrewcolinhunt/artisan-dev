@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum, auto
+from types import SimpleNamespace
 from typing import Any, ClassVar
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
+import jsonschema
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field, ValidationError
 
 from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint.deploy import build_app, endpoint_spec
+from artisan.execution.tool_endpoint.protocol import SchemaResponse
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.examples import DataGenerator, WaitTool
 from artisan.schemas.operation_config.compute import (
@@ -20,6 +25,7 @@ from artisan.schemas.operation_config.compute import (
 )
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.specs.input_models import PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -34,12 +40,21 @@ _OUTPUTS: dict[str, OutputSpec] = {
 class GpuTool(OperationDefinition):
     """Tool op with a hardware spec and a required param."""
 
+    class InputRole(StrEnum):
+        reference = auto()
+
     class OutputRole(StrEnum):
         output = auto()
 
     name: ClassVar[str] = "gpu_tool_test"
     description: ClassVar[str] = "Tool op with hardware spec"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.reference: InputSpec(
+            artifact_type="data",
+            required=False,
+            description="Optional reference structure",
+        ),
+    }
     outputs: ClassVar[dict[str, OutputSpec]] = _OUTPUTS
 
     class Params(BaseModel):
@@ -60,6 +75,9 @@ class GpuTool(OperationDefinition):
     compute_resources: ComputeResources = ComputeResources(
         gpu="A100", memory_gb=8, timeout=600
     )
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        return {}
 
     def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         return [*self.tool.parts(), "-c", "true"]
@@ -82,6 +100,13 @@ class NoModalTool(OperationDefinition):
         return [*self.tool.parts(), "-c", "true"]
 
 
+@pytest.fixture
+def mock_modal(monkeypatch) -> MagicMock:
+    mock = MagicMock()
+    monkeypatch.setattr(deploy_mod, "modal", mock)
+    return mock
+
+
 class TestEndpointSpec:
     def test_flattens_class_level_config(self):
         spec = endpoint_spec(WaitTool)
@@ -96,6 +121,27 @@ class TestEndpointSpec:
         spec = endpoint_spec(WaitTool)
         assert set(spec.params_schema["properties"]) == {"seconds"}
         assert spec.params_schema["additionalProperties"] is False  # extra="forbid"
+
+    def test_bakes_description_and_input_roles(self):
+        spec = endpoint_spec(WaitTool)
+        assert spec.description == WaitTool.description
+        assert spec.input_roles == {
+            "dataset": {
+                "required": True,
+                "description": "Artifacts to fan out over — one tool run per artifact",
+            }
+        }
+        # plain str keys — StrEnum roles must not leak into the baked closure
+        assert all(type(role) is str for role in spec.input_roles)
+
+    def test_optional_input_role_baked_as_not_required(self):
+        spec = endpoint_spec(GpuTool)
+        assert spec.input_roles == {
+            "reference": {
+                "required": False,
+                "description": "Optional reference structure",
+            }
+        }
 
     def test_hardware_from_compute_resources(self):
         spec = endpoint_spec(GpuTool)
@@ -121,12 +167,6 @@ class TestEndpointSpec:
 
 
 class TestBuildApp:
-    @pytest.fixture
-    def mock_modal(self, monkeypatch) -> MagicMock:
-        mock = MagicMock()
-        monkeypatch.setattr(deploy_mod, "modal", mock)
-        return mock
-
     def test_app_name_and_worker_wiring(self, mock_modal: MagicMock):
         build_app(GpuTool)
 
@@ -179,3 +219,51 @@ class TestBuildApp:
         with pytest.raises(ValueError, match="not a tool op"):
             build_app(DataGenerator)
         mock_modal.App.assert_not_called()
+
+
+class TestEndpointRoutes:
+    """Exercise the FastAPI app the endpoint function builds (modal mocked)."""
+
+    @pytest.fixture
+    def client(self, mock_modal: MagicMock) -> TestClient:
+        build_app(GpuTool)
+        # the undecorated endpoint fn is what asgi_app's decorator received;
+        # calling it builds the real FastAPI app
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        return TestClient(endpoint_fn())
+
+    @pytest.fixture
+    def worker(self, mock_modal: MagicMock) -> MagicMock:
+        # the closure's worker handle: the result of app.function(...)(fn)
+        return mock_modal.App.return_value.function.return_value.return_value
+
+    def test_schema_serves_baked_contract(self, client: TestClient):
+        response = client.get("/schema")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["operation"] == "gpu_tool_test"
+        assert body["description"] == "Tool op with hardware spec"
+        assert body["params_schema"] == GpuTool.Params.model_json_schema()
+        assert body["inputs"] == {
+            "reference": {
+                "required": False,
+                "description": "Optional reference structure",
+            }
+        }
+        SchemaResponse(**body)  # served dict matches the documented wire shape
+
+    def test_conforming_params_pass_submit(
+        self, client: TestClient, worker: MagicMock
+    ):
+        """The served schema and the /submit-enforced schema are the same dict."""
+        worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
+        served = client.get("/schema").json()["params_schema"]
+        payload = {"contigs": "10-20"}
+        jsonschema.validate(payload, served)  # conforms to what /schema served
+        response = client.post("/submit", data={"params": json.dumps(payload)})
+        assert response.status_code == 200
+        assert response.json() == {"call_id": "fc-1"}
+
+    def test_nonconforming_params_rejected(self, client: TestClient):
+        response = client.post("/submit", data={"params": json.dumps({"contigs": 1})})
+        assert response.status_code == 422
