@@ -516,6 +516,26 @@ class TestToolOps:
         with pytest.raises(NotImplementedError, match="must implement execute"):
             AbstractOp().execute(ExecuteInput(execute_dir="/tmp"))
 
+    def test_build_command_receives_unwrapped_per_artifact_inputs(self, tmp_path):
+        """Per-artifact one-element lists are unwrapped before build_command."""
+        from artisan.operations.base.operation_definition import tool_command_inputs
+
+        assert tool_command_inputs({"dataset": ["/a.csv"]}) == {"dataset": "/a.csv"}
+        assert tool_command_inputs({"many": ["/a", "/b"]}) == {"many": ["/a", "/b"]}
+        assert tool_command_inputs({"plain": "/a"}) == {"plain": "/a"}
+
+        seen: list[dict[str, Any]] = []
+
+        class _Spy(ShellTool):
+            def build_command(self, inputs: dict[str, Any]) -> list[str]:
+                seen.append(inputs)
+                return [*self.tool.parts(), "-c", "true"]
+
+        _Spy().execute(
+            ExecuteInput(inputs={"dataset": ["/one.csv"]}, execute_dir=str(tmp_path))
+        )
+        assert seen == [{"dataset": "/one.csv"}]
+
     def test_build_command_stub_raises(self):
         """Base build_command() raises for non-tool subclasses."""
 

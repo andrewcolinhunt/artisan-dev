@@ -51,6 +51,27 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.external_tools import run_command
 
 
+def tool_command_inputs(prepared: dict[str, Any]) -> dict[str, Any]:
+    """Normalize prepared inputs for ``build_command``.
+
+    Per-artifact dispatch delivers each sliced role as a one-element list
+    (the list interface ``execute()`` implementations expect); a tool
+    command addresses one artifact's files, so the framework unwraps
+    single-element lists before ``build_command`` — identically under the
+    local subprocess and the endpoint client.
+
+    Args:
+        prepared: ``ExecuteInput.inputs`` for one artifact.
+
+    Returns:
+        The dict with one-element list values unwrapped to their item.
+    """
+    return {
+        key: value[0] if isinstance(value, list) and len(value) == 1 else value
+        for key, value in prepared.items()
+    }
+
+
 class OperationDefinition(BaseModel):
     """Base class for all pipeline operations.
 
@@ -336,7 +357,7 @@ class OperationDefinition(BaseModel):
         else:
             run_command(
                 self.environments.current(),
-                self.build_command(inputs.inputs),
+                self.build_command(tool_command_inputs(inputs.inputs)),
                 cwd=inputs.execute_dir,
                 log_path=inputs.log_path,
             )

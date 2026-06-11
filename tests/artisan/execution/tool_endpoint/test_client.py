@@ -120,6 +120,32 @@ class TestCallEndpointHappyPath:
         assert json.loads(submit_kwargs["data"]["input_uris"]) == {
             "ref": "s3://bucket/key"
         }
+        # original filenames ride along so the worker preserves basenames
+        assert json.loads(submit_kwargs["data"]["input_filenames"]) == {
+            "pdb": "input.pdb",
+            "ref": "key",
+        }
+
+    def test_per_artifact_list_inputs_unwrap(self, mock_http, tmp_path):
+        """Per-artifact dispatch hands roles as one-element lists — accepted."""
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+        source = tmp_path / "input.pdb"
+        source.write_bytes(b"ATOM")
+
+        call_endpoint(
+            _op(),
+            ExecuteInput(
+                inputs={"pdb": [str(source)]},  # the _split_prepared_inputs shape
+                execute_dir=str(tmp_path),
+            ),
+        )
+
+        submit_kwargs = client.post.call_args_list[0].kwargs
+        assert submit_kwargs["files"] == [("files", ("pdb", b"ATOM"))]
 
 
 class TestCallEndpointFailures:

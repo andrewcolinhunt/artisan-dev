@@ -60,8 +60,9 @@ class InlineTransport:
         refs: list[InputRef] = []
         total = 0
         for name, source in files.items():
+            filename = os.path.basename(source.rstrip("/"))
             if "://" in source:
-                refs.append(InputRef(name=name, uri=source))
+                refs.append(InputRef(name=name, filename=filename, uri=source))
                 continue
             with open(source, "rb") as f:
                 data = f.read()
@@ -73,7 +74,7 @@ class InlineTransport:
                     "already-external artifacts re-upload nothing"
                 )
                 raise ValueError(msg)
-            refs.append(InputRef(name=name, data=data))
+            refs.append(InputRef(name=name, filename=filename, data=data))
         return refs
 
     def unpack_inputs(
@@ -96,7 +97,9 @@ class InlineTransport:
         os.makedirs(dest, exist_ok=True)
         paths: dict[str, str] = {}
         for ref in refs:
-            local = os.path.join(dest, os.path.basename(ref.name))
+            # original filename when carried — build_command and lineage
+            # stem-matching must see the same basename as a local run
+            local = os.path.join(dest, os.path.basename(ref.filename or ref.name))
             if ref.uri is not None:
                 ref_fs, remote = _resolve_fs(ref.uri, fs)
                 ref_fs.get(remote, local)
