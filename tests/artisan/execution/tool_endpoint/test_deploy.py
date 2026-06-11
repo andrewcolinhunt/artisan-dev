@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint.deploy import build_app, endpoint_spec
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.operations.examples import DataGenerator, EchoTool
+from artisan.operations.examples import DataGenerator, WaitTool
 from artisan.schemas.operation_config.compute import (
     ARTISAN_WORKER_IMAGE,
     ComputeProvider,
@@ -84,17 +84,17 @@ class NoModalTool(OperationDefinition):
 
 class TestEndpointSpec:
     def test_flattens_class_level_config(self):
-        spec = endpoint_spec(EchoTool)
-        assert spec.name == "echo_tool"
-        assert spec.op_module == EchoTool.__module__
-        assert spec.op_qualname == "EchoTool"
+        spec = endpoint_spec(WaitTool)
+        assert spec.name == "wait_tool"
+        assert spec.op_module == WaitTool.__module__
+        assert spec.op_qualname == "WaitTool"
         assert spec.image == ARTISAN_WORKER_IMAGE
         assert spec.local_python_sources == ["artisan"]
 
     def test_bakes_params_json_schema(self):
         """Boundary validation uses the baked schema — no artisan on the endpoint."""
-        spec = endpoint_spec(EchoTool)
-        assert set(spec.params_schema["properties"]) == {"text", "filename"}
+        spec = endpoint_spec(WaitTool)
+        assert set(spec.params_schema["properties"]) == {"seconds"}
         assert spec.params_schema["additionalProperties"] is False  # extra="forbid"
 
     def test_hardware_from_compute_resources(self):
