@@ -32,7 +32,14 @@ class ModalComputeConfig(ComputeConfig):
     concerns only.
 
     Attributes:
-        image: Container image for the Modal function.
+        image: Container image for the Modal function — a registry ref.
+            The image is the single source of truth for running the op
+            anywhere (Modal worker or plain ``docker run``): tool
+            binaries, dependencies, artisan, and the op's own code are
+            baked in, by convention from
+            ``docker/<image-name>/Dockerfile``. Pin an immutable tag
+            (version or ``sha-<short>``) in production; CI publishes
+            ``latest`` plus ``sha-<short>`` for ``artisan-worker``.
         retries: Number of retries on preemption.
         min_containers: Containers kept warm even at zero traffic.
             Set to match expected batch parallelism to eliminate
@@ -62,19 +69,21 @@ class ModalComputeConfig(ComputeConfig):
         env: Environment variables to set inside the container
             (e.g. ``{"HF_XET_HIGH_PERFORMANCE": "1"}``). Applied as
             an image layer so cache hits survive as long as the dict
-            is stable.
-        local_python_sources: Top-level Python package names to overlay
-            onto the Modal image via
-            ``modal.Image.add_local_python_source``. The default
-            ``["artisan"]`` preserves the existing behavior of shipping
-            the dev-host artisan source live, shadowing whatever version
-            the image pip-installed. Add your own package name(s) to
-            also overlay project sources live
-            (e.g. ``["artisan", "pipelines"]``). Remove ``"artisan"`` to
-            use the image's pinned version instead; pass ``[]`` to
-            overlay nothing. Mounted at cold-start rather than baked
-            into the image — upload bandwidth scales with total source
-            size.
+            is stable. Deploy-time concerns only — anything the tool
+            itself needs must live in the image's Dockerfile ``ENV``,
+            or a plain ``docker run`` of the same image diverges from
+            the Modal deploy.
+        local_python_sources: Dev-mode source overlay: top-level Python
+            package names shipped live from the deploy machine via
+            ``modal.Image.add_local_python_source``, shadowing whatever
+            versions the image baked. Default ``[]`` — op code is baked
+            into the image, so what runs on Modal is exactly what the
+            image carries (and what a plain ``docker run`` would run).
+            Set package names (e.g. ``["artisan", "pipelines"]``) or
+            pass ``artisan modal deploy --overlay`` to iterate without
+            rebuilding the image; never rely on the overlay in
+            production. Mounted at cold-start rather than baked —
+            upload bandwidth scales with total source size.
         endpoint_url: Base URL of an externally-deployed tool endpoint.
             None (default) resolves the Artisan-deployed app
             ``artisan-tool-<op.name>`` via the Modal SDK; set this to
@@ -104,7 +113,7 @@ class ModalComputeConfig(ComputeConfig):
     secrets: list[str] = Field(default_factory=list)
     volumes: dict[str, str] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
-    local_python_sources: list[str] = Field(default_factory=lambda: ["artisan"])
+    local_python_sources: list[str] = Field(default_factory=list)
     endpoint_url: str | None = None
     auth_secret: str | None = None
     poll_interval: float = Field(default=2.0, gt=0)

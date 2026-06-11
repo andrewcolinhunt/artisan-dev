@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import jsonschema
 import pytest
 from fastapi.testclient import TestClient
-from fixtures.endpoint_ops import GpuTool
+from fixtures.endpoint_ops import GpuTool, PlainTool
 
 from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint.deploy import build_app
@@ -64,6 +64,22 @@ class TestBuildApp:
         endpoint_chain = mock_modal.Image.debian_slim.return_value.uv_pip_install
         endpoint_chain.assert_called_once_with("fastapi[standard]", "jsonschema")
         endpoint_chain.return_value.add_local_python_source.assert_not_called()
+
+    def test_empty_default_adds_no_overlay(self, mock_modal: MagicMock):
+        """Baked-by-default: a bare config ships no deploy-machine source."""
+        build_app(PlainTool)
+
+        env_chain = mock_modal.Image.from_registry.return_value.env
+        env_chain.return_value.add_local_python_source.assert_not_called()
+
+    def test_overlay_appends_to_configured_sources(self, mock_modal: MagicMock):
+        """--overlay packages append after config sources, deduplicated."""
+        build_app(GpuTool, overlay=["mypkg", "artisan"])
+
+        env_chain = mock_modal.Image.from_registry.return_value.env
+        env_chain.return_value.add_local_python_source.assert_called_once_with(
+            "artisan", "mypkg"
+        )
 
     def test_volumes_and_secrets_resolved_by_name(self, mock_modal: MagicMock):
         build_app(GpuTool)

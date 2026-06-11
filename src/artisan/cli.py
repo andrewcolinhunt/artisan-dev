@@ -65,6 +65,16 @@ def _build_parser() -> argparse.ArgumentParser:
     deploy.add_argument(
         "operation", help="Registered operation name (e.g. 'wait_tool')"
     )
+    deploy.add_argument(
+        "--overlay",
+        action="append",
+        metavar="PKG",
+        help=(
+            "Dev mode: mount a local Python package source onto the worker "
+            "image, shadowing the baked version (repeatable). Production "
+            "deploys bake code into the image instead."
+        ),
+    )
     deploy.set_defaults(func=_modal_deploy)
 
     op_parser = sub.add_parser("op", help="Operation inspection commands")
@@ -115,7 +125,7 @@ def _modal_deploy(args: argparse.Namespace) -> int:
     op_cls = _resolve_op_cls(args.operation)
     if op_cls is None:
         return 1
-    app = build_app(op_cls)
+    app = build_app(op_cls, overlay=args.overlay)
     app.deploy()
     sys.stdout.write(f"Deployed artisan-tool-{op_cls.name}\n")
     return 0

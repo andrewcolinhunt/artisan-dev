@@ -85,7 +85,11 @@ class WaitTool(OperationDefinition):
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
 
     # ---------- Compute ----------
-    compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
+    # overlay deliberately on: example ops exercise in-development artisan,
+    # and the integration suite deploys them from the working branch
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(local_python_sources=["artisan"])
+    )
 
     # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:

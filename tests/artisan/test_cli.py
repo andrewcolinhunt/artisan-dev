@@ -24,9 +24,23 @@ class TestModalDeploy:
 
         assert rc == 0
         mock_discover.assert_called_once()
-        mock_build_app.assert_called_once_with(WaitTool)
+        mock_build_app.assert_called_once_with(WaitTool, overlay=None)
         mock_app.deploy.assert_called_once()
         assert "artisan-tool-wait_tool" in capsys.readouterr().out
+
+    @patch("artisan.registry.discovery.discover")
+    @patch("artisan.execution.tool_endpoint.deploy.build_app")
+    def test_overlay_forwarded_to_build_app(self, mock_build_app, mock_discover):
+        from artisan.operations.examples import WaitTool
+
+        mock_build_app.return_value = MagicMock()
+
+        rc = main(
+            ["modal", "deploy", "wait_tool", "--overlay", "artisan", "--overlay", "pkg"]
+        )
+
+        assert rc == 0
+        mock_build_app.assert_called_once_with(WaitTool, overlay=["artisan", "pkg"])
 
     @patch("artisan.registry.discovery.discover")
     @patch("artisan.execution.tool_endpoint.deploy.build_app")

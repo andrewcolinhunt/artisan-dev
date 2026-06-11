@@ -59,6 +59,9 @@ class GpuTool(OperationDefinition):
             volumes={"/weights": "weights-vol"},
             secrets=["hf-read"],
             min_containers=1,
+            # pinned: keeps the mounts-sources assertion meaningful now
+            # that the field default is [] (baked-by-default)
+            local_python_sources=["artisan"],
         )
     )
     compute_resources: ComputeResources = ComputeResources(
@@ -67,6 +70,24 @@ class GpuTool(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {}
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [*self.tool.parts(), "-c", "true"]
+
+
+class PlainTool(OperationDefinition):
+    """Tool op with a bare modal config — exercises the baked-image default."""
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "plain_tool_test"
+    description: ClassVar[str] = "Tool op with default modal config"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = _OUTPUTS
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+    compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
 
     def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         return [*self.tool.parts(), "-c", "true"]
