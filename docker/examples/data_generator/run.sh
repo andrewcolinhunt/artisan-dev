@@ -10,7 +10,7 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 echo "==> Building base image: artisan-worker:dev"
-docker build -f "${REPO_ROOT}/docker/Dockerfile" -t artisan-worker:dev "${REPO_ROOT}"
+docker build -f "${REPO_ROOT}/docker/artisan-worker/Dockerfile" -t artisan-worker:dev "${REPO_ROOT}"
 
 echo "==> Building example image: artisan-demo-data-generator:dev"
 docker build \
