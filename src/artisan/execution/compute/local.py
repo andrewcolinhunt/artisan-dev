@@ -15,7 +15,7 @@ class LocalExecuteRouter(ExecuteRouter):
     def route_execute(
         self,
         operation: Any,
-        execute_input: ExecuteInput,
+        execute_inputs: list[ExecuteInput],
         sandbox_root: str,
-    ) -> Any:
-        return invoke_op_work(operation, execute_input)
+    ) -> list[Any]:
+        return [invoke_op_work(operation, ei) for ei in execute_inputs]
