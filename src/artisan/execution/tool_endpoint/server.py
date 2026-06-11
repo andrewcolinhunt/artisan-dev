@@ -74,7 +74,7 @@ def run_tool_request(
     Returns:
         WorkerResult with the control manifest and, on success, the tar.
     """
-    op = _instantiate(op_cls, request)
+    op = instantiate_op(op_cls, request.params)
     job_root = tempfile.mkdtemp(prefix=f"artisan-tool-{op_cls.name}-")
     inputs_dir = os.path.join(job_root, "inputs")
     outputs_dir = os.path.join(job_root, "outputs")
@@ -107,15 +107,28 @@ def run_tool_request(
     )
 
 
-def _instantiate(
-    op_cls: type[OperationDefinition], request: ToolRequest
+def instantiate_op(
+    op_cls: type[OperationDefinition], params: dict[str, Any]
 ) -> OperationDefinition:
-    """Instantiate the op from request params (nested ``Params`` when present)."""
+    """Instantiate the op from a params dict (nested ``Params`` when present).
+
+    Shared by the endpoint worker (request params) and the ``artisan op
+    run`` runner (``--params`` argv) so both sides reconstruct the op
+    identically.
+
+    Args:
+        op_cls: The operation class to instantiate.
+        params: Field values for the op's nested ``Params`` model, or
+            top-level fields when the op declares no ``Params``.
+
+    Returns:
+        The operation instance.
+    """
     op_any: Any = op_cls  # subclass fields (params, …) are invisible on the base
     params_cls = getattr(op_cls, "Params", None)
     if params_cls is None:
-        return op_any(**request.params)  # type: ignore[no-any-return]
-    return op_any(params=params_cls(**request.params))  # type: ignore[no-any-return]
+        return op_any(**params)  # type: ignore[no-any-return]
+    return op_any(params=params_cls(**params))  # type: ignore[no-any-return]
 
 
 def _envelope(operation_name: str, exc: ExternalToolError) -> ArtisanErrorEnvelope:
