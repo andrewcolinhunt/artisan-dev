@@ -12,7 +12,7 @@ import polars as pl
 import pytest
 import xxhash
 
-from artisan.execution.compute.local import LocalComputeRouter
+from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executors.creator import (
     LifecycleResult,
     run_creator_lifecycle,
@@ -394,7 +394,7 @@ class TestRoundTripEquivalence:
         prepped = prep_unit(unit_split, runtime_env)
 
         # Execute each artifact individually
-        router = LocalComputeRouter()
+        router = LocalExecuteRouter()
         raw_results = []
         for ei in prepped.artifact_execute_inputs:
             result = router.route_execute(prepped.operation, ei, prepped.sandbox_path)

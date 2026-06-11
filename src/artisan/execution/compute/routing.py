@@ -1,9 +1,9 @@
-"""Factory for creating compute provider routers from provider configs."""
+"""Factory for creating execute routers from provider configs."""
 
 from __future__ import annotations
 
-from artisan.execution.compute.base import ComputeRouter
-from artisan.execution.compute.local import LocalComputeRouter
+from artisan.execution.compute.base import ExecuteRouter
+from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.schemas.operation_config.compute import (
     ComputeConfig,
     LocalComputeConfig,
@@ -12,11 +12,11 @@ from artisan.schemas.operation_config.compute import (
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 
 
-def create_router(
+def create_execute_router(
     config: ComputeConfig,
     compute_resources: ComputeResources | None = None,
-) -> ComputeRouter:
-    """Create a compute provider router from a provider config.
+) -> ExecuteRouter:
+    """Create an execute router from a provider config.
 
     Args:
         config: Provider config from ``ComputeProvider.current()``.
@@ -31,7 +31,7 @@ def create_router(
     """
     del compute_resources  # accepted for signature stability; local routing ignores it
     if isinstance(config, LocalComputeConfig):
-        return LocalComputeRouter()
+        return LocalExecuteRouter()
     if isinstance(config, ModalComputeConfig):
         msg = (
             "ModalComputeConfig no longer creates a router — modal compute "

@@ -15,7 +15,7 @@ class ComputeConfig(BaseModel):
     """Base class for compute_provider provider configs.
 
     Mirrors the ``EnvironmentSpec`` hierarchy — each provider
-    extends this base and ``create_router()`` dispatches by type.
+    extends this base and ``create_execute_router()`` dispatches by type.
     """
 
 

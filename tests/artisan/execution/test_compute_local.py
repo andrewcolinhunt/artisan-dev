@@ -1,4 +1,4 @@
-"""Tests for LocalComputeRouter."""
+"""Tests for LocalExecuteRouter."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from artisan.execution.compute.local import LocalComputeRouter
+from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.schemas.specs.input_models import ExecuteInput
 
 
 class TestLocalComputeRouter:
     def test_passthrough_calls_execute(self):
         """route_execute delegates to operation.execute and returns its result."""
-        router = LocalComputeRouter()
+        router = LocalExecuteRouter()
         operation = MagicMock()
         operation.execute.return_value = {"key": "value"}
 
@@ -30,7 +30,7 @@ class TestLocalComputeRouter:
 
     def test_passthrough_returns_none(self):
         """route_execute passes through None returns."""
-        router = LocalComputeRouter()
+        router = LocalExecuteRouter()
         operation = MagicMock()
         operation.execute.return_value = None
 
@@ -45,7 +45,7 @@ class TestLocalComputeRouter:
 
     def test_passthrough_propagates_exception(self):
         """route_execute does not catch exceptions from execute."""
-        router = LocalComputeRouter()
+        router = LocalExecuteRouter()
         operation = MagicMock()
         operation.execute.side_effect = RuntimeError("boom")
 

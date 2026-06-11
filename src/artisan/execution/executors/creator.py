@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from artisan.execution.compute.base import ComputeRouter
-from artisan.execution.compute.routing import create_router
+from artisan.execution.compute.base import ExecuteRouter
+from artisan.execution.compute.routing import create_execute_router
 from artisan.execution.context.builder import build_creator_execution_context
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
@@ -74,7 +74,7 @@ def run_creator_lifecycle(
     worker_id: int = 0,
     execution_run_id: str | None = None,
     sources: dict[str, ArtifactSource] | None = None,
-    compute_router: ComputeRouter | None = None,
+    execute_router: ExecuteRouter | None = None,
 ) -> LifecycleResult:
     """Run one operation through setup → preprocess → execute → postprocess → lineage.
 
@@ -96,7 +96,7 @@ def run_creator_lifecycle(
         sources: Optional pre-resolved artifact sources keyed by role.
             When provided, hydrate from sources instead of unit.inputs.
             Used by the composite executor for in-memory artifact passing.
-        compute_router: Optional pre-created router for execute() dispatch.
+        execute_router: Optional pre-created router for execute() dispatch.
             When None, created from the operation's compute_provider config.
 
     Returns:
@@ -119,14 +119,14 @@ def run_creator_lifecycle(
 
     # --- execute phase ---
     with phase_timer("execute", prepped.timings):
-        if compute_router is None:
+        if execute_router is None:
             config = prepped.operation.compute_provider.current()
-            compute_router = create_router(
+            execute_router = create_execute_router(
                 config,
                 compute_resources=prepped.operation.compute_resources,
             )
         try:
-            raw_result = compute_router.route_execute(
+            raw_result = execute_router.route_execute(
                 prepped.operation,
                 prepped.artifact_execute_inputs[0],
                 prepped.sandbox_path,
@@ -146,7 +146,7 @@ def run_creator_flow(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
     worker_id: int = 0,
-    compute_router: ComputeRouter | None = None,
+    execute_router: ExecuteRouter | None = None,
 ) -> StagingResult:
     """Execute a creator operation through ordered execution phases.
 
@@ -157,7 +157,7 @@ def run_creator_flow(
         unit: Execution unit specifying the operation and its inputs.
         runtime_env: Paths and step_runner configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
-        compute_router: Shared router for compute_provider dispatch. When provided,
+        execute_router: Shared router for compute_provider dispatch. When provided,
             the lifecycle skips creating its own router. When ``None``,
             each invocation creates a router from the operation's config.
 
@@ -186,7 +186,7 @@ def run_creator_flow(
             runtime_env,
             worker_id,
             execution_run_id,
-            compute_router=compute_router,
+            execute_router=execute_router,
         )
         timings.update(lifecycle_result.timings)
 
