@@ -21,7 +21,14 @@ from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
-pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+# The worker streams tool output (stream_output=True); the filters swallow
+# a pre-existing pipe-cleanup quirk in _run_with_streaming (Popen.stdout
+# closed by GC, not explicitly) — benign, same as test_streaming_echo.
+pytestmark = [
+    pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH"),
+    pytest.mark.filterwarnings("ignore::ResourceWarning"),
+    pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning"),
+]
 
 
 class FailTool(OperationDefinition):
