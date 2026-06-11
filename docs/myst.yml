@@ -117,6 +117,7 @@ project:
         - title: Configuration
           children:
             - file: how-to-guides/configuring-execution.md
+            - file: how-to-guides/op-container-images.md
             - file: how-to-guides/connect-to-prefect.md
         - title: Results
           children:
