@@ -48,28 +48,6 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.external_tools import run_command
-
-
-def tool_command_inputs(prepared: dict[str, Any]) -> dict[str, Any]:
-    """Normalize prepared inputs for ``execute_command``.
-
-    Per-artifact dispatch delivers each sliced role as a one-element list
-    (the list interface ``execute_function()`` implementations expect); a tool
-    command addresses one artifact's files, so the framework unwraps
-    single-element lists before ``execute_command`` — identically under the
-    local subprocess and the endpoint client.
-
-    Args:
-        prepared: ``ExecuteInput.inputs`` for one artifact.
-
-    Returns:
-        The dict with one-element list values unwrapped to their item.
-    """
-    return {
-        key: value[0] if isinstance(value, list) and len(value) == 1 else value
-        for key, value in prepared.items()
-    }
 
 
 class OperationDefinition(BaseModel):
@@ -319,53 +297,30 @@ class OperationDefinition(BaseModel):
         )
 
     def execute_function(self, inputs: ExecuteInput) -> Any:
-        """Run the core computation for a creator operation.
+        """Run the core computation for a creator operation, as a Python body.
 
-        Pure-Python creator ops override this method: receive prepared inputs
-        from preprocess, write output files to ``inputs.execute_dir``, access
-        config parameters via ``self``.
+        The function form of the execute phase: override to receive prepared
+        inputs from preprocess, write output files to ``inputs.execute_dir``,
+        and access config parameters via ``self``. The work is code — it
+        runs where the lifecycle worker is. Ops whose work should ship to a
+        remote backend declare a ``tool`` + ``execute_command()`` instead.
 
-        Command ops — subclasses declaring a ``tool`` plus
-        ``execute_command()`` — inherit this framework implementation
-        instead. It dispatches on
-        ``compute_provider`` and runs the tool: locally as a subprocess via
-        ``run_command`` (wrapped by the active environment), or remotely via
-        the deployed tool endpoint. Under both providers it returns ``None``;
-        a tool op's products are the files written to ``inputs.execute_dir``
-        plus the tool log. Memory results and post-run glue belong in
-        ``postprocess()``.
-
-        The framework calls this method; direct calls bypass orchestration
-        (sandboxing, lineage, caching) and should only be used for testing.
+        The execution layer performs this slot (via ``invoke_op_work()``);
+        direct calls bypass orchestration (sandboxing, lineage, caching)
+        and should only be used for testing.
 
         Args:
             inputs: Prepared inputs from preprocess and the execute directory.
 
         Returns:
             Raw result of any type, passed to postprocess as memory_outputs.
-            The framework tool-op implementation returns ``None``.
 
         Raises:
-            NotImplementedError: If the subclass neither overrides this
-                method nor declares a ToolSpec + ``execute_command()``.
+            NotImplementedError: If the subclass does not override this
+                method.
         """
-        if not self.is_command_op():
-            msg = f"{self.__class__.__name__} must implement execute_function() method"
-            raise NotImplementedError(msg)
-        if self.compute_provider.active == "modal":
-            # Deferred: operations/ may not import execution/ at module
-            # level (dependency direction); the client is the one exception,
-            # reached only on the modal path.
-            from artisan.execution.tool_endpoint.client import call_endpoint
-
-            call_endpoint(self, inputs)
-        else:
-            run_command(
-                self.environments.current(),
-                self.execute_command(tool_command_inputs(inputs.inputs)),
-                cwd=inputs.execute_dir,
-                log_path=inputs.log_path,
-            )
+        msg = f"{self.__class__.__name__} does not implement execute_function()"
+        raise NotImplementedError(msg)
 
     def execute_curator(
         self,
@@ -429,7 +384,7 @@ class OperationDefinition(BaseModel):
         if not cls.name:
             return
 
-        # Check that one of the execute slots is implemented
+        # Exactly one execute slot must be implemented
         has_execute_function = (
             cls.execute_function is not OperationDefinition.execute_function
         )
@@ -454,6 +409,23 @@ class OperationDefinition(BaseModel):
                 f"{cls.__name__} must implement execute_function() (creator "
                 "ops), execute_curator() (curator ops), or declare a ToolSpec "
                 "+ execute_command() (command ops)"
+            )
+            raise TypeError(msg)
+        filled = [
+            name
+            for name, has_slot in (
+                ("execute_function()", has_execute_function),
+                ("execute_command()", has_execute_command),
+                ("execute_curator()", has_execute_curator),
+            )
+            if has_slot
+        ]
+        if len(filled) > 1:
+            # A second slot would be silently dead code — fail at definition.
+            msg = (
+                f"{cls.__name__} fills {len(filled)} execute slots "
+                f"({', '.join(filled)}). Implement exactly one of "
+                "execute_function(), execute_command(), or execute_curator()."
             )
             raise TypeError(msg)
 

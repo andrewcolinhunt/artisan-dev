@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from artisan.execution.compute.invoke import invoke_op_work
 from artisan.operations.examples import WaitTool
 from artisan.schemas import ExecuteInput, PostprocessInput
 
@@ -35,12 +36,13 @@ class TestWaitTool:
         log_path = tmp_path / "tool_output.log"
 
         op = WaitTool(params=WaitTool.Params(seconds=1))
-        result = op.execute_function(
+        result = invoke_op_work(
+            op,
             ExecuteInput(
                 inputs={"dataset": str(source)},
                 execute_dir=str(execute_dir),
                 log_path=str(log_path),
-            )
+            ),
         )
 
         assert result is None

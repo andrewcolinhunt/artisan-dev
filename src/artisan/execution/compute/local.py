@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from artisan.execution.compute.base import ExecuteRouter
+from artisan.execution.compute.invoke import invoke_op_work
 from artisan.schemas.specs.input_models import ExecuteInput
 
 
 class LocalExecuteRouter(ExecuteRouter):
-    """Direct call — today's behavior."""
+    """Run the execute phase here: in-process Python or a local subprocess."""
 
     def route_execute(
         self,
@@ -17,4 +18,4 @@ class LocalExecuteRouter(ExecuteRouter):
         execute_input: ExecuteInput,
         sandbox_root: str,
     ) -> Any:
-        return operation.execute_function(execute_input)
+        return invoke_op_work(operation, execute_input)

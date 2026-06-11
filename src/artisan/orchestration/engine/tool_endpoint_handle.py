@@ -32,7 +32,7 @@ from artisan.execution.staging.recorder import (
     record_execution_failure,
     record_execution_success,
 )
-from artisan.execution.tool_endpoint.client import cancel_scope
+from artisan.execution.tool_endpoint.client import call_endpoint, cancel_scope
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter, _RouterState
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
@@ -214,6 +214,7 @@ class ToolEndpointDispatchHandle(LifecycleRouter):
         """
         try:
             with cancel_scope(self._cancel):
-                return operation.execute_function(execute_input)
+                call_endpoint(operation, execute_input)
+                return None
         except Exception as exc:
             return exc
