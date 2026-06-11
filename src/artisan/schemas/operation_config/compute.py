@@ -79,11 +79,13 @@ class ModalComputeConfig(ComputeConfig):
             None (default) resolves the Artisan-deployed app
             ``artisan-tool-<op.name>`` via the Modal SDK; set this to
             consume an endpoint Artisan did not deploy.
-        auth_secret: Environment-variable prefix for the proxy-auth
-            token pair (``<prefix>_TOKEN_ID`` / ``<prefix>_TOKEN_SECRET``),
-            sent as ``Modal-Key`` / ``Modal-Secret`` headers. None falls
-            back to ``MODAL_TOKEN_ID`` / ``MODAL_TOKEN_SECRET`` — the
-            same pair that already reaches workers.
+        auth_secret: Variable-name prefix for the proxy-auth token pair
+            (``<prefix>_TOKEN_ID`` / ``<prefix>_TOKEN_SECRET``), sent as
+            ``Modal-Key`` / ``Modal-Secret`` headers. None uses the
+            ``MODAL_PROXY`` prefix (``MODAL_PROXY_TOKEN_ID`` /
+            ``MODAL_PROXY_TOKEN_SECRET``). Tokens are dashboard-created
+            proxy-auth tokens, discovered from the process environment or
+            the nearest ``.env`` file (see ``.env.example``).
         poll_interval: Seconds between ``/result`` polls while a tool
             job runs.
     """
