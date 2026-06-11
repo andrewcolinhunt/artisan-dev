@@ -44,7 +44,7 @@ class SimpleOperation(OperationDefinition):
     label: str = Field(default="default")
     verbose: bool = Field(default=False)
 
-    def execute(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: dict[str, Any], output_dir):
         return ArtifactResult(success=True, metadata={"count": self.count})
 
 
@@ -68,12 +68,12 @@ class PositionalOperation(OperationDefinition):
     output_file: str = Field(...)
     verbose: bool = Field(default=False)
 
-    def execute(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: dict[str, Any], output_dir):
         return ArtifactResult(success=True)
 
 
 class ShellTool(OperationDefinition):
-    """Tool op for testing the framework execute()."""
+    """Tool op for testing the framework execute_function()."""
 
     class OutputRole(StrEnum):
         result = auto()
@@ -91,7 +91,7 @@ class ShellTool(OperationDefinition):
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
     message: str = Field(default="hello")
 
-    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         return [*self.tool.parts(), "-c", f'echo "{self.message}" > marker.txt']
 
 
@@ -147,7 +147,7 @@ class TestOperationDefinitionExecute:
     def test_should_execute_successfully(self, tmp_path):
         """Should execute and return ArtifactResult."""
         op = SimpleOperation(count=5)
-        result = op.execute(inputs={}, output_dir=tmp_path)
+        result = op.execute_function(inputs={}, output_dir=tmp_path)
 
         assert result.success is True
         assert result.metadata["count"] == 5
@@ -155,7 +155,7 @@ class TestOperationDefinitionExecute:
     def test_should_access_params_via_self(self, tmp_path):
         """Should be able to access params via self in execute."""
         op = SimpleOperation(count=10, label="test")
-        result = op.execute(inputs={}, output_dir=tmp_path)
+        result = op.execute_function(inputs={}, output_dir=tmp_path)
 
         # The implementation accesses self.count
         assert result.metadata["count"] == 10
@@ -292,7 +292,7 @@ class TestRoleEnumValidation:
                     ),
                 }
 
-                def execute(self, inputs, output_dir):
+                def execute_function(self, inputs, output_dir):
                     pass
 
     def test_missing_input_role_raises_type_error(self):
@@ -317,7 +317,7 @@ class TestRoleEnumValidation:
                 def preprocess(self, inputs):
                     return {}
 
-                def execute(self, inputs, output_dir):
+                def execute_function(self, inputs, output_dir):
                     pass
 
     def test_mismatched_output_role_raises_type_error(self):
@@ -337,7 +337,7 @@ class TestRoleEnumValidation:
                     ),
                 }
 
-                def execute(self, inputs, output_dir):
+                def execute_function(self, inputs, output_dir):
                     pass
 
     def test_mismatched_input_role_raises_type_error(self):
@@ -365,7 +365,7 @@ class TestRoleEnumValidation:
                 def preprocess(self, inputs):
                     return {}
 
-                def execute(self, inputs, output_dir):
+                def execute_function(self, inputs, output_dir):
                     pass
 
     def test_inherited_roles_pass_validation(self):
@@ -440,15 +440,15 @@ class TestRoleEnumValidation:
 
 
 class TestToolOps:
-    """Tool ops: ToolSpec + build_command() in place of execute()."""
+    """Tool ops: ToolSpec + execute_command() in place of execute_function()."""
 
     def test_tool_op_passes_subclass_validation(self):
-        """A ToolSpec + build_command() satisfies the must-implement check."""
+        """A ToolSpec + execute_command() satisfies the must-implement check."""
         assert "shell_tool_test" in OperationDefinition.get_all()
         assert ShellTool._kind() == "creator"
 
     def test_build_command_without_tool_raises(self):
-        """build_command() without a ToolSpec fails at class definition."""
+        """execute_command() without a ToolSpec fails at class definition."""
         with pytest.raises(TypeError, match="declares no ToolSpec"):
 
             class NoToolSpec(OperationDefinition):
@@ -456,7 +456,7 @@ class TestToolOps:
                 inputs: ClassVar[dict[str, InputSpec]] = {}
                 outputs: ClassVar[dict[str, OutputSpec]] = {}
 
-                def build_command(self, inputs: dict[str, Any]) -> list[str]:
+                def execute_command(self, inputs: dict[str, Any]) -> list[str]:
                     return ["true"]
 
     def test_neither_execute_nor_tool_raises(self):
@@ -469,7 +469,7 @@ class TestToolOps:
                 outputs: ClassVar[dict[str, OutputSpec]] = {}
 
     def test_modal_default_requires_tool_op(self):
-        """A class defaulting to modal must declare ToolSpec + build_command."""
+        """A class defaulting to modal must declare ToolSpec + execute_command."""
         with pytest.raises(TypeError, match="modal requires a ToolSpec"):
 
             class ModalPurePython(OperationDefinition):
@@ -480,13 +480,13 @@ class TestToolOps:
                     active="modal", modal=ModalComputeConfig()
                 )
 
-                def execute(self, inputs):
+                def execute_function(self, inputs):
                     return None
 
     def test_local_execute_runs_tool_and_returns_none(self, tmp_path):
         """Framework execute() runs the tool locally; products are files."""
         op = ShellTool(message="hi")
-        result = op.execute(
+        result = op.execute_function(
             ExecuteInput(
                 execute_dir=str(tmp_path),
                 log_path=str(tmp_path / "tool_output.log"),
@@ -503,21 +503,21 @@ class TestToolOps:
         )
         execute_input = ExecuteInput(execute_dir="/tmp")
         with patch("artisan.execution.tool_endpoint.client.call_endpoint") as mock_call:
-            result = op.execute(execute_input)
+            result = op.execute_function(execute_input)
         assert result is None
         mock_call.assert_called_once_with(op, execute_input)
 
     def test_unnamed_non_tool_base_execute_raises(self):
-        """Base execute() still raises for abstract non-tool subclasses."""
+        """Base execute_function() still raises for abstract non-tool subclasses."""
 
         class AbstractOp(OperationDefinition):
             pass  # no name — skips registration and validation
 
         with pytest.raises(NotImplementedError, match="must implement execute"):
-            AbstractOp().execute(ExecuteInput(execute_dir="/tmp"))
+            AbstractOp().execute_function(ExecuteInput(execute_dir="/tmp"))
 
     def test_build_command_receives_unwrapped_per_artifact_inputs(self, tmp_path):
-        """Per-artifact one-element lists are unwrapped before build_command."""
+        """Per-artifact one-element lists are unwrapped before execute_command."""
         from artisan.operations.base.operation_definition import tool_command_inputs
 
         assert tool_command_inputs({"dataset": ["/a.csv"]}) == {"dataset": "/a.csv"}
@@ -527,23 +527,23 @@ class TestToolOps:
         seen: list[dict[str, Any]] = []
 
         class _Spy(ShellTool):
-            def build_command(self, inputs: dict[str, Any]) -> list[str]:
+            def execute_command(self, inputs: dict[str, Any]) -> list[str]:
                 seen.append(inputs)
                 return [*self.tool.parts(), "-c", "true"]
 
-        _Spy().execute(
+        _Spy().execute_function(
             ExecuteInput(inputs={"dataset": ["/one.csv"]}, execute_dir=str(tmp_path))
         )
         assert seen == [{"dataset": "/one.csv"}]
 
     def test_build_command_stub_raises(self):
-        """Base build_command() raises for non-tool subclasses."""
+        """Base execute_command() raises for non-tool subclasses."""
 
         class AbstractOp2(OperationDefinition):
             pass
 
-        with pytest.raises(NotImplementedError, match="build_command"):
-            AbstractOp2().build_command({})
+        with pytest.raises(NotImplementedError, match="execute_command"):
+            AbstractOp2().execute_command({})
 
 
 class TestKindDerivation:

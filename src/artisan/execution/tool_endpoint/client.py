@@ -1,6 +1,6 @@
 """HTTP client for deployed tool endpoints — the ``compute_provider='modal'`` path.
 
-``call_endpoint`` is invoked by the framework ``execute()``: it submits the
+``call_endpoint`` is invoked by the framework ``execute_function()``: it submits the
 op's params + input files, polls ``/result``, downloads the output tar into
 ``execute_dir`` (recreating the local layout), and appends the tool-log tail
 to ``log_path``. The dispatch handle exposes pipeline cancellation to the
@@ -174,7 +174,7 @@ def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
                 message=(
                     f"prepared input {name!r} is {type(value).__name__}, not a "
                     "file path — tool ops under modal ship Params + input "
-                    "files only; derive scalars in Params or build_command"
+                    "files only; derive scalars in Params or execute_command"
                 ),
                 error_type="config",
                 operation_name=op_name,

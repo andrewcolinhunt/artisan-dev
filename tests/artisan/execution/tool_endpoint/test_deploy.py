@@ -61,7 +61,7 @@ class GpuTool(OperationDefinition):
         gpu="A100", memory_gb=8, timeout=600
     )
 
-    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         return [*self.tool.parts(), "-c", "true"]
 
 
@@ -78,7 +78,7 @@ class NoModalTool(OperationDefinition):
 
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
 
-    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         return [*self.tool.parts(), "-c", "true"]
 
 

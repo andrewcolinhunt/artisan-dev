@@ -64,7 +64,7 @@ class MockOperation(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: dict[str, Any], output_dir):
         return ArtifactResult(success=True, metadata={"count": self.count})
 
 
@@ -105,7 +105,7 @@ class MultiInputOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: dict[str, Any], output_dir):
         return ArtifactResult(success=True)
 
 
@@ -125,7 +125,7 @@ class GenerativeOp(OperationDefinition):
         ),
     }
 
-    def execute(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: dict[str, Any], output_dir):
         return ArtifactResult(success=True)
 
 
@@ -153,7 +153,7 @@ class UnionOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: dict[str, Any], output_dir):
         return ArtifactResult(success=True)
 
 
@@ -338,7 +338,7 @@ class TestOperationDefinitionValidation:
         # the error is raised during class definition, not when calling validate_execution_spec()
         with pytest.raises(
             TypeError,
-            match="must implement execute\\(\\) \\(creator ops\\)",
+            match="must implement execute_function\\(\\) \\(creator ops\\)",
         ):
 
             class BadOp(OperationDefinition):

@@ -67,13 +67,13 @@ def _run_one_unit(operation: Any, **mocks: Any) -> tuple[Any, dict[str, MagicMoc
 class TestProcessUnit:
     def test_success_runs_all_artifacts_and_records(self):
         operation = MagicMock()
-        operation.execute.side_effect = [{"r": 0}, {"r": 1}]
+        operation.execute_function.side_effect = [{"r": 0}, {"r": 1}]
 
         results, mocks = _run_one_unit(operation)
 
         assert len(results) == 1
         assert results[0].success is True
-        assert operation.execute.call_count == 2
+        assert operation.execute_function.call_count == 2
         raw_results = mocks["post"].call_args.args[1]
         assert raw_results == [{"r": 0}, {"r": 1}]
         mocks["rec_ok"].assert_called_once()
@@ -82,7 +82,7 @@ class TestProcessUnit:
     def test_artifacts_execute_concurrently(self):
         barrier = threading.Barrier(2, timeout=5)
         operation = MagicMock()
-        operation.execute.side_effect = lambda _ei: barrier.wait()
+        operation.execute_function.side_effect = lambda _ei: barrier.wait()
 
         results, _ = _run_one_unit(operation)
 
@@ -92,7 +92,10 @@ class TestProcessUnit:
     def test_per_artifact_failure_fails_unit_with_real_error(self):
         """An embedded exception must surface, not vanish into post_unit."""
         operation = MagicMock()
-        operation.execute.side_effect = [{"r": 0}, ValueError("container died")]
+        operation.execute_function.side_effect = [
+            {"r": 0},
+            ValueError("container died"),
+        ]
 
         results, mocks = _run_one_unit(operation)
 
@@ -104,7 +107,7 @@ class TestProcessUnit:
 
     def test_post_failure_records_failure(self):
         operation = MagicMock()
-        operation.execute.return_value = {}
+        operation.execute_function.return_value = {}
 
         results, mocks = _run_one_unit(
             operation, post_side_effect=_ExecuteFailure("1/2 artifacts failed")
@@ -142,7 +145,7 @@ class TestCancellation:
             seen.append(event)
             return {}
 
-        operation.execute.side_effect = _capture
+        operation.execute_function.side_effect = _capture
 
         _run_one_unit(operation, handle=handle, prepped=_prepped(operation, 1))
 

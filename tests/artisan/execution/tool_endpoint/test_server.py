@@ -49,7 +49,7 @@ class FailTool(OperationDefinition):
 
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
 
-    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         return [*self.tool.parts(), "-c", "echo boom >&2; exit 3"]
 
 
@@ -79,7 +79,7 @@ class CatTool(OperationDefinition):
     def preprocess(self, inputs):  # pragma: no cover - not exercised here
         return {}
 
-    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         return [*self.tool.parts(), "-c", f'cat "{inputs["source"]}" > copied.txt']
 
 

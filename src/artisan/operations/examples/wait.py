@@ -62,7 +62,7 @@ class Wait(OperationDefinition):
     )
 
     # ---------- Lifecycle ----------
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Sleep for the configured duration."""
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)

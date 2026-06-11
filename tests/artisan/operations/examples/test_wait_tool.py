@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(
 class TestWaitTool:
     def test_build_command_counts_and_writes_marker(self):
         op = WaitTool(params=WaitTool.Params(seconds=3))
-        cmd = op.build_command({"dataset": "/inputs/sample.csv"})
+        cmd = op.execute_command({"dataset": "/inputs/sample.csv"})
         assert cmd[0] == "bash"
         assert cmd[1] == "-c"
         assert "seq 1 3" in cmd[2]
@@ -35,7 +35,7 @@ class TestWaitTool:
         log_path = tmp_path / "tool_output.log"
 
         op = WaitTool(params=WaitTool.Params(seconds=1))
-        result = op.execute(
+        result = op.execute_function(
             ExecuteInput(
                 inputs={"dataset": str(source)},
                 execute_dir=str(execute_dir),

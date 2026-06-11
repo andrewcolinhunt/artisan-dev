@@ -42,7 +42,7 @@ def _run(
         execute_dir=execute_dir,
         files_dir=files_dir,
     )
-    raw = op.execute(execute_input)
+    raw = op.execute_function(execute_input)
 
     post_input = PostprocessInput(
         step_number=0,
@@ -89,7 +89,7 @@ class TestLargeFileGenerator:
         op = LargeFileGenerator()
         ei = ExecuteInput(execute_dir=str(tmp_path), files_dir=None)
         with pytest.raises(ValueError, match="files_dir required"):
-            op.execute(ei)
+            op.execute_function(ei)
 
     def test_artifact_type_is_large_file(self, tmp_path: Path) -> None:
         _, result = _run(tmp_path)

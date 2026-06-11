@@ -1,4 +1,4 @@
-"""Generative tool operation that writes a file via bash — the build_command exemplar."""
+"""Generative tool operation that writes a file via bash — the execute_command exemplar."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 class EchoTool(OperationDefinition):
     """Write a text file via bash — the canonical tool-op pattern.
 
-    Declares a ``ToolSpec`` + ``build_command()`` and **no** ``execute()``:
+    Declares a ``ToolSpec`` + ``execute_command()`` and **no** ``execute()``:
     the framework implementation runs the command, locally as a subprocess
     or (under ``compute_provider='modal'``) on the operation's deployed
     tool endpoint. The op's products are the files the command writes to
@@ -77,7 +77,7 @@ class EchoTool(OperationDefinition):
     compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
 
     # ---------- Lifecycle ----------
-    def build_command(self, inputs: dict[str, Any]) -> list[str]:
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         """Assemble the bash command that writes ``text`` to ``filename``."""
         del inputs  # generative — no inputs
         return [

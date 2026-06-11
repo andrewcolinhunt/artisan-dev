@@ -349,7 +349,7 @@ What happens:
 
 1. **Orchestration** creates step 0, sees no inputs to resolve, dispatches
    `DataGenerator` to workers.
-2. **Execution** creates an isolated sandbox. `DataGenerator.execute()`
+2. **Execution** creates an isolated sandbox. `DataGenerator.execute_function()`
    produces three files. `postprocess()` wraps them as draft artifacts.
    Lineage edges are captured. Results are staged as Parquet.
 3. **Orchestration** commits step 0 to Delta Lake. Artifacts get finalized

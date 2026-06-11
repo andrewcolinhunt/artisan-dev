@@ -1,7 +1,7 @@
 """Worker-side execution of tool requests.
 
 Runs inside the deployed worker image: resolve the deployed operation
-class, materialize input refs, run ``build_command`` as a local subprocess,
+class, materialize input refs, run ``execute_command`` as a local subprocess,
 and return the manifest + output tar. No Modal imports — locally testable.
 """
 
@@ -55,7 +55,7 @@ def run_tool_request(
     """Build the command from the op + request params and run the tool.
 
     Instantiates ``op_cls`` from the request params, resolves input refs
-    into the job's ``inputs/`` dir, runs ``op.build_command`` as a local
+    into the job's ``inputs/`` dir, runs ``op.execute_command`` as a local
     subprocess with ``cwd=outputs/``, and returns the manifest + output tar
     + tool-log tail. Tool failures return an ``OP_EXECUTE_FAILED`` envelope.
 
@@ -84,7 +84,7 @@ def run_tool_request(
     try:
         run_command(
             LocalEnvironmentSpec(),
-            op.build_command(inputs),
+            op.execute_command(inputs),
             cwd=outputs_dir,
             log_path=log_path,
             # container stdout IS the Modal dashboard log — stream so

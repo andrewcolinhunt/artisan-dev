@@ -97,7 +97,7 @@ class InlineTransport:
         os.makedirs(dest, exist_ok=True)
         paths: dict[str, str] = {}
         for ref in refs:
-            # original filename when carried — build_command and lineage
+            # original filename when carried — execute_command and lineage
             # stem-matching must see the same basename as a local run
             local = os.path.join(dest, os.path.basename(ref.filename or ref.name))
             if ref.uri is not None:

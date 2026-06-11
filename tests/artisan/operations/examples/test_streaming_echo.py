@@ -52,7 +52,7 @@ class TestStreamingEcho:
         with patch(
             "artisan.operations.examples.streaming_echo.run_command"
         ) as mock_run:
-            op.execute(
+            op.execute_function(
                 ExecuteInput(
                     inputs={}, execute_dir=execute_dir, log_path=log_path
                 )
@@ -72,7 +72,7 @@ class TestStreamingEcho:
         op, execute_dir, log_path = _setup(tmp_path, seconds=3)
 
         with patch("artisan.operations.examples.streaming_echo.run_command"):
-            mem = op.execute(
+            mem = op.execute_function(
                 ExecuteInput(
                     inputs={}, execute_dir=execute_dir, log_path=log_path
                 )
@@ -86,7 +86,7 @@ class TestStreamingEcho:
         op, execute_dir, log_path = _setup(tmp_path, seconds=4)
 
         with patch("artisan.operations.examples.streaming_echo.run_command"):
-            op.execute(
+            op.execute_function(
                 ExecuteInput(
                     inputs={}, execute_dir=execute_dir, log_path=log_path
                 )
@@ -104,7 +104,7 @@ class TestStreamingEcho:
         op, execute_dir, log_path = _setup(tmp_path, seconds=1)
 
         with patch("artisan.operations.examples.streaming_echo.run_command"):
-            mem = op.execute(
+            mem = op.execute_function(
                 ExecuteInput(
                     inputs={}, execute_dir=execute_dir, log_path=log_path
                 )
@@ -119,7 +119,7 @@ class TestStreamingEcho:
         op, execute_dir, log_path = _setup(tmp_path, seconds=3)
 
         with patch("artisan.operations.examples.streaming_echo.run_command"):
-            mem = op.execute(
+            mem = op.execute_function(
                 ExecuteInput(
                     inputs={}, execute_dir=execute_dir, log_path=log_path
                 )
@@ -144,6 +144,6 @@ def test_real_bash_streams_to_log_path(tmp_path: Path):
     assertion.
     """
     op, execute_dir, log_path = _setup(tmp_path, seconds=1)
-    op.execute(ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path))
+    op.execute_function(ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path))
     contents = Path(log_path).read_text()
     assert "streaming_echo line 1 / 1" in contents

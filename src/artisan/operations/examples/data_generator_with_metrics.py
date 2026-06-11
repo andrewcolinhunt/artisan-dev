@@ -100,7 +100,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
     )
 
     # ---------- Lifecycle ----------
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write CSV datasets and compute_provider per-file summary statistics."""
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)

@@ -91,7 +91,7 @@ class MockCreatorOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs, output_dir):
+    def execute_function(self, inputs, output_dir):
         """Mock creator execution."""
         return ArtifactResult(success=True)
 
@@ -266,7 +266,7 @@ class MockMultiInputCreatorOp(OperationDefinition):
     def preprocess(self, inputs: PreprocessInput) -> dict:
         return {}
 
-    def execute(self, inputs, output_dir):
+    def execute_function(self, inputs, output_dir):
         return ArtifactResult(success=True)
 
 
@@ -293,7 +293,7 @@ class MockNoGroupByCreatorOp(OperationDefinition):
     def preprocess(self, inputs: PreprocessInput) -> dict:
         return {}
 
-    def execute(self, inputs, output_dir):
+    def execute_function(self, inputs, output_dir):
         return ArtifactResult(success=True)
 
 

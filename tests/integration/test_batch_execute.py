@@ -71,7 +71,7 @@ def test_split_lifecycle_matches_monolithic(pipeline_env):
     prepped = prep_unit(unit_split, runtime_env)
 
     raw_results = [
-        prepped.operation.execute(ei) for ei in prepped.artifact_execute_inputs
+        prepped.operation.execute_function(ei) for ei in prepped.artifact_execute_inputs
     ]
 
     split_result = post_unit(prepped, raw_results, runtime_env)

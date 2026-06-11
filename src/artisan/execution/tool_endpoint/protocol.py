@@ -22,7 +22,7 @@ class InputRef(BaseModel):
 
     ``name`` is the input role; ``filename`` preserves the original file
     name across the wire — the worker materializes the file under it, so
-    ``build_command`` and lineage stem-matching see the same basename as a
+    ``execute_command`` and lineage stem-matching see the same basename as a
     local run. Clients send inline bytes as multipart parts keyed by
     ``name``; the endpoint repacks them into ``data`` for the worker hop.
     ``uri`` refs (e.g. ``s3://bucket/key``) are fetched worker-side via

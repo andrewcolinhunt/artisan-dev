@@ -83,7 +83,7 @@ class StreamingEcho(OperationDefinition):
     compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
 
     # ---------- Lifecycle ----------
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Run a bash echo loop, streaming each line to the parent's stdout."""
         env = self.environments.current()
         run_command(
