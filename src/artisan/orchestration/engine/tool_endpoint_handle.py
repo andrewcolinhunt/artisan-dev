@@ -33,7 +33,7 @@ from artisan.execution.staging.recorder import (
     record_execution_success,
 )
 from artisan.execution.tool_endpoint.client import cancel_scope
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle, _HandleState
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter, _RouterState
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.specs.input_models import ExecuteInput
@@ -44,7 +44,7 @@ from artisan.utils.timing import phase_timer
 logger = logging.getLogger(__name__)
 
 
-class ToolEndpointDispatchHandle(DispatchHandle):
+class ToolEndpointDispatchHandle(LifecycleRouter):
     """Per-artifact endpoint dispatch, in-process and cancel-aware.
 
     Args:
@@ -64,7 +64,7 @@ class ToolEndpointDispatchHandle(DispatchHandle):
     ) -> None:
         """Run units on a thread pool in a background thread."""
         self._assert_idle()
-        self._state = _HandleState.DISPATCHED
+        self._state = _RouterState.DISPATCHED
 
         def _run() -> list[UnitResult]:
             with ThreadPoolExecutor(max_workers=self._max_workers) as pool:

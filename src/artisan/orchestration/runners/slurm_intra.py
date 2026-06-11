@@ -6,7 +6,7 @@ import os
 import warnings
 from typing import Any
 
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.runners.base import (
     OrchestratorTraits,
     RunnerBase,
@@ -38,7 +38,7 @@ class SlurmIntraRunner(RunnerBase):
         staging_verification_timeout=60.0,
     )
 
-    def create_dispatch_handle(
+    def create_lifecycle_router(
         self,
         runner_resources: RunnerResources,
         batch_strategy: BatchStrategy,
@@ -46,8 +46,8 @@ class SlurmIntraRunner(RunnerBase):
         job_name: str,
         log_folder: str | None = None,
         staging_root: str | None = None,
-    ) -> DispatchHandle:
-        """Build a dispatch handle that uses srun within an existing allocation.
+    ) -> LifecycleRouter:
+        """Build a lifecycle router that uses srun within an existing allocation.
 
         Args:
             runner_resources: Hardware resource allocation.
@@ -58,11 +58,11 @@ class SlurmIntraRunner(RunnerBase):
             staging_root: Root directory for staging files.
 
         Returns:
-            Configured SlurmDispatchHandle using srun execution mode.
+            Configured SlurmLifecycleRouter using srun execution mode.
         """
         from prefect_submitit import SlurmTaskRunner
 
-        from artisan.orchestration.runners.slurm import SlurmDispatchHandle
+        from artisan.orchestration.runners.slurm import SlurmLifecycleRouter
 
         slurm_kwargs: dict[str, Any] = dict(runner_resources.extra)
         if log_folder is not None:
@@ -81,7 +81,7 @@ class SlurmIntraRunner(RunnerBase):
             units_per_worker=batch_strategy.units_per_worker,
             **slurm_kwargs,
         )
-        return SlurmDispatchHandle(
+        return SlurmLifecycleRouter(
             task_runner=task_runner,
             job_name=f"s{step_number}_srun",
             staging_root=staging_root,

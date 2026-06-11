@@ -1,4 +1,4 @@
-"""Tests for cancel-through-run flow on concrete dispatch handles.
+"""Tests for cancel-through-run flow on concrete lifecycle routers.
 
 Verifies the integration between ``run(cancel_event=...)``, the
 background thread, and each handle's ``cancel()`` method.
@@ -11,9 +11,9 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from artisan.orchestration.engine.dispatch_handle import _HandleState
+from artisan.orchestration.engine.lifecycle_router import _RouterState
 from artisan.orchestration.runners.local import LocalRunner
-from artisan.orchestration.runners.slurm import SlurmDispatchHandle
+from artisan.orchestration.runners.slurm import SlurmLifecycleRouter
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -42,14 +42,14 @@ def _fake_flow(**flow_kwargs):
     return decorator
 
 
-class TestLocalDispatchHandleCancelFlow:
-    """Cancel-through-run on a real LocalDispatchHandle."""
+class TestLocalLifecycleRouterCancelFlow:
+    """Cancel-through-run on a real LocalLifecycleRouter."""
 
     @patch("prefect.unmapped", MagicMock())
     @patch("prefect.flow", side_effect=_fake_flow)
     def test_run_with_pre_set_cancel_event(self, _mock_flow) -> None:
         """run() with an already-set cancel_event completes without hanging."""
-        handle = LocalRunner(default_max_workers=1).create_dispatch_handle(
+        handle = LocalRunner(default_max_workers=1).create_lifecycle_router(
             RunnerResources(), BatchStrategy(), step_number=0, job_name="test"
         )
 
@@ -63,7 +63,7 @@ class TestLocalDispatchHandleCancelFlow:
     @patch("prefect.flow", side_effect=_fake_flow)
     def test_run_completes_after_delayed_cancel(self, _mock_flow) -> None:
         """run() returns after cancel_event is set mid-execution."""
-        handle = LocalRunner(default_max_workers=1).create_dispatch_handle(
+        handle = LocalRunner(default_max_workers=1).create_lifecycle_router(
             RunnerResources(), BatchStrategy(), step_number=0, job_name="test"
         )
 
@@ -83,8 +83,8 @@ class TestLocalDispatchHandleCancelFlow:
         assert elapsed < 3.0
 
 
-class TestSlurmDispatchHandleCancelFlow:
-    """Cancel-through-run on a real SlurmDispatchHandle."""
+class TestSlurmLifecycleRouterCancelFlow:
+    """Cancel-through-run on a real SlurmLifecycleRouter."""
 
     @patch("artisan.orchestration.runners.slurm.subprocess")
     def test_run_with_pre_set_cancel_calls_scancel(
@@ -103,7 +103,7 @@ class TestSlurmDispatchHandleCancelFlow:
                 return_value=[],
             ),
         ):
-            handle = SlurmDispatchHandle(
+            handle = SlurmLifecycleRouter(
                 task_runner=MagicMock(),
                 job_name="s0_test_op",
                 staging_root="/staging",
@@ -139,7 +139,7 @@ class TestSlurmDispatchHandleCancelFlow:
                 return_value=[],
             ),
         ):
-            handle = SlurmDispatchHandle(
+            handle = SlurmLifecycleRouter(
                 task_runner=MagicMock(),
                 job_name="s1_my_op",
                 staging_root="/staging",
@@ -164,20 +164,20 @@ class TestSlurmDispatchHandleCancelFlow:
         assert isinstance(results, list)
 
 
-class TestSlurmDispatchHandleCancelBeforeDispatch:
-    """Cancel on a SlurmDispatchHandle that hasn't dispatched yet."""
+class TestSlurmLifecycleRouterCancelBeforeDispatch:
+    """Cancel on a SlurmLifecycleRouter that hasn't dispatched yet."""
 
     @patch("artisan.orchestration.runners.slurm.subprocess")
     def test_cancel_before_dispatch_calls_scancel(
         self, mock_subprocess: MagicMock
     ) -> None:
-        handle = SlurmDispatchHandle(
+        handle = SlurmLifecycleRouter(
             task_runner=MagicMock(),
             job_name="s2_early",
             staging_root="/staging",
             step_number=2,
         )
 
-        assert handle._state is _HandleState.IDLE
+        assert handle._state is _RouterState.IDLE
         handle.cancel()
         mock_subprocess.run.assert_called_once()

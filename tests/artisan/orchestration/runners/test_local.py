@@ -7,8 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle
-from artisan.orchestration.runners.local import LocalDispatchHandle, LocalRunner
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
+from artisan.orchestration.runners.local import LocalLifecycleRouter, LocalRunner
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -46,16 +46,16 @@ class TestLocalRunnerTraits:
         assert traits.needs_staging_verification is False
 
 
-class TestLocalRunnerCreateDispatchHandle:
-    def test_returns_dispatch_handle(self, local_runner: LocalRunner) -> None:
-        handle = local_runner.create_dispatch_handle(
+class TestLocalRunnerCreateLifecycleRouter:
+    def test_returns_lifecycle_router(self, local_runner: LocalRunner) -> None:
+        handle = local_runner.create_lifecycle_router(
             RunnerResources(), BatchStrategy(), step_number=0, job_name="test_op"
         )
-        assert isinstance(handle, DispatchHandle)
-        assert isinstance(handle, LocalDispatchHandle)
+        assert isinstance(handle, LifecycleRouter)
+        assert isinstance(handle, LocalLifecycleRouter)
 
     def test_uses_execution_max_workers(self, local_runner: LocalRunner) -> None:
-        handle = local_runner.create_dispatch_handle(
+        handle = local_runner.create_lifecycle_router(
             RunnerResources(),
             BatchStrategy(max_workers=8),
             step_number=0,
@@ -64,7 +64,7 @@ class TestLocalRunnerCreateDispatchHandle:
         assert handle._task_runner._max_workers == 8
 
     def test_gpu_defaults_to_sequential(self, local_runner: LocalRunner) -> None:
-        handle = local_runner.create_dispatch_handle(
+        handle = local_runner.create_lifecycle_router(
             RunnerResources(gpus=1),
             BatchStrategy(),
             step_number=0,
@@ -73,7 +73,7 @@ class TestLocalRunnerCreateDispatchHandle:
         assert handle._task_runner._max_workers == 1
 
     def test_cpu_defaults_to_pool_size(self, local_runner: LocalRunner) -> None:
-        handle = local_runner.create_dispatch_handle(
+        handle = local_runner.create_lifecycle_router(
             RunnerResources(gpus=0),
             BatchStrategy(),
             step_number=0,
@@ -84,7 +84,7 @@ class TestLocalRunnerCreateDispatchHandle:
     def test_explicit_max_workers_overrides_gpu(
         self, local_runner: LocalRunner
     ) -> None:
-        handle = local_runner.create_dispatch_handle(
+        handle = local_runner.create_lifecycle_router(
             RunnerResources(gpus=1),
             BatchStrategy(max_workers=3),
             step_number=0,
@@ -96,7 +96,7 @@ class TestLocalRunnerCreateDispatchHandle:
         self,
         local_runner: LocalRunner,
     ) -> None:
-        handle = local_runner.create_dispatch_handle(
+        handle = local_runner.create_lifecycle_router(
             RunnerResources(gpus=0),
             BatchStrategy(max_workers=6),
             step_number=0,

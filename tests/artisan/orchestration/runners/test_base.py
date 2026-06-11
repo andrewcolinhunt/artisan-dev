@@ -59,7 +59,7 @@ class TestInitSubclassValidation:
                 worker_traits = WorkerTraits()
                 orchestrator_traits = OrchestratorTraits()
 
-                def create_dispatch_handle(self, *a, **kw):
+                def create_lifecycle_router(self, *a, **kw):
                     pass
 
                 def capture_logs(
@@ -74,7 +74,7 @@ class TestInitSubclassValidation:
                 name = "bad"
                 orchestrator_traits = OrchestratorTraits()
 
-                def create_dispatch_handle(self, *a, **kw):
+                def create_lifecycle_router(self, *a, **kw):
                     pass
 
                 def capture_logs(
@@ -89,7 +89,7 @@ class TestInitSubclassValidation:
                 name = "bad"
                 worker_traits = WorkerTraits()
 
-                def create_dispatch_handle(self, *a, **kw):
+                def create_lifecycle_router(self, *a, **kw):
                     pass
 
                 def capture_logs(
@@ -105,7 +105,7 @@ class TestInitSubclassValidation:
             worker_traits = WorkerTraits()
             orchestrator_traits = OrchestratorTraits()
 
-            def create_dispatch_handle(self, *a, **kw):
+            def create_lifecycle_router(self, *a, **kw):
                 return MagicMock()
 
             def capture_logs(self, results, staging_root, failure_logs_root, op, step):

@@ -53,7 +53,7 @@ class TestCreatorBrokenProcessPool:
         mock_backend = MagicMock()
         mock_handle = MagicMock()
         mock_handle.run.side_effect = BrokenProcessPool("pool broken")
-        mock_backend.create_dispatch_handle.return_value = mock_handle
+        mock_backend.create_lifecycle_router.return_value = mock_handle
 
         config = MagicMock()
         config.delta_root = MagicMock()

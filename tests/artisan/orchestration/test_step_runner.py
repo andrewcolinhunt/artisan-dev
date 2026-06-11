@@ -16,21 +16,21 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
 class TestRunnerRouting:
-    """Tests for Runner.LOCAL and Runner.SLURM create_dispatch_handle routing."""
+    """Tests for Runner.LOCAL and Runner.SLURM create_lifecycle_router routing."""
 
-    def test_local_runner_returns_dispatch_handle(self):
-        from artisan.orchestration.engine.dispatch_handle import DispatchHandle
+    def test_local_runner_returns_lifecycle_router(self):
+        from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 
         runner_resources = RunnerResources()
         batch_strategy = BatchStrategy()
-        handle = Runner.LOCAL.create_dispatch_handle(
+        handle = Runner.LOCAL.create_lifecycle_router(
             runner_resources, batch_strategy, step_number=0, job_name="test_op"
         )
-        assert isinstance(handle, DispatchHandle)
+        assert isinstance(handle, LifecycleRouter)
 
     @patch("prefect_submitit.SlurmTaskRunner")
-    def test_slurm_runner_returns_dispatch_handle(self, mock_slurm_runner):
-        from artisan.orchestration.runners.slurm import SlurmDispatchHandle
+    def test_slurm_runner_returns_lifecycle_router(self, mock_slurm_runner):
+        from artisan.orchestration.runners.slurm import SlurmLifecycleRouter
 
         runner_resources = RunnerResources(
             cpus=4,
@@ -41,30 +41,30 @@ class TestRunnerRouting:
         )
         batch_strategy = BatchStrategy(units_per_worker=1)
 
-        handle = Runner.SLURM.create_dispatch_handle(
+        handle = Runner.SLURM.create_lifecycle_router(
             runner_resources, batch_strategy, step_number=3, job_name="test_op"
         )
 
-        assert isinstance(handle, SlurmDispatchHandle)
+        assert isinstance(handle, SlurmLifecycleRouter)
         mock_slurm_runner.assert_called_once()
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["partition"] == "gpu"
         assert call_kwargs["slurm_job_name"] == "s3_test_op"
 
     @patch("prefect_submitit.SlurmTaskRunner")
-    def test_slurm_intra_runner_returns_dispatch_handle(self, mock_slurm_runner):
-        from artisan.orchestration.runners.slurm import SlurmDispatchHandle
+    def test_slurm_intra_runner_returns_lifecycle_router(self, mock_slurm_runner):
+        from artisan.orchestration.runners.slurm import SlurmLifecycleRouter
 
         runner_resources = RunnerResources(
             cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00"
         )
         batch_strategy = BatchStrategy(units_per_worker=1)
 
-        handle = Runner.SLURM_INTRA.create_dispatch_handle(
+        handle = Runner.SLURM_INTRA.create_lifecycle_router(
             runner_resources, batch_strategy, step_number=1, job_name="test"
         )
 
-        assert isinstance(handle, SlurmDispatchHandle)
+        assert isinstance(handle, SlurmLifecycleRouter)
         mock_slurm_runner.assert_called_once()
         call_kwargs = mock_slurm_runner.call_args[1]
         assert call_kwargs["execution_mode"] == "srun"

@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from artisan.orchestration.engine.dispatch_handle import DispatchHandle
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -86,7 +86,7 @@ class RunnerBase(ABC):
                 raise TypeError(msg)
 
     @abstractmethod
-    def create_dispatch_handle(
+    def create_lifecycle_router(
         self,
         runner_resources: RunnerResources,
         batch_strategy: BatchStrategy,
@@ -94,8 +94,8 @@ class RunnerBase(ABC):
         job_name: str,
         log_folder: str | None = None,
         staging_root: str | None = None,
-    ) -> DispatchHandle:
-        """Build a configured dispatch handle for this step_runner.
+    ) -> LifecycleRouter:
+        """Build a configured lifecycle router for this step_runner.
 
         Args:
             runner_resources: Hardware resource allocation.
@@ -106,7 +106,7 @@ class RunnerBase(ABC):
             staging_root: Root directory for staging files (shared-FS runners).
 
         Returns:
-            Configured dispatch handle.
+            Configured lifecycle router.
         """
         ...
 

@@ -385,7 +385,7 @@ def _make_mock_backend(
 ):
     """Create a mock step_runner for step executor tests.
 
-    Returns a mock step_runner with a mock dispatch handle.  The handle's
+    Returns a mock step_runner with a mock lifecycle router.  The handle's
     ``run()`` returns *flow_return_value* (or raises *flow_side_effect*).
     """
     from unittest.mock import MagicMock
@@ -411,7 +411,7 @@ def _make_mock_backend(
 
     mock_handle.run.side_effect = _capture_and_run
 
-    mock_backend.create_dispatch_handle.return_value = mock_handle
+    mock_backend.create_lifecycle_router.return_value = mock_handle
     return mock_backend, mock_handle
 
 
@@ -1014,7 +1014,7 @@ class TestEmptyInputHandling:
             compact=False,
         )
 
-        mock_backend.create_dispatch_handle.assert_not_called()
+        mock_backend.create_lifecycle_router.assert_not_called()
         assert result.metadata["skipped"] is True
         assert result.metadata["skip_reason"] == "empty_inputs"
         assert result.succeeded_count == 0
