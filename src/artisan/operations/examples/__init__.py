@@ -24,6 +24,7 @@ from artisan.operations.examples.slow_transformer import (
 )
 from artisan.operations.examples.streaming_echo import StreamingEcho
 from artisan.operations.examples.wait import Wait
+from artisan.operations.examples.wait_tool import WaitTool
 
 __all__ = [
     "AppendableGenerator",
@@ -40,4 +41,5 @@ __all__ = [
     "SlowTransformer",
     "StreamingEcho",
     "Wait",
+    "WaitTool",
 ]
