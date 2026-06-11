@@ -111,7 +111,7 @@ class TestRecordExecutionFailure:
 @pytest.fixture(
     params=[
         pytest.param("local"),
-        pytest.param("s3", marks=pytest.mark.integration),
+        pytest.param("s3", marks=pytest.mark.s3),
     ]
 )
 def backend_fs(request, tmp_path):

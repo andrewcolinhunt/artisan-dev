@@ -114,7 +114,7 @@ class TestLargeFileGenerator:
 @pytest.fixture(
     params=[
         pytest.param("local"),
-        pytest.param("s3", marks=pytest.mark.integration),
+        pytest.param("s3", marks=pytest.mark.s3),
     ]
 )
 def backend_env(request, tmp_path):
