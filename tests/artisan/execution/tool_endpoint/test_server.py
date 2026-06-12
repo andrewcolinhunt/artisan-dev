@@ -12,7 +12,13 @@ from unittest.mock import patch
 
 import pytest
 
-from artisan.execution.tool_endpoint.protocol import InputRef, ToolRequest
+from artisan.execution.tool_endpoint import server as server_mod
+from artisan.execution.tool_endpoint import transport as transport_mod
+from artisan.execution.tool_endpoint.protocol import (
+    InputRef,
+    StoredOutputs,
+    ToolRequest,
+)
 from artisan.execution.tool_endpoint.server import (
     resolve_op,
     run_tool_request,
@@ -85,6 +91,28 @@ class CatTool(OperationDefinition):
         return [*self.tool.parts(), "-c", f'cat "{inputs["source"]}" > copied.txt']
 
 
+class NoopTool(OperationDefinition):
+    """Tool op that succeeds without writing any output files."""
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "noop_tool_test"
+    description: ClassVar[str] = "Succeeds, writes nothing"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type="data",
+            infer_lineage_from={"inputs": []},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [*self.tool.parts(), "-c", "true"]
+
+
 def _tar_names(payload: bytes) -> list[str]:
     with tarfile.open(fileobj=BytesIO(payload), mode="r") as tar:
         return sorted(tar.getnames())
@@ -103,6 +131,7 @@ class TestRunToolRequest:
         )
         assert result.manifest.error is None
         assert result.manifest.output_names == ["in_waited.csv"]
+        assert result.manifest.stored is None  # no output_store → inline
         # the log travels as log_tail, never on the data plane — locally
         # it lives outside execute_dir, so the tar must not leak it in
         assert result.manifest.log_tail is not None
@@ -162,6 +191,69 @@ class TestRunToolRequest:
         inputs = json.loads(argv[argv.index("--inputs") + 1])
         assert isinstance(inputs["source"], str)  # wire shape: one file per role
         assert inputs["source"].endswith("source")
+
+
+class TestRunToolRequestStoredOutputs:
+    _REQUEST = ToolRequest(
+        params={"seconds": 1},
+        inputs=[InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")],
+        output_store="s3://bucket/prefix",
+    )
+
+    def test_output_store_uploads_and_omits_tar(self, monkeypatch):
+        stored = StoredOutputs(uri="s3://bucket/p/wait_tool/x.tar.gz")
+        calls: dict = {}
+
+        def fake_upload(src: str, names: list, store: str, op_name: str):
+            calls.update(names=names, store=store, op_name=op_name)
+            return stored
+
+        monkeypatch.setattr(server_mod, "upload_outputs", fake_upload)
+        result = run_tool_request(WaitTool, self._REQUEST)
+        assert result.manifest.error is None
+        assert result.manifest.stored == stored
+        assert result.output_tar is None
+        assert result.manifest.output_names == ["in_waited.csv"]
+        assert calls == {
+            "names": ["in_waited.csv"],
+            "store": "s3://bucket/prefix",
+            "op_name": "wait_tool",
+        }
+
+    def test_stored_path_never_reaches_inline_cap(self, monkeypatch):
+        # with the cap below any tar, pack_outputs would raise — proving
+        # the stored path never invokes it (the any-size criterion)
+        monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 1)
+        monkeypatch.setattr(
+            server_mod,
+            "upload_outputs",
+            lambda *args: StoredOutputs(uri="s3://b/x.tar.gz"),
+        )
+        result = run_tool_request(WaitTool, self._REQUEST)
+        assert result.manifest.error is None
+        assert result.output_tar is None
+
+    def test_tool_failure_uploads_nothing(self, monkeypatch):
+        def explode(*args):
+            pytest.fail("upload_outputs must not run on tool failure")
+
+        monkeypatch.setattr(server_mod, "upload_outputs", explode)
+        result = run_tool_request(FailTool, ToolRequest(output_store="s3://b/p"))
+        assert result.manifest.error is not None
+        assert result.manifest.stored is None
+        assert result.output_tar is None
+
+    def test_no_outputs_falls_back_to_empty_inline_tar(self, monkeypatch):
+        def explode(*args):
+            pytest.fail("upload_outputs must not run with no outputs")
+
+        monkeypatch.setattr(server_mod, "upload_outputs", explode)
+        result = run_tool_request(NoopTool, ToolRequest(output_store="s3://b/p"))
+        assert result.manifest.error is None
+        assert result.manifest.output_names == []
+        assert result.manifest.stored is None
+        assert result.output_tar is not None
+        assert _tar_names(result.output_tar) == []
 
 
 class TestResolveOp:

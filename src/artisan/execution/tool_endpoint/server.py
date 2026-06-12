@@ -20,7 +20,7 @@ from artisan.execution.tool_endpoint.protocol import (
     ToolRequest,
     WorkerResult,
 )
-from artisan.execution.tool_endpoint.transport import InlineTransport
+from artisan.execution.tool_endpoint.transport import InlineTransport, upload_outputs
 from artisan.execution.transport.log_constants import (
     MAX_TOOL_OUTPUT_BYTES,
     TOOL_OUTPUT_FILENAME,
@@ -59,7 +59,9 @@ def run_tool_request(
     Instantiates ``op_cls`` from the request params, resolves input refs
     into the job's ``inputs/`` dir, runs ``op.execute_command`` as a local
     subprocess with ``cwd=outputs/``, and returns the manifest + output tar
-    + tool-log tail. Tool failures return an ``OP_EXECUTE_FAILED`` envelope.
+    + tool-log tail. When the request names an ``output_store``, outputs
+    are delivered there instead and the manifest carries the stored
+    pointer. Tool failures return an ``OP_EXECUTE_FAILED`` envelope.
 
     Inputs and outputs live in separate dirs so the tar never sweeps input
     files. The tool log is excluded from the manifest and tar — locally the
@@ -101,9 +103,16 @@ def run_tool_request(
             )
         )
     names = _list_outputs(outputs_dir)
+    stored = (
+        upload_outputs(outputs_dir, names, request.output_store, op_cls.name)
+        if request.output_store and names
+        else None
+    )
     return WorkerResult(
-        manifest=ToolManifest(output_names=names, log_tail=_log_tail(log_path)),
-        output_tar=transport.pack_outputs(outputs_dir, names),
+        manifest=ToolManifest(
+            output_names=names, stored=stored, log_tail=_log_tail(log_path)
+        ),
+        output_tar=None if stored else transport.pack_outputs(outputs_dir, names),
     )
 
 
