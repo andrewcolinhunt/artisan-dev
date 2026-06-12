@@ -62,12 +62,15 @@ class LifecycleResult:
         artifacts: Finalized output artifacts keyed by role.
         edges: Provenance edges linking inputs to outputs.
         timings: Phase name to elapsed seconds.
+        tool_output: Captured unit log (tool stdout/stderr), read before
+            sandbox cleanup. None when no log was written (function ops).
     """
 
     input_artifacts: dict[str, list[Artifact]]
     artifacts: dict[str, list[Artifact]]
     edges: list[ArtifactProvenanceEdge]
     timings: dict[str, float] = field(default_factory=dict)
+    tool_output: str | None = None
 
 
 def run_creator_lifecycle(
@@ -237,6 +240,7 @@ def run_creator_flow(
                 params=params_dict,
                 result_metadata={"timings": timings},
                 user_overrides=user_overrides,
+                tool_output=lifecycle_result.tool_output,
             )
     except (_PostprocessFailure, _ExecuteFailure) as exc:
         # Lifecycle failures with clean error messages

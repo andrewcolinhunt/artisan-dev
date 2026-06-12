@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import datetime
 from enum import StrEnum, auto
 from pathlib import Path
@@ -37,6 +38,7 @@ from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -178,6 +180,46 @@ class GenerativeTestOp(OperationDefinition):
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """v4: Create draft MetricArtifacts from file_outputs."""
+        drafts: list[MetricArtifact] = []
+        for file_path in inputs.file_outputs:
+            if file_path.endswith(".json"):
+                with open(file_path) as fh:
+                    content = json.loads(fh.read())
+                drafts.append(
+                    MetricArtifact.draft(
+                        content=content,
+                        original_name=os.path.basename(file_path),
+                        step_number=inputs.step_number,
+                    )
+                )
+        return ArtifactResult(success=True, artifacts={"output": drafts})
+
+
+class EchoToolTestOp(OperationDefinition):
+    """Command op whose tool prints to stdout and writes a metric file."""
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "echo_tool_executor_test"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.METRIC,
+            infer_lineage_from={"inputs": []},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [
+            *self.tool.parts(),
+            "-c",
+            'echo "tool stdout line"; echo \'{"value": 1}\' > generated.json',
+        ]
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         drafts: list[MetricArtifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".json"):
@@ -488,6 +530,57 @@ class TestRunExecutionFullLifecycle:
         result = run_creator_flow(unit, config, worker_id=42)
 
         assert result.success is True
+
+
+class TestToolOutputRecording:
+    """Successful runs persist the unit log to the executions row."""
+
+    @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+    def test_command_op_success_records_tool_output(
+        self, delta_root_with_input, working_root, staging_root
+    ):
+        """The tool's stdout survives sandbox cleanup into executions.parquet."""
+        delta_path, _ = delta_root_with_input
+        config = RuntimeEnvironment(
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
+        )
+        unit = ExecutionUnit(
+            operation=EchoToolTestOp(),
+            inputs={},
+            execution_spec_id="spec_echo" + "0" * 23,
+            step_number=0,
+        )
+
+        result = run_creator_flow(unit, config)
+
+        assert result.success is True
+        df = pl.read_parquet(Path(result.staging_path) / "executions.parquet")
+        assert "tool stdout line" in df["tool_output"][0]
+
+    def test_function_op_success_records_null_tool_output(
+        self, delta_root_with_input, working_root, staging_root
+    ):
+        """Function ops write no unit log — the column stays null."""
+        delta_path, _ = delta_root_with_input
+        config = RuntimeEnvironment(
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
+        )
+        unit = ExecutionUnit(
+            operation=GenerativeTestOp(count=1),
+            inputs={},
+            execution_spec_id="spec_fn00" + "0" * 23,
+            step_number=0,
+        )
+
+        result = run_creator_flow(unit, config)
+
+        assert result.success is True
+        df = pl.read_parquet(Path(result.staging_path) / "executions.parquet")
+        assert df["tool_output"][0] is None
 
 
 class TestRunExecutionFailureHandling:
