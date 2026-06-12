@@ -101,6 +101,17 @@ artisan op image fold_sequences --json
 Where Modal binds named Volumes, a harness bind-mounts local
 directories at the same paths.
 
+External tool ops are invoked through their own CLI, as above. Ops
+whose body is Python
+([`execute_as_tool`](writing-creator-operations.md#execute-as-tool))
+run through the uniform artisan CLI baked into the image:
+
+```bash
+IMAGE=$(artisan op image embed_sequences)
+docker run --rm "$IMAGE" artisan op run mypkg.ops:EmbedSequences \
+    --params '{"batch_size": 16}' --inputs '{"sequences": "/data/in.fasta"}'
+```
+
 ## Pin for production
 
 CI publishes `artisan-worker` under two tags on every `main` push that
