@@ -102,6 +102,21 @@ class ModalComputeConfig(ComputeConfig):
             artifact out to ``min(max_concurrent_calls, artifacts)``;
             excess artifacts queue and results stay positionally
             aligned. The server-side sibling is ``max_containers``.
+        output_store: Object-store root URI to deliver tool outputs
+            under (e.g. ``s3://bucket/prefix``), sent per request. None
+            (default) returns outputs inline, bounded at 100 MB. When
+            set, the worker uploads
+            ``<output_store>/<op-name>/<uuid>.tar.gz`` and the manifest
+            carries the URI plus a presigned GET URL (7-day expiry,
+            matching Modal's result retention). Uploads run with the
+            *worker's* credentials: name an AWS Modal Secret in
+            ``secrets`` (e.g. ``["aws-s3"]``) and scope its IAM policy
+            to the prefixes callers may target. Artisan never deletes
+            delivered tarballs — pair destination prefixes with a
+            bucket lifecycle policy. Presigned PUT URLs are rejected
+            here: they name one object and expire, so they are
+            per-request wire data for external callers, never static
+            config.
     """
 
     image: str = ARTISAN_WORKER_IMAGE
@@ -118,6 +133,20 @@ class ModalComputeConfig(ComputeConfig):
     auth_secret: str | None = None
     poll_interval: float = Field(default=2.0, gt=0)
     max_concurrent_calls: int = Field(default=64, gt=0)
+    output_store: str | None = None
+
+    @field_validator("output_store")
+    @classmethod
+    def _reject_presigned_put(cls, value: str | None) -> str | None:
+        """Constrain ``output_store`` to object-store prefixes."""
+        if value is not None and value.startswith(("http://", "https://")):
+            msg = (
+                "output_store must be an object-store prefix (s3://…); a "
+                "presigned PUT URL names one object and expires — it is "
+                "per-request wire data for external callers, not static config"
+            )
+            raise ValueError(msg)
+        return value
 
 
 class ComputeProvider(BaseModel):

@@ -16,7 +16,7 @@ from artisan.execution.tool_endpoint.client import (
     call_endpoint,
     cancel_scope,
 )
-from artisan.execution.tool_endpoint.protocol import ToolManifest
+from artisan.execution.tool_endpoint.protocol import StoredOutputs, ToolManifest
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.operations.examples import WaitTool
 from artisan.schemas.operation_config.compute import (
@@ -146,6 +146,75 @@ class TestCallEndpointHappyPath:
 
         submit_kwargs = client.post.call_args_list[0].kwargs
         assert submit_kwargs["files"] == [("files", ("pdb", b"ATOM"))]
+
+
+class TestStoredOutputs:
+    _MANIFEST = ToolManifest(
+        output_names=["out.txt"],
+        stored=StoredOutputs(
+            uri="s3://bucket/prefix/wait_tool/abc.tar.gz",
+            presigned_url="https://signed.example/get?sig=x",
+        ),
+    )
+
+    def test_output_store_sent_when_configured(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+        call_endpoint(
+            _op(output_store="s3://bucket/prefix"),
+            ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
+        )
+        data = client.post.call_args_list[0].kwargs["data"]
+        assert data["output_store"] == "s3://bucket/prefix"
+
+    def test_output_store_absent_when_unset(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+        call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+        assert "output_store" not in client.post.call_args_list[0].kwargs["data"]
+
+    def test_stored_manifest_fetched_via_bare_presigned_get(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": self._MANIFEST.model_dump()}
+        )
+        mock_http.get.return_value = _response(content=_tar_payload(tmp_path))
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+
+        call_endpoint(
+            _op(output_store="s3://bucket/prefix"),
+            ExecuteInput(inputs={}, execute_dir=str(execute_dir)),
+        )
+
+        # bare one-shot GET on the module, not the proxy-authenticated
+        # client: positional URL, timeout only — no headers ride along
+        assert mock_http.get.call_args.args == ("https://signed.example/get?sig=x",)
+        assert "headers" not in mock_http.get.call_args.kwargs
+        assert (execute_dir / "out.txt").read_text() == "hi\n"
+        # /download is never hit — every client.get was a /result poll
+        assert all(call.args[0] == "/result" for call in client.get.call_args_list)
+
+    def test_stored_without_presigned_url_fails_fast(self, mock_http, tmp_path):
+        manifest = ToolManifest(
+            output_names=["out.txt"],
+            stored=StoredOutputs(uri="https://their-bucket/run.tar.gz"),
+        )
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": manifest.model_dump()}
+        )
+        with pytest.raises(ArtisanError, match="no presigned URL"):
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+        mock_http.get.assert_not_called()
 
 
 class TestCallEndpointFailures:

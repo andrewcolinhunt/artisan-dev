@@ -116,7 +116,7 @@ def build_app(
         import jsonschema
         import modal as modal_rt
         from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-        from fastapi.responses import StreamingResponse
+        from fastapi.responses import RedirectResponse, StreamingResponse
 
         web = FastAPI(
             title=f"artisan-tool-{op_name}",
@@ -143,13 +143,16 @@ def build_app(
             params: str = Form("{}"),
             input_uris: str = Form("{}"),
             input_filenames: str = Form("{}"),
+            output_store: str = Form(""),
             files: list[UploadFile] = File(default=[]),  # noqa: B008 — FastAPI DI idiom
         ) -> dict[str, str]:
             """Submit a tool job: params JSON + input files (multipart).
 
             ``input_filenames`` (JSON, role → original file name) lets the
             worker materialize each input under its real name; omitted
-            entries fall back to the role.
+            entries fall back to the role. ``output_store`` (optional) is
+            an object-store prefix or presigned PUT URL — outputs are
+            delivered there instead of riding the result inline.
             """
             try:
                 parsed = json.loads(params)
@@ -159,6 +162,14 @@ def build_app(
                     jsonschema.validate(parsed, params_schema)
             except (ValueError, jsonschema.ValidationError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if output_store and "://" not in output_store:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "output_store must be an object-store prefix "
+                        "(s3://…) or a presigned PUT URL (https://…)"
+                    ),
+                )
             refs: list[dict[str, Any]] = [
                 {
                     "name": f.filename or "input",
@@ -179,7 +190,13 @@ def build_app(
             ]
             # async variant — submit runs on the event loop; the blocking
             # spawn would stall every concurrent request on this container
-            call = await worker.spawn.aio({"params": parsed, "inputs": refs})
+            call = await worker.spawn.aio(
+                {
+                    "params": parsed,
+                    "inputs": refs,
+                    "output_store": output_store or None,
+                }
+            )
             return {"call_id": call.object_id}
 
         def _retained(call_id: str) -> dict[str, Any] | str:
@@ -205,9 +222,20 @@ def build_app(
 
         @web.get("/download")
         def download(call_id: str) -> Any:
-            """Stream the output tar of a completed job."""
+            """Stream the output tar, or redirect to its presigned store URL."""
             raw = _retained(call_id)
-            if isinstance(raw, str) or raw.get("output_tar") is None:
+            if isinstance(raw, str):
+                raise HTTPException(status_code=404, detail="no output tar for call")
+            stored = (raw.get("manifest") or {}).get("stored")
+            if stored is not None:
+                if stored.get("presigned_url") is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="outputs were delivered to a caller-supplied "
+                        "destination; fetch them there",
+                    )
+                return RedirectResponse(stored["presigned_url"], status_code=307)
+            if raw.get("output_tar") is None:
                 raise HTTPException(status_code=404, detail="no output tar for call")
             return StreamingResponse(
                 io.BytesIO(raw["output_tar"]), media_type="application/x-tar"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import jsonschema
@@ -15,6 +16,9 @@ from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint.deploy import build_app
 from artisan.execution.tool_endpoint.protocol import SchemaResponse
 from artisan.operations.examples import DataGenerator
+
+_PARAMS = json.dumps({"contigs": "10-20"})
+"""Minimal valid GpuTool params — /submit schema-validates before anything else."""
 
 
 @pytest.fixture
@@ -139,3 +143,98 @@ class TestEndpointRoutes:
     def test_nonconforming_params_rejected(self, client: TestClient):
         response = client.post("/submit", data={"params": json.dumps({"contigs": 1})})
         assert response.status_code == 422
+
+    def test_submit_forwards_output_store(self, client: TestClient, worker: MagicMock):
+        worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
+        response = client.post(
+            "/submit",
+            data={"params": _PARAMS, "output_store": "s3://bucket/prefix"},
+        )
+        assert response.status_code == 200
+        payload = worker.spawn.aio.call_args.args[0]
+        assert payload["output_store"] == "s3://bucket/prefix"
+
+    def test_submit_without_output_store_sends_none(
+        self, client: TestClient, worker: MagicMock
+    ):
+        worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
+        assert client.post("/submit", data={"params": _PARAMS}).status_code == 200
+        assert worker.spawn.aio.call_args.args[0]["output_store"] is None
+
+    def test_schemeless_output_store_rejected(self, client: TestClient):
+        response = client.post(
+            "/submit", data={"params": _PARAMS, "output_store": "not-a-uri"}
+        )
+        assert response.status_code == 422
+        assert "output_store" in response.json()["detail"]
+
+    def test_concurrent_callers_reach_worker_with_their_own_stores(
+        self, client: TestClient, worker: MagicMock
+    ):
+        """One deployment, per-request destinations — the caller-data criterion."""
+        worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
+        client.post(
+            "/submit", data={"params": _PARAMS, "output_store": "s3://team-a/runs"}
+        )
+        client.post(
+            "/submit", data={"params": _PARAMS, "output_store": "s3://team-b/other"}
+        )
+        stores = [
+            call.args[0]["output_store"] for call in worker.spawn.aio.call_args_list
+        ]
+        assert stores == ["s3://team-a/runs", "s3://team-b/other"]
+
+
+class TestRetainedResultRoutes:
+    """/result and /download against a mocked retained FunctionCall result."""
+
+    STORED: ClassVar[dict[str, str]] = {
+        "uri": "s3://bucket/prefix/my_op/abc.tar.gz",
+        "presigned_url": "https://signed.example/get?sig=x",
+    }
+
+    @pytest.fixture
+    def client(self, mock_modal: MagicMock) -> TestClient:
+        build_app(GpuTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        return TestClient(endpoint_fn())
+
+    def _retain(self, monkeypatch, raw: dict) -> None:
+        # the endpoint body imports the real `modal` at app build —
+        # patch its FunctionCall lookup, not the deploy-module mock
+        fc = MagicMock()
+        fc.get.return_value = raw
+        monkeypatch.setattr("modal.FunctionCall.from_id", lambda call_id: fc)
+
+    def test_result_carries_stored_pointer_untouched(self, client, monkeypatch):
+        manifest = {"output_names": ["a.txt"], "stored": self.STORED, "error": None}
+        self._retain(monkeypatch, {"manifest": manifest, "output_tar": None})
+        body = client.get("/result", params={"call_id": "fc-1"}).json()
+        assert body["status"] == "done"
+        assert body["manifest"]["stored"] == self.STORED
+
+    def test_download_redirects_to_presigned_url(self, client, monkeypatch):
+        manifest = {"output_names": ["a.txt"], "stored": self.STORED}
+        self._retain(monkeypatch, {"manifest": manifest, "output_tar": None})
+        response = client.get(
+            "/download", params={"call_id": "fc-1"}, follow_redirects=False
+        )
+        assert response.status_code == 307
+        assert response.headers["location"] == self.STORED["presigned_url"]
+
+    def test_download_409_when_caller_owns_destination(self, client, monkeypatch):
+        stored = {"uri": "https://their-bucket/run.tar.gz", "presigned_url": None}
+        self._retain(
+            monkeypatch,
+            {"manifest": {"output_names": ["a.txt"], "stored": stored}},
+        )
+        response = client.get("/download", params={"call_id": "fc-1"})
+        assert response.status_code == 409
+        assert "caller-supplied" in response.json()["detail"]
+
+    def test_download_still_streams_inline_tar(self, client, monkeypatch):
+        manifest = {"output_names": ["a.txt"], "stored": None}
+        self._retain(monkeypatch, {"manifest": manifest, "output_tar": b"tarbytes"})
+        response = client.get("/download", params={"call_id": "fc-1"})
+        assert response.status_code == 200
+        assert response.content == b"tarbytes"

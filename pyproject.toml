@@ -199,6 +199,7 @@ test-notebook-modal = "pytest -m 'notebook and modal' --nbval-lax docs/tutorials
 test-notebook-slurm = "pytest -m 'notebook and slurm' --nbval-lax docs/tutorials/"  # SLURM tutorial notebooks; run on a cluster + prefect-start (slurm-intra also needs an active allocation)
 test-modal = "pytest -m modal -n 2"  # Real-Modal smoke tests; needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET (or ~/.modal.toml)
 test-modal-seq = "pytest -m modal"  # Sequential variant for debugging Modal tests
+test-modal-endpoint = "pytest tests/integration/test_tool_endpoint_modal_r2.py -v"  # Live E2E: deploy wait_tool, deliver outputs to R2 (Modal + R2 creds + r2-artisan secret; see module docstring)
 fmt = "ruff format . && ruff check --fix ."
 build-dist = "rm -rf dist/ && python -m build"
 check-dist = "python -m twine check dist/*"

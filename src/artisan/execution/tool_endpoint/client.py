@@ -3,8 +3,10 @@
 ``call_endpoint`` runs a command op's execute phase remotely: it submits the
 op's params + input files, polls ``/result``, downloads the output tar into
 ``execute_dir`` (recreating the local layout), and appends the tool-log tail
-to ``log_path``. The caller exposes pipeline cancellation to the
-poll loop via ``cancel_scope``.
+to ``log_path``. Stored outputs (``output_store`` configured) are fetched
+from the object store via the manifest's presigned URL instead of
+``/download``. The caller exposes pipeline cancellation to the poll loop
+via ``cancel_scope``.
 """
 
 from __future__ import annotations
@@ -102,15 +104,14 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
         headers=headers,
         timeout=_HTTP_TIMEOUT,
     ) as client:
-        response = client.post(
-            "/submit",
-            data={
-                "params": operation.params_json(),
-                "input_uris": json.dumps(uris),
-                "input_filenames": json.dumps(filenames),
-            },
-            files=multipart or None,
-        )
+        data = {
+            "params": operation.params_json(),
+            "input_uris": json.dumps(uris),
+            "input_filenames": json.dumps(filenames),
+        }
+        if cfg.output_store:
+            data["output_store"] = cfg.output_store
+        response = client.post("/submit", data=data, files=multipart or None)
         _check(response, operation.name)
         call_id = str(response.json()["call_id"])
 
@@ -119,7 +120,23 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
             _append_log(inputs.log_path, manifest.log_tail)
         if manifest.error is not None:
             _raise_from_envelope(manifest.error, operation.name)
-        if manifest.output_names:
+        if manifest.stored is not None:
+            if manifest.stored.presigned_url is None:
+                # capability-mode pointer — unreachable via this client
+                # (the config validator rejects PUT URLs); fail with the
+                # contract, not a TypeError inside httpx
+                raise ArtisanError(
+                    code=ErrorCode.OP_EXECUTE_FAILED,
+                    message="stored outputs carry no presigned URL to fetch",
+                    error_type="compute",
+                    operation_name=operation.name,
+                )
+            # bare one-shot GET: the presigned URL must never receive the
+            # Modal proxy-auth headers riding `client`
+            download = httpx.get(manifest.stored.presigned_url, timeout=_HTTP_TIMEOUT)
+            _check(download, operation.name)
+            transport.unpack_outputs(download.content, inputs.execute_dir)
+        elif manifest.output_names:
             download = client.get("/download", params={"call_id": call_id})
             _check(download, operation.name)
             transport.unpack_outputs(download.content, inputs.execute_dir)
