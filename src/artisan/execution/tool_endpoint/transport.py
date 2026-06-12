@@ -1,10 +1,12 @@
 """Bulk-file transport between the endpoint client and the tool worker.
 
-``DataTransport`` is the seam; ``InlineTransport`` is v1 — input bytes and
-the output tar ride the endpoint↔worker function-call hop, bounded at
-100 MB per direction. ``s3://`` input refs are fetched worker-side via
-fsspec and bypass the bound. A later object-store transport implements the
-same Protocol without touching operation code.
+``DataTransport`` is the seam; ``InlineTransport`` is the inline mode —
+input bytes and the output tar ride the endpoint↔worker function-call hop,
+bounded at 100 MB per direction. ``s3://`` input refs are fetched
+worker-side via fsspec and bypass the bound. ``upload_outputs`` is the
+stored output mode: when a request names an ``output_store``, the worker
+delivers the output tarball there and only a ``StoredOutputs`` pointer
+rides the control plane — no second Protocol implementation is coming.
 """
 
 from __future__ import annotations
@@ -12,12 +14,18 @@ from __future__ import annotations
 import io
 import os
 import tarfile
+import tempfile
+import uuid
 from typing import Any, Protocol
 
-from artisan.execution.tool_endpoint.protocol import InputRef
+from artisan.execution.tool_endpoint.protocol import InputRef, StoredOutputs
+from artisan.utils.path import uri_join
 
 MAX_INLINE_BYTES = 100 * 1024 * 1024
-"""Modal's function-call payload cap — the v1 inline bound per direction."""
+"""Modal's function-call payload cap — the inline bound per direction."""
+
+PRESIGN_EXPIRY_SECONDS = 7 * 24 * 3600
+"""SigV4 maximum — matches Modal's 7-day FunctionCall result retention."""
 
 
 class DataTransport(Protocol):
@@ -116,8 +124,8 @@ class InlineTransport:
         """Tar the named output files (paths relative to ``src``).
 
         Raises:
-            ValueError: When the tar exceeds ``MAX_INLINE_BYTES`` (full
-                object-store output delivery is the deferred fix).
+            ValueError: When the tar exceeds ``MAX_INLINE_BYTES`` — pass
+                ``output_store`` for object-store delivery instead.
         """
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -127,8 +135,8 @@ class InlineTransport:
         if len(payload) > MAX_INLINE_BYTES:
             msg = (
                 f"Output tar exceeds {MAX_INLINE_BYTES >> 20} MB — the inline "
-                "transport cannot return it; object-store output delivery is "
-                "not implemented yet"
+                "transport cannot return it; pass output_store for "
+                "object-store delivery"
             )
             raise ValueError(msg)
         return payload
@@ -138,6 +146,59 @@ class InlineTransport:
         os.makedirs(dest, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(payload), mode="r") as tar:
             tar.extractall(dest, filter="data")
+
+
+def upload_outputs(
+    src: str, names: list[str], store: str, op_name: str
+) -> StoredOutputs:
+    """Worker-side: tar the named outputs and deliver them to ``store``.
+
+    Spools the gzipped tar to disk (stored outputs are exactly the ones too
+    large to buffer), then delivers by destination form: an ``http(s)://``
+    value is a caller-minted presigned PUT URL — the tar is PUT there
+    directly, touching no store credentials; anything else is an
+    object-store prefix — the tar is uploaded under it via the same
+    ambient-credential fs resolution input refs use, and a presigned GET
+    is minted once.
+
+    Args:
+        src: Directory holding the output files.
+        names: Output paths relative to ``src``.
+        store: Caller-supplied destination — object-store root URI
+            (``s3://bucket/prefix``) or presigned PUT URL.
+        op_name: Deployed op name — namespaces keys under a prefix.
+
+    Returns:
+        Pointer to the delivered tarball.
+
+    Raises:
+        NotImplementedError: When a prefix's filesystem cannot presign
+            (prefix mode requires a signing object store).
+        httpx.HTTPStatusError: When a presigned PUT is refused.
+    """
+    spool = os.path.join(tempfile.mkdtemp(prefix="artisan-tool-tar-"), "out.tar.gz")
+    with tarfile.open(spool, "w:gz") as tar:
+        for name in names:
+            tar.add(os.path.join(src, name), arcname=name)
+    if store.startswith(("http://", "https://")):
+        import httpx
+
+        # Explicit Content-Length, or httpx sends the file body as
+        # Transfer-Encoding: chunked — S3 answers plain chunked PUTs with
+        # 501 (MinIO tolerates them). Never in the signed set: callers
+        # mint with default (host-only) signed headers.
+        headers = {"Content-Length": str(os.path.getsize(spool))}
+        with open(spool, "rb") as f:
+            # streamed body; bounded by the worker's Modal timeout
+            response = httpx.put(store, content=f, headers=headers, timeout=None)
+        response.raise_for_status()
+        return StoredOutputs(uri=store.split("?", 1)[0])
+    uri = uri_join(store, op_name, f"{uuid.uuid4().hex}.tar.gz")
+    fs, remote = _resolve_fs(uri, None)
+    fs.put(spool, remote)
+    return StoredOutputs(
+        uri=uri, presigned_url=fs.sign(remote, expiration=PRESIGN_EXPIRY_SECONDS)
+    )
 
 
 def _resolve_fs(uri: str, fs: Any) -> tuple[Any, str]:
