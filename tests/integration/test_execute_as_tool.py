@@ -76,8 +76,11 @@ def test_flag_op_runs_as_subprocess_in_pipeline(pipeline_env: dict[str, str]):
     assert set(edges["target_artifact_id"].to_list()) == head_ids
     assert set(edges["source_artifact_id"].to_list()) == source_ids
 
-    # both subprocess executions recorded as successes
+    # both subprocess executions recorded as successes, each with its
+    # captured stdout persisted to the executions table
     executions = read_table(delta_root, "orchestration/executions")
     step1 = executions.filter(pl.col("origin_step_number") == 1)
     assert step1.height == 2
     assert step1["success"].all()
+    for tool_output in step1["tool_output"].to_list():
+        assert "csv_head: wrote" in tool_output

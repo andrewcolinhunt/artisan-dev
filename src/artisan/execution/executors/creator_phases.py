@@ -41,6 +41,7 @@ from artisan.execution.lineage.validation import (
 )
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.execution.staging.recorder import _read_tool_output
 from artisan.execution.transport.log_constants import TOOL_OUTPUT_FILENAME
 from artisan.execution.utils import finalize_artifacts, generate_execution_run_id
 from artisan.operations.base.per_artifact import PerArtifact
@@ -459,6 +460,10 @@ def post_unit(
         finalized_artifacts, edge_pairs, flat_input_artifacts, filesystem_match_map
     )
 
+    # Capture the unit log before sandbox cleanup destroys it — the
+    # recorder persists it to the executions table on success.
+    tool_output = _read_tool_output(prepped.log_path)
+
     # Clean up sandbox
     if (
         prepped.sandbox_path is not None  # type: ignore[redundant-expr]  # defensive runtime check
@@ -471,6 +476,7 @@ def post_unit(
         input_artifacts=flat_input_artifacts,
         artifacts=finalized_artifacts,
         edges=artifact_edges,
+        tool_output=tool_output,
         timings=timings,
     )
 
