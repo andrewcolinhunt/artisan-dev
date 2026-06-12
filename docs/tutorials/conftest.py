@@ -38,6 +38,9 @@ _TUTORIALS_DIR = Path(__file__).parent
 # relative to docs/tutorials/.
 INFRA_NOTEBOOKS = {
     "07-compute-backends/04-modal-execution.ipynb": "modal",
+    # additionally needs R2/S3 credentials + the r2-artisan Modal secret
+    # on the wait_tool deployment (see the notebook's setup cell)
+    "07-compute-backends/05-modal-r2-outputs.ipynb": "modal",
     "04-batching/02-batch-execute.ipynb": "modal",
     "07-compute-backends/02-slurm-execution.ipynb": "slurm",
     # slurm-intra additionally needs an active salloc/sbatch allocation.

@@ -234,6 +234,7 @@ External binaries (compiled tools), artisan, and the op's Python module
 must all be baked into the worker image; `local_python_sources` overlays
 dev-host source for iteration.
 
+(object-store-output-delivery)=
 ### Object-store output delivery
 
 The 100 MB output bound applies only to inline returns. Set
@@ -280,6 +281,7 @@ Operational notes:
 - **Redeploy to enable.** An endpoint deployed before this feature
   ignores the field and silently falls back to inline delivery.
 
+(presigned-puts-and-external-consumers-capability-mode)=
 #### Presigned PUTs and external consumers (capability mode)
 
 `output_store` rides `/submit` as a plain form field, so a consumer
