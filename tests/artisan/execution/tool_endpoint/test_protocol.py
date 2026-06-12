@@ -10,6 +10,7 @@ from artisan.execution.tool_endpoint.protocol import (
     InputRef,
     ResultResponse,
     SchemaResponse,
+    StoredOutputs,
     SubmitResponse,
     ToolManifest,
     ToolRequest,
@@ -33,6 +34,7 @@ class TestToolRequest:
         request = ToolRequest()
         assert request.params == {}
         assert request.inputs == []
+        assert request.output_store is None
 
     def test_round_trip_with_bytes(self):
         request = ToolRequest(
@@ -41,13 +43,35 @@ class TestToolRequest:
         restored = ToolRequest(**request.model_dump())
         assert restored == request
 
+    def test_output_store_round_trips(self):
+        request = ToolRequest(output_store="s3://bucket/prefix")
+        assert ToolRequest(**request.model_dump()) == request
+
 
 class TestToolManifest:
     def test_defaults(self):
         manifest = ToolManifest()
         assert manifest.output_names == []
+        assert manifest.stored is None
         assert manifest.log_tail is None
         assert manifest.error is None
+
+    def test_stored_round_trip(self):
+        manifest = ToolManifest(
+            output_names=["a.txt"],
+            stored=StoredOutputs(
+                uri="s3://bucket/prefix/my_op/abc123.tar.gz",
+                presigned_url="https://bucket.s3.amazonaws.com/signed?sig=x",
+            ),
+        )
+        assert ToolManifest(**manifest.model_dump()) == manifest
+
+    def test_stored_capability_mode_has_no_presigned_url(self):
+        # caller-supplied presigned PUT: the caller owns the destination
+        stored = StoredOutputs(uri="https://bucket.s3.amazonaws.com/run42.tar.gz")
+        assert stored.presigned_url is None
+        manifest = ToolManifest(stored=stored)
+        assert ToolManifest(**manifest.model_dump()) == manifest
 
     def test_error_envelope_round_trip(self):
         envelope = ArtisanError(
@@ -75,6 +99,19 @@ class TestWorkerResult:
     def test_failure_has_no_tar(self):
         result = WorkerResult(manifest=ToolManifest())
         assert result.output_tar is None
+
+    def test_stored_alone_accepted(self):
+        result = WorkerResult(
+            manifest=ToolManifest(stored=StoredOutputs(uri="s3://b/k.tar.gz"))
+        )
+        assert result.output_tar is None
+
+    def test_rejects_tar_and_stored_together(self):
+        with pytest.raises(ValidationError, match="both an inline tar"):
+            WorkerResult(
+                manifest=ToolManifest(stored=StoredOutputs(uri="s3://b/k.tar.gz")),
+                output_tar=b"tarbytes",
+            )
 
 
 class TestResponses:
