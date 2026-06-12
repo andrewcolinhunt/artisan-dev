@@ -152,8 +152,24 @@ class TestUploadOutputsPrefixMode:
     @pytest.fixture
     def fake_fs(self, monkeypatch) -> _FakeFs:
         fake = _FakeFs()
-        monkeypatch.setattr(transport_mod, "_resolve_fs", lambda uri, fs: (fake, uri))
+        monkeypatch.setattr(
+            transport_mod, "_resolve_fs", lambda uri, fs, **options: (fake, uri)
+        )
         return fake
+
+    def test_s3_filesystem_derived_with_sigv4(self, tmp_path, monkeypatch):
+        fake = _FakeFs()
+        captured: dict = {}
+
+        def resolve(uri, fs, **options):
+            captured.update(options)
+            return fake, uri
+
+        monkeypatch.setattr(transport_mod, "_resolve_fs", resolve)
+        upload_outputs(_make_outputs(tmp_path), ["out.txt"], "s3://b/p", "op")
+        # without the opt-in, presigned URLs come out legacy SigV2 —
+        # MinIO accepts them, R2 and modern AWS buckets return 401
+        assert captured == {"config_kwargs": {"signature_version": "s3v4"}}
 
     def test_gzipped_tar_uploaded_under_namespaced_key(self, tmp_path, fake_fs):
         stored = upload_outputs(
@@ -186,7 +202,9 @@ class TestUploadOutputsPrefixMode:
                 raise NotImplementedError(msg)
 
         fake = _NoSignFs()
-        monkeypatch.setattr(transport_mod, "_resolve_fs", lambda uri, fs: (fake, uri))
+        monkeypatch.setattr(
+            transport_mod, "_resolve_fs", lambda uri, fs, **options: (fake, uri)
+        )
         with pytest.raises(NotImplementedError):
             upload_outputs(_make_outputs(tmp_path), ["out.txt"], "file:///tmp/x", "op")
 
