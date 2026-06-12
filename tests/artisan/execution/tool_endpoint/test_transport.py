@@ -182,7 +182,8 @@ class TestUploadOutputsPrefixMode:
     def test_non_signing_fs_propagates(self, tmp_path, monkeypatch):
         class _NoSignFs(_FakeFs):
             def sign(self, remote: str, expiration: int = 100) -> str:
-                raise NotImplementedError("Sign is not implemented for this fs")
+                msg = "Sign is not implemented for this fs"
+                raise NotImplementedError(msg)
 
         fake = _NoSignFs()
         monkeypatch.setattr(transport_mod, "_resolve_fs", lambda uri, fs: (fake, uri))
