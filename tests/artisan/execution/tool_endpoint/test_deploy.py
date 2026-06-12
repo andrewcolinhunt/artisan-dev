@@ -90,7 +90,7 @@ class TestBuildApp:
         mock_modal.Secret.from_name.assert_called_once_with("hf-read")
 
     def test_non_tool_op_raises_before_modal(self, mock_modal: MagicMock):
-        with pytest.raises(ValueError, match="not a tool op"):
+        with pytest.raises(ValueError, match="not a command op"):
             build_app(DataGenerator)
         mock_modal.App.assert_not_called()
 

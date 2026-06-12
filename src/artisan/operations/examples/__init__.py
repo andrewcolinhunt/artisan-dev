@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from artisan.operations.examples.appendable_generator import AppendableGenerator
+from artisan.operations.examples.csv_head import CsvHead
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.operations.examples.data_generator_with_metrics import (
     DataGeneratorWithMetrics,
@@ -27,6 +28,7 @@ from artisan.operations.examples.wait_tool import WaitTool
 
 __all__ = [
     "AppendableGenerator",
+    "CsvHead",
     "DataGenerator",
     "DataGeneratorWithMetrics",
     "DataTransformer",

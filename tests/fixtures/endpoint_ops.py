@@ -93,6 +93,33 @@ class PlainTool(OperationDefinition):
         return [*self.tool.parts(), "-c", "true"]
 
 
+class FlagTool(OperationDefinition):
+    """execute_as_tool op with a modal config — deployable without a ToolSpec."""
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "flag_tool_test"
+    description: ClassVar[str] = "Flag-op deployable to a tool endpoint"
+    execute_as_tool: ClassVar[bool] = True
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = _OUTPUTS
+
+    class Params(BaseModel):
+        """Parameters for FlagTool."""
+
+        model_config = {"extra": "forbid"}
+
+        batch_size: int = Field(default=8, description="Items per batch.")
+
+    params: Params = Params()
+
+    compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
+
+    def execute_function(self, inputs: Any) -> None:
+        return None
+
+
 class NoModalTool(OperationDefinition):
     """Tool op without a modal config — not deployable."""
 

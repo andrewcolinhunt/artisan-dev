@@ -19,7 +19,6 @@ from contextvars import ContextVar
 from typing import Any, NoReturn
 
 import httpx
-from pydantic import BaseModel
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.tool_endpoint.protocol import ResultResponse, ToolManifest
@@ -106,7 +105,7 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
         response = client.post(
             "/submit",
             data={
-                "params": _params_json(operation),
+                "params": operation.params_json(),
                 "input_uris": json.dumps(uris),
                 "input_filenames": json.dumps(filenames),
             },
@@ -186,14 +185,6 @@ def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
             )
         files[name] = value
     return files
-
-
-def _params_json(operation: Any) -> str:
-    """The op's nested Params as JSON (the endpoint's typed schema)."""
-    params = getattr(operation, "params", None)
-    if isinstance(params, BaseModel):
-        return params.model_dump_json()
-    return "{}"
 
 
 def _resolve_url(op_name: str) -> str:
