@@ -69,6 +69,7 @@ project:
             - file: tutorials/07-compute-backends/02-slurm-execution.ipynb
             - file: tutorials/07-compute-backends/03-slurm-intra-execution.ipynb
             - file: tutorials/07-compute-backends/04-modal-execution.ipynb
+            - file: tutorials/07-compute-backends/05-modal-r2-outputs.ipynb
         - title: Analysis
           children:
             - file: tutorials/08-analysis/01-provenance-graphs.ipynb
