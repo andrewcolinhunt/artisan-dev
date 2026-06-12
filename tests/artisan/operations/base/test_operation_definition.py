@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum, auto
 from typing import Any, ClassVar
 
 import pytest
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
@@ -92,6 +93,32 @@ class ShellTool(OperationDefinition):
 
     def execute_command(self, inputs: dict[str, Any]) -> list[str]:
         return [*self.tool.parts(), "-c", f'echo "{self.message}" > marker.txt']
+
+
+class FlagOp(OperationDefinition):
+    """execute_as_tool fixture: a Python body shipped as a framework command."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "flag_op_def_test"
+    description: ClassVar[str] = "Writes a marker file via the op-run shim"
+    execute_as_tool: ClassVar[bool] = True
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": []},
+        ),
+    }
+
+    class Params(BaseModel):
+        suffix: str = Field(default="out", description="Output filename suffix.")
+
+    params: Params = Params()
+
+    def execute_function(self, inputs: ExecuteInput) -> None:
+        return None
 
 
 class TestOperationDefinitionValidation:
@@ -468,8 +495,8 @@ class TestToolOps:
                 outputs: ClassVar[dict[str, OutputSpec]] = {}
 
     def test_modal_default_requires_tool_op(self):
-        """A class defaulting to modal must declare ToolSpec + execute_command."""
-        with pytest.raises(TypeError, match="modal requires a ToolSpec"):
+        """A class defaulting to modal must declare a command op."""
+        with pytest.raises(TypeError, match="modal requires a command op"):
 
             class ModalPurePython(OperationDefinition):
                 name: ClassVar[str] = "modal_pure_python_test"
@@ -602,3 +629,152 @@ class TestIntrospectionPayloads:
             "title": "Params",
             "properties": {},
         }
+
+
+class TestExecuteAsTool:
+    """execute_as_tool: a function op shipped as a framework command."""
+
+    def test_flag_op_passes_subclass_validation(self):
+        """The flag satisfies the must-implement check and the predicates."""
+        assert "flag_op_def_test" in OperationDefinition.get_all()
+        assert FlagOp._kind() == "creator"
+        assert FlagOp().is_command_op()
+
+    def test_flag_without_execute_function_raises(self):
+        with pytest.raises(TypeError, match="does not implement execute_function"):
+
+            class NoBody(OperationDefinition):
+                name: ClassVar[str] = "flag_no_body_test"
+                execute_as_tool: ClassVar[bool] = True
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+    def test_flag_with_execute_command_raises(self):
+        with pytest.raises(TypeError, match="framework supplies the command"):
+
+            class FlagAndCommand(OperationDefinition):
+                name: ClassVar[str] = "flag_and_command_test"
+                execute_as_tool: ClassVar[bool] = True
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                def execute_function(self, inputs):
+                    return None
+
+                def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+                    return ["true"]
+
+    def test_flag_with_tool_raises(self):
+        with pytest.raises(TypeError, match="needs no ToolSpec"):
+
+            class FlagAndTool(OperationDefinition):
+                name: ClassVar[str] = "flag_and_tool_test"
+                execute_as_tool: ClassVar[bool] = True
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+                tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_flag_with_top_level_field_raises(self):
+        """Top-level config never crosses the wire — params-only rule."""
+        with pytest.raises(TypeError, match="move per-run config"):
+
+            class FlagTopLevel(OperationDefinition):
+                name: ClassVar[str] = "flag_top_level_test"
+                execute_as_tool: ClassVar[bool] = True
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+                rate: float = 1.0
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_flag_params_not_nested_class_raises(self):
+        """The worker rebuilds via getattr(op_cls, 'Params') — enforce it."""
+
+        class LooseConfig(BaseModel):
+            rate: float = Field(default=1.0, description="Rate.")
+
+        with pytest.raises(TypeError, match="nested Params class"):
+
+            class FlagLooseParams(OperationDefinition):
+                name: ClassVar[str] = "flag_loose_params_test"
+                execute_as_tool: ClassVar[bool] = True
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+                params: LooseConfig = LooseConfig()
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_flag_defined_in_main_raises(self):
+        """__main__ classes can't be resolved by the op-run subprocess."""
+        with pytest.raises(TypeError, match="__main__"):
+            type(
+                "MainFlagOp",
+                (OperationDefinition,),
+                {
+                    "__module__": "__main__",
+                    "name": "flag_main_module_test",
+                    "execute_as_tool": True,
+                    "inputs": {},
+                    "outputs": {},
+                    "execute_function": lambda self, inputs: None,
+                },
+            )
+
+    def test_flag_modal_default_accepted(self):
+        """A flag-op may default to modal — it is a command op."""
+
+        class FlagModal(OperationDefinition):
+            class OutputRole(StrEnum):
+                result = auto()
+
+            name: ClassVar[str] = "flag_modal_default_test"
+            execute_as_tool: ClassVar[bool] = True
+            inputs: ClassVar[dict[str, InputSpec]] = {}
+            outputs: ClassVar[dict[str, OutputSpec]] = {
+                OutputRole.result: OutputSpec(
+                    artifact_type=ArtifactTypes.DATA,
+                    infer_lineage_from={"inputs": []},
+                ),
+            }
+            compute_provider: ComputeProvider = ComputeProvider(
+                active="modal", modal=ModalComputeConfig()
+            )
+
+            def execute_function(self, inputs):
+                return None
+
+        assert FlagModal.declares_command_execute()
+
+    def test_declares_command_execute_truth_table(self):
+        """Flag op and external tool op are command ops; function op is not."""
+        assert FlagOp.declares_command_execute()
+        assert ShellTool.declares_command_execute()
+        assert not SimpleOperation.declares_command_execute()
+
+    def test_params_json_round_trips_nested_params(self):
+        op = FlagOp(params=FlagOp.Params(suffix="embedded"))
+        assert json.loads(op.params_json()) == {"suffix": "embedded"}
+
+    def test_params_json_without_params_model(self):
+        assert ShellTool().params_json() == "{}"
+
+    def test_shim_argv_carries_target_params_and_inputs(self):
+        """The base execute_command returns the generic op-run argv."""
+        op = FlagOp(params=FlagOp.Params(suffix="x"))
+        argv = op.execute_command({"source": ["/tmp/a.csv"]})
+
+        assert argv[:3] == ["artisan", "op", "run"]
+        assert argv[3] == f"{FlagOp.__module__}:FlagOp"
+        assert argv[4] == "--params"
+        assert json.loads(argv[5]) == {"suffix": "x"}
+        assert argv[6] == "--inputs"
+        assert json.loads(argv[7]) == {"source": ["/tmp/a.csv"]}
+
+    def test_shim_argv_non_serializable_input_names_role(self):
+        with pytest.raises(TypeError, match="source"):
+            FlagOp().execute_command({"source": object()})

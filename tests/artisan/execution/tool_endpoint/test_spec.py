@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 import pytest
-from fixtures.endpoint_ops import GpuTool, NoModalTool
+from fixtures.endpoint_ops import FlagTool, GpuTool, NoModalTool
 from pydantic import ValidationError
 
 from artisan.execution.tool_endpoint.spec import endpoint_spec
@@ -66,12 +66,21 @@ class TestEndpointSpec:
         endpoint_spec(GpuTool)  # but the spec reads class-level defaults
 
     def test_non_tool_op_raises(self):
-        with pytest.raises(ValueError, match="not a tool op"):
+        with pytest.raises(ValueError, match="not a command op"):
             endpoint_spec(DataGenerator)
 
     def test_missing_modal_config_raises(self):
         with pytest.raises(ValueError, match="no compute_provider.modal"):
             endpoint_spec(NoModalTool)
+
+    def test_flag_op_accepted_without_toolspec(self):
+        """execute_as_tool satisfies the command-op predicate; the nested
+        Params schema bakes exactly as for external tool ops."""
+        spec = endpoint_spec(FlagTool)
+        assert spec.name == "flag_tool_test"
+        assert spec.op_qualname == "FlagTool"
+        assert set(spec.params_schema["properties"]) == {"batch_size"}
+        assert spec.params_schema["additionalProperties"] is False
 
 
 def test_spec_module_imports_without_modal():

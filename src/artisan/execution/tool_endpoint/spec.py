@@ -57,16 +57,14 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
         op's ``Params`` JSON schema for boundary validation.
 
     Raises:
-        ValueError: If the op is not a tool op (ToolSpec + execute_command)
-            or declares no ``compute_provider.modal`` config.
+        ValueError: If the op is not a command op (ToolSpec +
+            execute_command, or execute_as_tool=True) or declares no
+            ``compute_provider.modal`` config.
     """
-    has_execute_command = (
-        op_cls.execute_command is not OperationDefinition.execute_command
-    )
-    if not has_execute_command or op_cls.model_fields["tool"].default is None:
+    if not op_cls.declares_command_execute():
         msg = (
-            f"{op_cls.__name__} is not a tool op — deploying an endpoint "
-            "requires a ToolSpec + execute_command()"
+            f"{op_cls.__name__} is not a command op — deploying an endpoint "
+            "requires a ToolSpec + execute_command(), or execute_as_tool=True"
         )
         raise ValueError(msg)
     provider = op_cls.model_fields["compute_provider"].default

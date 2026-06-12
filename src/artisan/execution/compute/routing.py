@@ -53,9 +53,9 @@ def create_execute_router(
             raise ArtisanError(
                 code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
                 message=(
-                    "compute_provider='modal' requires a command op "
-                    f"(ToolSpec + execute_command()); {operation.name} "
-                    "declares neither"
+                    "compute_provider='modal' requires a command op — a "
+                    "ToolSpec + execute_command(), or execute_as_tool=True; "
+                    f"{operation.name} declares neither"
                 ),
                 error_type="config",
                 operation_name=operation.name,

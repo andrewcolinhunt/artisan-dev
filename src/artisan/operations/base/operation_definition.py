@@ -7,6 +7,7 @@ generation, and the operation registry live here.
 
 from __future__ import annotations
 
+import json
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -216,6 +217,34 @@ class OperationDefinition(BaseModel):
     artifacts to amortize model loading.
     """
 
+    execute_as_tool: ClassVar[bool] = False
+    """Run ``execute_function`` as a framework-generated command.
+
+    Opting in makes this op a command op everywhere — a subprocess
+    locally, deployable to a Modal tool endpoint — with the framework
+    supplying the argv (``artisan op run <module:Qualname>``). Requires
+    the file-shaped contract:
+
+    - Prepared inputs are file paths, JSON-serializable. Per-artifact
+      values are wrapped in ``PerArtifact`` (a raw list passes through
+      whole, as shared data, to every per-artifact subprocess). Scalars
+      belong in ``Params``.
+    - Multi-element list values (the ``per_artifact_dispatch=False``
+      shape) run under the local shim but cannot cross the endpoint —
+      the wire protocol carries one file per role.
+    - Outputs are files written to ``execute_dir``;
+      ``execute_function`` returns None (a non-None return is a runtime
+      error under the shim).
+    - All per-run config lives in the nested ``Params`` model (enforced
+      at class definition).
+    - ``ExecuteInput.metadata`` and ``files_dir`` are unavailable, and
+      ``log_path`` points at a throwaway file — log to stdout/stderr,
+      which the framework captures to the unit log.
+    - The op's module and artisan must be importable wherever the
+      command runs: baked into the container image for Modal and
+      ``docker run``, installed in the active environment locally.
+    """
+
     # ---------- Tool ----------
     tool: ToolSpec | None = None
     """External binary/script this operation invokes. None for pure-Python ops."""
@@ -270,7 +299,9 @@ class OperationDefinition(BaseModel):
         Command ops override this instead of ``execute_function()``; the
         framework runs the returned argv — locally as a subprocess, or on
         the deployed tool endpoint's worker under
-        ``compute_provider='modal'``.
+        ``compute_provider='modal'``. ``execute_as_tool`` ops do not
+        override this: the base implementation returns the generic
+        ``artisan op run`` argv for them.
 
         Args:
             inputs: Prepared inputs from ``preprocess()``
@@ -280,21 +311,62 @@ class OperationDefinition(BaseModel):
             The argv list, typically ``[*self.tool.parts(), ...]``.
 
         Raises:
-            NotImplementedError: If the subclass does not override this method.
+            NotImplementedError: If the subclass neither overrides this
+                method nor sets ``execute_as_tool``.
         """
+        if self.execute_as_tool:
+            return [
+                "artisan",
+                "op",
+                "run",
+                f"{type(self).__module__}:{type(self).__qualname__}",
+                "--params",
+                self.params_json(),
+                "--inputs",
+                _inputs_json(type(self).name, inputs),
+            ]
         msg = f"{self.__class__.__name__} does not implement execute_command()"
         raise NotImplementedError(msg)
 
     def is_command_op(self) -> bool:
         """True when this op runs via the framework tool path.
 
-        Command ops declare a ``ToolSpec`` (``tool``) and override
-        ``execute_command()`` instead of ``execute_function()``.
+        Command ops either set ``execute_as_tool`` (the framework
+        supplies the command) or declare a ``ToolSpec`` (``tool``) and
+        override ``execute_command()`` instead of ``execute_function()``.
         """
-        return (
+        return self.execute_as_tool or (
             type(self).execute_command is not OperationDefinition.execute_command
             and self.tool is not None
         )
+
+    @classmethod
+    def declares_command_execute(cls) -> bool:
+        """Class-level twin of ``is_command_op()`` for deploy-time checks.
+
+        Reads field defaults rather than instance state —
+        ``endpoint_spec`` and the CLI consult class-level config only.
+        """
+        return cls.execute_as_tool or (
+            cls.execute_command is not OperationDefinition.execute_command
+            and cls.model_fields["tool"].default is not None
+        )
+
+    def params_json(self) -> str:
+        """The nested ``Params`` as JSON.
+
+        The unit that crosses process and wire boundaries — the endpoint
+        submit form and the ``artisan op run`` argv both carry exactly
+        this payload, and the worker/runner rebuild the op from it.
+
+        Returns:
+            ``self.params`` serialized via ``model_dump_json()``, or
+            ``"{}"`` when the op declares no ``Params``.
+        """
+        params = getattr(self, "params", None)
+        if isinstance(params, BaseModel):
+            return params.model_dump_json()
+        return "{}"
 
     def execute_function(self, inputs: ExecuteInput) -> Any:
         """Run the core computation for a creator operation, as a Python body.
@@ -394,6 +466,8 @@ class OperationDefinition(BaseModel):
         has_execute_command = (
             cls.execute_command is not OperationDefinition.execute_command
         )
+        if cls.execute_as_tool:
+            cls._validate_execute_as_tool(has_execute_function, has_execute_command)
         if has_execute_command and cls.model_fields["tool"].default is None:
             msg = (
                 f"{cls.__name__} implements execute_command() but declares no "
@@ -435,11 +509,12 @@ class OperationDefinition(BaseModel):
         if (
             isinstance(provider_default, ComputeProvider)
             and provider_default.active == "modal"
-            and not has_execute_command
+            and not (has_execute_command or cls.execute_as_tool)
         ):
             msg = (
                 f"{cls.__name__} defaults compute_provider.active='modal' but "
-                "modal requires a ToolSpec + execute_command() (command op)"
+                "modal requires a command op — declare a ToolSpec + "
+                "execute_command(), or set execute_as_tool=True"
             )
             raise TypeError(msg)
 
@@ -479,6 +554,69 @@ class OperationDefinition(BaseModel):
                 OperationDefinition._name_collisions.append(
                     (cls.name, existing.__module__, cls.__module__)
                 )
+
+    @classmethod
+    def _validate_execute_as_tool(
+        cls, has_execute_function: bool, has_execute_command: bool
+    ) -> None:
+        """Reject execute_as_tool misdeclarations at class definition.
+
+        The flag wraps a Python body in a framework-generated command, so
+        the class must (1) live in an importable module, (2) implement
+        ``execute_function`` and nothing else in the command slot, (3)
+        declare no ``ToolSpec``, and (4) keep all per-run config in the
+        nested ``Params`` model — the only payload that crosses the
+        process and wire boundaries.
+
+        Raises:
+            TypeError: On any violation, naming the rule.
+        """
+        if cls.__module__ == "__main__":
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True but is defined in "
+                "__main__ — the runner resolves ops by module:qualname, so "
+                "flag-ops must live in an importable module"
+            )
+            raise TypeError(msg)
+        if not has_execute_function:
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True but does not "
+                "implement execute_function() — the flag runs a Python body "
+                "as a framework-generated command"
+            )
+            raise TypeError(msg)
+        if has_execute_command:
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True and overrides "
+                "execute_command() — the framework supplies the command for "
+                "flag-ops; implement execute_function() only"
+            )
+            raise TypeError(msg)
+        if cls.model_fields["tool"].default is not None:
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True and declares a "
+                "ToolSpec — `tool` means an external binary the op invokes; "
+                "the framework needs no ToolSpec for its own argv"
+            )
+            raise TypeError(msg)
+        extra = set(cls.model_fields) - set(OperationDefinition.model_fields)
+        if not extra <= {"params"}:
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True but declares model "
+                f"fields {sorted(extra - {'params'})} — only the nested Params "
+                "model crosses the process boundary; move per-run config into "
+                "the nested Params model"
+            )
+            raise TypeError(msg)
+        if "params" in cls.model_fields and cls.model_fields[
+            "params"
+        ].annotation is not getattr(cls, "Params", None):
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True but its `params` "
+                "field is not typed as the nested Params class — the worker "
+                "and runner rebuild the op via its nested Params model"
+            )
+            raise TypeError(msg)
 
     @classmethod
     def _validate_params_documented(cls) -> None:
@@ -595,3 +733,34 @@ class OperationDefinition(BaseModel):
     def get_all(cls) -> dict[str, type[OperationDefinition]]:
         """Return a copy of the operation registry."""
         return dict(cls._registry)
+
+
+def _inputs_json(op_name: str, inputs: dict[str, Any]) -> str:
+    """Serialize prepared inputs for the ``artisan op run`` argv.
+
+    The local mirror of the endpoint client's wire-side enforcement
+    (``_file_inputs``): values must be JSON-serializable file paths.
+
+    Args:
+        op_name: Operation name for the error message.
+        inputs: ``ExecuteInput.inputs`` for one artifact.
+
+    Returns:
+        The inputs dict as JSON.
+
+    Raises:
+        TypeError: When a value is not JSON-serializable; names the
+            offending role and restates the file-paths contract.
+    """
+    for role, value in inputs.items():
+        try:
+            json.dumps(value)
+        except TypeError as exc:
+            msg = (
+                f"prepared input {role!r} of {op_name} is not "
+                "JSON-serializable — execute_as_tool ops ship file paths "
+                "only; derive scalars in Params or read them in "
+                "execute_function"
+            )
+            raise TypeError(msg) from exc
+    return json.dumps(inputs)
