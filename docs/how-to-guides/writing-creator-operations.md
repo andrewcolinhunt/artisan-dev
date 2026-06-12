@@ -630,6 +630,69 @@ def execute_function(self, inputs: ExecuteInput) -> Any:
 See `DataTransformerScript` in `artisan.operations.examples` for a complete
 implementation with multi-input pairing and config artifacts.
 
+(execute-as-tool)=
+### Python body as a command (`execute_as_tool`)
+
+A function op can only run where the lifecycle worker runs. To make a
+Python body deployable like a tool — a subprocess locally, a Modal tool
+endpoint remotely, a standalone container CLI — set one flag:
+
+```python
+class EmbedSequences(OperationDefinition):
+    name = "embed_sequences"
+    execute_as_tool: ClassVar[bool] = True   # the entire opt-in
+    ...
+
+    class Params(BaseModel):
+        batch_size: int = Field(default=8, description="Sequences per batch.")
+
+    params: Params = Params()
+
+    def execute_function(self, inputs: ExecuteInput) -> None:
+        ...  # read input files, write output files to inputs.execute_dir
+```
+
+No `ToolSpec`, no `execute_command` — the framework supplies the command
+(`artisan op run <module:Qualname> --params … --inputs …`) and the op is
+a command op everywhere: `artisan modal deploy` accepts it,
+`compute_provider='modal'` routes it, and a container with the op's
+package baked in runs it with no orchestration at all.
+
+The flag declares a **file-shaped contract**, enforced at class
+definition where possible:
+
+- Prepared inputs are file paths, JSON-serializable. Wrap per-artifact
+  values in `PerArtifact` — raw lists pass through whole, as shared
+  data, to every per-artifact subprocess. Scalars belong in `Params`.
+- Outputs are files written to `execute_dir`; `execute_function`
+  returns `None` (a non-`None` return is a runtime error).
+- All per-run config lives in the nested `Params` model — it is the
+  only payload that crosses the process and wire boundaries. Top-level
+  fields, a `params` field not typed as the nested `Params` class, a
+  `ToolSpec`, or an `execute_command` override all fail at import.
+- `ExecuteInput.metadata` and `files_dir` are unavailable, and
+  `log_path` is a throwaway — log to stdout/stderr, which the framework
+  captures to the unit log.
+- The op's module and artisan must be importable wherever the command
+  runs: baked into the container image (see
+  [Op Container Images](op-container-images.md)), installed in the
+  active environment locally.
+
+When to choose what:
+
+| Op shape | Use |
+|----------|-----|
+| Python body, results used in-process, no remote story needed | Plain function op |
+| External binary with its own CLI | `tool` + `execute_command()` |
+| Python body that should deploy like a tool (GPU model, heavy transform) | `execute_as_tool = True` |
+
+The subprocess costs ~1–2 s of interpreter startup per artifact —
+negligible for compute worth shipping to a GPU container; a transform
+that notices it should stay a plain function op.
+
+See `CsvHead` in `artisan.operations.examples` for the complete
+reference implementation.
+
 ### Multi-input operations
 
 When an operation consumes multiple input roles, set `group_by` to control
@@ -802,3 +865,5 @@ assert step.succeeded_count > 0
 - [Writing Curator Operations](writing-curator-operations.md) — filter, merge,
   ingest operations
 - [Build a Pipeline](building-a-pipeline.md) — wiring operations into pipelines
+- [Op Container Images](op-container-images.md) — the image contract behind
+  `execute_as_tool` and external tool deployment
