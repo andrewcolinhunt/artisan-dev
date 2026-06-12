@@ -113,6 +113,8 @@ graphviz = "*"          # Python bindings for Graphviz (provenance graph visuali
 modal = "*"             # Modal SDK for remote compute routing
 httpx = "*"             # Tool-endpoint client (submit/poll/download/cancel)
 python-dotenv = "*"     # .env fallback for proxy-auth token discovery
+s3fs = "*"              # Worker-side s3:// input refs + stored-output delivery
+                        # (the artisan-worker image installs this environment)
 
 # =============================================================================
 # DEV FEATURE - Development tools (testing, linting, debugging, notebooks)
@@ -149,11 +151,8 @@ icecream = "*"
 build = ">=1.4.0,<2"
 twine = ">=6.2.0,<7"
 
-# S3 testing — pulled in for unit-parametrized [local, s3] coverage and the
-# E2E MinIO integration test. Production users still install via the
-# `artisan[s3]` extra; this duplication is intentional so dev gets s3fs
-# without the extra.
-s3fs = "*"
+# S3 testing — MinIO test container (s3fs itself lives in the default
+# environment; pip consumers still opt in via the `artisan[s3]` extra)
 testcontainers = { version = "*", extras = ["minio"] }
 
 # =============================================================================
