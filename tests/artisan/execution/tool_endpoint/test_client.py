@@ -196,15 +196,11 @@ class TestStoredOutputs:
 
         # bare one-shot GET on the module, not the proxy-authenticated
         # client: positional URL, timeout only — no headers ride along
-        assert mock_http.get.call_args.args == (
-            "https://signed.example/get?sig=x",
-        )
+        assert mock_http.get.call_args.args == ("https://signed.example/get?sig=x",)
         assert "headers" not in mock_http.get.call_args.kwargs
         assert (execute_dir / "out.txt").read_text() == "hi\n"
         # /download is never hit — every client.get was a /result poll
-        assert all(
-            call.args[0] == "/result" for call in client.get.call_args_list
-        )
+        assert all(call.args[0] == "/result" for call in client.get.call_args_list)
 
     def test_stored_without_presigned_url_fails_fast(self, mock_http, tmp_path):
         manifest = ToolManifest(

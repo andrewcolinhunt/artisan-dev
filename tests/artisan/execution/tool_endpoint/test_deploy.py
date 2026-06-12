@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import jsonschema
@@ -15,7 +16,6 @@ from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint.deploy import build_app
 from artisan.execution.tool_endpoint.protocol import SchemaResponse
 from artisan.operations.examples import DataGenerator
-
 
 _PARAMS = json.dumps({"contigs": "10-20"})
 """Minimal valid GpuTool params — /submit schema-validates before anything else."""
@@ -173,8 +173,12 @@ class TestEndpointRoutes:
     ):
         """One deployment, per-request destinations — the caller-data criterion."""
         worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
-        client.post("/submit", data={"params": _PARAMS, "output_store": "s3://team-a/runs"})
-        client.post("/submit", data={"params": _PARAMS, "output_store": "s3://team-b/other"})
+        client.post(
+            "/submit", data={"params": _PARAMS, "output_store": "s3://team-a/runs"}
+        )
+        client.post(
+            "/submit", data={"params": _PARAMS, "output_store": "s3://team-b/other"}
+        )
         stores = [
             call.args[0]["output_store"] for call in worker.spawn.aio.call_args_list
         ]
@@ -184,7 +188,7 @@ class TestEndpointRoutes:
 class TestRetainedResultRoutes:
     """/result and /download against a mocked retained FunctionCall result."""
 
-    STORED = {
+    STORED: ClassVar[dict[str, str]] = {
         "uri": "s3://bucket/prefix/my_op/abc.tar.gz",
         "presigned_url": "https://signed.example/get?sig=x",
     }
