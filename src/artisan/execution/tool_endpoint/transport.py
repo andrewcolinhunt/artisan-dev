@@ -194,18 +194,30 @@ def upload_outputs(
         response.raise_for_status()
         return StoredOutputs(uri=store.split("?", 1)[0])
     uri = uri_join(store, op_name, f"{uuid.uuid4().hex}.tar.gz")
-    fs, remote = _resolve_fs(uri, None)
+    # Force SigV4 on s3: requests sign v4 either way, but presigned URLs
+    # come out legacy SigV2 without the explicit opt-in — accepted by
+    # MinIO, rejected (401) by R2 and modern AWS buckets.
+    options = (
+        {"config_kwargs": {"signature_version": "s3v4"}}
+        if uri.startswith("s3://")
+        else {}
+    )
+    fs, remote = _resolve_fs(uri, None, **options)
     fs.put(spool, remote)
     return StoredOutputs(
         uri=uri, presigned_url=fs.sign(remote, expiration=PRESIGN_EXPIRY_SECONDS)
     )
 
 
-def _resolve_fs(uri: str, fs: Any) -> tuple[Any, str]:
-    """Return (filesystem, path) for a URI, deriving the fs when not given."""
+def _resolve_fs(uri: str, fs: Any, **storage_options: Any) -> tuple[Any, str]:
+    """Return (filesystem, path) for a URI, deriving the fs when not given.
+
+    ``storage_options`` are forwarded to the derived filesystem's
+    constructor (ignored when ``fs`` is given).
+    """
     if fs is not None:
         return fs, uri
     import fsspec
 
-    derived_fs, path = fsspec.core.url_to_fs(uri)
+    derived_fs, path = fsspec.core.url_to_fs(uri, **storage_options)
     return derived_fs, path

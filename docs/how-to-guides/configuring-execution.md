@@ -305,10 +305,13 @@ curl "$ENDPOINT/result?call_id=$CALL_ID" -H "Modal-Key: ..." -H "Modal-Secret: .
 # /download answers 409 (the endpoint cannot serve what it never held)
 ```
 
-Mint with default (host-only) signed headers — the worker adds an
-explicit `Content-Length` and nothing else. A single presigned PUT is
-bounded by S3's 5 GiB per-object limit; prefix mode multiparts
-transparently and has no such bound. Presigned PUT URLs are per-request
+Mint **SigV4** URLs (boto3/botocore default to legacy SigV2 query auth
+unless configured with `Config(signature_version="s3v4")` — R2 and
+modern AWS buckets reject SigV2 with 401) with default (host-only)
+signed headers — the worker adds an explicit `Content-Length` and
+nothing else. A single presigned PUT is bounded by S3's 5 GiB
+per-object limit; prefix mode multiparts transparently and has no such
+bound. Presigned PUT URLs are per-request
 wire data: `ModalComputeConfig.output_store` rejects them at
 import time, and the artisan client always uses prefix mode.
 
