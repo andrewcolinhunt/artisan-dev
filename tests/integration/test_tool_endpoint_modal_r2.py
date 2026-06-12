@@ -29,9 +29,11 @@ Requirements (each missing one skips with a reason):
   falling back to ``_dev/demos/s3_real/.env``)
 - the ``r2-artisan`` Modal Secret carrying ``AWS_ACCESS_KEY_ID``,
   ``AWS_SECRET_ACCESS_KEY``, ``AWS_REGION``, ``AWS_ENDPOINT_URL``
-- a worker image whose default environment carries s3fs (the
-  ``fix/s3fs-default-env`` lock) — override the registry default with
-  ``ARTISAN_TEST_WORKER_IMAGE`` until a post-merge image is published
+- a worker image carrying s3fs and ca-certificates (any
+  ``artisan-worker:latest`` from the ``fix/s3fs-default-env`` lock
+  onward); ``ARTISAN_TEST_WORKER_IMAGE`` pins a different ref —
+  remember Modal caches registry refs, so a re-pushed tag needs one
+  run with ``MODAL_FORCE_BUILD=1``
 """
 
 from __future__ import annotations
