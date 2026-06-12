@@ -80,6 +80,7 @@ class TestModalComputeConfig:
         assert config.endpoint_url is None
         assert config.auth_secret is None
         assert config.poll_interval == 2.0
+        assert config.output_store is None
 
     def test_endpoint_client_fields(self):
         config = ModalComputeConfig(
@@ -87,10 +88,23 @@ class TestModalComputeConfig:
             endpoint_url="https://my-org--tool.modal.run",
             auth_secret="MY_PROXY_AUTH",
             poll_interval=0.5,
+            output_store="s3://bucket/prefix",
         )
         assert config.endpoint_url == "https://my-org--tool.modal.run"
         assert config.auth_secret == "MY_PROXY_AUTH"
         assert config.poll_interval == 0.5
+        assert config.output_store == "s3://bucket/prefix"
+
+    def test_output_store_round_trips(self):
+        config = ModalComputeConfig(image="img", output_store="s3://b/p")
+        assert ModalComputeConfig.model_validate(config.model_dump()) == config
+
+    @pytest.mark.parametrize("scheme", ["http", "https"])
+    def test_output_store_rejects_presigned_put_urls(self, scheme):
+        with pytest.raises(ValueError, match="per-request wire data"):
+            ModalComputeConfig(
+                image="img", output_store=f"{scheme}://bucket.s3/key?sig=x"
+            )
 
     def test_poll_interval_must_be_positive(self):
         with pytest.raises(ValueError, match="poll_interval"):

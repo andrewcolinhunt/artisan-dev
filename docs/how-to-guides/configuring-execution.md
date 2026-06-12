@@ -153,14 +153,17 @@ Modal-specific provider configuration. Hardware fields (`gpu`, `cpu`,
 | `secrets` | `list[str]` | `[]` | Names of Modal Secrets to inject into the runtime environment (e.g. `["hf-read", "aws-s3"]`). Created via `modal secret create ...`. Distinct from `image_registry_secret`, which authenticates the image pull only. |
 | `volumes` | `dict[str, str]` | `{}` | Mount path → volume name (e.g. `{"/weights": "foundry-weights"}`). Each volume is resolved via `modal.Volume.from_name(name, create_if_missing=True, version=2)` — surviving across cold starts is the point. |
 | `env` | `dict[str, str]` | `{}` | Environment variables set inside the container (e.g. `{"HF_XET_HIGH_PERFORMANCE": "1"}`). Applied as an image layer; cache hits survive as long as the dict is stable. |
-| `local_python_sources` | `list[str]` | `["artisan"]` | Top-level Python package names overlaid onto the **worker** image. Defaults to `["artisan"]` (ships dev-host artisan source live, shadowing the image's pinned version). Ops defined outside the artisan package must add their own package name. The endpoint image carries no artisan — it validates requests against the op's `Params` JSON schema baked in at deploy time. |
+| `local_python_sources` | `list[str]` | `[]` | Top-level Python package names overlaid onto the **worker** image, shadowing the image's baked versions — dev-mode iteration only (`artisan modal deploy --overlay` appends). Default `[]`: op code is baked into the image. The endpoint image carries no artisan — it validates requests against the op's `Params` JSON schema baked in at deploy time. |
 | `endpoint_url` | `str \| None` | `None` | Base URL of an externally-deployed tool endpoint. `None` resolves the Artisan-deployed app `artisan-tool-<op.name>` via the Modal SDK. |
 | `auth_secret` | `str \| None` | `None` | Env-var prefix for the proxy-auth token pair (`<prefix>_TOKEN_ID` / `<prefix>_TOKEN_SECRET`). `None` uses `MODAL_PROXY`. |
 | `poll_interval` | `float` | `2.0` | Seconds between `/result` polls while a tool job runs. |
+| `max_concurrent_calls` | `int` | `64` | Client-side cap on concurrent endpoint calls per unit — the execute router fans one thread per artifact up to this bound. The server-side sibling is `max_containers`. |
+| `output_store` | `str \| None` | `None` | Object-store prefix (`s3://bucket/prefix`) to deliver tool outputs under, sent per request. `None` returns outputs inline (100 MB bound). See *Object-store output delivery* below. |
 
-The worker image must be able to run the tool's executable; artisan and
-the op's module ride along via `local_python_sources`, so `execute_command`
-runs on the worker without shipping code per call.
+The worker image must carry everything the op needs — tool binaries,
+artisan, and the op's own module are baked in (see the op-container-images
+guide); `local_python_sources` overlays dev-host source on top for
+iteration.
 
 #### GPU op with weights, secrets, and runtime env
 
@@ -221,13 +224,100 @@ instructions in the error, before any network call.
 
 Input files ship inline in the submit request and outputs return as a
 tar — bounded at 100 MB per direction. Inputs that already live on object
-storage pass their `s3://` URI by reference (no re-upload, no bound).
-Large static data (model weights) belongs on Modal Volumes
-(`ModalComputeConfig.volumes`), not in the request.
+storage pass their `s3://` URI by reference (no re-upload, no bound), and
+outputs can be delivered to an object store with no size bound — see
+*Object-store output delivery* below. Large static data (model weights)
+belongs on Modal Volumes (`ModalComputeConfig.volumes`), not in the
+request.
 
-External binaries (compiled tools) must be pre-installed in the worker
-image; artisan and the op's Python module are overlaid via
-`local_python_sources`.
+External binaries (compiled tools), artisan, and the op's Python module
+must all be baked into the worker image; `local_python_sources` overlays
+dev-host source for iteration.
+
+### Object-store output delivery
+
+The 100 MB output bound applies only to inline returns. Set
+`output_store` to deliver outputs of any size to an object store
+instead. The destination is **request data**: every caller of one
+deployed endpoint picks its own, per run, with no redeploy.
+
+```python
+op = FoldComplex(
+    compute_provider=ComputeProvider(
+        active="modal",
+        modal=ModalComputeConfig(
+            image="ghcr.io/your-org/boltz-worker:0.4",
+            secrets=["aws-s3"],                    # worker upload credentials
+            output_store="s3://your-bucket/runs",  # this caller's choice
+        ),
+    )
+)
+```
+
+The worker tars the outputs, uploads
+`<output_store>/<op-name>/<uuid>.tar.gz` with its own credentials, and
+the `/result` manifest carries the URI plus a presigned GET URL (7-day
+expiry, matching Modal's result retention). The artisan client fetches
+the tarball straight from the store; `/download` 307-redirects to the
+same URL for curl-style consumers — one plain HTTP GET, no AWS
+credentials. Omit `output_store` and behavior is exactly the inline
+mode above.
+
+Operational notes:
+
+- **Credentials.** Prefix-mode uploads run with the worker's Modal
+  Secret (`secrets=["aws-s3"]`). Use long-lived IAM user keys — STS
+  session credentials cap presign lifetime below 7 days — and scope the
+  key's IAM policy to the prefixes callers may target: that policy is
+  the access-control surface for worker-identity writes.
+- **Lifecycle.** Artisan never deletes delivered tarballs. Pair
+  destination prefixes with a bucket lifecycle policy (≥ 7 days,
+  matching presign and result expiry).
+- **Caller-owned buckets.** A caller outside the worker's IAM universe
+  either grants the worker's principal `s3:PutObject` on its prefix via
+  bucket policy, or skips shared credentials entirely with a presigned
+  PUT (below).
+- **Redeploy to enable.** An endpoint deployed before this feature
+  ignores the field and silently falls back to inline delivery.
+
+#### Presigned PUTs and external consumers (capability mode)
+
+`output_store` rides `/submit` as a plain form field, so a consumer
+with no artisan installation can direct delivery. Two forms,
+discriminated by scheme: an object-store prefix (`s3://…`, the worker's
+credentials write) or a presigned PUT URL (`https://…`) the caller
+mints for its own bucket — the worker PUTs the tarball through it and
+no store credentials cross the boundary in either direction:
+
+```bash
+# mint a presigned PUT with your own credentials, e.g. boto3:
+#   s3.generate_presigned_url("put_object", Params={"Bucket": ..., "Key": ...})
+curl -X POST "$ENDPOINT/submit" \
+  -H "Modal-Key: $TOKEN_ID" -H "Modal-Secret: $TOKEN_SECRET" \
+  -F params='{"contigs": "10-20"}' \
+  -F output_store="$PRESIGNED_PUT_URL"
+# → {"call_id": "..."}
+
+curl "$ENDPOINT/result?call_id=$CALL_ID" -H "Modal-Key: ..." -H "Modal-Secret: ..."
+# → {"status": "done",
+#    "manifest": {"stored": {"uri": "https://...", "presigned_url": null}}}
+# the tarball is in your bucket — fetch it with your own credentials;
+# /download answers 409 (the endpoint cannot serve what it never held)
+```
+
+Mint **SigV4** URLs (boto3/botocore default to legacy SigV2 query auth
+unless configured with `Config(signature_version="s3v4")` — R2 and
+modern AWS buckets reject SigV2 with 401) with default (host-only)
+signed headers — the worker adds an explicit `Content-Length` and
+nothing else. A single presigned PUT is bounded by S3's 5 GiB
+per-object limit; prefix mode multiparts transparently and has no such
+bound. Presigned PUT URLs are per-request
+wire data: `ModalComputeConfig.output_store` rejects them at
+import time, and the artisan client always uses prefix mode.
+
+Inputs compose: input-ref URIs accept presigned GET URLs too, so a
+fully credential-free deployment (presigned GETs in, presigned PUT out)
+needs no object-store secret at all.
 
 ---
 

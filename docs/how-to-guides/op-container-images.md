@@ -37,6 +37,13 @@ Two conventions keep the contract honest:
   `ghcr.io/dexterity-systems/artisan-worker:latest` builds from
   `docker/artisan-worker/Dockerfile`.
 
+One trap for minimal runtime stages: install the distro CA bundle
+(`ca-certificates`). Modal injects `SSL_CERT_DIR=/etc/ssl/certs` into
+every container, which preempts a conda/pixi env's own certificate
+file — on a bare base image without the bundle, **all TLS verification
+fails** (S3/R2 uploads, presigned PUTs, any HTTPS the tool makes), and
+only on Modal: a plain `docker run` of the same image works.
+
 ## Point an op at its image
 
 The image ref lives on the op's modal config — it is the single source
