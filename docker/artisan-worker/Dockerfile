@@ -10,6 +10,13 @@ RUN pixi install --locked
 
 # --- Runtime stage: slim image with resolved environment ---
 FROM ubuntu:24.04
+# Distro CA bundle: Modal injects SSL_CERT_DIR=/etc/ssl/certs into every
+# container, which preempts the pixi env's own cert.pem — without the
+# bundle there, all TLS verification (S3/R2 uploads, presigned PUTs)
+# fails with CERTIFICATE_VERIFY_FAILED.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /app/.pixi/envs/default /app/.pixi/envs/default
 COPY --from=build /app/src /app/src
