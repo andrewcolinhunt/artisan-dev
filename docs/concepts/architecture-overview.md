@@ -263,15 +263,14 @@ For table layout, partitioning, and the staging-commit pattern, see
 ### Composites: reusable compositions of operations
 
 When multiple operations are tightly coupled — for example, transform then
-score where you always score immediately after transforming — running them
-as separate steps wastes I/O on intermediate artifacts that are immediately
-consumed. A **composite** solves this.
+score where you always score immediately after transforming — copying that
+wiring into every pipeline duplicates it, and the copies drift. A
+**composite** names the wiring once as a reusable unit.
 
 A `CompositeDefinition` declares inputs, outputs, and a `compose()` method
-that wires operations together using a `CompositeContext`. The same composite
-can run **collapsed** (single worker, in-memory artifact passing via
-`pipeline.run()`) or **expanded** (each internal operation becomes its own
-pipeline step via `pipeline.run_composite()`).
+that wires operations together using a `CompositeContext`. Running a
+composite with `pipeline.run_composite()` expands it into real pipeline
+steps — each internal `ctx.run()` becomes its own step.
 
 ```python
 class TransformAndScore(CompositeDefinition):
@@ -286,16 +285,13 @@ class TransformAndScore(CompositeDefinition):
         ctx.output("metrics", scored.output("metrics"))
 
 
-# Collapsed: single step
-pipeline.run(TransformAndScore, inputs={"dataset": output("gen", "datasets")})
-
-# Expanded: each internal op becomes its own step
+# Each internal operation becomes its own pipeline step
 pipeline.run_composite(TransformAndScore, inputs={"dataset": output("gen", "datasets")})
 ```
 
-Composites share the same dispatch-execute-commit lifecycle as regular steps.
-Intermediate artifacts can be discarded (default), persisted, or fully exposed
-depending on the `intermediates` setting. For the full conceptual model, see
+Composites share the same dispatch-execute-commit lifecycle as regular steps:
+each internal operation is an ordinary step with its own caching and
+provenance. For the full conceptual model, see
 [Composites and Composition](composites-and-composition.md).
 
 ---
