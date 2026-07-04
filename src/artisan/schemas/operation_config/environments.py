@@ -6,7 +6,7 @@ is active at runtime.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from artisan.schemas.operation_config.environment_spec import (
     ApptainerEnvironmentSpec,
@@ -36,6 +36,23 @@ class Environments(BaseModel):
     docker: DockerEnvironmentSpec | None = None
     apptainer: ApptainerEnvironmentSpec | None = None
     pixi: PixiEnvironmentSpec | None = None
+
+    @field_validator("active")
+    @classmethod
+    def _validate_active(cls, value: str) -> str:
+        """Constrain ``active`` to the known environment names.
+
+        A free-form value colliding with a method name (e.g. 'available')
+        would make ``current()`` resolve to a bound method instead of
+        failing fast.
+        """
+        if value not in ("local", "docker", "apptainer", "pixi"):
+            msg = (
+                f"Unknown environment {value!r}; expected one of "
+                "'local', 'docker', 'apptainer', 'pixi'"
+            )
+            raise ValueError(msg)
+        return value
 
     def current(self) -> EnvironmentSpec:
         """Return the active environment spec.
