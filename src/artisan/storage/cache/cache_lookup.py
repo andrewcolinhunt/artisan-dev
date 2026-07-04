@@ -23,7 +23,6 @@ def cache_lookup(
     execution_spec_id: str,
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
-    execution_edges_path: str | None = None,
 ) -> CacheHit | CacheMiss:
     """Look up a cached execution by its deterministic spec ID.
 
@@ -37,7 +36,6 @@ def cache_lookup(
             inputs, and merged params.
         fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
         storage_options: Credentials/config passed to delta-rs calls.
-        execution_edges_path: Unused; retained for caller compatibility.
 
     Returns:
         ``CacheHit`` identifying the prior execution when a successful
