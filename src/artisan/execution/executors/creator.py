@@ -121,7 +121,6 @@ def run_creator_lifecycle(
             execute_router = create_execute_router(
                 config,
                 prepped.operation,
-                compute_resources=prepped.operation.compute_resources,
                 cancel_check=_cancel_check(runtime_env, unit.step_run_id),
             )
         try:
