@@ -21,7 +21,7 @@ from typing import Any, cast
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel
 
-from artisan.execution.context.builder import build_curator_execution_context
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.executors.curator import (
     _get_params,
     is_curator_operation,
@@ -834,7 +834,7 @@ def _execute_curator_step(
             synthetic_run_id = f"killed-{unit.execution_spec_id[:24]}"
             kill_fs = runtime_env.storage.filesystem()
             kill_so = runtime_env.storage.delta_storage_options()
-            execution_context = build_curator_execution_context(
+            execution_context = build_execution_context(
                 execution_run_id=synthetic_run_id,
                 execution_spec_id=unit.execution_spec_id,
                 step_number=unit.step_number,
