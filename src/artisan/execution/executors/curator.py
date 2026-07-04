@@ -29,9 +29,9 @@ from artisan.execution.lineage.validation import (
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.staging.parquet_writer import StagingResult
 from artisan.execution.staging.recorder import (
-    build_execution_edges,
     record_execution_failure,
     record_execution_success,
+    record_passthrough,
 )
 from artisan.execution.utils import (
     finalize_artifacts,
@@ -210,67 +210,22 @@ def _handle_passthrough_result(
     timestamp_end: datetime,
     user_overrides: dict[str, Any] | None = None,
 ) -> StagingResult:
-    """Validate and stage a passthrough result (no new artifacts created)."""
-    from artisan.execution.staging.parquet_writer import (
-        StagingResult,
-        _create_staging_path,
-        _stage_artifact_edges,
-        _stage_execution,
-    )
+    """Validate and stage a passthrough result (no new artifacts created).
 
+    Validation needs the operation instance (which the recorder never sees),
+    so it stays here; the staging body — including edge run-id stamping —
+    lives in ``record_passthrough``.
+    """
     validate_passthrough_result(result, operation.outputs)
-    staging_path = _create_staging_path(
-        execution_context.staging_root,
-        execution_context.execution_run_id,
-        execution_context.step_number,
-        operation_name=execution_context.operation_name,
-        fs=execution_context.fs,
-    )
-    if result.lineage_edges:
-        # Stamp the executor-assigned execution_run_id onto each edge.
-        # Ops build edges with a sentinel run_id (they don't know it yet)
-        # and the executor finalizes it here, mirroring the artifact-result
-        # path where the run_id is also injected after the op returns.
-        stamped_edges = [
-            edge.model_copy(
-                update={"execution_run_id": execution_context.execution_run_id}
-            )
-            for edge in result.lineage_edges
-        ]
-        _stage_artifact_edges(stamped_edges, staging_path, execution_context.fs)
-    execution_edges = build_execution_edges(
-        execution_run_id=execution_context.execution_run_id,
+    return record_passthrough(
+        execution_context=execution_context,
+        passthrough=result.passthrough,
+        lineage_edges=result.lineage_edges,
         inputs=inputs,
-        outputs=result.passthrough,
-    )
-
-    params_dict = _get_params(operation)
-    _stage_execution(
-        execution_run_id=execution_context.execution_run_id,
-        execution_spec_id=execution_context.execution_spec_id,
-        operation_name=execution_context.operation_name,
-        step_number=execution_context.step_number,
-        execution_edges=execution_edges,
-        staging_path=staging_path,
-        fs=execution_context.fs,
-        success=True,
-        error=None,
-        timestamp_start=execution_context.timestamp_start,
         timestamp_end=timestamp_end,
-        worker_id=execution_context.worker_id,
-        params=params_dict,
-        compute_backend=execution_context.compute_backend,
-        shared_filesystem=execution_context.shared_filesystem,
+        params=_get_params(operation),
         result_metadata=result.metadata if result.metadata else None,
         user_overrides=user_overrides,
-        step_run_id=execution_context.step_run_id,
-    )
-    all_passthrough_ids = [aid for ids in result.passthrough.values() for aid in ids]
-    return StagingResult(
-        success=True,
-        staging_path=staging_path,
-        execution_run_id=execution_context.execution_run_id,
-        artifact_ids=all_passthrough_ids,
     )
 
 
