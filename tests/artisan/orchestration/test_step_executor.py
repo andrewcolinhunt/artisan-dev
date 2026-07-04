@@ -1785,7 +1785,7 @@ class TestCuratorSubprocessIsolation:
                 se._run_curator_in_subprocess(unit, runtime_env)
 
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
-    @patch("artisan.orchestration.engine.step_executor.build_curator_execution_context")
+    @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._format_subprocess_kill_error")
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")

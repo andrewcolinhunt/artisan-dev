@@ -226,13 +226,11 @@ def check_cache_for_batch(
     storage_options = storage.delta_storage_options()
 
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
-    execution_edges_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
     result = cache_lookup(
         executions_path,
         execution_spec_id,
         fs=fs,
         storage_options=storage_options,
-        execution_edges_path=execution_edges_path,
     )
     return result if isinstance(result, CacheHit) else None
 
