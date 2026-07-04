@@ -13,7 +13,7 @@ import os
 import resource
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -896,14 +896,17 @@ def _run_curator_in_subprocess(
         ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool,
     ):
         future = pool.submit(run_curator_flow, unit, runtime_env, 0)
-        while True:
-            try:
-                return future.result(timeout=0.5)
-            except TimeoutError as err:
-                if cancel_event is not None and cancel_event.is_set():
-                    msg = "Curator interrupted by cancellation"
-                    raise RuntimeError(msg) from err
-                continue
+        # Poll done() and call result() exactly once after completion. On
+        # Python 3.12 concurrent.futures.TimeoutError IS builtins.TimeoutError,
+        # so calling result(timeout=) in the loop would swallow a task-raised
+        # TimeoutError as a poll timeout and spin forever; polling done()
+        # instead lets task exceptions surface as real failures.
+        while not future.done():
+            if cancel_event is not None and cancel_event.is_set():
+                msg = "Curator interrupted by cancellation"
+                raise RuntimeError(msg)
+            wait([future], timeout=0.5)
+        return future.result()
 
 
 def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
