@@ -2485,7 +2485,7 @@ def test_class_default_image_bump_changes_step_spec_id(
     step_spec_id — the motivating bug, as an end-to-end regression guard.
 
     Before this change the image lived only in the class default, invisible to
-    the typed-override cache_payload, so both runs produced the same key and
+    the typed-override cache key, so both runs produced the same key and
     the cache served v1 artifacts for a v2 op.
     """
 

@@ -155,7 +155,7 @@ class TestEffectiveConfigPayload:
 
         The two ops differ solely in ``environments.docker.image``; the op
         name passed to the primitives is held fixed, so the image is the only
-        variable. Under the old cache_payload path both ids were identical.
+        variable. Under the old typed-override path both ids were identical.
         """
         v1 = effective_config_payload(_ImageV1Op())
         v2 = effective_config_payload(_ImageV2Op())
