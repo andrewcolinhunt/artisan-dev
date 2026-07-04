@@ -58,13 +58,14 @@ class IngestMockOp(OperationDefinition):
 
 def _mock_execute_step(**kwargs):
     from artisan.orchestration.engine.step_executor import build_step_result
+    from artisan.schemas.enums import FailurePolicy
 
     return build_step_result(
         operation=kwargs["operation_class"],
         step_number=kwargs["step_number"],
         succeeded_count=5,
         failed_count=0,
-        failure_policy=kwargs["failure_policy"],
+        failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
     )
 
 

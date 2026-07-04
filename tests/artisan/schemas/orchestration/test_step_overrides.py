@@ -7,15 +7,14 @@ Three layers:
   override cannot silently escape the cache key.
 - **from_user coercion** — each typed-or-dict knob lands in canonical
   dict-or-str form; ``step_runner`` and scalars pass through untouched.
-- **cache_payload byte-equivalence** — the payload reproduces the legacy
-  ``_merge_config_overrides`` exactly (characterization test, gates its
-  deletion) plus hardcoded golden values that outlive the legacy symbol.
+- **cache_payload golden values** — the config-overrides payload matches
+  hardcoded golden values (byte-equivalent to the legacy merge the refactor
+  replaced, so existing caches stay valid).
 """
 
 from __future__ import annotations
 
 from dataclasses import fields
-from typing import Any
 
 import pytest
 
@@ -130,80 +129,19 @@ class TestFromUserCoercion:
 
 
 # ---------------------------------------------------------------------------
-# cache_payload byte-equivalence with _merge_config_overrides
+# cache_payload golden values
 # ---------------------------------------------------------------------------
 #
-# Characterization test — gates the deletion of _merge_config_overrides.
-# It is fed the *coerced* StepOverrides fields, matching the real dispatch
-# flow (submit coerces before hashing). The legacy _to_dict(model) branch
-# is unreachable in the real flow, so the raw-model form is exercised
-# through from_user's coercion, not by passing a model to the legacy
-# function directly (which would diverge: exclude_defaults vs mode="json").
-
-_CHAR_CASES: list[dict[str, Any]] = [
-    {},
-    {"environment": None},
-    {"environment": "docker"},
-    {"environment": {"active": "docker", "docker": {"image": "x"}}},
-    {
-        "environment": Environments(
-            active="docker", docker=DockerEnvironmentSpec(image="x")
-        )
-    },
-    {"tool": None},
-    {"tool": {}},  # falsy — omitted
-    {"tool": {"executable": "bash"}},
-    {"tool": ToolSpec(executable="bash")},
-    {"compute_provider": None},
-    {"compute_provider": "modal"},
-    {"compute_provider": {"active": "modal"}},
-    {"compute_provider": ComputeProvider(active="modal", modal=ModalComputeConfig())},
-    {"compute_resources": None},
-    {"compute_resources": {"gpu": "A100", "memory_gb": 32}},
-    {"compute_resources": ComputeResources(gpu="A100", memory_gb=16)},
-    *[{"group_by": gb} for gb in GroupByStrategy],
-    {"group_by": None},
-    {
-        "environment": "docker",
-        "tool": {"executable": "bash"},
-        "compute_provider": "modal",
-        "compute_resources": {"gpu": "A100"},
-        "group_by": GroupByStrategy.ZIP,
-    },
-    {
-        "environment": Environments(
-            active="docker", docker=DockerEnvironmentSpec(image="x")
-        ),
-        "compute_provider": ComputeProvider(active="modal", modal=ModalComputeConfig()),
-        "compute_resources": ComputeResources(gpu="A100"),
-    },
-]
-
-
-@pytest.mark.parametrize("kw", _CHAR_CASES)
-def test_cache_payload_matches_merge_config_overrides(kw: dict[str, Any]) -> None:
-    """cache_payload reproduces _merge_config_overrides for the coerced fields.
-
-    Both sides start from the coerced StepOverrides fields — the exact
-    inputs _merge_config_overrides receives in the real dispatch flow,
-    where coercion always precedes hashing.
-    """
-    from artisan.orchestration.engine.step_executor import _merge_config_overrides
-
-    ov = StepOverrides.from_user(**kw)
-    expected = _merge_config_overrides(
-        ov.environment,
-        ov.tool,
-        ov.compute_provider,
-        ov.compute_resources,
-        group_by=ov.group_by,
-    )
-    assert ov.cache_payload() == expected
+# A transient characterization test pinned cache_payload against the legacy
+# config-overrides merge (byte-for-byte, for every coerced input form) until
+# that function was deleted in the same PR. The golden values below plus the
+# recorded step-spec hashes in
+# tests/artisan/utils/test_hash_stability_recorded.py are the permanent guard
+# that cache keys stay byte-identical.
 
 
 def test_cache_payload_golden_values() -> None:
-    """Hardcoded payload values — the permanent guard that outlives the
-    legacy _merge_config_overrides symbol."""
+    """Hardcoded payload values — the permanent guard on cache-key stability."""
     assert StepOverrides.from_user().cache_payload() is None
     assert StepOverrides.from_user(environment="docker").cache_payload() == {
         "environment": "docker"

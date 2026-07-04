@@ -74,7 +74,7 @@ def _coerce(
 def _to_json(value: Any) -> Any:
     """Dump a Pydantic model to a JSON-safe dict; pass other values through.
 
-    Mirrors the legacy ``_merge_config_overrides._to_dict`` so the cache
+    Mirrors the legacy config-overrides merge's model-dump step so the cache
     payload stays JSON-serializable and dict-vs-model forms hash alike.
     ``from_user`` coerces models to dicts up front, so in practice this is
     a passthrough — it exists to reproduce the legacy behavior exactly.
@@ -192,7 +192,7 @@ class StepOverrides:
     def cache_payload(self) -> dict[str, Any] | None:
         """Build the ``config_overrides`` hash payload from the cache fields.
 
-        Reproduces the legacy ``_merge_config_overrides`` byte-for-byte, so
+        Reproduces the legacy config-overrides merge byte-for-byte, so
         existing caches stay valid. The omit rules are deliberately
         non-uniform: ``tool`` is omitted when falsy (an empty dict), the
         other three dict/str fields when ``None``; ``group_by`` is
