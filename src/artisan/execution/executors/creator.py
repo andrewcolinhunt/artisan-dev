@@ -352,7 +352,14 @@ def _try_build_execution_context(
     runtime_env: RuntimeEnvironment,
     operation: Any,
 ) -> Any | None:
-    """Try to build an execution context, returning None on failure."""
+    """Try to build an execution context, returning None on failure.
+
+    A missing ``working_root`` (the expected setup failure) returns None
+    silently so the caller stages a bare StagingResult. Any other failure
+    is logged with its cause before returning None, so an unexpected
+    context-build error is not masked behind the caller's generic
+    "Creator setup failed" message.
+    """
     try:
         return _build_execution_context(
             execution_run_id,
@@ -362,7 +369,12 @@ def _try_build_execution_context(
             runtime_env,
             operation,
         )
-    except (ValueError, Exception):
+    except ValueError:
+        return None
+    except Exception:
+        logger.exception(
+            "Unexpected failure building execution context for %s", execution_run_id
+        )
         return None
 
 
