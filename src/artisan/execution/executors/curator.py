@@ -164,7 +164,7 @@ def _handle_artifact_result(
     else:
         validate_lineage_integrity(result.lineage, input_artifacts, finalized)
         lineage = result.lineage
-    pairs = build_edges(lineage, finalized, input_artifacts, output_specs)
+    pairs = build_edges(lineage, finalized)
     if pairs:
         artifact_edges.extend(
             build_artifact_edges_from_dict(
