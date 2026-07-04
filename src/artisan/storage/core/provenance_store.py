@@ -246,49 +246,6 @@ class ProvenanceStore:
             descendant_map.setdefault(source_id, []).append(target_id)
         return descendant_map
 
-    def get_descendant_ids_df(
-        self,
-        source_ids: pl.Series,
-        target_artifact_type: str | None = None,
-    ) -> pl.DataFrame:
-        """Return direct descendant IDs as a two-column DataFrame.
-
-        Args:
-            source_ids: Source artifact IDs to query. An empty Series
-                returns the empty schema immediately.
-            target_artifact_type: If given, restrict to descendants of
-                this type.
-
-        Returns:
-            DataFrame with columns ``[source_artifact_id,
-            target_artifact_id]``. Empty with correct schema when no
-            matches exist.
-        """
-        empty = pl.DataFrame(
-            schema={
-                "source_artifact_id": pl.String,
-                "target_artifact_id": pl.String,
-            }
-        )
-
-        if source_ids.is_empty():
-            return empty
-
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not self._fs.exists(prov_path):
-            return empty
-
-        query = pl.scan_delta(prov_path, storage_options=self._storage_options).filter(
-            pl.col("source_artifact_id").is_in(source_ids.to_list())
-        )
-
-        if target_artifact_type is not None:
-            query = query.filter(pl.col("target_artifact_type") == target_artifact_type)
-
-        result = query.select(["source_artifact_id", "target_artifact_id"]).collect()
-
-        return result if not result.is_empty() else empty
-
     # -------------------------------------------------------------------------
     # Step queries
     # -------------------------------------------------------------------------
