@@ -11,6 +11,8 @@ These tests verify the step executor behavior for:
 from __future__ import annotations
 
 import resource
+import signal
+from contextlib import contextmanager
 from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -1636,6 +1638,35 @@ class TestCuratorStepSpecId:
 # =============================================================================
 
 
+class _DeadlineExceeded(Exception):
+    """Raised by _deadline when the guarded block overruns.
+
+    Deliberately not a TimeoutError so a spinning poll loop that swallows
+    TimeoutError cannot also swallow the deadline signal.
+    """
+
+
+@contextmanager
+def _deadline(seconds: int):
+    """Fail the wrapped block if it runs longer than *seconds* (SIGALRM).
+
+    Guards against a regression where the poll loop spins forever instead of
+    surfacing a task-raised exception.
+    """
+
+    def _handler(signum, frame):
+        msg = f"deadline exceeded after {seconds}s"
+        raise _DeadlineExceeded(msg)
+
+    old = signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+
+
 class TestCuratorSubprocessIsolation:
     """Tests for subprocess isolation of curator operations."""
 
@@ -1670,6 +1701,36 @@ class TestCuratorSubprocessIsolation:
         assert call_kwargs["max_workers"] == 1
         assert call_kwargs["mp_context"].get_start_method() == "spawn"
         mock_pool.submit.assert_called_once()
+
+    def test_curator_task_timeouterror_surfaces_as_failure(self) -> None:
+        """A task raising TimeoutError surfaces, not an infinite poll loop.
+
+        On Python 3.12 concurrent.futures.TimeoutError IS
+        builtins.TimeoutError; the poll loop must call result() exactly once
+        after done() and let the task-raised TimeoutError propagate rather
+        than eating it as a poll timeout.
+        """
+        from artisan.orchestration.engine import step_executor as se
+
+        unit = MagicMock()
+        runtime_env = MagicMock()
+
+        with patch(
+            "artisan.orchestration.engine.step_executor.ProcessPoolExecutor"
+        ) as mock_pool_cls:
+            mock_pool = MagicMock()
+            mock_pool_cls.return_value.__enter__ = MagicMock(return_value=mock_pool)
+            mock_pool_cls.return_value.__exit__ = MagicMock(return_value=False)
+            future = mock_pool.submit.return_value
+            future.done.return_value = True
+            future.result.side_effect = TimeoutError("task self-timeout")
+
+            # Deadline guard: a regression would spin forever on result(timeout=).
+            with (
+                _deadline(10),
+                pytest.raises(TimeoutError, match="task self-timeout"),
+            ):
+                se._run_curator_in_subprocess(unit, runtime_env)
 
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
     @patch("artisan.orchestration.engine.step_executor.build_curator_execution_context")
