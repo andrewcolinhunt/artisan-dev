@@ -506,7 +506,7 @@ class Filter(OperationDefinition):
             )
 
             # Build metric namespace
-            wide_chunk, step_info = self._build_metric_namespace(
+            wide_chunk, step_info = _build_metric_namespace(
                 chunk_pt, chunk_pairs, artifact_store
             )
 
@@ -515,7 +515,7 @@ class Filter(OperationDefinition):
                 for i, crit in enumerate(self.params.criteria):
                     if crit.step is not None or crit.step_number is not None:
                         continue
-                    self._check_collision(crit.metric, step_info)
+                    _check_collision(crit.metric, step_info)
                     # Resolve step for diagnostics
                     if crit.metric in step_info:
                         steps_for_field = step_info[crit.metric]
@@ -735,36 +735,3 @@ class Filter(OperationDefinition):
             pl.col("target_id").alias("passthrough_id"),
             pl.col("candidate_id").alias("metric_id"),
         )
-
-    def _build_metric_namespace(
-        self,
-        passthrough_df: pl.DataFrame,
-        metric_pairs: pl.DataFrame,
-        artifact_store: ArtifactStore,
-    ) -> tuple[pl.DataFrame, dict[str, Any] | None]:
-        """Hydrate metrics and build wide DataFrame for evaluation.
-
-        Args:
-            passthrough_df: DataFrame with passthrough artifact_id column.
-            metric_pairs: DataFrame with [passthrough_id, metric_id].
-            artifact_store: Store for metric loading.
-
-        Returns:
-            Tuple of (wide DataFrame with passthrough_id + metric columns,
-            step_info mapping field names to sets of step numbers that
-            produce them — None if no metrics found).
-        """
-        return _build_metric_namespace(passthrough_df, metric_pairs, artifact_store)
-
-    @staticmethod
-    def _check_collision(field: str, step_info: dict[str, Any]) -> None:
-        """Raise ValueError if a field comes from multiple steps.
-
-        Args:
-            field: Metric field name to check.
-            step_info: Mapping from field names to sets of step numbers.
-
-        Raises:
-            ValueError: When the field appears in metrics from multiple steps.
-        """
-        _check_collision(field, step_info)
