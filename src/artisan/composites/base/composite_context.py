@@ -434,33 +434,32 @@ class CollapsedCompositeContext(CompositeContext):
         return sources
 
     def _pre_curator_commit(self) -> None:
-        """Commit pending internal artifacts to Delta for curator hydration."""
+        """Commit pending internal artifacts to Delta for curator hydration.
+
+        Empty staging is a no-op — ``commit_all_tables`` returns without
+        raising — so any exception here is a genuine commit failure and
+        must propagate rather than be mistaken for "no pending data".
+        """
         from artisan.storage.io.commit import DeltaCommitter
         from artisan.storage.io.staging import StagingManager
 
         staging_root = self._runtime_env.staging_root
         delta_root = self._runtime_env.delta_root
         if staging_root and delta_root:
-            try:
-                fs = self._runtime_env.storage.filesystem()
-                storage_options = self._runtime_env.storage.delta_storage_options()
-                staging_manager = StagingManager(staging_root, fs)
-                committer = DeltaCommitter(
-                    delta_root,
-                    staging_manager,
-                    fs=fs,
-                    storage_options=storage_options,
-                )
-                committer.commit_all_tables(
-                    cleanup_staging=False,
-                    step_number=self._step_number,
-                    operation_name=f"_composite_{self._composite.name}_pre_curator",
-                )
-            except Exception:
-                logger.debug(
-                    "Pre-curator commit had no pending data (expected for "
-                    "composites with no prior creator output)"
-                )
+            fs = self._runtime_env.storage.filesystem()
+            storage_options = self._runtime_env.storage.delta_storage_options()
+            staging_manager = StagingManager(staging_root, fs)
+            committer = DeltaCommitter(
+                delta_root,
+                staging_manager,
+                fs=fs,
+                storage_options=storage_options,
+            )
+            committer.commit_all_tables(
+                cleanup_staging=False,
+                step_number=self._step_number,
+                operation_name=f"_composite_{self._composite.name}_pre_curator",
+            )
 
     def get_output_map(self) -> dict[str, CompositeRef]:
         """Return the recorded output mappings."""
