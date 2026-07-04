@@ -15,7 +15,7 @@ from typing import Any
 
 import polars as pl
 
-from artisan.execution.context.builder import build_curator_execution_context
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.capture import capture_lineage_metadata
 from artisan.execution.lineage.enrich import (
@@ -316,7 +316,7 @@ def run_curator_flow(
                 files_root=runtime_env.files_root,
             )
 
-            execution_context = build_curator_execution_context(
+            execution_context = build_execution_context(
                 execution_run_id=execution_run_id,
                 execution_spec_id=unit.execution_spec_id,
                 step_number=unit.step_number,
