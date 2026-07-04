@@ -14,7 +14,6 @@ from typing import Any, cast
 
 from prefect import task
 
-from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
@@ -25,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _save_units(
-    units: list[ExecutionUnit | ExecutionComposite],
+    units: list[ExecutionUnit],
     staging_root: str,
     step_number: int,
 ) -> str:
@@ -41,21 +40,21 @@ def _save_units(
     return path
 
 
-def _load_units(path: str) -> list[ExecutionUnit | ExecutionComposite]:
+def _load_units(path: str) -> list[ExecutionUnit]:
     """Deserialize execution units from a pickle file."""
     with open(path, "rb") as f:
-        return cast(list[ExecutionUnit | ExecutionComposite], pickle.load(f))
+        return cast(list[ExecutionUnit], pickle.load(f))
 
 
 @task
 def execute_unit_task(
-    unit: ExecutionUnit | ExecutionComposite,
+    unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
 ) -> UnitResult:
-    """Execute a single unit or composite, routing to the appropriate executor.
+    """Execute a single unit, routing to the appropriate executor.
 
     Args:
-        unit: Batch of artifacts to process or a composite.
+        unit: Batch of artifacts to process.
         runtime_env: Runtime paths and step_runner configuration.
 
     Returns:
@@ -67,18 +66,6 @@ def execute_unit_task(
         # Get worker_id from step_runner-specific environment variable
         env_var = runtime_env.worker_id_env_var
         worker_id = int(os.environ.get(env_var, "0")) if env_var else 0
-
-        # Route composite to composite executor
-        if isinstance(unit, ExecutionComposite):
-            from artisan.execution.executors.composite import run_composite
-
-            result = run_composite(unit, runtime_env, worker_id=worker_id)
-            return UnitResult(
-                success=result.success,
-                error=result.error,
-                item_count=1,
-                execution_run_ids=[result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
-            )
 
         from artisan.execution.executors.curator import (
             is_curator_operation,

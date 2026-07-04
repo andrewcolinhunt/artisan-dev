@@ -14,7 +14,6 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
-from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
@@ -58,7 +57,7 @@ class LifecycleRouter(ABC):
     @abstractmethod
     def dispatch(
         self,
-        units: list[ExecutionUnit | ExecutionComposite],
+        units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,
     ) -> None:
         """Start execution, return immediately.
@@ -97,7 +96,7 @@ class LifecycleRouter(ABC):
 
     def run(
         self,
-        units: list[ExecutionUnit | ExecutionComposite],
+        units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,
         cancel_event: threading.Event | None = None,
     ) -> list[UnitResult]:
@@ -121,7 +120,7 @@ class LifecycleRouter(ABC):
 
     @staticmethod
     def _write_cancel_sentinel(
-        units: list[ExecutionUnit | ExecutionComposite],
+        units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,
     ) -> None:
         """Best-effort cancel sentinel on the staging filesystem.

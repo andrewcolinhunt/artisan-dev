@@ -9,7 +9,6 @@ from typing import Any
 
 from prefect.task_runners import ProcessPoolTaskRunner
 
-from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter, _RouterState
 from artisan.orchestration.runners.base import (
@@ -75,7 +74,7 @@ class LocalLifecycleRouter(LifecycleRouter):
 
     def dispatch(
         self,
-        units: list[ExecutionUnit | ExecutionComposite],
+        units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,
     ) -> None:
         """Start local ProcessPool execution in a background thread."""

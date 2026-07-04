@@ -291,14 +291,11 @@ the failure to Delta Lake with the error details, and returns a failed
 
 ### Composite operations
 
-In **collapsed** mode, a failure in any internal `ctx.run()` call aborts the
-entire composite. Artifacts are passed in-memory between operations, so there
-is no meaningful partial result to preserve. The composite executor catches the
-failure and returns a `StagingResult` with the error from the failing operation.
-At the step level, the composite failure is counted as a single failed item.
-
-In **expanded** mode, each internal operation runs as its own pipeline step
-and fails independently with standard step-level error handling.
+A composite expands into real pipeline steps: each internal `ctx.run()`
+runs as its own step and fails independently with standard step-level
+error handling. A failing internal step is recorded and counted like any
+other step failure; downstream steps that depend on its output receive
+empty inputs and skip.
 
 For the full composites model, see
 [Composites and Composition](composites-and-composition.md).
