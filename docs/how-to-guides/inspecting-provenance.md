@@ -199,17 +199,17 @@ store = ArtifactStore(delta_root)
 ### One hop backward (direct parents)
 
 ```python
-parents = store.provenance.get_ancestor_artifact_ids("abc123...")
+parents = store.provenance.get_direct_ancestors("abc123...")
 ```
 
 ### One hop forward (direct children)
 
 ```python
-children_map = store.provenance.get_descendant_artifact_ids({"abc123..."})
+children_map = store.provenance.get_direct_descendants({"abc123..."})
 children = children_map.get("abc123...", [])
 
 # Filter by type
-metric_children = store.provenance.get_descendant_artifact_ids(
+metric_children = store.provenance.get_direct_descendants(
     {"abc123..."}, target_artifact_type="metric"
 )
 ```
@@ -245,7 +245,7 @@ import polars as pl
 from artisan.provenance import walk_forward
 
 sources = pl.DataFrame({"artifact_id": [source_id]})
-edges = store.provenance.load_provenance_edges_df(step_min, step_max, include_target_type=True)
+edges = store.provenance.load_edges_df(step_min, step_max, include_target_type=True)
 result = walk_forward(sources, edges, target_type="metric")
 # result has columns [source_id, target_id]
 ```
@@ -257,7 +257,7 @@ from artisan.provenance import walk_backward
 
 candidates = pl.DataFrame({"artifact_id": [candidate_id]})
 targets = pl.DataFrame({"artifact_id": [target_id]})
-edges_df = store.provenance.load_provenance_edges_df(step_min, step_max)
+edges_df = store.provenance.load_edges_df(step_min, step_max)
 result = walk_backward(candidates, targets, edges_df)
 # result has columns [candidate_id, target_id]
 ```
@@ -281,8 +281,8 @@ artifact_type = store.get_artifact_type("abc123...")  # "data", "metric", etc.
 step_number = store.provenance.get_artifact_step_number("abc123...")  # int
 
 # Bulk lookups (single Delta scan each — use these when querying many artifacts)
-type_map = store.provenance.load_artifact_type_map()  # {artifact_id: type_str}
-step_map = store.provenance.load_step_number_map()  # {artifact_id: step_number}
+type_map = store.provenance.load_type_map()  # {artifact_id: type_str}
+step_map = store.provenance.load_step_map()  # {artifact_id: step_number}
 name_map = store.provenance.load_step_name_map()  # {step_number: step_name}
 
 # Get artifact IDs by type, optionally filtered by step
@@ -343,7 +343,7 @@ from artisan.storage import ArtifactStore
 store = ArtifactStore(delta_root)
 sources = pl.DataFrame({"artifact_id": ["source_abc..."]})
 step_range = store.provenance.get_step_range(pl.Series(["source_abc..."]))
-edges = store.provenance.load_provenance_edges_df(*step_range, include_target_type=True)
+edges = store.provenance.load_edges_df(*step_range, include_target_type=True)
 
 derived = walk_forward(sources, edges, target_type="metric")
 # derived has columns [source_id, target_id]
