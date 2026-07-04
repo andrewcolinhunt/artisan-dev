@@ -55,7 +55,8 @@ SUBMIT_OVERRIDE_KWARGS = frozenset(
 )
 
 # Composite-only kwargs that exist on submit_composite but not submit.
-COMPOSITE_ONLY_KWARGS = frozenset({"expand", "intermediates"})
+# Single-mode composites have none — expand / intermediates are gone.
+COMPOSITE_ONLY_KWARGS: frozenset[str] = frozenset()
 
 # Operation-only kwargs that exist on submit but not on submit_composite.
 # ``group_by`` is a pairing strategy specific to multi-input operations
@@ -117,7 +118,7 @@ def test_run_kwargs_match_submit() -> None:
 
 
 def test_submit_composite_kwargs_match_submit_plus_composite_only() -> None:
-    """submit_composite = (submit kwargs - OPERATION_ONLY) + {expand, intermediates}.
+    """submit_composite = (submit kwargs - OPERATION_ONLY) + COMPOSITE_ONLY.
 
     Symmetry guard: every override kwarg on submit must also exist on
     submit_composite, except for kwargs explicitly carved out as

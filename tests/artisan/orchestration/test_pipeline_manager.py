@@ -958,41 +958,6 @@ class TestCancellation:
         assert result.metadata.get("skip_reason") == "cancelled"
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_composite_skipped_on_cancel(self, mock_tracker_cls, tmp_path):
-        """_dispatch_collapsed_composite returns skipped result when cancelled."""
-        mock_tracker_cls.return_value = MagicMock()
-
-        pipeline = _make_pipeline(tmp_path)
-        pipeline.cancel()
-
-        # Call _dispatch_collapsed_composite directly with a mock composite class
-
-        mock_composite = MagicMock()
-        mock_composite.name = "test_composite"
-        mock_composite.outputs = {
-            "output": MagicMock(artifact_type="data"),
-        }
-        mock_composite.inputs = {
-            "data": MagicMock(artifact_type="data", required=True),
-        }
-
-        result_future = pipeline._dispatch_collapsed_composite(
-            composite_class=mock_composite,
-            inputs={"data": ["a" * 32]},
-            params=None,
-            step_runner=None,
-            runner_resources=None,
-            batch_strategy=None,
-            intermediates="discard",
-            failure_policy=None,
-            compact=False,
-            name="test_composite",
-        )
-        result = result_future.result()
-        assert result.metadata.get("skipped") is True
-        assert result.metadata.get("skip_reason") == "cancelled"
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_finalize_cancel_during_future_wait(self, mock_tracker_cls, tmp_path):
         """finalize() returns cleanly when cancel fires while waiting on futures."""
         import threading
@@ -2200,32 +2165,37 @@ class TestCompositeFailFast:
             pipeline.submit_composite(_OpForTests)
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_submit_composite_expand_with_persist_raises(
-        self, mock_tracker_cls, tmp_path
-    ):
+    def test_submit_composite_rejects_expand_kwarg(self, mock_tracker_cls, tmp_path):
+        """The removed expand kwarg is rejected as an unexpected keyword."""
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
 
-        with pytest.raises(ValueError, match="intermediates"):
-            pipeline.submit_composite(
-                _RealComposite,
-                expand=True,
-                intermediates="persist",
-            )
+        with pytest.raises(TypeError):
+            pipeline.submit_composite(_RealComposite, **{"expand": True})
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_submit_composite_expand_with_default_intermediates_ok(
+    def test_submit_composite_rejects_intermediates_kwarg(
         self, mock_tracker_cls, tmp_path
     ):
-        """expand=True with intermediates='discard' (default) does not raise."""
+        """The removed intermediates kwarg is rejected as an unexpected keyword."""
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
 
-        # Does not raise; returns ExpandedCompositeResult with no children.
-        result = pipeline.submit_composite(_RealComposite, expand=True)
-        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+        with pytest.raises(TypeError):
+            pipeline.submit_composite(_RealComposite, **{"intermediates": "persist"})
 
-        assert isinstance(result, ExpandedCompositeResult)
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_composite_returns_composite_result(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """submit_composite returns a CompositeResult."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        result = pipeline.submit_composite(_RealComposite)
+        from artisan.composites.base.results import CompositeResult
+
+        assert isinstance(result, CompositeResult)
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_submit_composite_accepts_compute_resources(
@@ -2235,17 +2205,13 @@ class TestCompositeFailFast:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
 
-        # Just verify the kwarg is accepted without TypeError; downstream
-        # plumbing into the dispatched step is exercised in the override-
-        # equivalence integration suite.
         result = pipeline.submit_composite(
             _RealComposite,
-            expand=True,
             compute_resources={"memory_gb": 16, "timeout": 7200},
         )
-        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+        from artisan.composites.base.results import CompositeResult
 
-        assert isinstance(result, ExpandedCompositeResult)
+        assert isinstance(result, CompositeResult)
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_run_composite_accepts_compute_resources(self, mock_tracker_cls, tmp_path):
@@ -2253,16 +2219,38 @@ class TestCompositeFailFast:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
 
-        # expand=True path returns ExpandedCompositeResult immediately when
-        # there are no compose()-submitted children.
         result = pipeline.run_composite(
             _RealComposite,
-            expand=True,
             compute_resources={"memory_gb": 16},
         )
-        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+        from artisan.composites.base.results import CompositeResult
 
-        assert isinstance(result, ExpandedCompositeResult)
+        assert isinstance(result, CompositeResult)
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_composite_rejects_bad_runner_resources(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """Composite-level override keys are validated fail-fast."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(ValueError, match="Unknown resource keys"):
+            pipeline.submit_composite(_RealComposite, runner_resources={"not_a_key": 1})
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_composite_rejects_inactive_provider_environment(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """A composite-level env dict configuring an inactive provider raises."""
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+
+        with pytest.raises(ValueError, match="Configured inactive provider"):
+            pipeline.submit_composite(
+                _RealComposite,
+                environment={"docker": {"image": "biocontainers/samtools:1.17"}},
+            )
 
 
 # =============================================================================
@@ -2329,72 +2317,30 @@ def _slow_execute_step(**kwargs):
     )
 
 
-def _slow_execute_composite_step(**kwargs):
-    """Mock execute_composite_step — sleep then return a successful StepResult."""
-    import time
-
-    from artisan.orchestration.engine.step_executor import build_step_result
-
-    time.sleep(0.2)
-    return build_step_result(
-        operation=kwargs["composite_class"],
-        step_number=kwargs["step_number"],
-        succeeded_count=1,
-        failed_count=0,
-        failure_policy=kwargs["failure_policy"],
-    )
-
-
 class TestRunComposite:
-    """Blocking semantics of ``run_composite`` in both modes."""
+    """Blocking semantics of ``run_composite``."""
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_slow_execute_step,
     )
-    def test_run_composite_expanded_blocks_until_children_done(
-        self, mock_exec, tmp_path
-    ):
-        """Expanded mode: ``run_composite`` returns only after every child future is done."""
+    def test_run_composite_blocks_until_children_done(self, mock_exec, tmp_path):
+        """``run_composite`` returns only after every child future is done."""
         pipeline = PipelineManager.create(
-            name="test_run_composite_expanded",
+            name="test_run_composite",
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
         )
 
-        result = pipeline.run_composite(_TwoStepComposite, expand=True)
+        result = pipeline.run_composite(_TwoStepComposite)
 
-        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+        from artisan.composites.base.results import CompositeResult
 
-        assert isinstance(result, ExpandedCompositeResult)
-        # Both child futures captured by the expanded context.
+        assert isinstance(result, CompositeResult)
+        # Both child futures captured by the context.
         assert len(result._child_futures) == 2
         # And every one of them is done after run_composite returns.
         assert all(f.done for f in result._child_futures)
-
-    @patch(
-        "artisan.orchestration.engine.step_executor.execute_composite_step",
-        side_effect=_slow_execute_composite_step,
-    )
-    def test_run_composite_collapsed_blocks_until_done(self, mock_exec, tmp_path):
-        """Collapsed mode: ``run_composite`` returns the StepResult after blocking.
-
-        The underlying StepFuture (kept on ``pipeline._active_futures``) must
-        be ``done`` once ``run_composite`` returns — that is what blocking
-        through ``StepFuture.result()`` is supposed to guarantee.
-        """
-        pipeline = PipelineManager.create(
-            name="test_run_composite_collapsed",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-
-        result = pipeline.run_composite(_TwoStepComposite, expand=False)
-
-        # Collapsed mode unwraps the StepFuture into a StepResult.
-        assert isinstance(result, StepResult)
-        # The future on _active_futures finished blocking before return.
-        assert pipeline._active_futures[0].done is True
 
 
 # =============================================================================

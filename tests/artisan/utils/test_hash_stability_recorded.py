@@ -1,4 +1,4 @@
-"""Recorded-fixture tests for compute_step_spec_id / compute_composite_spec_id.
+"""Recorded-fixture tests for compute_step_spec_id.
 
 These hashes are recorded values from a known-good `main` snapshot
 (post-PipelineManager-refactor, 2026-04-25). Any commit that changes
@@ -10,10 +10,10 @@ every cache entry currently in production."
 Updating these constants is fine but should be called out in the PR
 description so reviewers know to expect a cache flush.
 
-Comparison-only tests (test_step_spec_id.py, test_composite_spec_id.py)
-verify *determinism* — same inputs → same hash. They cannot detect a
-silent semantic change because both sides of the comparison change
-together. This file is the brittle, golden-value safety net.
+Comparison-only tests (test_step_spec_id.py) verify *determinism* — same
+inputs → same hash. They cannot detect a silent semantic change because
+both sides of the comparison change together. This file is the brittle,
+golden-value safety net.
 """
 
 from __future__ import annotations
@@ -21,10 +21,7 @@ from __future__ import annotations
 import pytest
 
 from artisan.orchestration.engine.step_executor import _merge_config_overrides
-from artisan.utils.hashing import (
-    compute_composite_spec_id,
-    compute_step_spec_id,
-)
+from artisan.utils.hashing import compute_step_spec_id
 
 # ---------------------------------------------------------------------------
 # Step spec hashes
@@ -214,44 +211,3 @@ def test_step_spec_id_through_merge_config_overrides_matches_recorded_hash(
         **inputs["spec_kwargs"], config_overrides=config_overrides
     )
     assert actual == expected
-
-
-# ---------------------------------------------------------------------------
-# Composite spec hashes
-# ---------------------------------------------------------------------------
-
-RECORDED_COMPOSITE_HASHES = [
-    pytest.param(
-        {
-            "composite_name": "generate_and_transform",
-            "params": {"factor": 2.0},
-            "input_spec": {"data": ("upstream_id_bbb", "out")},
-        },
-        "19c1722566edbd7ce397d33066e93684",
-        id="basic-composite",
-    ),
-    pytest.param(
-        {
-            "composite_name": "passthrough_composite",
-            "params": None,
-            "input_spec": {"in": ("upstream_xxx", "data")},
-        },
-        "7d37930f6056d7d723978b59f0812c23",
-        id="composite-no-params",
-    ),
-    pytest.param(
-        {
-            "composite_name": "generative_composite",
-            "params": {"count": 5, "seed": 42},
-            "input_spec": {},
-        },
-        "7ddf5df018d640ccba52df180a9ca81f",
-        id="composite-no-inputs",
-    ),
-]
-
-
-@pytest.mark.parametrize(("inputs", "expected"), RECORDED_COMPOSITE_HASHES)
-def test_composite_spec_id_is_recorded_value(inputs: dict, expected: str) -> None:
-    """compute_composite_spec_id must produce the recorded hex digest."""
-    assert compute_composite_spec_id(**inputs) == expected
