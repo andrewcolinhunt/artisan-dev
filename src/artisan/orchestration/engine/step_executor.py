@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from fsspec import AbstractFileSystem
+from pydantic import BaseModel
 
 from artisan.execution.context.builder import build_curator_execution_context
 from artisan.execution.executors.curator import (
@@ -59,6 +60,35 @@ from artisan.utils.spawn import suppress_main_reimport
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
+
+
+def _deep_merge_model[ModelT: BaseModel](
+    base_model: BaseModel,
+    override: dict[str, Any],
+    model_cls: type[ModelT],
+) -> ModelT:
+    """Deep-merge a dict override onto a Pydantic model.
+
+    Dumps ``base_model``, shallow-merges each nested dict from ``override``
+    (so a partial nested dict keeps its sibling fields), then re-validates
+    through ``model_cls`` — this coerces nested dicts into their proper
+    sub-models even when the base field was ``None``.
+
+    Args:
+        base_model: The operation default to merge onto.
+        override: Overrides, whose top-level dict values merge into the base.
+        model_cls: Model class to validate the merged mapping through.
+
+    Returns:
+        A new ``model_cls`` instance with the override applied.
+    """
+    base = base_model.model_dump()
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = {**base[key], **value}
+        else:
+            base[key] = value
+    return model_cls.model_validate(base)
 
 
 def instantiate_operation(
@@ -142,15 +172,9 @@ def instantiate_operation(
         elif isinstance(environment, Environments):
             updates["environments"] = environment
         else:
-            # Dump-merge-validate: coerces nested dicts into proper
-            # Pydantic models (handles both existing and None fields).
-            base = instance.environments.model_dump()
-            for key, value in environment.items():
-                if isinstance(value, dict) and isinstance(base.get(key), dict):
-                    base[key] = {**base[key], **value}
-                else:
-                    base[key] = value
-            updates["environments"] = Environments.model_validate(base)
+            updates["environments"] = _deep_merge_model(
+                instance.environments, environment, Environments
+            )
     if compute_provider is not None:
         if isinstance(compute_provider, str):
             updates["compute_provider"] = instance.compute_provider.model_copy(
@@ -159,13 +183,9 @@ def instantiate_operation(
         elif isinstance(compute_provider, ComputeProvider):
             updates["compute_provider"] = compute_provider
         else:
-            base = instance.compute_provider.model_dump()
-            for key, value in compute_provider.items():
-                if isinstance(value, dict) and isinstance(base.get(key), dict):
-                    base[key] = {**base[key], **value}
-                else:
-                    base[key] = value
-            updates["compute_provider"] = ComputeProvider.model_validate(base)
+            updates["compute_provider"] = _deep_merge_model(
+                instance.compute_provider, compute_provider, ComputeProvider
+            )
     if compute_resources is not None:
         from artisan.schemas.operation_config.compute_resources import ComputeResources
 
