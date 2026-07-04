@@ -5,14 +5,11 @@ from __future__ import annotations
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
 from artisan.schemas.provenance.source_target_pair import SourceTargetPair
-from artisan.schemas.specs.output_spec import OutputSpec
 
 
 def build_edges(
     lineage: dict[str, list[LineageMapping]],
     finalized_artifacts: dict[str, list[Artifact]],
-    input_artifacts: dict[str, list[Artifact]],
-    output_specs: dict[str, OutputSpec],
 ) -> list[SourceTargetPair]:
     """Resolve lineage mappings into concrete source-target artifact pairs.
 
@@ -25,8 +22,6 @@ def build_edges(
     Args:
         lineage: Role-keyed lineage mappings from capture or user code.
         finalized_artifacts: Role-keyed finalized output artifacts.
-        input_artifacts: Role-keyed input artifacts (unused; reserved).
-        output_specs: Role-keyed output specs (unused; reserved).
 
     Returns:
         List of source-target pairs with role and group metadata.

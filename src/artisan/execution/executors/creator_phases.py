@@ -430,8 +430,6 @@ def post_unit(
         edge_pairs = build_edges(
             lineage=lineage,
             finalized_artifacts=finalized_artifacts,
-            input_artifacts=flat_input_artifacts,
-            output_specs=operation_class.outputs,
         )
 
         validate_lineage_completeness(

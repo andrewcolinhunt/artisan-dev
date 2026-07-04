@@ -745,9 +745,8 @@ class TestBuildEdgesBasicConversion:
             ]
         }
         finalized_artifacts = {"processed": [finalized_output]}
-        output_specs = {"processed": OutputSpec(artifact_type=ArtifactTypes.METRIC)}
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 1
         assert edges[0].source == finalized_input_artifact.artifact_id
@@ -781,9 +780,8 @@ class TestBuildEdgesBasicConversion:
             ]
         }
         finalized_artifacts = {"processed": [finalized_output_1, finalized_output_2]}
-        output_specs = {"processed": OutputSpec(artifact_type=ArtifactTypes.METRIC)}
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 2
         # All edges should have correct source_role
@@ -802,9 +800,8 @@ class TestBuildEdgesBasicConversion:
             ]
         }
         finalized_artifacts = {"processed": []}  # Empty
-        output_specs = {"processed": OutputSpec(artifact_type=ArtifactTypes.METRIC)}
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 0
 
@@ -860,15 +857,8 @@ class TestBuildEdgesDraftReferenceResolution:
             "processed": [finalized_structure],
             "energy": [finalized_metric],
         }
-        output_specs = {
-            "processed": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-            "energy": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"outputs": ["processed"]},
-            ),
-        }
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         energy_edges = [e for e in edges if e.target_role == "energy"]
         assert len(energy_edges) == 1
@@ -911,12 +901,8 @@ class TestBuildEdgesSourceOriginalName:
                 )
             ]
         }
-        output_specs = {
-            "structures": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-            "metrics": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-        }
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 1
         assert edges[0].source == structure.artifact_id
@@ -942,10 +928,9 @@ class TestBuildEdgesSourceOriginalName:
                 )
             ]
         }
-        output_specs = {"metrics": OutputSpec(artifact_type=ArtifactTypes.METRIC)}
 
         with pytest.raises(ValueError) as exc_info:
-            build_edges(lineage, finalized_artifacts, {}, output_specs)
+            build_edges(lineage, finalized_artifacts)
 
         msg = str(exc_info.value)
         assert "missing" in msg
@@ -984,13 +969,8 @@ class TestBuildEdgesSourceOriginalName:
                 )
             ]
         }
-        output_specs = {
-            "structures": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-            "other": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-            "metrics": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-        }
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 1
         assert edges[0].source == same_name_in_other.artifact_id
@@ -1029,7 +1009,7 @@ class TestSourceRoleTracking:
         lineage = capture_lineage_metadata(
             output_artifacts, input_artifacts, output_specs
         )
-        edges = build_edges(lineage, output_artifacts, input_artifacts, output_specs)
+        edges = build_edges(lineage, output_artifacts)
 
         assert len(edges) == 1
         assert edges[0].source_role == "data"  # Not "input"!
@@ -1065,7 +1045,7 @@ class TestSourceRoleTracking:
         lineage = capture_lineage_metadata(
             output_artifacts, input_artifacts, output_specs
         )
-        edges = build_edges(lineage, output_artifacts, input_artifacts, output_specs)
+        edges = build_edges(lineage, output_artifacts)
 
         assert len(edges) == 1
         assert edges[0].source_role == "reference"  # Explicit role preserved
@@ -1100,7 +1080,7 @@ class TestSourceRoleTracking:
         }
 
         lineage = capture_lineage_metadata(output_artifacts, {}, output_specs)
-        edges = build_edges(lineage, output_artifacts, {}, output_specs)
+        edges = build_edges(lineage, output_artifacts)
 
         assert len(edges) == 1
         assert edges[0].source_role == "processed"  # Output role, not "input"
@@ -1176,12 +1156,8 @@ class TestBuildEdgesPerRoleResolution:
                 )
             ],
         }
-        output_specs = {
-            "role_a": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-            "role_b": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-        }
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 2
         role_a_edges = [e for e in edges if e.target_role == "role_a"]
@@ -1230,15 +1206,8 @@ class TestBuildEdgesPerRoleResolution:
                 )
             ],
         }
-        output_specs = {
-            "processed": OutputSpec(artifact_type=ArtifactTypes.METRIC),
-            "energy": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"outputs": ["processed"]},
-            ),
-        }
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 1
         assert edges[0].source == processed_artifact.artifact_id
@@ -1262,9 +1231,8 @@ class TestBuildEdgesPerRoleResolution:
             ]
         }
         finalized_artifacts = {"processed": [finalized_output]}
-        output_specs = {"processed": OutputSpec(artifact_type=ArtifactTypes.METRIC)}
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 1
         assert edges[0].source == finalized_input_artifact.artifact_id
@@ -1297,9 +1265,8 @@ class TestBuildEdgesPerRoleResolution:
                 )
             ]
         }
-        output_specs = {"other": OutputSpec(artifact_type=ArtifactTypes.METRIC)}
 
-        edges = build_edges(lineage, finalized_artifacts, {}, output_specs)
+        edges = build_edges(lineage, finalized_artifacts)
 
         # No edges: "sample_001" is in "data" role, not "other" role
         assert len(edges) == 0
@@ -1772,7 +1739,7 @@ class TestGroupIdFlowThroughBuildEdges:
             group_ids=group_ids,
         )
 
-        edges = build_edges(lineage, output_artifacts, input_artifacts, output_specs)
+        edges = build_edges(lineage, output_artifacts)
 
         assert len(edges) == 2
         for edge in edges:
@@ -1802,7 +1769,7 @@ class TestGroupIdFlowThroughBuildEdges:
             output_specs,
         )
 
-        edges = build_edges(lineage, output_artifacts, input_artifacts, output_specs)
+        edges = build_edges(lineage, output_artifacts)
 
         assert len(edges) == 1
         assert edges[0].group_id is None
