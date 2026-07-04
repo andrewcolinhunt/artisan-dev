@@ -246,13 +246,19 @@ class DeltaCommitter:
         Idempotent: content-addressed deduplication skips rows that
         already exist in Delta.
 
+        Recovery is best-effort: a partial commit failure is logged and
+        swallowed rather than raised, because this runs at pipeline
+        startup against debris from a *prior* run — raising would block
+        every subsequent start on the same bad file. The failed tables'
+        staging is preserved, so a later recovery can retry.
+
         Args:
             preserve_staging: Keep staging files after commit instead
                 of cleaning them up.
 
         Returns:
             Mapping of table name to rows committed. Empty dict when
-            no leftover staging files are found.
+            no leftover staging files are found or recovery failed.
         """
         if not self._fs.exists(self.staging_manager.staging_dir):
             return {}
@@ -266,10 +272,16 @@ class DeltaCommitter:
             len(probe),
         )
 
-        results = self.commit_all_tables(
-            cleanup_staging=not preserve_staging,
-            step_number=None,
-        )
+        try:
+            results = self.commit_all_tables(
+                cleanup_staging=not preserve_staging,
+                step_number=None,
+            )
+        except CommitError as exc:
+            logger.error(
+                "Staged recovery failed (%s); staging preserved for retry", exc
+            )
+            return {}
 
         if results:
             parts = [f"{name}={count}" for name, count in results.items()]

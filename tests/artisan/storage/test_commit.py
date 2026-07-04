@@ -893,6 +893,28 @@ class TestRecoverStaged:
         )
         assert metrics_table.shape[0] == 1
 
+    def test_recover_staged_swallows_commit_error(self, commit_env, monkeypatch):
+        """A partial commit failure during recovery is logged, not raised.
+
+        Recovery runs at pipeline startup against a prior run's debris;
+        raising would block every subsequent start on the same bad file.
+        """
+        from artisan.errors import CommitError
+
+        committer, fs, _storage, _delta_root, staging_root = commit_env
+        self._stage_mock_execution(staging_root, fs)
+
+        def _failing_commit(**kwargs):
+            raise CommitError(["executions"])
+
+        monkeypatch.setattr(committer, "commit_all_tables", _failing_commit)
+
+        result = committer.recover_staged()
+
+        assert result == {}
+        # Staging must survive so a later recovery can retry.
+        assert fs.exists(staging_root)
+
     def test_recover_staged_idempotent(self, commit_env):
         """Calling recover_staged twice with preserve_staging produces no duplicates."""
         committer, fs, storage, delta_root, staging_root = commit_env
