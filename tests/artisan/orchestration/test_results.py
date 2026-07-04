@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from artisan.orchestration.engine.results import (
+    FailFastAbort,
     aggregate_results,
     extract_execution_run_ids,
 )
@@ -48,12 +49,12 @@ class TestAggregateResults:
         assert failed == 1
 
     def test_fail_fast_raises(self):
-        """fail_fast policy raises RuntimeError on first failure."""
+        """fail_fast policy raises FailFastAbort on first failure."""
         results = [
             _result(execution_run_ids=["a"]),
             _result(success=False, error="step failed"),
         ]
-        with pytest.raises(RuntimeError, match="fail_fast"):
+        with pytest.raises(FailFastAbort, match="fail_fast"):
             aggregate_results(results, FailurePolicy.FAIL_FAST)
 
     def test_empty_results(self):

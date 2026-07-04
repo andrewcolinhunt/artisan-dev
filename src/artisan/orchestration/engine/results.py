@@ -10,6 +10,16 @@ from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.execution.unit_result import UnitResult
 
 
+class FailFastAbort(RuntimeError):
+    """Signals an intentional step abort under the fail_fast policy.
+
+    Subclasses RuntimeError so callers can distinguish a deliberate
+    fail-fast abort from an incidental RuntimeError raised by the dispatch
+    machinery — the latter must be recorded as a dispatch_error rather than
+    crashing the step.
+    """
+
+
 def aggregate_results(
     results: list[UnitResult],
     failure_policy: FailurePolicy,
@@ -24,7 +34,7 @@ def aggregate_results(
         Tuple of (succeeded_count, failed_count).
 
     Raises:
-        RuntimeError: If fail_fast policy is active and any failure occurred.
+        FailFastAbort: If fail_fast policy is active and any failure occurred.
     """
     succeeded = 0
     failed = 0
@@ -38,7 +48,7 @@ def aggregate_results(
             if failure_policy == FailurePolicy.FAIL_FAST:
                 error_msg = result.error or "Unknown error"
                 msg = f"Step failed with fail_fast policy: {error_msg}"
-                raise RuntimeError(msg)
+                raise FailFastAbort(msg)
 
     return succeeded, failed
 
