@@ -7,7 +7,7 @@ declared inputs, outputs, and internal wiring.
 [Writing Creator Operations](writing-creator-operations.md)
 
 **Key types:** `CompositeDefinition`, `CompositeContext`,
-`CompositeStepHandle`, `CompositeRef`
+`CompositeStepHandle`, `CompositeRef`, `CompositeResult`
 
 ---
 
@@ -60,9 +60,12 @@ class TransformAndScore(CompositeDefinition):
 
 ---
 
-## Use the composite in a pipeline
+## Run the composite in a pipeline
 
-### Collapsed (single step)
+Run a composite with `pipeline.run_composite()`. Each internal
+`ctx.run()` becomes its own pipeline step with independent caching,
+batching, and worker dispatch. Step names are prefixed with the
+composite name.
 
 ```python
 from artisan.orchestration import PipelineManager
@@ -76,29 +79,32 @@ pipeline = PipelineManager.create(
 output = pipeline.output
 
 pipeline.run(operation=DataGenerator, name="generate", params={"count": 5})
-pipeline.run(
-    operation=TransformAndScore,
-    inputs={"dataset": output("generate", "datasets")},
-)
-result = pipeline.finalize()
-```
-
-The composite runs as a single pipeline step. Internal artifacts pass
-in-memory between operations.
-
-### Expanded (separate steps)
-
-```python
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 5})
-expanded = pipeline.run_composite(
+pipeline.run_composite(
     TransformAndScore,
     inputs={"dataset": output("generate", "datasets")},
 )
 result = pipeline.finalize()
 ```
 
-Each internal `ctx.run()` becomes its own pipeline step with independent
-caching, batching, and worker dispatch.
+`run_composite` blocks until every child step completes. Use
+`submit_composite` for the non-blocking form; it returns a
+`CompositeResult` whose `.output(role)` wires downstream steps and whose
+`.wait()` blocks on the children.
+
+```python
+scored = pipeline.submit_composite(
+    TransformAndScore,
+    inputs={"dataset": output("generate", "datasets")},
+)
+pipeline.run(
+    operation=MetricCalculator,
+    name="rescore",
+    inputs={"dataset": scored.output("metrics")},
+)
+```
+
+Composites run only through `run_composite`/`submit_composite`. Passing a
+`CompositeDefinition` to `pipeline.run()` raises `TypeError`.
 
 ---
 
@@ -205,38 +211,58 @@ class TransformAndScore(CompositeDefinition):
 Override at the pipeline level:
 
 ```python
-pipeline.run(
-    operation=TransformAndScore,
+pipeline.run_composite(
+    TransformAndScore,
     inputs={"dataset": output("gen", "datasets")},
     params={"scale_factor": 3.0},
 )
 ```
 
+`params` configure the composite itself and are consumed inside
+`compose()`. They are not forwarded to child steps.
+
 ---
 
-## Control intermediate artifacts
+## Forward execution overrides
 
-In collapsed mode, pass `intermediates=` to `pipeline.run()`:
+`run_composite`/`submit_composite` accept the same execution overrides an
+ordinary step takes: `step_runner`, `runner_resources`, `batch_strategy`,
+`environment`, `tool`, `compute_provider`, `compute_resources`,
+`failure_policy`, `compact`, and `skip_cache`. Each becomes the
+**default for every child step**. A value set explicitly on a `ctx.run()`
+call wins for that step and that knob; anything the child leaves unset
+falls back to the composite-level default.
 
 ```python
-# Default: discard intermediates
-pipeline.run(operation=TransformAndScore, inputs={"dataset": output("gen", "datasets")})
-
-# Persist for debugging
-pipeline.run(
-    operation=TransformAndScore,
+# batch_strategy here is the default for every child step
+pipeline.run_composite(
+    TransformAndScore,
     inputs={"dataset": output("gen", "datasets")},
-    intermediates="persist",
+    batch_strategy={"artifacts_per_unit": 4},
 )
 ```
 
-| Mode | Intermediates in Delta Lake | Use when |
-|------|---------------------------|----------|
-| `"discard"` (default) | No | Production: minimize storage |
-| `"persist"` | Yes (internal provenance edges) | Debugging: inspect intermediate results |
-| `"expose"` | Yes (step-boundary edges) | Downstream steps need intermediate outputs |
+```python
+# A child step that sets the same knob wins for that step only
+def compose(self, ctx: CompositeContext) -> None:
+    transformed = ctx.run(
+        DataTransformer,
+        inputs={"dataset": ctx.input("dataset")},
+        batch_strategy={"artifacts_per_unit": 1},  # overrides the default here
+    )
+    scored = ctx.run(  # inherits the composite-level default
+        MetricCalculator,
+        inputs={"dataset": transformed.output("dataset")},
+    )
+    ctx.output("metrics", scored.output("metrics"))
+```
 
-In expanded mode, intermediates are always full pipeline steps.
+To co-locate a composite's steps in one compute allocation, forward the
+intra-allocation runner: `run_composite(..., step_runner=Runner.SLURM_INTRA)`
+dispatches every child step via `srun` inside the current allocation. See
+[Configure Execution](configuring-execution.md) and the
+[Running Inside a SLURM Allocation](../tutorials/07-compute-backends/03-slurm-intra-execution.ipynb)
+tutorial.
 
 ---
 
@@ -303,7 +329,8 @@ class GenerateAndAnalyze(CompositeDefinition):
 
 ### Nesting composites
 
-A composite can contain other composites:
+A composite can contain other composites. The inner composite's internal
+operations expand into their own steps, with dot-separated names:
 
 ```python
 class FullPipeline(CompositeDefinition):
@@ -327,8 +354,9 @@ class FullPipeline(CompositeDefinition):
 
 ### Curator inside a composite
 
-Composites can run curator operations. In collapsed mode, pending
-artifacts are pre-committed to Delta Lake before the curator executes:
+Composites can run curator operations. A curator inside `compose()` runs
+as a real pipeline step, so its upstream artifacts are already committed
+and its provenance edges are recorded by the ordinary step path:
 
 ```python
 def compose(self, ctx: CompositeContext) -> None:
@@ -353,7 +381,8 @@ def compose(self, ctx: CompositeContext) -> None:
 | `ValueError: Unknown input role` | Typo in `ctx.input("role")` | Check `InputRole` enum values |
 | `ValueError: Unknown output role` | Typo in `ctx.output("role", ref)` | Check `OutputRole` enum values |
 | `TypeError: Expected CompositeRef` | Passed raw value instead of `ctx.input()` or `handle.output()` result | Use `CompositeRef` objects from the context API |
-| Resources ignored in collapsed mode | Per-operation `resources`/`backend` not supported in collapsed mode | Use expanded mode for per-operation resource control |
+| `TypeError` from `pipeline.run()` | Passed a composite to `run`/`submit` | Use `run_composite`/`submit_composite` for composites |
+| A `ctx.run()` ignores a composite-level override | The child set the same knob explicitly | Per-op values win per knob; remove the child's value to inherit the default |
 
 ---
 
@@ -373,29 +402,13 @@ pipeline = PipelineManager.create(
 output = pipeline.output
 pipeline.run(operation=DataGenerator, name="generate", params={"count": 3})
 
-# Collapsed
-step = pipeline.run(
-    operation=TransformAndScore,
+result = pipeline.run_composite(
+    TransformAndScore,
     inputs={"dataset": output("generate", "datasets")},
 )
-assert step.success
-assert step.succeeded_count > 0
+# result exposes .output(role) for the composite's declared outputs
+assert result.output("metrics") is not None
 pipeline.finalize()
-
-# Expanded (in a separate pipeline)
-pipeline2 = PipelineManager.create(
-    name="test_expanded",
-    delta_root="test2/delta",
-    staging_root="test2/staging",
-)
-output2 = pipeline2.output
-pipeline2.run(operation=DataGenerator, name="generate", params={"count": 3})
-expanded = pipeline2.submit_composite(
-    TransformAndScore,
-    inputs={"dataset": output2("generate", "datasets")},
-    expand=True,
-)
-result = pipeline2.finalize()
 ```
 
 ---
@@ -403,7 +416,7 @@ result = pipeline2.finalize()
 ## Cross-references
 
 - [Composites and Composition](../concepts/composites-and-composition.md) — why
-  composites exist and how they work
+  composites exist and how they execute
 - [CompositeDefinition Reference](../reference/composite-definition.md) — API
   signatures and field tables
 - [Composable Operations Tutorial](../tutorials/02-pipeline-design/07-composites.ipynb) —

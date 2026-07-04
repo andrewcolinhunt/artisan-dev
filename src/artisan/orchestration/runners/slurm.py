@@ -6,7 +6,6 @@ import logging
 import subprocess
 from typing import Any
 
-from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter, _RouterState
 from artisan.orchestration.runners.base import (
@@ -51,7 +50,7 @@ class SlurmLifecycleRouter(LifecycleRouter):
 
     def dispatch(
         self,
-        units: list[ExecutionUnit | ExecutionComposite],
+        units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,
     ) -> None:
         """Write units to shared FS, then submit via SLURM task runner."""

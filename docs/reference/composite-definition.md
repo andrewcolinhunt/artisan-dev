@@ -25,13 +25,6 @@ and a `compose()` method that wires internal operations together.
 | `inputs` | `dict[str, InputSpec]` | `{}` | Declared input roles |
 | `outputs` | `dict[str, OutputSpec]` | `{}` | Declared output roles |
 
-### Instance fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `runner_resources` | `RunnerResources` | `RunnerResources()` | Worker resource allocation (collapsed mode) |
-| `batch_strategy` | `BatchStrategy` | `BatchStrategy()` | Batching and scheduling config (collapsed mode) |
-
 ### Inner classes
 
 | Class | Base | Purpose |
@@ -122,13 +115,74 @@ class MyComposite(CompositeDefinition):
 
 ---
 
+## Pipeline methods
+
+`artisan.orchestration.pipeline_manager.PipelineManager`
+
+Composites run through `submit_composite` (non-blocking) and
+`run_composite` (blocking). Each internal `ctx.run()` becomes a real
+pipeline step. Composite-level override kwargs act as defaults for every
+child step; a per-op `ctx.run()` value wins for the knob it sets.
+
+#### `submit_composite(...) -> CompositeResult`
+
+```python
+def submit_composite(
+    composite: type[CompositeDefinition],
+    *,
+    inputs: dict[str, OutputReference | list[str]] | None = None,
+    params: dict[str, Any] | None = None,
+    name: str | None = None,
+    step_runner: str | RunnerBase | None = None,
+    runner_resources: dict[str, Any] | RunnerResources | None = None,
+    batch_strategy: dict[str, Any] | BatchStrategy | None = None,
+    environment: str | dict[str, Any] | Environments | None = None,
+    tool: dict[str, Any] | ToolSpec | None = None,
+    compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
+    compute_resources: dict[str, Any] | ComputeResources | None = None,
+    failure_policy: FailurePolicy | None = None,
+    compact: bool = True,
+    skip_cache: bool = False,
+) -> CompositeResult
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `composite` | `type[CompositeDefinition]` | — | Composite class to run |
+| `inputs` | `dict[str, OutputReference \| list[str]] \| None` | `None` | Input wiring by role |
+| `params` | `dict[str, Any] \| None` | `None` | Composite parameter overrides |
+| `name` | `str \| None` | `None` | Child-step name prefix. Defaults to `composite.name` |
+| `step_runner` | `str \| RunnerBase \| None` | `None` | Default step runner for child steps |
+| `runner_resources` | `dict[str, Any] \| RunnerResources \| None` | `None` | Default runner resources for child steps |
+| `batch_strategy` | `dict[str, Any] \| BatchStrategy \| None` | `None` | Default batching/scheduling for child steps |
+| `environment` | `str \| dict[str, Any] \| Environments \| None` | `None` | Default environment for child steps |
+| `tool` | `dict[str, Any] \| ToolSpec \| None` | `None` | Default tool config for child steps |
+| `compute_provider` | `str \| dict[str, Any] \| ComputeProvider \| None` | `None` | Default compute provider for child steps |
+| `compute_resources` | `dict[str, Any] \| ComputeResources \| None` | `None` | Default compute resources for child steps |
+| `failure_policy` | `FailurePolicy \| None` | `None` | Default failure policy for child steps |
+| `compact` | `bool` | `True` | Default Delta Lake compaction for child steps |
+| `skip_cache` | `bool` | `False` | Default cache-bypass for child steps |
+
+**Returns:** `CompositeResult` (non-blocking); `.output(role)` wires
+downstream steps, `.wait()` blocks on the children.
+
+**Raises:** `TypeError` if `composite` is not a `CompositeDefinition`
+subclass, or if a `CompositeDefinition` is passed to `run`/`submit`.
+
+#### `run_composite(...) -> CompositeResult`
+
+Same signature as `submit_composite`. Blocks until every child step
+completes (via `CompositeResult.wait()`), then returns the resolved
+`CompositeResult`.
+
+---
+
 ## CompositeContext
 
 `artisan.composites.base.composite_context.CompositeContext`
 
-Abstract base class for composite execution contexts. Two concrete
-implementations exist: `CollapsedCompositeContext` (single-worker,
-in-memory) and `ExpandedCompositeContext` (separate pipeline steps).
+Build-time context passed to `CompositeDefinition.compose`. A single
+concrete class; each `run()` submits a real pipeline step.
 
 ### Methods
 
@@ -143,28 +197,48 @@ Reference a declared input of this composite.
 
 **Raises:** `ValueError` if role is not a declared input.
 
-#### `run(operation, *, inputs=None, params=None, runner_resources=None, batch_strategy=None, step_runner=None, compute_provider=None, compute_resources=None, environment=None, tool=None) -> CompositeStepHandle`
+#### `run(operation, *, inputs=None, params=None, ...) -> CompositeStepHandle`
 
-Execute an operation or nested composite.
+Submit an operation or nested composite as a pipeline step.
+
+```python
+def run(
+    operation: type,
+    inputs: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+    runner_resources: dict[str, Any] | None = None,
+    batch_strategy: dict[str, Any] | None = None,
+    step_runner: str | RunnerBase | None = None,
+    environment: str | dict[str, Any] | None = None,
+    tool: dict[str, Any] | None = None,
+    compute_resources: dict[str, Any] | ComputeResources | None = None,
+    compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
+    skip_cache: bool | None = None,
+    failure_policy: FailurePolicy | None = None,
+    compact: bool | None = None,
+) -> CompositeStepHandle
+```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `operation` | `type` | — | `OperationDefinition` or `CompositeDefinition` subclass |
 | `inputs` | `dict[str, Any] \| None` | `None` | Input wiring as `{role: CompositeRef}` |
 | `params` | `dict[str, Any] \| None` | `None` | Parameter overrides |
-| `runner_resources` | `dict[str, Any] \| None` | `None` | Runner resource overrides (expanded mode only) |
-| `batch_strategy` | `dict[str, Any] \| None` | `None` | Batching/scheduling overrides (expanded mode only) |
-| `step_runner` | `str \| RunnerBase \| None` | `None` | Step-runner override (expanded mode only) |
-| `compute_provider` | `str \| dict \| ComputeProvider \| None` | `None` | Compute-provider override (expanded mode only) |
-| `compute_resources` | `dict \| ComputeResources \| None` | `None` | Compute-resource overrides (expanded mode only) |
-| `environment` | `str \| dict[str, Any] \| None` | `None` | Environment override |
-| `tool` | `dict[str, Any] \| None` | `None` | Tool overrides |
+| `runner_resources` | `dict[str, Any] \| None` | `None` | Runner resource overrides for this step |
+| `batch_strategy` | `dict[str, Any] \| None` | `None` | Batching/scheduling overrides for this step |
+| `step_runner` | `str \| RunnerBase \| None` | `None` | Step-runner override for this step |
+| `environment` | `str \| dict[str, Any] \| None` | `None` | Environment override for this step |
+| `tool` | `dict[str, Any] \| None` | `None` | Tool overrides for this step |
+| `compute_resources` | `dict \| ComputeResources \| None` | `None` | Compute-resource overrides for this step |
+| `compute_provider` | `str \| dict \| ComputeProvider \| None` | `None` | Compute-provider override for this step |
+| `skip_cache` | `bool \| None` | `None` | Cache-bypass override for this step |
+| `failure_policy` | `FailurePolicy \| None` | `None` | Failure-policy override for this step |
+| `compact` | `bool \| None` | `None` | Delta Lake compaction override for this step |
 
-**Returns:** `CompositeStepHandle` wrapping the operation's results.
+Any override left at its default (`None`) falls back to the
+composite-level value passed to `submit_composite`/`run_composite`.
 
-In collapsed mode, `runner_resources`, `batch_strategy`, and `step_runner` are
-ignored (logged as debug). In expanded mode, they are forwarded to the parent
-pipeline's `submit()`.
+**Returns:** `CompositeStepHandle` wrapping the step's `StepFuture`.
 
 #### `output(role: str, ref: CompositeRef) -> None`
 
@@ -180,10 +254,9 @@ Map an internal result to a declared output of this composite.
 
 ## CompositeStepHandle
 
-`artisan.schemas.composites.composite_ref.CompositeStepHandle`
+`artisan.composites.base.results.CompositeStepHandle`
 
-Handle returned by `ctx.run()`. Wraps either in-memory artifacts
-(collapsed mode) or a `StepFuture` (expanded mode).
+Handle returned by `ctx.run()`. Wraps the child step's `StepFuture`.
 
 ### Methods
 
@@ -197,9 +270,7 @@ Reference an output role of this internal operation.
 **Returns:** `CompositeRef` for wiring to downstream `ctx.run()` calls
 or to `ctx.output()`.
 
-**Raises:**
-- `ValueError` if role is not a valid output of the operation.
-- `KeyError` if role has no artifacts in collapsed mode.
+**Raises:** `ValueError` if role is not a valid output of the operation.
 
 ---
 
@@ -208,47 +279,23 @@ or to `ctx.output()`.
 `artisan.schemas.composites.composite_ref.CompositeRef`
 
 Frozen dataclass. A lightweight reference used as input wiring between
-internal operations. Either `source` or `output_reference` is set,
-never both.
+internal operations.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `source` | `ArtifactSource \| None` | In-memory artifact source (collapsed mode) |
-| `output_reference` | `OutputReference \| None` | Lazy pipeline reference (expanded mode) |
+| `source` | `ArtifactSource \| None` | Internal in-memory artifact source; unset for ordinary step wiring |
+| `output_reference` | `OutputReference \| None` | Pipeline reference to the producing step's output |
 | `role` | `str` | Output role name this ref points to |
 
 ---
 
-## CompositeIntermediates
+## CompositeResult
 
-`artisan.execution.models.execution_composite.CompositeIntermediates`
+`artisan.composites.base.results.CompositeResult`
 
-`StrEnum` controlling intermediate artifact handling in collapsed mode.
-
-| Value | Behavior |
-|-------|----------|
-| `DISCARD` | Default. Intermediates discarded after composite completes |
-| `PERSIST` | Intermediates committed to Delta Lake with `step_boundary=False` |
-| `EXPOSE` | Intermediates committed to Delta Lake with `step_boundary=True` |
-
-Pass as `intermediates=` to `pipeline.run()`:
-
-```python
-pipeline.run(
-    operation=MyComposite,
-    inputs={"data": output("gen", "datasets")},
-    intermediates="persist",
-)
-```
-
----
-
-## ExpandedCompositeResult
-
-`artisan.schemas.composites.composite_ref.ExpandedCompositeResult`
-
-Returned by `pipeline.run_composite()`. Maps composite outputs to internal
-pipeline steps. Duck-types with `StepResult` and `StepFuture`.
+Returned by `submit_composite`/`run_composite`. Maps composite outputs to
+their producing pipeline steps. Duck-types with `StepResult` and
+`StepFuture` for `.output(role) -> OutputReference`.
 
 ### Methods
 
@@ -263,6 +310,19 @@ Get the `OutputReference` for a composite output role.
 produces it.
 
 **Raises:** `ValueError` if role is not a declared output.
+
+#### `wait(*, timeout: float | None = None) -> CompositeResult`
+
+Block until every child step completes.
+
+**Args:**
+- `timeout` — optional total deadline in seconds. `None` waits
+  indefinitely.
+
+**Returns:** Self, with all child steps resolved.
+
+**Raises:** `TimeoutError` if the timeout expires before all children
+resolve.
 
 ---
 

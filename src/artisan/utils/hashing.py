@@ -148,32 +148,6 @@ def _serialize_input_spec(input_spec: dict[str, tuple[str, str]]) -> str:
     return ",".join(parts)
 
 
-def compute_composite_spec_id(
-    composite_name: str,
-    params: dict[str, Any] | None,
-    input_spec: dict[str, tuple[str, str]],
-) -> str:
-    """Compute deterministic spec ID for a composite step.
-
-    The composite is identified by class name plus params, with inputs
-    referenced by upstream spec_ids.
-
-    Args:
-        composite_name: The composite's name attribute.
-        params: Composite parameters dict.
-        input_spec: Maps each input role to a (upstream_step_spec_id,
-            upstream_role) tuple.
-
-    Returns:
-        32-character xxh3_128 hex string.
-    """
-    input_str = _serialize_input_spec(input_spec)
-    params_json = _canonicalize_dict(params)
-
-    hash_input = f"composite|{composite_name}|{params_json}|{input_str}"
-    return digest_utf8(hash_input)
-
-
 class _CanonicalEncoder(json.JSONEncoder):
     """JSON encoder that handles sets and Paths for deterministic output."""
 
