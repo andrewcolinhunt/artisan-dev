@@ -29,21 +29,6 @@ class TestBuiltinTypes:
         assert ArtifactTypes.DATA == "data"
 
 
-class TestGet:
-    """String lookup via get()."""
-
-    def test_get_existing(self) -> None:
-        assert ArtifactTypes.get("data") == "data"
-
-    def test_get_unknown_raises(self) -> None:
-        try:
-            ArtifactTypes.get("nonexistent")
-            msg = "Should have raised KeyError"
-            raise AssertionError(msg)
-        except KeyError:
-            pass
-
-
 class TestMembership:
     """Membership checks via ``in``."""
 
@@ -106,20 +91,6 @@ class TestAnySentinel:
 
     def test_any_not_registered(self) -> None:
         assert ArtifactTypes.is_registered("any") is False
-
-
-class TestIsConcrete:
-    """Tests for is_concrete() helper."""
-
-    def test_builtin_is_concrete(self) -> None:
-        assert ArtifactTypes.is_concrete("data") is True
-        assert ArtifactTypes.is_concrete("metric") is True
-
-    def test_any_is_not_concrete(self) -> None:
-        assert ArtifactTypes.is_concrete("any") is False
-
-    def test_unknown_is_not_concrete(self) -> None:
-        assert ArtifactTypes.is_concrete("nonexistent") is False
 
 
 class TestMatches:
