@@ -2170,8 +2170,9 @@ class TestCompositeFailFast:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
 
+        removed_kwarg = {"expand": True}
         with pytest.raises(TypeError):
-            pipeline.submit_composite(_RealComposite, **{"expand": True})
+            pipeline.submit_composite(_RealComposite, **removed_kwarg)
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_submit_composite_rejects_intermediates_kwarg(
@@ -2181,8 +2182,9 @@ class TestCompositeFailFast:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
 
+        removed_kwarg = {"intermediates": "persist"}
         with pytest.raises(TypeError):
-            pipeline.submit_composite(_RealComposite, **{"intermediates": "persist"})
+            pipeline.submit_composite(_RealComposite, **removed_kwarg)
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_submit_composite_returns_composite_result(
