@@ -807,14 +807,12 @@ class TestCommit:
         # Execution edges: one input edge per primary artifact, one output
         # edge per filtered artifact, all role="passthrough".
         run_id = row["execution_run_id"]
-        edges = pl.read_delta(
-            str(delta_root / "provenance/execution_edges")
-        ).filter(pl.col("execution_run_id") == run_id)
+        edges = pl.read_delta(str(delta_root / "provenance/execution_edges")).filter(
+            pl.col("execution_run_id") == run_id
+        )
         inputs = edges.filter(pl.col("direction") == "input")
         outputs = edges.filter(pl.col("direction") == "output")
-        assert set(inputs["artifact_id"].to_list()) == set(
-            filt._primary_artifact_ids
-        )
+        assert set(inputs["artifact_id"].to_list()) == set(filt._primary_artifact_ids)
         assert set(outputs["artifact_id"].to_list()) == set(filt.filtered_ids)
         assert set(edges["role"].unique().to_list()) == {"passthrough"}
 
