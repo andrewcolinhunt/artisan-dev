@@ -11,10 +11,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from artisan.schemas.composites.composite_ref import (
-    CompositeRef,
-    CompositeStepHandle,
-)
+from artisan.composites.base.results import CompositeStepHandle
+from artisan.schemas.composites.composite_ref import CompositeRef
 from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.compute_resources import ComputeResources
@@ -284,7 +282,7 @@ class CompositeContext:
         overrides, so they become the nested composite's own composite-level
         defaults and propagate to its child steps.
         """
-        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+        from artisan.composites.base.results import CompositeResult
 
         result = self._pipeline.submit_composite(
             composite_class,
@@ -302,7 +300,7 @@ class CompositeContext:
             compact=compact,
             skip_cache=skip_cache,
         )
-        assert isinstance(result, ExpandedCompositeResult)
+        assert isinstance(result, CompositeResult)
 
         return _NestedHandle(
             nested_result=result,
