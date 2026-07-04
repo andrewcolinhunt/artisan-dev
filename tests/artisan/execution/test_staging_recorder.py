@@ -183,8 +183,7 @@ class TestPassthroughStagedRowsGolden:
             "origin_step_number": 3,
             "operation_name": "filter",
             "params": (
-                '{"criteria": [], "passthrough_failures": false, '
-                '"chunk_size": 100000}'
+                '{"criteria": [], "passthrough_failures": false, "chunk_size": 100000}'
             ),
             "user_overrides": '{"foo": "bar"}',
             "timestamp_start": datetime(2026, 1, 1, tzinfo=UTC),
