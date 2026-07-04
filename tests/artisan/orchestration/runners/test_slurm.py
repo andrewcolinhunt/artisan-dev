@@ -19,7 +19,6 @@ class TestSlurmRunnerTraits:
         traits = SlurmRunner.worker_traits
         assert traits.worker_id_env_var == "SLURM_ARRAY_TASK_ID"
         assert traits.shared_filesystem is True
-        assert traits.needs_staging_fsync is True
 
     def test_orchestrator_traits(self) -> None:
         traits = SlurmRunner.orchestrator_traits

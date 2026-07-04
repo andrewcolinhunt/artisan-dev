@@ -14,7 +14,6 @@ import shlex
 import signal
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -179,7 +178,6 @@ def run_command(
     environment: Any,
     cmd: list[str],
     cwd: str | None = None,
-    timeout: float | None = None,
     stream_output: bool = False,
     log_path: str | None = None,
     log_mode: Literal["w", "a"] = "w",
@@ -193,7 +191,6 @@ def run_command(
         environment: An EnvironmentSpec instance that wraps the command.
         cmd: Pre-built command list (e.g. from ToolSpec.parts() + args).
         cwd: Working directory for subprocess.
-        timeout: Timeout in seconds.
         stream_output: If True, print output lines in real-time.
         log_path: If provided, write output to this file.
         log_mode: Open mode for ``log_path`` — ``"w"`` truncates (default),
@@ -203,32 +200,16 @@ def run_command(
         CompletedProcess with captured stdout/stderr.
 
     Raises:
-        ExternalToolError: On non-zero exit or timeout.
+        ExternalToolError: On non-zero exit.
     """
     wrapped = environment.wrap_command(cmd, cwd)
     full_cmd = Command(parts=wrapped, string=shlex.join(wrapped))
     env = environment.prepare_env()
 
-    try:
-        if stream_output:
-            result = _run_with_streaming(
-                full_cmd, cwd, timeout, log_path, log_mode, env
-            )
-        else:
-            result = _run_captured(full_cmd, cwd, timeout, log_path, log_mode, env)
-    except subprocess.TimeoutExpired as e:
-        # text=True is used everywhere in this module, so stdout/stderr are str
-        # at runtime even though typeshed declares them as `bytes | None`.
-        stdout: str = e.stdout or ""  # type: ignore[assignment]
-        stderr: str = e.stderr or ""  # type: ignore[assignment]
-        raise ExternalToolError(
-            message=f"Command timed out after {timeout}s",
-            command=full_cmd.parts,
-            return_code=-1,
-            stdout=stdout,
-            stderr=stderr,
-            runtime=environment,
-        ) from e
+    if stream_output:
+        result = _run_with_streaming(full_cmd, cwd, log_path, log_mode, env)
+    else:
+        result = _run_captured(full_cmd, cwd, log_path, log_mode, env)
 
     if result.returncode != 0:
         raise ExternalToolError(
@@ -245,7 +226,6 @@ def run_command(
 def _run_with_streaming(
     cmd: Command,
     cwd: str | None,
-    timeout: float | None,
     log_path: str | None,
     log_mode: Literal["w", "a"] = "w",
     env: dict[str, str] | None = None,
@@ -268,7 +248,6 @@ def _run_with_streaming(
     Args:
         cmd: Command to execute.
         cwd: Working directory.
-        timeout: Approximate timeout (checked between lines, not during).
         log_path: Optional file to write output.
         log_mode: Open mode for ``log_path`` (``"w"`` or ``"a"``).
         env: Environment variables.
@@ -293,16 +272,11 @@ def _run_with_streaming(
         )
 
         stdout_lines: list[str] = []
-        start_time = time.monotonic()
 
         # stdout=PIPE guarantees process.stdout is not None
         assert process.stdout is not None
         try:
             for line in process.stdout:
-                if timeout and (time.monotonic() - start_time) > timeout:
-                    _kill_process_group(process)
-                    raise subprocess.TimeoutExpired(cmd.parts, timeout)
-
                 if log_file:
                     log_file.write(line)
                     log_file.flush()
@@ -328,7 +302,6 @@ def _run_with_streaming(
 def _run_captured(
     cmd: Command,
     cwd: str | None,
-    timeout: float | None,
     log_path: str | None,
     log_mode: Literal["w", "a"] = "w",
     env: dict[str, str] | None = None,
@@ -339,11 +312,8 @@ def _run_captured(
     :func:`run_command` can dispatch positionally to either path.
 
     When ``log_path`` is set, captured stdout is written to it after
-    the process completes. On timeout, whatever stdout was buffered on
-    the ``TimeoutExpired`` exception is written before the exception
-    propagates — this gives the Modal compute router something to ferry
-    back from a container that hit its timeout. Stderr stays on the
-    returned ``CompletedProcess`` and surfaces via
+    the process completes. Stderr stays on the returned
+    ``CompletedProcess`` and surfaces via
     :attr:`ExternalToolError.stderr` on non-zero exit; it is not written
     to ``log_path`` (asymmetric with streaming mode, which merges via
     ``stderr=subprocess.STDOUT``).
@@ -351,7 +321,6 @@ def _run_captured(
     Args:
         cmd: Command to execute.
         cwd: Working directory.
-        timeout: Timeout in seconds.
         log_path: Optional file to write captured stdout.
         log_mode: Open mode for ``log_path`` (``"w"`` or ``"a"``).
         env: Environment variables.
@@ -369,13 +338,7 @@ def _run_captured(
         process_group=0,
     )
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as e:
-        _kill_process_group(process)
-        if log_path and e.stdout:
-            with open(log_path, log_mode) as f:
-                f.write(e.stdout)  # type: ignore[arg-type]  # text=True → str
-        raise
+        stdout, stderr = process.communicate()
     except BaseException:
         _kill_process_group(process)
         raise

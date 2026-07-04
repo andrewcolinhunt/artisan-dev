@@ -16,13 +16,13 @@ from artisan.schemas.artifact.file_ref import FileRefArtifact
 
 def _draft_at(path: str, content: bytes = b"hello") -> FileRefArtifact:
     """Create a finalized FileRefArtifact pointing at the given path."""
-    from artisan.utils.hashing import compute_content_hash
+    from artisan.utils.hashing import compute_artifact_id
 
     return cast(
         FileRefArtifact,
         FileRefArtifact.draft(
             path=path,
-            content_hash=compute_content_hash(content),
+            content_hash=compute_artifact_id(content),
             size_bytes=len(content),
             step_number=0,
             original_name="x",
