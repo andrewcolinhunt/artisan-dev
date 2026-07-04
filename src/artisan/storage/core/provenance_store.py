@@ -246,49 +246,6 @@ class ProvenanceStore:
             descendant_map.setdefault(source_id, []).append(target_id)
         return descendant_map
 
-    def get_descendant_ids_df(
-        self,
-        source_ids: pl.Series,
-        target_artifact_type: str | None = None,
-    ) -> pl.DataFrame:
-        """Return direct descendant IDs as a two-column DataFrame.
-
-        Args:
-            source_ids: Source artifact IDs to query. An empty Series
-                returns the empty schema immediately.
-            target_artifact_type: If given, restrict to descendants of
-                this type.
-
-        Returns:
-            DataFrame with columns ``[source_artifact_id,
-            target_artifact_id]``. Empty with correct schema when no
-            matches exist.
-        """
-        empty = pl.DataFrame(
-            schema={
-                "source_artifact_id": pl.String,
-                "target_artifact_id": pl.String,
-            }
-        )
-
-        if source_ids.is_empty():
-            return empty
-
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not self._fs.exists(prov_path):
-            return empty
-
-        query = pl.scan_delta(prov_path, storage_options=self._storage_options).filter(
-            pl.col("source_artifact_id").is_in(source_ids.to_list())
-        )
-
-        if target_artifact_type is not None:
-            query = query.filter(pl.col("target_artifact_type") == target_artifact_type)
-
-        result = query.select(["source_artifact_id", "target_artifact_id"]).collect()
-
-        return result if not result.is_empty() else empty
-
     # -------------------------------------------------------------------------
     # Step queries
     # -------------------------------------------------------------------------
@@ -514,6 +471,78 @@ class ProvenanceStore:
     # Transitive walks (multi-hop)
     # -------------------------------------------------------------------------
 
+    def _walk_transitive(
+        self,
+        artifact_id: str,
+        *,
+        frontier_col: str,
+        collect_col: str,
+        type_col: str | None = None,
+        type_value: str | None = None,
+    ) -> list[str]:
+        """Iterative BFS over provenance edges in one direction.
+
+        Walk from ``artifact_id`` by repeatedly matching the current
+        frontier against ``frontier_col`` and collecting the opposite
+        endpoint (``collect_col``). Shared by the ancestor (backward) and
+        descendant (forward) walks with the source/target roles swapped.
+
+        Args:
+            artifact_id: Starting artifact ID.
+            frontier_col: Edge column matched against the current frontier
+                (``target_artifact_id`` backward, ``source_artifact_id``
+                forward).
+            collect_col: Edge column whose values form the next frontier
+                (the opposite endpoint of ``frontier_col``).
+            type_col: Edge column carrying the collected node's type. When
+                given, only nodes whose ``type_col`` equals ``type_value``
+                are returned; the walk itself still traverses every edge.
+            type_value: Required type when ``type_col`` is set.
+
+        Returns:
+            Reachable artifact IDs (excludes the starting artifact). When
+            ``type_col`` is set, only type-matching IDs. Empty list if no
+            matches exist or the artifact_edges table is missing.
+        """
+        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
+        if not self._fs.exists(prov_path):
+            return []
+
+        select_cols = [frontier_col, collect_col]
+        if type_col is not None:
+            select_cols.append(type_col)
+
+        edges = (
+            pl.scan_delta(prov_path, storage_options=self._storage_options)
+            .select(select_cols)
+            .collect()
+        )
+        if edges.is_empty():
+            return []
+
+        collected: set[str] = set()
+        type_matched: set[str] = set()
+        frontier = {artifact_id}
+
+        while frontier:
+            next_edges = edges.filter(pl.col(frontier_col).is_in(sorted(frontier)))
+            next_ids = set(next_edges[collect_col].to_list())
+            new = next_ids - collected - {artifact_id}
+
+            if type_col is not None and new:
+                matched = next_edges.filter(
+                    (pl.col(type_col) == type_value)
+                    & pl.col(collect_col).is_in(sorted(new))
+                )
+                type_matched.update(matched[collect_col].to_list())
+
+            collected.update(new)
+            frontier = new
+
+        if type_col is not None:
+            return list(type_matched)
+        return list(collected)
+
     def get_ancestor_ids(
         self,
         artifact_id: str,
@@ -533,36 +562,16 @@ class ProvenanceStore:
             Ancestor artifact IDs (excludes the starting artifact itself).
             Empty list if no ancestors exist or tables are missing.
         """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not self._fs.exists(prov_path):
-            return []
-
-        edges = (
-            pl.scan_delta(prov_path, storage_options=self._storage_options)
-            .select(["source_artifact_id", "target_artifact_id"])
-            .collect()
+        # Ancestor type filtering resolves each node's type from the
+        # artifact_index (an edge's source_artifact_type is the edge's role,
+        # not the ancestor's own type), so it runs after the walk.
+        ancestor_ids = self._walk_transitive(
+            artifact_id,
+            frontier_col="target_artifact_id",
+            collect_col="source_artifact_id",
         )
-        if edges.is_empty():
+        if not ancestor_ids:
             return []
-
-        collected: set[str] = set()
-        frontier = {artifact_id}
-
-        while frontier:
-            parents = (
-                edges.filter(pl.col("target_artifact_id").is_in(sorted(frontier)))
-                .select("source_artifact_id")
-                .to_series()
-                .to_list()
-            )
-            new = set(parents) - collected - {artifact_id}
-            collected.update(new)
-            frontier = new
-
-        if not collected:
-            return []
-
-        ancestor_ids = list(collected)
 
         if ancestor_type is not None:
             type_map = self.load_type_map(ancestor_ids)
@@ -591,44 +600,12 @@ class ProvenanceStore:
             Descendant artifact IDs (excludes the starting artifact itself).
             Empty list if no descendants exist or tables are missing.
         """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not self._fs.exists(prov_path):
-            return []
-
-        select_cols = ["source_artifact_id", "target_artifact_id"]
-        if descendant_type is not None:
-            select_cols.append("target_artifact_type")
-
-        edges = (
-            pl.scan_delta(prov_path, storage_options=self._storage_options)
-            .select(select_cols)
-            .collect()
+        # Descendant type filtering uses the edge's target_artifact_type
+        # inline during the walk, so it is pushed into the helper.
+        return self._walk_transitive(
+            artifact_id,
+            frontier_col="source_artifact_id",
+            collect_col="target_artifact_id",
+            type_col="target_artifact_type" if descendant_type is not None else None,
+            type_value=descendant_type,
         )
-        if edges.is_empty():
-            return []
-
-        collected: set[str] = set()
-        type_matched: set[str] = set()
-        frontier = {artifact_id}
-
-        while frontier:
-            children_df = edges.filter(
-                pl.col("source_artifact_id").is_in(sorted(frontier))
-            )
-            child_ids = set(children_df["target_artifact_id"].to_list())
-            new = child_ids - collected - {artifact_id}
-
-            if descendant_type is not None and new:
-                matched_df = children_df.filter(
-                    (pl.col("target_artifact_type") == descendant_type)
-                    & pl.col("target_artifact_id").is_in(sorted(new))
-                )
-                type_matched.update(matched_df["target_artifact_id"].to_list())
-
-            collected.update(new)
-            frontier = new
-
-        if descendant_type is not None:
-            return list(type_matched)
-
-        return list(collected)
