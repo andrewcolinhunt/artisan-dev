@@ -75,7 +75,7 @@ class TestCuratorCancelAwareMessage:
     """Fix 4: BrokenProcessPool during cancellation uses cancel-specific message."""
 
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
-    @patch("artisan.orchestration.engine.step_executor.build_curator_execution_context")
+    @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
@@ -136,7 +136,7 @@ class TestCuratorCancelAwareMessage:
         )
 
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
-    @patch("artisan.orchestration.engine.step_executor.build_curator_execution_context")
+    @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
@@ -197,7 +197,9 @@ class TestCuratorCancelAwareWait:
         )
 
         mock_future = MagicMock()
-        mock_future.result.side_effect = TimeoutError
+        # Never done: the poll loop must hit the cancel check, which
+        # precedes the wait() call, so a cancelled step raises promptly.
+        mock_future.done.return_value = False
 
         mock_pool = MagicMock()
         mock_pool.__enter__ = MagicMock(return_value=mock_pool)
@@ -223,7 +225,9 @@ class TestCuratorCancelAwareWait:
 
         mock_result = MagicMock()
         mock_future = MagicMock()
-        mock_future.result.side_effect = [TimeoutError, mock_result]
+        # Done immediately: result() is called exactly once, with no timeout.
+        mock_future.done.return_value = True
+        mock_future.result.return_value = mock_result
 
         mock_pool = MagicMock()
         mock_pool.__enter__ = MagicMock(return_value=mock_pool)

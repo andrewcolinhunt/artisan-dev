@@ -15,7 +15,7 @@ from artisan.operations.curator.consolidate_appendables import (
 )
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.utils.hashing import compute_content_hash
+from artisan.utils.hashing import compute_artifact_id
 
 
 @pytest.fixture(
@@ -56,7 +56,7 @@ def _make_appendable_artifact(
     line = json.dumps({"record_id": record_id, "values": {"x": 1.0}}, sort_keys=True)
     art = AppendableArtifact.draft(
         record_id=record_id,
-        content_hash=compute_content_hash(line.encode()),
+        content_hash=compute_artifact_id(line.encode()),
         size_bytes=len(line.encode()),
         step_number=step_number,
         external_path=external_path,

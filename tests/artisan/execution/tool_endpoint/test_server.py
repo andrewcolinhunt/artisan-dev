@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tarfile
+import tempfile
 from enum import StrEnum, auto
 from io import BytesIO
 from typing import Any, ClassVar
@@ -118,6 +120,20 @@ def _tar_names(payload: bytes) -> list[str]:
         return sorted(tar.getnames())
 
 
+def _capture_tempdirs(monkeypatch) -> list[str]:
+    """Record every ``mkdtemp`` path a request allocates, calling through."""
+    created: list[str] = []
+    real = tempfile.mkdtemp
+
+    def spy(*args, **kwargs):
+        path = real(*args, **kwargs)
+        created.append(path)
+        return path
+
+    monkeypatch.setattr(tempfile, "mkdtemp", spy)
+    return created
+
+
 class TestRunToolRequest:
     def test_success_returns_manifest_and_tar(self):
         result = run_tool_request(
@@ -166,6 +182,29 @@ class TestRunToolRequest:
     def test_invalid_params_raise(self):
         with pytest.raises(Exception, match="(?i)extra"):
             run_tool_request(WaitTool, ToolRequest(params={"no_such_param": 1}))
+
+    def test_success_removes_job_dir(self, monkeypatch):
+        # warm-container reuse: the per-request job tree must not survive
+        created = _capture_tempdirs(monkeypatch)
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                params={"seconds": 1},
+                inputs=[
+                    InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")
+                ],
+            ),
+        )
+        assert result.manifest.error is None
+        assert created  # the worker did allocate a job dir
+        assert all(not os.path.exists(p) for p in created)
+
+    def test_tool_failure_removes_job_dir(self, monkeypatch):
+        created = _capture_tempdirs(monkeypatch)
+        result = run_tool_request(FailTool, ToolRequest())
+        assert result.manifest.error is not None
+        assert created  # the worker did allocate a job dir
+        assert all(not os.path.exists(p) for p in created)
 
     def test_flag_op_spawns_op_run_with_wire_params_and_inputs(self):
         """The worker path composes for execute_as_tool ops: instantiate

@@ -1,7 +1,7 @@
 """Tests for ArtifactStore DataFrame query methods.
 
 Tests cover:
-1. load_provenance_edges_df with step scoping
+1. provenance.load_edges_df with step scoping
 2. load_metrics_df with binary content
 """
 
@@ -39,7 +39,7 @@ def _write_metrics(root: str, rows: list[dict], storage_options: dict | None) ->
 
 
 class TestLoadProvenanceEdgesDf:
-    """Tests for load_provenance_edges_df."""
+    """Tests for provenance.load_edges_df via ArtifactStore."""
 
     def test_returns_edges_within_step_range(self, backend_fs):
         """Edges with both endpoints in range are returned."""
@@ -82,7 +82,7 @@ class TestLoadProvenanceEdgesDf:
         )
 
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        result = store.load_provenance_edges_df(step_min=1, step_max=2)
+        result = store.provenance.load_edges_df(step_min=1, step_max=2)
 
         assert len(result) == 1
         assert result["source_artifact_id"][0] == "A"
@@ -129,7 +129,7 @@ class TestLoadProvenanceEdgesDf:
         )
 
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        result = store.load_provenance_edges_df(step_min=1, step_max=3)
+        result = store.provenance.load_edges_df(step_min=1, step_max=3)
 
         assert result.is_empty()
         assert result.columns == ["source_artifact_id", "target_artifact_id"]
@@ -140,7 +140,7 @@ class TestLoadProvenanceEdgesDf:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        result = store.load_provenance_edges_df(step_min=0, step_max=10)
+        result = store.provenance.load_edges_df(step_min=0, step_max=10)
 
         assert result.is_empty()
         assert result.columns == ["source_artifact_id", "target_artifact_id"]

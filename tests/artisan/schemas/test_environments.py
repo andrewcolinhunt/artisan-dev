@@ -42,6 +42,12 @@ class TestEnvironments:
         with pytest.raises(ValueError, match="not configured"):
             envs.current()
 
+    def test_unknown_active_raises(self):
+        # 'available' collides with a method name; without the validator it
+        # would resolve to the bound method and defeat the fail-fast error.
+        with pytest.raises(ValueError, match="Unknown environment"):
+            Environments(active="available")
+
     def test_available_default(self):
         envs = Environments()
         assert envs.available() == ["local"]

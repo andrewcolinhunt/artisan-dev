@@ -32,11 +32,6 @@ class WorkerTraits:
     worker_id_env_var: str | None = None
     shared_filesystem: bool = False
 
-    @property
-    def needs_staging_fsync(self) -> bool:
-        """NFS requires explicit fsync for cross-node visibility."""
-        return self.shared_filesystem
-
 
 @dataclass(frozen=True)
 class OrchestratorTraits:

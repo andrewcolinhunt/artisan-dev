@@ -45,8 +45,6 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
         'data'
         >>> "data" in ArtifactTypes
         True
-        >>> ArtifactTypes.get("metric")
-        'metric'
     """
 
     METRIC: ClassVar[str] = _BuiltinArtifactType.METRIC
@@ -64,27 +62,6 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
     _registry: ClassVar[dict[str, str]] = {
         m.value: m.value for m in _BuiltinArtifactType
     }
-
-    @classmethod
-    def get(cls, key: str) -> str:
-        """Lookup by string key.
-
-        Args:
-            key: Artifact type key (e.g. "data").
-
-        Returns:
-            The registered type string.
-
-        Raises:
-            KeyError: If key is not registered.
-        """
-        if key not in cls._registry:
-            msg = (
-                f"Unknown artifact type: {key!r}. "
-                f"Registered: {list(cls._registry.keys())}"
-            )
-            raise KeyError(msg)
-        return cls._registry[key]
 
     @classmethod
     def register(cls, key: str) -> str:
@@ -118,18 +95,6 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
     @classmethod
     def is_registered(cls, key: str) -> bool:
         """Return True if the given type key is in the registry."""
-        return key in cls._registry
-
-    @classmethod
-    def is_concrete(cls, key: str) -> bool:
-        """Check if a type key refers to a concrete (registered) type.
-
-        Args:
-            key: Artifact type key.
-
-        Returns:
-            True if key is in the registry, False for ANY or unknown keys.
-        """
         return key in cls._registry
 
     @classmethod

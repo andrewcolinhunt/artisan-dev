@@ -208,6 +208,29 @@ class ErrorCode:
     UNKNOWN_VALIDATION_ERROR = "unknown_validation_error"
 
 
+class CommitError(Exception):
+    """Raised when one or more table commits fail in ``commit_all_tables``.
+
+    Delta Lake has no multi-table transaction, so a partial failure can
+    leave earlier tables committed and the store inconsistent. The
+    committer preserves staging (skips cleanup) on failure so the commit
+    can be retried; ``DeltaCommitter.recover_staged`` re-commits the
+    preserved Parquet idempotently via anti-join deduplication.
+
+    Attributes:
+        failed_tables: Names of the tables whose commit raised.
+    """
+
+    def __init__(self, failed_tables: list[str]) -> None:
+        """Build the error from the list of failed table names.
+
+        Args:
+            failed_tables: Names of the tables whose commit raised.
+        """
+        self.failed_tables = failed_tables
+        super().__init__(f"Failed to commit tables: {', '.join(failed_tables)}")
+
+
 def _default_doc_uri(code: str) -> str:
     """Return the canonical doc URL for an error code."""
     return f"https://artisan.dev/docs/errors/{code}"

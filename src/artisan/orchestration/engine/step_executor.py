@@ -13,14 +13,15 @@ import os
 import resource
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from fsspec import AbstractFileSystem
+from pydantic import BaseModel
 
-from artisan.execution.context.builder import build_curator_execution_context
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.executors.curator import (
     _get_params,
     is_curator_operation,
@@ -38,6 +39,7 @@ from artisan.orchestration.engine.batching import (
 from artisan.orchestration.engine.inputs import resolve_inputs
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
+    FailFastAbort,
     aggregate_results,
     extract_execution_run_ids,
 )
@@ -58,6 +60,35 @@ from artisan.utils.spawn import suppress_main_reimport
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
+
+
+def _deep_merge_model[ModelT: BaseModel](
+    base_model: BaseModel,
+    override: dict[str, Any],
+    model_cls: type[ModelT],
+) -> ModelT:
+    """Deep-merge a dict override onto a Pydantic model.
+
+    Dumps ``base_model``, shallow-merges each nested dict from ``override``
+    (so a partial nested dict keeps its sibling fields), then re-validates
+    through ``model_cls`` — this coerces nested dicts into their proper
+    sub-models even when the base field was ``None``.
+
+    Args:
+        base_model: The operation default to merge onto.
+        override: Overrides, whose top-level dict values merge into the base.
+        model_cls: Model class to validate the merged mapping through.
+
+    Returns:
+        A new ``model_cls`` instance with the override applied.
+    """
+    base = base_model.model_dump()
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            base[key] = {**base[key], **value}
+        else:
+            base[key] = value
+    return model_cls.model_validate(base)
 
 
 def instantiate_operation(
@@ -141,15 +172,9 @@ def instantiate_operation(
         elif isinstance(environment, Environments):
             updates["environments"] = environment
         else:
-            # Dump-merge-validate: coerces nested dicts into proper
-            # Pydantic models (handles both existing and None fields).
-            base = instance.environments.model_dump()
-            for key, value in environment.items():
-                if isinstance(value, dict) and isinstance(base.get(key), dict):
-                    base[key] = {**base[key], **value}
-                else:
-                    base[key] = value
-            updates["environments"] = Environments.model_validate(base)
+            updates["environments"] = _deep_merge_model(
+                instance.environments, environment, Environments
+            )
     if compute_provider is not None:
         if isinstance(compute_provider, str):
             updates["compute_provider"] = instance.compute_provider.model_copy(
@@ -158,13 +183,9 @@ def instantiate_operation(
         elif isinstance(compute_provider, ComputeProvider):
             updates["compute_provider"] = compute_provider
         else:
-            base = instance.compute_provider.model_dump()
-            for key, value in compute_provider.items():
-                if isinstance(value, dict) and isinstance(base.get(key), dict):
-                    base[key] = {**base[key], **value}
-                else:
-                    base[key] = value
-            updates["compute_provider"] = ComputeProvider.model_validate(base)
+            updates["compute_provider"] = _deep_merge_model(
+                instance.compute_provider, compute_provider, ComputeProvider
+            )
     if compute_resources is not None:
         from artisan.schemas.operation_config.compute_resources import ComputeResources
 
@@ -205,13 +226,11 @@ def check_cache_for_batch(
     storage_options = storage.delta_storage_options()
 
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
-    execution_edges_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
     result = cache_lookup(
         executions_path,
         execution_spec_id,
         fs=fs,
         storage_options=storage_options,
-        execution_edges_path=execution_edges_path,
     )
     return result if isinstance(result, CacheHit) else None
 
@@ -813,7 +832,7 @@ def _execute_curator_step(
             synthetic_run_id = f"killed-{unit.execution_spec_id[:24]}"
             kill_fs = runtime_env.storage.filesystem()
             kill_so = runtime_env.storage.delta_storage_options()
-            execution_context = build_curator_execution_context(
+            execution_context = build_execution_context(
                 execution_run_id=synthetic_run_id,
                 execution_spec_id=unit.execution_spec_id,
                 step_number=unit.step_number,
@@ -847,7 +866,7 @@ def _execute_curator_step(
                 )
             ]
             succeeded, failed = 0, 1
-        except RuntimeError:
+        except FailFastAbort:
             raise  # fail_fast — intentional abort
         except Exception as exc:
             dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
@@ -896,14 +915,17 @@ def _run_curator_in_subprocess(
         ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool,
     ):
         future = pool.submit(run_curator_flow, unit, runtime_env, 0)
-        while True:
-            try:
-                return future.result(timeout=0.5)
-            except TimeoutError as err:
-                if cancel_event is not None and cancel_event.is_set():
-                    msg = "Curator interrupted by cancellation"
-                    raise RuntimeError(msg) from err
-                continue
+        # Poll done() and call result() exactly once after completion. On
+        # Python 3.12 concurrent.futures.TimeoutError IS builtins.TimeoutError,
+        # so calling result(timeout=) in the loop would swallow a task-raised
+        # TimeoutError as a poll timeout and spin forever; polling done()
+        # instead lets task exceptions surface as real failures.
+        while not future.done():
+            if cancel_event is not None and cancel_event.is_set():
+                msg = "Curator interrupted by cancellation"
+                raise RuntimeError(msg)
+            wait([future], timeout=0.5)
+        return future.result()
 
 
 def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
@@ -1151,7 +1173,7 @@ def _execute_creator_step(
                     )
                     results = []
                     succeeded, failed = 0, len(units_to_dispatch)
-                except RuntimeError:
+                except FailFastAbort:
                     raise  # fail_fast — intentional abort
                 except Exception as exc:
                     dispatch_error, results, succeeded, failed = (
@@ -1328,8 +1350,8 @@ def execute_composite_step(
                 )
                 results = router.run([composite_transport], runtime_env)
                 succeeded, failed = aggregate_results(results, failure_policy)
-            except RuntimeError:
-                raise
+            except FailFastAbort:
+                raise  # fail_fast — intentional abort
             except Exception as exc:
                 dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
                     exc, step_number, label="Composite dispatch"

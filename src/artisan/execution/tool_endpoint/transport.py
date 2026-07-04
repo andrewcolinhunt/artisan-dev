@@ -1,22 +1,22 @@
 """Bulk-file transport between the endpoint client and the tool worker.
 
-``DataTransport`` is the seam; ``InlineTransport`` is the inline mode —
-input bytes and the output tar ride the endpoint↔worker function-call hop,
-bounded at 100 MB per direction. ``s3://`` input refs are fetched
-worker-side via fsspec and bypass the bound. ``upload_outputs`` is the
-stored output mode: when a request names an ``output_store``, the worker
-delivers the output tarball there and only a ``StoredOutputs`` pointer
-rides the control plane — no second Protocol implementation is coming.
+``InlineTransport`` is the inline mode — input bytes and the output tar
+ride the endpoint↔worker function-call hop, bounded at 100 MB per
+direction. ``s3://`` input refs are fetched worker-side via fsspec and
+bypass the bound. ``upload_outputs`` is the stored output mode: when a
+request names an ``output_store``, the worker delivers the output tarball
+there and only a ``StoredOutputs`` pointer rides the control plane.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import shutil
 import tarfile
 import tempfile
 import uuid
-from typing import Any, Protocol
+from typing import Any
 
 from artisan.execution.tool_endpoint.protocol import InputRef, StoredOutputs
 from artisan.utils.path import uri_join
@@ -26,28 +26,6 @@ MAX_INLINE_BYTES = 100 * 1024 * 1024
 
 PRESIGN_EXPIRY_SECONDS = 7 * 24 * 3600
 """SigV4 maximum — matches Modal's 7-day FunctionCall result retention."""
-
-
-class DataTransport(Protocol):
-    """Moves bulk tool files between client and worker."""
-
-    def pack_inputs(self, files: dict[str, str]) -> list[InputRef]:
-        """Client-side: local paths / object-store URIs → input refs."""
-        ...
-
-    def unpack_inputs(
-        self, refs: list[InputRef], dest: str, fs: Any = None
-    ) -> dict[str, str]:
-        """Worker-side: input refs → local paths under ``dest``."""
-        ...
-
-    def pack_outputs(self, src: str, names: list[str]) -> Any:
-        """Worker-side: output files under ``src`` → data-plane payload."""
-        ...
-
-    def unpack_outputs(self, payload: Any, dest: str) -> None:
-        """Client-side: data-plane payload → files under ``dest``."""
-        ...
 
 
 class InlineTransport:
@@ -176,37 +154,43 @@ def upload_outputs(
             (prefix mode requires a signing object store).
         httpx.HTTPStatusError: When a presigned PUT is refused.
     """
-    spool = os.path.join(tempfile.mkdtemp(prefix="artisan-tool-tar-"), "out.tar.gz")
-    with tarfile.open(spool, "w:gz") as tar:
-        for name in names:
-            tar.add(os.path.join(src, name), arcname=name)
-    if store.startswith(("http://", "https://")):
-        import httpx
+    # Modal reuses warm containers across requests; the spool must not
+    # outlive the call or gzipped tars accumulate in the container.
+    spool_dir = tempfile.mkdtemp(prefix="artisan-tool-tar-")
+    spool = os.path.join(spool_dir, "out.tar.gz")
+    try:
+        with tarfile.open(spool, "w:gz") as tar:
+            for name in names:
+                tar.add(os.path.join(src, name), arcname=name)
+        if store.startswith(("http://", "https://")):
+            import httpx
 
-        # Explicit Content-Length, or httpx sends the file body as
-        # Transfer-Encoding: chunked — S3 answers plain chunked PUTs with
-        # 501 (MinIO tolerates them). Never in the signed set: callers
-        # mint with default (host-only) signed headers.
-        headers = {"Content-Length": str(os.path.getsize(spool))}
-        with open(spool, "rb") as f:
-            # streamed body; bounded by the worker's Modal timeout
-            response = httpx.put(store, content=f, headers=headers, timeout=None)
-        response.raise_for_status()
-        return StoredOutputs(uri=store.split("?", 1)[0])
-    uri = uri_join(store, op_name, f"{uuid.uuid4().hex}.tar.gz")
-    # Force SigV4 on s3: requests sign v4 either way, but presigned URLs
-    # come out legacy SigV2 without the explicit opt-in — accepted by
-    # MinIO, rejected (401) by R2 and modern AWS buckets.
-    options = (
-        {"config_kwargs": {"signature_version": "s3v4"}}
-        if uri.startswith("s3://")
-        else {}
-    )
-    fs, remote = _resolve_fs(uri, None, **options)
-    fs.put(spool, remote)
-    return StoredOutputs(
-        uri=uri, presigned_url=fs.sign(remote, expiration=PRESIGN_EXPIRY_SECONDS)
-    )
+            # Explicit Content-Length, or httpx sends the file body as
+            # Transfer-Encoding: chunked — S3 answers plain chunked PUTs with
+            # 501 (MinIO tolerates them). Never in the signed set: callers
+            # mint with default (host-only) signed headers.
+            headers = {"Content-Length": str(os.path.getsize(spool))}
+            with open(spool, "rb") as f:
+                # streamed body; bounded by the worker's Modal timeout
+                response = httpx.put(store, content=f, headers=headers, timeout=None)
+            response.raise_for_status()
+            return StoredOutputs(uri=store.split("?", 1)[0])
+        uri = uri_join(store, op_name, f"{uuid.uuid4().hex}.tar.gz")
+        # Force SigV4 on s3: requests sign v4 either way, but presigned URLs
+        # come out legacy SigV2 without the explicit opt-in — accepted by
+        # MinIO, rejected (401) by R2 and modern AWS buckets.
+        options = (
+            {"config_kwargs": {"signature_version": "s3v4"}}
+            if uri.startswith("s3://")
+            else {}
+        )
+        fs, remote = _resolve_fs(uri, None, **options)
+        fs.put(spool, remote)
+        return StoredOutputs(
+            uri=uri, presigned_url=fs.sign(remote, expiration=PRESIGN_EXPIRY_SECONDS)
+        )
+    finally:
+        shutil.rmtree(spool_dir, ignore_errors=True)
 
 
 def _resolve_fs(uri: str, fs: Any, **storage_options: Any) -> tuple[Any, str]:

@@ -11,7 +11,7 @@ import pytest
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.utils.hashing import compute_content_hash
+from artisan.utils.hashing import compute_artifact_id
 
 
 def _make_jsonl(path: Path, records: list[dict]) -> None:
@@ -26,7 +26,7 @@ def _draft(external_path: str = "/tmp/test.jsonl") -> AppendableArtifact:
     line = json.dumps({"record_id": "rec_000000", "values": {"x": 1.0}}, sort_keys=True)
     return AppendableArtifact.draft(
         record_id="rec_000000",
-        content_hash=compute_content_hash(line.encode()),
+        content_hash=compute_artifact_id(line.encode()),
         size_bytes=len(line.encode()),
         step_number=1,
         external_path=external_path,
@@ -86,14 +86,14 @@ class TestFinalize:
         line_b = json.dumps({"record_id": "b", "values": {}}, sort_keys=True)
         art_a = AppendableArtifact.draft(
             record_id="a",
-            content_hash=compute_content_hash(line_a.encode()),
+            content_hash=compute_artifact_id(line_a.encode()),
             size_bytes=len(line_a.encode()),
             step_number=0,
             external_path="/tmp/same.jsonl",
         )
         art_b = AppendableArtifact.draft(
             record_id="b",
-            content_hash=compute_content_hash(line_b.encode()),
+            content_hash=compute_artifact_id(line_b.encode()),
             size_bytes=len(line_b.encode()),
             step_number=0,
             external_path="/tmp/same.jsonl",
