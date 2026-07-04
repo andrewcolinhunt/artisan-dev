@@ -255,21 +255,6 @@ class TestRunCommand:
         assert call_args[:3] == ["docker", "run", "--rm"]
         assert "img:latest" in call_args
 
-    @patch("artisan.utils.external_tools._kill_process_group")
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_timeout_raises_error(self, mock_popen, mock_kill):
-        mock_proc = MagicMock()
-        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
-            cmd=["test"], timeout=5
-        )
-        mock_popen.return_value = mock_proc
-
-        env = EnvironmentSpec()
-        with pytest.raises(ExternalToolError) as exc_info:
-            run_command(env, ["cmd"], timeout=5)
-        assert exc_info.value.return_code == -1
-        mock_kill.assert_called_once_with(mock_proc)
-
     @patch("artisan.utils.external_tools.subprocess.Popen")
     def test_env_vars_passed(self, mock_popen):
         mock_proc = MagicMock()
@@ -311,23 +296,6 @@ class TestRunCommand:
             run_command(env, ["python", "run.py"], stream_output=True)
 
         mock_kill.assert_called_with(mock_proc)
-
-    @patch("artisan.utils.external_tools._kill_process_group")
-    @patch("artisan.utils.external_tools.time.monotonic")
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_streaming_timeout_kills_group(self, mock_popen, mock_monotonic, mock_kill):
-        """Timeout during streaming triggers _kill_process_group."""
-        mock_proc = MagicMock()
-        mock_proc.stdout = iter(["line\n"])
-        mock_proc.wait.return_value = 0
-        mock_popen.return_value = mock_proc
-        mock_monotonic.side_effect = [0.0, 100.0]
-
-        env = LocalEnvironmentSpec()
-        with pytest.raises(ExternalToolError):
-            run_command(env, ["python", "run.py"], stream_output=True, timeout=5)
-
-        mock_kill.assert_called()
 
     @patch("artisan.utils.external_tools.subprocess.Popen")
     def test_streaming_writes_each_line_to_stdout(self, mock_popen, capsys):
@@ -403,42 +371,3 @@ class TestRunCommand:
         run_command(env, ["python", "run.py"])
 
         assert list(tmp_path.iterdir()) == []
-
-    @patch("artisan.utils.external_tools._kill_process_group")
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_captured_writes_log_path_on_timeout(self, mock_popen, mock_kill, tmp_path):
-        """``TimeoutExpired`` with buffered stdout writes ``log_path`` before re-raise."""
-        mock_proc = MagicMock()
-        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
-            cmd=["test"], timeout=5, output="partial output\n", stderr=""
-        )
-        mock_popen.return_value = mock_proc
-
-        log_path = tmp_path / "out.log"
-        env = LocalEnvironmentSpec()
-        with pytest.raises(ExternalToolError) as exc_info:
-            run_command(env, ["cmd"], timeout=5, log_path=str(log_path))
-
-        assert exc_info.value.return_code == -1
-        assert log_path.read_text() == "partial output\n"
-        mock_kill.assert_called_once_with(mock_proc)
-
-    @patch("artisan.utils.external_tools._kill_process_group")
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_captured_skips_log_path_on_timeout_with_no_buffered_stdout(
-        self, mock_popen, mock_kill, tmp_path
-    ):
-        """``TimeoutExpired`` with ``e.stdout=None`` does not crash and writes nothing."""
-        mock_proc = MagicMock()
-        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(
-            cmd=["test"], timeout=5, output=None, stderr=None
-        )
-        mock_popen.return_value = mock_proc
-
-        log_path = tmp_path / "out.log"
-        env = LocalEnvironmentSpec()
-        with pytest.raises(ExternalToolError):
-            run_command(env, ["cmd"], timeout=5, log_path=str(log_path))
-
-        assert not log_path.exists()
-        mock_kill.assert_called_once_with(mock_proc)

@@ -10,14 +10,14 @@ import pytest
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.utils.hashing import compute_content_hash
+from artisan.utils.hashing import compute_artifact_id
 
 
 def _draft(external_path: str = "/tmp/test.bin") -> LargeFileArtifact:
     """Create a standard draft for reuse across tests."""
     data = b"test binary content"
     return LargeFileArtifact.draft(
-        content_hash=compute_content_hash(data),
+        content_hash=compute_artifact_id(data),
         size_bytes=len(data),
         step_number=1,
         external_path=external_path,
@@ -70,13 +70,13 @@ class TestFinalize:
 
     def test_different_content_different_id(self) -> None:
         art_a = LargeFileArtifact.draft(
-            content_hash=compute_content_hash(b"content_a"),
+            content_hash=compute_artifact_id(b"content_a"),
             size_bytes=9,
             step_number=0,
             external_path="/tmp/same.bin",
         )
         art_b = LargeFileArtifact.draft(
-            content_hash=compute_content_hash(b"content_b"),
+            content_hash=compute_artifact_id(b"content_b"),
             size_bytes=9,
             step_number=0,
             external_path="/tmp/same.bin",
@@ -126,7 +126,7 @@ class TestMaterialize:
         source.write_bytes(data)
 
         art = LargeFileArtifact.draft(
-            content_hash=compute_content_hash(data),
+            content_hash=compute_artifact_id(data),
             size_bytes=len(data),
             step_number=0,
             external_path=str(source),
@@ -147,7 +147,7 @@ class TestMaterialize:
         source.write_bytes(b"data")
 
         art = LargeFileArtifact.draft(
-            content_hash=compute_content_hash(b"data"),
+            content_hash=compute_artifact_id(b"data"),
             size_bytes=4,
             step_number=0,
             external_path=str(source),
@@ -185,7 +185,7 @@ class TestMaterializeAutoInferFs:
         src.write_bytes(b"local-bytes")
 
         art = LargeFileArtifact.draft(
-            content_hash=compute_content_hash(b"local-bytes"),
+            content_hash=compute_artifact_id(b"local-bytes"),
             size_bytes=len(b"local-bytes"),
             step_number=0,
             external_path=str(src),
@@ -208,7 +208,7 @@ class TestMaterializeAutoInferFs:
             f.write(b"memory-bytes")
 
         art = LargeFileArtifact.draft(
-            content_hash=compute_content_hash(b"memory-bytes"),
+            content_hash=compute_artifact_id(b"memory-bytes"),
             size_bytes=len(b"memory-bytes"),
             step_number=0,
             external_path="memory:///test_large_file/auto/blob.bin",
