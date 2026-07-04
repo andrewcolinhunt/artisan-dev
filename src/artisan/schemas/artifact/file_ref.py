@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar
 
 import polars as pl
 from pydantic import Field, PrivateAttr
 
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.common import metadata_from_json, metadata_to_json
 from artisan.schemas.artifact.types import ArtifactTypes
 
 
@@ -169,42 +168,3 @@ class FileRefArtifact(Artifact):
             },
             sort_keys=True,
         ).encode("utf-8")
-
-    def to_row(self) -> dict[str, Any]:
-        """Serialize to a flat dict matching POLARS_SCHEMA columns.
-
-        JSON-encodes ``metadata`` for Parquet storage.
-        """
-        return {
-            "artifact_id": self.artifact_id,
-            "origin_step_number": self.origin_step_number,
-            "content_hash": self.content_hash,
-            "path": self.path,
-            "size_bytes": self.size_bytes,
-            "original_name": self.original_name,
-            "extension": self.extension,
-            "metadata": metadata_to_json(self.metadata),
-            "external_path": self.external_path,
-        }
-
-    @classmethod
-    def from_row(cls, row: dict[str, Any]) -> Self:
-        """Reconstruct from a Parquet row dict.
-
-        Reverses the JSON encoding applied by ``to_row`` for
-        ``metadata``.
-
-        Args:
-            row: Dict with keys matching POLARS_SCHEMA columns.
-        """
-        return cls(
-            artifact_id=row["artifact_id"],
-            origin_step_number=row.get("origin_step_number"),
-            content_hash=row.get("content_hash"),
-            path=row.get("path"),
-            size_bytes=row.get("size_bytes"),
-            original_name=row.get("original_name"),
-            extension=row.get("extension"),
-            metadata=metadata_from_json(row.get("metadata")),
-            external_path=row.get("external_path"),
-        )

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from collections.abc import Callable
+from typing import Any, ClassVar, Self
 
+import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from artisan.schemas.artifact.common import metadata_from_json, metadata_to_json
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.hashing import compute_artifact_id
 
@@ -28,6 +31,10 @@ class Artifact(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")  # NOT frozen - drafts are mutable
+
+    # Column set for Delta/Parquet storage — the single source of truth that
+    # to_row/from_row iterate. Concrete subclasses assign it.
+    POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]]
 
     artifact_id: str | None = Field(
         default=None,
@@ -168,3 +175,48 @@ class Artifact(BaseModel):
         a ``content`` field (e.g. FileRefArtifact) should override.
         """
         return getattr(self, "content", None)
+
+    def to_row(self) -> dict[str, Any]:
+        """Serialize to a flat dict keyed by ``POLARS_SCHEMA`` columns.
+
+        Every column reads the same-named field via ``getattr``, except
+        columns whose stored form differs (see ``_row_encoders``): the
+        JSON-encoded ``metadata`` and any subclass-specific columns.
+        ``POLARS_SCHEMA`` is the single source of truth for the column set.
+        """
+        encoders = self._row_encoders()
+        return {
+            column: encoders[column]() if column in encoders else getattr(self, column)
+            for column in self.POLARS_SCHEMA
+        }
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any]) -> Self:
+        """Reconstruct an artifact from a ``POLARS_SCHEMA`` row dict.
+
+        Inverse of ``to_row``: columns in ``_row_decoders`` pass through
+        their decoder; all others map straight to the same-named field.
+
+        Args:
+            row: Dict with keys matching ``POLARS_SCHEMA`` columns.
+        """
+        decoders = cls._row_decoders()
+        return cls(
+            **{
+                column: decoders[column](row.get(column))
+                if column in decoders
+                else row.get(column)
+                for column in cls.POLARS_SCHEMA
+            }
+        )
+
+    def _row_encoders(self) -> dict[str, Callable[[], Any]]:
+        """``to_row`` encoders for columns whose stored form differs from the
+        raw field value. Subclasses extend via ``super()`` (e.g. DataArtifact
+        adds its ``columns`` JSON encoding)."""
+        return {"metadata": lambda: metadata_to_json(self.metadata)}
+
+    @classmethod
+    def _row_decoders(cls) -> dict[str, Callable[[Any], Any]]:
+        """``from_row`` decoders, the inverse of ``_row_encoders``."""
+        return {"metadata": metadata_from_json}
