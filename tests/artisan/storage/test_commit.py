@@ -5,6 +5,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
+from artisan.errors import CommitError
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import (
@@ -229,6 +230,65 @@ class TestDeltaCommitter:
 
         # Staging should be empty
         assert committer.staging_manager.list_batch_ids() == []
+
+    def test_commit_all_tables_raises_and_preserves_staging_on_failure(
+        self, commit_env, monkeypatch
+    ):
+        """A per-table commit failure raises CommitError and keeps staging."""
+        committer, fs, _storage, delta_root, staging_root = commit_env
+
+        # Stage a content table (commits first) and the index table so an
+        # earlier table is committed before the injected failure.
+        staging = StagingArea(staging_root, fs, batch_id="test")
+        metrics_df = pl.DataFrame(
+            {
+                "artifact_id": ["a" * 32],
+                "origin_step_number": [0],
+                "content": [b'{"score": 0.5}'],
+                "original_name": ["test"],
+                "extension": [".json"],
+                "metadata": ["{}"],
+                "external_path": [None],
+            },
+            schema=METRICS_SCHEMA,
+        )
+        index_df = pl.DataFrame(
+            {
+                "artifact_id": ["a" * 32],
+                "artifact_type": ["data"],
+                "origin_step_number": [0],
+                "metadata": ["{}"],
+            },
+            schema=ARTIFACT_INDEX_SCHEMA,
+        )
+        staging.stage_dataframe(metrics_df, "metrics")
+        staging.stage_dataframe(index_df, "index")
+
+        # Inject a transient failure on the index table only.
+        real_commit_table = DeltaCommitter.commit_table
+
+        def flaky_commit_table(self, table, **kwargs):
+            if table == TablePath.ARTIFACT_INDEX.value:
+                msg = "transient S3 failure"
+                raise OSError(msg)
+            return real_commit_table(self, table, **kwargs)
+
+        monkeypatch.setattr(DeltaCommitter, "commit_table", flaky_commit_table)
+
+        with pytest.raises(CommitError) as exc_info:
+            committer.commit_all_tables(cleanup_staging=True)
+
+        # The error names the failed table and chains the underlying cause.
+        assert "index" in exc_info.value.failed_tables
+        assert isinstance(exc_info.value.__cause__, OSError)
+
+        # The earlier table was already committed (store now inconsistent).
+        assert fs.exists(f"{delta_root}/artifacts/metrics")
+
+        # Staging preserved despite cleanup_staging=True — the recovery
+        # source must survive a partial failure for recover_staged.
+        remaining = list(fs.glob(f"{staging_root}/**/*.parquet"))
+        assert len(remaining) > 0
 
     def test_commit_batch_specific(self, commit_env):
         """Commit only a specific batch."""
