@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import shutil
 import tempfile
 from functools import reduce
 from typing import Any
@@ -78,42 +79,50 @@ def run_tool_request(
     """
     op = instantiate_op(op_cls, request.params)
     job_root = tempfile.mkdtemp(prefix=f"artisan-tool-{op_cls.name}-")
-    inputs_dir = os.path.join(job_root, "inputs")
-    outputs_dir = os.path.join(job_root, "outputs")
-    os.makedirs(outputs_dir)
-
-    transport = InlineTransport()
-    inputs = transport.unpack_inputs(request.inputs, inputs_dir)
-    log_path = os.path.join(outputs_dir, TOOL_OUTPUT_FILENAME)
+    # Modal reuses warm containers across requests; the job tree must not
+    # outlive the call or per-request temp dirs accumulate in the container.
     try:
-        # The shared primitive — the same invocation as the local execute
-        # router, so the two sides cannot drift. The container is the
-        # environment; stream so tool progress (ticks, progress bars) is
-        # visible live on container stdout (the Modal dashboard log).
-        invoke_op_work(
-            op,
-            ExecuteInput(execute_dir=outputs_dir, inputs=inputs, log_path=log_path),
-            environment=LocalEnvironmentSpec(),
-            stream_output=True,
+        inputs_dir = os.path.join(job_root, "inputs")
+        outputs_dir = os.path.join(job_root, "outputs")
+        os.makedirs(outputs_dir)
+
+        transport = InlineTransport()
+        inputs = transport.unpack_inputs(request.inputs, inputs_dir)
+        log_path = os.path.join(outputs_dir, TOOL_OUTPUT_FILENAME)
+        try:
+            # The shared primitive — the same invocation as the local execute
+            # router, so the two sides cannot drift. The container is the
+            # environment; stream so tool progress (ticks, progress bars) is
+            # visible live on container stdout (the Modal dashboard log).
+            invoke_op_work(
+                op,
+                ExecuteInput(execute_dir=outputs_dir, inputs=inputs, log_path=log_path),
+                environment=LocalEnvironmentSpec(),
+                stream_output=True,
+            )
+        except ExternalToolError as exc:
+            return WorkerResult(
+                manifest=ToolManifest(
+                    error=_envelope(op_cls.name, exc), log_tail=_log_tail(log_path)
+                )
+            )
+        names = _list_outputs(outputs_dir)
+        stored = (
+            upload_outputs(outputs_dir, names, request.output_store, op_cls.name)
+            if request.output_store and names
+            else None
         )
-    except ExternalToolError as exc:
         return WorkerResult(
             manifest=ToolManifest(
-                error=_envelope(op_cls.name, exc), log_tail=_log_tail(log_path)
-            )
+                output_names=names, stored=stored, log_tail=_log_tail(log_path)
+            ),
+            output_tar=None if stored else transport.pack_outputs(outputs_dir, names),
         )
-    names = _list_outputs(outputs_dir)
-    stored = (
-        upload_outputs(outputs_dir, names, request.output_store, op_cls.name)
-        if request.output_store and names
-        else None
-    )
-    return WorkerResult(
-        manifest=ToolManifest(
-            output_names=names, stored=stored, log_tail=_log_tail(log_path)
-        ),
-        output_tar=None if stored else transport.pack_outputs(outputs_dir, names),
-    )
+    finally:
+        # Result values (tar bytes, log tail, stored pointer) are fully
+        # evaluated before finally runs; ignore_errors keeps cleanup from
+        # masking the real exception or altering the returned manifest.
+        shutil.rmtree(job_root, ignore_errors=True)
 
 
 def instantiate_op(
