@@ -197,6 +197,121 @@ def _check_collision(field: str, step_info: dict[str, Any]) -> None:
     raise ValueError("\n".join(lines))
 
 
+def _compute_funnel_counts(
+    wide: pl.DataFrame, criteria: list[Criterion], total: int
+) -> list[int]:
+    """Compute cumulative AND pass counts for the funnel from a wide frame.
+
+    Args:
+        wide: Wide DataFrame with one row per artifact and metric columns.
+        criteria: Criteria applied cumulatively (AND).
+        total: Count for the "All evaluated" stage (index 0).
+
+    Returns:
+        Counts where index 0 is ``total`` and index ``i + 1`` is the number of
+        rows passing the first ``i + 1`` criteria.
+    """
+    counts = [total]
+    mask = pl.lit(True)
+    for crit in criteria:
+        mask = mask & _criterion_to_expr(crit).fill_null(False)
+        counts.append(wide.filter(mask).height)
+    return counts
+
+
+def _build_funnel(criteria: list[Criterion], counts: list[int]) -> list[dict[str, Any]]:
+    """Build cumulative-funnel rows from progressive pass counts.
+
+    Args:
+        criteria: One criterion per funnel stage after "All evaluated".
+        counts: Cumulative counts; ``counts[0]`` is all evaluated and
+            ``counts[i + 1]`` is the count after applying criterion ``i``.
+
+    Returns:
+        Funnel rows with label, count, and per-stage eliminated delta. The
+        first row (``All evaluated``) has no ``eliminated`` key.
+    """
+    funnel: list[dict[str, Any]] = [{"label": "All evaluated", "count": counts[0]}]
+    for i, crit in enumerate(criteria):
+        count = counts[i + 1]
+        prev_count = funnel[-1]["count"]
+        funnel.append(
+            {
+                "label": f"+ {crit.metric} {crit.operator} {crit.value}",
+                "count": count,
+                "eliminated": prev_count - count,
+            }
+        )
+    return funnel
+
+
+def _criterion_stats(
+    wide: pl.DataFrame, crit: Criterion
+) -> tuple[int, dict[str, float] | None]:
+    """Compute a criterion's pass count and numeric min/max/mean stats.
+
+    Args:
+        wide: Wide DataFrame with metric columns.
+        crit: Criterion whose metric column to summarize.
+
+    Returns:
+        Tuple of (pass count, stats dict with min/max/mean, or None when the
+        metric column holds no numeric values).
+    """
+    pass_count = wide.select(_criterion_to_expr(crit).fill_null(False).sum()).item()
+    numeric = wide[crit.metric].drop_nulls().cast(pl.Float64, strict=False).drop_nulls()
+    if numeric.len() == 0:
+        return pass_count, None
+    return pass_count, {
+        "min": numeric.min(),
+        "max": numeric.max(),
+        "mean": round(float(numeric.mean()), 6),  # type: ignore[arg-type]
+    }
+
+
+def _assemble_diagnostics(
+    *,
+    total_input: int,
+    total_evaluated: int,
+    total_metrics_discovered: int,
+    total_passed: int,
+    metric_sources: list[dict[str, Any]],
+    criteria: list[dict[str, Any]],
+    funnel: list[dict[str, Any]],
+    interactive: bool = False,
+) -> dict[str, Any]:
+    """Assemble the v4 diagnostics dict shared by Filter and InteractiveFilter.
+
+    Args:
+        total_input: Passthrough artifacts entering the filter.
+        total_evaluated: Artifacts actually evaluated.
+        total_metrics_discovered: Distinct metrics discovered.
+        total_passed: Artifacts passing all criteria.
+        metric_sources: Per-step metric-source descriptors.
+        criteria: Per-criterion diagnostics rows.
+        funnel: Cumulative AND funnel rows.
+        interactive: Whether the diagnostics come from InteractiveFilter.
+
+    Returns:
+        The v4 diagnostics dict.
+    """
+    diagnostics: dict[str, Any] = {"version": 4}
+    if interactive:
+        diagnostics["interactive"] = True
+    diagnostics.update(
+        {
+            "total_input": total_input,
+            "total_evaluated": total_evaluated,
+            "total_metrics_discovered": total_metrics_discovered,
+            "total_passed": total_passed,
+            "metric_sources": metric_sources,
+            "criteria": criteria,
+            "funnel": funnel,
+        }
+    )
+    return diagnostics
+
+
 class _DiagnosticsAccumulator:
     """Accumulate filter diagnostics across evaluation chunks.
 
@@ -287,31 +402,15 @@ class _DiagnosticsAccumulator:
                 }
             )
 
-        # Funnel from accumulated counts
-        funnel: list[dict[str, Any]] = [
-            {"label": "All evaluated", "count": self._funnel_counts[0]}
-        ]
-        for i, crit in enumerate(criteria):
-            count = self._funnel_counts[i + 1]
-            prev_count = funnel[-1]["count"]
-            funnel.append(
-                {
-                    "label": f"+ {crit.metric} {crit.operator} {crit.value}",
-                    "count": count,
-                    "eliminated": prev_count - count,
-                }
-            )
-
-        return {
-            "version": 4,
-            "total_input": total_input,
-            "total_evaluated": self.total_evaluated,
-            "total_metrics_discovered": total_metrics_discovered,
-            "total_passed": total_passed,
-            "metric_sources": metric_sources,
-            "criteria": criteria_diagnostics,
-            "funnel": funnel,
-        }
+        return _assemble_diagnostics(
+            total_input=total_input,
+            total_evaluated=self.total_evaluated,
+            total_metrics_discovered=total_metrics_discovered,
+            total_passed=total_passed,
+            metric_sources=metric_sources,
+            criteria=criteria_diagnostics,
+            funnel=_build_funnel(criteria, self._funnel_counts),
+        )
 
 
 class Filter(OperationDefinition):
@@ -407,16 +506,15 @@ class Filter(OperationDefinition):
         # No criteria -> all passthrough artifacts pass
         if not self.params.criteria:
             passthrough_ids = passthrough_df["artifact_id"].to_list()
-            diag: dict[str, Any] = {
-                "version": 4,
-                "total_input": len(passthrough_ids),
-                "total_evaluated": len(passthrough_ids),
-                "total_metrics_discovered": 0,
-                "total_passed": len(passthrough_ids),
-                "metric_sources": [],
-                "criteria": [],
-                "funnel": [{"label": "All evaluated", "count": len(passthrough_ids)}],
-            }
+            diag = _assemble_diagnostics(
+                total_input=len(passthrough_ids),
+                total_evaluated=len(passthrough_ids),
+                total_metrics_discovered=0,
+                total_passed=len(passthrough_ids),
+                metric_sources=[],
+                criteria=[],
+                funnel=_build_funnel([], [len(passthrough_ids)]),
+            )
             if self.params.passthrough_failures:
                 diag["passthrough_failures"] = True
             return PassthroughResult(

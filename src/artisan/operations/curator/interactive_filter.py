@@ -18,8 +18,12 @@ from fsspec import AbstractFileSystem
 
 from artisan.operations.curator.filter import (
     Criterion,
+    _assemble_diagnostics,
+    _build_funnel,
     _build_metric_namespace,
     _check_collision,
+    _compute_funnel_counts,
+    _criterion_stats,
     _criterion_to_expr,
 )
 from artisan.provenance.traversal import walk_forward
@@ -430,50 +434,26 @@ class InteractiveFilter:
         # Per-criterion stats
         crit_rows: list[dict[str, Any]] = []
         for crit in self._criteria:
-            expr = _criterion_to_expr(crit).fill_null(False)
-            pass_count = wide.select(expr.sum()).item()
-
-            col_data = wide[crit.metric].drop_nulls()
-            numeric = col_data.cast(pl.Float64, strict=False).drop_nulls()
-
-            row: dict[str, Any] = {
-                "metric": crit.metric,
-                "operator": crit.operator,
-                "threshold": crit.value,
-                "pass": pass_count,
-                "total": total,
-                "rate": round(pass_count / total * 100, 1) if total else 0.0,
-            }
-
-            if numeric.len() > 0:
-                row["min"] = numeric.min()
-                row["mean"] = round(float(numeric.mean()), 6)  # type: ignore[arg-type]
-                row["max"] = numeric.max()
-            else:
-                row["min"] = None
-                row["mean"] = None
-                row["max"] = None
-
-            crit_rows.append(row)
-
-        criteria_df = pl.DataFrame(crit_rows)
-
-        # Cumulative funnel with fill_null(False)
-        funnel_rows: list[dict[str, Any]] = [{"label": "All evaluated", "count": total}]
-        mask = pl.lit(True)
-        for crit in self._criteria:
-            expr = _criterion_to_expr(crit).fill_null(False)
-            mask = mask & expr
-            count = wide.filter(mask).height
-            prev_count = funnel_rows[-1]["count"]
-            funnel_rows.append(
+            pass_count, stats = _criterion_stats(wide, crit)
+            crit_rows.append(
                 {
-                    "label": f"+ {crit.metric} {crit.operator} {crit.value}",
-                    "count": count,
-                    "eliminated": prev_count - count,
+                    "metric": crit.metric,
+                    "operator": crit.operator,
+                    "threshold": crit.value,
+                    "pass": pass_count,
+                    "total": total,
+                    "rate": round(pass_count / total * 100, 1) if total else 0.0,
+                    "min": stats["min"] if stats else None,
+                    "mean": stats["mean"] if stats else None,
+                    "max": stats["max"] if stats else None,
                 }
             )
 
+        criteria_df = pl.DataFrame(crit_rows)
+
+        funnel_rows = _build_funnel(
+            self._criteria, _compute_funnel_counts(wide, self._criteria, total)
+        )
         funnel_df = pl.DataFrame(funnel_rows)
 
         passed = funnel_rows[-1]["count"]
@@ -721,8 +701,7 @@ class InteractiveFilter:
         criteria_diags: list[dict[str, Any]] = []
         resolved_steps: list[int | None] = []
         for crit in self._criteria:
-            expr = _criterion_to_expr(crit).fill_null(False)
-            pass_count = wide.select(expr.sum()).item()
+            pass_count, stats = _criterion_stats(wide, crit)
 
             # Resolve step
             resolved: int | None = None
@@ -734,18 +713,6 @@ class InteractiveFilter:
                     resolved = next(iter(step_nums))
             resolved_steps.append(resolved)
 
-            # Stats
-            col_data = wide[crit.metric].drop_nulls()
-            numeric = col_data.cast(pl.Float64, strict=False).drop_nulls()
-            stats: dict[str, Any] = {}
-            if numeric.len() > 0:
-                mean_val = numeric.mean()
-                stats = {
-                    "min": numeric.min(),
-                    "max": numeric.max(),
-                    "mean": round(float(mean_val), 6),  # type: ignore[arg-type]
-                }
-
             criteria_diags.append(
                 {
                     "metric": crit.metric,
@@ -753,37 +720,24 @@ class InteractiveFilter:
                     "value": crit.value,
                     "pass_count": pass_count,
                     "resolved_from_step": resolved,
-                    "stats": stats,
+                    "stats": stats or {},
                 }
             )
 
-        # Funnel
-        funnel: list[dict[str, Any]] = [{"label": "All evaluated", "count": total}]
-        mask = pl.lit(True)
-        for crit in self._criteria:
-            expr = _criterion_to_expr(crit).fill_null(False)
-            mask = mask & expr
-            count = wide.filter(mask).height
-            prev_count = funnel[-1]["count"]
-            funnel.append(
-                {
-                    "label": f"+ {crit.metric} {crit.operator} {crit.value}",
-                    "count": count,
-                    "eliminated": prev_count - count,
-                }
-            )
+        funnel = _build_funnel(
+            self._criteria, _compute_funnel_counts(wide, self._criteria, total)
+        )
 
-        return {
-            "version": 4,
-            "interactive": True,
-            "total_input": total,
-            "total_evaluated": total,
-            "total_metrics_discovered": self._total_metrics_discovered,
-            "total_passed": len(filtered),
-            "metric_sources": self._metric_sources,
-            "criteria": criteria_diags,
-            "funnel": funnel,
-        }
+        return _assemble_diagnostics(
+            total_input=total,
+            total_evaluated=total,
+            total_metrics_discovered=self._total_metrics_discovered,
+            total_passed=len(filtered),
+            metric_sources=self._metric_sources,
+            criteria=criteria_diags,
+            funnel=funnel,
+            interactive=True,
+        )
 
     def _next_step_number(self) -> int:
         """Determine the next step number from the steps table."""
