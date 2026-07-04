@@ -13,19 +13,15 @@ from artisan.schemas.enums import CacheValidationReason
 
 @dataclass
 class CacheHit:
-    """Successful cache lookup with reusable execution results.
+    """Successful cache lookup identifying a reusable execution.
 
     Attributes:
         execution_run_id: Run ID of the cached execution.
         execution_spec_id: Deterministic cache key that matched.
-        inputs: Input role/artifact_id pairs from the cached run.
-        outputs: Output role/artifact_id pairs from the cached run.
     """
 
     execution_run_id: str
     execution_spec_id: str
-    inputs: list[dict[str, str]]  # [{"role": str, "artifact_id": str}, ...]
-    outputs: list[dict[str, str]]  # [{"role": str, "artifact_id": str}, ...]
 
 
 @dataclass
