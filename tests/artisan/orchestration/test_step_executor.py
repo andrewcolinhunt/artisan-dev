@@ -2003,25 +2003,47 @@ class TestInstantiateOperationGroupByOverride:
         assert instance.group_by is GroupByStrategy.CROSS_PRODUCT
 
 
-class TestCachePayloadGroupBy:
-    """``StepOverrides.cache_payload`` emits ``group_by.value`` into the
-    config-overrides payload only when an override is set, so existing
-    cache rows hashed without ``group_by`` are preserved."""
+class TestGroupByEffectiveConfigHashing:
+    """``group_by`` reaches the cache key through ``effective_config_payload``
+    off the instantiated op — class default or per-step override alike — so
+    distinct strategies produce distinct spec ids."""
 
-    def test_group_by_none_omits_key(self):
-        # No cache-affecting override set → payload is None.
-        assert StepOverrides.from_user(group_by=None).cache_payload() is None
+    def test_group_by_none_serializes_as_none(self):
+        """An op with no class default and no override emits ``group_by=None``."""
+        from artisan.orchestration.engine.step_executor import instantiate_operation
+        from artisan.utils.hashing import effective_config_payload
 
-    def test_group_by_set_emits_value_as_string(self):
-        result = StepOverrides.from_user(
-            group_by=GroupByStrategy.CROSS_PRODUCT
-        ).cache_payload()
-        assert result == {"group_by": "cross_product"}
+        instance = instantiate_operation(
+            MockNoGroupByCreatorOp, StepOverrides.from_user()
+        )
+        assert effective_config_payload(instance)["group_by"] is None
+
+    def test_class_default_group_by_appears_without_override(self):
+        """A class-level ``group_by=ZIP`` reaches the payload with no override —
+        the effective-config behavior the old typed-override path missed."""
+        from artisan.orchestration.engine.step_executor import instantiate_operation
+        from artisan.utils.hashing import effective_config_payload
+
+        instance = instantiate_operation(
+            MockMultiInputCreatorOp, StepOverrides.from_user()
+        )
+        assert effective_config_payload(instance)["group_by"] == "zip"
+
+    def test_override_group_by_emits_value_as_string(self):
+        from artisan.orchestration.engine.step_executor import instantiate_operation
+        from artisan.utils.hashing import effective_config_payload
+
+        instance = instantiate_operation(
+            MockNoGroupByCreatorOp,
+            StepOverrides.from_user(group_by=GroupByStrategy.CROSS_PRODUCT),
+        )
+        assert effective_config_payload(instance)["group_by"] == "cross_product"
 
     def test_distinct_strategies_produce_distinct_step_spec_ids(self):
-        """Two strategies → two ``step_spec_id`` values. Locks in
-        Design Criterion: per-step cache key reflects the override."""
-        from artisan.utils.hashing import compute_step_spec_id
+        """Two strategies → two ``step_spec_id`` values. Locks in the
+        Design Criterion: the cache key reflects the effective ``group_by``."""
+        from artisan.orchestration.engine.step_executor import instantiate_operation
+        from artisan.utils.hashing import compute_step_spec_id, effective_config_payload
 
         common = {
             "operation_name": "x",
@@ -2029,22 +2051,18 @@ class TestCachePayloadGroupBy:
             "params": {"a": 1},
             "input_spec": {"data": ("upstream", "out")},
         }
-        spec_a = compute_step_spec_id(
-            **common,
-            config_overrides=StepOverrides.from_user(
-                group_by=GroupByStrategy.LINEAGE
-            ).cache_payload(),
-        )
-        spec_b = compute_step_spec_id(
-            **common,
-            config_overrides=StepOverrides.from_user(
-                group_by=GroupByStrategy.CROSS_PRODUCT
-            ).cache_payload(),
-        )
-        spec_none = compute_step_spec_id(
-            **common,
-            config_overrides=StepOverrides.from_user(group_by=None).cache_payload(),
-        )
-        assert spec_a != spec_b
-        # ``None`` preserves legacy hashes (no group_by in payload).
-        assert spec_none not in {spec_a, spec_b}
+
+        def spec_for(strategy: GroupByStrategy | None) -> str:
+            instance = instantiate_operation(
+                MockNoGroupByCreatorOp,
+                StepOverrides.from_user(group_by=strategy),
+            )
+            return compute_step_spec_id(
+                **common, config_overrides=effective_config_payload(instance)
+            )
+
+        spec_lineage = spec_for(GroupByStrategy.LINEAGE)
+        spec_cross = spec_for(GroupByStrategy.CROSS_PRODUCT)
+        spec_none = spec_for(None)
+        assert spec_lineage != spec_cross
+        assert spec_none not in {spec_lineage, spec_cross}
