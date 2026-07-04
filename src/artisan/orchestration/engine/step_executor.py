@@ -38,6 +38,7 @@ from artisan.orchestration.engine.batching import (
 from artisan.orchestration.engine.inputs import resolve_inputs
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
+    FailFastAbort,
     aggregate_results,
     extract_execution_run_ids,
 )
@@ -847,7 +848,7 @@ def _execute_curator_step(
                 )
             ]
             succeeded, failed = 0, 1
-        except RuntimeError:
+        except FailFastAbort:
             raise  # fail_fast — intentional abort
         except Exception as exc:
             dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
@@ -1154,7 +1155,7 @@ def _execute_creator_step(
                     )
                     results = []
                     succeeded, failed = 0, len(units_to_dispatch)
-                except RuntimeError:
+                except FailFastAbort:
                     raise  # fail_fast — intentional abort
                 except Exception as exc:
                     dispatch_error, results, succeeded, failed = (
@@ -1331,8 +1332,8 @@ def execute_composite_step(
                 )
                 results = router.run([composite_transport], runtime_env)
                 succeeded, failed = aggregate_results(results, failure_policy)
-            except RuntimeError:
-                raise
+            except FailFastAbort:
+                raise  # fail_fast — intentional abort
             except Exception as exc:
                 dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
                     exc, step_number, label="Composite dispatch"

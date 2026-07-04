@@ -1222,7 +1222,54 @@ class TestDispatchFailureHandling:
         mock_cache,
         tmp_path,
     ):
-        """RuntimeError (from fail_fast) should still propagate."""
+        """fail_fast propagates FailFastAbort from aggregate_results."""
+        from artisan.orchestration.engine.results import FailFastAbort
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+
+        # A failed unit under FAIL_FAST makes aggregate_results raise.
+        mock_backend, _mock_handle = _make_mock_backend(
+            flow_return_value=[
+                UnitResult(
+                    success=False, error="boom", item_count=1, execution_run_ids=[]
+                )
+            ],
+        )
+
+        mock_resolve.return_value = {"data": [_ID_S1]}
+        mock_cache.return_value = None
+
+        with pytest.raises(FailFastAbort, match="fail_fast"):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs={"data": [_ID_S1]},
+                step_runner=mock_backend,
+                step_number=1,
+                config=config,
+                failure_policy=FailurePolicy.FAIL_FAST,
+                compact=False,
+            )
+
+    @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
+    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
+    def test_dispatch_runtimeerror_recorded_as_dispatch_error(
+        self,
+        mock_resolve,
+        mock_cache,
+        tmp_path,
+    ):
+        """A plain RuntimeError from dispatch is recorded, not propagated.
+
+        Only FailFastAbort aborts the step; an incidental RuntimeError from
+        the dispatch machinery must fall through to the dispatch-error path.
+        """
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1234,22 +1281,27 @@ class TestDispatchFailureHandling:
         )
 
         mock_backend, _mock_handle = _make_mock_backend(
-            flow_side_effect=RuntimeError("fail_fast: step failed"),
+            flow_side_effect=RuntimeError("dispatch machinery exploded"),
         )
 
         mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
 
-        with pytest.raises(RuntimeError, match="fail_fast"):
-            _execute_creator_step(
-                operation=MockNoGroupByCreatorOp(),
-                inputs={"data": [_ID_S1]},
-                step_runner=mock_backend,
-                step_number=1,
-                config=config,
-                failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
-            )
+        result = _execute_creator_step(
+            operation=MockNoGroupByCreatorOp(),
+            inputs={"data": [_ID_S1]},
+            step_runner=mock_backend,
+            step_number=1,
+            config=config,
+            failure_policy=FailurePolicy.CONTINUE,
+            compact=False,
+        )
+
+        assert result.succeeded_count == 0
+        assert result.failed_count == 1
+        assert "dispatch_error" in result.metadata
+        assert "RuntimeError" in result.metadata["dispatch_error"]
+        assert "dispatch machinery exploded" in result.metadata["dispatch_error"]
 
 
 class TestCommitFailureHandling:
