@@ -23,6 +23,7 @@ from artisan.schemas.operation_config.compute import (
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -48,7 +49,7 @@ class TestExecuteStepPassesCancelEvent:
         execute_step(
             operation_class=MagicMock(),
             inputs=None,
-            params=None,
+            ov=StepOverrides(),
             step_runner=MagicMock(),
             cancel_event=event,
         )
@@ -74,7 +75,7 @@ class TestExecuteStepPassesCancelEvent:
         execute_step(
             operation_class=MagicMock(),
             inputs=None,
-            params=None,
+            ov=StepOverrides(),
             step_runner=MagicMock(),
             cancel_event=event,
         )
@@ -349,8 +350,9 @@ class TestInstantiateOperationComputeOverrides:
         """Dict override creates ModalComputeConfig when field starts as None."""
         op = instantiate_operation(
             _SimpleCreatorOp,
-            params=None,
-            compute_provider={"active": "modal", "modal": {"min_containers": 8}},
+            StepOverrides.from_user(
+                compute_provider={"active": "modal", "modal": {"min_containers": 8}}
+            ),
         )
         assert isinstance(op.compute_provider.modal, ModalComputeConfig)
         assert op.compute_provider.modal.min_containers == 8
@@ -374,8 +376,7 @@ class TestInstantiateOperationComputeOverrides:
 
         result = instantiate_operation(
             _ModalOp,
-            params=None,
-            compute_provider={"modal": {"min_containers": 4}},
+            StepOverrides.from_user(compute_provider={"modal": {"min_containers": 4}}),
         )
         assert result.compute_provider.modal.retries == 5
         assert result.compute_provider.modal.min_containers == 4
@@ -384,8 +385,7 @@ class TestInstantiateOperationComputeOverrides:
         """String compute_provider override selects the active provider."""
         op = instantiate_operation(
             _SimpleCreatorOp,
-            params=None,
-            compute_provider="modal",
+            StepOverrides.from_user(compute_provider="modal"),
         )
         assert op.compute_provider.active == "modal"
 
@@ -393,8 +393,9 @@ class TestInstantiateOperationComputeOverrides:
         """Reproduces the bug: compute_provider.current() must return a ModalComputeConfig."""
         op = instantiate_operation(
             _SimpleCreatorOp,
-            params=None,
-            compute_provider={"active": "modal", "modal": {"min_containers": 8}},
+            StepOverrides.from_user(
+                compute_provider={"active": "modal", "modal": {"min_containers": 8}}
+            ),
         )
         assert isinstance(op.compute_provider.current(), ModalComputeConfig)
 
@@ -406,8 +407,9 @@ class TestInstantiateOperationEnvironmentOverrides:
         """Dict override creates DockerEnvironmentSpec when field starts as None."""
         op = instantiate_operation(
             _SimpleCreatorOp,
-            params=None,
-            environment={"active": "docker", "docker": {"image": "my-image:v2"}},
+            StepOverrides.from_user(
+                environment={"active": "docker", "docker": {"image": "my-image:v2"}}
+            ),
         )
         assert isinstance(op.environments.docker, DockerEnvironmentSpec)
         assert op.environments.docker.image == "my-image:v2"
@@ -424,8 +426,7 @@ class TestInstantiateOperationEnvironmentOverrides:
 
         result = instantiate_operation(
             _DockerOp,
-            params=None,
-            environment={"docker": {"image": "new:v2"}},
+            StepOverrides.from_user(environment={"docker": {"image": "new:v2"}}),
         )
         assert result.environments.docker.image == "new:v2"
         assert result.environments.docker.gpu is True
