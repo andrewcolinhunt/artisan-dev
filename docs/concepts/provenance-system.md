@@ -321,27 +321,19 @@ a deterministic `group_id` that flows through to the
 
 ---
 
-## Composite provenance and step boundaries
+## Composite provenance
 
-When operations are composed into composites (multiple creators wired together
-via a `CompositeDefinition`), the provenance graph contains both internal edges
-between intermediate artifacts and shortcut edges from composite inputs to final
-outputs.
+A composite expands into real pipeline steps — each internal `ctx.run()`
+runs as an ordinary step. Its provenance is therefore ordinary
+step-to-step provenance: the edges linking a composite's internal
+operations are the same `ArtifactProvenanceEdge` records that any sequence
+of steps produces, and pipeline-level queries see the composite's data
+flow exactly as they see any other steps.
 
-Each `ArtifactProvenanceEdge` carries a `step_boundary` flag that distinguishes
-these two kinds:
-
-| `step_boundary` | Meaning | When created |
-|-----------------|---------|-------------|
-| `True` (default) | Visible at the pipeline level | All normal edges, plus shortcut edges from composite inputs to final outputs |
-| `False` | Internal to a composite | Edges between intermediate composite artifacts (when intermediates are persisted) |
-
-Whether internal edges are persisted depends on the composite's `intermediates`
-configuration. When intermediates are discarded, only shortcut edges appear in
-the provenance graph. When intermediates are persisted or exposed, both internal
-and shortcut edges are stored, with `step_boundary` distinguishing them. This
-lets pipeline-level queries filter to step-boundary edges for a clean
-high-level view while preserving full detail for debugging.
+Because every internal operation is a real step, there is no separate
+composite-internal edge kind. The grouping is expressed through the
+composite's step-name prefix (`composite_name.operation`), not through a
+special provenance edge.
 
 ---
 
@@ -453,7 +445,6 @@ derivation edge.
 | Denormalized artifact types on edges | Query performance on large provenance tables without joins |
 | Deterministic `group_id` for co-inputs | Enables "all parents of this derivation" queries without intermediate artifacts |
 | Dual execution identity (spec_id + run_id) | Deterministic caching without losing per-attempt provenance |
-| `step_boundary` flag on edges | Lets composite-internal edges coexist with pipeline-visible edges without separate tables |
 | Three-level validation (artifacts, completeness, integrity) | Catches errors before staging rather than storing invalid provenance |
 
 ---

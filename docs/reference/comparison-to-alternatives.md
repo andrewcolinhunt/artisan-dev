@@ -60,7 +60,7 @@ to the closest Artisan equivalents.
 | Nextflow `-resume` / Snakemake timestamp check / Prefect `cache_key_fn` | Content-addressed cache — automatic, no flags or per-task configuration |
 | Nextflow `work/` directory | Staging directory → atomic Delta Lake commit |
 | Airflow XCom | Artifact — content-addressed, typed, and queryable |
-| Nextflow **operator chain** / Snakemake **rule dependencies** | `CompositeDefinition` — compose multiple operations into a reusable unit with collapsed or expanded execution |
+| Nextflow **operator chain** / Snakemake **rule dependencies** | `CompositeDefinition` — compose multiple operations into a reusable unit that expands into real pipeline steps |
 
 ---
 
@@ -86,7 +86,7 @@ support SLURM natively, and both have content-based caching.
 - Content stored in table rows prevents filesystem bloat from millions of
   small output files
 - Typed artifact system extensible by domain layers without framework changes
-- Composites compose multiple operations within a single step, with collapsed or expanded execution
+- Composites group multiple operations into a reusable unit that expands into real pipeline steps
 - Pure Python — no Groovy DSL
 
 ### vs. Snakemake
@@ -150,7 +150,7 @@ adds on top.
 - Operation model (preprocess/execute/postprocess) for wrapping external tools
 - Delta Lake storage with ACID commits and direct queryability
 - Staging-commit pattern for safe concurrent writes from thousands of workers
-- Composites that compose multiple operations with collapsed or expanded execution for tightly coupled computations
+- Composites that group multiple operations into a reusable unit for tightly coupled computations
 - Step-runner abstraction (`RunnerBase`) that decouples operation logic from
   compute dispatch — swap LOCAL for SLURM without changing operations
 - Extensible type system where domain layers add artifact types and get full
