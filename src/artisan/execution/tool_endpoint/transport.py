@@ -1,12 +1,11 @@
 """Bulk-file transport between the endpoint client and the tool worker.
 
-``DataTransport`` is the seam; ``InlineTransport`` is the inline mode —
-input bytes and the output tar ride the endpoint↔worker function-call hop,
-bounded at 100 MB per direction. ``s3://`` input refs are fetched
-worker-side via fsspec and bypass the bound. ``upload_outputs`` is the
-stored output mode: when a request names an ``output_store``, the worker
-delivers the output tarball there and only a ``StoredOutputs`` pointer
-rides the control plane — no second Protocol implementation is coming.
+``InlineTransport`` is the inline mode — input bytes and the output tar
+ride the endpoint↔worker function-call hop, bounded at 100 MB per
+direction. ``s3://`` input refs are fetched worker-side via fsspec and
+bypass the bound. ``upload_outputs`` is the stored output mode: when a
+request names an ``output_store``, the worker delivers the output tarball
+there and only a ``StoredOutputs`` pointer rides the control plane.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ import os
 import tarfile
 import tempfile
 import uuid
-from typing import Any, Protocol
+from typing import Any
 
 from artisan.execution.tool_endpoint.protocol import InputRef, StoredOutputs
 from artisan.utils.path import uri_join
@@ -26,28 +25,6 @@ MAX_INLINE_BYTES = 100 * 1024 * 1024
 
 PRESIGN_EXPIRY_SECONDS = 7 * 24 * 3600
 """SigV4 maximum — matches Modal's 7-day FunctionCall result retention."""
-
-
-class DataTransport(Protocol):
-    """Moves bulk tool files between client and worker."""
-
-    def pack_inputs(self, files: dict[str, str]) -> list[InputRef]:
-        """Client-side: local paths / object-store URIs → input refs."""
-        ...
-
-    def unpack_inputs(
-        self, refs: list[InputRef], dest: str, fs: Any = None
-    ) -> dict[str, str]:
-        """Worker-side: input refs → local paths under ``dest``."""
-        ...
-
-    def pack_outputs(self, src: str, names: list[str]) -> Any:
-        """Worker-side: output files under ``src`` → data-plane payload."""
-        ...
-
-    def unpack_outputs(self, payload: Any, dest: str) -> None:
-        """Client-side: data-plane payload → files under ``dest``."""
-        ...
 
 
 class InlineTransport:
