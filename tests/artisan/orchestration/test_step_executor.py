@@ -2020,7 +2020,7 @@ class TestGroupByEffectiveConfigHashing:
 
     def test_class_default_group_by_appears_without_override(self):
         """A class-level ``group_by=ZIP`` reaches the payload with no override —
-        the effective-config behavior the old cache_payload path missed."""
+        the effective-config behavior the old typed-override path missed."""
         from artisan.orchestration.engine.step_executor import instantiate_operation
         from artisan.utils.hashing import effective_config_payload
 
