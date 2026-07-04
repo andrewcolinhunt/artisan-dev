@@ -15,7 +15,7 @@ from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
-from artisan.utils.hashing import compute_content_hash
+from artisan.utils.hashing import compute_artifact_id
 
 
 def _run(
@@ -101,7 +101,7 @@ class TestLargeFileGenerator:
         file_path = raw["files"][0]["path"]
         with open(file_path, "rb") as fh:
             data = fh.read()
-        expected = compute_content_hash(data)
+        expected = compute_artifact_id(data)
         assert raw["files"][0]["content_hash"] == expected
 
 
