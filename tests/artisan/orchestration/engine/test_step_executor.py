@@ -31,6 +31,10 @@ from artisan.schemas.specs.output_spec import OutputSpec
 class TestExecuteStepPassesCancelEvent:
     """execute_step should forward cancel_event to creator/curator paths."""
 
+    @patch(
+        "artisan.orchestration.engine.step_executor.effective_config_payload",
+        return_value={},
+    )
     @patch("artisan.orchestration.engine.step_executor._execute_creator_step")
     @patch(
         "artisan.orchestration.engine.step_executor.is_curator_operation",
@@ -38,7 +42,7 @@ class TestExecuteStepPassesCancelEvent:
     )
     @patch("artisan.orchestration.engine.step_executor.instantiate_operation")
     def test_passes_cancel_event_to_creator(
-        self, mock_instantiate, mock_is_curator, mock_creator
+        self, mock_instantiate, mock_is_curator, mock_creator, mock_config_payload
     ):
         mock_op = MagicMock()
         mock_op.name = "test"
@@ -57,6 +61,10 @@ class TestExecuteStepPassesCancelEvent:
         _, kwargs = mock_creator.call_args
         assert kwargs["cancel_event"] is event
 
+    @patch(
+        "artisan.orchestration.engine.step_executor.effective_config_payload",
+        return_value={},
+    )
     @patch("artisan.orchestration.engine.step_executor._execute_curator_step")
     @patch(
         "artisan.orchestration.engine.step_executor.is_curator_operation",
@@ -64,7 +72,7 @@ class TestExecuteStepPassesCancelEvent:
     )
     @patch("artisan.orchestration.engine.step_executor.instantiate_operation")
     def test_passes_cancel_event_to_curator(
-        self, mock_instantiate, mock_is_curator, mock_curator
+        self, mock_instantiate, mock_is_curator, mock_curator, mock_config_payload
     ):
         mock_op = MagicMock()
         mock_op.name = "test"
