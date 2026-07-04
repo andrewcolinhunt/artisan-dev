@@ -19,8 +19,6 @@ from artisan.operations.base._role_docs import (
     get_registered,
     validate_role_enums,
 )
-from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -48,12 +46,6 @@ class CompositeDefinition(BaseModel):
 
     # ---------- Outputs ----------
     outputs: ClassVar[dict[str, OutputSpec]] = {}
-
-    # ---------- Resources ----------
-    runner_resources: RunnerResources = RunnerResources()  # type: ignore[call-arg]
-
-    # ---------- Execution ----------
-    batch_strategy: BatchStrategy = BatchStrategy()  # type: ignore[call-arg]
 
     # ---------- Compose ----------
     def compose(self, ctx: CompositeContext) -> None:
