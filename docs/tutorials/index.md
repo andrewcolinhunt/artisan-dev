@@ -25,7 +25,7 @@ illustrations.
 - [Multi-Input Operations](02-pipeline-design/04-multi-input-operations.ipynb) (~15 min) -- Operations that consume multiple input roles
 - [Name-Based Pairing](02-pipeline-design/05-name-based-pairing.ipynb) (~15 min) -- Pair multi-input streams by `original_name` stem when they share no ancestry
 - [Diamonds and Iteration](02-pipeline-design/06-diamonds-and-iteration.ipynb) (~15 min) -- Diamond DAGs, output lineage, and iterative refinement
-- [Composites](02-pipeline-design/07-composites.ipynb) (~15 min) -- Compose operations into reusable units with collapsed or expanded execution
+- [Composites](02-pipeline-design/07-composites.ipynb) (~15 min) -- Compose operations into reusable units that expand into real pipeline steps
 
 ## Caching
 

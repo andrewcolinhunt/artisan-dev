@@ -201,31 +201,18 @@ the subprocess is killed (typically by the OOM killer), the framework detects
 the broken process pool, captures diagnostic information (peak RSS, system
 memory), and stages a failure record rather than crashing the pipeline.
 
-### Composite execution: collapsed and expanded modes
+### Composite execution
 
 When multiple creator operations are composed into a
-[composite](operations-model.md), they can execute in two modes.
+[composite](operations-model.md), running the composite expands it into
+real pipeline steps. Each `ctx.run()` call delegates to the parent
+pipeline as its own step, giving each internal operation its own
+dispatch-execute-commit cycle with full parallelism and independent
+failure handling.
 
-In **collapsed** mode, the composite runs within a single worker process.
-Each `ctx.run()` call executes its operation eagerly through the standard
-creator lifecycle (`run_creator_lifecycle`), and artifacts are passed
-in-memory to subsequent operations via `ArtifactSource` objects, avoiding
-Delta Lake round-trips.
-
-In **expanded** mode, each `ctx.run()` call delegates to the parent pipeline
-as a separate step, giving each internal operation its own dispatch-execute-commit
-cycle with full parallelism and independent failure handling.
-
-In both modes, the `intermediates` policy controls what happens to artifacts
-produced by non-final operations:
-
-- **DISCARD** (default) -- only the final operation's artifacts are committed.
-  Shortcut provenance edges link the composite's initial inputs directly to
-  its final outputs.
-- **PERSIST** -- intermediate artifacts and their internal provenance edges are
-  also committed, preserving the full composite lineage.
-- **EXPOSE** -- like PERSIST, but provenance edges for intermediates are marked
-  with `step_boundary=True` so they appear in step-level provenance queries.
+There is no separate composite runtime. A composite is a named grouping
+over ordinary steps, so every internal operation participates in the same
+caching, provenance, and cancellation machinery as any other step.
 
 For the full conceptual model of composites, see
 [Composites and Composition](composites-and-composition.md).
@@ -445,7 +432,7 @@ re-executes cancelled steps while completed steps load from cache.
 | Curator subprocess isolation | Prevents memory leaks from accumulating in the long-lived orchestrator process |
 | Staging verification with close-to-open consistency | NFS attribute caching can hide files; `stat()` is not sufficient |
 | Default continue-on-failure | Large runs expect occasional failures; successful results should not be discarded |
-| Composite collapsed mode | Avoids Delta Lake round-trips for tightly coupled operations |
+| Composites expand into real steps | A composite is a named grouping; each internal operation is an ordinary step, so caching, provenance, and cancellation need no parallel path |
 | Steps Delta table | Enables step-level caching, resume, and observability without additional infrastructure |
 
 ---

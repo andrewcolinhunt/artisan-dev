@@ -93,7 +93,7 @@ Both methods accept identical parameters. `run()` blocks and returns
 
 ```python
 pipeline.run(
-    operation,                # type[OperationDefinition | CompositeDefinition]
+    operation,                # type[OperationDefinition]
     inputs=None,              # Input wiring (see below)
     name=None,                # str — step name for wiring and display
     params=None,              # dict — operation parameters
@@ -104,31 +104,39 @@ pipeline.run(
     resources=None,           # dict — CPU/memory/GPU
     failure_policy=None,      # FailurePolicy — CONTINUE or FAIL_FAST
     compact=True,             # bool — compact provenance
-    intermediates="discard",  # str — "discard", "persist", or "expose" (composites only)
 ) -> StepResult
 ```
 
-## expand() API
+## run_composite() / submit_composite() API
 
-Runs a composite in expanded mode — each internal `ctx.run()` becomes its own
-pipeline step. Accepts `CompositeDefinition` subclasses only.
+Runs a composite — each internal `ctx.run()` becomes its own pipeline step.
+`run_composite()` blocks; `submit_composite()` returns immediately. Accepts
+`CompositeDefinition` subclasses only (passing a composite to `run`/`submit`
+raises `TypeError`).
 
 ```python
-pipeline.expand(
+pipeline.run_composite(
     composite,                # type[CompositeDefinition] — the composite class
     inputs=None,              # Input wiring (same as run())
     params=None,              # dict — composite parameters
-    resources=None,           # dict — per-operation override
-    execution=None,           # dict — per-operation override
-    backend=None,             # str — per-operation override
-    environment=None,         # str | dict — per-operation override
-    tool=None,                # dict — per-operation override
-    name=None,                # str — prefix for expanded step names
-) -> ExpandedCompositeResult
+    name=None,                # str — prefix for child step names
+    step_runner=None,         # default for every child step
+    runner_resources=None,    # default for every child step
+    batch_strategy=None,      # default for every child step
+    environment=None,         # default for every child step
+    tool=None,                # default for every child step
+    compute_provider=None,    # default for every child step
+    compute_resources=None,   # default for every child step
+    failure_policy=None,      # default for every child step
+    compact=True,             # default for every child step
+    skip_cache=False,         # default for every child step
+) -> CompositeResult
 ```
 
-Returns `ExpandedCompositeResult` with `.output(role)` for downstream wiring.
-No `intermediates` parameter — all internal steps are naturally visible.
+Composite-level overrides are defaults for each child step; a value set on a
+`ctx.run()` call wins for that step. `submit_composite()` returns a
+`CompositeResult` with `.output(role)` for downstream wiring and `.wait()` to
+block on the children; `run_composite()` returns the resolved `CompositeResult`.
 
 ---
 
@@ -161,7 +169,6 @@ pipelines for readability. Bind `output = pipeline.output` at the top.
 | `resources` | `dict` | `cpus`, `memory_gb`, `gpus`, `time_limit` |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` (default) or `FAIL_FAST` |
 | `compact` | `bool` | Compact provenance graph (default `True`) |
-| `intermediates` | `str` | `"discard"` (default), `"persist"`, or `"expose"` (composites only) |
 
 ---
 
@@ -298,9 +305,10 @@ for i in range(3):
     datasets = output(f"transform_r{i}", "dataset")
 ```
 
-### Composite (Collapsed)
+### Composite
 
-Combine tightly coupled operations into a single step with in-memory passing:
+Name a reusable multi-operation sequence, then run it with `run_composite`.
+Each internal operation becomes its own pipeline step with full provenance:
 
 ```python
 class TransformAndScore(CompositeDefinition):
@@ -319,28 +327,21 @@ class TransformAndScore(CompositeDefinition):
         metrics = ctx.run(MetricCalculator, inputs={"dataset": transformed.output("dataset")})
         ctx.output("metrics", metrics.output("metrics"))
 
-pipeline.run(TransformAndScore, inputs={"data": output("generate", "datasets")})
-```
-
-Options: `intermediates="discard"` (default), `"persist"`, or `"expose"`.
-
-### Composite (Expanded)
-
-Each internal operation becomes its own pipeline step with full provenance:
-
-```python
-expanded = pipeline.expand(
-    TransformAndScore,
-    name="expand_ts",
-    inputs={"data": output("generate", "datasets")},
+# Blocking — expands into one step per internal ctx.run()
+pipeline.run_composite(
+    TransformAndScore, inputs={"data": output("generate", "datasets")}
 )
-# Wire downstream from expanded outputs
+
+# Non-blocking — wire downstream from the CompositeResult
+result = pipeline.submit_composite(
+    TransformAndScore, inputs={"data": output("generate", "datasets")}
+)
 pipeline.run(Filter, name="filter",
-    inputs={"passthrough": expanded.output("metrics")})
+    inputs={"passthrough": result.output("metrics")})
 ```
 
-`expand()` returns `ExpandedCompositeResult` with `.output(role)` for wiring.
-No `intermediates` parameter — all internal steps are visible by design.
+`submit_composite` returns a `CompositeResult` with `.output(role)` for wiring.
+Composite-level execution overrides are defaults for every child step.
 
 ### Async Steps (submit)
 

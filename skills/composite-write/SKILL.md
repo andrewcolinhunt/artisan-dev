@@ -8,9 +8,8 @@ argument-hint: "[CompositeClassName or description of what the composite should 
 
 Write or scaffold a composite operation for `$ARGUMENTS`.
 
-Before writing, read the example composites in integration tests
-(`tests/integration/test_composite_collapsed.py`,
-`tests/integration/test_composite_expanded.py`) and the base class at
+Before writing, read the example composites in the integration test
+(`tests/integration/test_composite.py`) and the base class at
 `src/artisan/composites/base/composite_definition.py` to match established patterns.
 
 ---
@@ -19,11 +18,11 @@ Before writing, read the example composites in integration tests
 
 - **Reusable multi-operation sequence** — a fixed chain of operations that
   appears in multiple pipelines
-- **Tightly coupled ops** — operations that logically belong together and should
-  run as a single pipeline step (collapsed) or be expandable for debugging
-- **Dual-mode execution** — same definition works with `pipeline.run()`
-  (collapsed, single step) and `pipeline.expand()` (expanded, one step per
-  internal op)
+- **Tightly coupled ops** — operations that logically belong together and are
+  named as one reusable unit
+- **Named grouping over real steps** — running a composite expands each
+  internal `ctx.run()` into its own pipeline step with independent caching,
+  batching, dispatch, and provenance
 
 If you only need a single operation, use `operation-write` instead.
 
@@ -120,24 +119,24 @@ primitives on the `CompositeContext`:
 
 ## Per-Operation Overrides in compose()
 
-`ctx.run()` accepts optional overrides that are forwarded to the operation:
+`ctx.run()` accepts optional execution overrides applied to that step:
 
 ```python
 ctx.run(
     DataTransformer,
     inputs={"dataset": ctx.input("data")},
     params={"scale_factor": 2.0},
-    resources={"cpus": 4, "memory_gb": 16},
-    execution={"artifacts_per_unit": 10},
-    backend="slurm",
+    runner_resources={"cpus": 4, "memory_gb": 16},
+    batch_strategy={"artifacts_per_unit": 10},
+    step_runner="slurm",
     environment="my_container",
     tool={"executable": "/path/to/tool"},
 )
 ```
 
-In collapsed mode, `resources`/`backend`/`environment`/`tool` are ignored (the
-composite runs as a single unit). In expanded mode, they are forwarded to each
-pipeline step.
+Composite-level overrides passed to `run_composite`/`submit_composite` are the
+defaults for every child step; a value set on a `ctx.run()` call wins for that
+step and that knob.
 
 ---
 
@@ -162,21 +161,6 @@ class OuterComposite(CompositeDefinition):
         metrics = ctx.run(MetricCalculator, inputs={"dataset": inner.output("dataset")})
         ctx.output("metrics", metrics.output("metrics"))
 ```
-
----
-
-## Intermediates Modes
-
-Controls what happens to artifacts from internal operations (collapsed mode only):
-
-| Mode | Behavior |
-|---|---|
-| `"discard"` (default) | Only final outputs are committed; intermediates are discarded |
-| `"persist"` | Intermediates committed to Delta but not visible as step boundaries |
-| `"expose"` | Intermediates committed to Delta with full step boundaries |
-
-Set via `pipeline.run(MyComposite, intermediates="persist", ...)`. Not
-applicable to `pipeline.expand()` where all steps are naturally visible.
 
 ---
 
@@ -210,32 +194,32 @@ The framework validates at class definition time (`__pydantic_init_subclass__`):
 
 ## Running Composites
 
-Two execution modes — see `pipeline-write` for full API details:
+Composites run via `run_composite` (blocking) or `submit_composite`
+(non-blocking) — see `pipeline-write` for full API details:
 
 ```python
-# Collapsed: single pipeline step, in-memory passing
-pipeline.run(
+# Blocking: expands into real pipeline steps, one per internal ctx.run()
+pipeline.run_composite(
     TransformAndScore,
     name="ts",
     inputs={"data": output("generate", "datasets")},
-    intermediates="discard",
 )
 
-# Expanded: each internal op becomes its own pipeline step
-expanded = pipeline.expand(
+# Non-blocking: returns a CompositeResult for downstream wiring
+result = pipeline.submit_composite(
     TransformAndScore, name="ts", inputs={"data": output("generate", "datasets")}
 )
-pipeline.run(NextOp, inputs={"data": expanded.output("metrics")})
+pipeline.run(NextOp, inputs={"data": result.output("metrics")})
 ```
 
 ---
 
 ## Testing Patterns
 
-### Integration test (collapsed)
+### Integration test
 
 ```python
-def test_composite_collapsed(tmp_path):
+def test_composite(tmp_path):
     pipeline = PipelineManager.create(
         name="test",
         delta_root=tmp_path / "delta",
@@ -244,32 +228,12 @@ def test_composite_collapsed(tmp_path):
     output = pipeline.output
 
     pipeline.run(DataGenerator, name="gen", params={"count": 2, "seed": 42})
-    pipeline.run(
+    pipeline.run_composite(
         TransformAndScore, name="ts", inputs={"data": output("gen", "datasets")}
     )
 
     summary = pipeline.finalize()
-    assert summary.steps_completed == 2
-```
-
-### Integration test (expanded)
-
-```python
-def test_composite_expanded(tmp_path):
-    pipeline = PipelineManager.create(
-        name="test",
-        delta_root=tmp_path / "delta",
-        staging_root=tmp_path / "staging",
-    )
-    output = pipeline.output
-
-    pipeline.run(DataGenerator, name="gen", params={"count": 2, "seed": 42})
-    expanded = pipeline.expand(
-        TransformAndScore, name="ts", inputs={"data": output("gen", "datasets")}
-    )
-
-    summary = pipeline.finalize()
-    # Expanded creates one step per internal operation
+    # The composite expands into one step per internal operation
     assert summary.steps_completed >= 3
 ```
 
