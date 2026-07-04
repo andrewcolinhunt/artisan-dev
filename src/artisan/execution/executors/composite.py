@@ -16,13 +16,19 @@ from artisan.composites.base.provenance import (
     _collect_composite_edges,
     update_ancestor_map,
 )
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_composite import ExecutionComposite
 from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import record_execution_success
+from artisan.execution.staging.recorder import (
+    record_execution_failure,
+    record_execution_success,
+)
 from artisan.execution.utils import generate_execution_run_id
+from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.utils.errors import format_error
+from artisan.utils.hashing import serialize_params
 
 logger = logging.getLogger(__name__)
 
@@ -119,34 +125,13 @@ def run_composite(
         )
 
         # Build execution context for recording
-        from artisan.execution.context.builder import (
-            build_creator_execution_context,
+        execution_context = _build_composite_execution_context(
+            composite_transport,
+            runtime_env,
+            execution_run_id,
+            timestamp_start,
+            worker_id,
         )
-
-        working_root = runtime_env.working_root
-        if working_root is None:
-            msg = "RuntimeEnvironment.working_root must be set"
-            raise ValueError(msg)
-
-        execution_context = build_creator_execution_context(
-            execution_run_id=execution_run_id,
-            execution_spec_id=composite_transport.execution_spec_id,
-            step_number=composite_transport.step_number,
-            timestamp_start=timestamp_start,
-            worker_id=worker_id,
-            delta_root=runtime_env.delta_root,
-            staging_root=runtime_env.staging_root,
-            fs=fs,
-            storage_options=storage_options,
-            operation=composite,  # type: ignore[arg-type]  # CompositeDefinition shares the relevant attrs
-            sandbox_path=os.path.join(working_root, "dummy"),
-            compute_backend_name=runtime_env.compute_backend_name,
-            shared_filesystem=runtime_env.shared_filesystem,
-            step_run_id=composite_transport.step_run_id,
-            files_root=runtime_env.files_root,
-        )
-
-        from artisan.utils.hashing import serialize_params
 
         params_dict = serialize_params(composite)
 
@@ -167,11 +152,75 @@ def run_composite(
     except Exception as exc:
         error = format_error(exc)
         logger.error("Composite %s failed: %s", composite.name, error)
-        staging_result = StagingResult(
-            success=False,
+        try:
+            execution_context = _build_composite_execution_context(
+                composite_transport,
+                runtime_env,
+                execution_run_id,
+                timestamp_start,
+                worker_id,
+            )
+        except Exception:
+            # No context could be built (e.g. working_root unset) — stage a
+            # bare result carrying the original error, mirroring the
+            # early-failure path in run_creator_flow.
+            logger.exception(
+                "Failed to build execution context for composite %s",
+                execution_run_id,
+            )
+            return StagingResult(
+                success=False,
+                error=error,
+                execution_run_id=execution_run_id,
+                artifact_ids=[],
+            )
+        original_inputs = {
+            role: list(ids) for role, ids in composite_transport.inputs.items()
+        }
+        staging_result = record_execution_failure(
+            execution_context=execution_context,
             error=error,
-            execution_run_id=execution_run_id,
-            artifact_ids=[],
+            inputs=original_inputs,
+            timestamp_end=datetime.now(UTC),
+            params=serialize_params(composite),
+            failure_logs_root=runtime_env.failure_logs_root,
         )
 
     return staging_result
+
+
+def _build_composite_execution_context(
+    composite_transport: ExecutionComposite,
+    runtime_env: RuntimeEnvironment,
+    execution_run_id: str,
+    timestamp_start: datetime,
+    worker_id: int,
+) -> ExecutionContext:
+    """Build the execution context for recording a composite run.
+
+    Raises:
+        ValueError: If working_root is not set.
+    """
+    working_root = runtime_env.working_root
+    if working_root is None:
+        msg = "RuntimeEnvironment.working_root must be set"
+        raise ValueError(msg)
+    fs = runtime_env.storage.filesystem()
+    storage_options = runtime_env.storage.delta_storage_options()
+    return build_execution_context(
+        execution_run_id=execution_run_id,
+        execution_spec_id=composite_transport.execution_spec_id,
+        step_number=composite_transport.step_number,
+        timestamp_start=timestamp_start,
+        worker_id=worker_id,
+        delta_root=runtime_env.delta_root,
+        staging_root=runtime_env.staging_root,
+        fs=fs,
+        storage_options=storage_options,
+        operation=composite_transport.composite,  # type: ignore[arg-type]  # CompositeDefinition shares the relevant attrs
+        sandbox_path=os.path.join(working_root, "dummy"),
+        compute_backend_name=runtime_env.compute_backend_name,
+        shared_filesystem=runtime_env.shared_filesystem,
+        step_run_id=composite_transport.step_run_id,
+        files_root=runtime_env.files_root,
+    )

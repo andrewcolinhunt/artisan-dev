@@ -39,7 +39,6 @@ class TestLocalRunnerTraits:
         traits = LocalRunner.worker_traits
         assert traits.worker_id_env_var is None
         assert traits.shared_filesystem is False
-        assert traits.needs_staging_fsync is False
 
     def test_orchestrator_traits_local(self) -> None:
         traits = LocalRunner.orchestrator_traits

@@ -559,6 +559,48 @@ class TestSummary:
         assert s.funnel["count"][0] == 4  # "All evaluated" row
         assert s.funnel["count"][1] == 2  # after confidence > 50
 
+    def test_summary_full_golden(self, delta_root: Path) -> None:
+        """Full summary criteria/funnel/header are stable (multi-criterion)."""
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+        filt.set_criteria(
+            [
+                {"metric": "confidence", "operator": "gt", "value": 60},
+                {"metric": "score", "operator": "gt", "value": 0.5},
+            ]
+        )
+        s = filt.summary()
+        assert s.criteria.to_dicts() == [
+            {
+                "metric": "confidence",
+                "operator": "gt",
+                "threshold": 60.0,
+                "pass": 2,
+                "total": 4,
+                "rate": 50.0,
+                "min": 30.0,
+                "mean": 60.0,
+                "max": 90.0,
+            },
+            {
+                "metric": "score",
+                "operator": "gt",
+                "threshold": 0.5,
+                "pass": 2,
+                "total": 4,
+                "rate": 50.0,
+                "min": 0.3,
+                "mean": 0.6,
+                "max": 0.9,
+            },
+        ]
+        assert s.funnel.to_dicts() == [
+            {"label": "All evaluated", "count": 4, "eliminated": None},
+            {"label": "+ confidence gt 60", "count": 2, "eliminated": 2},
+            {"label": "+ score gt 0.5", "count": 2, "eliminated": 0},
+        ]
+        assert s._header == "2 / 4 pass (50.0%)"
+
     def test_summary_repr_html(self, delta_root: Path) -> None:
         filt = InteractiveFilter(delta_root)
         filt.load()
@@ -664,6 +706,53 @@ class TestCommit:
         assert diag["funnel"][0]["label"] == "All evaluated"
         assert diag["funnel"][0]["count"] == 4
         assert "eliminated" in diag["funnel"][1]
+
+    def test_commit_diagnostics_full_dict_golden(self, delta_root: Path) -> None:
+        """Full v4 diagnostics dict is stable (multi-criterion)."""
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+        filt.set_criteria(
+            [
+                {"metric": "confidence", "operator": "gt", "value": 60},
+                {"metric": "score", "operator": "gt", "value": 0.5},
+            ]
+        )
+        result = filt.commit()
+        assert result.metadata["diagnostics"] == {
+            "version": 4,
+            "interactive": True,
+            "total_input": 4,
+            "total_evaluated": 4,
+            "total_metrics_discovered": 8,
+            "total_passed": 2,
+            "metric_sources": [
+                {"step_number": 1, "step_name": "calc_metrics"},
+                {"step_number": 2, "step_name": "extra_metrics"},
+            ],
+            "criteria": [
+                {
+                    "metric": "confidence",
+                    "operator": "gt",
+                    "value": 60,
+                    "pass_count": 2,
+                    "resolved_from_step": 1,
+                    "stats": {"min": 30.0, "max": 90.0, "mean": 60.0},
+                },
+                {
+                    "metric": "score",
+                    "operator": "gt",
+                    "value": 0.5,
+                    "pass_count": 2,
+                    "resolved_from_step": 2,
+                    "stats": {"min": 0.3, "max": 0.9, "mean": 0.6},
+                },
+            ],
+            "funnel": [
+                {"label": "All evaluated", "count": 4},
+                {"label": "+ confidence gt 60", "count": 2, "eliminated": 2},
+                {"label": "+ score gt 0.5", "count": 2, "eliminated": 0},
+            ],
+        }
 
     def test_commit_step_compatible_with_output_reference(
         self, delta_root: Path

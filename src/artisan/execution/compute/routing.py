@@ -14,13 +14,11 @@ from artisan.schemas.operation_config.compute import (
     LocalComputeConfig,
     ModalComputeConfig,
 )
-from artisan.schemas.operation_config.compute_resources import ComputeResources
 
 
 def create_execute_router(
     config: ComputeConfig,
     operation: Any,
-    compute_resources: ComputeResources | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> ExecuteRouter:
     """Create an execute router from a provider config.
@@ -31,8 +29,6 @@ def create_execute_router(
     Args:
         config: Provider config from ``ComputeProvider.current()``.
         operation: The operation instance (validated against the provider).
-        compute_resources: Hardware spec (gpu/memory_gb/timeout) for
-            providers that consume one. Local routing ignores it.
         cancel_check: Orchestrator-cancellation probe for routers whose
             calls outlive the orchestrator's threads. None disables soft
             cancel.
@@ -45,7 +41,6 @@ def create_execute_router(
             for an op that is not a command op.
         ValueError: If the config type is not recognized.
     """
-    del compute_resources  # accepted for signature stability; unused so far
     if isinstance(config, LocalComputeConfig):
         return LocalExecuteRouter()
     if isinstance(config, ModalComputeConfig):

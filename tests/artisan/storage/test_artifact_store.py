@@ -148,7 +148,7 @@ class TestArtifactStoreReadWithDelta:
 
 
 class TestBulkLoadMethods:
-    """Tests for bulk-load methods (load_provenance_map, load_step_number_map)."""
+    """Tests for bulk-load methods (provenance.load_backward_map, load_step_map)."""
 
     @pytest.fixture
     def store_with_provenance(self, backend_fs):
@@ -193,7 +193,7 @@ class TestBulkLoadMethods:
 
     def test_load_provenance_map(self, store_with_provenance):
         """Returns {target_id: [source_ids]} for all edges."""
-        pmap = store_with_provenance.load_provenance_map()
+        pmap = store_with_provenance.provenance.load_backward_map()
 
         assert "b" * 32 in pmap
         assert pmap["b" * 32] == ["a" * 32]
@@ -213,11 +213,11 @@ class TestBulkLoadMethods:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        assert store.load_provenance_map() == {}
+        assert store.provenance.load_backward_map() == {}
 
     def test_load_step_number_map_all(self, store_with_provenance):
         """Returns all step numbers when no filter provided."""
-        smap = store_with_provenance.load_step_number_map()
+        smap = store_with_provenance.provenance.load_step_map()
 
         assert smap["a" * 32] == 0
         assert smap["b" * 32] == 1
@@ -227,7 +227,7 @@ class TestBulkLoadMethods:
 
     def test_load_step_number_map_filtered(self, store_with_provenance):
         """Returns only requested artifact IDs when filtered."""
-        smap = store_with_provenance.load_step_number_map({"a" * 32, "c" * 32})
+        smap = store_with_provenance.provenance.load_step_map({"a" * 32, "c" * 32})
 
         assert smap["a" * 32] == 0
         assert smap["c" * 32] == 2
@@ -239,11 +239,11 @@ class TestBulkLoadMethods:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        assert store.load_step_number_map() == {}
+        assert store.provenance.load_step_map() == {}
 
     def test_load_step_number_map_nonexistent_ids(self, store_with_provenance):
         """Returns empty dict when all requested IDs don't exist."""
-        smap = store_with_provenance.load_step_number_map({"z" * 32})
+        smap = store_with_provenance.provenance.load_step_map({"z" * 32})
         assert smap == {}
 
 
@@ -511,22 +511,22 @@ class TestArtifactStoreProvenanceQueries:
 
     def test_get_ancestor_artifact_ids_with_parent(self, store_with_provenance):
         """Artifact with parent returns parent ID."""
-        result = store_with_provenance.get_ancestor_artifact_ids("b" * 32)
+        result = store_with_provenance.provenance.get_direct_ancestors("b" * 32)
         assert result == ["a" * 32]
 
     def test_get_ancestor_artifact_ids_chain(self, store_with_provenance):
         """Artifact at end of chain returns immediate parent only."""
-        result = store_with_provenance.get_ancestor_artifact_ids("c" * 32)
+        result = store_with_provenance.provenance.get_direct_ancestors("c" * 32)
         assert result == ["b" * 32]
 
     def test_get_ancestor_artifact_ids_no_parent(self, store_with_provenance):
         """Root artifact returns empty list."""
-        result = store_with_provenance.get_ancestor_artifact_ids("a" * 32)
+        result = store_with_provenance.provenance.get_direct_ancestors("a" * 32)
         assert result == []
 
     def test_get_ancestor_artifact_ids_nonexistent(self, store_with_provenance):
         """Nonexistent artifact returns empty list."""
-        result = store_with_provenance.get_ancestor_artifact_ids("z" * 32)
+        result = store_with_provenance.provenance.get_direct_ancestors("z" * 32)
         assert result == []
 
     def test_get_ancestor_artifact_ids_no_table(self, backend_fs):
@@ -535,18 +535,20 @@ class TestArtifactStoreProvenanceQueries:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        result = store.get_ancestor_artifact_ids("a" * 32)
+        result = store.provenance.get_direct_ancestors("a" * 32)
         assert result == []
 
     def test_get_artifact_step_number(self, store_with_provenance):
         """Returns correct step number for each artifact."""
-        assert store_with_provenance.get_artifact_step_number("a" * 32) == 0
-        assert store_with_provenance.get_artifact_step_number("b" * 32) == 1
-        assert store_with_provenance.get_artifact_step_number("c" * 32) == 2
+        assert store_with_provenance.provenance.get_artifact_step_number("a" * 32) == 0
+        assert store_with_provenance.provenance.get_artifact_step_number("b" * 32) == 1
+        assert store_with_provenance.provenance.get_artifact_step_number("c" * 32) == 2
 
     def test_get_artifact_step_number_nonexistent(self, store_with_provenance):
         """Returns None for nonexistent artifact."""
-        assert store_with_provenance.get_artifact_step_number("z" * 32) is None
+        assert (
+            store_with_provenance.provenance.get_artifact_step_number("z" * 32) is None
+        )
 
     def test_get_artifact_step_number_no_table(self, backend_fs):
         """Missing artifact_index table returns None."""
@@ -554,7 +556,7 @@ class TestArtifactStoreProvenanceQueries:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        assert store.get_artifact_step_number("a" * 32) is None
+        assert store.provenance.get_artifact_step_number("a" * 32) is None
 
 
 class TestMetricOriginalNamePersistence:
@@ -701,7 +703,7 @@ class TestExecutionConfigArtifactRoundTrip:
 
 
 class TestGetDescendantArtifactIds:
-    """Tests for get_descendant_artifact_ids() forward provenance query."""
+    """Tests for provenance.get_direct_descendants() forward provenance query."""
 
     @pytest.fixture
     def store_with_provenance(self, backend_fs):
@@ -733,14 +735,14 @@ class TestGetDescendantArtifactIds:
 
     def test_single_source_multiple_descendants(self, store_with_provenance):
         """Source A has two descendants: B and D."""
-        result = store_with_provenance.get_descendant_artifact_ids({"a" * 32})
+        result = store_with_provenance.provenance.get_direct_descendants({"a" * 32})
 
         assert "a" * 32 in result
         assert sorted(result["a" * 32]) == sorted(["b" * 32, "d" * 32])
 
     def test_type_filter_metric_only(self, store_with_provenance):
         """With METRIC filter, source A returns only D (metric), not B (data)."""
-        result = store_with_provenance.get_descendant_artifact_ids(
+        result = store_with_provenance.provenance.get_direct_descendants(
             {"a" * 32}, target_artifact_type=ArtifactTypes.METRIC
         )
 
@@ -748,12 +750,14 @@ class TestGetDescendantArtifactIds:
 
     def test_leaf_node_no_descendants(self, store_with_provenance):
         """Leaf node C has no descendants."""
-        result = store_with_provenance.get_descendant_artifact_ids({"c" * 32})
+        result = store_with_provenance.provenance.get_direct_descendants({"c" * 32})
         assert result == {}
 
     def test_multiple_sources(self, store_with_provenance):
         """Query multiple sources at once."""
-        result = store_with_provenance.get_descendant_artifact_ids({"a" * 32, "b" * 32})
+        result = store_with_provenance.provenance.get_direct_descendants(
+            {"a" * 32, "b" * 32}
+        )
 
         assert "a" * 32 in result
         assert "b" * 32 in result
@@ -761,7 +765,7 @@ class TestGetDescendantArtifactIds:
 
     def test_empty_input(self, store_with_provenance):
         """Empty input returns empty dict without scanning."""
-        result = store_with_provenance.get_descendant_artifact_ids(set())
+        result = store_with_provenance.provenance.get_direct_descendants(set())
         assert result == {}
 
     def test_missing_table(self, backend_fs):
@@ -770,12 +774,12 @@ class TestGetDescendantArtifactIds:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        result = store.get_descendant_artifact_ids({"a" * 32})
+        result = store.provenance.get_direct_descendants({"a" * 32})
         assert result == {}
 
 
 class TestLoadArtifactTypeMap:
-    """Tests for load_artifact_type_map() bulk type resolution."""
+    """Tests for provenance.load_type_map() bulk type resolution."""
 
     @pytest.fixture
     def store_with_index(self, backend_fs):
@@ -801,7 +805,7 @@ class TestLoadArtifactTypeMap:
 
     def test_load_all(self, store_with_index):
         """Load all types when no filter provided."""
-        result = store_with_index.load_artifact_type_map()
+        result = store_with_index.provenance.load_type_map()
         assert len(result) == 4
         assert result["a" * 32] == "data"
         assert result["c" * 32] == "metric"
@@ -809,7 +813,7 @@ class TestLoadArtifactTypeMap:
 
     def test_load_filtered(self, store_with_index):
         """Load only requested IDs."""
-        result = store_with_index.load_artifact_type_map(["a" * 32, "c" * 32])
+        result = store_with_index.provenance.load_type_map(["a" * 32, "c" * 32])
         assert len(result) == 2
         assert result["a" * 32] == "data"
         assert result["c" * 32] == "metric"
@@ -820,11 +824,11 @@ class TestLoadArtifactTypeMap:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        assert store.load_artifact_type_map() == {}
+        assert store.provenance.load_type_map() == {}
 
     def test_nonexistent_ids(self, store_with_index):
         """Non-existent IDs return empty dict."""
-        result = store_with_index.load_artifact_type_map(["z" * 32])
+        result = store_with_index.provenance.load_type_map(["z" * 32])
         assert result == {}
 
 
@@ -850,26 +854,30 @@ class TestLoadArtifactIdsByType:
 
     def test_filter_by_type(self, store_with_index):
         """Returns only IDs of the requested type."""
-        result = store_with_index.load_artifact_ids_by_type(ArtifactTypes.DATA)
+        result = store_with_index.provenance.load_artifact_ids_by_type(
+            ArtifactTypes.DATA
+        )
         assert result == {"a" * 32, "b" * 32}
 
     def test_filter_by_type_and_step(self, store_with_index):
         """Filters by both type and step number."""
-        result = store_with_index.load_artifact_ids_by_type(
+        result = store_with_index.provenance.load_artifact_ids_by_type(
             ArtifactTypes.DATA, step_numbers=[0]
         )
         assert result == {"a" * 32}
 
     def test_filter_by_type_and_ids(self, store_with_index):
         """Filters by type and specific artifact IDs."""
-        result = store_with_index.load_artifact_ids_by_type(
+        result = store_with_index.provenance.load_artifact_ids_by_type(
             ArtifactTypes.METRIC, artifact_ids=["c" * 32]
         )
         assert result == {"c" * 32}
 
     def test_no_match(self, store_with_index):
         """Returns empty set when no match."""
-        result = store_with_index.load_artifact_ids_by_type(ArtifactTypes.FILE_REF)
+        result = store_with_index.provenance.load_artifact_ids_by_type(
+            ArtifactTypes.FILE_REF
+        )
         assert result == set()
 
     def test_missing_index(self, backend_fs):
@@ -878,12 +886,12 @@ class TestLoadArtifactIdsByType:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        result = store.load_artifact_ids_by_type(ArtifactTypes.DATA)
+        result = store.provenance.load_artifact_ids_by_type(ArtifactTypes.DATA)
         assert result == set()
 
 
 class TestLoadForwardProvenanceMap:
-    """Tests for load_forward_provenance_map()."""
+    """Tests for provenance.load_forward_map()."""
 
     @pytest.fixture
     def store_with_provenance(self, backend_fs):
@@ -910,7 +918,7 @@ class TestLoadForwardProvenanceMap:
 
     def test_forward_map(self, store_with_provenance):
         """Returns {source: [targets]} mapping."""
-        result = store_with_provenance.load_forward_provenance_map()
+        result = store_with_provenance.provenance.load_forward_map()
         assert sorted(result["a" * 32]) == sorted(["b" * 32, "d" * 32])
         assert result["b" * 32] == ["c" * 32]
         assert "c" * 32 not in result  # leaf has no outgoing edges
@@ -921,7 +929,7 @@ class TestLoadForwardProvenanceMap:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        assert store.load_forward_provenance_map() == {}
+        assert store.provenance.load_forward_map() == {}
 
 
 class TestLoadStepNameMap:
@@ -965,7 +973,7 @@ class TestLoadStepNameMap:
 
     def test_loads_step_names(self, store_with_steps):
         """Returns step_number -> step_name mapping."""
-        result = store_with_steps.load_step_name_map()
+        result = store_with_steps.provenance.load_step_name_map()
         assert result[0] == "ingest"
         assert result[1] == "tool_c"
 
@@ -975,7 +983,7 @@ class TestLoadStepNameMap:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        assert store.load_step_name_map() == {}
+        assert store.provenance.load_step_name_map() == {}
 
     def test_fallback_to_executions(self, backend_fs):
         """Falls back to executions when steps table is missing."""
@@ -1004,7 +1012,7 @@ class TestLoadStepNameMap:
             },
             schema=EXECUTIONS_SCHEMA,
         ).write_delta(f"{root}/orchestration/executions", storage_options=opts)
-        result = store.load_step_name_map()
+        result = store.provenance.load_step_name_map()
         assert result[0] == "ingest_fallback"
 
 

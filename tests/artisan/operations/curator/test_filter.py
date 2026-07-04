@@ -648,6 +648,113 @@ class TestFilterDiagnosticsMetadata:
         diag = result.metadata["diagnostics"]
         assert diag["total_evaluated"] == 2
 
+    def test_diagnostics_full_dict_golden(self, lineage_store):
+        """Full diagnostics dict is byte-for-byte stable (multi-criterion)."""
+        op = Filter(
+            params=Filter.Params(
+                criteria=[
+                    Criterion(metric="score", operator="ge", value=0.3),
+                    Criterion(metric="n_chainbreaks", operator="eq", value=0),
+                ]
+            )
+        )
+        result = op.execute_curator(
+            inputs=_make_inputs({"passthrough": ["pt_a", "pt_b"]}),
+            step_number=0,
+            artifact_store=lineage_store,
+        )
+        assert result.metadata["diagnostics"] == {
+            "version": 4,
+            "total_input": 2,
+            "total_evaluated": 2,
+            "total_metrics_discovered": 4,
+            "total_passed": 1,
+            "metric_sources": [
+                {"step_number": 2, "step_name": "metric_calc", "metric_count": 0}
+            ],
+            "criteria": [
+                {
+                    "metric": "score",
+                    "operator": "ge",
+                    "value": 0.3,
+                    "pass_count": 2,
+                    "resolved_from_step": 2,
+                    "stats": {"min": 0.3, "max": 0.9, "mean": 0.6},
+                },
+                {
+                    "metric": "n_chainbreaks",
+                    "operator": "eq",
+                    "value": 0,
+                    "pass_count": 1,
+                    "resolved_from_step": 2,
+                    "stats": {"min": 0.0, "max": 2.0, "mean": 1.0},
+                },
+            ],
+            "funnel": [
+                {"label": "All evaluated", "count": 2},
+                {"label": "+ score ge 0.3", "count": 2, "eliminated": 0},
+                {"label": "+ n_chainbreaks eq 0", "count": 1, "eliminated": 1},
+            ],
+        }
+
+    def test_diagnostics_empty_full_dict_golden(self, lineage_store):
+        """Full diagnostics dict is stable for the no-criteria path."""
+        op = Filter(params=Filter.Params(criteria=[]))
+        result = op.execute_curator(
+            inputs=_make_inputs({"passthrough": ["pt_a", "pt_b"]}),
+            step_number=0,
+            artifact_store=lineage_store,
+        )
+        assert result.metadata["diagnostics"] == {
+            "version": 4,
+            "total_input": 2,
+            "total_evaluated": 2,
+            "total_metrics_discovered": 0,
+            "total_passed": 2,
+            "metric_sources": [],
+            "criteria": [],
+            "funnel": [{"label": "All evaluated", "count": 2}],
+        }
+
+    def test_diagnostics_passthrough_failures_full_dict_golden(self, lineage_store):
+        """Full diagnostics dict is stable with passthrough_failures set."""
+        op = Filter(
+            params=Filter.Params(
+                criteria=[Criterion(metric="score", operator="gt", value=0.5)],
+                passthrough_failures=True,
+            )
+        )
+        result = op.execute_curator(
+            inputs=_make_inputs({"passthrough": ["pt_a", "pt_b"]}),
+            step_number=0,
+            artifact_store=lineage_store,
+        )
+        assert result.metadata["diagnostics"] == {
+            "version": 4,
+            "total_input": 2,
+            "total_evaluated": 2,
+            "total_metrics_discovered": 4,
+            "total_passed": 1,
+            "metric_sources": [
+                {"step_number": 2, "step_name": "metric_calc", "metric_count": 0}
+            ],
+            "criteria": [
+                {
+                    "metric": "score",
+                    "operator": "gt",
+                    "value": 0.5,
+                    "pass_count": 1,
+                    "resolved_from_step": 2,
+                    "stats": {"min": 0.3, "max": 0.9, "mean": 0.6},
+                }
+            ],
+            "funnel": [
+                {"label": "All evaluated", "count": 2},
+                {"label": "+ score gt 0.5", "count": 1, "eliminated": 1},
+            ],
+            "passthrough_failures": True,
+        }
+
 
 class TestForwardMetricDiscovery:
     """Tests for forward walk metric discovery."""

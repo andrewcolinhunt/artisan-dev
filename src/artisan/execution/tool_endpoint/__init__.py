@@ -20,13 +20,11 @@ from artisan.execution.tool_endpoint.protocol import (
 from artisan.execution.tool_endpoint.server import resolve_op, run_tool_request
 from artisan.execution.tool_endpoint.transport import (
     MAX_INLINE_BYTES,
-    DataTransport,
     InlineTransport,
 )
 
 __all__ = [
     "MAX_INLINE_BYTES",
-    "DataTransport",
     "InlineTransport",
     "InputRef",
     "ResultResponse",

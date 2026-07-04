@@ -120,7 +120,6 @@ class TestRegistration:
             model = _MockModel
 
         assert ArtifactTypes.is_registered("_test_facade")
-        assert ArtifactTypes.get("_test_facade") == "_test_facade"
 
 
 class TestLookup:

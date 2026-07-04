@@ -135,7 +135,7 @@ def test_explicit_output_to_output_lineage(pipeline_env: dict[str, str]) -> None
     assert result["overall_success"]
 
     artifact_store = ArtifactStore(delta_root)
-    step1_metric_ids = artifact_store.load_artifact_ids_by_type(
+    step1_metric_ids = artifact_store.provenance.load_artifact_ids_by_type(
         ArtifactTypes.METRIC, step_numbers=[1]
     )
     step1_metrics = artifact_store.get_artifacts_by_type(
@@ -341,10 +341,10 @@ def test_explicit_lineage_with_coinput_edges_matches_autodetect(
 
     auto_store = ArtifactStore(auto_root)
     explicit_store = ArtifactStore(explicit_root)
-    auto_targets = auto_store.load_artifact_ids_by_type(
+    auto_targets = auto_store.provenance.load_artifact_ids_by_type(
         ArtifactTypes.METRIC, step_numbers=[2]
     )
-    explicit_targets = explicit_store.load_artifact_ids_by_type(
+    explicit_targets = explicit_store.provenance.load_artifact_ids_by_type(
         ArtifactTypes.METRIC, step_numbers=[2]
     )
     assert auto_targets == explicit_targets, (
