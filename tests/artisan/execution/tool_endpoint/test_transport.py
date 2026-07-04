@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import tarfile
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +46,20 @@ def _make_outputs(tmp_path: Path) -> str:
     (src / "out.txt").write_text("payload")
     (src / "nested" / "deep.txt").write_text("deep")
     return str(src)
+
+
+def _capture_tempdirs(monkeypatch) -> list[str]:
+    """Record every ``mkdtemp`` path allocated, calling through."""
+    created: list[str] = []
+    real = tempfile.mkdtemp
+
+    def spy(*args, **kwargs):
+        path = real(*args, **kwargs)
+        created.append(path)
+        return path
+
+    monkeypatch.setattr(tempfile, "mkdtemp", spy)
+    return created
 
 
 class TestPackInputs:
@@ -246,6 +262,31 @@ class TestUploadOutputsCapabilityMode:
         monkeypatch.setattr("httpx.put", fake_put)
         with pytest.raises(httpx.HTTPStatusError):
             upload_outputs(_make_outputs(tmp_path), ["out.txt"], self.PUT_URL, "op")
+
+
+class TestUploadOutputsSpoolCleanup:
+    """The gzipped-tar spool dir must not outlive the call (warm containers)."""
+
+    def test_spool_removed_on_success(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            transport_mod, "_resolve_fs", lambda uri, fs, **options: (_FakeFs(), uri)
+        )
+        created = _capture_tempdirs(monkeypatch)
+        upload_outputs(_make_outputs(tmp_path), ["out.txt"], "s3://b/p", "op")
+        assert created  # the call did allocate a spool dir
+        assert all(not os.path.exists(p) for p in created)
+
+    def test_spool_removed_on_put_failure(self, tmp_path, monkeypatch):
+        def fake_put(url, content=None, headers=None, timeout=None):
+            return httpx.Response(403, request=httpx.Request("PUT", url))
+
+        monkeypatch.setattr("httpx.put", fake_put)
+        created = _capture_tempdirs(monkeypatch)
+        put_url = "https://bucket.s3.amazonaws.com/x.tar.gz?X-Amz-Signature=abc"
+        with pytest.raises(httpx.HTTPStatusError):
+            upload_outputs(_make_outputs(tmp_path), ["out.txt"], put_url, "op")
+        assert created  # the call did allocate a spool dir
+        assert all(not os.path.exists(p) for p in created)
 
 
 class TestUploadOutputsMinIO:
