@@ -767,6 +767,57 @@ class TestCommit:
         assert ref.source_step == result.step_number
         assert ref.role == "passthrough"
 
+    def test_commit_execution_rows_golden(self, delta_root: Path) -> None:
+        """Characterization: committed executions/execution_edges rows.
+
+        Pins the exact execution record and edge rows so the rerouting of
+        commit() through record_passthrough + commit_all_tables can be
+        proven byte-identical. Fields set at commit time (run/spec IDs,
+        timestamps) are asserted structurally; content columns exactly.
+        """
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+        filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 50}])
+
+        result = filt.commit()
+
+        exec_df = pl.read_delta(str(delta_root / "orchestration/executions")).filter(
+            pl.col("operation_name") == "filter"
+        )
+        assert exec_df.height == 1
+        row = exec_df.to_dicts()[0]
+
+        # Content columns pinned exactly (byte-identical constraint).
+        assert row["operation_name"] == "filter"
+        assert row["origin_step_number"] == result.step_number
+        assert row["params"] == json.dumps(
+            {"criteria": [c.model_dump() for c in filt.criteria]}
+        )
+        assert row["user_overrides"] == "{}"
+        assert row["source_worker"] == 0
+        assert row["compute_backend"] == "local"
+        assert row["success"] is True
+        assert row["error"] is None
+        assert row["step_run_id"] is None
+        assert row["metadata"] == json.dumps(
+            {"diagnostics": result.metadata["diagnostics"]}
+        )
+        assert row["timestamp_start"] == row["timestamp_end"]
+
+        # Execution edges: one input edge per primary artifact, one output
+        # edge per filtered artifact, all role="passthrough".
+        run_id = row["execution_run_id"]
+        edges = pl.read_delta(
+            str(delta_root / "provenance/execution_edges")
+        ).filter(pl.col("execution_run_id") == run_id)
+        inputs = edges.filter(pl.col("direction") == "input")
+        outputs = edges.filter(pl.col("direction") == "output")
+        assert set(inputs["artifact_id"].to_list()) == set(
+            filt._primary_artifact_ids
+        )
+        assert set(outputs["artifact_id"].to_list()) == set(filt.filtered_ids)
+        assert set(edges["role"].unique().to_list()) == {"passthrough"}
+
     def test_commit_raises_before_load(self, delta_root: Path) -> None:
         filt = InteractiveFilter(delta_root)
         with pytest.raises(ValueError, match="No data loaded"):
