@@ -210,20 +210,6 @@ class ArtifactStore:
 
         return cast("str | None", result["artifact_type"][0])
 
-    def get_ancestor_artifact_ids(self, artifact_id: str) -> list[str]:
-        """Return direct ancestor (source) artifact IDs.
-
-        Delegates to ``self.provenance.get_direct_ancestors``.
-        """
-        return self.provenance.get_direct_ancestors(artifact_id)
-
-    def load_provenance_map(self) -> dict[str, list[str]]:
-        """Load the full backward provenance map.
-
-        Delegates to ``self.provenance.load_backward_map``.
-        """
-        return self.provenance.load_backward_map()
-
     def get_associated(
         self,
         artifact_ids: set[str],
@@ -263,76 +249,6 @@ class ArtifactStore:
             if artifacts:
                 result[source_id] = artifacts
         return result
-
-    def get_descendant_artifact_ids(
-        self,
-        source_artifact_ids: set[str],
-        target_artifact_type: str | None = None,
-    ) -> dict[str, list[str]]:
-        """Delegates to ``self.provenance.get_direct_descendants``."""
-        return self.provenance.get_direct_descendants(
-            source_artifact_ids, target_artifact_type
-        )
-
-    def load_step_number_map(
-        self, artifact_ids: set[str] | None = None
-    ) -> dict[str, int]:
-        """Delegates to ``self.provenance.load_step_map``."""
-        return self.provenance.load_step_map(artifact_ids)
-
-    def get_step_range(self, artifact_ids: list[str]) -> tuple[int, int] | None:
-        """Delegates to ``self.provenance.get_step_range``."""
-        return self.provenance.get_step_range(artifact_ids)
-
-    def get_descendant_ids_df(
-        self,
-        source_ids: pl.Series,
-        target_artifact_type: str | None = None,
-    ) -> pl.DataFrame:
-        """Delegates to ``self.provenance.get_descendant_ids_df``."""
-        return self.provenance.get_descendant_ids_df(source_ids, target_artifact_type)
-
-    def get_artifact_step_number(self, artifact_id: str) -> int | None:
-        """Delegates to ``self.provenance.get_artifact_step_number``."""
-        return self.provenance.get_artifact_step_number(artifact_id)
-
-    def load_artifact_type_map(
-        self, artifact_ids: list[str] | None = None
-    ) -> dict[str, str]:
-        """Delegates to ``self.provenance.load_type_map``."""
-        return self.provenance.load_type_map(artifact_ids)
-
-    def load_artifact_ids_by_type(
-        self,
-        artifact_type: str,
-        *,
-        step_numbers: list[int] | None = None,
-        artifact_ids: list[str] | None = None,
-    ) -> set[str]:
-        """Delegates to ``self.provenance.load_artifact_ids_by_type``."""
-        return self.provenance.load_artifact_ids_by_type(
-            artifact_type, step_numbers=step_numbers, artifact_ids=artifact_ids
-        )
-
-    def load_forward_provenance_map(self) -> dict[str, list[str]]:
-        """Delegates to ``self.provenance.load_forward_map``."""
-        return self.provenance.load_forward_map()
-
-    def load_step_name_map(self, pipeline_run_id: str | None = None) -> dict[int, str]:
-        """Delegates to ``self.provenance.load_step_name_map``."""
-        return self.provenance.load_step_name_map(pipeline_run_id)
-
-    def load_provenance_edges_df(
-        self,
-        step_min: int,
-        step_max: int,
-        *,
-        include_target_type: bool = False,
-    ) -> pl.DataFrame:
-        """Delegates to ``self.provenance.load_edges_df``."""
-        return self.provenance.load_edges_df(
-            step_min, step_max, include_target_type=include_target_type
-        )
 
     def load_metrics_df(self, artifact_ids: list[str]) -> pl.DataFrame:
         """Load metric artifacts as a two-column DataFrame.
@@ -392,7 +308,7 @@ class ArtifactStore:
         if not artifact_ids:
             return {}
 
-        type_map = self.load_artifact_type_map(artifact_ids)
+        type_map = self.provenance.load_type_map(artifact_ids)
         if not type_map:
             return {}
 
