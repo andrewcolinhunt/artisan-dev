@@ -31,12 +31,10 @@ class TestPassthroughResultArtifactIds:
 
     @patch(f"{_PARQUET_MODULE}._stage_execution")
     @patch(f"{_PARQUET_MODULE}._create_staging_path", return_value="/tmp/staging")
-    @patch(f"{_MOCK_MODULE}.build_execution_edges", return_value=[])
     @patch(f"{_MOCK_MODULE}.validate_passthrough_result")
     def test_artifact_ids_populated_from_passthrough(
         self,
         _mock_validate,
-        _mock_edges,
         _mock_staging_path,
         _mock_stage,
     ):
@@ -65,12 +63,10 @@ class TestPassthroughResultArtifactIds:
 
     @patch(f"{_PARQUET_MODULE}._stage_execution")
     @patch(f"{_PARQUET_MODULE}._create_staging_path", return_value="/tmp/staging")
-    @patch(f"{_MOCK_MODULE}.build_execution_edges", return_value=[])
     @patch(f"{_MOCK_MODULE}.validate_passthrough_result")
     def test_artifact_ids_empty_when_nothing_passes(
         self,
         _mock_validate,
-        _mock_edges,
         _mock_staging_path,
         _mock_stage,
     ):
@@ -99,12 +95,10 @@ class TestPassthroughResultArtifactIds:
 
     @patch(f"{_PARQUET_MODULE}._stage_execution")
     @patch(f"{_PARQUET_MODULE}._create_staging_path", return_value="/tmp/staging")
-    @patch(f"{_MOCK_MODULE}.build_execution_edges", return_value=[])
     @patch(f"{_MOCK_MODULE}.validate_passthrough_result")
     def test_artifact_ids_flattened_across_roles(
         self,
         _mock_validate,
-        _mock_edges,
         _mock_staging_path,
         _mock_stage,
     ):
