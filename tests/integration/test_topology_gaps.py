@@ -410,13 +410,14 @@ def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: collapsed composite (DataGenerator -> DataTransformer)
+    # Steps 0-1: composite expands to DataGenerator (step 0) then
+    # DataTransformer (step 1); the composite output maps to step 1.
     composite_step = pipeline.run_composite(
         _GenerateAndTransform,
         step_runner=Runner.LOCAL,
     )
 
-    # Step 1: MetricCalculator on composite output
+    # Step 2: MetricCalculator on composite output
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": composite_step.output("dataset")},
@@ -426,15 +427,15 @@ def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Composite produced 2 data artifacts
+    # DataGenerator (step 0) produced 2 data artifacts
     assert count_artifacts_by_step(delta_root, 0) == 2
 
-    # MetricCalculator produced 2 metric artifacts
-    assert count_artifacts_by_step(delta_root, 1) == 2
+    # MetricCalculator (step 2) produced 2 metric artifacts
+    assert count_artifacts_by_step(delta_root, 2) == 2
 
-    # Metric artifacts have provenance to composite outputs
-    metric_ids = get_execution_outputs(delta_root, 1, "metrics")
-    composite_ids = set(get_execution_outputs(delta_root, 0, "dataset"))
+    # Metric artifacts have provenance to the composite output (step 1)
+    metric_ids = get_execution_outputs(delta_root, 2, "metrics")
+    composite_ids = set(get_execution_outputs(delta_root, 1, "dataset"))
     assert len(metric_ids) == 2
 
     df_edges = read_table(delta_root, "provenance/artifact_edges")
