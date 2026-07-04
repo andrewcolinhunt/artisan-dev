@@ -47,7 +47,12 @@ from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.hashing import compute_artifact_id, compute_step_spec_id, digest_utf8
+from artisan.utils.hashing import (
+    compute_artifact_id,
+    compute_step_spec_id,
+    digest_utf8,
+    effective_config_payload,
+)
 from artisan.utils.json import artisan_json_default as _set_default
 from artisan.utils.path import uri_join, uri_parent
 
@@ -1576,7 +1581,7 @@ class PipelineManager:
                 if k not in base_fields
             }
 
-        config_overrides = ov.cache_payload()
+        config_overrides = effective_config_payload(temp_instance)
 
         input_spec = self._build_input_spec(inputs)
         step_spec_id = compute_step_spec_id(

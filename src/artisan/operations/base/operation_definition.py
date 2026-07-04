@@ -93,6 +93,19 @@ class OperationDefinition(BaseModel):
 
     # ---------- Metadata ----------
     name: ClassVar[str] = ""
+    version: ClassVar[str] = "1"
+    """Execute-behavior version, folded into the cache key.
+
+    Bump when ``execute`` produces different output for identical inputs and
+    config — a new algorithm, a changed hard-coded default, a dependency
+    upgrade that moves numbers. A bump invalidates only this op's cached
+    results (its ``version`` is one component of every spec id it produces).
+
+    This is the author's explicit lever for the code-identity hole: the cache
+    cannot see edits to an ``execute`` body, and hashing op source was
+    rejected (every unrelated edit would thrash the dev-loop cache). Leaving
+    ``version`` unchanged across a behavior change is a correctness bug the
+    author owns."""
     description: ClassVar[str] = ""
     examples: ClassVar[list[OperationExample]] = []
     """Author-declared usage examples. Surfaced by ``artisan.registry.examples(name)``."""
@@ -455,6 +468,13 @@ class OperationDefinition(BaseModel):
         # Skip abstract classes (no name set)
         if not cls.name:
             return
+
+        if not isinstance(cls.version, str) or not cls.version:
+            msg = (
+                f"{cls.__name__}.version must be a non-empty string "
+                f"(got {cls.version!r}) — it is folded verbatim into the cache key"
+            )
+            raise TypeError(msg)
 
         # Exactly one execute slot must be implemented
         has_execute_function = (

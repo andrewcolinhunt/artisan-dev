@@ -55,7 +55,7 @@ from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
 from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
-from artisan.utils.hashing import serialize_params
+from artisan.utils.hashing import effective_config_payload, serialize_params
 from artisan.utils.path import uri_join, uri_parent
 from artisan.utils.spawn import suppress_main_reimport
 from artisan.utils.timing import phase_timer
@@ -535,9 +535,11 @@ def execute_step(
     operation = instantiate_operation(operation_class, ov)
     user_overrides = ov.params or {}
 
-    # Cache-affecting overrides (environment, tool, compute_provider,
-    # compute_resources, group_by) folded into config_overrides for hashing.
-    config_overrides = ov.cache_payload()
+    # Cache-affecting config (environment, tool, compute_provider,
+    # compute_resources, group_by, version) read off the instantiated op —
+    # class defaults + applied overrides — folded into config_overrides for
+    # hashing, symmetric with the merged-params channel.
+    config_overrides = effective_config_payload(operation)
 
     # Resolve runtime knobs against pipeline defaults: ov carries the raw
     # per-step values; an unset one falls back to config.

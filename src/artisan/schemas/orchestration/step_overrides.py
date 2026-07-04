@@ -6,13 +6,16 @@ constructed once at the public API boundary via ``from_user`` (which
 coerces typed-or-dict inputs to canonical dict-or-str form) and threaded
 by reference through validation, spec-id hashing, and dispatch.
 
-Two ``ClassVar`` tuples classify every field as either a *cache field*
-(folded into the ``config_overrides`` hash channel via ``cache_payload``)
-or a *runtime field*. A unit test asserts the classification is total, so
-a newly added override cannot silently escape the cache key. ``params`` is
+Two ``ClassVar`` tuples classify every field as either a *cache field* or a
+*runtime field*. A cache field is an override knob whose effect reaches the
+step/execution spec id by mutating an instance field that
+``effective_config_payload`` reads off the instantiated operation (class
+defaults + applied overrides); a runtime field does not enter that
+config-hash channel. A unit test asserts the classification is total, so a
+newly added override cannot silently escape the cache decision. ``params`` is
 output-affecting but keeps its own full-merged-params hash channel in
 ``_prepare_step_spec``; it is therefore a runtime field here, not a
-``config_overrides`` field.
+config-hash field.
 """
 
 from __future__ import annotations
@@ -71,19 +74,6 @@ def _coerce(
     return value
 
 
-def _to_json(value: Any) -> Any:
-    """Dump a Pydantic model to a JSON-safe dict; pass other values through.
-
-    Mirrors the legacy config-overrides merge's model-dump step so the cache
-    payload stays JSON-serializable and dict-vs-model forms hash alike.
-    ``from_user`` coerces models to dicts up front, so in practice this is
-    a passthrough — it exists to reproduce the legacy behavior exactly.
-    """
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    return value
-
-
 @dataclass(frozen=True)
 class StepOverrides:
     """Per-step user overrides, coerced to canonical dict-or-str form.
@@ -123,7 +113,9 @@ class StepOverrides:
     skip_cache: bool = False
     name: str | None = None
 
-    # Fields folded into the config_overrides hash channel (cache_payload).
+    # Override knobs whose effect reaches the cache key by mutating an
+    # instance field that ``effective_config_payload`` reads off the
+    # instantiated operation (see the module docstring).
     _CACHE_FIELDS: ClassVar[tuple[str, ...]] = (
         "environment",
         "tool",
@@ -188,31 +180,3 @@ class StepOverrides:
             skip_cache=skip_cache,
             name=name,
         )
-
-    def cache_payload(self) -> dict[str, Any] | None:
-        """Build the ``config_overrides`` hash payload from the cache fields.
-
-        Reproduces the legacy config-overrides merge byte-for-byte, so
-        existing caches stay valid. The omit rules are deliberately
-        non-uniform: ``tool`` is omitted when falsy (an empty dict), the
-        other three dict/str fields when ``None``; ``group_by`` is
-        serialized via its ``.value``. Any Pydantic model surviving on a
-        field is dumped via ``model_dump(mode="json")`` (``from_user`` has
-        already coerced models to dicts, so this is a passthrough in
-        practice).
-
-        Returns:
-            The merged override dict, or ``None`` when no cache field is set.
-        """
-        merged: dict[str, Any] = {}
-        if self.environment is not None:
-            merged["environment"] = _to_json(self.environment)
-        if self.tool:
-            merged["tool"] = _to_json(self.tool)
-        if self.compute_provider is not None:
-            merged["compute_provider"] = _to_json(self.compute_provider)
-        if self.compute_resources is not None:
-            merged["compute_resources"] = _to_json(self.compute_resources)
-        if self.group_by is not None:
-            merged["group_by"] = self.group_by.value
-        return merged or None
