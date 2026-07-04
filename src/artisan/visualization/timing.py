@@ -278,16 +278,9 @@ class PipelineTimings:
         Returns:
             matplotlib Figure.
         """
-        import matplotlib.pyplot as plt
-
         steps = self._data["steps"]
         if step_numbers is not None:
             steps = [s for s in steps if s["step_number"] in step_numbers]
-        if not steps:
-            fig, ax = plt.subplots(1, 1, **kwargs)
-            ax.text(0.5, 0.5, "No steps", ha="center", va="center")
-            plt.close(fig)
-            return fig
 
         # Collect all phase names (excluding "total") in order
         all_phases = _collect_phase_names(step["timings"] for step in steps)
@@ -298,29 +291,14 @@ class PipelineTimings:
             for p in all_phases:
                 phase_data[p].append(step["timings"].get(p, 0.0))
 
-        fig, ax = plt.subplots(
-            figsize=kwargs.pop("figsize", (10, max(2, len(steps) * 0.8))),
+        return self._plot_stacked_phases(
+            labels,
+            phase_data,
+            all_phases,
+            "Step Phase Timings",
+            "No steps",
             **kwargs,
         )
-
-        y_pos = range(len(labels))
-        lefts = [0.0] * len(labels)
-        colors = _get_phase_colors(all_phases)
-
-        for phase in all_phases:
-            values = phase_data[phase]
-            ax.barh(y_pos, values, left=lefts, label=phase, color=colors[phase])
-            lefts = [left + v for left, v in zip(lefts, values, strict=False)]
-
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels(labels)
-        ax.set_xlabel("Time (seconds)")
-        ax.set_title("Step Phase Timings")
-        ax.legend(loc="lower right", fontsize="small")
-        ax.invert_yaxis()
-        fig.tight_layout()
-        plt.close(fig)
-        return fig
 
     def plot_execution_stats(self, **kwargs: Any) -> Any:
         """Plot stacked horizontal bar chart of mean execution phase timings.
@@ -334,17 +312,8 @@ class PipelineTimings:
         Returns:
             matplotlib Figure.
         """
-        import matplotlib.pyplot as plt
-
-        steps = self._data["steps"]
         # Only include steps that have executions
-        steps_with_execs = [s for s in steps if s["executions"]]
-
-        if not steps_with_execs:
-            fig, ax = plt.subplots(1, 1, **kwargs)
-            ax.text(0.5, 0.5, "No executions", ha="center", va="center")
-            plt.close(fig)
-            return fig
+        steps_with_execs = [s for s in self._data["steps"] if s["executions"]]
 
         # Collect mean timings per step
         all_phases = _collect_phase_names(
@@ -360,14 +329,52 @@ class PipelineTimings:
             for p in all_phases:
                 phase_data[p].append(stats_map.get(p, 0.0))
 
-        n_bars = len(labels)
-        fig, ax = plt.subplots(
-            figsize=kwargs.pop("figsize", (10, max(2, n_bars * 0.8))),
+        return self._plot_stacked_phases(
+            labels,
+            phase_data,
+            all_phases,
+            "Mean Execution Phase Timings",
+            "No executions",
             **kwargs,
         )
 
-        y_pos = range(n_bars)
-        lefts = [0.0] * n_bars
+    def _plot_stacked_phases(
+        self,
+        labels: list[str],
+        phase_data: dict[str, list[float]],
+        all_phases: list[str],
+        title: str,
+        empty_message: str,
+        **kwargs: Any,
+    ) -> Any:
+        """Render a stacked horizontal bar chart of phase timings.
+
+        Args:
+            labels: One y-axis label per bar. Empty renders the placeholder.
+            phase_data: Phase name -> per-bar values (aligned with ``labels``).
+            all_phases: Phase names in stacking/legend order.
+            title: Axis title.
+            empty_message: Text drawn when ``labels`` is empty.
+            **kwargs: Forwarded to ``plt.subplots`` (e.g. ``figsize``).
+
+        Returns:
+            matplotlib Figure.
+        """
+        import matplotlib.pyplot as plt
+
+        if not labels:
+            fig, ax = plt.subplots(1, 1, **kwargs)
+            ax.text(0.5, 0.5, empty_message, ha="center", va="center")
+            plt.close(fig)
+            return fig
+
+        fig, ax = plt.subplots(
+            figsize=kwargs.pop("figsize", (10, max(2, len(labels) * 0.8))),
+            **kwargs,
+        )
+
+        y_pos = range(len(labels))
+        lefts = [0.0] * len(labels)
         colors = _get_phase_colors(all_phases)
 
         for phase in all_phases:
@@ -378,7 +385,7 @@ class PipelineTimings:
         ax.set_yticks(y_pos)
         ax.set_yticklabels(labels)
         ax.set_xlabel("Time (seconds)")
-        ax.set_title("Mean Execution Phase Timings")
+        ax.set_title(title)
         ax.legend(loc="lower right", fontsize="small")
         ax.invert_yaxis()
         fig.tight_layout()
