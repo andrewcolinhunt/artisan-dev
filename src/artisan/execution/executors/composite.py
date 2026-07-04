@@ -119,16 +119,14 @@ def run_composite(
         )
 
         # Build execution context for recording
-        from artisan.execution.context.builder import (
-            build_creator_execution_context,
-        )
+        from artisan.execution.context.builder import build_execution_context
 
         working_root = runtime_env.working_root
         if working_root is None:
             msg = "RuntimeEnvironment.working_root must be set"
             raise ValueError(msg)
 
-        execution_context = build_creator_execution_context(
+        execution_context = build_execution_context(
             execution_run_id=execution_run_id,
             execution_spec_id=composite_transport.execution_spec_id,
             step_number=composite_transport.step_number,

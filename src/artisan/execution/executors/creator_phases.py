@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from artisan.execution.executors.creator import LifecycleResult
 
-from artisan.execution.context.builder import build_creator_execution_context
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.context.sandbox import create_sandbox, output_snapshot
 from artisan.execution.inputs.instantiation import instantiate_inputs
 from artisan.execution.inputs.materialization import materialize_inputs
@@ -197,7 +197,7 @@ def prep_unit(
         fs = runtime_env.storage.filesystem()
         storage_options = runtime_env.storage.delta_storage_options()
 
-        execution_context = build_creator_execution_context(
+        execution_context = build_execution_context(
             execution_run_id=execution_run_id,
             execution_spec_id=unit.execution_spec_id,
             step_number=unit.step_number,

@@ -12,7 +12,7 @@ from typing import Any
 
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.compute.routing import create_execute_router
-from artisan.execution.context.builder import build_creator_execution_context
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.staging.parquet_writer import StagingResult
@@ -325,7 +325,7 @@ def _build_execution_context(
         raise ValueError(msg)
     fs = runtime_env.storage.filesystem()
     storage_options = runtime_env.storage.delta_storage_options()
-    return build_creator_execution_context(
+    return build_execution_context(
         execution_run_id=execution_run_id,
         execution_spec_id=unit.execution_spec_id,
         step_number=unit.step_number,
