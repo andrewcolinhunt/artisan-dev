@@ -212,18 +212,8 @@ class CollapsedCompositeContext(CompositeContext):
         from artisan.orchestration.engine.step_executor import instantiate_operation
         from artisan.utils.hashing import compute_execution_spec_id
 
-        op_config: dict[str, Any] | None = None
-        if environment or tool:
-            op_config = {}
-            if environment:
-                op_config["environment"] = environment
-            if tool:
-                op_config["tool"] = tool
-
-        env_override = op_config.get("environment") if op_config else None
-        tool_override = op_config.get("tool") if op_config else None
         instance = instantiate_operation(
-            operation, params, environment=env_override, tool=tool_override
+            operation, params, environment=environment or None, tool=tool or None
         )
 
         # Build dummy spec_id for internal operation
