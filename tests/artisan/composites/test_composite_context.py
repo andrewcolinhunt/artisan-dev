@@ -185,6 +185,28 @@ class TestCollapsedRunCreator:
         assert len(ctx.get_all_artifacts()) == 1
 
 
+class TestCollapsedPreCuratorCommit:
+    @patch("artisan.storage.io.commit.DeltaCommitter.commit_all_tables")
+    def test_pre_curator_commit_propagates_commit_error(self, mock_commit):
+        """A genuine commit failure during pre-curator commit propagates."""
+        from artisan.errors import CommitError
+
+        mock_commit.side_effect = CommitError(["index"])
+
+        ctx = CollapsedCompositeContext(
+            sources={"data": ArtifactSource.from_artifacts([_art()])},
+            composite=InnerComposite(),
+            runtime_env=_make_runtime_env(),
+            step_number=0,
+            execution_run_id="r" * 32,
+            intermediates=CompositeIntermediates.DISCARD,
+            artifact_store=_make_store(),
+        )
+
+        with pytest.raises(CommitError):
+            ctx._pre_curator_commit()
+
+
 class TestCollapsedRunNested:
     def test_nested_composite_passthrough(self):
         """Nested composite that passes input through to output."""
