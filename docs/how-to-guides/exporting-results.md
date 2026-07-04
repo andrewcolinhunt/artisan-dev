@@ -91,7 +91,7 @@ path = artifact.materialize_to(output_dir)
 ### Export all data artifacts from a step
 
 ```python
-artifact_ids = store.load_artifact_ids_by_type("data", step_numbers=[2])
+artifact_ids = store.provenance.load_artifact_ids_by_type("data", step_numbers=[2])
 artifacts = store.get_artifacts_by_type(list(artifact_ids), "data")
 
 output_dir = Path("exported/step_2/")
