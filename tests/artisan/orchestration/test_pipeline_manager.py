@@ -37,8 +37,10 @@ from artisan.orchestration.pipeline_manager import (
     _validate_resources,
 )
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -1778,11 +1780,7 @@ class TestValidateOperationOverrides:
         PipelineManager._validate_operation_overrides(
             _MockOp,
             {"data": ["a" * 32]},
-            None,
-            None,
-            None,
-            None,
-            None,
+            StepOverrides.from_user(),
         )
 
     def test_invalid_params_raises(self):
@@ -1790,11 +1788,7 @@ class TestValidateOperationOverrides:
             PipelineManager._validate_operation_overrides(
                 _ParamsOp,
                 None,
-                {"bad_param": 1},
-                None,
-                None,
-                None,
-                None,
+                StepOverrides.from_user(params={"bad_param": 1}),
             )
 
     def test_invalid_resources_raises(self):
@@ -1802,11 +1796,7 @@ class TestValidateOperationOverrides:
             PipelineManager._validate_operation_overrides(
                 _MockOp,
                 None,
-                None,
-                {"bogus": 1},
-                None,
-                None,
-                None,
+                StepOverrides.from_user(runner_resources={"bogus": 1}),
             )
 
     def test_invalid_execution_raises(self):
@@ -1814,11 +1804,7 @@ class TestValidateOperationOverrides:
             PipelineManager._validate_operation_overrides(
                 _MockOp,
                 None,
-                None,
-                None,
-                {"bad_key": 1},
-                None,
-                None,
+                StepOverrides.from_user(batch_strategy={"bad_key": 1}),
             )
 
     def test_invalid_input_roles_raises(self):
@@ -1826,11 +1812,7 @@ class TestValidateOperationOverrides:
             PipelineManager._validate_operation_overrides(
                 _MockOp,
                 {"bad_role": "val"},
-                None,
-                None,
-                None,
-                None,
-                None,
+                StepOverrides.from_user(),
             )
 
     def test_invalid_group_by_raises_type_error(self):
@@ -1841,14 +1823,9 @@ class TestValidateOperationOverrides:
             PipelineManager._validate_operation_overrides(
                 _MockOp,
                 {"data": ["a" * 32]},
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                "cross_product",  # str instead of enum
+                StepOverrides.from_user(
+                    group_by="cross_product"
+                ),  # str instead of enum
             )
         # Error message must enumerate valid members for usability.
         for member in GroupByStrategy:
@@ -1861,14 +1838,7 @@ class TestValidateOperationOverrides:
         PipelineManager._validate_operation_overrides(
             _MockOp,
             {"data": ["a" * 32]},
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            GroupByStrategy.CROSS_PRODUCT,
+            StepOverrides.from_user(group_by=GroupByStrategy.CROSS_PRODUCT),
         )
 
     def test_group_by_none_passes(self):
@@ -1876,14 +1846,7 @@ class TestValidateOperationOverrides:
         PipelineManager._validate_operation_overrides(
             _MockOp,
             {"data": ["a" * 32]},
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            StepOverrides.from_user(),
         )
 
 
@@ -2308,6 +2271,7 @@ def _slow_execute_step(**kwargs):
     import time
 
     from artisan.orchestration.engine.step_executor import build_step_result
+    from artisan.schemas.enums import FailurePolicy
 
     time.sleep(0.2)
     return build_step_result(
@@ -2315,7 +2279,7 @@ def _slow_execute_step(**kwargs):
         step_number=kwargs["step_number"],
         succeeded_count=1,
         failed_count=0,
-        failure_policy=kwargs["failure_policy"],
+        failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
     )
 
 
@@ -2382,3 +2346,59 @@ class TestSilentMisconfigRejection:
                 _OpForTests,
                 compute_provider={"modal": {"image": "ghcr.io/x/y:latest"}},
             )
+
+
+# =============================================================================
+# Golden step_spec_ids — byte-identical cache keys across the StepOverrides
+# refactor. Recorded on ach/dev @ a776559 (pre-refactor), driven end-to-end
+# through submit() -> StepOverrides.from_user -> cache_payload ->
+# compute_step_spec_id. A mismatch means every cached step with that override
+# shape will miss-and-rerun; confirm that is intended before updating.
+# =============================================================================
+
+_GOLDEN_STEP_SPEC_IDS: dict[str, str] = {
+    "bare": "b89945eeda6bee25ac0639962e21eebc",
+    "environment_local": "9fb21351111eb94428335b78434ca9f9",
+    "environment_docker_dict": "cd74a57b94bb17222db11b652288ba89",
+    "compute_provider_modal": "e95b1f76bf5008691aba6fb1b00778c7",
+    "compute_resources_a100": "a8521640e843815db87e9dc86aa16287",
+    "group_by_cross": "edad9e45dd51b7a997c548b60a7b78f9",
+}
+
+_GOLDEN_OVERRIDES: dict[str, dict[str, Any]] = {
+    "bare": {},
+    "environment_local": {"environment": "local"},
+    "environment_docker_dict": {
+        "environment": {"active": "docker", "docker": {"image": "img:v2"}}
+    },
+    "compute_provider_modal": {"compute_provider": "modal"},
+    "compute_resources_a100": {"compute_resources": {"gpu": "A100", "memory_gb": 32}},
+    "group_by_cross": {"group_by": GroupByStrategy.CROSS_PRODUCT},
+}
+
+
+@pytest.mark.parametrize("label", sorted(_GOLDEN_STEP_SPEC_IDS))
+@patch("artisan.orchestration.pipeline_manager.execute_step")
+@patch("artisan.orchestration.pipeline_manager.StepTracker")
+def test_step_spec_id_is_byte_identical(
+    mock_tracker_cls, mock_execute, label, tmp_path
+):
+    """submit() reproduces the pre-refactor step_spec_id for each override combo."""
+    mock_tracker = MagicMock()
+    mock_tracker.check_cache.return_value = None
+    mock_tracker_cls.return_value = mock_tracker
+    mock_execute.return_value = StepResult(
+        step_name=_MockOp.name,
+        step_number=0,
+        success=True,
+        total_count=0,
+        succeeded_count=0,
+        failed_count=0,
+        duration_seconds=0.0,
+    )
+
+    pipeline = _make_pipeline(tmp_path)
+    pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, **_GOLDEN_OVERRIDES[label])
+    pipeline.finalize()
+
+    assert pipeline._step_spec_ids[0] == _GOLDEN_STEP_SPEC_IDS[label]

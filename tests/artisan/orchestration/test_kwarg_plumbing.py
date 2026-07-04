@@ -252,11 +252,13 @@ def test_kwarg_reaches_execute_step(
 
     assert mock_execute.called, "execute_step was never called"
     call_kwargs = mock_execute.call_args.kwargs
-    assert kwarg in call_kwargs, (
-        f"submit({kwarg}=...) did not reach execute_step. "
+    # Overrides now reach execute_step bundled in the StepOverrides carrier.
+    assert "ov" in call_kwargs, (
+        f"execute_step was called without an ov carrier. "
         f"call_kwargs were: {sorted(call_kwargs)}"
     )
-    assert call_kwargs[kwarg] == sentinel, (
-        f"submit({kwarg}={sentinel!r}) reached execute_step but the value "
-        f"was transformed to {call_kwargs[kwarg]!r}"
+    actual = getattr(call_kwargs["ov"], kwarg)
+    assert actual == sentinel, (
+        f"submit({kwarg}={sentinel!r}) reached execute_step but ov.{kwarg} "
+        f"was {actual!r}"
     )

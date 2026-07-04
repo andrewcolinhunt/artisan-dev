@@ -27,6 +27,7 @@ from artisan.schemas.execution.curator_result import (
     PassthroughResult,
 )
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_models import PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -1975,8 +1976,7 @@ class TestInstantiateOperationGroupByOverride:
         # MockMultiInputCreatorOp declares group_by = ZIP at class level.
         instance = instantiate_operation(
             MockMultiInputCreatorOp,
-            params=None,
-            group_by=GroupByStrategy.CROSS_PRODUCT,
+            StepOverrides.from_user(group_by=GroupByStrategy.CROSS_PRODUCT),
         )
         assert instance.group_by is GroupByStrategy.CROSS_PRODUCT
 
@@ -1986,8 +1986,7 @@ class TestInstantiateOperationGroupByOverride:
 
         instance = instantiate_operation(
             MockMultiInputCreatorOp,
-            params=None,
-            group_by=None,
+            StepOverrides.from_user(),
         )
         assert instance.group_by is GroupByStrategy.ZIP
 
@@ -1999,36 +1998,29 @@ class TestInstantiateOperationGroupByOverride:
         # MockNoGroupByCreatorOp declares no class-level group_by.
         instance = instantiate_operation(
             MockNoGroupByCreatorOp,
-            params=None,
-            group_by=GroupByStrategy.CROSS_PRODUCT,
+            StepOverrides.from_user(group_by=GroupByStrategy.CROSS_PRODUCT),
         )
         assert instance.group_by is GroupByStrategy.CROSS_PRODUCT
 
 
-class TestMergeConfigOverridesGroupBy:
-    """``_merge_config_overrides`` emits ``group_by.value`` into the
+class TestCachePayloadGroupBy:
+    """``StepOverrides.cache_payload`` emits ``group_by.value`` into the
     config-overrides payload only when an override is set, so existing
     cache rows hashed without ``group_by`` are preserved."""
 
     def test_group_by_none_omits_key(self):
-        from artisan.orchestration.engine.step_executor import _merge_config_overrides
-
-        # All inputs None → merged result is None.
-        result = _merge_config_overrides(None, None, group_by=None)
-        assert result is None
+        # No cache-affecting override set → payload is None.
+        assert StepOverrides.from_user(group_by=None).cache_payload() is None
 
     def test_group_by_set_emits_value_as_string(self):
-        from artisan.orchestration.engine.step_executor import _merge_config_overrides
-
-        result = _merge_config_overrides(
-            None, None, group_by=GroupByStrategy.CROSS_PRODUCT
-        )
+        result = StepOverrides.from_user(
+            group_by=GroupByStrategy.CROSS_PRODUCT
+        ).cache_payload()
         assert result == {"group_by": "cross_product"}
 
     def test_distinct_strategies_produce_distinct_step_spec_ids(self):
         """Two strategies → two ``step_spec_id`` values. Locks in
         Design Criterion: per-step cache key reflects the override."""
-        from artisan.orchestration.engine.step_executor import _merge_config_overrides
         from artisan.utils.hashing import compute_step_spec_id
 
         common = {
@@ -2039,19 +2031,19 @@ class TestMergeConfigOverridesGroupBy:
         }
         spec_a = compute_step_spec_id(
             **common,
-            config_overrides=_merge_config_overrides(
-                None, None, group_by=GroupByStrategy.LINEAGE
-            ),
+            config_overrides=StepOverrides.from_user(
+                group_by=GroupByStrategy.LINEAGE
+            ).cache_payload(),
         )
         spec_b = compute_step_spec_id(
             **common,
-            config_overrides=_merge_config_overrides(
-                None, None, group_by=GroupByStrategy.CROSS_PRODUCT
-            ),
+            config_overrides=StepOverrides.from_user(
+                group_by=GroupByStrategy.CROSS_PRODUCT
+            ).cache_payload(),
         )
         spec_none = compute_step_spec_id(
             **common,
-            config_overrides=_merge_config_overrides(None, None, group_by=None),
+            config_overrides=StepOverrides.from_user(group_by=None).cache_payload(),
         )
         assert spec_a != spec_b
         # ``None`` preserves legacy hashes (no group_by in payload).

@@ -386,14 +386,11 @@ class TestNoOverrides:
         from artisan.orchestration.engine.step_executor import (
             instantiate_operation,
         )
+        from artisan.schemas.orchestration.step_overrides import StepOverrides
 
         instance = instantiate_operation(
             MockOpWithParams,
-            params=None,
-            runner_resources=None,
-            batch_strategy=None,
-            environment=None,
-            tool=None,
+            StepOverrides.from_user(),
         )
         assert instance.params.count == 1
         assert instance.runner_resources.cpus == 1

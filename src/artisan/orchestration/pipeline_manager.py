@@ -43,6 +43,7 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -515,118 +516,6 @@ def _validate_tool(
     if unknown:
         msg = f"Unknown tool keys: {sorted(unknown)}. Valid keys: {sorted(valid_keys)}"
         raise ValueError(msg)
-
-
-def _coerce_runner_resources(
-    value: dict[str, Any] | RunnerResources | None,
-) -> dict[str, Any] | None:
-    """Normalize typed-or-dict RunnerResources input to a dict.
-
-    Args:
-        value: RunnerResources instance, dict, or None.
-
-    Returns:
-        Dict suitable for downstream override merging, or None.
-    """
-    if value is None:
-        return None
-    if isinstance(value, RunnerResources):
-        return value.model_dump(exclude_defaults=True)
-    return value
-
-
-def _coerce_compute_resources(
-    value: dict[str, Any] | ComputeResources | None,
-) -> dict[str, Any] | None:
-    """Normalize typed-or-dict ComputeResources input to a dict.
-
-    Args:
-        value: ComputeResources instance, dict, or None.
-
-    Returns:
-        Dict suitable for downstream override merging, or None.
-    """
-    if value is None:
-        return None
-    if isinstance(value, ComputeResources):
-        return value.model_dump(exclude_defaults=True)
-    return value
-
-
-def _coerce_batch_strategy(
-    value: dict[str, Any] | BatchStrategy | None,
-) -> dict[str, Any] | None:
-    """Normalize typed-or-dict BatchStrategy input to a dict.
-
-    Args:
-        value: BatchStrategy instance, dict, or None.
-
-    Returns:
-        Dict suitable for downstream override merging, or None.
-    """
-    if value is None:
-        return None
-    if isinstance(value, BatchStrategy):
-        return value.model_dump(exclude_defaults=True)
-    return value
-
-
-def _coerce_tool(
-    value: dict[str, Any] | ToolSpec | None,
-) -> dict[str, Any] | None:
-    """Normalize typed-or-dict ToolSpec input to a dict.
-
-    Args:
-        value: ToolSpec instance, dict, or None.
-
-    Returns:
-        Dict suitable for downstream override merging, or None.
-    """
-    if value is None:
-        return None
-    if isinstance(value, ToolSpec):
-        return value.model_dump(exclude_defaults=True)
-    return value
-
-
-def _coerce_environment(
-    value: str | dict[str, Any] | Environments | None,
-) -> str | dict[str, Any] | None:
-    """Normalize typed-or-dict-or-str Environments input.
-
-    String form (active-provider selector) passes through unchanged.
-
-    Args:
-        value: Environments instance, dict, str, or None.
-
-    Returns:
-        Str, dict, or None for downstream override merging.
-    """
-    if value is None or isinstance(value, str):
-        return value
-    if isinstance(value, Environments):
-        return value.model_dump(exclude_defaults=True)
-    return value
-
-
-def _coerce_compute_provider(
-    value: str | dict[str, Any] | ComputeProvider | None,
-) -> str | dict[str, Any] | None:
-    """Normalize typed-or-dict-or-str ComputeProvider input.
-
-    String form (active-provider selector) passes through unchanged.
-
-    Args:
-        value: ComputeProvider instance, dict, str, or None.
-
-    Returns:
-        Str, dict, or None for downstream override merging.
-    """
-    if value is None or isinstance(value, str):
-        return value
-    if isinstance(value, ComputeProvider):
-        return value.model_dump(exclude_defaults=True)
-    return value
 
 
 def _validate_input_roles(
@@ -1408,14 +1297,23 @@ class PipelineManager:
         """
         from artisan.composites.base.composite_definition import CompositeDefinition
 
-        # 0. Normalize typed-or-dict inputs to dict-or-str at the boundary so
-        #    every downstream consumer sees a single shape.
-        runner_resources = _coerce_runner_resources(runner_resources)
-        compute_resources = _coerce_compute_resources(compute_resources)
-        batch_strategy = _coerce_batch_strategy(batch_strategy)
-        environment = _coerce_environment(environment)
-        tool = _coerce_tool(tool)
-        compute_provider = _coerce_compute_provider(compute_provider)
+        # 0. Bundle + coerce every per-step override once at the boundary so
+        #    every downstream consumer sees one frozen, single-shaped record.
+        ov = StepOverrides.from_user(
+            params=params,
+            step_runner=step_runner,
+            runner_resources=runner_resources,
+            batch_strategy=batch_strategy,
+            environment=environment,
+            tool=tool,
+            compute_provider=compute_provider,
+            compute_resources=compute_resources,
+            failure_policy=failure_policy,
+            group_by=group_by,
+            compact=compact,
+            skip_cache=skip_cache,
+            name=name,
+        )
 
         # 1. Reject composites at the boundary — they have a separate surface
         #    (``submit_composite``/``run_composite``) so composite-only kwargs
@@ -1431,20 +1329,9 @@ class PipelineManager:
         # 2. Fail-fast validation before any blocking work. Checks params,
         #    resources, execution, environment, and tool keys against the
         #    operation's declared fields, plus input role/type compatibility.
-        self._validate_operation_overrides(
-            operation,
-            inputs,
-            params,
-            runner_resources,
-            batch_strategy,
-            environment,
-            tool,
-            compute_provider,
-            compute_resources,
-            group_by,
-        )
+        self._validate_operation_overrides(operation, inputs, ov)
 
-        step_name = name or operation.name
+        step_name = ov.name or operation.name
 
         # 3. Early exit: skip if pipeline is stopped (earlier step had empty
         #    inputs) or cancelled. Also blocks until predecessor steps finish,
@@ -1461,21 +1348,14 @@ class PipelineManager:
         #    drives the step-level cache.
         step_spec_id, temp_instance = self._prepare_step_spec(
             operation,
-            params,
-            runner_resources,
-            batch_strategy,
-            environment,
-            tool,
-            compute_provider,
-            compute_resources,
+            ov,
             step_number,
             inputs,
-            group_by,
         )
 
         # 5. Cache check: if a prior run produced identical spec_id, return
         #    the cached StepResult immediately without re-executing.
-        if not (skip_cache or self._config.skip_cache):
+        if not (ov.skip_cache or self._config.skip_cache):
             cached = self._try_cached_step(
                 step_spec_id,
                 step_number,
@@ -1498,7 +1378,7 @@ class PipelineManager:
                 step_number,
                 step_spec_id,
                 step_name,
-                failure_policy,
+                ov.failure_policy,
             )
             if isinstance(file_result, StepFuture):
                 return file_result
@@ -1510,22 +1390,11 @@ class PipelineManager:
         return self._dispatch_step(
             operation=operation,
             inputs=inputs,
-            params=params,
-            step_runner=step_runner,
-            runner_resources=runner_resources,
-            batch_strategy=batch_strategy,
-            environment=environment,
-            tool=tool,
-            compute_provider=compute_provider,
-            compute_resources=compute_resources,
-            failure_policy=failure_policy,
-            compact=compact,
+            ov=ov,
             step_name=step_name,
             step_number=step_number,
             step_spec_id=step_spec_id,
             temp_instance=temp_instance,
-            skip_cache=skip_cache,
-            group_by=group_by,
         )
 
     # =========================================================================
@@ -1536,14 +1405,7 @@ class PipelineManager:
     def _validate_operation_overrides(
         operation: type[OperationDefinition],
         inputs: Any,
-        params: dict[str, Any] | None,
-        runner_resources: dict[str, Any] | None,
-        batch_strategy: dict[str, Any] | None,
-        environment: str | dict[str, Any] | None,
-        tool: dict[str, Any] | None,
-        compute_provider: str | dict[str, Any] | None = None,
-        compute_resources: dict[str, Any] | None = None,
-        group_by: GroupByStrategy | None = None,
+        ov: StepOverrides,
     ) -> None:
         """Validate all overrides against the operation (fail-fast).
 
@@ -1553,24 +1415,24 @@ class PipelineManager:
         validation covers role existence, required roles, and upstream
         type compatibility.
         """
-        if params:
-            _validate_params(operation, params)
-        if runner_resources:
-            _validate_resources(runner_resources)
-        if batch_strategy:
-            _validate_execution(batch_strategy)
-        if environment is not None:
-            _validate_environment(operation, environment)
-        if tool:
-            _validate_tool(operation, tool)
-        if isinstance(compute_provider, dict):
-            _validate_compute_provider(compute_provider)
-        if isinstance(compute_resources, dict):
-            _validate_compute_resources(compute_resources)
-        if group_by is not None and not isinstance(group_by, GroupByStrategy):
+        if ov.params:
+            _validate_params(operation, ov.params)
+        if ov.runner_resources:
+            _validate_resources(ov.runner_resources)
+        if ov.batch_strategy:
+            _validate_execution(ov.batch_strategy)
+        if ov.environment is not None:
+            _validate_environment(operation, ov.environment)
+        if ov.tool:
+            _validate_tool(operation, ov.tool)
+        if isinstance(ov.compute_provider, dict):
+            _validate_compute_provider(ov.compute_provider)
+        if isinstance(ov.compute_resources, dict):
+            _validate_compute_resources(ov.compute_resources)
+        if ov.group_by is not None and not isinstance(ov.group_by, GroupByStrategy):
             msg = (
                 f"group_by must be a GroupByStrategy member, got "
-                f"{type(group_by).__name__}: {group_by!r}. Valid members: "
+                f"{type(ov.group_by).__name__}: {ov.group_by!r}. Valid members: "
                 f"{[s.name for s in GroupByStrategy]}."
             )
             raise TypeError(msg)
@@ -1681,16 +1543,9 @@ class PipelineManager:
     def _prepare_step_spec(
         self,
         operation: type[OperationDefinition],
-        params: dict[str, Any] | None,
-        runner_resources: dict[str, Any] | None,
-        batch_strategy: dict[str, Any] | None,
-        environment: str | dict[str, Any] | None,
-        tool: dict[str, Any] | None,
-        compute_provider: str | dict[str, Any] | None,
-        compute_resources: dict[str, Any] | None,
+        ov: StepOverrides,
         step_number: int,
         inputs: Any,
-        group_by: GroupByStrategy | None = None,
     ) -> tuple[str, OperationDefinition]:
         """Instantiate operation and compute deterministic step spec ID.
 
@@ -1708,17 +1563,7 @@ class PipelineManager:
         """
         # Instantiate with merged defaults + user overrides so we can
         # dump the *full* params (including defaults) for hashing.
-        temp_instance = instantiate_operation(
-            operation,
-            params,
-            runner_resources,
-            batch_strategy,
-            environment,
-            tool,
-            compute_provider,
-            compute_resources=compute_resources,
-            group_by=group_by,
-        )
+        temp_instance = instantiate_operation(operation, ov)
         if "params" in type(temp_instance).model_fields:
             full_params = temp_instance.params.model_dump(mode="json")  # type: ignore[attr-defined]
         else:
@@ -1731,12 +1576,7 @@ class PipelineManager:
                 if k not in base_fields
             }
 
-        # TODO: _merge_config_overrides should not start with _
-        from artisan.orchestration.engine.step_executor import _merge_config_overrides
-
-        config_overrides = _merge_config_overrides(
-            environment, tool, compute_provider, compute_resources, group_by=group_by
-        )
+        config_overrides = ov.cache_payload()
 
         input_spec = self._build_input_spec(inputs)
         step_spec_id = compute_step_spec_id(
@@ -1870,22 +1710,12 @@ class PipelineManager:
         self,
         operation: type[OperationDefinition],
         inputs: Any,
-        params: dict[str, Any] | None,
-        step_runner: str | RunnerBase | None,
-        runner_resources: dict[str, Any] | Any | None,
-        batch_strategy: dict[str, Any] | Any | None,
-        environment: str | dict[str, Any] | Any | None,
-        tool: dict[str, Any] | Any | None,
-        compute_provider: str | dict[str, Any] | Any | None,
-        failure_policy: FailurePolicy | None,
-        compact: bool,
+        ov: StepOverrides,
+        *,
         step_name: str,
         step_number: int,
         step_spec_id: str,
         temp_instance: OperationDefinition,
-        skip_cache: bool = False,
-        compute_resources: dict[str, Any] | Any | None = None,
-        group_by: GroupByStrategy | None = None,
     ) -> StepFuture:
         """Register step, resolve step_runner, and submit execution to thread pool.
 
@@ -1925,14 +1755,15 @@ class PipelineManager:
         resolved_runner: RunnerBase
         if is_curator_operation(temp_instance):
             resolved_runner = Runner.LOCAL
-        elif step_runner is not None:
-            resolved_runner = resolve_runner(step_runner)
+        elif ov.step_runner is not None:
+            resolved_runner = resolve_runner(ov.step_runner)
         else:
             resolved_runner = resolve_runner(self._config.default_step_runner)
 
         # Internal compute_options keys stay "resources"/"execution" to
         # preserve persisted-record stability across the public-API renames.
-        # Typed models are normalized to dicts so the record JSON-serializes.
+        # ov fields are already coerced to dicts/strs; _to_dict is a
+        # defensive no-op kept for record-JSON stability.
         from pydantic import BaseModel as _BaseModel
 
         def _to_dict(v: Any) -> Any:
@@ -1941,14 +1772,16 @@ class PipelineManager:
             return v
 
         compute_options_data = {
-            "resources": _to_dict(runner_resources) or {},
-            "execution": _to_dict(batch_strategy) or {},
-            "environment": (_to_dict(environment) if environment is not None else {}),
-            "tool": _to_dict(tool) or {},
-            "compute_provider": (
-                _to_dict(compute_provider) if compute_provider is not None else {}
+            "resources": _to_dict(ov.runner_resources) or {},
+            "execution": _to_dict(ov.batch_strategy) or {},
+            "environment": (
+                _to_dict(ov.environment) if ov.environment is not None else {}
             ),
-            "group_by": (group_by.value if group_by is not None else None),
+            "tool": _to_dict(ov.tool) or {},
+            "compute_provider": (
+                _to_dict(ov.compute_provider) if ov.compute_provider is not None else {}
+            ),
+            "group_by": (ov.group_by.value if ov.group_by is not None else None),
         }
         start_record = StepStartRecord(
             step_run_id=step_run_id,
@@ -1956,7 +1789,7 @@ class PipelineManager:
             step_number=step_number,
             step_name=step_name,
             operation_class=_qualified_name(operation),
-            params_json=json.dumps(params or {}, default=_set_default),
+            params_json=json.dumps(ov.params or {}, default=_set_default),
             input_refs_json=_serialize_input_refs(inputs),
             compute_backend=resolved_runner.name,
             compute_options_json=json.dumps(compute_options_data, default=_set_default),
@@ -1964,8 +1797,6 @@ class PipelineManager:
             output_types_json=json.dumps(output_types_map),
         )
         self._step_tracker.record_step_start(start_record)
-
-        _failure_policy = failure_policy or self._config.failure_policy
 
         def _run() -> StepResult:
             # Last-chance cancel check: the step may have been queued in
@@ -2001,24 +1832,14 @@ class PipelineManager:
                 result = execute_step(
                     operation_class=operation,
                     inputs=inputs,
-                    params=params,
+                    ov=ov,
                     step_runner=resolved_runner,
-                    runner_resources=runner_resources,
-                    batch_strategy=batch_strategy,
-                    environment=environment,
-                    tool=tool,
-                    compute_provider=compute_provider,
-                    compute_resources=compute_resources,
                     step_number=step_number,
                     config=self._config,
-                    failure_policy=_failure_policy,
-                    compact=compact,
                     step_spec_id=step_spec_id,
                     cancel_event=self._cancel_event,
-                    skip_cache=skip_cache or self._config.skip_cache,
                     step_run_id=step_run_id,
                     step_run_ids=upstream_step_run_ids,
-                    group_by=group_by,
                 )
                 elapsed = time.perf_counter() - start
                 result = result.model_copy(
@@ -2167,13 +1988,20 @@ class PipelineManager:
         from artisan.composites.base.composite_definition import CompositeDefinition
         from artisan.composites.base.results import CompositeResult
 
-        # Normalize typed-or-dict inputs to dict-or-str at the boundary.
-        runner_resources = _coerce_runner_resources(runner_resources)
-        compute_resources = _coerce_compute_resources(compute_resources)
-        batch_strategy = _coerce_batch_strategy(batch_strategy)
-        environment = _coerce_environment(environment)
-        tool = _coerce_tool(tool)
-        compute_provider = _coerce_compute_provider(compute_provider)
+        # Bundle + coerce the child-step defaults once at the boundary.
+        # ``group_by`` is operation-only, so it is never populated here.
+        ov = StepOverrides.from_user(
+            step_runner=step_runner,
+            runner_resources=runner_resources,
+            batch_strategy=batch_strategy,
+            environment=environment,
+            tool=tool,
+            compute_provider=compute_provider,
+            compute_resources=compute_resources,
+            failure_policy=failure_policy,
+            compact=compact,
+            skip_cache=skip_cache,
+        )
 
         if not (
             isinstance(composite, type) and issubclass(composite, CompositeDefinition)
@@ -2189,12 +2017,12 @@ class PipelineManager:
             composite,
             inputs,
             params,
-            runner_resources,
-            batch_strategy,
-            environment,
-            tool,
-            compute_provider,
-            compute_resources,
+            ov.runner_resources,
+            ov.batch_strategy,
+            ov.environment,
+            ov.tool,
+            ov.compute_provider,
+            ov.compute_resources,
         )
 
         self._wait_for_predecessors(inputs)
@@ -2216,16 +2044,16 @@ class PipelineManager:
         # params and name are deliberately excluded — params belongs to the
         # composite's own Params, and name is the child-step prefix.
         step_defaults: dict[str, Any] = {
-            "step_runner": step_runner,
-            "runner_resources": runner_resources,
-            "batch_strategy": batch_strategy,
-            "environment": environment,
-            "tool": tool,
-            "compute_provider": compute_provider,
-            "compute_resources": compute_resources,
-            "failure_policy": failure_policy,
-            "compact": compact,
-            "skip_cache": skip_cache,
+            "step_runner": ov.step_runner,
+            "runner_resources": ov.runner_resources,
+            "batch_strategy": ov.batch_strategy,
+            "environment": ov.environment,
+            "tool": ov.tool,
+            "compute_provider": ov.compute_provider,
+            "compute_resources": ov.compute_resources,
+            "failure_policy": ov.failure_policy,
+            "compact": ov.compact,
+            "skip_cache": ov.skip_cache,
         }
 
         ctx = CompositeContext(
