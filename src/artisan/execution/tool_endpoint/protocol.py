@@ -1,7 +1,7 @@
 """Wire models for the tool-endpoint protocol.
 
 Control payloads (manifest, status) stay small; bulk files ride the
-``DataTransport`` plane (``transport.py``). Inline mode: the worker's return
+transport data plane (``transport.py``). Inline mode: the worker's return
 value **is** that plane — ``WorkerResult`` wraps the control manifest plus
 the inline output tar, bounded by Modal's 100 MB function-call limit;
 ``/result`` returns the manifest only and ``/download`` streams the tar from
