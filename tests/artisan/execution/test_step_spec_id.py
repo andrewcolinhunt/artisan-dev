@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.step_executor import instantiate_operation
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import compute_step_spec_id
@@ -273,8 +274,8 @@ class TestStepSpecIdWithDefaults:
         This validates the Phase 3 fix: step_spec_id uses full instantiated
         params (defaults + overrides), not just user overrides.
         """
-        instance_v1 = instantiate_operation(_OpV1, params=None)
-        instance_v2 = instantiate_operation(_OpV2, params=None)
+        instance_v1 = instantiate_operation(_OpV1, StepOverrides.from_user())
+        instance_v2 = instantiate_operation(_OpV2, StepOverrides.from_user())
 
         full_params_v1 = instance_v1.params.model_dump(mode="json")
         full_params_v2 = instance_v2.params.model_dump(mode="json")
@@ -297,8 +298,8 @@ class TestStepSpecIdWithDefaults:
 
     def test_same_defaults_produce_same_spec_id(self):
         """step_spec_id is stable when defaults are unchanged."""
-        instance1 = instantiate_operation(_OpV1, params=None)
-        instance2 = instantiate_operation(_OpV1, params=None)
+        instance1 = instantiate_operation(_OpV1, StepOverrides.from_user())
+        instance2 = instantiate_operation(_OpV1, StepOverrides.from_user())
 
         full_params1 = instance1.params.model_dump(mode="json")
         full_params2 = instance2.params.model_dump(mode="json")
@@ -319,9 +320,9 @@ class TestStepSpecIdWithDefaults:
 
     def test_user_override_matches_same_default(self):
         """Explicit user override equal to default produces same spec_id as no override."""
-        instance_no_override = instantiate_operation(_OpV1, params=None)
+        instance_no_override = instantiate_operation(_OpV1, StepOverrides.from_user())
         instance_with_override = instantiate_operation(
-            _OpV1, params={"temperature": 0.5}
+            _OpV1, StepOverrides.from_user(params={"temperature": 0.5})
         )
 
         params_no = instance_no_override.params.model_dump(mode="json")

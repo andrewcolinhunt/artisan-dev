@@ -33,10 +33,6 @@ from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.artifact_store import ArtifactStore
-from artisan.storage.core.table_schemas import (
-    EXECUTION_EDGES_SCHEMA,
-    EXECUTIONS_SCHEMA,
-)
 from artisan.utils.dataframes import encode_metric_value
 from artisan.utils.dicts import flatten_dict
 from artisan.utils.hashing import compute_artifact_id
@@ -603,65 +599,55 @@ class InteractiveFilter:
         # Build v4 diagnostics
         diagnostics = self._build_diagnostics(filtered)
 
-        # Write execution record
-        exec_row = pl.DataFrame(
-            [
-                {
-                    "execution_run_id": execution_run_id,
-                    "execution_spec_id": execution_spec_id,
-                    "origin_step_number": step_number,
-                    "operation_name": "filter",
-                    "params": json.dumps(
-                        {"criteria": [c.model_dump() for c in self._criteria]}
-                    ),
-                    "user_overrides": "{}",
-                    "timestamp_start": now,
-                    "timestamp_end": now,
-                    "source_worker": 0,
-                    "compute_backend": "local",
-                    "success": True,
-                    "error": None,
-                    "metadata": json.dumps({"diagnostics": diagnostics}),
-                }
-            ],
-            schema=EXECUTIONS_SCHEMA,  # type: ignore[arg-type]
-        )
-
+        # Stage + commit the execution record and edges through the shared
+        # recorder so executions/execution_edges rows come from the single
+        # writer (recorder.py) instead of being hand-built here. This flow
+        # has no ExecutionUnit; ExecutionContext still requires a real
+        # operation and store, so supply a Filter instance (its name yields
+        # the "filter" operation_name) and the store this instance holds.
+        from artisan.execution.staging.recorder import record_passthrough
+        from artisan.operations.curator.filter import Filter
+        from artisan.schemas.execution.execution_context import ExecutionContext
         from artisan.storage.io.commit import DeltaCommitter
         from artisan.storage.io.staging import StagingManager
 
-        staging_manager = StagingManager(self._delta_root, self._fs)
+        operation = Filter()
+        staging_root = uri_join(self._delta_root, "_staging")
+        execution_context = ExecutionContext(
+            execution_run_id=execution_run_id,
+            execution_spec_id=execution_spec_id,
+            step_number=step_number,
+            timestamp_start=now,
+            worker_id=0,
+            artifact_store=self._store,
+            staging_root=staging_root,
+            fs=self._fs,
+            operation_name=type(operation).name,
+            operation=operation,
+            sandbox_path=None,
+            compute_backend="local",
+            shared_filesystem=False,
+            step_run_id=None,
+        )
+        record_passthrough(
+            execution_context=execution_context,
+            passthrough={"passthrough": filtered},
+            lineage_edges=None,
+            inputs={"passthrough": list(self._primary_artifact_ids)},
+            timestamp_end=now,
+            params={"criteria": [c.model_dump() for c in self._criteria]},
+            result_metadata={"diagnostics": diagnostics},
+        )
+
+        staging_manager = StagingManager(staging_root, self._fs)
         committer = DeltaCommitter(
             self._delta_root,
             staging_manager,
             fs=self._fs,
             storage_options=self._storage_options,
         )
-        committer.commit_dataframe(exec_row, TablePath.EXECUTIONS, deduplicate=False)
-
-        # Write execution edges
-        edge_rows: list[dict[str, Any]] = []
-        for aid in self._primary_artifact_ids:
-            edge_rows.append(
-                {
-                    "execution_run_id": execution_run_id,
-                    "direction": "input",
-                    "role": "passthrough",
-                    "artifact_id": aid,
-                }
-            )
-        for aid in filtered:
-            edge_rows.append(
-                {
-                    "execution_run_id": execution_run_id,
-                    "direction": "output",
-                    "role": "passthrough",
-                    "artifact_id": aid,
-                }
-            )
-        edges_df = pl.DataFrame(edge_rows, schema=EXECUTION_EDGES_SCHEMA)
-        committer.commit_dataframe(
-            edges_df, TablePath.EXECUTION_EDGES, deduplicate=False
+        committer.commit_all_tables(
+            step_number=step_number, operation_name=type(operation).name
         )
 
         # Build and record step result

@@ -3,6 +3,7 @@
 Public API:
     build_execution_edges: Create execution-level input/output edge DataFrame.
     record_execution_success: Stage a successful execution run's outputs.
+    record_passthrough: Stage an execution run that created no new artifacts.
     record_execution_failure: Stage a failed execution run's error record.
 """
 
@@ -177,6 +178,94 @@ def record_execution_success(
         staging_path=staging_path,
         execution_run_id=execution_context.execution_run_id,
         artifact_ids=artifact_ids,
+    )
+
+
+def record_passthrough(
+    execution_context: ExecutionContext,
+    passthrough: dict[str, list[str]],
+    lineage_edges: list[ArtifactProvenanceEdge] | None,
+    inputs: dict[str, list[str]],
+    timestamp_end: datetime,
+    params: dict[str, Any] | None = None,
+    result_metadata: dict[str, Any] | None = None,
+    user_overrides: dict[str, Any] | None = None,
+) -> StagingResult:
+    """Stage execution record and edges for a run that created no new artifacts.
+
+    Used by curator passthrough operations, which route existing artifact IDs
+    instead of producing new artifacts. Any provided ``lineage_edges`` are
+    stamped with the execution's run ID before staging — operations build
+    edges with a sentinel run ID because they do not know it yet, and the
+    recorder finalizes it here (mirroring the artifact-result path).
+
+    Args:
+        execution_context: Immutable context for the current execution.
+        passthrough: Output role -> passed-through artifact IDs.
+        lineage_edges: Provenance edges to stage, or None/empty to stage none.
+        inputs: Original input artifact IDs keyed by role.
+        timestamp_end: Wall-clock end time of the execution.
+        params: Serialized operation parameters.
+        result_metadata: Arbitrary metadata to persist with the execution record.
+        user_overrides: User-provided parameter overrides before default merge.
+
+    Returns:
+        StagingResult with ``success=True`` and the passed-through artifact IDs.
+    """
+    from artisan.execution.staging.parquet_writer import (
+        StagingResult,
+        _create_staging_path,
+        _stage_artifact_edges,
+        _stage_execution,
+    )
+
+    fs = execution_context.fs
+    staging_path = _create_staging_path(
+        execution_context.staging_root,
+        execution_context.execution_run_id,
+        execution_context.step_number,
+        execution_context.operation_name,
+        fs,
+    )
+    if lineage_edges:
+        stamped_edges = [
+            edge.model_copy(
+                update={"execution_run_id": execution_context.execution_run_id}
+            )
+            for edge in lineage_edges
+        ]
+        _stage_artifact_edges(stamped_edges, staging_path, fs)
+    execution_edges = build_execution_edges(
+        execution_run_id=execution_context.execution_run_id,
+        inputs=inputs,
+        outputs=passthrough,
+    )
+    _stage_execution(
+        execution_run_id=execution_context.execution_run_id,
+        execution_spec_id=execution_context.execution_spec_id,
+        operation_name=execution_context.operation_name,
+        step_number=execution_context.step_number,
+        execution_edges=execution_edges,
+        staging_path=staging_path,
+        fs=fs,
+        success=True,
+        error=None,
+        timestamp_start=execution_context.timestamp_start,
+        timestamp_end=timestamp_end,
+        worker_id=execution_context.worker_id,
+        params=params,
+        compute_backend=execution_context.compute_backend,
+        shared_filesystem=execution_context.shared_filesystem,
+        result_metadata=result_metadata,
+        user_overrides=user_overrides,
+        step_run_id=execution_context.step_run_id,
+    )
+    all_passthrough_ids = [aid for ids in passthrough.values() for aid in ids]
+    return StagingResult(
+        success=True,
+        staging_path=staging_path,
+        execution_run_id=execution_context.execution_run_id,
+        artifact_ids=all_passthrough_ids,
     )
 
 

@@ -108,6 +108,132 @@ class TestRecordExecutionFailure:
         assert result.execution_run_id == "a" * 32
 
 
+class TestPassthroughStagedRowsGolden:
+    """Characterization: staged rows for the curator passthrough path.
+
+    Pins the exact executions / execution_edges / artifact_edges rows that
+    the passthrough recording produces, so the delegation refactor
+    (``_handle_passthrough_result`` -> ``record_passthrough``) can be proven
+    byte-identical. Exercises ``_handle_passthrough_result`` (the stable
+    entry that survives the refactor) and reads the staged Parquet back.
+    """
+
+    def _run(self, tmp_path: Path):
+        from artisan.execution.executors.curator import _handle_passthrough_result
+        from artisan.operations.curator.filter import Filter
+        from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+        from artisan.schemas.execution.curator_result import PassthroughResult
+
+        staging_root = tmp_path / "staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+
+        ctx = MagicMock()
+        ctx.staging_root = str(staging_root)
+        ctx.fs = LocalFileSystem()
+        ctx.execution_run_id = "r" * 32
+        ctx.execution_spec_id = "s" * 32
+        ctx.operation_name = "filter"
+        ctx.step_number = 3
+        ctx.timestamp_start = datetime(2026, 1, 1, tzinfo=UTC)
+        ctx.worker_id = 0
+        ctx.compute_backend = "local"
+        ctx.shared_filesystem = False
+        ctx.step_run_id = None
+
+        edge = ArtifactProvenanceEdge(
+            execution_run_id="0" * 32,  # sentinel; recorder stamps the real one
+            source_artifact_id="a" * 32,
+            target_artifact_id="b" * 32,
+            source_artifact_type="data",
+            target_artifact_type="data",
+            source_role="passthrough",
+            target_role="passthrough",
+            group_id=None,
+            step_boundary=True,
+        )
+        result = PassthroughResult(
+            passthrough={"passthrough": ["b" * 32]},
+            lineage_edges=[edge],
+            metadata={"k": "v"},
+        )
+
+        _handle_passthrough_result(
+            result=result,
+            operation=Filter(),
+            execution_context=ctx,
+            inputs={"passthrough": ["a" * 32]},
+            timestamp_end=datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+            user_overrides={"foo": "bar"},
+        )
+        return staging_root
+
+    @staticmethod
+    def _read_only(staging_root: Path, filename: str) -> pl.DataFrame:
+        matches = list(staging_root.rglob(filename))
+        assert len(matches) == 1, f"expected one {filename}, found {matches}"
+        return pl.read_parquet(matches[0])
+
+    def test_executions_row_golden(self, tmp_path):
+        staging_root = self._run(tmp_path)
+        row = self._read_only(staging_root, "executions.parquet").to_dicts()[0]
+        assert row == {
+            "execution_run_id": "r" * 32,
+            "execution_spec_id": "s" * 32,
+            "step_run_id": None,
+            "origin_step_number": 3,
+            "operation_name": "filter",
+            "params": (
+                '{"criteria": [], "passthrough_failures": false, "chunk_size": 100000}'
+            ),
+            "user_overrides": '{"foo": "bar"}',
+            "timestamp_start": datetime(2026, 1, 1, tzinfo=UTC),
+            "timestamp_end": datetime(2026, 1, 1, 0, 0, 1, tzinfo=UTC),
+            "source_worker": 0,
+            "compute_backend": "local",
+            "success": True,
+            "error": None,
+            "tool_output": None,
+            "worker_log": None,
+            "metadata": '{"k": "v"}',
+        }
+
+    def test_execution_edges_rows_golden(self, tmp_path):
+        staging_root = self._run(tmp_path)
+        rows = self._read_only(staging_root, "execution_edges.parquet").to_dicts()
+        assert rows == [
+            {
+                "execution_run_id": "r" * 32,
+                "direction": "input",
+                "role": "passthrough",
+                "artifact_id": "a" * 32,
+            },
+            {
+                "execution_run_id": "r" * 32,
+                "direction": "output",
+                "role": "passthrough",
+                "artifact_id": "b" * 32,
+            },
+        ]
+
+    def test_artifact_edges_row_golden_stamped(self, tmp_path):
+        staging_root = self._run(tmp_path)
+        rows = self._read_only(staging_root, "artifact_edges.parquet").to_dicts()
+        # Sentinel run id ("0"*32) is replaced with the execution's run id.
+        assert rows == [
+            {
+                "execution_run_id": "r" * 32,
+                "source_artifact_id": "a" * 32,
+                "target_artifact_id": "b" * 32,
+                "source_artifact_type": "data",
+                "target_artifact_type": "data",
+                "source_role": "passthrough",
+                "target_role": "passthrough",
+                "group_id": None,
+                "step_boundary": True,
+            }
+        ]
+
+
 @pytest.fixture(
     params=[
         pytest.param("local"),

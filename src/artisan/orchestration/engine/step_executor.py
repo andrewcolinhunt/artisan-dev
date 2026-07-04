@@ -44,13 +44,14 @@ from artisan.orchestration.engine.results import (
     extract_execution_run_ids,
 )
 from artisan.orchestration.runners.base import RunnerBase
-from artisan.schemas.enums import FailurePolicy, GroupByStrategy, TablePath
+from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
 from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
@@ -93,34 +94,32 @@ def _deep_merge_model[ModelT: BaseModel](
 
 def instantiate_operation(
     operation_class: type[OperationDefinition],
-    params: dict[str, Any] | None,
-    runner_resources: dict[str, Any] | Any | None = None,
-    batch_strategy: dict[str, Any] | Any | None = None,
-    environment: str | dict[str, Any] | Any | None = None,
-    tool: dict[str, Any] | Any | None = None,
-    compute_provider: str | dict[str, Any] | Any | None = None,
-    compute_resources: dict[str, Any] | Any | None = None,
-    group_by: GroupByStrategy | None = None,
+    ov: StepOverrides,
 ) -> OperationDefinition:
-    """Construct an operation instance from class, params, and overrides.
+    """Construct an operation instance from a class and coerced overrides.
+
+    Applies ``ov``'s params and per-step config overrides (runner resources,
+    batch strategy, environment, tool, compute provider, compute resources,
+    group_by) onto the class default. String overrides select the active
+    provider/environment; dicts delta-merge into the class default; typed
+    models replace it outright.
 
     Args:
         operation_class: The operation class to instantiate.
-        params: User-provided parameters (merged into params sub-model or flat fields).
-        runner_resources: Optional resource overrides (applied via model_copy).
-        batch_strategy: Optional execution overrides (applied via model_copy).
-        environment: Optional environment override. String selects the active
-            environment; dict deep-merges nested EnvironmentSpec fields.
-        tool: Optional tool overrides (applied via model_copy on instance.tool).
-        compute_provider: Optional compute_provider override. String selects the active
-            provider; dict applied via model_copy.
-        compute_resources: Optional compute resources override.
-        group_by: Optional per-step pairing-strategy override applied via
-            ``model_copy``. ``None`` (default) preserves the class-level default.
+        ov: The coerced per-step overrides.
 
     Returns:
         Fully configured operation instance.
     """
+    params = ov.params
+    runner_resources = ov.runner_resources
+    batch_strategy = ov.batch_strategy
+    environment = ov.environment
+    tool = ov.tool
+    compute_provider = ov.compute_provider
+    compute_resources = ov.compute_resources
+    group_by = ov.group_by
+
     init_kwargs: dict[str, Any] = {}
 
     if params:
@@ -497,24 +496,15 @@ def _create_runtime_environment(
 def execute_step(
     operation_class: type[OperationDefinition],
     inputs: Any,
-    params: dict[str, Any] | None,
+    ov: StepOverrides,
     step_runner: RunnerBase,
-    runner_resources: dict[str, Any] | Any | None = None,
-    batch_strategy: dict[str, Any] | Any | None = None,
-    environment: str | dict[str, Any] | Any | None = None,
-    tool: dict[str, Any] | Any | None = None,
-    compute_provider: str | dict[str, Any] | Any | None = None,
-    compute_resources: dict[str, Any] | Any | None = None,
+    *,
     step_number: int = 0,
     config: PipelineConfig | None = None,
-    failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
-    compact: bool = True,
     step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
-    skip_cache: bool = False,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
-    group_by: GroupByStrategy | None = None,
 ) -> StepResult:
     """Execute a single pipeline step.
 
@@ -527,21 +517,14 @@ def execute_step(
     Args:
         operation_class: OperationDefinition subclass to execute.
         inputs: Input specification (see PipelineManager.run() for formats).
-        params: Parameter overrides.
-        step_runner: Backend to use for execution.
-        runner_resources: Resource overrides (cpus, memory_gb, etc.).
-        batch_strategy: Batching/scheduling overrides (artifacts_per_unit, etc.).
-        environment: Environment override (string or dict).
-        tool: Tool overrides (executable, interpreter, etc.).
-        compute_provider: Compute routing override (string or dict).
+        ov: Coerced per-step overrides (params + cache/runtime knobs).
+        step_runner: Resolved backend to use for execution.
         step_number: Pipeline step number.
         config: Pipeline configuration.
-        failure_policy: "continue" or "fail_fast".
-        compact: Whether to run Delta Lake compaction.
         step_spec_id: Pre-computed step spec ID from PipelineManager. When
             provided for curator ops, used directly as execution_spec_id to
             skip the O(N log N) compute_execution_spec_id call.
-        skip_cache: Bypass execution-level cache lookups.
+        cancel_event: Set to request cooperative cancellation between phases.
         step_run_id: Unique ID for this step attempt (for output isolation).
         step_run_ids: Mapping of upstream step_number to step_run_id
             for scoped output resolution.
@@ -549,24 +532,21 @@ def execute_step(
     Returns:
         StepResult with output references and execution metadata.
     """
-    operation = instantiate_operation(
-        operation_class,
-        params,
-        runner_resources,
-        batch_strategy,
-        environment,
-        tool,
-        compute_provider,
-        compute_resources=compute_resources,
-        group_by=group_by,
-    )
-    user_overrides = params or {}
+    operation = instantiate_operation(operation_class, ov)
+    user_overrides = ov.params or {}
 
-    # Merge environment + tool + compute_provider + compute_resources into
-    # config_overrides for hashing
-    config_overrides = _merge_config_overrides(
-        environment, tool, compute_provider, compute_resources, group_by=group_by
+    # Cache-affecting overrides (environment, tool, compute_provider,
+    # compute_resources, group_by) folded into config_overrides for hashing.
+    config_overrides = ov.cache_payload()
+
+    # Resolve runtime knobs against pipeline defaults: ov carries the raw
+    # per-step values; an unset one falls back to config.
+    failure_policy = (
+        ov.failure_policy
+        if ov.failure_policy is not None
+        else (config.failure_policy if config is not None else FailurePolicy.CONTINUE)
     )
+    skip_cache = ov.skip_cache or (config.skip_cache if config is not None else False)
 
     # Check if this is a curator operation
     if is_curator_operation(operation):
@@ -577,7 +557,7 @@ def execute_step(
             step_number=step_number,
             config=config,
             failure_policy=failure_policy,
-            compact=compact,
+            compact=ov.compact,
             user_overrides=user_overrides,
             step_spec_id=step_spec_id,
             cancel_event=cancel_event,
@@ -595,53 +575,13 @@ def execute_step(
         step_number=step_number,
         config=config,
         failure_policy=failure_policy,
-        compact=compact,
+        compact=ov.compact,
         user_overrides=user_overrides,
         cancel_event=cancel_event,
         skip_cache=skip_cache,
         step_run_id=step_run_id,
         step_run_ids=step_run_ids,
     )
-
-
-def _merge_config_overrides(
-    environment: str | dict[str, Any] | Any | None,
-    tool: dict[str, Any] | Any | None,
-    compute_provider: str | dict[str, Any] | Any | None = None,
-    compute_resources: dict[str, Any] | Any | None = None,
-    *,
-    group_by: GroupByStrategy | None = None,
-) -> dict[str, Any] | None:
-    """Merge environment, tool, compute_provider, compute_resources, and
-    group_by overrides into a single dict for hashing.
-
-    Typed Pydantic models are normalized to dicts via ``model_dump`` so the
-    hash payload remains JSON-serializable and dict-vs-model forms produce
-    identical step_spec_ids. ``group_by`` is serialized via its ``.value``
-    because the canonical JSON encoder does not handle ``Enum`` natively.
-
-    ``group_by`` is only emitted when an explicit override is set; this
-    preserves existing cache rows that were hashed without it.
-    """
-    from pydantic import BaseModel as _BaseModel
-
-    def _to_dict(v: Any) -> Any:
-        if isinstance(v, _BaseModel):
-            return v.model_dump(mode="json")
-        return v
-
-    merged: dict[str, Any] = {}
-    if environment is not None:
-        merged["environment"] = _to_dict(environment)
-    if tool:
-        merged["tool"] = _to_dict(tool)
-    if compute_provider is not None:
-        merged["compute_provider"] = _to_dict(compute_provider)
-    if compute_resources is not None:
-        merged["compute_resources"] = _to_dict(compute_resources)
-    if group_by is not None:
-        merged["group_by"] = group_by.value
-    return merged or None
 
 
 def _execute_curator_step(
