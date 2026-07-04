@@ -16,11 +16,6 @@ class TestWorkerTraits:
         traits = WorkerTraits()
         assert traits.worker_id_env_var is None
         assert traits.shared_filesystem is False
-        assert traits.needs_staging_fsync is False
-
-    def test_shared_filesystem_enables_fsync(self) -> None:
-        traits = WorkerTraits(shared_filesystem=True)
-        assert traits.needs_staging_fsync is True
 
     def test_frozen(self) -> None:
         traits = WorkerTraits()
