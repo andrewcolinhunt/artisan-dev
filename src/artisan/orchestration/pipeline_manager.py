@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, cast, overload
 from uuid import uuid4
 
 import polars as pl
@@ -52,7 +52,7 @@ from artisan.utils.path import uri_join, uri_parent
 
 if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
-    from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+    from artisan.composites.base.results import CompositeResult
 
 # Validation helpers accept both OperationDefinition and CompositeDefinition,
 # which share ClassVars (name, inputs, outputs) but have no common base.
@@ -1578,6 +1578,59 @@ class PipelineManager:
         _validate_required_inputs(operation, inputs)
         _validate_input_types(operation, inputs)
 
+    @staticmethod
+    def _validate_composite_overrides(
+        composite: type[CompositeDefinition],
+        inputs: Any,
+        params: dict[str, Any] | None,
+        runner_resources: dict[str, Any] | None,
+        batch_strategy: dict[str, Any] | None,
+        environment: str | dict[str, Any] | None,
+        tool: dict[str, Any] | None,
+        compute_provider: str | dict[str, Any] | None,
+        compute_resources: dict[str, Any] | None,
+    ) -> None:
+        """Validate composite-level overrides (fail-fast).
+
+        Composite-level overrides become defaults for every child step, so
+        they are checked for shape here rather than against the composite,
+        which is not an OperationDefinition and owns no environment or tool of
+        its own. Operation-specific checks — a string environment being
+        configured, a tool existing to override — run when each child step is
+        submitted inside ``compose()``.
+
+        Raises:
+            ValueError: If an override dict carries unrecognized keys or a
+                silently-inactive provider configuration.
+        """
+        from artisan.schemas.operation_config.tool_spec import ToolSpec
+
+        if params:
+            _validate_params(composite, params)
+        if runner_resources:
+            _validate_resources(runner_resources)
+        if batch_strategy:
+            _validate_execution(batch_strategy)
+        if isinstance(environment, dict):
+            # Dict form is validated by shape/key only; the operation arg is
+            # unused for the dict branch of _validate_environment.
+            _validate_environment(composite, environment)  # type: ignore[arg-type]
+        if tool:
+            unknown = set(tool) - set(ToolSpec.model_fields)
+            if unknown:
+                msg = (
+                    f"Unknown tool keys: {sorted(unknown)}. "
+                    f"Valid keys: {sorted(ToolSpec.model_fields)}"
+                )
+                raise ValueError(msg)
+        if isinstance(compute_provider, dict):
+            _validate_compute_provider(compute_provider)
+        if isinstance(compute_resources, dict):
+            _validate_compute_resources(compute_resources)
+        _validate_input_roles(composite, inputs)
+        _validate_required_inputs(composite, inputs)
+        _validate_input_types(composite, inputs)
+
     def _check_early_exit(
         self,
         step_name: str,
@@ -1594,7 +1647,7 @@ class PipelineManager:
            complete, then re-checks cancellation (which may have been
            signalled while waiting).
 
-        Used by both ``submit()`` and ``_dispatch_collapsed_composite()``.
+        Used by ``submit()``.
 
         Returns:
             Resolved StepFuture if the step should be skipped,
@@ -2065,8 +2118,6 @@ class PipelineManager:
         inputs: (dict[str, OutputReference | list[str]] | None) = None,
         params: dict[str, Any] | None = None,
         name: str | None = None,
-        expand: bool = False,
-        intermediates: Literal["discard", "persist", "expose"] = "discard",
         step_runner: str | RunnerBase | None = None,
         runner_resources: dict[str, Any] | RunnerResources | None = None,
         batch_strategy: dict[str, Any] | BatchStrategy | None = None,
@@ -2077,53 +2128,44 @@ class PipelineManager:
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
-    ) -> StepFuture | ExpandedCompositeResult:
-        """Submit a composite step (non-blocking).
+    ) -> CompositeResult:
+        """Submit a composite (non-blocking).
 
-        Two modes selected by ``expand``:
-        - ``expand=False`` (default) — collapsed: the composite executes as
-          a single pipeline step with one cache entry.
-        - ``expand=True`` — expanded: each internal ctx.run() creates its
-          own pipeline step with independent worker dispatch, batching,
-          and caching.
+        Each internal ``ctx.run()`` becomes its own pipeline step with
+        independent worker dispatch, batching, caching, and provenance. Every
+        override kwarg is a **default for each child step**: the context
+        applies it to any ``ctx.run()`` that does not set the same knob
+        (per-knob, wholesale — no deep merge). ``params`` is the composite's
+        own parameters, consumed inside ``compose()``, and is never forwarded
+        to child steps.
 
         Args:
             composite: CompositeDefinition subclass.
             inputs: Input specification for the composite.
-            params: Parameter overrides for the composite.
-            name: Custom step name (collapsed) or step-name prefix (expanded).
-                Defaults to composite.name.
-            expand: False for collapsed mode, True for expanded mode.
-            intermediates: How to handle intermediate artifacts in collapsed
-                mode: "discard" (default), "persist", or "expose". Must be
-                "discard" when ``expand=True`` (expanded mode always persists
-                via the per-step Delta path).
-            step_runner: Step runner for execution. None uses pipeline default.
-            runner_resources: Resource overrides (forwarded to each child step in
-                expanded mode).
-            batch_strategy: Batching/scheduling overrides.
-            environment: Environment override.
-            tool: Tool overrides.
-            compute_provider: Compute provider override (string or dict).
-            compute_resources: Hardware resources for the compute provider
-                (gpu, memory_gb, timeout). Forwarded to each child step in
-                expanded mode.
-            failure_policy: Override pipeline-level failure policy.
-            compact: Run Delta Lake compaction after commit.
-            skip_cache: Bypass cache lookups for this step.
+            params: Parameter overrides for the composite itself.
+            name: Step-name prefix for child steps. Defaults to composite.name.
+            step_runner: Default step runner for child steps.
+            runner_resources: Default resource overrides for child steps.
+            batch_strategy: Default batching overrides for child steps.
+            environment: Default environment override for child steps.
+            tool: Default tool overrides for child steps.
+            compute_provider: Default compute provider for child steps.
+            compute_resources: Default hardware resources for child steps.
+            failure_policy: Default failure policy for child steps.
+            compact: Default Delta compaction flag for child steps.
+            skip_cache: Default cache-bypass flag for child steps.
 
         Returns:
-            StepFuture (collapsed) or ExpandedCompositeResult (expanded).
-            Both expose ``.output(role) -> OutputReference`` for downstream
-            wiring.
+            CompositeResult exposing ``.output(role) -> OutputReference`` for
+            downstream wiring and ``.wait()`` to block on child completion.
 
         Raises:
             TypeError: If ``composite`` is not a CompositeDefinition subclass.
-            ValueError: If ``expand=True`` and ``intermediates != "discard"``.
+            ValueError: If any composite-level override key is unrecognized.
         """
-        from artisan.composites.base.composite_context import ExpandedCompositeContext
+        from artisan.composites.base.composite_context import CompositeContext
         from artisan.composites.base.composite_definition import CompositeDefinition
-        from artisan.schemas.composites.composite_ref import ExpandedCompositeResult
+        from artisan.composites.base.results import CompositeResult
 
         # Normalize typed-or-dict inputs to dict-or-str at the boundary.
         runner_resources = _coerce_runner_resources(runner_resources)
@@ -2142,39 +2184,18 @@ class PipelineManager:
             )
             raise TypeError(msg)
 
-        if expand and intermediates != "discard":
-            msg = (
-                f"intermediates={intermediates!r} is only meaningful for "
-                "collapsed composites (expand=False); expanded composites "
-                "always persist via the per-step Delta path."
-            )
-            raise ValueError(msg)
-
-        if expand is False:
-            return self._dispatch_collapsed_composite(
-                composite_class=composite,
-                inputs=inputs,
-                params=params,
-                step_runner=step_runner,
-                runner_resources=runner_resources,
-                batch_strategy=batch_strategy,
-                compute_resources=compute_resources,
-                compute_provider=compute_provider,
-                environment=environment,
-                tool=tool,
-                intermediates=intermediates,
-                failure_policy=failure_policy,
-                compact=compact,
-                name=name or composite.name,
-                skip_cache=skip_cache,
-            )
-
-        # Expanded mode — each ctx.run() creates a real pipeline step.
-        _validate_input_roles(composite, inputs)
-        _validate_required_inputs(composite, inputs)
-        _validate_input_types(composite, inputs)
-        if params:
-            _validate_params(composite, params)
+        # Fail-fast validation of composite-level overrides before any work.
+        self._validate_composite_overrides(
+            composite,
+            inputs,
+            params,
+            runner_resources,
+            batch_strategy,
+            environment,
+            tool,
+            compute_provider,
+            compute_resources,
+        )
 
         self._wait_for_predecessors(inputs)
 
@@ -2191,15 +2212,32 @@ class PipelineManager:
 
         step_name_prefix = name or composite.name
 
-        ctx = ExpandedCompositeContext(
+        # Composite-level overrides become per-knob defaults for child steps.
+        # params and name are deliberately excluded — params belongs to the
+        # composite's own Params, and name is the child-step prefix.
+        step_defaults: dict[str, Any] = {
+            "step_runner": step_runner,
+            "runner_resources": runner_resources,
+            "batch_strategy": batch_strategy,
+            "environment": environment,
+            "tool": tool,
+            "compute_provider": compute_provider,
+            "compute_resources": compute_resources,
+            "failure_policy": failure_policy,
+            "compact": compact,
+            "skip_cache": skip_cache,
+        }
+
+        ctx = CompositeContext(
             pipeline=self,
             input_refs=input_refs,
             composite=instance,
             step_name_prefix=step_name_prefix,
+            step_defaults=step_defaults,
         )
         instance.compose(ctx)
 
-        return ExpandedCompositeResult(
+        return CompositeResult(
             output_map=ctx.get_output_map(),
             output_types=ctx.get_output_types(),
             child_futures=ctx.get_child_futures(),
@@ -2212,8 +2250,6 @@ class PipelineManager:
         inputs: (dict[str, OutputReference | list[str]] | None) = None,
         params: dict[str, Any] | None = None,
         name: str | None = None,
-        expand: bool = False,
-        intermediates: Literal["discard", "persist", "expose"] = "discard",
         step_runner: str | RunnerBase | None = None,
         runner_resources: dict[str, Any] | RunnerResources | None = None,
         batch_strategy: dict[str, Any] | BatchStrategy | None = None,
@@ -2224,29 +2260,25 @@ class PipelineManager:
         failure_policy: FailurePolicy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
-    ) -> StepResult | ExpandedCompositeResult:
-        """Execute a composite step (blocking).
+    ) -> CompositeResult:
+        """Execute a composite (blocking).
 
-        Collapsed: returns the composite step's StepResult after completion.
-        Expanded: returns the ExpandedCompositeResult after every child
-        step completes (drained via ``ExpandedCompositeResult.wait()``).
+        Submits the composite and blocks until every child step completes via
+        ``CompositeResult.wait()``. See ``submit_composite`` for argument
+        details.
 
-        Both return types expose ``.output(role) -> OutputReference``, so
-        downstream wiring is uniform across modes.
-
-        See ``submit_composite`` for argument details.
+        Returns:
+            The CompositeResult after all child steps have resolved.
 
         Raises:
             TypeError: If ``composite`` is not a CompositeDefinition subclass.
-            ValueError: If ``expand=True`` and ``intermediates != "discard"``.
+            ValueError: If any composite-level override key is unrecognized.
         """
         result = self.submit_composite(
             composite,
             inputs=inputs,
             params=params,
             name=name,
-            expand=expand,
-            intermediates=intermediates,
             step_runner=step_runner,
             runner_resources=runner_resources,
             batch_strategy=batch_strategy,
@@ -2258,254 +2290,7 @@ class PipelineManager:
             compact=compact,
             skip_cache=skip_cache,
         )
-        if isinstance(result, StepFuture):
-            return result.result()
         return result.wait()
-
-    def _dispatch_collapsed_composite(
-        self,
-        composite_class: type[CompositeDefinition],
-        inputs: Any,
-        params: dict[str, Any] | None,
-        step_runner: str | RunnerBase | None,
-        runner_resources: dict[str, Any] | None,
-        batch_strategy: dict[str, Any] | None,
-        intermediates: str,
-        failure_policy: FailurePolicy | None,
-        compact: bool,
-        name: str,
-        skip_cache: bool = False,
-        compute_resources: dict[str, Any] | None = None,
-        compute_provider: str | dict[str, Any] | None = None,
-        environment: str | dict[str, Any] | None = None,
-        tool: dict[str, Any] | None = None,
-    ) -> StepFuture:
-        """Internal: dispatch a composite step for collapsed execution.
-
-        Args:
-            composite_class: CompositeDefinition subclass.
-            inputs: Initial inputs.
-            step_runner: Step runner override.
-            runner_resources: Composite-level resource overrides.
-            batch_strategy: Composite-level execution overrides.
-            intermediates: "discard", "persist", or "expose".
-            params: Parameter overrides.
-            failure_policy: Override pipeline failure policy.
-            compact: Run Delta Lake compaction.
-            name: Step name.
-            skip_cache: Bypass cache lookups for this step.
-            compute_resources: Composite-level compute resource overrides.
-            compute_provider: Composite-level compute provider override.
-            environment: Composite-level environment override.
-            tool: Composite-level tool override.
-
-        Returns:
-            StepFuture for downstream wiring.
-        """
-        from artisan.execution.models.execution_composite import (
-            CompositeIntermediates,
-        )
-        from artisan.orchestration.engine.step_executor import execute_composite_step
-        from artisan.schemas.execution.batch_strategy import BatchStrategy
-        from artisan.schemas.operation_config.runner_resources import RunnerResources
-
-        # Validate inputs against composite declarations
-        _validate_input_roles(composite_class, inputs)
-        _validate_required_inputs(composite_class, inputs)
-        _validate_input_types(composite_class, inputs)
-
-        if params:
-            _validate_params(composite_class, params)
-        if runner_resources:
-            _validate_resources(runner_resources)
-        if batch_strategy:
-            _validate_execution(batch_strategy)
-
-        early = self._check_early_exit(name, composite_class.outputs, inputs)
-        if early is not None:
-            return early
-
-        step_number = self._current_step
-
-        # Compute composite step_spec_id
-        temp = instantiate_operation(composite_class, params)  # type: ignore[arg-type]
-        if hasattr(temp, "params"):
-            full_params = temp.params.model_dump(mode="json")
-        else:
-            full_params = {}
-
-        input_spec = self._build_input_spec(inputs)
-        from artisan.utils.hashing import compute_composite_spec_id
-
-        step_spec_id = compute_composite_spec_id(
-            composite_name=composite_class.name,
-            params=full_params or None,
-            input_spec=input_spec,
-        )
-
-        # Check step cache
-        cached = (
-            None
-            if (skip_cache or self._config.skip_cache)
-            else self._step_tracker.check_cache(step_spec_id, self._config.cache_policy)
-        )
-        if cached is not None:
-            logger.info("Step %d (%s) CACHED — skipping execution", step_number, name)
-            self._step_spec_ids[step_number] = step_spec_id
-            if cached.step_run_id:
-                self._step_run_ids[step_number] = cached.step_run_id
-            self._step_results.append(cached)
-            self._register_step(name, step_number, composite_class.outputs)
-            self._named_steps.setdefault(cached.step_name, []).append(cached)
-            self._current_step += 1
-
-            resolved: Future[StepResult] = Future()
-            resolved.set_result(cached)
-            return StepFuture(
-                step_number=step_number,
-                step_name=cached.step_name,
-                output_roles=cached.output_roles,
-                output_types=cached.output_types,
-                future=resolved,
-            )
-
-        # Cache miss — build and dispatch
-        self._register_step(name, step_number, composite_class.outputs)
-        self._current_step += 1
-        self._step_spec_ids[step_number] = step_spec_id
-
-        output_types_map = self._build_output_types(composite_class.outputs)
-
-        # Resolve step_runner
-        if step_runner is not None:
-            resolved_runner = resolve_runner(step_runner)
-        else:
-            resolved_runner = resolve_runner(self._config.default_step_runner)
-
-        _failure_policy = failure_policy or self._config.failure_policy
-        composite_intermediates = CompositeIntermediates(intermediates)
-        composite_resources = RunnerResources(**(runner_resources or {}))
-        composite_execution = BatchStrategy(**(batch_strategy or {}))
-
-        def _run() -> StepResult:
-            # Bail out immediately if cancelled while queued in the executor
-            if self._cancel_event.is_set():
-                cancelled_result = StepResult(
-                    step_name=name,
-                    step_number=step_number,
-                    success=True,
-                    total_count=0,
-                    succeeded_count=0,
-                    failed_count=0,
-                    output_roles=frozenset(output_types_map.keys()),
-                    output_types=output_types_map,
-                    metadata={"cancelled": True},
-                )
-                self._step_results.append(cancelled_result)
-                self._named_steps.setdefault(name, []).append(cancelled_result)
-                return cancelled_result
-
-            logger.info(
-                "Step %d (%s) starting composite... [step_runner=%s]",
-                step_number,
-                name,
-                resolved_runner.name,
-            )
-            composite_step_run_id = _generate_step_run_id(step_spec_id)
-            self._step_run_ids[step_number] = composite_step_run_id
-            upstream_step_run_ids = dict(self._step_run_ids)
-            start = time.perf_counter()
-            try:
-                result = execute_composite_step(
-                    composite_class=composite_class,
-                    inputs=inputs,
-                    params=params,
-                    step_runner=resolved_runner,
-                    composite_resources=composite_resources,
-                    composite_execution=composite_execution,
-                    intermediates=composite_intermediates,
-                    step_number=step_number,
-                    config=self._config,
-                    failure_policy=_failure_policy,
-                    compact=compact,
-                    step_run_ids=upstream_step_run_ids,
-                    step_run_id=composite_step_run_id,
-                )
-                elapsed = time.perf_counter() - start
-                result = result.model_copy(
-                    update={
-                        "step_name": name,
-                        "duration_seconds": elapsed,
-                        "step_run_id": composite_step_run_id,
-                    },
-                )
-                self._step_tracker.record_step_completed(
-                    StepStartRecord(
-                        step_run_id=composite_step_run_id,
-                        step_spec_id=step_spec_id,
-                        step_number=step_number,
-                        step_name=name,
-                        operation_class=f"{composite_class.__module__}.{composite_class.__qualname__}",
-                        params_json=json.dumps(full_params or {}),
-                        input_refs_json=_serialize_input_refs(inputs),
-                        compute_backend=resolved_runner.name,
-                        compute_options_json="{}",
-                        output_roles_json=json.dumps(
-                            sorted(composite_class.outputs.keys())
-                        ),
-                        output_types_json=json.dumps(output_types_map),
-                    ),
-                    result,
-                )
-                logger.info(
-                    "Step %d (%s) completed in %.1fs [%d/%d succeeded]",
-                    step_number,
-                    name,
-                    elapsed,
-                    result.succeeded_count,
-                    result.total_count,
-                )
-                self._step_results.append(result)
-                self._named_steps.setdefault(result.step_name, []).append(result)
-                return result
-
-            except Exception as e:
-                elapsed = time.perf_counter() - start
-                error_msg = f"{type(e).__name__}: {e}"
-                logger.error(
-                    "Step %d (%s) failed after %.1fs: %s",
-                    step_number,
-                    name,
-                    elapsed,
-                    error_msg,
-                )
-                failed_result = StepResult(
-                    step_name=name,
-                    step_number=step_number,
-                    success=False,
-                    total_count=0,
-                    succeeded_count=0,
-                    failed_count=0,
-                    duration_seconds=elapsed,
-                    metadata={"error": error_msg},
-                )
-                self._step_results.append(failed_result)
-                self._named_steps.setdefault(name, []).append(failed_result)
-                return failed_result
-
-        ctx = contextvars.copy_context()
-        assert self._executor is not None, "executor must be live during submit"
-        cf_future = self._executor.submit(ctx.run, _run)
-
-        future = StepFuture(
-            step_number=step_number,
-            step_name=name,
-            output_roles=frozenset(output_types_map.keys()),
-            output_types=output_types_map,
-            future=cf_future,
-        )
-        self._active_futures[step_number] = future
-        return future
 
     # =========================================================================
     # Internal helpers
