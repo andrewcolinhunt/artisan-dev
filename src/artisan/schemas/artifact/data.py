@@ -10,17 +10,14 @@ import csv
 import io
 import json
 import os
-from typing import Any, ClassVar, Self
+from collections.abc import Callable
+from typing import Any, ClassVar
 
 import polars as pl
 from pydantic import Field
 
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.common import (
-    get_compound_extension,
-    metadata_from_json,
-    metadata_to_json,
-)
+from artisan.schemas.artifact.common import get_compound_extension
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.utils.filename import strip_extensions
 
@@ -133,47 +130,22 @@ class DataArtifact(Artifact):
             external_path=external_path,
         )
 
-    def to_row(self) -> dict[str, Any]:
-        """Serialize to a flat dict matching POLARS_SCHEMA columns.
-
-        JSON-encodes ``columns`` and ``metadata`` for Parquet storage.
-        """
+    def _row_encoders(self) -> dict[str, Callable[[], Any]]:
+        """Add ``columns`` JSON encoding on top of the base ``metadata`` one."""
         return {
-            "artifact_id": self.artifact_id,
-            "origin_step_number": self.origin_step_number,
-            "content": self.content,
-            "original_name": self.original_name,
-            "extension": self.extension,
-            "size_bytes": self.size_bytes,
-            "columns": json.dumps(self.columns) if self.columns is not None else None,
-            "row_count": self.row_count,
-            "metadata": metadata_to_json(self.metadata),
-            "external_path": self.external_path,
+            **super()._row_encoders(),
+            "columns": lambda: json.dumps(self.columns)
+            if self.columns is not None
+            else None,
         }
 
     @classmethod
-    def from_row(cls, row: dict[str, Any]) -> Self:
-        """Reconstruct a DataArtifact from a Parquet row dict.
-
-        Reverses the JSON encoding applied by ``to_row`` for
-        ``columns`` and ``metadata``.
-
-        Args:
-            row: Dict with keys matching POLARS_SCHEMA columns.
-        """
-        columns_raw = row.get("columns")
-        return cls(
-            artifact_id=row["artifact_id"],
-            origin_step_number=row.get("origin_step_number"),
-            content=row.get("content"),
-            original_name=row.get("original_name"),
-            extension=row.get("extension"),
-            size_bytes=row.get("size_bytes"),
-            columns=json.loads(columns_raw) if columns_raw else None,
-            row_count=row.get("row_count"),
-            metadata=metadata_from_json(row.get("metadata")),
-            external_path=row.get("external_path"),
-        )
+    def _row_decoders(cls) -> dict[str, Callable[[Any], Any]]:
+        """Reverse the ``columns`` JSON encoding applied by ``_row_encoders``."""
+        return {
+            **super()._row_decoders(),
+            "columns": lambda raw: json.loads(raw) if raw else None,
+        }
 
 
 def _parse_csv_metadata(content: bytes) -> tuple[list[str], int]:
