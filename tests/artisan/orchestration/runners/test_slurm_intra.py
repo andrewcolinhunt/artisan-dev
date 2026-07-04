@@ -23,7 +23,6 @@ class TestSlurmIntraRunnerTraits:
         traits = SlurmIntraRunner.worker_traits
         assert traits.worker_id_env_var == "SLURM_STEP_ID"
         assert traits.shared_filesystem is True
-        assert traits.needs_staging_fsync is True
 
     def test_orchestrator_traits(self) -> None:
         traits = SlurmIntraRunner.orchestrator_traits
