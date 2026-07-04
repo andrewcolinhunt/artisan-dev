@@ -578,6 +578,62 @@ class TestExactlyOneSlot:
         assert Filter._kind() == "curator"
 
 
+class TestVersionValidation:
+    """``version`` must be a non-empty string — it is folded into the cache key."""
+
+    def test_default_version_is_one(self):
+        """Ops inherit ``version = "1"`` and pass validation."""
+        assert SimpleOperation.version == "1"
+
+    def test_explicit_string_version_accepted(self):
+        """A non-empty string version is accepted at class definition."""
+
+        class VersionedOp(OperationDefinition):
+            name: ClassVar[str] = "versioned_op_test"
+            version: ClassVar[str] = "2"
+            inputs: ClassVar[dict[str, InputSpec]] = {}
+            outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+            def execute_function(self, inputs):
+                return None
+
+        assert VersionedOp.version == "2"
+
+    def test_empty_version_raises(self):
+        """An empty-string version carries no signal — TypeError at definition."""
+        with pytest.raises(TypeError, match="version must be a non-empty string"):
+
+            class EmptyVersionOp(OperationDefinition):
+                name: ClassVar[str] = "empty_version_op_test"
+                version: ClassVar[str] = ""
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_non_string_version_raises(self):
+        """A non-string version would serialize inconsistently — TypeError."""
+        with pytest.raises(TypeError, match="version must be a non-empty string"):
+
+            class IntVersionOp(OperationDefinition):
+                name: ClassVar[str] = "int_version_op_test"
+                version: ClassVar[Any] = 2
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_abstract_base_skips_version_check(self):
+        """A base with no name skips validation even with a bad version."""
+
+        class AbstractBadVersion(OperationDefinition):
+            version: ClassVar[Any] = 2  # no name → validation skipped
+
+        assert AbstractBadVersion.version == 2
+
+
 class TestKindDerivation:
     """``_kind`` classifies ops by whether ``execute_curator`` is overridden."""
 

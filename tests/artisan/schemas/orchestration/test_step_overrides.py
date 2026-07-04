@@ -4,12 +4,13 @@ Three layers:
 
 - **Classification completeness** — every dataclass field is classified
   into exactly one of ``_CACHE_FIELDS`` / ``_RUNTIME_FIELDS``, so a new
-  override cannot silently escape the cache key.
+  override cannot silently escape the cache decision.
 - **from_user coercion** — each typed-or-dict knob lands in canonical
   dict-or-str form; ``step_runner`` and scalars pass through untouched.
-- **cache_payload golden values** — the config-overrides payload matches
-  hardcoded golden values (byte-equivalent to the legacy merge the refactor
-  replaced, so existing caches stay valid).
+- **Cache-field / payload correspondence** — every cache-classified knob
+  maps to an instance field that ``effective_config_payload`` actually
+  reads, so a knob cannot be wired into ``instantiate_operation`` yet
+  silently skipped by the hash.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from dataclasses import fields
 
 import pytest
 
+from artisan.operations.examples.data_transformer import DataTransformer
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import (
@@ -30,6 +32,7 @@ from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.step_overrides import StepOverrides
+from artisan.utils.hashing import effective_config_payload
 
 # ---------------------------------------------------------------------------
 # Classification completeness
@@ -129,49 +132,36 @@ class TestFromUserCoercion:
 
 
 # ---------------------------------------------------------------------------
-# cache_payload golden values
+# Cache-field / payload correspondence
 # ---------------------------------------------------------------------------
 #
-# A transient characterization test pinned cache_payload against the legacy
-# config-overrides merge (byte-for-byte, for every coerced input form) until
-# that function was deleted in the same PR. The golden values below plus the
-# recorded step-spec hashes in
-# tests/artisan/utils/test_hash_stability_recorded.py are the permanent guard
-# that cache keys stay byte-identical.
+# The classification guard above proves every override *knob* is classified;
+# this guard proves every cache-classified knob reaches the hash through a
+# concrete instance field that ``effective_config_payload`` reads. Without
+# it, someone could add a cache-affecting knob, wire it into
+# ``instantiate_operation``, but forget to read the resulting instance field
+# in the payload — and the completeness test would still pass.
+
+# Maps each cache knob (``StepOverrides`` field name) to the instance field
+# ``effective_config_payload`` reads for it. ``environment`` mutates the
+# ``environments`` instance field; the rest share their name.
+_CACHE_KNOB_TO_INSTANCE_FIELD = {
+    "environment": "environments",
+    "tool": "tool",
+    "compute_provider": "compute_provider",
+    "compute_resources": "compute_resources",
+    "group_by": "group_by",
+}
 
 
-def test_cache_payload_golden_values() -> None:
-    """Hardcoded payload values — the permanent guard on cache-key stability."""
-    assert StepOverrides.from_user().cache_payload() is None
-    assert StepOverrides.from_user(environment="docker").cache_payload() == {
-        "environment": "docker"
-    }
-    # Falsy tool (empty dict) is omitted; a real dict is kept.
-    assert StepOverrides.from_user(tool={}).cache_payload() is None
-    assert StepOverrides.from_user(tool={"executable": "bash"}).cache_payload() == {
-        "tool": {"executable": "bash"}
-    }
-    assert StepOverrides.from_user(compute_provider="modal").cache_payload() == {
-        "compute_provider": "modal"
-    }
-    assert StepOverrides.from_user(
-        compute_resources={"gpu": "A100"}
-    ).cache_payload() == {"compute_resources": {"gpu": "A100"}}
-    # group_by serialized via .value.
-    assert StepOverrides.from_user(
-        group_by=GroupByStrategy.CROSS_PRODUCT
-    ).cache_payload() == {"group_by": "cross_product"}
+def test_cache_fields_correspond_to_hashed_instance_fields() -> None:
+    """Every cache knob maps to an instance field the payload actually reads.
 
-
-def test_cache_payload_ignores_runtime_fields() -> None:
-    """Runtime-only fields never enter the config_overrides payload."""
-    ov = StepOverrides.from_user(
-        params={"a": 1},
-        step_runner="slurm",
-        runner_resources={"cpus": 8},
-        batch_strategy={"artifacts_per_unit": 4},
-        compact=False,
-        skip_cache=True,
-        name="custom",
-    )
-    assert ov.cache_payload() is None
+    ``version`` is the one payload key with no ``StepOverrides`` counterpart
+    (it is op-code identity, not a user override) and is asserted separately.
+    """
+    expected = {_CACHE_KNOB_TO_INSTANCE_FIELD[f] for f in StepOverrides._CACHE_FIELDS}
+    payload = effective_config_payload(DataTransformer())
+    hashed = set(payload.keys()) - {"version"}
+    assert hashed == expected
+    assert "version" in payload

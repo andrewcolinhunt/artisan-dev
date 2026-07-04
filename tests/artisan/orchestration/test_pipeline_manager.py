@@ -38,6 +38,8 @@ from artisan.orchestration.pipeline_manager import (
 )
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
+from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_overrides import StepOverrides
@@ -2349,20 +2351,27 @@ class TestSilentMisconfigRejection:
 
 
 # =============================================================================
-# Golden step_spec_ids — byte-identical cache keys across the StepOverrides
-# refactor. Recorded on ach/dev @ a776559 (pre-refactor), driven end-to-end
-# through submit() -> StepOverrides.from_user -> cache_payload ->
-# compute_step_spec_id. A mismatch means every cached step with that override
-# shape will miss-and-rerun; confirm that is intended before updating.
+# Golden step_spec_ids — the cache keys submit() produces for each override
+# combo, driven end-to-end through submit() -> StepOverrides.from_user ->
+# instantiate_operation -> effective_config_payload -> compute_step_spec_id.
+# Regenerated for the effective-config-hashing change (the config component is
+# now read off the instantiated op, not the typed overrides), so every value
+# here differs from the pre-change baseline — a one-time, ratified cache flush.
+# A mismatch means every cached step with that override shape will
+# miss-and-rerun; confirm that is intended before updating.
+#
+# ``bare`` and ``environment_local`` share a digest by design: _MockOp's
+# default environment is already ``local``, so selecting it is a no-op on the
+# effective config. Under the old typed-override path they differed.
 # =============================================================================
 
 _GOLDEN_STEP_SPEC_IDS: dict[str, str] = {
-    "bare": "b89945eeda6bee25ac0639962e21eebc",
-    "environment_local": "9fb21351111eb94428335b78434ca9f9",
-    "environment_docker_dict": "cd74a57b94bb17222db11b652288ba89",
-    "compute_provider_modal": "e95b1f76bf5008691aba6fb1b00778c7",
-    "compute_resources_a100": "a8521640e843815db87e9dc86aa16287",
-    "group_by_cross": "edad9e45dd51b7a997c548b60a7b78f9",
+    "bare": "8666ba0b064487dba1826070fee00a57",
+    "environment_local": "8666ba0b064487dba1826070fee00a57",
+    "environment_docker_dict": "56bf45b7aacfd45a6e16cdb205b8c420",
+    "compute_provider_modal": "dec35b7ae6fe17642e9f53ccb66fe848",
+    "compute_resources_a100": "8a4149df518a7d0d97082988dd3284c7",
+    "group_by_cross": "7883b18c8795f11bc4982cb19da13b60",
 }
 
 _GOLDEN_OVERRIDES: dict[str, dict[str, Any]] = {
@@ -2402,3 +2411,100 @@ def test_step_spec_id_is_byte_identical(
     pipeline.finalize()
 
     assert pipeline._step_spec_ids[0] == _GOLDEN_STEP_SPEC_IDS[label]
+
+
+# Two ops sharing a name but differing only in their class-default image —
+# the "before" and "after" of an image bump. Same name → identical
+# operation_name in the hash, so the image is the sole variable.
+class _ImageOpV1(OperationDefinition):
+    """Op whose container image is a class-level default (v1)."""
+
+    class InputRole(StrEnum):
+        data = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "mock_image_bump_op"
+    environments: Environments = Environments(
+        active="docker", docker=DockerEnvironmentSpec(image="lab/tool:v1")
+    )
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": ["data"]},
+        ),
+    }
+
+    def preprocess(self, inputs: Any) -> dict:
+        return {}
+
+    def execute_function(self, inputs: Any, output_dir: Any) -> Any:
+        return None
+
+
+class _ImageOpV2(OperationDefinition):
+    """Identical to _ImageOpV1 but the class-default image is bumped to v2."""
+
+    class InputRole(StrEnum):
+        data = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "mock_image_bump_op"
+    environments: Environments = Environments(
+        active="docker", docker=DockerEnvironmentSpec(image="lab/tool:v2")
+    )
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            infer_lineage_from={"inputs": ["data"]},
+        ),
+    }
+
+    def preprocess(self, inputs: Any) -> dict:
+        return {}
+
+    def execute_function(self, inputs: Any, output_dir: Any) -> Any:
+        return None
+
+
+@patch("artisan.orchestration.pipeline_manager.execute_step")
+@patch("artisan.orchestration.pipeline_manager.StepTracker")
+def test_class_default_image_bump_changes_step_spec_id(
+    mock_tracker_cls, mock_execute, tmp_path
+):
+    """Bumping only the class-default image (no per-step override) flips the
+    step_spec_id — the motivating bug, as an end-to-end regression guard.
+
+    Before this change the image lived only in the class default, invisible to
+    the typed-override cache key, so both runs produced the same key and
+    the cache served v1 artifacts for a v2 op.
+    """
+
+    def _spec_id(op: type[OperationDefinition]) -> str:
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+        mock_execute.return_value = StepResult(
+            step_name=op.name,
+            step_number=0,
+            success=True,
+            total_count=0,
+            succeeded_count=0,
+            failed_count=0,
+            duration_seconds=0.0,
+        )
+        pipeline = _make_pipeline(tmp_path / op.__name__)
+        pipeline.submit(op, inputs={"data": ["a" * 32]})
+        pipeline.finalize()
+        return pipeline._step_spec_ids[0]
+
+    assert _spec_id(_ImageOpV1) != _spec_id(_ImageOpV2)

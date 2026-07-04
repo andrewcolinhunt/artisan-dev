@@ -54,6 +54,36 @@ def serialize_params(operation: Any) -> dict[str, Any]:
     return dumped
 
 
+def effective_config_payload(operation: Any) -> dict[str, Any]:
+    """Serialize the effective, cache-affecting config off an op instance.
+
+    The config counterpart to ``serialize_params``: both read the merged
+    values (class defaults + applied overrides) off an already-instantiated
+    operation, so the cache key reflects what actually runs — not just what
+    the caller typed at the call site. Every key is always present; the
+    legacy omit-when-unset rule is dropped.
+
+    Args:
+        operation: A fully-instantiated ``OperationDefinition`` (post
+            ``instantiate_operation``). Duck-typed to keep ``utils`` free
+            of an ``operations`` import, mirroring ``serialize_params``.
+
+    Returns:
+        JSON-ready dict fed to ``compute_step_spec_id`` /
+        ``compute_execution_spec_id`` as ``config_overrides``.
+    """
+    tool = operation.tool
+    group_by = operation.group_by
+    return {
+        "version": type(operation).version,
+        "environments": operation.environments.model_dump(mode="json"),
+        "tool": tool.model_dump(mode="json") if tool is not None else None,
+        "compute_provider": operation.compute_provider.model_dump(mode="json"),
+        "compute_resources": operation.compute_resources.model_dump(mode="json"),
+        "group_by": group_by.value if group_by is not None else None,
+    }
+
+
 def compute_execution_spec_id(
     operation_name: str,
     inputs: dict[str, list[str]],
