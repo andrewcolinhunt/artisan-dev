@@ -84,11 +84,10 @@ both policies.
 ## Composite
 
 A reusable composition of operations with declared inputs and outputs. Defined
-by subclassing `CompositeDefinition` and implementing `compose()`. Can run
-**collapsed** (`pipeline.run()` — single step, in-memory artifact passing) or
-**expanded** (`pipeline.run_composite()` — each internal operation becomes its own
-pipeline step). The `intermediates` setting controls whether intermediate
-artifacts are discarded, persisted, or exposed.
+by subclassing `CompositeDefinition` and implementing `compose()`. Running a
+composite with `pipeline.run_composite()` expands it into real pipeline steps —
+each internal `ctx.run()` becomes its own step with independent caching,
+dispatch, and provenance.
 
 ---
 

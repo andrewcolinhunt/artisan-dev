@@ -355,22 +355,14 @@ class TransformAndScore(CompositeDefinition):
         ctx.output("metrics", scored.output("metrics"))
 ```
 
-Use `pipeline.run()` for **collapsed** execution (single step, in-memory
-artifact passing) or `pipeline.run_composite()` for **expanded** execution (each
-internal operation becomes its own pipeline step):
+Run a composite with `pipeline.run_composite()`. Each internal operation
+becomes its own pipeline step with independent caching and dispatch:
 
 ```python
 output = pipeline.output
 pipeline.run(operation=DataGenerator, name="gen", params={"count": 10})
 
-# Collapsed — single step
-pipeline.run(
-    operation=TransformAndScore,
-    name="ts",
-    inputs={"dataset": output("gen", "datasets")},
-)
-
-# Expanded — each internal operation is a separate step
+# Each internal operation becomes its own step
 pipeline.run_composite(
     composite=TransformAndScore,
     name="ts",
@@ -378,17 +370,10 @@ pipeline.run_composite(
 )
 ```
 
-For the full guide on writing composites, see
+Composite-level execution overrides (`step_runner`, `runner_resources`,
+`batch_strategy`, …) become the default for every child step. For the full
+guide on writing composites, see
 [Writing Composite Operations](writing-composite-operations.md).
-
-**Intermediates handling** controls what happens to artifacts produced by
-operations before the final one:
-
-| Mode | Behavior |
-|------|----------|
-| `"discard"` (default) | Intermediates discarded after the composite completes |
-| `"persist"` | Intermediates committed to Delta Lake with internal provenance edges |
-| `"expose"` | Like `"persist"`, but execution edges include intermediate outputs |
 
 ### SLURM execution
 

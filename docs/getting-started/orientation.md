@@ -80,8 +80,8 @@ When operations are tightly coupled — for example, always running transform
 immediately followed by scoring — you can bundle them into a **composite**.
 A `CompositeDefinition` declares its own inputs and outputs and wires
 internal operations together via a `compose()` method, creating a reusable
-building block that the pipeline can execute as a single step (collapsed)
-or as separate steps (expanded).
+building block. Running it expands each internal operation into its own
+pipeline step.
 
 > **Deep dive:** [Operations Model](../concepts/operations-model.md) | [Composites and Composition](../concepts/composites-and-composition.md)
 
