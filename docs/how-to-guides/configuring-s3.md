@@ -95,7 +95,7 @@ pipeline.run(
 ```
 
 For each path, Artisan resolves the filesystem via a two-step rule
-(`src/artisan/utils/fs_resolve.py`):
+(`src/artisan/schemas/execution/fs.py`):
 
 1. If the path's protocol matches `config.storage.protocol`, use the
    pipeline's configured `StorageConfig.filesystem()` — credentials and
