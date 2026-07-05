@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import polars as pl
+from fixtures.execution_records import executions_df
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.orchestration.engine.inputs import (
@@ -20,7 +21,6 @@ from artisan.orchestration.engine.inputs import (
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.storage.core.table_schemas import (
     EXECUTION_EDGES_SCHEMA,
-    EXECUTIONS_SCHEMA,
 )
 
 
@@ -55,7 +55,7 @@ def _create_executions_df(**overrides) -> pl.DataFrame:
             if key not in overrides and len(val) != n:
                 defaults[key] = val * n
     defaults.update(overrides)
-    return pl.DataFrame(defaults, schema=EXECUTIONS_SCHEMA)
+    return executions_df(**defaults)
 
 
 def _create_execution_edges_df(rows: list[dict]) -> pl.DataFrame:

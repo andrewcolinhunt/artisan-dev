@@ -274,7 +274,9 @@ def _raise_from_envelope(envelope: ArtisanErrorEnvelope, op_name: str) -> NoRetu
         message=envelope.message,
         error_type=envelope.error_type,
         operation_name=envelope.operation_name or op_name,
+        field=envelope.field,
         hint=envelope.hint,
+        suggestions=envelope.suggestions,
         recovery_hint=envelope.recovery_hint,
         doc_uri=envelope.doc_uri,
     )

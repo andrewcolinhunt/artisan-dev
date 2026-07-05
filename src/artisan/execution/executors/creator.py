@@ -18,6 +18,7 @@ from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.staging.parquet_writer import StagingResult
 from artisan.execution.staging.recorder import (
     _read_tool_output,
+    error_envelope_dict,
     record_execution_failure,
     record_execution_success,
 )
@@ -146,7 +147,12 @@ def run_creator_lifecycle(
                 f"{len(failures)}/{len(raw_results)} artifact executions "
                 f"failed; first: {format_error(failures[0])}"
             )
-            raise _ExecuteFailure(msg, tool_output=_read_tool_output(prepped.log_path))
+            # Chain the first failure so a structured client ArtisanError
+            # (the endpoint batch contract returns it as a raw_results entry)
+            # survives as __cause__ for error_envelope_dict to persist.
+            raise _ExecuteFailure(
+                msg, tool_output=_read_tool_output(prepped.log_path)
+            ) from failures[0]
 
     return post_unit(prepped, raw_results, runtime_env)
 
@@ -267,6 +273,7 @@ def run_creator_flow(
             user_overrides=user_overrides,
             tool_output=tool_output,
             failure_logs_root=runtime_env.failure_logs_root,
+            error_envelope=error_envelope_dict(exc),
         )
     except Exception as exc:
         error = format_error(exc)
@@ -296,6 +303,7 @@ def run_creator_flow(
                 params=params_dict,
                 user_overrides=user_overrides,
                 failure_logs_root=runtime_env.failure_logs_root,
+                error_envelope=error_envelope_dict(exc),
             )
 
     timings["total"] = round(time.perf_counter() - total_start, 4)
