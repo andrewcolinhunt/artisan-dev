@@ -56,9 +56,9 @@ pipeline = PipelineManager.create(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `name` | `str` | — | Pipeline identifier (used in logging and run IDs) |
-| `delta_root` | `Path \| str` | — | Where Delta Lake tables are written |
-| `staging_root` | `Path \| str` | — | Where workers write intermediate files before commit |
-| `working_root` | `Path \| str \| None` | `tempfile.gettempdir()` | Worker sandbox directory. Defaults to `$TMPDIR` |
+| `delta_root` | `str` | — | Where Delta Lake tables are written |
+| `staging_root` | `str` | — | Where workers write intermediate files before commit |
+| `working_root` | `str \| None` | `tempfile.gettempdir()` | Worker sandbox directory. Defaults to `$TMPDIR` |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | How to handle step failures (`CONTINUE` or `FAIL_FAST`) |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When completed steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Default step runner. Accepts an instance or string name (`"local"`, `"slurm"`, `"slurm_intra"`) |
@@ -456,6 +456,7 @@ assert step.succeeded_count == 3
 ## Cross-references
 
 - [Configuring Execution](configuring-execution.md) — resources, batching, step runners
+- [CompositeDefinition Reference](../reference/composite-definition.md) — full API for composites
 - [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) — interactive walkthrough
 - [Execution Flow](../concepts/execution-flow.md) — what happens under the hood
 - [Writing Creator Operations](writing-creator-operations.md) — building custom operations

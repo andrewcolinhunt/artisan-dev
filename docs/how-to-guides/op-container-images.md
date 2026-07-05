@@ -50,10 +50,10 @@ The image ref lives on the op's modal config — it is the single source
 of truth both consumers read:
 
 ```python
-class FoldSequences(OperationDefinition):
+class ProcessData(OperationDefinition):
     ...
     compute_provider = ComputeProvider(
-        modal=ModalComputeConfig(image="ghcr.io/dexterity-systems/fold-tool:0.3.1")
+        modal=ModalComputeConfig(image="ghcr.io/dexterity-systems/process-tool:0.3.1")
     )
 ```
 
@@ -64,7 +64,7 @@ Ops without per-op needs use the default `artisan-worker` image.
 From the repo root:
 
 ```bash
-artisan docker build fold_sequences
+artisan docker build process_data
 ```
 
 This resolves the op's image ref, finds the conventional Dockerfile,
@@ -73,7 +73,7 @@ declares** — a tag is never typed twice. Push it wherever the ref
 points:
 
 ```bash
-docker push "$(artisan op image fold_sequences)"
+docker push "$(artisan op image process_data)"
 ```
 
 ## Resolve the image from a harness
@@ -81,22 +81,22 @@ docker push "$(artisan op image fold_sequences)"
 External harnesses ask artisan instead of hardcoding refs:
 
 ```bash
-IMAGE=$(artisan op image fold_sequences)
-docker run --rm -v /data/weights:/weights "$IMAGE" fold --input ...
+IMAGE=$(artisan op image process_data)
+docker run --rm -v /data/weights:/weights "$IMAGE" process --input ...
 ```
 
 `--json` adds what the container expects at runtime — env the deploy
 would layer on, volume mount paths, hardware:
 
 ```bash
-artisan op image fold_sequences --json
+artisan op image process_data --json
 ```
 
 ```json
 {
-  "image": "ghcr.io/dexterity-systems/fold-tool:0.3.1",
+  "image": "ghcr.io/dexterity-systems/process-tool:0.3.1",
   "env": {},
-  "volumes": { "/weights": "fold-weights" },
+  "volumes": { "/weights": "model-weights" },
   "secrets": [],
   "gpu": "A100",
   "cpu": null,
@@ -108,15 +108,16 @@ artisan op image fold_sequences --json
 Where Modal binds named Volumes, a harness bind-mounts local
 directories at the same paths.
 
-External tool ops are invoked through their own CLI, as above. Ops
+Command ops wrapping an external tool are invoked through that
+tool's CLI, as above. Ops
 whose body is Python
 ([`execute_as_tool`](writing-creator-operations.md#execute-as-tool))
 run through the uniform artisan CLI baked into the image:
 
 ```bash
-IMAGE=$(artisan op image embed_sequences)
-docker run --rm "$IMAGE" artisan op run mypkg.ops:EmbedSequences \
-    --params '{"batch_size": 16}' --inputs '{"sequences": "/data/in.fasta"}'
+IMAGE=$(artisan op image transform_data)
+docker run --rm "$IMAGE" artisan op run mypkg.ops:TransformData \
+    --params '{"batch_size": 16}' --inputs '{"data": "/data/input.csv"}'
 ```
 
 ## Pin for production
@@ -134,7 +135,7 @@ deploy can overlay local package sources onto the worker image,
 shadowing the baked versions:
 
 ```bash
-artisan modal deploy fold_sequences --overlay artisan --overlay mypkg
+artisan modal deploy process_data --overlay artisan --overlay mypkg
 ```
 
 The overlay is per-deploy and dev-only — production deploys bake code
@@ -152,3 +153,14 @@ docker run --rm "$(artisan op image wait_tool)" bash -c 'echo ok'
 
 Both commands succeeding confirms the convention end-to-end: ref →
 Dockerfile → built tag → runnable container.
+
+---
+
+## Cross-references
+
+- [Execution Flow](../concepts/execution-flow.md) -- how compute routing and
+  remote execution fit the pipeline step lifecycle
+- [Running on Modal](../tutorials/07-compute-backends/04-modal-execution.ipynb)
+  -- deploy and run an op on Modal end-to-end
+- [Configuring Execution](configuring-execution.md) -- set compute providers and
+  resources on an op

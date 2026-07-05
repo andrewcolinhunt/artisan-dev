@@ -70,11 +70,11 @@ storage = StorageConfig(
 )
 ```
 
-Why two dicts? fsspec and delta-rs were written by different communities
-and have genuinely different option schemas (`client_kwargs={"endpoint_url": ...}`
-versus `AWS_ENDPOINT_URL`). Translating between them is fragile, so
-`StorageConfig` carries both side-by-side. Leave `delta_options={}` (the
-default) on AWS to fall back to env-var discovery.
+fsspec and delta-rs use different option schemas, so `StorageConfig`
+carries both side by side — see
+[Pipeline Configuration](../concepts/pipeline-configuration.md) for why.
+Leave `delta_options={}` (the default) on AWS to fall back to env-var
+discovery.
 
 ---
 
@@ -84,6 +84,9 @@ Pipelines can ingest files directly from cloud URIs — no local download
 step needed:
 
 ```python
+from artisan.operations.curator import IngestData
+
+# `pipeline` continues from the minimal working example above.
 pipeline.run(
     IngestData,
     inputs=[
@@ -111,36 +114,17 @@ combination — without forcing users to think about which credentials apply.
 
 ## External file outputs (`files_root`) on cloud
 
-`files_root` is where `LargeFileArtifact` and `AppendableArtifact`
-content lives — bytes too large to embed in Delta. When `files_root`
-is a cloud URI, Artisan uses a **local sandbox + framework upload**
-model so operation authors never have to reach for fsspec:
+`files_root` holds `LargeFileArtifact` and `AppendableArtifact` content —
+bytes too large to embed in Delta. Point it at a cloud URI and existing
+creators keep working with no code change: they still write to the local
+`inputs.files_dir` sandbox, and the framework uploads each finalized file
+to `files_root` for you.
 
-1. During `execute`, the operation writes to `inputs.files_dir`
-   using ordinary stdlib I/O (`open(...)`, `os.path.join`, etc.).
-   `files_dir` is always a local sandbox subdirectory, never a
-   cloud URI.
-2. After `postprocess`, the framework walks every finalized
-   artifact whose `external_path` points inside `files_dir` and
-   uploads the file to the sharded destination under `files_root`
-   (cloud: `fs.put`; local: `shutil.move`), then rewrites
-   `external_path` on each artifact to the destination.
-3. Downstream consumers read the artifact via
-   `LargeFileArtifact.materialize_to(...)`, which uses `fs.get`
-   on `external_path` — so the cloud round-trip is transparent.
+If an upload fails, the unit fails with a postprocess-style error and the
+local sandbox is preserved so the bytes are recoverable.
 
-This means existing creators like `LargeFileGenerator` and
-`AppendableGenerator` work on cloud `files_root` without any code
-change; they keep writing to `inputs.files_dir` with `open()`, and
-the framework handles the upload.
-
-Multiple artifacts may share one output file (for example,
-`AppendableGenerator` emits N `AppendableArtifact` rows backed by
-one JSONL). The upload helper dedups by source path: one upload,
-N `external_path` rewrites to the shared destination.
-
-If the upload fails, the unit fails with a postprocess-style error
-and the local sandbox is preserved so the bytes are recoverable.
+See [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) for the
+external-file storage model in depth.
 
 ---
 
@@ -158,3 +142,16 @@ If you're testing against MinIO locally, the project provides a
 boots a MinIO container per pytest session. See
 `tests/artisan/storage/test_smoke_s3.py` for the smallest end-to-end
 example.
+
+---
+
+## Cross-references
+
+- [Pipeline Configuration](../concepts/pipeline-configuration.md) — the
+  `PipelineConfig` and `StorageConfig` schemas
+- [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) — how
+  tables, staging, and external files are laid out
+- [External File Storage tutorial](../tutorials/06-storage/02-external-file-storage.ipynb) —
+  `files_root` and external content in action
+- [Configure Execution](configuring-execution.md) — runners, batching,
+  and compute routing

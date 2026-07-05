@@ -171,6 +171,15 @@ atomically to Delta Lake.
 
 For the full phase-by-phase breakdown, see [Execution Flow](execution-flow.md).
 
+The execution layer also routes *where* an operation's computation runs.
+**Compute-provider routing** either runs the operation in-process on the worker
+(local passthrough) or invokes it on a remote tool endpoint. The
+**operation-as-tool endpoint** exposes a single operation as a standalone
+service or container CLI, so an external harness can run it without the
+surrounding pipeline. See
+[Configure Execution](../how-to-guides/configuring-execution.md) and
+[Op Container Images](../how-to-guides/op-container-images.md).
+
 ---
 
 ## The building blocks
@@ -203,8 +212,9 @@ The framework provides two types:
 
 **Creators** wrap heavy computation (external tools, ML inference, file
 transforms). They follow a three-phase lifecycle — `preprocess` adapts inputs,
-`execute` runs the computation, `postprocess` constructs output
-artifacts. Each phase runs in its own sandbox directory.
+the execute phase (`execute_function` or `execute_command`) runs the
+computation, `postprocess` constructs output artifacts. Each phase runs in its
+own sandbox directory.
 
 **Curators** perform lightweight metadata manipulation (filtering, merging,
 ingesting). They run a single `execute_curator` method in-memory, with no
@@ -354,7 +364,7 @@ What happens:
    into three concrete artifact IDs. Computes cache key. No cache hit.
    Dispatches `DataTransformer` to workers.
 5. **Execution** materializes the three input artifacts to disk. Runs
-   `preprocess` → `execute` → `postprocess`. Captures lineage edges
+   `preprocess` → `execute_function` → `postprocess`. Captures lineage edges
    A→D, B→E, C→F via filename stem matching. Stages results.
 6. **Orchestration** commits step 1 to Delta Lake. Pipeline complete.
 

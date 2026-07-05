@@ -85,7 +85,7 @@ output_dir.mkdir(exist_ok=True)
 
 artifact = store.get_artifact("abc123...", artifact_type="data")
 path = artifact.materialize_to(output_dir)
-# path is e.g. Path("exported/dataset_00000.csv")
+# path is a str like "exported/<artifact_id>.csv"
 ```
 
 ### Export all data artifacts from a step
@@ -170,7 +170,7 @@ path = ArtifactTypeDef.get_table_path("data")  # "artifacts/data"
 | `inspect_data` raises `ValueError` | `content` is `None` (not hydrated) | The `DataArtifact` was created without CSV content |
 | `inspect_data` raises `ValueError` with "No matching data artifacts found" | Name does not match any `original_name` in the data table | Check the error message for available names |
 | `inspect_metrics` returns empty DataFrame | No metric artifacts at that step | Use `inspect_step` to check what artifact types exist |
-| `materialize_to` raises `ValueError` | Artifact not hydrated or `original_name` not set | Load the artifact with `hydrate=True` (the default) |
+| `materialize_to` raises `ValueError` | `content`/`path` is `None` (not hydrated) or `artifact_id` is `None` (not finalized) | Load the artifact with `hydrate=True` (the default) |
 | `pl.read_delta` raises an error | Path does not contain a valid Delta table | Check spelling; use `TablePath` enum values for framework tables |
 
 ---

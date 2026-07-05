@@ -1,63 +1,108 @@
 # Pipeline Configuration
 
-`PipelineConfig` is the frozen Pydantic model that captures every
-orchestrator-level setting for a pipeline run. It is set once when you
-call `PipelineManager.create(...)` (or constructed directly) and is
-propagated to every worker via `RuntimeEnvironment`.
+Every setting that governs a pipeline run as a whole — where results are
+stored, how failures are handled, which compute backend runs each step — must
+be decided once and then respected by every worker, whether that worker runs
+in the same process or on a remote cluster node. `PipelineConfig` is the single
+object that holds those decisions. Understanding what it captures, and why it
+is immutable, tells you where run-wide behavior is set and why it cannot change
+partway through a run.
 
-```python
-from artisan.orchestration import PipelineConfig, PipelineManager
+This page explains what belongs in the pipeline configuration, why the model
+is frozen, and how its values reach every worker.
 
-config = PipelineConfig(
-    name="my-pipeline",
-    delta_root="/data/delta",
-    staging_root="/data/staging",
-    default_step_runner="local",
-    default_compute_provider="local",
-)
-pipeline = PipelineManager(config)
-```
+---
 
-After creation, the config is exposed read-only on `pipeline.config`:
+## What the configuration captures
 
-```python
-print(pipeline.config.delta_root)
-print(pipeline.config.default_step_runner)
-```
+`PipelineConfig` is the orchestrator-level configuration for a run. It is
+decided once and covers the settings that must be identical everywhere the
+pipeline executes, grouped by concern:
 
-## Fields
+**Identity.** A human-readable `name` used for logging and Prefect, plus a
+`pipeline_run_id` that tags one run session (see [Where the run id comes
+from](#where-the-run-id-comes-from)).
 
-| Field                       | Type             | Description                                                                                |
-| --------------------------- | ---------------- | ------------------------------------------------------------------------------------------ |
-| `name`                      | `str`            | Pipeline identifier used for logging and Prefect.                                          |
-| `pipeline_run_id`           | `str`            | Unique ID generated for this run session (auto-derived from `name` when blank).            |
-| `delta_root`                | `str`            | Root URI for the Delta Lake tables that hold artifacts and provenance.                     |
-| `staging_root`              | `str`            | Root URI where workers stage Parquet files before commit.                                  |
-| `working_root`              | `str`            | Root path for worker sandboxes. Always local, defaults to `tempfile.gettempdir()`.         |
-| `failure_policy`            | `FailurePolicy`  | Default behavior on step failure: `CONTINUE` (default) or `FAIL_FAST`.                     |
-| `cache_policy`              | `CachePolicy`    | When completed steps qualify as cache hits. `ALL_SUCCEEDED` (default).                     |
-| `default_step_runner`       | `str`            | Default runner for step dispatch (`"local"`, `"slurm"`, `"slurm_intra"`).                  |
-| `default_compute_provider`  | `str`            | Default compute provider for execute-phase routing (`"local"` or `"modal"`).                 |
-| `preserve_staging`          | `bool`           | Debug flag — keep staging files after commit.                                              |
-| `preserve_working`          | `bool`           | Debug flag — keep worker sandboxes after execution.                                        |
-| `recover_staging`           | `bool`           | At pipeline init, commit leftover staging files from a prior crashed run. Default `True`.  |
-| `skip_cache`                | `bool`           | Bypass all cache lookups (step-level and execution-level).                                 |
-| `files_root`                | `str \| None`    | Root for Artisan-managed external files. Auto-derived for local; required for cloud.      |
-| `storage`                   | `StorageConfig`  | Storage backend configuration (S3, GCS, local).                                            |
+**Storage roots.** Where artifacts and provenance are persisted (`delta_root`),
+where workers stage results before commit (`staging_root`), where
+Artisan-managed external files live (`files_root`), and the backend `storage`
+configuration for local, S3, or GCS. Worker sandboxes use `working_root`, which
+is always local.
 
-## Public surface
+**Execution defaults.** The default step runner and compute provider that steps
+inherit unless a step overrides them — for example a local runner versus a
+SLURM or Modal backend.
 
-- `from artisan.orchestration import PipelineConfig` — re-exported from the
-  top-level package since it is part of the stable user-facing API.
-- The model is `frozen` (Pydantic `model_config = {"frozen": True}`); all
-  fields are immutable after construction. To change a field, build a new
-  config and a new `PipelineManager`.
+**Policies.** How the pipeline reacts to a failed step (`failure_policy`) and
+when a completed step counts as a cache hit (`cache_policy`).
 
-## Related
+**Recovery and debugging.** Flags to recover leftover staging files from a
+crashed run, bypass the cache, or keep staging directories and worker sandboxes
+around for inspection.
 
-- [PipelineManager.create](../how-to-guides/building-a-pipeline.md) — the
-  factory that constructs a config from kwargs.
-- [Configuring S3](../how-to-guides/configuring-s3.md) — using
-  `PipelineConfig` directly for cloud deployments.
-- [List previous runs](../how-to-guides/building-a-pipeline.md#list-previous-runs)
-  — `list_runs(delta_root)` reads runs from `PipelineConfig.delta_root`.
+The exhaustive field list, with types and defaults, lives in the
+[Glossary](../reference/glossary.md#glossary-pipeline-manager) reference
+entries. This page covers why those settings live together in one frozen
+object, not the mechanics of each field.
+
+---
+
+## Why the configuration is frozen
+
+The model is immutable: once constructed, no field can be reassigned. This is a
+deliberate constraint.
+
+**Consistency across workers.** A pipeline step can dispatch thousands of
+workers, some in separate processes or on remote nodes. Each worker receives
+the run's settings through a `RuntimeEnvironment` derived from the config. If
+the config could change mid-run, different workers could observe different
+storage roots or policies and produce results that cannot be reconciled.
+Freezing the config makes that divergence impossible.
+
+**Reproducibility.** Run-wide settings that never change are settings you can
+trust when you read results back. The `delta_root` a step wrote to is the same
+`delta_root` recorded for every other step in the run.
+
+To change a run-wide setting, you build a new configuration and a new
+`PipelineManager`. There is no partial mutation of an in-flight run.
+
+---
+
+(where-the-run-id-comes-from)=
+## Where the run id comes from
+
+`pipeline_run_id` identifies one run session, and its value depends on how the
+pipeline is created. `PipelineManager.create(...)` generates the id from the
+pipeline name. When you construct a `PipelineConfig` directly and hand it to
+`PipelineManager`, the field stays blank unless you set it yourself — the config
+model does not derive it. `files_root` is the one value the model fills in on
+its own: for local deployments it is derived from `delta_root`, while cloud
+deployments must set it explicitly.
+
+---
+
+## Key design decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| One object for all run-wide settings | A single source of truth every worker reads, rather than scattered flags |
+| Frozen after construction | Guarantees every worker sees identical settings; prevents mid-run divergence |
+| Propagated via `RuntimeEnvironment` | Remote workers receive the run's settings without sharing orchestrator memory |
+| Run id generated by the factory | `PipelineManager.create` tags each session; direct construction leaves it blank |
+| `files_root` auto-derived for local only | Local runs need no extra setup; cloud runs must be explicit about file storage |
+
+---
+
+## Cross-references
+
+- [Glossary](../reference/glossary.md#glossary-pipeline-manager) -- Reference
+  entries for `PipelineManager` and `PipelineConfig`
+- [First Pipeline tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb)
+  -- Create a `PipelineManager` and see its configuration in context
+- [Storage and Delta Lake](storage-and-delta-lake.md) -- How `delta_root`,
+  `staging_root`, and the storage backend fit together
+- [Building a Pipeline](../how-to-guides/building-a-pipeline.md) --
+  `PipelineManager.create`, the factory that builds a config from keyword
+  arguments
+- [Configuring S3](../how-to-guides/configuring-s3.md) -- Set storage roots and
+  `files_root` for cloud deployments

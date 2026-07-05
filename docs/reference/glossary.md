@@ -21,8 +21,9 @@ An immutable, content-addressed data node identified by the `xxh3_128` hash of
 its content. Artifacts are the fundamental data units flowing through pipelines.
 Once finalized, an artifact's ID is a permanent commitment to its exact content.
 Artifacts follow a [draft/finalize](#glossary-draft-finalize) lifecycle: they
-are created as mutable drafts and become immutable when finalized. The four
-built-in artifact types are `data`, `metric`, `file_ref`, and `config`.
+are created as mutable drafts and become immutable when finalized. The six
+built-in artifact types are `data`, `metric`, `file_ref`, `config`,
+`large_file`, and `appendable`.
 
 ---
 
@@ -88,6 +89,24 @@ by subclassing `CompositeDefinition` and implementing `compose()`. Running a
 composite with `pipeline.run_composite()` expands it into real pipeline steps —
 each internal `ctx.run()` becomes its own step with independent caching,
 dispatch, and provenance.
+
+---
+
+(glossary-compute-provider)=
+## Compute provider
+
+The routing target for an [operation](#glossary-operation)'s execute phase,
+selected per operation or per step via `compute_provider`. `"local"` (the
+default) runs the execute phase as a direct call inside the worker process.
+`"modal"` ships it to the operation's deployed tool endpoint: the worker submits
+params and input files over HTTP, polls until the tool finishes, and downloads
+the outputs. Only command operations (a [ToolSpec](#glossary-tool-spec) with an
+`execute_command()`, or `execute_as_tool=True`) can route to `"modal"`. The
+compute provider is orthogonal to the [backend](#glossary-backend): the backend
+controls where the worker process runs; the compute provider controls where the
+execute phase runs inside that worker. See
+[Compute Routing](../tutorials/07-compute-backends/01-compute-routing.ipynb) and
+[Execution Flow](../concepts/execution-flow.md).
 
 ---
 
@@ -315,9 +334,9 @@ together via [output references](#glossary-output-reference).
 
 The main user-facing interface for defining and executing pipelines. Provides
 `run()` (blocking step execution), `submit()` (non-blocking, returns a
-[StepFuture](#glossary-step-future)), `expand()` (expand a
-[composite](#glossary-composite) into separate steps), and `output()` (reference
-a step's outputs). Configured with a `PipelineConfig`
+[StepFuture](#glossary-step-future)), `run_composite()` / `submit_composite()`
+(expand a [composite](#glossary-composite) into separate steps), and `output()`
+(reference a step's outputs). Configured with a `PipelineConfig`
 specifying the Delta Lake root, staging root, failure policy, and cache policy.
 
 ---

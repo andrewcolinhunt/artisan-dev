@@ -20,6 +20,7 @@ The simplest creator produces artifacts from nothing:
 ```python
 from __future__ import annotations
 from enum import StrEnum
+from pathlib import Path
 from typing import ClassVar
 
 from artisan.operations.base import OperationDefinition
@@ -43,17 +44,17 @@ class HelloGenerator(OperationDefinition):
     }
 
     def execute_function(self, inputs: ExecuteInput) -> None:
-        (inputs.execute_dir / "hello.csv").write_text("id,value\n1,42\n")
+        Path(inputs.execute_dir, "hello.csv").write_text("id,value\n1,42\n")
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         drafts = [
             DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
+                content=path.read_bytes(),
+                original_name=path.name,
                 step_number=inputs.step_number,
             )
-            for f in inputs.file_outputs
-            if f.suffix == ".csv"
+            for path in map(Path, inputs.file_outputs)
+            if path.suffix == ".csv"
         ]
         return ArtifactResult(success=True, artifacts={"datasets": drafts})
 ```
@@ -124,18 +125,18 @@ class ScaleData(OperationDefinition):
                 parts = row.split(",")
                 parts[1] = str(float(parts[1]) * self.params.factor)
                 scaled.append(",".join(parts))
-            out = inputs.execute_dir / path.name
+            out = Path(inputs.execute_dir) / path.name
             out.write_text(header + "\n" + "\n".join(scaled) + "\n")
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         drafts = [
             DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
+                content=path.read_bytes(),
+                original_name=path.name,
                 step_number=inputs.step_number,
             )
-            for f in inputs.file_outputs
-            if f.suffix == ".csv"
+            for path in map(Path, inputs.file_outputs)
+            if path.suffix == ".csv"
         ]
         return ArtifactResult(success=True, artifacts={"dataset": drafts})
 ```
@@ -334,7 +335,7 @@ def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `preprocess_dir` | `Path` | Directory for writing intermediate files (configs, conversions) |
+| `preprocess_dir` | `str` | Directory for writing intermediate files (configs, conversions) |
 | `input_artifacts` | `dict[str, list[Artifact]]` | Artifacts keyed by input role name |
 | `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
 
@@ -355,7 +356,7 @@ def execute_function(self, inputs: ExecuteInput) -> Any:
     for path_str in inputs.inputs["dataset"]:
         data = Path(path_str).read_text()
         transformed = do_something(data)
-        (inputs.execute_dir / Path(path_str).name).write_text(transformed)
+        (Path(inputs.execute_dir) / Path(path_str).name).write_text(transformed)
 
     return None  # or return computed data for memory_outputs
 ```
@@ -364,9 +365,9 @@ def execute_function(self, inputs: ExecuteInput) -> Any:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `execute_dir` | `Path` | Directory for writing output files. All files here are captured by postprocess |
+| `execute_dir` | `str` | Directory for writing output files. All files here are captured by postprocess |
 | `inputs` | `dict[str, Any]` | Prepared inputs from preprocess |
-| `log_path` | `Path \| None` | Path where external tool output should be written (provided by the framework) |
+| `log_path` | `str \| None` | Path where external tool output should be written (provided by the framework) |
 | `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
 
 `ExecuteInput` is frozen — you cannot modify its fields.
@@ -388,12 +389,12 @@ Build draft artifacts and return them keyed by output role:
 def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
     drafts = [
         DataArtifact.draft(
-            content=f.read_bytes(),
-            original_name=f.name,
+            content=path.read_bytes(),
+            original_name=path.name,
             step_number=inputs.step_number,
         )
-        for f in inputs.file_outputs
-        if f.suffix == ".csv"
+        for path in map(Path, inputs.file_outputs)
+        if path.suffix == ".csv"
     ]
     return ArtifactResult(success=True, artifacts={"dataset": drafts})
 ```
@@ -407,8 +408,8 @@ stem when there is a 1:1 relationship.
 | Field | Type | Description |
 |-------|------|-------------|
 | `step_number` | `int` | Current pipeline step number (required for `draft()` calls) |
-| `postprocess_dir` | `Path` | Directory for any postprocess intermediates (rarely needed) |
-| `file_outputs` | `list[Path]` | All files in `execute_dir` after execute completes |
+| `postprocess_dir` | `str` | Directory for any postprocess intermediates (rarely needed) |
+| `file_outputs` | `list[str]` | All files in `execute_dir` after execute completes |
 | `memory_outputs` | `Any` | Whatever `execute` returned (`None`, dict, etc.) |
 | `input_artifacts` | `dict[str, list[Artifact]]` | Full input context with metadata for output naming and lineage |
 | `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
@@ -480,12 +481,12 @@ both roles:
 def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
     dataset_drafts = [
         DataArtifact.draft(
-            content=f.read_bytes(),
-            original_name=f.name,
+            content=path.read_bytes(),
+            original_name=path.name,
             step_number=inputs.step_number,
         )
-        for f in inputs.file_outputs
-        if f.suffix == ".csv"
+        for path in map(Path, inputs.file_outputs)
+        if path.suffix == ".csv"
     ]
     metric_drafts = [
         MetricArtifact.draft(
@@ -574,7 +575,7 @@ When you need explicit lineage on every output role, set
 `infer_lineage_from={"inputs": []}` on each `OutputSpec` so the framework
 expects user-supplied lineage rather than attempting stem inference.
 
-### External tool operations
+### Command operations (external tools)
 
 Set `tool` to a `ToolSpec` declaring the binary or script to invoke, and
 configure the execution environment with `environments`:
@@ -705,7 +706,7 @@ from artisan.schemas.enums import GroupByStrategy
 
 class AlignOp(OperationDefinition):
     name = "align"
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+    group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
     ...
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
@@ -738,7 +739,7 @@ represent the same logical entity in different formats pair naturally.
 ```python
 class JoinByName(OperationDefinition):
     name = "join_by_name"
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.NAME
+    group_by: GroupByStrategy | None = GroupByStrategy.NAME
 
     class InputRole(StrEnum):
         sequences = "sequences"
@@ -759,13 +760,13 @@ Set defaults on the class. Override per-step at the pipeline level:
 ```python
 class HeavyOp(OperationDefinition):
     name = "heavy_op"
-    resources: RunnerResources = RunnerResources(
+    runner_resources: RunnerResources = RunnerResources(
         cpus=4,
         memory_gb=32,
         gpus=1,
         extra={"partition": "gpu"},
     )
-    execution: BatchStrategy = BatchStrategy(
+    batch_strategy: BatchStrategy = BatchStrategy(
         artifacts_per_unit=5,
         estimated_seconds=3600.0,
     )

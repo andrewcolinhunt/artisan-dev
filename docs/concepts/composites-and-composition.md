@@ -77,7 +77,7 @@ itself produces no artifacts — it orchestrates the operations that do.
 
 | | `OperationDefinition` | `CompositeDefinition` |
 |---|---|---|
-| Method to implement | `preprocess`, `execute`, `postprocess` (or `execute_curator`) | `compose` |
+| Method to implement | `preprocess`, `execute_function`, `postprocess` (or `execute_curator`) | `compose` |
 | Receives | Raw inputs (files, DataFrames) | `CompositeContext` |
 | Produces | Artifacts directly | Nothing — delegates to operations |
 | Registered in | Operation registry | Composite registry |
@@ -86,38 +86,24 @@ itself produces no artifacts — it orchestrates the operations that do.
 
 ## How compose() wires operations
 
-`compose()` receives a `CompositeContext` with three methods:
+`compose()` receives a `CompositeContext`, the wiring surface it uses to
+connect operations. The context exposes three methods, all visible in the
+example above:
 
-### `ctx.input(role)` → `CompositeRef`
+- **Referencing inputs.** `ctx.input(role)` hands back a reference to one
+  of the composite's declared inputs, ready to feed into a step.
+- **Running steps.** `ctx.run(operation, ...)` runs an operation (or a
+  nested composite) as a real pipeline step and returns a handle. Asking
+  that handle for one of its outputs yields a reference you wire into the
+  next step.
+- **Mapping outputs.** `ctx.output(role, ref)` maps an internal result
+  onto one of the composite's declared outputs.
 
-Reference a declared input of the composite. The returned `CompositeRef`
-is passed as an input to `ctx.run()`:
-
-```python
-dataset_ref = ctx.input("dataset")
-```
-
-### `ctx.run(operation, ...)` → `CompositeStepHandle`
-
-Execute an operation (or nested composite) as a real pipeline step.
-Returns a handle whose `.output(role)` method produces a `CompositeRef`
-for wiring to the next operation:
-
-```python
-handle = ctx.run(DataTransformer, inputs={"dataset": dataset_ref})
-transformed_ref = handle.output("dataset")
-```
-
-### `ctx.output(role, ref)`
-
-Map an internal result to a declared output of the composite:
-
-```python
-ctx.output("metrics", scored.output("metrics"))
-```
-
-Only refs that are mapped via `ctx.output()` are visible outside the
-composite. Everything else is an internal wiring reference between steps.
+Only refs mapped through `ctx.output()` are visible outside the composite.
+Everything else is an internal wiring reference between steps, so the
+composite's external contract is exactly its declared inputs and mapped
+outputs. For exact signatures and return types, see the
+[CompositeDefinition Reference](../reference/composite-definition.md).
 
 ---
 
