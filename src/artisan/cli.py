@@ -12,9 +12,17 @@ The repo's console entry point (``[project.scripts]``). Subcommands:
   RL harnesses invoke it directly via ``docker run``.
 - ``artisan docker build <op>`` — build the op's image from its
   conventional Dockerfile, tagged with the ref the config declares.
+- ``artisan op list`` / ``artisan op describe <op>`` — registry
+  discovery for agents and humans (``--json`` for machine output).
+- ``artisan runs`` / ``artisan failures`` / ``artisan provenance`` —
+  read persisted run history, failure envelopes, and provenance edges
+  from a Delta root (``--delta-root`` or ``ARTISAN_DELTA_ROOT``).
 
 Heavy artisan imports are deferred into the command functions so
-``--help`` and argument errors stay fast.
+``--help`` and argument errors stay fast. Under ``--json``, handled
+failures serialize as ``ArtisanError.to_dict()`` envelopes on stdout
+with exit code 1 — the CLI is a machine-read boundary per the
+error-envelope policy.
 """
 
 from __future__ import annotations
@@ -29,8 +37,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
+    from artisan.errors import ArtisanError
     from artisan.operations.base.operation_definition import OperationDefinition
 
 _CONTAINER_VIEW_FIELDS = (
@@ -85,6 +94,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     op_parser = sub.add_parser("op", help="Operation commands")
     op_sub = op_parser.add_subparsers(dest="op_command", required=True)
+
+    op_list = op_sub.add_parser("list", help="List registered operations")
+    op_list.add_argument(
+        "--kind", choices=["creator", "curator"], help="Restrict to one op kind"
+    )
+    op_list.add_argument(
+        "--query", help="Substring match on name or description (case-insensitive)"
+    )
+    op_list.add_argument("--json", action="store_true", help="Emit JSON")
+    op_list.set_defaults(func=_op_list)
+
+    describe = op_sub.add_parser(
+        "describe", help="Full metadata for one operation (schemas, examples)"
+    )
+    describe.add_argument("operation", help="Registered operation name")
+    describe.add_argument("--json", action="store_true", help="Emit JSON")
+    describe.set_defaults(func=_op_describe)
+
     image = op_sub.add_parser(
         "image", help="Print the container image ref an operation runs in"
     )
@@ -129,7 +156,44 @@ def _build_parser() -> argparse.ArgumentParser:
     build.add_argument("operation", help="Registered operation name")
     build.set_defaults(func=_docker_build)
 
+    runs = sub.add_parser("runs", help="List persisted pipeline runs")
+    _add_store_args(runs)
+    runs.set_defaults(func=_runs)
+
+    failures = sub.add_parser(
+        "failures", help="Failure report — one row per failed execution"
+    )
+    _add_store_args(failures)
+    failures.add_argument("--run", help="Filter to one pipeline run id")
+    failures.set_defaults(func=_failures)
+
+    provenance = sub.add_parser(
+        "provenance", help="Provenance edges around one artifact"
+    )
+    provenance.add_argument("artifact_id", help="Artifact to walk from")
+    _add_store_args(provenance)
+    provenance.add_argument(
+        "--direction",
+        choices=["backward", "forward"],
+        default="backward",
+        help="Walk toward ancestors (backward) or descendants (forward)",
+    )
+    provenance.add_argument(
+        "--depth", type=int, default=3, help="Maximum hops from the artifact"
+    )
+    provenance.set_defaults(func=_provenance)
+
     return parser
+
+
+def _add_store_args(parser: argparse.ArgumentParser) -> None:
+    """Add the shared flags for commands that read a Delta root."""
+    parser.add_argument(
+        "--delta-root",
+        default=None,
+        help="Delta Lake root (falls back to ARTISAN_DELTA_ROOT)",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit JSON")
 
 
 def _resolve_op_cls(operation: str) -> type[OperationDefinition] | None:
@@ -143,6 +207,151 @@ def _resolve_op_cls(operation: str) -> type[OperationDefinition] | None:
     except KeyError as exc:
         sys.stderr.write(f"{exc.args[0] if exc.args else exc}\n")
         return None
+
+
+def _emit(args: argparse.Namespace, payload_fn: Callable[[], Any]) -> int:
+    """Run a command body; serialize the result, or the error envelope.
+
+    ``FileNotFoundError`` from store-reading bodies wraps into a
+    ``CHECK_INPUT`` envelope: an agent pointing at an empty or wrong
+    root is a recoverable input error, not a bug. Other non-Artisan
+    exceptions propagate as tracebacks.
+    """
+    from artisan.errors import ArtisanError, ErrorCode
+
+    try:
+        payload = payload_fn()
+    except FileNotFoundError as exc:
+        err = ArtisanError(
+            ErrorCode.STORE_NOT_FOUND,
+            str(exc),
+            error_type="io",
+            hint="no Delta tables at this root — check --delta-root / ARTISAN_DELTA_ROOT",
+            recovery_hint="CHECK_INPUT",
+        )
+        err.__cause__ = exc
+        return _emit_error(args, err)
+    except ArtisanError as exc:
+        return _emit_error(args, exc)
+    sys.stdout.write(_render(payload, json_mode=args.json) + "\n")
+    return 0
+
+
+def _emit_error(args: argparse.Namespace, exc: ArtisanError) -> int:
+    """Write the failure: envelope JSON on stdout under ``--json``, else stderr."""
+    if args.json:
+        sys.stdout.write(json.dumps(exc.to_dict()) + "\n")  # machine boundary
+    else:
+        sys.stderr.write(f"{exc}\n")
+    return 1
+
+
+def _render(payload: Any, *, json_mode: bool) -> str:
+    """Serialize a command payload for stdout.
+
+    JSON mode: Pydantic model → its dump; list of models →
+    ``{"items": [...]}``; DataFrame → ``{"items": to_dicts()}``
+    (``default=str`` covers Datetime columns). Human mode: DataFrames
+    render as Polars tables, registry summaries as aligned lines,
+    models as indented JSON.
+    """
+    import polars as pl
+    from pydantic import BaseModel
+
+    if json_mode:
+        if isinstance(payload, pl.DataFrame):
+            data: Any = {"items": payload.to_dicts()}
+        elif isinstance(payload, BaseModel):
+            data = payload.model_dump()
+        else:
+            data = {"items": [item.model_dump() for item in payload]}
+        return json.dumps(data, default=str)
+    if isinstance(payload, pl.DataFrame):
+        return str(payload)
+    if isinstance(payload, BaseModel):
+        return json.dumps(payload.model_dump(), indent=2, default=str)
+    lines = [f"{s.name:<32} {s.kind:<8} {s.description}" for s in payload]
+    return "\n".join(lines) if lines else "(no operations registered)"
+
+
+def _require_delta_root(args: argparse.Namespace) -> str:
+    """Resolve the Delta root from ``--delta-root`` or the environment."""
+    root = args.delta_root or os.environ.get("ARTISAN_DELTA_ROOT")
+    if not root:
+        from artisan.errors import ArtisanError, ErrorCode
+
+        raise ArtisanError(
+            ErrorCode.DELTA_ROOT_UNSET,
+            "no Delta root given",
+            error_type="config",
+            hint="pass --delta-root or set ARTISAN_DELTA_ROOT",
+            recovery_hint="CHECK_INPUT",
+        )
+    return root
+
+
+def _op_list(args: argparse.Namespace) -> int:
+    """List registered operations (``OperationSummary`` rows)."""
+
+    def payload() -> Any:
+        from artisan import registry
+
+        registry.discover()
+        return registry.list_operations(kind=args.kind, query=args.query)
+
+    return _emit(args, payload)
+
+
+def _op_describe(args: argparse.Namespace) -> int:
+    """Full ``OperationMetadata`` for one op (examples included)."""
+
+    def payload() -> Any:
+        from artisan import registry
+
+        registry.discover()
+        return registry.describe(args.operation)
+
+    return _emit(args, payload)
+
+
+def _runs(args: argparse.Namespace) -> int:
+    """List persisted pipeline runs from the steps table."""
+
+    def payload() -> Any:
+        from artisan.orchestration.run_history import list_runs
+
+        return list_runs(_require_delta_root(args))
+
+    return _emit(args, payload)
+
+
+def _failures(args: argparse.Namespace) -> int:
+    """Failure report with deserialized envelope columns."""
+
+    def payload() -> Any:
+        from artisan.visualization.inspect import inspect_failures
+
+        return inspect_failures(
+            _require_delta_root(args), pipeline_run_id=args.run
+        )
+
+    return _emit(args, payload)
+
+
+def _provenance(args: argparse.Namespace) -> int:
+    """Bounded provenance edge list around one artifact."""
+
+    def payload() -> Any:
+        from artisan.provenance import provenance_edges
+
+        return provenance_edges(
+            _require_delta_root(args),
+            args.artifact_id,
+            direction=args.direction,
+            depth=args.depth,
+        )
+
+    return _emit(args, payload)
 
 
 def _modal_deploy(args: argparse.Namespace) -> int:
