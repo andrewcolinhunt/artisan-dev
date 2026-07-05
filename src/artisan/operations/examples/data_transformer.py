@@ -94,7 +94,7 @@ class DataTransformer(OperationDefinition):
         )
         output_prefix: str = Field(
             default="",
-            description="Optional prefix prepended to output filenames",
+            description="Optional suffix appended to output filenames",
         )
 
     params: Params = Params()

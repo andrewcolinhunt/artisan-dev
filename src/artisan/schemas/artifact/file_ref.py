@@ -80,6 +80,9 @@ class FileRefArtifact(Artifact):
                 that need configured-storage credentials must pass ``fs``
                 explicitly.
 
+        Returns:
+            The file's bytes, cached after the first read.
+
         Raises:
             ValueError: If path is None (not hydrated).
         """

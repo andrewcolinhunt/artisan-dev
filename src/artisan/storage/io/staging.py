@@ -4,14 +4,17 @@ Workers write Parquet files here instead of directly to Delta Lake,
 avoiding transaction conflicts on shared filesystems. The orchestrator
 later commits staged files via ``DeltaCommitter`` (see ``commit.py``).
 
-Staging directory layout::
+``StagingArea`` writes a flat, per-batch layout::
 
     staging_dir/
-        {step_number}/
-            {hash[0:2]}/{hash[2:4]}/{execution_run_id}/
-                data.parquet
-                metrics.parquet
-                ...
+        {batch_id}/
+            data.parquet
+            metrics.parquet
+            ...
+
+``StagingManager`` reads this flat layout as well as the sharded
+``{step_number}/{hash[0:2]}/{hash[2:4]}/{execution_run_id}/`` layout
+written by ``execution/staging/parquet_writer.py``.
 """
 
 from __future__ import annotations

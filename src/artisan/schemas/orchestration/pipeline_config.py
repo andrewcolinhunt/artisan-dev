@@ -71,7 +71,7 @@ class PipelineConfig(BaseModel):
     )
     storage: StorageConfig = Field(
         default_factory=StorageConfig,
-        description="Storage step_runner configuration.",
+        description="Storage configuration.",
     )
 
     model_config = {"frozen": True}

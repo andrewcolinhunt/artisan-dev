@@ -23,6 +23,7 @@ class ExecutionRecord(BaseModel):
             Hash of: execution_spec_id + timestamp_start + source_worker.
         execution_spec_id: Deterministic ID for caching.
             Hash of: operation_name + sorted(input_artifact_ids) + merged_params.
+        step_run_id: Step run ID linking this execution to a specific step attempt.
         origin_step_number: Pipeline step number where this record was produced (partition key).
         operation_name: From OperationDefinition.name.
         params: Full instantiated parameters.
@@ -40,7 +41,7 @@ class ExecutionRecord(BaseModel):
         extra="forbid",
     )
 
-    # Dual identity (reference: v3 "ExecutionRecord has two identities")
+    # Dual identity
     execution_run_id: str = Field(
         ...,
         description="Unique ID for this execution attempt (PK)",

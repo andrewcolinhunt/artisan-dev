@@ -133,7 +133,7 @@ def prep_unit(
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and step_runner configuration.
+        runtime_env: Paths and runtime configuration.
         worker_id: Numeric worker identifier.
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources.
@@ -150,13 +150,11 @@ def prep_unit(
     original_inputs = _extract_inputs(unit)
     _validate_operation_outputs(operation_class)
 
+    timestamp_start = datetime.now(UTC)
     if execution_run_id is None:
-        timestamp_start = datetime.now(UTC)
         execution_run_id = generate_execution_run_id(
             unit.execution_spec_id, timestamp_start, worker_id
         )
-    else:
-        timestamp_start = datetime.now(UTC)
 
     # --- setup phase ---
     with phase_timer("setup", timings):
@@ -388,10 +386,11 @@ def post_unit(
         # rewrite external_path on each finalized artifact. Runs inside
         # the postprocess phase_timer, so any _UploadFailure surfaces
         # as a postprocess failure (it subclasses _PostprocessFailure)
-        # and the existing except clause at creator.py:204 records it.
-        # Because the exception propagates out of post_unit before the
-        # sandbox cleanup at lines 429-434, the local files survive
-        # automatically for recovery — no explicit preservation code.
+        # and the existing except (_PostprocessFailure, _ExecuteFailure)
+        # clause in creator.py records it. Because the exception
+        # propagates out of post_unit before the sandbox-cleanup block
+        # at the end of post_unit, the local files survive automatically
+        # for recovery — no explicit preservation code.
         _upload_files_to_root(
             finalized_artifacts,
             files_dir=prepped.files_dir,
@@ -465,11 +464,7 @@ def post_unit(
     tool_output = _read_tool_output(prepped.log_path)
 
     # Clean up sandbox
-    if (
-        prepped.sandbox_path is not None  # type: ignore[redundant-expr]  # defensive runtime check
-        and not runtime_env.preserve_working
-        and os.path.exists(prepped.sandbox_path)
-    ):
+    if not runtime_env.preserve_working and os.path.exists(prepped.sandbox_path):
         shutil.rmtree(prepped.sandbox_path, ignore_errors=True)
 
     return LifecycleResult(
@@ -512,8 +507,9 @@ def _upload_files_to_root(
     Artifacts whose ``external_path`` is already a cloud URI or
     lives outside ``files_dir`` are left untouched.
 
-    ``Artifact`` is not frozen (``schemas/artifact/base.py:30``), so
-    rewrites are direct attribute assignments.
+    ``Artifact`` is not frozen (see ``model_config`` in
+    ``schemas/artifact/base.py``), so rewrites are direct attribute
+    assignments.
 
     Args:
         finalized_artifacts: Output of ``finalize_artifacts`` — dict
@@ -521,8 +517,8 @@ def _upload_files_to_root(
         files_dir: Unit's local sandbox files directory, or None
             when no operation in this unit produces file outputs.
         runtime_env: Runtime environment carrying ``files_root`` and
-            the storage step_runner.
-        execution_run_id: Per-execution ID used to compute_provider the
+            the storage runtime.
+        execution_run_id: Per-execution ID used to compute the
             sharded destination under ``files_root``.
         step_number: Pipeline step number for sharding.
         operation_name: Operation name for sharding.
@@ -593,7 +589,7 @@ def _upload_files_to_root(
                 moved[ext_path] = destination
 
             destination = moved[ext_path]
-            # Direct mutation: Artifact is not frozen (base.py:30).
+            # Direct mutation: Artifact is not frozen (model_config, base.py).
             artifact.external_path = destination
             # Local: shutil.move relocated the bytes; point at the
             # new path. Cloud: sandbox still has the bytes until the
@@ -678,8 +674,8 @@ def _reassemble_results(
     the same data shapes as when execute processes all artifacts at
     once. Also returns a stem -> slot-index map so lineage capture
     can recover the per-output pair index for grouped multi-input ops
-    (Bug A — fixes the ``primary_id_to_idx`` clobber for repeated
-    primaries under CROSS_PRODUCT + ``artifacts_per_unit > 1``).
+    (fixing the ``primary_id_to_idx`` clobber for repeated primaries
+    under CROSS_PRODUCT + ``artifacts_per_unit > 1``).
 
     Args:
         per_artifact_results: One raw result per artifact.

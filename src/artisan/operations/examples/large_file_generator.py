@@ -15,9 +15,9 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
-from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -60,7 +60,7 @@ class LargeFileGenerator(OperationDefinition):
         file_size_bytes: int = Field(
             default=1_000_000,
             ge=1,
-            description="Approximate size of each generated file",
+            description="Size in bytes of each generated file",
         )
         seed: int | None = Field(
             default=None, description="Random seed for reproducibility"

@@ -25,7 +25,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 
 class DataGeneratorWithMetrics(OperationDefinition):
-    """Generate CSV datasets and compute_provider statistics with output-to-output lineage.
+    """Generate CSV datasets and compute statistics with output-to-output lineage.
 
     Produces N datasets (like DataGenerator) and also computes statistics for
     each one (like MetricCalculator). The metric's lineage points to the
@@ -101,7 +101,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
 
     # ---------- Lifecycle ----------
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Write CSV datasets and compute_provider per-file summary statistics."""
+        """Write CSV datasets and compute per-file summary statistics."""
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)
 

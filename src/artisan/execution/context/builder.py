@@ -32,9 +32,32 @@ def build_execution_context(
     """Build an execution context for a creator or curator operation.
 
     Args:
+        execution_run_id: Unique ID for this execution attempt (32-char hex).
+        execution_spec_id: Deterministic cache key (32-char hex).
+        step_number: Pipeline step number.
+        timestamp_start: Execution start time (UTC).
+        worker_id: Worker identifier for distributed execution.
+        delta_root: Root URI for the Delta Lake tables (local path or
+            cloud URI).
+        staging_root: Root URI/path for staged Parquet files.
+        fs: Filesystem implementation for staging I/O.
+        storage_options: Backend storage options for the ArtifactStore.
+            None for local filesystems.
+        operation: Fully configured operation this context describes.
         sandbox_path: Sandbox directory for the file-based I/O of a
             creator's preprocess/execute/postprocess phases. None for
             curators, which operate on in-memory DataFrames.
+        compute_backend_name: Backend name recorded in provenance
+            (e.g. "local", "slurm").
+        shared_filesystem: Whether workers share a filesystem with the
+            orchestrator.
+        step_run_id: Identifier of the owning pipeline step run, or None
+            for composite-internal lifecycles.
+        files_root: Root for Artisan-managed external files. None when
+            not configured.
+
+    Returns:
+        The assembled ExecutionContext for the operation.
     """
     artifact_store = ArtifactStore(
         delta_root,

@@ -212,7 +212,7 @@ def _file_shaped(inputs: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _op_run(args: argparse.Namespace) -> int:
-    """Run a flag-op's ``execute_function`` — the recursion leaf of the shim.
+    """Run an execute_as_tool op's ``execute_function`` — the recursion leaf of the shim.
 
     Resolves the class by ``module:Qualname`` (no registry discovery),
     rebuilds the op from the params JSON, and calls the Python body

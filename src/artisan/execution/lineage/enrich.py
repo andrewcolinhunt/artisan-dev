@@ -36,7 +36,7 @@ def build_artifact_edges_from_store(
 ) -> list[ArtifactProvenanceEdge]:
     """Build typed provenance edges by resolving types from the artifact store.
 
-    Uses a single bulk ``load_artifact_type_map`` call instead of per-pair
+    Uses a single bulk ``load_type_map`` call instead of per-pair
     lookups, reducing delta scans from 2N to 1.
 
     Args:
@@ -122,7 +122,7 @@ def build_config_reference_edges(
 ) -> list[ArtifactProvenanceEdge]:
     """Build provenance edges from referenced artifacts to config artifacts.
 
-    Uses a single bulk ``load_artifact_type_map`` call for all references.
+    Uses a single bulk ``load_type_map`` call for all references.
 
     Args:
         config_artifacts: ExecutionConfigArtifact instances that reference

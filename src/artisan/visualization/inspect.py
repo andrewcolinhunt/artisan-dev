@@ -43,6 +43,7 @@ def inspect_pipeline(
         delta_root: Path to Delta Lake root.
         pipeline_run_id: Filter to a specific run. Latest if None.
         storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with columns: step, operation, status, produced, duration.
@@ -313,6 +314,7 @@ def inspect_step(
         delta_root: Path to Delta Lake root.
         step_number: Step number to inspect.
         storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with columns: name, artifact_type, step, details.
@@ -403,6 +405,7 @@ def inspect_metrics(
         step_number: Filter to a specific step. All metric steps if None.
         round_digits: Decimal places for float rounding.
         storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with columns: name, step, {metric_key_1}, {metric_key_2}, ...
@@ -486,6 +489,7 @@ def inspect_data(
         name: Filter by original_name. Takes the first match.
         step_number: Filter by step number.
         storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with the actual CSV data content.

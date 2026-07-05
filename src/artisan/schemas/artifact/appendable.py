@@ -157,6 +157,9 @@ class AppendableArtifact(Artifact):
             external_path: Path to the JSONL file.
             original_name: Record key for lineage inference.
             metadata: Optional metadata dict.
+
+        Returns:
+            Draft AppendableArtifact for the record.
         """
         return cls(
             artifact_id=None,

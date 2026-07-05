@@ -245,8 +245,8 @@ def _append_log(log_path: str, tail: str) -> None:
 
 def _check(response: httpx.Response, op_name: str) -> None:
     """Raise a compute-typed ArtisanError on a non-2xx endpoint response."""
-    # Verified 2026-06-10: Modal's proxy answers missing/invalid tokens
-    # with a fast 401 response (not a connection error); 407 defensively.
+    # Modal's proxy answers missing/invalid tokens with a fast 401 response
+    # (not a connection error); 407 handled defensively.
     if response.status_code in (401, 407):
         raise ArtisanError(
             code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,

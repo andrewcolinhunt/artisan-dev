@@ -29,8 +29,8 @@ class PipelineTimings:
     """DataFrame-first API for pipeline timing analysis.
 
     Attributes:
-        data (dict[str, Any]): Raw timing data dict with "pipeline_run_id"
-            and "steps" keys.
+        data (dict[str, Any]): Raw timing data dict. Requires a "steps" key;
+            "pipeline_run_id" is optional.
 
     Raises:
         ValueError: If data is empty or missing required keys.
@@ -70,6 +70,7 @@ class PipelineTimings:
             pipeline_run_id: Pipeline run ID to filter by. If None, uses the
                 latest pipeline run.
             storage_options: Delta-rs storage options for cloud backends.
+            fs: Filesystem for existence checks. Local if None.
 
         Returns:
             PipelineTimings instance.

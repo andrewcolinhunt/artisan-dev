@@ -136,6 +136,9 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
             resolved_paths: Mapping from artifact ID to materialized
                 path. Required when the config contains references.
             format: Not supported; raises if provided.
+            fs: Accepted for base-class signature parity but unused;
+                config content is embedded, so no filesystem read is
+                needed.
 
         Returns:
             Path to the written JSON file.
