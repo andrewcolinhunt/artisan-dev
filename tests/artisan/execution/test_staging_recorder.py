@@ -10,8 +10,13 @@ import polars as pl
 import pytest
 from fsspec.implementations.local import LocalFileSystem
 
+from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+from artisan.execution.executors.creator import _ExecuteFailure
 from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import record_execution_failure
+from artisan.execution.staging.recorder import (
+    error_envelope_dict,
+    record_execution_failure,
+)
 
 
 def _make_execution_context(tmp_path: Path) -> MagicMock:
@@ -108,6 +113,91 @@ class TestRecordExecutionFailure:
         assert result.execution_run_id == "a" * 32
 
 
+class TestErrorEnvelopeDict:
+    """Tests for the error_envelope_dict cause-walk helper."""
+
+    def test_direct_artisan_error_returns_dict(self):
+        """A caught ArtisanError yields its own envelope dict."""
+        exc = ArtisanError(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            message="boom",
+            error_type="compute",
+        )
+        env = error_envelope_dict(exc)
+        assert env is not None
+        assert env["code"] == "op_execute_failed"
+        assert env["error_type"] == "compute"
+
+    def test_one_level_cause_returns_dict(self):
+        """An ArtisanError as a one-level __cause__ is captured."""
+        inner = ArtisanError(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            message="boom",
+            error_type="compute",
+        )
+        outer = _ExecuteFailure("wrapped")
+        outer.__cause__ = inner
+        env = error_envelope_dict(outer)
+        assert env is not None
+        assert env["code"] == "op_execute_failed"
+
+    def test_plain_exception_returns_none(self):
+        """An unstructured failure yields no envelope."""
+        assert error_envelope_dict(ValueError("nope")) is None
+
+    def test_execute_failure_without_cause_returns_none(self):
+        """The un-chained batch path (__cause__ is None) yields no envelope."""
+        assert error_envelope_dict(_ExecuteFailure("wrapped")) is None
+
+
+class TestRecordExecutionFailureEnvelope:
+    """error_envelope round-trips through record_execution_failure."""
+
+    def test_envelope_persisted_as_json(self, tmp_path):
+        """A provided envelope dict lands as JSON that reconstructs the model."""
+        ctx = _make_execution_context(tmp_path)
+        ctx.shared_filesystem = False
+        ctx.step_run_id = None
+        envelope = ArtisanError(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            message="tool crashed",
+            error_type="compute",
+            recovery_hint="REPORT_TO_USER",
+        ).to_dict()
+
+        result = record_execution_failure(
+            execution_context=ctx,
+            error="tool crashed",
+            inputs={},
+            timestamp_end=datetime.now(UTC),
+            error_envelope=envelope,
+        )
+
+        df = pl.read_parquet(f"{result.staging_path}/executions.parquet")
+        raw = df["error_envelope"][0]
+        assert raw is not None
+        # The extra `cause` key to_dict emits is tolerated by the model.
+        reparsed = ArtisanErrorEnvelope.model_validate_json(raw)
+        assert reparsed.code == "op_execute_failed"
+        assert reparsed.recovery_hint == "REPORT_TO_USER"
+
+    def test_no_envelope_persists_null(self, tmp_path):
+        """An unstructured failure persists NULL in the envelope column."""
+        ctx = _make_execution_context(tmp_path)
+        ctx.shared_filesystem = False
+        ctx.step_run_id = None
+
+        result = record_execution_failure(
+            execution_context=ctx,
+            error="unstructured",
+            inputs={},
+            timestamp_end=datetime.now(UTC),
+        )
+
+        df = pl.read_parquet(f"{result.staging_path}/executions.parquet")
+        assert df["error_envelope"][0] is None
+
+
 class TestPassthroughStagedRowsGolden:
     """Characterization: staged rows for the curator passthrough path.
 
@@ -192,6 +282,7 @@ class TestPassthroughStagedRowsGolden:
             "compute_backend": "local",
             "success": True,
             "error": None,
+            "error_envelope": None,
             "tool_output": None,
             "worker_log": None,
             "metadata": '{"k": "v"}',

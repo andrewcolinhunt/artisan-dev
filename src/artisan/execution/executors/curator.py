@@ -29,6 +29,7 @@ from artisan.execution.lineage.validation import (
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.staging.parquet_writer import StagingResult
 from artisan.execution.staging.recorder import (
+    error_envelope_dict,
     record_execution_failure,
     record_execution_success,
     record_passthrough,
@@ -310,6 +311,7 @@ def run_curator_flow(
                     params=params_dict,
                     user_overrides=user_overrides,
                     failure_logs_root=runtime_env.failure_logs_root,
+                    error_envelope=error_envelope_dict(exc),
                 )
 
         # --- record phase ---
@@ -397,6 +399,7 @@ def run_curator_flow(
             params=params_dict,
             user_overrides=user_overrides,
             failure_logs_root=runtime_env.failure_logs_root,
+            error_envelope=error_envelope_dict(exc),
         )
 
     timings["total"] = round(time.perf_counter() - total_start, 4)
