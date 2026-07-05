@@ -322,31 +322,6 @@ def _seed_steps(root: Path, run_ids: list[str]) -> None:
     df.write_delta(str(root / TablePath.STEPS))
 
 
-def _seed_edges(root: Path, pairs: list[tuple[str, str]]) -> None:
-    """Write an artifact_edges table from (source, target) pairs."""
-    import polars as pl
-
-    from artisan.schemas.enums import TablePath
-    from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA
-
-    n = len(pairs)
-    df = pl.DataFrame(
-        {
-            "execution_run_id": ["run"] * n,
-            "source_artifact_id": [p[0] for p in pairs],
-            "target_artifact_id": [p[1] for p in pairs],
-            "source_artifact_type": ["data"] * n,
-            "target_artifact_type": ["data"] * n,
-            "source_role": ["input"] * n,
-            "target_role": ["output"] * n,
-            "group_id": [None] * n,
-            "step_boundary": [True] * n,
-        },
-        schema=ARTIFACT_EDGES_SCHEMA,
-    )
-    df.write_delta(str(root / TablePath.ARTIFACT_EDGES))
-
-
 class TestOpList:
     """artisan op list."""
 
@@ -464,8 +439,8 @@ class TestProvenance:
     B = "b" * 32
     C = "c" * 32
 
-    def test_backward_edges(self, tmp_path, capsys):
-        _seed_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
+    def test_backward_edges(self, tmp_path, capsys, seed_artifact_edges):
+        seed_artifact_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
         rc = main(
             ["provenance", self.C, "--delta-root", str(tmp_path), "--json"]
         )
@@ -478,8 +453,8 @@ class TestProvenance:
         ]
         assert payload["truncated"] is False
 
-    def test_forward_depth_truncation(self, tmp_path, capsys):
-        _seed_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
+    def test_forward_depth_truncation(self, tmp_path, capsys, seed_artifact_edges):
+        seed_artifact_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
         rc = main(
             [
                 "provenance",
