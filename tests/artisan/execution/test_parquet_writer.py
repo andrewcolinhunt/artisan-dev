@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 from fsspec.implementations.local import LocalFileSystem
 
-from artisan.execution.staging.parquet_writer import (
+from artisan.execution.recording.parquet_writer import (
     StagingResult,
     _stage_artifact_edges,
     _stage_artifact_index,

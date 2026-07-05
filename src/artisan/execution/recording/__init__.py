@@ -2,6 +2,6 @@
 
 Import symbols directly from their submodules:
 
-- ``artisan.execution.staging.parquet_writer``
-- ``artisan.execution.staging.recorder``
+- ``artisan.execution.recording.parquet_writer``
+- ``artisan.execution.recording.recorder``
 """

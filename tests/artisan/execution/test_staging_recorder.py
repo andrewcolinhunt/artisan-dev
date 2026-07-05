@@ -1,4 +1,4 @@
-"""Tests for execution/staging/recorder.py — failure recording."""
+"""Tests for execution/recording/recorder.py — failure recording."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.executors.creator import _ExecuteFailure
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import (
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import (
     error_envelope_dict,
     record_execution_failure,
 )
@@ -80,7 +80,7 @@ class TestRecordExecutionFailure:
         ctx = _make_execution_context(tmp_path)
 
         with patch(
-            "artisan.execution.staging.parquet_writer._stage_execution",
+            "artisan.execution.recording.parquet_writer._stage_execution",
             side_effect=OSError("disk full"),
         ):
             result = record_execution_failure(
@@ -100,7 +100,7 @@ class TestRecordExecutionFailure:
         ctx = _make_execution_context(tmp_path)
 
         with patch(
-            "artisan.execution.staging.parquet_writer._stage_execution",
+            "artisan.execution.recording.parquet_writer._stage_execution",
             side_effect=RuntimeError("boom"),
         ):
             result = record_execution_failure(

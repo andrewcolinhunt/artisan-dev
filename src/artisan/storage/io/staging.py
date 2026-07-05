@@ -14,7 +14,7 @@ later commits staged files via ``DeltaCommitter`` (see ``commit.py``).
 
 ``StagingManager`` reads this flat layout as well as the sharded
 ``{step_number}/{hash[0:2]}/{hash[2:4]}/{execution_run_id}/`` layout
-written by ``execution/staging/parquet_writer.py``.
+written by ``execution/recording/parquet_writer.py``.
 """
 
 from __future__ import annotations

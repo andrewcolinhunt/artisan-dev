@@ -27,8 +27,8 @@ from artisan.execution.lineage.validation import (
     validate_lineage_integrity,
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import (
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import (
     error_envelope_dict,
     record_execution_failure,
     record_execution_success,

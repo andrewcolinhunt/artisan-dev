@@ -15,7 +15,7 @@ from typing import Any, ClassVar
 import polars as pl
 from fsspec.implementations.local import LocalFileSystem
 
-from artisan.execution.staging.recorder import (
+from artisan.execution.recording.recorder import (
     build_execution_edges,
     record_execution_failure,
     record_execution_success,
