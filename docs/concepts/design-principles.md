@@ -289,8 +289,9 @@ immediate, actionable errors.
 
 **Examples of fail-fast behavior:**
 
-- Operations that implement neither `execute` nor `execute_curator` raise
-  `TypeError` at class definition time.
+- Operations that implement none of `execute_function()`, `execute_curator()`,
+  or `execute_command()` (or implement more than one) raise `TypeError` at
+  class definition time.
 - Creator operations must declare `infer_lineage_from` on every output spec.
   Missing declarations are rejected at class definition, not at pipeline
   runtime.
@@ -345,4 +346,6 @@ expense.
 - [Execution Flow](execution-flow.md) — Dispatch, execute, commit in detail
 - [Storage and Delta Lake](storage-and-delta-lake.md) — Persistence and the staging-commit pattern
 - [Error Handling](error-handling.md) — Error containment and the fail-fast philosophy
+- [Glossary](../reference/glossary.md) — Definitions of the terms used throughout these principles
+- [Writing Creator Operations](../how-to-guides/writing-creator-operations.md) — Apply the creator-purity and fail-fast principles in practice
 - [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) — See these principles in action

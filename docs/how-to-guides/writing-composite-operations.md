@@ -380,7 +380,7 @@ def compose(self, ctx: CompositeContext) -> None:
 | `TypeError: must define InputRole` | Missing `InputRole(StrEnum)` inner class | Add enum with values matching `inputs` keys |
 | `ValueError: Unknown input role` | Typo in `ctx.input("role")` | Check `InputRole` enum values |
 | `ValueError: Unknown output role` | Typo in `ctx.output("role", ref)` | Check `OutputRole` enum values |
-| `TypeError: Expected CompositeRef` | Passed raw value instead of `ctx.input()` or `handle.output()` result | Use `CompositeRef` objects from the context API |
+| `TypeError: Invalid input type for role ...` | Passed a raw value instead of a `ctx.input()` or `handle.output()` result | Wire steps with the `CompositeRef` objects the context API returns |
 | `TypeError` from `pipeline.run()` | Passed a composite to `run`/`submit` | Use `run_composite`/`submit_composite` for composites |
 | A `ctx.run()` ignores a composite-level override | The child set the same knob explicitly | Per-op values win per knob; remove the child's value to inherit the default |
 

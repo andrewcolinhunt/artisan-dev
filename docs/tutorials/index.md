@@ -64,6 +64,7 @@ Choosing where the execute phase runs.
 - [Running on SLURM](07-compute-backends/02-slurm-execution.ipynb) (~10 min) -- Run operations on a SLURM cluster
 - [Running Inside a SLURM Allocation](07-compute-backends/03-slurm-intra-execution.ipynb) (~10 min) -- Dispatch work via srun within an existing SLURM allocation
 - [Running on Modal](07-compute-backends/04-modal-execution.ipynb) (~15 min) -- Route operations to Modal containers with GPU, automatic sandbox transport, and tool shipping
+- [Delivering Outputs to Object Storage](07-compute-backends/05-modal-r2-outputs.ipynb) (~10 min) -- Send a Modal-executed command op's outputs to your own S3-compatible bucket with `output_store`
 
 ## Analysis
 

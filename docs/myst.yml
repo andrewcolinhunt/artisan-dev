@@ -92,6 +92,7 @@ project:
             - file: concepts/operations-model.md
             - file: concepts/composites-and-composition.md
             - file: concepts/artifacts-and-content-addressing.md
+            - file: concepts/pipeline-configuration.md
         - title: Data and Tracking
           children:
             - file: concepts/provenance-system.md
@@ -118,6 +119,7 @@ project:
         - title: Configuration
           children:
             - file: how-to-guides/configuring-execution.md
+            - file: how-to-guides/configuring-s3.md
             - file: how-to-guides/op-container-images.md
             - file: how-to-guides/connect-to-prefect.md
         - title: Results

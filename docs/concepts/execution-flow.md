@@ -249,9 +249,10 @@ When compute is `"local"` (the default), the execute phase runs as a direct call
 inside the worker process -- today's behavior. When compute is `"modal"`,
 the execute phase becomes an HTTP client of the operation's deployed tool endpoint:
 it submits the op's params + input files, polls until the tool finishes,
-and downloads the output files back into the execute dir. Only tool ops
-(`ToolSpec` + `execute_command()`) can route to modal. Inline transfers are
-bounded at 100 MB per direction; `s3://` inputs pass by reference.
+and downloads the output files back into the execute dir. Only command ops
+can route to modal -- an op with a `ToolSpec` + `execute_command()`, or one
+that sets `execute_as_tool=True`. Inline transfers are bounded at 100 MB per
+direction; `s3://` inputs pass by reference.
 
 ---
 
@@ -449,6 +450,8 @@ re-executes cancelled steps while completed steps load from cache.
   staging-commit pattern, querying with Polars
 - [Design Principles](design-principles.md) -- Foundational rationale for
   content addressing, scale transparency, fail-fast validation
+- [Glossary](../reference/glossary.md) -- Definitions for the terms used
+  throughout this page
 - [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) -- See the execution flow in action
 - [SLURM Execution Tutorial](../tutorials/07-compute-backends/02-slurm-execution.ipynb) -- Run operations on a SLURM cluster
 - [Pipeline Cancellation Tutorial](../tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb) -- Cooperative cancellation in action
