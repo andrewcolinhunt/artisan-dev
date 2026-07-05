@@ -245,6 +245,80 @@ class TestCallEndpointFailures:
         assert exc_info.value.code == "op_execute_failed"
         assert "boom" in log_path.read_text()  # tail lands before the raise
 
+    @pytest.mark.parametrize(
+        ("code", "error_type"),
+        [
+            (ErrorCode.PARAM_TYPE_MISMATCH, "validation"),
+            (ErrorCode.INPUT_RESOLUTION_FAILED, "io"),
+        ],
+    )
+    def test_check_input_envelope_propagates(
+        self, mock_http, tmp_path, code, error_type
+    ):
+        # the worker's param/input failures reach the client as CHECK_INPUT
+        # envelopes — the code and recovery hint survive the re-raise
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        envelope = ArtisanError(
+            code=code,
+            message="bad call",
+            error_type=error_type,
+            operation_name="wait_tool",
+            recovery_hint="CHECK_INPUT",
+        ).envelope
+        manifest = ToolManifest(error=envelope)
+        client.get.return_value = _response(
+            {"status": "failed", "manifest": manifest.model_dump()}
+        )
+
+        with pytest.raises(ArtisanError) as exc_info:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc_info.value.code == code
+        assert exc_info.value.envelope.recovery_hint == "CHECK_INPUT"
+
+    def test_delivery_failure_appends_log_and_raises_retry_later(
+        self, mock_http, tmp_path
+    ):
+        # a delivery failure: the tool ran (log_tail + output_names present)
+        # but its outputs were not delivered — the client appends the log,
+        # raises RETRY_LATER, and never attempts a download
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        envelope = ArtisanError(
+            code=ErrorCode.OUTPUT_DELIVERY_FAILED,
+            message="delivery to s3://bucket/prefix failed",
+            error_type="io",
+            operation_name="wait_tool",
+            recovery_hint="RETRY_LATER",
+        ).envelope
+        manifest = ToolManifest(
+            error=envelope, output_names=["out.txt"], log_tail="ran fine\n"
+        )
+        client.get.return_value = _response(
+            {"status": "failed", "manifest": manifest.model_dump()}
+        )
+        log_path = tmp_path / "tool_output.log"
+
+        with pytest.raises(ArtisanError) as exc_info:
+            call_endpoint(
+                _op(),
+                ExecuteInput(
+                    inputs={},
+                    execute_dir=str(tmp_path),
+                    log_path=str(log_path),
+                ),
+            )
+
+        assert exc_info.value.code == "output_delivery_failed"
+        assert exc_info.value.envelope.recovery_hint == "RETRY_LATER"
+        # the tool's log survives even though its outputs were not delivered
+        assert "ran fine" in log_path.read_text()
+        # the error short-circuits before the output_names download branch —
+        # output_names on an error manifest is purely informational
+        mock_http.get.assert_not_called()  # no presigned GET
+        assert all(call.args[0] == "/result" for call in client.get.call_args_list)
+
     def test_expired_result_raises(self, mock_http, tmp_path):
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})

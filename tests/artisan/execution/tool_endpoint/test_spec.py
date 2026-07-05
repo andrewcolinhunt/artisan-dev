@@ -6,11 +6,18 @@ import subprocess
 import sys
 
 import pytest
-from fixtures.endpoint_ops import FlagTool, GpuTool, NoModalTool
+from fixtures.endpoint_ops import (
+    DocstringParamsTool,
+    FlagTool,
+    GpuTool,
+    NoModalTool,
+    PlainTool,
+)
 from pydantic import ValidationError
 
 from artisan.execution.tool_endpoint.spec import endpoint_spec
-from artisan.operations.examples import DataGenerator, WaitTool
+from artisan.operations.examples import CsvHead, DataGenerator, WaitTool
+from artisan.registry.schemas import params_schema_for
 from artisan.schemas.operation_config.compute import ARTISAN_WORKER_IMAGE
 
 
@@ -81,6 +88,41 @@ class TestEndpointSpec:
         assert spec.op_qualname == "FlagTool"
         assert set(spec.params_schema["properties"]) == {"batch_size"}
         assert spec.params_schema["additionalProperties"] is False
+
+
+# Every deployable command op with a modal config: the two example ops plus
+# the endpoint fixtures. DocstringParamsTool is the one whose descriptions
+# live *only* in the docstring, so the drift assertion below actually bites
+# if the endpoint plane stops routing through params_schema_for (a
+# Field-description op would pass either way).
+_DEPLOYABLE = [WaitTool, CsvHead, GpuTool, PlainTool, FlagTool, DocstringParamsTool]
+
+
+class TestParamsSchemaSingleSource:
+    """The wire plane serves the registry's canonical schema — no drift."""
+
+    @pytest.mark.parametrize("op_cls", _DEPLOYABLE, ids=lambda op: op.name)
+    def test_matches_canonical_builder(self, op_cls):
+        assert endpoint_spec(op_cls).params_schema == params_schema_for(op_cls)
+
+    def test_docstring_only_descriptions_are_served(self):
+        # the teeth: params_schema_for merges the Attributes: description
+        # that model_json_schema alone would omit — proving the endpoint
+        # plane serves the *merged* schema, not the raw one
+        schema = endpoint_spec(DocstringParamsTool).params_schema
+        assert (
+            schema["properties"]["threshold"]["description"]
+            == "Minimum score to keep — documented only here."
+        )
+
+    def test_parameter_less_op_serves_empty_params_shape(self):
+        # the one behavioral seam: {} becomes the permissive empty-object
+        # schema that params_schema_for returns
+        assert endpoint_spec(PlainTool).params_schema == {
+            "type": "object",
+            "title": "Params",
+            "properties": {},
+        }
 
 
 def test_spec_module_imports_without_modal():

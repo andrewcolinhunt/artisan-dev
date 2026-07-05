@@ -90,8 +90,9 @@ class SchemaResponse(BaseModel):
     """``GET /schema`` response: the endpoint's request contract.
 
     ``params_schema`` is the same dict the ``/submit`` validator enforces;
-    empty means the op declares no ``Params``. ``inputs`` maps each input
-    role to ``{"required": bool, "description": str}``.
+    a parameter-less op serves the empty-``Params`` object schema (any JSON
+    object satisfies it). ``inputs`` maps each input role to
+    ``{"required": bool, "description": str}``.
     """
 
     operation: str
