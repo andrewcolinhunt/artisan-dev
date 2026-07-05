@@ -42,7 +42,7 @@ from artisan.execution.lineage.validation import (
 )
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.recorder import _read_tool_output
+from artisan.execution.recording.recorder import _read_tool_output
 from artisan.execution.transport.log_constants import TOOL_OUTPUT_FILENAME
 from artisan.execution.utils import finalize_artifacts, generate_execution_run_id
 from artisan.operations.base.per_artifact import PerArtifact

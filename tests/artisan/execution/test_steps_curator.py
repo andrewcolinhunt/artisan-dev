@@ -16,14 +16,14 @@ from artisan.schemas.execution.curator_result import PassthroughResult
 # =============================================================================
 
 _MOCK_MODULE = "artisan.execution.executors.curator"
-_PARQUET_MODULE = "artisan.execution.staging.parquet_writer"
+_PARQUET_MODULE = "artisan.execution.recording.parquet_writer"
 
 # =============================================================================
 # Tests for _handle_passthrough_result artifact_ids
 # =============================================================================
 
 
-_PARQUET_MODULE = "artisan.execution.staging.parquet_writer"
+_PARQUET_MODULE = "artisan.execution.recording.parquet_writer"
 
 
 class TestPassthroughResultArtifactIds:

@@ -609,7 +609,7 @@ class InteractiveFilter:
         # has no ExecutionUnit; ExecutionContext still requires a real
         # operation and store, so supply a Filter instance (its name yields
         # the "filter" operation_name) and the store this instance holds.
-        from artisan.execution.staging.recorder import record_passthrough
+        from artisan.execution.recording.recorder import record_passthrough
         from artisan.operations.curator.filter import Filter
         from artisan.schemas.execution.execution_context import ExecutionContext
         from artisan.storage.io.commit import DeltaCommitter

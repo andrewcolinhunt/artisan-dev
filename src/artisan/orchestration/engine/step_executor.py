@@ -29,8 +29,8 @@ from artisan.execution.executors.curator import (
 )
 from artisan.execution.inputs.grouping import group_inputs
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import record_execution_failure
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import record_execution_failure
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,

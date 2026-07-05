@@ -641,7 +641,7 @@ class TestCuratorStepPairing:
         tmp_path,
     ):
         """Curator step with group_by should call group_inputs()."""
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -702,7 +702,7 @@ class TestCuratorStepPairing:
         tmp_path,
     ):
         """Curator step without group_by should NOT call group_inputs()."""
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -750,7 +750,7 @@ class TestCuratorStepPairing:
         tmp_path,
     ):
         """Curator step group_ids should be attached to the ExecutionUnit."""
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -929,7 +929,7 @@ class TestStepTimingIntegration:
         tmp_path,
     ):
         """Curator step should include timing metadata in result."""
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1465,7 +1465,7 @@ class TestFilterStepLogging:
         caplog,
     ):
         """Filter log should count only passthrough role, not metric inputs."""
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1539,7 +1539,7 @@ class TestFilterStepLogging:
         caplog,
     ):
         """Filter log should show 0/N when nothing passes."""
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1609,7 +1609,7 @@ class TestCuratorStepSpecId:
         tmp_path,
     ):
         """When step_spec_id is provided, check_cache_for_batch is not called."""
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1655,7 +1655,7 @@ class TestCuratorStepSpecId:
         tmp_path,
     ):
         """When step_spec_id is None, check_cache_for_batch is still called."""
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1727,7 +1727,7 @@ class TestCuratorSubprocessIsolation:
         """_run_curator_in_subprocess should delegate to ProcessPoolExecutor."""
         from unittest.mock import MagicMock
 
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import (
             _run_curator_in_subprocess,
         )
@@ -1804,7 +1804,7 @@ class TestCuratorSubprocessIsolation:
         """BrokenProcessPool should record failure and return failed StepResult."""
         from concurrent.futures.process import BrokenProcessPool
 
-        from artisan.execution.staging.parquet_writer import StagingResult
+        from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 

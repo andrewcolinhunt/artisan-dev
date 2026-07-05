@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from artisan.execution.staging.parquet_writer import StagingResult
+from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 
@@ -148,7 +148,7 @@ def record_execution_success(
     Returns:
         StagingResult with ``success=True`` and the staged artifact IDs.
     """
-    from artisan.execution.staging.parquet_writer import (
+    from artisan.execution.recording.parquet_writer import (
         StagingResult,
         _create_staging_path,
         _stage_artifacts,
@@ -239,7 +239,7 @@ def record_passthrough(
     Returns:
         StagingResult with ``success=True`` and the passed-through artifact IDs.
     """
-    from artisan.execution.staging.parquet_writer import (
+    from artisan.execution.recording.parquet_writer import (
         StagingResult,
         _create_staging_path,
         _stage_artifact_edges,
@@ -384,7 +384,7 @@ def record_execution_failure(
     Returns:
         StagingResult with ``success=False``.
     """
-    from artisan.execution.staging.parquet_writer import (
+    from artisan.execution.recording.parquet_writer import (
         StagingResult,
         _create_staging_path,
         _stage_execution,

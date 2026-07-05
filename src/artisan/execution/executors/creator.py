@@ -15,8 +15,8 @@ from artisan.execution.compute.routing import create_execute_router
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import (
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import (
     _read_tool_output,
     error_envelope_dict,
     record_execution_failure,
