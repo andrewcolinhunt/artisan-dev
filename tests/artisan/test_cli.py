@@ -277,3 +277,206 @@ class TestOpRun:
 
         assert rc == 1
         assert "module:Qualname" in capsys.readouterr().err
+
+
+def _seed_steps(root: Path, run_ids: list[str]) -> None:
+    """Write a steps table with a running+completed row pair per run."""
+    from datetime import UTC, datetime, timedelta
+
+    import polars as pl
+
+    from artisan.schemas.enums import TablePath
+    from artisan.storage.core.table_schemas import STEPS_SCHEMA
+
+    rows = []
+    t0 = datetime(2026, 7, 1, tzinfo=UTC)
+    for i, run_id in enumerate(run_ids):
+        for j, status in enumerate(["running", "completed"]):
+            rows.append(
+                {
+                    "step_run_id": f"{run_id}-step-1",
+                    "step_spec_id": "spec-1",
+                    "pipeline_run_id": run_id,
+                    "step_number": 1,
+                    "step_name": "generate",
+                    "status": status,
+                    "operation_class": "DataGenerator",
+                    "params_json": "{}",
+                    "input_refs_json": "{}",
+                    "compute_backend": "local",
+                    "compute_options_json": "{}",
+                    "output_roles_json": "[]",
+                    "output_types_json": "[]",
+                    "total_count": 1,
+                    "succeeded_count": 1,
+                    "failed_count": 0,
+                    "timestamp": t0 + timedelta(minutes=10 * i + j),
+                    "duration_seconds": 1.0,
+                    "error": None,
+                    "dispatch_error": None,
+                    "commit_error": None,
+                    "metadata": "{}",
+                }
+            )
+    df = pl.DataFrame(rows, schema=STEPS_SCHEMA)
+    df.write_delta(str(root / TablePath.STEPS))
+
+
+class TestOpList:
+    """artisan op list."""
+
+    def test_json_lists_registered_ops(self, capsys):
+        rc = main(["op", "list", "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        names = [item["name"] for item in payload["items"]]
+        assert "filter" in names  # builtin curator
+        assert "cli_runner_op_test" in names  # registered by this module
+
+    def test_kind_filter(self, capsys):
+        rc = main(["op", "list", "--kind", "curator", "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["items"]
+        assert all(item["kind"] == "curator" for item in payload["items"])
+
+    def test_query_filter(self, capsys):
+        rc = main(["op", "list", "--query", "cli_runner_op", "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert [item["name"] for item in payload["items"]] == ["cli_runner_op_test"]
+
+    def test_human_mode(self, capsys):
+        rc = main(["op", "list"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "cli_runner_op_test" in out
+
+
+class TestOpDescribe:
+    """artisan op describe."""
+
+    def test_json_metadata(self, capsys):
+        rc = main(["op", "describe", "cli_runner_op_test", "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["name"] == "cli_runner_op_test"
+        assert "params_schema" in payload
+        assert "examples" in payload
+
+    def test_unknown_op_emits_envelope(self, capsys):
+        rc = main(["op", "describe", "cli_runner_op_tset", "--json"])
+
+        assert rc == 1
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["code"] == "unknown_operation"
+        assert "cli_runner_op_test" in envelope["suggestions"]
+
+    def test_unknown_op_human_mode_uses_stderr(self, capsys):
+        rc = main(["op", "describe", "no_such_op_anywhere"])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "no_such_op_anywhere" in captured.err
+
+
+class TestRuns:
+    """artisan runs."""
+
+    def test_missing_delta_root_emits_envelope(self, capsys, monkeypatch):
+        monkeypatch.delenv("ARTISAN_DELTA_ROOT", raising=False)
+        rc = main(["runs", "--json"])
+
+        assert rc == 1
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["code"] == "delta_root_unset"
+        assert envelope["recovery_hint"] == "CHECK_INPUT"
+
+    def test_lists_seeded_runs(self, tmp_path, capsys):
+        _seed_steps(tmp_path, ["run-a", "run-b"])
+        rc = main(["runs", "--delta-root", str(tmp_path), "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        by_id = {item["pipeline_run_id"]: item for item in payload["items"]}
+        assert set(by_id) == {"run-a", "run-b"}
+        assert by_id["run-a"]["last_status"] == "completed"
+        assert by_id["run-a"]["started_at"]  # datetime serialized via default=str
+
+    def test_env_var_fallback(self, tmp_path, capsys, monkeypatch):
+        _seed_steps(tmp_path, ["run-a"])
+        monkeypatch.setenv("ARTISAN_DELTA_ROOT", str(tmp_path))
+        rc = main(["runs", "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert len(payload["items"]) == 1
+
+
+class TestFailures:
+    """artisan failures."""
+
+    def test_empty_root_emits_store_not_found(self, tmp_path, capsys):
+        rc = main(["failures", "--delta-root", str(tmp_path), "--json"])
+
+        assert rc == 1
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["code"] == "store_not_found"
+        assert envelope["recovery_hint"] == "CHECK_INPUT"
+        assert envelope["cause"]["type"] == "FileNotFoundError"
+
+
+class TestProvenance:
+    """artisan provenance."""
+
+    A = "a" * 32
+    B = "b" * 32
+    C = "c" * 32
+
+    def test_backward_edges(self, tmp_path, capsys, seed_artifact_edges):
+        seed_artifact_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
+        rc = main(["provenance", self.C, "--delta-root", str(tmp_path), "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["edges"] == [
+            {"source_artifact_id": self.B, "target_artifact_id": self.C},
+            {"source_artifact_id": self.A, "target_artifact_id": self.B},
+        ]
+        assert payload["truncated"] is False
+
+    def test_forward_depth_truncation(self, tmp_path, capsys, seed_artifact_edges):
+        seed_artifact_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
+        rc = main(
+            [
+                "provenance",
+                self.A,
+                "--delta-root",
+                str(tmp_path),
+                "--direction",
+                "forward",
+                "--depth",
+                "1",
+                "--json",
+            ]
+        )
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["edges"] == [
+            {"source_artifact_id": self.A, "target_artifact_id": self.B}
+        ]
+        assert payload["truncated"] is True
+
+    def test_missing_table_degrades_to_empty(self, tmp_path, capsys):
+        rc = main(["provenance", self.A, "--delta-root", str(tmp_path), "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["edges"] == []
