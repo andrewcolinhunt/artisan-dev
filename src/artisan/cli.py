@@ -331,9 +331,7 @@ def _failures(args: argparse.Namespace) -> int:
     def payload() -> Any:
         from artisan.visualization.inspect import inspect_failures
 
-        return inspect_failures(
-            _require_delta_root(args), pipeline_run_id=args.run
-        )
+        return inspect_failures(_require_delta_root(args), pipeline_run_id=args.run)
 
     return _emit(args, payload)
 
