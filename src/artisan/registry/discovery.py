@@ -23,10 +23,10 @@ from artisan.registry.models import (
     NameCollision,
 )
 
-_BUILTIN_MODULES = (
-    "artisan.operations.curator",
-    "artisan.operations.examples",
-)
+# Example/demo ops are deliberately excluded: they would otherwise surface
+# in every discover() call as first-class recommendable operations. Load
+# them explicitly via extra_modules or ARTISAN_LOAD_MODULES when needed.
+_BUILTIN_MODULES = ("artisan.operations.curator",)
 _ENV_VAR = "ARTISAN_LOAD_MODULES"
 
 
