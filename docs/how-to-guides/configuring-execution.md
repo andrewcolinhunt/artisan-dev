@@ -7,7 +7,8 @@ is batched — from local development through production SLURM.
 [Building a Pipeline](building-a-pipeline.md)
 
 **Key types:** `Runner`, `RunnerResources`, `BatchStrategy`, `ToolSpec`,
-`Environments`, `CachePolicy`, `FailurePolicy`, `ComputeProvider`, `ModalComputeConfig`
+`Environments`, `CachePolicy`, `FailurePolicy`, `ComputeProvider`,
+`ModalComputeConfig`, `ComputeResources`
 
 ---
 
@@ -50,7 +51,7 @@ default:
 from artisan.orchestration import Runner
 
 # Pipeline-wide default
-pipeline = PipelineManager.create(..., step_runner=Runner.SLURM)
+pipeline = PipelineManager.create(..., default_step_runner=Runner.SLURM)
 
 # Step-level override
 pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
@@ -91,6 +92,7 @@ the step runner. Set it per step or as a pipeline-wide default:
 
 ```python
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 
 # Pipeline-wide default
 pipeline = PipelineManager.create(..., default_compute_provider="local")
@@ -112,8 +114,8 @@ pipeline.run(
 | `"local"` (default) | Direct call inside the worker | Development, testing, CPU-only ops |
 | `"modal"` | Call the tool's deployed Modal endpoint | GPU work, cloud burst, isolated environments |
 
-The modal provider runs **tool ops** only — operations declaring a
-`ToolSpec` + `execute_command()` instead of `execute()` — and requires the
+The modal provider runs **command ops** only — operations declaring a
+`ToolSpec` + `execute_command()` instead of `execute_function()` — and requires the
 tool's endpoint to be deployed first:
 
 ```bash
@@ -525,7 +527,6 @@ binary/script to invoke) and an `Environments` configuration (the runtime
 that wraps the command):
 
 ```python
-from pathlib import Path
 from artisan.operations.base import OperationDefinition
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.operation_config.environments import Environments
@@ -536,18 +537,18 @@ class ToolAOp(OperationDefinition):
     name = "tool_a"
 
     tool: ToolSpec = ToolSpec(
-        executable=Path("run_tool_a.sh"),
+        executable="run_tool_a.sh",
         interpreter="bash",
     )
 
     environments: Environments = Environments(
         active="apptainer",
         apptainer=ApptainerEnvironmentSpec(
-            image=Path("/tools/tool_a.sif"),
+            image="/tools/tool_a.sif",
             gpu=True,
             binds=[
-                (Path("/data/weights"), Path("/weights")),
-                (Path("/scratch"), Path("/scratch")),
+                ("/data/weights", "/weights"),
+                ("/scratch", "/scratch"),
             ],
         ),
     )
@@ -583,8 +584,8 @@ other Docker / Apptainer-supported mode string:
 
 ```python
 binds = [
-    (Path("/data/weights"), Path("/weights"), "ro"),
-    (Path("/scratch"), Path("/scratch")),  # 2-tuple still works (default rw)
+    ("/data/weights", "/weights", "ro"),
+    ("/scratch", "/scratch"),  # 2-tuple still works (default rw)
 ]
 ```
 
@@ -600,7 +601,7 @@ binds = [
 
 | Spec | Use case | Key fields |
 |------|----------|------------|
-| `ApptainerEnvironmentSpec` | Apptainer/Singularity containers (HPC) | `image` (Path), `gpu`, `binds` (2- or 3-tuple) |
+| `ApptainerEnvironmentSpec` | Apptainer/Singularity containers (HPC) | `image` (str), `gpu`, `binds` (2- or 3-tuple) |
 | `DockerEnvironmentSpec` | Docker containers | `image` (str), `gpu`, `binds` (2- or 3-tuple) |
 | `LocalEnvironmentSpec` | Local execution, optional virtualenv | `venv_path` |
 | `PixiEnvironmentSpec` | Pixi-managed environments | `pixi_environment`, `manifest_path` |
@@ -623,7 +624,7 @@ pipeline.submit(MyOp, environment="docker")
 pipeline.submit(MyOp, environment={"active": "docker", "docker": {"image": "myimg:latest"}})
 
 # Typed-model form (autocomplete + validation):
-pipeline.submit(MyOp, environment=Environments(active="docker", docker=DockerEnv(image="myimg:latest")))
+pipeline.submit(MyOp, environment=Environments(active="docker", docker=DockerEnvironmentSpec(image="myimg:latest")))
 ```
 
 `compute_provider`:
@@ -652,7 +653,9 @@ pipeline.submit(
 ```
 
 Passing a dict that configures a non-active provider (e.g.
-`environment={"docker": {...}}` without `active="docker"`) raises `ValueError`.
+`environment={"docker": {...}}` without `active="docker"`) leaves the active
+provider unchanged — the `docker` block is merged in but stays unused. Set
+`active="docker"` to switch providers.
 
 ---
 

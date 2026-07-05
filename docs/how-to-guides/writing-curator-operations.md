@@ -351,6 +351,7 @@ If `IngestFiles` does not fit your ingestion pattern, implement
 Before writing a custom curator, check whether a built-in one already does what
 you need.
 
+(filter)=
 ### Filter
 
 Conditional passthrough with structured criteria. Evaluates metrics against
@@ -543,7 +544,7 @@ etc.).
 | Empty `inputs` dict | Input role name mismatch | Check that `pipeline.run(inputs={...})` keys match what the operation expects |
 | `ArtifactResult` with unfinalizable drafts | Missing `step_number` on `draft()` | Use the `step_number` parameter |
 | `PassthroughResult` with invalid IDs | Passed artifact objects instead of ID strings | Use `artifact.artifact_id`, not the artifact itself |
-| Operation dispatched to SLURM unexpectedly | Operation overrides `execute()` instead of `execute_curator()` | Override `execute_curator` — curators run in-process |
+| Operation dispatched to SLURM unexpectedly | Operation overrides `execute_function()` instead of `execute_curator()` | Override `execute_curator` — curators run in-process |
 
 ---
 

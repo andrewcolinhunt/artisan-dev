@@ -172,8 +172,8 @@ PipelineManager                                (Artisan: step sequencing, cachin
             └─ LifecycleRouter.run()          (router owns dispatch lifecycle + cancellation)
                  └─ @flow(task_runner=...)      (Prefect: parallel dispatch + observability)
                       └─ execute_unit_task.map(units)
-                           ├─ run_creator_flow()    (Artisan: single operation lifecycle)
-                           └─ run_composite()        (Artisan: composite operations lifecycle)
+                           ├─ run_creator_flow()    (Artisan: creator operation lifecycle)
+                           └─ run_curator_flow()    (Artisan: curator operation lifecycle)
 ```
 
 Three built-in step runners control which Prefect `task_runner` is used:
@@ -191,7 +191,8 @@ Three built-in step runners control which Prefect `task_runner` is used:
 | Step runner selection and dispatch handle creation | Artisan (`RunnerBase`) |
 | Parallel dispatch to workers | Prefect (via runner-selected `task_runner`) |
 | Operation lifecycle (preprocess/execute/postprocess) | Artisan (execution layer) |
-| Composite routing (single ops vs. composed composites) | Artisan (`execute_unit_task`) |
+| Creator vs. curator dispatch | Artisan (`execute_unit_task`) |
+| Composite expansion into pipeline steps | Artisan (`PipelineManager`) |
 | Lineage capture, staging | Artisan (execution layer) |
 | Atomic commit to Delta Lake | Artisan (orchestration layer) |
 | Flow/task run observability UI | Prefect |

@@ -31,7 +31,7 @@ with no benefit.
 | Aspect | Creator | Curator |
 |--------|---------|---------|
 | Purpose | Heavy computation, file I/O | Metadata coordination |
-| Lifecycle | `preprocess` → `execute` → `postprocess` | `execute_curator` |
+| Lifecycle | `preprocess` → `execute_function` / `execute_command` → `postprocess` | `execute_curator` |
 | Sandboxing | Isolated directories per phase | None (in-memory) |
 | Input delivery | Files written to disk | DataFrames of artifact metadata |
 | Worker dispatch | SLURM, ProcessPool | Local only |
@@ -64,7 +64,7 @@ Preprocess translates framework-managed artifacts into whatever format the
 computation expects. Extract file paths from materialized artifacts, parse JSON
 content, generate configuration files — then return a plain `dict[str, Any]`.
 No framework types, no artifact objects. The return value becomes the input to
-`execute`.
+`execute_function`.
 
 **Why a separate phase?** Because the framework delivers artifacts in its own
 format (materialized paths, content bytes, metadata). The computation has its
@@ -73,11 +73,16 @@ bridges the gap, and you can test it independently of the actual computation.
 
 ### Execute: compute
 
-Execute runs the core work. It receives a frozen `ExecuteInput` containing the
-prepared dict from preprocess and a working directory. Write output files to
-that directory, call external tools, run inference — the framework treats this
-method as a black box. It does not inspect the return value. Any exception is
-caught and recorded as a failure.
+Execute runs the core work through `execute_function` — a Python body that
+receives a frozen `ExecuteInput` containing the prepared dict from preprocess
+and a working directory. Write output files to that directory, call external
+tools, run inference — the framework treats this method as a black box. It does
+not inspect the return value. Any exception is caught and recorded as a failure.
+
+Operations whose work should ship to a remote backend implement `execute_command`
+instead, returning an argv the framework runs as a subprocess or on a deployed
+tool endpoint. See [Command operations and tool
+endpoints](#command-operations-and-tool-endpoints).
 
 **Why a black box?** Because external tools know nothing about artifacts,
 lineage, or pipelines. They take files in and produce files out. By isolating
@@ -86,20 +91,21 @@ the computation behind a clean boundary, you can test it by constructing an
 
 ### Postprocess: construct
 
-Postprocess builds draft artifacts from whatever `execute` produced. It
-receives the files written to the execute directory and whatever value `execute`
-returned. This is where you create typed artifact drafts and assign
-`original_name` — the filename stem that drives the lineage matching algorithm.
+Postprocess builds draft artifacts from whatever `execute_function` produced. It
+receives the files written to the execute directory and whatever value
+`execute_function` returned. This is where you create typed artifact drafts and
+assign `original_name` — the filename stem that drives the lineage matching
+algorithm.
 
-**Why not return artifacts from execute?** Because artifact construction
-requires framework knowledge (draft types, role names, step numbers) that does
-not belong inside a black-box computation. Separating construction from
-computation keeps `execute` testable without framework dependencies.
+**Why not return artifacts from `execute_function`?** Because artifact
+construction requires framework knowledge (draft types, role names, step numbers)
+that does not belong inside a black-box computation. Separating construction from
+computation keeps `execute_function` testable without framework dependencies.
 
 ### Generative creators
 
 Creators with no inputs (empty `inputs` dict) skip preprocess entirely. They
-only implement `execute` and `postprocess`. The framework does not require a
+only implement `execute_function` and `postprocess`. The framework does not require a
 `preprocess` override when there are no input artifacts to adapt. Their outputs
 declare `infer_lineage_from={"inputs": []}` to signal that the produced
 artifacts have no parents.
@@ -114,9 +120,31 @@ Three properties fall directly out of the phase separation:
 - **Debuggability.** Each phase runs in its own sandbox subdirectory
   (`preprocess/`, `execute/`, `postprocess/`). When something fails, the
   relevant directory contains exactly the inputs and outputs for that phase.
-- **Portability.** External tools run inside `execute` without knowing about
-  artifacts or lineage. Preprocess adapts inputs; postprocess interprets
+- **Portability.** External tools run inside the execute phase without knowing
+  about artifacts or lineage. Preprocess adapts inputs; postprocess interprets
   outputs. The tool itself is unchanged.
+
+(command-operations-and-tool-endpoints)=
+### Command operations and tool endpoints
+
+A creator ships its execute phase in one of two forms. A **function op**
+implements `execute_function` — a Python body that runs where the lifecycle
+worker is. A **command op** declares a `tool` and implements `execute_command`,
+which returns an argv the framework runs as a local subprocess or on a deployed
+tool endpoint. Command ops are how work reaches a remote backend like Modal,
+where the execute phase becomes an HTTP client of the operation's endpoint.
+
+A Python-body op opts into the same path by setting `execute_as_tool=True`: the
+framework supplies the argv (`artisan op run <module:Qualname>`), runs it as a
+subprocess locally, and deploys it as a tool endpoint remotely. This is why the
+single execute slot split into `execute_function` and `execute_command` — the
+same operation can run inline or as a deployable, backend-portable tool without
+the author rewriting its logic.
+
+See [Writing Creator Operations — Python body as a
+command](../how-to-guides/writing-creator-operations.md#execute-as-tool) and
+[Op Container Images](../how-to-guides/op-container-images.md) for the
+deployment mechanics.
 
 ---
 
@@ -235,7 +263,9 @@ intermediate base classes.
 
 For concrete classes (non-empty `name`):
 
-- Either `execute()` or `execute_curator()` must be overridden (not neither)
+- Exactly one of `execute_function()`, `execute_command()`, or
+  `execute_curator()` must be overridden (command ops also need a `tool`
+  ToolSpec); overriding more than one raises `TypeError`
 - Creator outputs must have explicit `infer_lineage_from` (not `None`)
 - Creator operations with inputs must implement `preprocess()`
 - `OutputRole` enum values must match `outputs` keys
@@ -266,18 +296,21 @@ nested `Params` class.
 
 Built-in fields control how the framework runs the operation:
 
-- **`resources`** — portable hardware requirements: CPU count, memory, GPUs,
-  time limit, plus an `extra` dict for backend-specific settings like SLURM
-  partition
-- **`execution`** — batching and scheduling: artifacts per unit, units per
+- **`runner_resources`** — portable hardware requirements for the step runner
+  (local / SLURM): CPU count, memory, GPUs, time limit, plus an `extra` dict for
+  backend-specific settings like SLURM partition
+- **`batch_strategy`** — batching and scheduling: artifacts per unit, units per
   worker, max workers, estimated seconds per unit
+- **`compute_provider`** — where the execute phase runs: local, or a Modal tool
+  endpoint
+- **`compute_resources`** — hardware requested from the compute provider (Modal)
 - **`tool`** — external executable specification: path, interpreter, subcommand
 - **`environments`** — execution environment selection: local, Docker,
   Apptainer, or Pixi
 
-Both `resources` and `execution` can be overridden at the pipeline step level.
-The operation provides sensible defaults; the pipeline adapts them to specific
-cluster configurations.
+Both `runner_resources` and `batch_strategy` can be overridden at the pipeline
+step level. The operation provides sensible defaults; the pipeline adapts them to
+specific cluster configurations.
 
 ### Algorithm parameters
 
@@ -302,7 +335,8 @@ stream out. Operations that consume multiple input roles need the framework to
 
 ### Pairing strategies
 
-The `group_by` ClassVar controls how inputs from different roles are matched:
+The `group_by` field controls how inputs from different roles are matched
+(overridable per step via `pipeline.run(..., group_by=...)`):
 
 | Strategy | Behavior | When to use |
 |----------|----------|-------------|
