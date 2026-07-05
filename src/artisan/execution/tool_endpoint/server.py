@@ -15,6 +15,7 @@ from functools import reduce
 from typing import Any
 
 import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import ValidationError
 
 from artisan.errors import ArtisanError, ErrorCode, ErrorType, RecoveryHint
@@ -107,9 +108,14 @@ def run_tool_request(
         transport = InlineTransport()
         try:
             inputs = transport.unpack_inputs(request.inputs, inputs_dir)
-        except (ValueError, OSError) as exc:
-            # malformed ref, or an input URI that would not resolve — the
-            # agent supplied the ref and can correct it
+        except (ValueError, OSError, BotoCoreError, ClientError) as exc:
+            # malformed ref; a URI that would not resolve (missing object,
+            # denied read — s3fs maps these to FileNotFoundError/
+            # PermissionError); or a botocore root s3fs returns untranslated
+            # (NoCredentialsError, EndpointConnectionError — the R2 bad-creds
+            # / bad-endpoint modes, both BotoCoreError, neither an OSError).
+            # The caller supplied the ref/Secret and can correct it. Fetch
+            # precedes compute, so nothing partial exists.
             return _error_result(
                 op_cls.name,
                 ErrorCode.INPUT_RESOLUTION_FAILED,

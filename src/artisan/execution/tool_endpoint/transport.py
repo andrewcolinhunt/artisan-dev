@@ -3,9 +3,12 @@
 ``InlineTransport`` is the inline mode — input bytes and the output tar
 ride the endpoint↔worker function-call hop, bounded at 100 MB per
 direction. ``s3://`` input refs are fetched worker-side via fsspec and
-bypass the bound. ``upload_outputs`` is the stored output mode: when a
-request names an ``output_store``, the worker delivers the output tarball
-there and only a ``StoredOutputs`` pointer rides the control plane.
+bypass the bound; the producer is ``materialize_inputs`` under
+``endpoint_routed=True``, which hands a cloud-hosted input's
+``external_path`` straight to ``pack_inputs`` rather than downloading it.
+``upload_outputs`` is the stored output mode: when a request names an
+``output_store``, the worker delivers the output tarball there and only a
+``StoredOutputs`` pointer rides the control plane.
 """
 
 from __future__ import annotations

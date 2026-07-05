@@ -12,11 +12,18 @@ if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
 
 
+def _is_remote(path: str | None) -> bool:
+    """True when ``path`` is a cloud URI (``scheme://`` other than file)."""
+    return bool(path) and "://" in path and not path.startswith("file://")
+
+
 def materialize_inputs(
     artifacts: dict[str, list[Artifact]],
     input_specs: dict[str, InputSpec],
     directory: str,
     artifact_store: ArtifactStore,
+    *,
+    endpoint_routed: bool = False,
 ) -> tuple[dict[str, list[Artifact]], set[str]]:
     """Materialize input artifacts to disk with dependency-aware ordering.
 
@@ -28,6 +35,12 @@ def materialize_inputs(
         input_specs: Role-keyed input specs controlling materialization.
         directory: Target directory for materialized files.
         artifact_store: Store for hydrating config-referenced artifacts.
+        endpoint_routed: When True, a cloud-hosted (non-config, file-backed)
+            input is shipped to the worker by reference: its download is
+            skipped and ``materialized_path`` is set to its cloud
+            ``external_path`` so the URI flows through the endpoint client's
+            existing ``pack_inputs`` passthrough. Local execution keeps the
+            default (False), materializing every input to disk as before.
 
     Returns:
         Tuple of (artifacts dict, set of artifact_ids that were materialized).
@@ -72,6 +85,16 @@ def materialize_inputs(
     resolved_paths: dict[str, str] = {}
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
+            continue
+        # Endpoint-routed steps ship cloud-hosted inputs by reference: the
+        # worker fetches the URI with ambient creds, so the client must not
+        # download it (and must not inline it past the 100 MB cap). The op's
+        # preprocess reads materialized_path — pointing it at the URI makes
+        # the reference flow through pack_inputs' existing passthrough. No
+        # local file is written, so the artifact stays out of
+        # materialized_ids (the filesystem-passthrough match map).
+        if endpoint_routed and _is_remote(artifact.external_path):
+            artifact.materialized_path = artifact.external_path
             continue
         materialized = artifact.materialize_to(directory, format=fmt, fs=fs)
         if isinstance(materialized, str):
