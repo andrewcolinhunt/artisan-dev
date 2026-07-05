@@ -8,6 +8,7 @@ from pathlib import Path
 import graphviz
 import polars as pl
 import pytest
+from fixtures.execution_records import executions_df
 
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -15,7 +16,6 @@ from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
-    EXECUTIONS_SCHEMA,
 )
 from artisan.visualization.graph import (
     build_micro_graph,
@@ -50,7 +50,7 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "worker_log": [None, None],
         "metadata": ["{}", "{}"],
     }
-    exec_df = pl.DataFrame(exec_data, schema=EXECUTIONS_SCHEMA)
+    exec_df = executions_df(**exec_data)
     exec_df.write_delta(str(delta_root / "orchestration/executions"), mode="overwrite")
 
     # Create artifact_index

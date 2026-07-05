@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from fixtures.execution_records import executions_df
 
 from artisan.errors import CommitError
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -773,32 +774,28 @@ class TestRecoverStaged:
         """Stage mock execution + artifact data simulating a crashed run."""
         from artisan.storage.core.table_schemas import (
             EXECUTION_EDGES_SCHEMA,
-            EXECUTIONS_SCHEMA,
         )
 
         staging = StagingArea(staging_root, fs, batch_id=batch_id)
 
         # Stage an execution record
-        exec_df = pl.DataFrame(
-            {
-                "execution_run_id": ["exec_001"],
-                "execution_spec_id": ["spec_001"],
-                "step_run_id": [None],
-                "origin_step_number": [0],
-                "operation_name": ["TestOp"],
-                "params": ["{}"],
-                "user_overrides": ["{}"],
-                "timestamp_start": [None],
-                "timestamp_end": [None],
-                "source_worker": [0],
-                "compute_backend": ["local"],
-                "success": [True],
-                "error": [None],
-                "tool_output": [None],
-                "worker_log": [None],
-                "metadata": ["{}"],
-            },
-            schema=EXECUTIONS_SCHEMA,
+        exec_df = executions_df(
+            execution_run_id=["exec_001"],
+            execution_spec_id=["spec_001"],
+            step_run_id=[None],
+            origin_step_number=[0],
+            operation_name=["TestOp"],
+            params=["{}"],
+            user_overrides=["{}"],
+            timestamp_start=[None],
+            timestamp_end=[None],
+            source_worker=[0],
+            compute_backend=["local"],
+            success=[True],
+            error=[None],
+            tool_output=[None],
+            worker_log=[None],
+            metadata=["{}"],
         )
         staging.stage_dataframe(exec_df, "executions")
 

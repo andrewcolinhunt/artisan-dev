@@ -6,12 +6,12 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import polars as pl
+from fixtures.execution_records import executions_df
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.orchestration.engine.inputs import resolve_output_reference
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
-from artisan.storage.core.table_schemas import EXECUTIONS_SCHEMA
 
 
 def _create_executions_df(**overrides) -> pl.DataFrame:
@@ -35,7 +35,7 @@ def _create_executions_df(**overrides) -> pl.DataFrame:
         "metadata": ["{}"],
     }
     defaults.update(overrides)
-    return pl.DataFrame(defaults, schema=EXECUTIONS_SCHEMA)
+    return executions_df(**defaults)
 
 
 class TestResolveOutputReferenceEmptyUpstream:

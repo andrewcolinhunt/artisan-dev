@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import polars as pl
 import pytest
+from fixtures.execution_records import executions_df
 
 from artisan.schemas.enums import CacheValidationReason
 from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
 from artisan.storage.cache.cache_lookup import cache_lookup
-from artisan.storage.core.table_schemas import EXECUTIONS_SCHEMA
 
 
 @pytest.fixture
@@ -44,7 +43,7 @@ def cache_env(backend_fs):
         "worker_log": [None, None],
         "metadata": ["{}", "{}"],
     }
-    pl.DataFrame(records_data, schema=EXECUTIONS_SCHEMA).write_delta(
+    executions_df(**records_data).write_delta(
         executions_path, mode="overwrite", storage_options=opts
     )
 
@@ -124,7 +123,7 @@ class TestCacheLookup:
             "worker_log": [None, None],
             "metadata": ["{}", "{}"],
         }
-        pl.DataFrame(records_data, schema=EXECUTIONS_SCHEMA).write_delta(
+        executions_df(**records_data).write_delta(
             executions_path, mode="overwrite", storage_options=opts
         )
 
@@ -196,28 +195,25 @@ class TestCacheLookupBackendParametrized:
         storage_options = storage.delta_storage_options()
 
         now = datetime.now()
-        executions_df = pl.DataFrame(
-            {
-                "execution_run_id": ["run_success"],
-                "execution_spec_id": ["spec_success"],
-                "step_run_id": [None],
-                "origin_step_number": [1],
-                "operation_name": ["relax"],
-                "params": ["{}"],
-                "user_overrides": ["{}"],
-                "timestamp_start": [now],
-                "timestamp_end": [now],
-                "source_worker": [0],
-                "compute_backend": ["local"],
-                "success": [True],
-                "error": [None],
-                "tool_output": [None],
-                "worker_log": [None],
-                "metadata": ["{}"],
-            },
-            schema=EXECUTIONS_SCHEMA,
+        records_df = executions_df(
+            execution_run_id=["run_success"],
+            execution_spec_id=["spec_success"],
+            step_run_id=[None],
+            origin_step_number=[1],
+            operation_name=["relax"],
+            params=["{}"],
+            user_overrides=["{}"],
+            timestamp_start=[now],
+            timestamp_end=[now],
+            source_worker=[0],
+            compute_backend=["local"],
+            success=[True],
+            error=[None],
+            tool_output=[None],
+            worker_log=[None],
+            metadata=["{}"],
         )
-        executions_df.write_delta(
+        records_df.write_delta(
             executions_path, mode="overwrite", storage_options=storage_options
         )
 
