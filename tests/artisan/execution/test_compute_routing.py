@@ -10,11 +10,12 @@ import pytest
 from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.compute.endpoint import EndpointExecuteRouter
 from artisan.execution.compute.local import LocalExecuteRouter
-from artisan.execution.compute.routing import create_execute_router
+from artisan.execution.compute.routing import create_execute_router, routes_to_endpoint
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.operation_config.compute import (
     ComputeConfig,
+    ComputeProvider,
     LocalComputeConfig,
     ModalComputeConfig,
 )
@@ -126,3 +127,31 @@ class TestCreateExecuteRouter:
         config = ComputeConfig()
         with pytest.raises(ValueError, match="Unknown compute provider config"):
             create_execute_router(config, _RoutingFunctionOp())
+
+
+class TestRoutesToEndpoint:
+    """The input-delivery read must agree with the router-construction branch."""
+
+    def test_true_for_modal(self):
+        op = _RoutingCommandOp()
+        op.compute_provider = ComputeProvider(
+            active="modal", modal=ModalComputeConfig(image="test-image")
+        )
+        assert routes_to_endpoint(op) is True
+
+    def test_false_for_local(self):
+        op = _RoutingFunctionOp()
+        op.compute_provider = ComputeProvider(active="local")
+        assert routes_to_endpoint(op) is False
+
+    def test_matches_router_construction_branch(self):
+        # active=="modal" is exactly the branch create_execute_router takes
+        # to build the endpoint router — predicate and factory read the
+        # same compute_provider signal, so they cannot disagree.
+        op = _RoutingCommandOp()
+        op.compute_provider = ComputeProvider(
+            active="modal", modal=ModalComputeConfig(image="test-image")
+        )
+        router = create_execute_router(op.compute_provider.current(), op)
+        assert isinstance(router, EndpointExecuteRouter)
+        assert routes_to_endpoint(op) is True

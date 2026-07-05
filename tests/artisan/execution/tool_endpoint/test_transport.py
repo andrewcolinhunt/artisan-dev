@@ -349,3 +349,79 @@ class TestUploadOutputsMinIO:
         dest = tmp_path / "extracted"
         InlineTransport().unpack_outputs(local.read_bytes(), str(dest))
         assert (dest / "out.txt").read_text() == "payload"
+
+
+class TestUnpackInputsMinIO:
+    """Worker-side URI fetch end to end against MinIO (s3 marker via ``s3_fs``).
+
+    ``AWS_ENDPOINT_URL`` is set so the endpoint-resolution path is
+    exercised, not default AWS routing — MinIO tolerates shapes real
+    stores reject, so the round-trip must run against a custom endpoint.
+    """
+
+    def _use_ambient_creds(self, storage, monkeypatch) -> None:
+        import s3fs as s3fs_mod
+
+        # worker-style ambient credentials: env vars, exactly how the Modal
+        # Secret hands them to the worker (unpack_inputs derives the fs from
+        # the URI scheme with no storage_options → botocore reads the env)
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", storage.options["key"])
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", storage.options["secret"])
+        monkeypatch.setenv(
+            "AWS_ENDPOINT_URL", storage.options["client_kwargs"]["endpoint_url"]
+        )
+        s3fs_mod.S3FileSystem.clear_instance_cache()
+
+    def test_uri_ref_fetched_from_ambient_config(self, s3_fs, tmp_path, monkeypatch):
+        fs, storage, uri_prefix = s3_fs
+        bucket = uri_prefix.removeprefix("s3://")
+        fs.pipe_file(f"{bucket}/inputs/model.bin", b"weights-bytes")
+        self._use_ambient_creds(storage, monkeypatch)
+
+        dest = tmp_path / "inputs"
+        paths = InlineTransport().unpack_inputs(
+            [
+                InputRef(
+                    name="weights",
+                    filename="model.bin",
+                    uri=f"{uri_prefix}/inputs/model.bin",
+                )
+            ],
+            str(dest),
+        )
+
+        # lands under its basename with correct bytes — the URI never
+        # touched the inline cap
+        assert Path(paths["weights"]).name == "model.bin"
+        assert Path(paths["weights"]).read_bytes() == b"weights-bytes"
+
+    def test_missing_key_surfaces_as_input_resolution_failed(
+        self, s3_fs, tmp_path, monkeypatch
+    ):
+        from artisan.execution.tool_endpoint.protocol import ToolRequest
+        from artisan.execution.tool_endpoint.server import run_tool_request
+        from artisan.operations.examples import WaitTool
+
+        _fs, storage, uri_prefix = s3_fs
+        self._use_ambient_creds(storage, monkeypatch)
+
+        # a ref to a missing object: s3fs maps 404 → FileNotFoundError,
+        # which run_tool_request maps to INPUT_RESOLUTION_FAILED before any
+        # compute runs (output_tar is None — the fetch precedes the tool)
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                params={"seconds": 1},
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        filename="missing.csv",
+                        uri=f"{uri_prefix}/inputs/does-not-exist.csv",
+                    )
+                ],
+            ),
+        )
+        assert result.output_tar is None
+        assert result.manifest.error is not None
+        assert result.manifest.error.code == "input_resolution_failed"
+        assert result.manifest.error.recovery_hint == "CHECK_INPUT"
