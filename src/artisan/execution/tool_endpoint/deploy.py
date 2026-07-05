@@ -128,8 +128,9 @@ def build_app(
             """The request contract: params JSON-schema + input roles.
 
             ``params_schema`` is the same dict ``/submit`` validates
-            against; an empty dict means the op declares no ``Params``
-            (nothing is validated), not that the schema is unknown.
+            against. A parameter-less op serves the empty-``Params`` object
+            schema (``{"type": "object", "properties": {}}``) — any JSON
+            object satisfies it — not an empty ``{}``.
             """
             return {
                 "operation": op_name,

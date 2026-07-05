@@ -16,6 +16,7 @@ from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint.deploy import build_app
 from artisan.execution.tool_endpoint.protocol import SchemaResponse
 from artisan.operations.examples import DataGenerator
+from artisan.registry.schemas import params_schema_for
 
 _PARAMS = json.dumps({"contigs": "10-20"})
 """Minimal valid GpuTool params — /submit schema-validates before anything else."""
@@ -121,7 +122,9 @@ class TestEndpointRoutes:
         body = response.json()
         assert body["operation"] == "gpu_tool_test"
         assert body["description"] == "Tool op with hardware spec"
-        assert body["params_schema"] == GpuTool.Params.model_json_schema()
+        # the served schema is the registry's canonical one — both agent
+        # planes build it through params_schema_for
+        assert body["params_schema"] == params_schema_for(GpuTool)
         assert body["inputs"] == {
             "reference": {
                 "required": False,
@@ -238,3 +241,35 @@ class TestRetainedResultRoutes:
         response = client.get("/download", params={"call_id": "fc-1"})
         assert response.status_code == 200
         assert response.content == b"tarbytes"
+
+
+class TestParameterlessSubmit:
+    """A parameter-less op bakes the empty-object schema, not ``{}``.
+
+    ``/submit`` still accepts any params object; the seam is only that a
+    non-object body is now rejected at the boundary instead of reaching the
+    worker and failing opaquely at ``op(**params)``.
+    """
+
+    @pytest.fixture
+    def client(self, mock_modal: MagicMock) -> TestClient:
+        build_app(PlainTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        return TestClient(endpoint_fn())
+
+    @pytest.fixture
+    def worker(self, mock_modal: MagicMock) -> MagicMock:
+        return mock_modal.App.return_value.function.return_value.return_value
+
+    def test_schema_serves_empty_object_shape(self, client: TestClient):
+        served = client.get("/schema").json()["params_schema"]
+        assert served == {"type": "object", "title": "Params", "properties": {}}
+
+    def test_empty_params_still_validates(self, client: TestClient, worker: MagicMock):
+        worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
+        # default "{}" — an object satisfies the empty-object schema
+        assert client.post("/submit", data={"params": "{}"}).status_code == 200
+
+    def test_non_object_body_now_422s(self, client: TestClient):
+        # a JSON array is not an object — rejected at the boundary
+        assert client.post("/submit", data={"params": "[]"}).status_code == 422
