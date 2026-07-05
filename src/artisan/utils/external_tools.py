@@ -48,7 +48,7 @@ class Command:
 class ExternalToolError(ArtisanError):
     """Structured error for external tool failures.
 
-    Raised when an external tool exits with non-zero status or times out.
+    Raised when an external tool exits with non-zero status.
     Contains all context needed to diagnose the failure. Reuses
     ``OP_EXECUTE_FAILED`` (``error_type="compute"``) — a local tool crash
     and a remote one read the same code — and keeps the full multi-line
@@ -58,7 +58,7 @@ class ExternalToolError(ArtisanError):
     Attributes:
         message: Human-readable error description.
         command: The command that was executed (as list of parts).
-        return_code: Exit code (-1 for timeout).
+        return_code: Exit code from the subprocess.
         stdout: Captured standard output.
         stderr: Captured standard error.
         runtime: The EnvironmentSpec or context that was executed.

@@ -27,8 +27,8 @@ from artisan.execution.lineage.validation import (
     validate_lineage_integrity,
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import (
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import (
     error_envelope_dict,
     record_execution_failure,
     record_execution_success,
@@ -51,8 +51,8 @@ from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
-from artisan.utils.errors import format_error
 from artisan.utils.timing import phase_timer
+from artisan.utils.traceback import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def is_curator_operation(op: type[OperationDefinition] | OperationDefinition) ->
 
 
 def _get_params(operation: OperationDefinition) -> dict[str, Any]:
-    """Safely serialize operation params when available."""
+    """Serialize operation params via serialize_params."""
     from artisan.utils.hashing import serialize_params
 
     return serialize_params(operation)
@@ -104,7 +104,7 @@ def _hydrate_inputs_for_lineage(
         if not ids:
             continue
 
-        # Determine artifact type from the operation's input specs
+        # Resolve each artifact's type from the provenance type map
         type_map = artifact_store.provenance.load_type_map(ids)
 
         # Group by type for bulk loading
@@ -239,7 +239,7 @@ def run_curator_flow(
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and step_runner configuration for this run.
+        runtime_env: Paths and runtime configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
 
     Returns:

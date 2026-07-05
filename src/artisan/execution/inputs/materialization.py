@@ -79,7 +79,7 @@ def materialize_inputs(
                 non_configs.append((ref_artifact, None))
 
     # Get fs from artifact_store for cloud-capable source reads
-    fs = artifact_store._fs if hasattr(artifact_store, "_fs") else None
+    fs = artifact_store._fs
 
     materialized_ids: set[str] = set()
     resolved_paths: dict[str, str] = {}

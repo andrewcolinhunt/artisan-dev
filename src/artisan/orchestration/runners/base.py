@@ -57,7 +57,7 @@ class OrchestratorTraits:
 class RunnerBase(ABC):
     """A complete execution step_runner.
 
-    Bundles compute_provider dispatch, storage traits, and worker configuration
+    Bundles compute dispatch, storage traits, and worker configuration
     into a single object. Subclasses implement concrete runners.
     Users access pre-built instances via the Runner namespace
     (e.g., Runner.SLURM), not this class directly.

@@ -36,6 +36,8 @@ def display_provenance_stepper(
         delta_root: Path to Delta Lake root directory.
         output_dir: Directory to write step images. Defaults to
             {delta_root}/../images (e.g., runs/images alongside runs/delta).
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
 
     Returns:
         ipywidgets VBox containing the stepper widget.

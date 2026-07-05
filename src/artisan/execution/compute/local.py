@@ -1,4 +1,4 @@
-"""Local execute router — direct passthrough (today's behavior)."""
+"""Local execute router — direct passthrough."""
 
 from __future__ import annotations
 

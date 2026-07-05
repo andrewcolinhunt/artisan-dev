@@ -2,6 +2,7 @@
 
 Public API:
     build_execution_edges: Create execution-level input/output edge DataFrame.
+    error_envelope_dict: Extract the ArtisanError envelope dict for a failure.
     record_execution_success: Stage a successful execution run's outputs.
     record_passthrough: Stage an execution run that created no new artifacts.
     record_execution_failure: Stage a failed execution run's error record.
@@ -16,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from artisan.execution.staging.parquet_writer import StagingResult
+from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 
@@ -147,7 +148,7 @@ def record_execution_success(
     Returns:
         StagingResult with ``success=True`` and the staged artifact IDs.
     """
-    from artisan.execution.staging.parquet_writer import (
+    from artisan.execution.recording.parquet_writer import (
         StagingResult,
         _create_staging_path,
         _stage_artifacts,
@@ -238,7 +239,7 @@ def record_passthrough(
     Returns:
         StagingResult with ``success=True`` and the passed-through artifact IDs.
     """
-    from artisan.execution.staging.parquet_writer import (
+    from artisan.execution.recording.parquet_writer import (
         StagingResult,
         _create_staging_path,
         _stage_artifact_edges,
@@ -313,7 +314,7 @@ def _write_failure_log(
         execution_run_id: Execution run ID (used as filename).
         operation_name: Name of the operation that failed.
         step_number: Pipeline step number.
-        compute_backend: Compute step_runner used (local/slurm).
+        compute_backend: Compute backend used (local/slurm).
         error: Full error string (traceback).
         tool_output: Captured tool stdout/stderr.
     """
@@ -383,7 +384,7 @@ def record_execution_failure(
     Returns:
         StagingResult with ``success=False``.
     """
-    from artisan.execution.staging.parquet_writer import (
+    from artisan.execution.recording.parquet_writer import (
         StagingResult,
         _create_staging_path,
         _stage_execution,

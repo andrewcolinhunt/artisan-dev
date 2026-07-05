@@ -135,6 +135,7 @@ def build_macro_graph(
     Args:
         delta_root: Path to Delta Lake root directory.
         storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).

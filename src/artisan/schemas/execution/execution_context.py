@@ -1,8 +1,7 @@
 """Execution context grouping runtime state for a single execution.
 
 ``ExecutionContext`` is created once at execution start and threaded
-through the entire execution flow, replacing ~13 individual parameters
-with a single immutable object.
+through the entire execution flow as a single immutable object.
 """
 
 from __future__ import annotations
@@ -39,6 +38,8 @@ class ExecutionContext:
         compute_backend: Backend name (e.g. "local", "slurm").
         shared_filesystem: Whether workers share a filesystem with
             the orchestrator.
+        step_run_id: Step run ID linking this execution to a specific
+            step attempt. None when not associated with a step.
     """
 
     execution_run_id: str

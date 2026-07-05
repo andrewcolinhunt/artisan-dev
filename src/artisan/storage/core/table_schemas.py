@@ -23,16 +23,12 @@ from artisan.schemas.enums import TablePath
 # =============================================================================
 # executions table
 # =============================================================================
-# Lightweight execution log with success/error/timestamps.
-# Input/output edges have been moved to execution_edges table.
-#
-#
-# Semantic shift: executions stores execution metadata only,
-# while execution_edges stores normalized input/output edges.
+# Lightweight execution log with success/error/timestamps. Stores
+# execution metadata only; input/output edges live in the
+# execution_edges table.
 
 # Note on nullability: Polars DataFrames allow null values by default for all
 # column types. Fields like timestamp_end, error, and metadata may contain nulls.
-# This aligns with Phase 1 models where these fields are Optional.
 
 EXECUTIONS_SCHEMA = {
     "execution_run_id": pl.String,  # PK - unique per execution attempt
@@ -60,14 +56,8 @@ EXECUTIONS_SCHEMA = {
 # execution_edges table
 # =============================================================================
 # Normalized input/output edges for execution provenance.
-# One row per edge (input or output artifact).
-#
-# Benefits over arrays in executions:
-# - No batching logic needed - one row per edge, Parquet handles the rest
-# - Clean normalized schema - no arrays in cells
-# - Easy queries - WHERE execution_run_id = ? AND direction = 'output'
-# - Scales naturally - 1M edges = 1M rows (Parquet optimized for this)
-# - Works for both creator and curator ops - same table structure
+# One row per edge (input or output artifact), which keeps queries
+# simple and avoids array columns in the executions table.
 
 EXECUTION_EDGES_SCHEMA = {
     "execution_run_id": pl.String,  # FK to executions
@@ -84,8 +74,6 @@ EXECUTION_EDGES_SCHEMA = {
 #
 # Terminology: Uses source/target (graph-centric) for artifact provenance,
 # distinct from inputs/outputs (operation-centric) in executions.
-#
-# Reference: design_provenance_model_v3.md
 #
 # Multi-input grouping: Edges sharing the same group_id and target_artifact_id
 # were co-inputs to a single derivation. group_id is null for independent

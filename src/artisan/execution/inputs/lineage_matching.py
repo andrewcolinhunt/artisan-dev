@@ -4,9 +4,6 @@ Per-candidate BFS through directed provenance edges. For each candidate,
 walks backward from the candidate node until hitting a target; the first
 target reached at the shortest hop depth is the match. Multiple targets
 at the same hop depth on different branches raise.
-
-Re-exports ``walk_backward`` and ``walk_forward`` under their legacy
-names for backwards compatibility during migration.
 """
 
 from __future__ import annotations
@@ -15,16 +12,10 @@ import logging
 
 import polars as pl
 
-from artisan.provenance.traversal import walk_backward as walk_provenance_to_targets
-from artisan.provenance.traversal import walk_forward as walk_forward_to_targets
-
 logger = logging.getLogger(__name__)
 
-# Re-export so existing callers don't break
 __all__ = [
     "match_by_ancestry",
-    "walk_forward_to_targets",
-    "walk_provenance_to_targets",
 ]
 
 

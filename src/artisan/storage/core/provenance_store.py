@@ -1,7 +1,7 @@
 """Read operations for provenance and artifact-metadata Delta tables.
 
-Extracts provenance-related query methods from ArtifactStore into a
-focused class: edge loading, step/type maps, ancestor/descendant lookups.
+Groups the provenance-related query methods in a focused class: edge
+loading, step/type maps, and ancestor/descendant lookups.
 """
 
 from __future__ import annotations

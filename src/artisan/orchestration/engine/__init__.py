@@ -1,7 +1,7 @@
 """Orchestration execution engine (internal).
 
 This package contains the orchestration engine used by PipelineManager.run().
-Import symbols directly from their submodules:
+Import symbols directly from their submodules, for example:
 
 - ``artisan.orchestration.engine.inputs``
 - ``artisan.orchestration.engine.batching``

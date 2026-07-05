@@ -75,6 +75,8 @@ class DataArtifact(Artifact):
 
         Args:
             directory: Target directory for the output file.
+            fs: Accepted for base-signature parity; unused because CSV
+                content is held in memory.
 
         Returns:
             Path to the written file.

@@ -12,7 +12,7 @@ ARTISAN_WORKER_IMAGE = "ghcr.io/dexterity-systems/artisan-worker:latest"
 
 
 class ComputeConfig(BaseModel):
-    """Base class for compute_provider provider configs.
+    """Base class for compute provider configs.
 
     Mirrors the ``EnvironmentSpec`` hierarchy — each provider
     extends this base and ``create_execute_router()`` dispatches by type.
@@ -20,7 +20,7 @@ class ComputeConfig(BaseModel):
 
 
 class LocalComputeConfig(ComputeConfig):
-    """Local compute_provider (default, today's behavior)."""
+    """Local compute provider (default)."""
 
 
 class ModalComputeConfig(ComputeConfig):
@@ -150,7 +150,7 @@ class ModalComputeConfig(ComputeConfig):
 
 
 class ComputeProvider(BaseModel):
-    """Multi-provider compute_provider routing configuration.
+    """Multi-provider compute routing configuration.
 
     Follows the ``Environments`` pattern: named providers with an
     active selector. Pipeline-level overrides change ``active``
@@ -158,7 +158,7 @@ class ComputeProvider(BaseModel):
 
     Attributes:
         active: Name of the currently selected provider.
-        local: Local compute_provider config (always available).
+        local: Local compute provider config (always available).
     """
 
     active: str = "local"

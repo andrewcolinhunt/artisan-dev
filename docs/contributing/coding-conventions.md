@@ -236,7 +236,7 @@ from artisan.execution.lineage.capture import _match_outputs_to_candidates  # pr
 
 **Within a package**, direct imports from sibling modules are expected. For
 example, `execution/executors/creator.py` imports directly from
-`execution/lineage/capture.py` and `execution/staging/recorder.py`. This is
+`execution/lineage/capture.py` and `execution/recording/recorder.py`. This is
 normal — the `__init__.py` boundary matters for external consumers, not for
 internal wiring.
 

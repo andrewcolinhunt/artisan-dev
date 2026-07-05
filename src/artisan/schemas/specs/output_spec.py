@@ -78,7 +78,7 @@ class OutputSpec(BaseModel):
 
     @field_validator("infer_lineage_from")
     @classmethod
-    def validate_lineage_config(
+    def _validate_lineage_config(
         cls, v: dict[str, list[str]] | None
     ) -> dict[str, list[str]] | None:
         """Validate infer_lineage_from configuration.

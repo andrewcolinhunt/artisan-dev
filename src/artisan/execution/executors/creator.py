@@ -15,8 +15,8 @@ from artisan.execution.compute.routing import create_execute_router
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import (
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import (
     _read_tool_output,
     error_envelope_dict,
     record_execution_failure,
@@ -26,9 +26,9 @@ from artisan.execution.utils import generate_execution_run_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.utils.errors import format_error
 from artisan.utils.path import cancel_sentinel_path
 from artisan.utils.timing import phase_timer
+from artisan.utils.traceback import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def run_creator_lifecycle(
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and step_runner configuration for this run.
+        runtime_env: Paths and runner configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources keyed by role.
@@ -188,7 +188,7 @@ def run_creator_flow(
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and step_runner configuration for this run.
+        runtime_env: Paths and runner configuration for this run.
         worker_id: Numeric worker identifier for concurrency tracking.
         execute_router: Shared router for compute_provider dispatch. When provided,
             the lifecycle skips creating its own router. When ``None``,
@@ -344,6 +344,9 @@ def _build_execution_context(
         fs=fs,
         storage_options=storage_options,
         operation=operation,
+        # The record phase only stages the execution record, which never
+        # reads sandbox_path; the sandbox was created and torn down inside
+        # run_creator_lifecycle, so any placeholder path suffices here.
         sandbox_path=os.path.join(working_root, "dummy"),
         compute_backend_name=runtime_env.compute_backend_name,
         shared_filesystem=runtime_env.shared_filesystem,
