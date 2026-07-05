@@ -245,6 +245,31 @@ class TestCallEndpointFailures:
         assert exc_info.value.code == "op_execute_failed"
         assert "boom" in log_path.read_text()  # tail lands before the raise
 
+    def test_field_and_suggestions_survive_reraise(self, mock_http, tmp_path):
+        # a worker envelope carrying field + suggestions must reach the
+        # persisted client-side ArtisanError intact (inspect_failures reads them)
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        envelope = ArtisanError(
+            code=ErrorCode.PARAM_TYPE_MISMATCH,
+            message="bad param",
+            error_type="validation",
+            operation_name="wait_tool",
+            field="params.seconds",
+            suggestions=["second", "secs"],
+            recovery_hint="CHECK_INPUT",
+        ).envelope
+        manifest = ToolManifest(error=envelope)
+        client.get.return_value = _response(
+            {"status": "failed", "manifest": manifest.model_dump()}
+        )
+
+        with pytest.raises(ArtisanError) as exc_info:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc_info.value.envelope.field == "params.seconds"
+        assert exc_info.value.envelope.suggestions == ["second", "secs"]
+
     @pytest.mark.parametrize(
         ("code", "error_type"),
         [

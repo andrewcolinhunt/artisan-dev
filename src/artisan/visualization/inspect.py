@@ -59,9 +59,9 @@ def inspect_pipeline(
         msg = f"Steps table not found at {steps_path}"
         raise FileNotFoundError(msg)
 
-    # Load completed, skipped, and cancelled steps
+    # Load completed, skipped, cancelled, and failed steps
     scanner = pl.scan_delta(steps_path, storage_options=storage_options).filter(
-        pl.col("status").is_in(["completed", "skipped", "cancelled"])
+        pl.col("status").is_in(["completed", "skipped", "cancelled", "failed"])
     )
     if pipeline_run_id is not None:
         scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
@@ -145,6 +145,18 @@ def inspect_pipeline(
             )
             continue
 
+        if row["status"] == "failed":
+            rows.append(
+                {
+                    "step": step_num,
+                    "operation": row["step_name"],
+                    "status": "failed",
+                    "produced": "-",
+                    "duration": "-",
+                }
+            )
+            continue
+
         op_class = row["operation_class"] or ""
         is_filter = "Filter" in op_class or "filter" in (row["step_name"] or "")
 
@@ -172,6 +184,120 @@ def inspect_pipeline(
         )
 
     return pl.DataFrame(rows)
+
+
+_FAILURES_SCHEMA = {
+    "step": pl.Int32,
+    "operation": pl.String,
+    "execution_run_id": pl.String,
+    "code": pl.String,
+    "recovery_hint": pl.String,
+    "field": pl.String,
+    "suggestions": pl.List(pl.String),
+    "error": pl.String,
+    "log": pl.String,
+}
+
+
+def inspect_failures(
+    delta_root: str,
+    *,
+    pipeline_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> pl.DataFrame:
+    """Execution-level failure report — one row per failed execution.
+
+    Scans ``executions`` for ``success == False``, deserializes each
+    ``error_envelope`` into its structured fields (``code``,
+    ``recovery_hint``, ``field``, ``suggestions``), and surfaces them
+    alongside step/op identity, the error string, and a pointer to the
+    human failure log. Rows whose failure carried no ``ArtisanError``
+    (``error_envelope`` NULL) show the string and log only, with null
+    structured fields.
+
+    Complements ``inspect_pipeline`` (the step overview): this surfaces the
+    failed *executions* within any step, including partial failures inside
+    a step that completed.
+
+    Args:
+        delta_root: Path to Delta Lake root.
+        pipeline_run_id: Filter to one run (joined via ``steps`` on
+            ``step_run_id``). All runs if None. Failures with a null
+            ``step_run_id`` (composite-internal lifecycles) do not match a
+            run filter.
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
+
+    Returns:
+        DataFrame with columns: step, operation, execution_run_id, code,
+        recovery_hint, field, suggestions, error, log. ``log`` is the
+        relative fragment ``step_{step}_{operation}/{run_id}.log`` — prefix
+        it with ``<runs_dir>/logs/failures/``.
+
+    Raises:
+        FileNotFoundError: If the executions table does not exist.
+    """
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
+    executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
+    if not fs.exists(executions_path):
+        msg = f"Executions table not found at {executions_path}"
+        raise FileNotFoundError(msg)
+
+    failures = (
+        pl.scan_delta(executions_path, storage_options=storage_options)
+        .filter(~pl.col("success"))
+        .select(
+            "execution_run_id",
+            "step_run_id",
+            "origin_step_number",
+            "operation_name",
+            "error",
+            "error_envelope",
+        )
+        .collect()
+    )
+
+    if pipeline_run_id is not None:
+        failures = failures.filter(
+            pl.col("step_run_id").is_in(
+                _run_step_ids(delta_root, pipeline_run_id, storage_options, fs)
+            )
+        )
+
+    rows: list[dict[str, Any]] = []
+    for row in failures.iter_rows(named=True):
+        code = recovery_hint = field = None
+        suggestions: list[str] | None = None
+        env_json = row["error_envelope"]
+        if env_json is not None:
+            env = json.loads(env_json)
+            code = env.get("code")
+            recovery_hint = env.get("recovery_hint")
+            field = env.get("field")
+            suggestions = env.get("suggestions")
+        step = row["origin_step_number"]
+        operation = row["operation_name"]
+        rows.append(
+            {
+                "step": step,
+                "operation": operation,
+                "execution_run_id": row["execution_run_id"],
+                "code": code,
+                "recovery_hint": recovery_hint,
+                "field": field,
+                "suggestions": suggestions,
+                "error": row["error"],
+                "log": f"step_{step}_{operation}/{row['execution_run_id']}.log",
+            }
+        )
+
+    if not rows:
+        return pl.DataFrame(schema=_FAILURES_SCHEMA)
+    return pl.DataFrame(rows, schema=_FAILURES_SCHEMA)
 
 
 def inspect_step(
@@ -426,6 +552,29 @@ def inspect_data(
 # ======================================================================
 # Private helpers
 # ======================================================================
+
+
+def _run_step_ids(
+    delta_root: str,
+    pipeline_run_id: str,
+    storage_options: dict[str, str] | None,
+    fs: AbstractFileSystem,
+) -> list[str]:
+    """Return the ``step_run_id``s belonging to one pipeline run.
+
+    Reads ``steps`` and filters to ``pipeline_run_id``. Empty when the
+    steps table is absent — an unknown run matches nothing.
+    """
+    steps_path = uri_join(delta_root, TablePath.STEPS)
+    if not fs.exists(steps_path):
+        return []
+    return (
+        pl.scan_delta(steps_path, storage_options=storage_options)
+        .filter(pl.col("pipeline_run_id") == pipeline_run_id)
+        .select("step_run_id")
+        .collect()["step_run_id"]
+        .to_list()
+    )
 
 
 def _format_size(size: int) -> str:

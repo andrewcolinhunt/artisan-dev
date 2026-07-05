@@ -8,11 +8,14 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
+from fixtures.execution_records import executions_df
 
+from artisan.errors import ArtisanError, ErrorCode
 from artisan.utils.dicts import flatten_dict as _flatten_dict
 from artisan.visualization.inspect import (
     _build_details,
     inspect_data,
+    inspect_failures,
     inspect_metrics,
     inspect_pipeline,
     inspect_step,
@@ -104,6 +107,24 @@ def _write_data(delta_root: Path, rows: list[dict]) -> None:
 
 def _write_metrics(delta_root: Path, rows: list[dict]) -> None:
     _write_delta(delta_root, "artifacts/metrics", rows, METRICS_SCHEMA)
+
+
+def _write_executions(delta_root: Path, df: pl.DataFrame) -> None:
+    table_path = delta_root / "orchestration/executions"
+    table_path.parent.mkdir(parents=True, exist_ok=True)
+    df.write_delta(str(table_path))
+
+
+def _envelope_json(**overrides) -> str:
+    """Serialize an ArtisanError envelope dict the way the recorder does."""
+    kwargs = {
+        "code": ErrorCode.OP_EXECUTE_FAILED,
+        "message": "boom",
+        "error_type": "compute",
+        "recovery_hint": "REPORT_TO_USER",
+    }
+    kwargs.update(overrides)
+    return json.dumps(ArtisanError(**kwargs).to_dict())
 
 
 def _csv_bytes(header: str, data_rows: list[str]) -> bytes:
@@ -305,6 +326,186 @@ def test_inspect_pipeline_no_steps_raises(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
     with pytest.raises(FileNotFoundError):
         inspect_pipeline(delta_root)
+
+
+def test_inspect_pipeline_failed_steps(tmp_path: Path) -> None:
+    """A whole-step failure shows as status='failed', not hidden."""
+    delta_root = tmp_path / "delta"
+    failed_row = _step_row(step_number=1, step_name="transform")
+    failed_row["status"] = "failed"
+    _write_steps(
+        delta_root,
+        [
+            _step_row(step_number=0, step_name="data_generator"),
+            failed_row,
+        ],
+    )
+    _write_index(
+        delta_root,
+        [
+            {
+                "artifact_id": "a1",
+                "artifact_type": "data",
+                "origin_step_number": 0,
+                "metadata": "{}",
+            },
+        ],
+    )
+
+    result = inspect_pipeline(delta_root)
+    assert result.shape[0] == 2
+    assert result["status"][0] == "ok"
+    assert result["status"][1] == "failed"
+    assert result["produced"][1] == "-"
+    assert result["duration"][1] == "-"
+
+
+# ======================================================================
+# inspect_failures tests
+# ======================================================================
+
+
+def test_inspect_failures_structured(tmp_path: Path) -> None:
+    """A failed execution with an envelope surfaces its structured fields."""
+    delta_root = tmp_path / "delta"
+    _write_executions(
+        delta_root,
+        executions_df(
+            execution_run_id=["run_fail"],
+            origin_step_number=[1],
+            operation_name=["transform"],
+            success=[False],
+            error=["boom traceback"],
+            error_envelope=[
+                _envelope_json(field="params.scale", suggestions=["scale_factor"])
+            ],
+        ),
+    )
+
+    result = inspect_failures(delta_root)
+    assert result.shape[0] == 1
+    assert result.columns == [
+        "step",
+        "operation",
+        "execution_run_id",
+        "code",
+        "recovery_hint",
+        "field",
+        "suggestions",
+        "error",
+        "log",
+    ]
+    row = result.to_dicts()[0]
+    assert row["step"] == 1
+    assert row["operation"] == "transform"
+    assert row["code"] == "op_execute_failed"
+    assert row["recovery_hint"] == "REPORT_TO_USER"
+    assert row["field"] == "params.scale"
+    assert row["suggestions"] == ["scale_factor"]
+    assert row["error"] == "boom traceback"
+    assert row["log"] == "step_1_transform/run_fail.log"
+
+
+def test_inspect_failures_unstructured_degrades(tmp_path: Path) -> None:
+    """A failure with no envelope shows string + log, null structured fields."""
+    delta_root = tmp_path / "delta"
+    _write_executions(
+        delta_root,
+        executions_df(
+            execution_run_id=["run_plain"],
+            origin_step_number=[2],
+            operation_name=["transform"],
+            success=[False],
+            error=["ValueError: bad"],
+            error_envelope=[None],
+        ),
+    )
+
+    result = inspect_failures(delta_root)
+    row = result.to_dicts()[0]
+    assert row["code"] is None
+    assert row["recovery_hint"] is None
+    assert row["field"] is None
+    assert row["suggestions"] is None
+    assert row["error"] == "ValueError: bad"
+    assert row["log"] == "step_2_transform/run_plain.log"
+
+
+def test_inspect_failures_only_failed_rows(tmp_path: Path) -> None:
+    """Successful executions are excluded."""
+    delta_root = tmp_path / "delta"
+    _write_executions(
+        delta_root,
+        executions_df(
+            execution_run_id=["ok1", "fail1", "ok2"],
+            origin_step_number=[0, 1, 2],
+            operation_name=["a", "b", "c"],
+            success=[True, False, True],
+            error=[None, "boom", None],
+            error_envelope=[None, _envelope_json(), None],
+        ),
+    )
+
+    result = inspect_failures(delta_root)
+    assert result.shape[0] == 1
+    assert result["execution_run_id"][0] == "fail1"
+
+
+def test_inspect_failures_empty_when_no_failures(tmp_path: Path) -> None:
+    """All-success table yields a fixed-schema empty frame."""
+    delta_root = tmp_path / "delta"
+    _write_executions(
+        delta_root,
+        executions_df(
+            execution_run_id=["ok1"],
+            origin_step_number=[0],
+            operation_name=["a"],
+            success=[True],
+        ),
+    )
+
+    result = inspect_failures(delta_root)
+    assert result.is_empty()
+    assert result.columns == [
+        "step",
+        "operation",
+        "execution_run_id",
+        "code",
+        "recovery_hint",
+        "field",
+        "suggestions",
+        "error",
+        "log",
+    ]
+
+
+def test_inspect_failures_pipeline_run_id_filter(tmp_path: Path) -> None:
+    """pipeline_run_id filters via the steps join on step_run_id."""
+    delta_root = tmp_path / "delta"
+    # step 1 belongs to run1 (step_run_id 'sr1' per _step_row).
+    _write_steps(delta_root, [_step_row(step_number=1, step_name="transform")])
+    _write_executions(
+        delta_root,
+        executions_df(
+            execution_run_id=["in_run", "other_run"],
+            step_run_id=["sr1", "sr_other"],
+            origin_step_number=[1, 1],
+            operation_name=["transform", "transform"],
+            success=[False, False],
+            error=["a", "b"],
+            error_envelope=[_envelope_json(), _envelope_json()],
+        ),
+    )
+
+    result = inspect_failures(delta_root, pipeline_run_id="run1")
+    assert result.shape[0] == 1
+    assert result["execution_run_id"][0] == "in_run"
+
+
+def test_inspect_failures_no_table_raises(tmp_path: Path) -> None:
+    delta_root = tmp_path / "delta"
+    with pytest.raises(FileNotFoundError):
+        inspect_failures(delta_root)
 
 
 # ======================================================================
