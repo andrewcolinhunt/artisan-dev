@@ -16,8 +16,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from artisan.utils.traceback import format_error
-
 ErrorType = Literal["validation", "runtime", "io", "compute", "config"]
 RecoveryHint = Literal[
     "RETRY_LATER",
@@ -142,6 +140,11 @@ class ArtisanError(Exception):
         Returns:
             A dict shaped like the envelope, with an optional ``cause`` key.
         """
+        # Imported lazily: ``artisan.utils.traceback`` pulls the ``artisan.utils``
+        # package init, which re-exports ``external_tools`` (a module that imports
+        # this one) — a module-level import here would form a cycle.
+        from artisan.utils.traceback import format_error
+
         data = self.envelope.model_dump(exclude_none=False)
         if include_cause and self.__cause__ is not None:
             data["cause"] = {
