@@ -166,6 +166,10 @@ class ErrorCode:
     TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
+    # io — worker-side input resolution / output delivery (tool-endpoint wire)
+    INPUT_RESOLUTION_FAILED = "input_resolution_failed"
+    OUTPUT_DELIVERY_FAILED = "output_delivery_failed"
+
 
 class CommitError(Exception):
     """Raised when one or more table commits fail in ``commit_all_tables``.
