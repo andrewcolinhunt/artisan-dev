@@ -15,6 +15,7 @@ from pydantic import Field, PrivateAttr
 
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.execution.fs import resolve_fs
 
 
 class FileRefArtifact(Artifact):
@@ -91,8 +92,6 @@ class FileRefArtifact(Artifact):
                 msg = "Cannot read content: artifact not hydrated"
                 raise ValueError(msg)
             if fs is None:
-                from artisan.utils.fs_resolve import resolve_fs
-
                 fs, path = resolve_fs(self.path, storage=None)
             else:
                 path = self.path
