@@ -87,6 +87,8 @@ delta_root/
 │   ├── configs/            Execution configuration snapshots (built-in)
 │   ├── data/               Generic tabular data (built-in)
 │   ├── file_refs/          External file references (built-in)
+│   ├── appendables/        Appendable JSONL records (built-in)
+│   ├── large_files/        Large external files (built-in)
 │   └── [custom_type]/      Domain types registered at runtime
 ├── provenance/             Derivation and execution relationships
 │   ├── artifact_edges/     Source → target derivation edges
@@ -142,8 +144,9 @@ maps and step maps for provenance graph rendering.
 
 Provenance queries (ancestor/descendant lookups, edge loading, type maps, step
 maps) are handled by a dedicated `ProvenanceStore` class. `ArtifactStore`
-delegates all provenance-related methods to it, keeping artifact content
-queries and graph traversal cleanly separated. This split means provenance
+exposes the `ProvenanceStore` through a `provenance` accessor rather than
+mixing graph queries into artifact content queries, keeping the two cleanly
+separated. This split means provenance
 queries never need access to artifact content tables, and content queries never
 need to load the edge graph.
 
@@ -151,8 +154,9 @@ need to load the edge graph.
 
 ## Registry-driven extensibility
 
-The framework defines four built-in artifact types (metric, config, data,
-file_ref). But the table architecture is not hardcoded to these four. New
+The framework defines six built-in artifact types (metric, config, data,
+file_ref, appendable, large_file). But the table architecture is not hardcoded
+to these six. New
 artifact types are added by defining two classes: an artifact model (the data
 shape) and a type definition (the registry entry). Registration is automatic —
 Python's `__init_subclass__` mechanism detects the new type definition and
@@ -330,9 +334,11 @@ The deduplication check is a single Polars scan of the existing table's
 proportional to the number of existing artifacts, not the total data volume,
 because only the ID column is read.
 
-Deduplication applies to all tables with an `artifact_id` column (content
-tables, the artifact index, artifact edges) but not to execution edges, which
-are keyed by execution run ID instead.
+Deduplication applies to tables with an `artifact_id` column (content tables
+and the artifact index). It does not apply to the provenance edge tables:
+artifact edges are keyed by `source_artifact_id`/`target_artifact_id` and
+execution edges by execution run ID, so neither carries the `artifact_id`
+column the dedup check requires.
 
 ---
 
@@ -368,8 +374,8 @@ that filter on those columns.
 transaction log. The default retention period is 7 days, ensuring that
 concurrent readers are not affected by cleanup.
 
-Both operations can be scoped to a single partition (step number) or applied
-across the entire table.
+Compaction can be scoped to a single partition (step number) or applied across
+the entire table. Vacuum always operates on the whole table.
 
 ---
 

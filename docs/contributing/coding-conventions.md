@@ -39,7 +39,7 @@ schemas/execution/curator_result.py
   → ArtifactResult, PassthroughResult, CuratorResult
 
 operations/examples/data_generator.py
-  → DataGenerator (with nested Params, InputRole/OutputRole enums)
+  → DataGenerator (with nested Params and OutputRole enum)
 ```
 
 The rule: **if the classes only make sense together, keep them together.**
@@ -51,7 +51,7 @@ The rule: **if the classes only make sense together, keep them together.**
 | `base.py` | Base class for the package | `schemas/artifact/base.py` → `Artifact` |
 | `utils.py` | Helper functions for the package | `execution/utils.py` |
 | `shared.py` | Code shared between variant operations | (variant operations sharing logic) |
-| `constants.py` | Package-level constants | `orchestration/engine/constants.py` |
+| `constants.py` | Package-level constants | (module-level constant definitions) |
 | `exceptions.py` | Package-level exception classes | `execution/exceptions.py` |
 | `enums.py` | Enum definitions (one file for all enums) | `schemas/enums.py` |
 | `common.py` | Shared types within a sub-package | `schemas/artifact/common.py` |
@@ -67,11 +67,11 @@ This is the most important structural decision.
 - The package has **~6 or fewer files**
 
 ```
-operations/metrics/
+schemas/specs/
 ├── __init__.py
-├── component_interface.py
-├── sample_interface.py
-└── summary_metrics.py
+├── input_spec.py
+├── output_spec.py
+└── input_models.py
 ```
 
 **Use nested** when:
@@ -90,7 +90,7 @@ execution/
 ├── inputs/
 ├── lineage/
 ├── models/
-└── staging/
+└── recording/
 ```
 
 **The heuristic:** If you can describe the package as "a collection of
@@ -191,12 +191,12 @@ sub-package owns a distinct phase of the worker-side execution flow:
 
 | Sub-package | Responsibility | Key modules |
 |-------------|---------------|-------------|
-| `executors/` | Orchestrate creator, curator, and composite flows end-to-end | `creator.py`, `curator.py`, `composite.py` |
+| `executors/` | Orchestrate creator and curator flows end-to-end | `creator.py`, `curator.py`, `creator_phases.py` |
 | `context/` | Build execution context, run identity, sandbox environment | `builder.py`, `sandbox.py` |
 | `inputs/` | Instantiate, materialize, and group artifacts for execution | `instantiation.py`, `materialization.py`, `grouping.py`, `lineage_matching.py` |
 | `lineage/` | Capture lineage, build provenance edges, validate completeness | `builder.py`, `capture.py`, `enrich.py`, `validation.py` |
-| `models/` | Transport containers carrying work from orchestrator to executor | `execution_unit.py`, `execution_composite.py`, `artifact_source.py` |
-| `staging/` | Stage artifacts and metadata, record outcomes | `parquet_writer.py`, `recorder.py` |
+| `models/` | Transport containers carrying work from orchestrator to executor | `execution_unit.py`, `artifact_source.py` |
+| `recording/` | Stage artifacts and metadata, record outcomes | `parquet_writer.py`, `recorder.py` |
 
 The package also has root-level cross-cutting files: `exceptions.py` and
 `utils.py`.
@@ -227,7 +227,7 @@ re-exports (`__init__.py`). Each package's `__all__` defines its public API.
 # Cross-package imports — use re-exports
 from artisan.schemas import DataArtifact, ArtifactResult, InputSpec, OutputSpec
 from artisan.operations.curator import Filter
-from artisan.execution.executors import run_creator_flow
+from artisan.operations.examples import DataGenerator, MetricCalculator
 
 # Avoid reaching past the boundary for cross-package imports
 from artisan.schemas.artifact.data import DataArtifact          # internal path
@@ -277,7 +277,7 @@ def compute_artifact_id(content: bytes, artifact_type: str) -> str:
   `InputSpec` / `OutputSpec`
 - The `name` class variable identifies the operation for registry lookup
 - Creator operations implement the three-phase lifecycle:
-  `preprocess` → `execute` → `postprocess`
+  `preprocess` → `execute_command`/`execute_function` → `postprocess`
 - Curator operations implement `execute_curator`
 - Creator operations with inputs must implement `preprocess`
 - Creator operations must set `infer_lineage_from` on every `OutputSpec`

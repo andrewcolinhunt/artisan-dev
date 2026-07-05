@@ -18,9 +18,8 @@ full, for a hypothetical `DataRecordArtifact` that stores CSV sample data.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any, ClassVar, Self
+import os
+from typing import Any, ClassVar
 
 import polars as pl
 from pydantic import Field
@@ -53,14 +52,15 @@ class DataRecordArtifact(Artifact):
     size_bytes: int | None = Field(default=None, ge=0)
     record_count: int | None = Field(default=None, ge=0)
 
-    def _materialize_content(self, directory: Path) -> Path:
+    def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         if self.content is None:
             raise ValueError("Cannot materialize: artifact not hydrated")
         if self.original_name is None:
             raise ValueError("Cannot materialize: original_name not set")
         filename = f"{self.original_name}{self.extension or '.csv'}"
-        path = directory / filename
-        path.write_bytes(self.content)
+        path = os.path.join(directory, filename)
+        with open(path, "wb") as f:
+            f.write(self.content)
         self.materialized_path = path
         return path
 
@@ -82,34 +82,6 @@ class DataRecordArtifact(Artifact):
             size_bytes=len(content),
             record_count=record_count,
             metadata=metadata or {},
-        )
-
-    def to_row(self) -> dict[str, Any]:
-        return {
-            "artifact_id": self.artifact_id,
-            "origin_step_number": self.origin_step_number,
-            "content": self.content,
-            "original_name": self.original_name,
-            "extension": self.extension,
-            "size_bytes": self.size_bytes,
-            "record_count": self.record_count,
-            "metadata": json.dumps(self.metadata or {}),
-            "external_path": self.external_path,
-        }
-
-    @classmethod
-    def from_row(cls, row: dict[str, Any]) -> Self:
-        metadata_raw = row.get("metadata")
-        return cls(
-            artifact_id=row["artifact_id"],
-            origin_step_number=row.get("origin_step_number"),
-            content=row.get("content"),
-            original_name=row.get("original_name"),
-            extension=row.get("extension"),
-            size_bytes=row.get("size_bytes"),
-            record_count=row.get("record_count"),
-            metadata=json.loads(metadata_raw) if metadata_raw else {},
-            external_path=row.get("external_path"),
         )
 
 
@@ -134,15 +106,13 @@ these members:
 | `POLARS_SCHEMA` | `ClassVar` | Column names and Polars types for the Delta Lake table |
 | `artifact_type` | field | String discriminator with `frozen=True` |
 | `draft()` | classmethod | Create a mutable artifact with `artifact_id=None` |
-| `_materialize_content()` | method | Write content to disk, return the `Path` |
-| `to_row()` | method | Serialize to a dict matching `POLARS_SCHEMA` |
-| `from_row()` | classmethod | Deserialize from a dict back to the model |
+| `_materialize_content()` | method | Write content to disk, return the path string |
 
-The base `Artifact` class provides `finalize()`, `materialize_to()`, and
-several fields your model inherits automatically. You do not need to redeclare
-these inherited fields on your subclass, but you must include them in
-`POLARS_SCHEMA` and `to_row()`/`from_row()` because they are stored as
-Delta Lake columns.
+The base `Artifact` class provides `finalize()`, `materialize_to()`,
+`to_row()`, `from_row()`, and several fields your model inherits
+automatically. You do not need to redeclare these inherited fields on your
+subclass, but you must include them in `POLARS_SCHEMA` because they are stored
+as Delta Lake columns.
 
 ### Inherited fields from the base class
 
@@ -155,7 +125,7 @@ The `Artifact` base class defines these fields that every artifact type shares:
 | `origin_step_number` | `int \| None` | Pipeline step that produced this artifact. |
 | `metadata` | `dict[str, Any]` | Generic JSON-serializable metadata dict. |
 | `external_path` | `str \| None` | Path to external content on disk. |
-| `materialized_path` | `Path \| None` | Runtime-only path (excluded from serialization). |
+| `materialized_path` | `str \| None` | Runtime-only path (excluded from serialization). |
 
 The base class also sets `model_config = ConfigDict(extra="forbid")`, which
 means Pydantic rejects any fields not declared on your model. This catches
@@ -237,33 +207,35 @@ the box. For metadata-only types without a `content` field, override
 `_finalize_content()` instead -- see
 [Metadata-only types](#metadata-only-types-no-embedded-content).
 
-### Implement serialization
+### Serialization is automatic
 
-`to_row()` returns a flat dict suitable for Parquet. `from_row()` reverses it.
-The key rule: **JSON-encode any complex fields** (dicts, lists) as strings in
-`to_row()` and decode them in `from_row()`.
+You do not implement `to_row()` / `from_row()`. The base class serializes
+every `POLARS_SCHEMA` column by reading the same-named field via `getattr`,
+and `from_row()` reverses it. Because all of `DataRecordArtifact`'s columns
+are plain fields with matching names -- and `metadata` is JSON-encoded by the
+base encoder -- the round-trip works with no serialization code at all.
+
+Override `_row_encoders()` / `_row_decoders()` only for columns whose stored
+form differs from the raw field value, such as a `list` field stored as a JSON
+string. Call `super()` so the base `metadata` handling stays in place.
+`DataArtifact` does this for its `columns` field:
 
 ```python
-def to_row(self) -> dict[str, Any]:
+def _row_encoders(self) -> dict[str, Callable[[], Any]]:
     return {
-        ...
-        "metadata": json.dumps(self.metadata or {}),  # dict -> str
-        "external_path": self.external_path,           # include inherited fields
+        **super()._row_encoders(),
+        "columns": lambda: json.dumps(self.columns)
+        if self.columns is not None
+        else None,
     }
 
 @classmethod
-def from_row(cls, row: dict[str, Any]) -> Self:
-    metadata_raw = row.get("metadata")
-    return cls(
-        ...
-        metadata=json.loads(metadata_raw) if metadata_raw else {},  # str -> dict
-        external_path=row.get("external_path"),
-    )
+def _row_decoders(cls) -> dict[str, Callable[[Any], Any]]:
+    return {
+        **super()._row_decoders(),
+        "columns": lambda raw: json.loads(raw) if raw else None,
+    }
 ```
-
-Include the inherited fields (`artifact_id`, `origin_step_number`, `metadata`,
-`external_path`) in both methods. The keys in the dict returned by `to_row()`
-must match `POLARS_SCHEMA` exactly.
 
 ### Implement _materialize_content
 
@@ -272,23 +244,28 @@ subclass must provide an implementation. Write the artifact content to a file
 in the given directory, set `self.materialized_path`, and return the path:
 
 ```python
-def _materialize_content(self, directory: Path) -> Path:
+def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
     if self.content is None:
         raise ValueError("Cannot materialize: artifact not hydrated")
     if self.original_name is None:
         raise ValueError("Cannot materialize: original_name not set")
     filename = f"{self.original_name}{self.extension or '.csv'}"
-    path = directory / filename
-    path.write_bytes(self.content)
+    path = os.path.join(directory, filename)
+    with open(path, "wb") as f:
+        f.write(self.content)
     self.materialized_path = path
     return path
 ```
+
+The `fs` parameter is an optional fsspec filesystem for reading source content
+from cloud storage. Artifacts that hold their content in memory accept it for
+signature parity and ignore it, as this example does.
 
 The base class `materialize_to()` rejects format conversion by default and
 delegates to your `_materialize_content()`. For most artifact types,
 implementing `_materialize_content()` is sufficient. Override
 `materialize_to()` only if you need custom logic beyond writing content to
-disk -- for example, `BatchStrategyArtifact` overrides it to resolve
+disk -- for example, `ExecutionConfigArtifact` overrides it to resolve
 `{"$artifact": id}` reference patterns into filesystem paths before writing.
 
 ---
@@ -349,6 +326,8 @@ Cover these scenarios:
 
 ```python
 # tests/artisan/schemas/test_data_record.py
+import os
+
 import pytest
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
@@ -394,10 +373,11 @@ def test_materialize_writes_file(tmp_path):
     artifact = DataRecordArtifact.draft(
         content=SAMPLE_CSV, original_name="test.csv", step_number=1,
     ).finalize()
-    path = artifact.materialize_to(tmp_path)
-    assert path.exists()
-    assert path.name == "test.csv"
-    assert path.read_bytes() == SAMPLE_CSV
+    path = artifact.materialize_to(str(tmp_path))
+    assert os.path.exists(path)
+    assert os.path.basename(path) == "test.csv"
+    with open(path, "rb") as f:
+        assert f.read() == SAMPLE_CSV
 
 
 def test_round_trip_serialization():
@@ -444,7 +424,7 @@ metadata={"record_count": 42}
 ### Using JsonContentMixin for JSON-based artifacts
 
 If your artifact stores JSON-encoded content (like `MetricArtifact` and
-`BatchStrategyArtifact` do), use the `JsonContentMixin` from
+`ExecutionConfigArtifact` do), use the `JsonContentMixin` from
 `artisan.schemas.artifact.common`. It provides a cached `values` property that
 parses and returns the JSON content as a dict:
 
@@ -470,6 +450,7 @@ repeated access is free. It raises `ValueError` if the artifact is not hydrated.
 Note the MRO: list `JsonContentMixin` before `Artifact` in the class
 definition so the mixin's methods are resolved first.
 
+(metadata-only-types-no-embedded-content)=
 ### Metadata-only types (no embedded content)
 
 Some artifact types reference external data rather than storing content inline.

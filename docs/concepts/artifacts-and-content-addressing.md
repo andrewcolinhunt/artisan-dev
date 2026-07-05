@@ -92,7 +92,7 @@ accidental mutation detectable.
 
 ## Artifact types
 
-The framework defines four built-in artifact types. Each represents a
+The framework defines six built-in artifact types. Each represents a
 different category of pipeline data, with storage characteristics matched to
 its purpose.
 
@@ -102,6 +102,8 @@ its purpose.
 | **Config** | Execution parameters and tool configurations | JSON-encoded bytes | Can reference other artifacts via `$artifact` patterns |
 | **Data** | Generic tabular data (CSV) | Raw CSV bytes | Captures schema metadata (columns, row count) at creation |
 | **File ref** | Pointers to external files | Metadata only (no embedded content) | Lightweight reference without copying large files into storage |
+| **Large file** | External one-to-one files (model weights, matrices, simulation outputs) | Metadata only (bytes stay at `external_path`) | Handles files too large to embed in a Parquet column |
+| **Appendable** | Individual records in a shared JSONL file | Metadata only (each record lives in the JSONL file) | Many records share one file; each is addressed by `record_id` |
 
 Each type maps to its own Delta Lake table (e.g., `artifacts/metrics`,
 `artifacts/configs`, `artifacts/data`, `artifacts/file_refs`). This means you
@@ -124,10 +126,12 @@ All artifact types inherit a common set of fields from the base artifact model:
 - **metadata** -- a JSON-serializable dict for extensibility
 - **external_path** -- an optional path to external content on disk
 
-These shared fields appear in every content table. The artifact index stores
-a subset (`artifact_id`, `artifact_type`, `origin_step_number`, `metadata`).
-Type-specific fields (like `content`, `columns`, `row_count`, `content_hash`)
-are added by each concrete type.
+Content tables store `artifact_id`, `origin_step_number`, `metadata`, and
+`external_path`, plus the type-specific fields (like `content`, `columns`,
+`row_count`, `content_hash`) added by each concrete type. `artifact_type` is a
+model discriminator rather than a content-table column -- it is implied by which
+table a row lives in, and recorded explicitly in the artifact index alongside
+`artifact_id`, `origin_step_number`, and `metadata`.
 
 ### Config artifacts and cross-references
 
@@ -153,6 +157,11 @@ The rationale: file refs are *pointers*, and their identity should include
 where they point. If you ingest the same file from two different locations, those
 are two distinct provenance events, even though the underlying bytes are
 identical.
+
+Large file and appendable artifacts hash the same way. Both keep their bytes at
+`external_path` and derive their ID from a JSON record of the content hash and
+path (plus `record_id` for appendable records), so the same content stored at a
+different location is a distinct artifact.
 
 ---
 
@@ -208,7 +217,8 @@ Content addressing makes caching deterministic. The framework computes cache
 keys at two levels:
 
 **Execution-level cache keys** are computed from the operation name, input
-artifact IDs (sorted and deduplicated across all roles), merged parameters,
+artifact IDs (sorted within each role, with the roles themselves sorted;
+multiplicity within a role and role assignment are preserved), merged parameters,
 and any config overrides. Same data + same computation = same cache key, so
 identical work is never repeated regardless of when or where it runs.
 

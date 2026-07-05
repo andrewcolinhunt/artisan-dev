@@ -41,14 +41,16 @@ deterministic caching. Artifacts follow a draft/finalize pattern: drafts are
 mutable while being assembled, and once finalized the content hash makes any
 tampering detectable.
 
-Artisan provides four built-in artifact types:
+Artisan provides six built-in artifact types:
 
 | Type | Class | Purpose |
 |------|-------|---------|
 | `DATA` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
 | `METRIC` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
-| `CONFIG` | `BatchStrategyArtifact` | Execution configuration snapshots (JSON) |
+| `CONFIG` | `ExecutionConfigArtifact` | Execution configuration snapshots (JSON) |
 | `FILE_REF` | `FileRefArtifact` | References to files at their original paths on disk |
+| `LARGE_FILE` | `LargeFileArtifact` | References to large one-to-one files (bytes stay at their external path) |
+| `APPENDABLE` | `AppendableArtifact` | Individual records stored in a shared JSONL file |
 
 Custom artifact types can be registered by domain layers through the
 `ArtifactTypeDef` registry.

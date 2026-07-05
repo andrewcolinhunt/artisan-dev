@@ -10,22 +10,12 @@ monitoring.
 
 ## Prefect's role in Artisan
 
-Artisan uses Prefect as a dispatch layer for parallel task execution — not as a
-workflow engine. Artisan owns pipeline definition, step sequencing, caching, and
-provenance. Prefect dispatches work to local processes or SLURM nodes and
-provides a monitoring UI.
-
-The Prefect server coordinates workers and tracks run state. It is backed by
-PostgreSQL to handle concurrent connections from parallel SLURM jobs. Pixi
-installs PostgreSQL automatically — no system packages needed.
-
-:::{important}
-Artisan stores all durable state (artifacts, provenance, cache) independently
-of Prefect. The Prefect server holds only transient monitoring data — run
-status, logs, and timing. You can safely treat the server as ephemeral: start
-one at the beginning of a session and let it go when you're done. Nothing of
-lasting value is lost.
-:::
+Artisan uses Prefect only as a dispatch layer for parallel task execution — it
+does not own pipeline state. Durable data (artifacts, provenance, cache) lives
+in Artisan, so the Prefect server is safe to treat as ephemeral: start one per
+session and stop it when you're done. See
+[Execution Flow](../concepts/execution-flow.md) for how orchestration and
+dispatch fit together.
 
 ---
 
@@ -114,7 +104,7 @@ automatically. No extra configuration is needed:
 
 ```python
 from artisan.operations.examples import DataGenerator
-from artisan.orchestration import Backend
+from artisan.orchestration import Runner
 
 pipeline.run(
     operation=DataGenerator,
@@ -127,7 +117,7 @@ pipeline.run(
 
 SLURM compute nodes must be able to reach the Prefect server host and port
 over the cluster network. Since the self-hosted server runs on the same
-cluster, this works out of the box.
+cluster, no extra network configuration is required.
 
 ---
 
@@ -137,6 +127,7 @@ cluster, this works out of the box.
 |---------|-------|-----|
 | `PrefectServerNotFound` | No server argument, env var, discovery file, or profile | Run `pixi run prefect-start` |
 | `PrefectServerUnreachable` | Server URL found but health check fails | Check the server is running (`pixi run prefect-start`) |
+| `PrefectVersionMismatch` | Client and server Prefect versions diverge | Restart the server from this environment (`pixi run prefect-stop && pixi run prefect-start`) |
 | SLURM workers can't connect | Compute nodes can't reach the server host | Ensure the server runs on a node reachable from compute nodes |
 | Cloud ignored when local server running | Discovery file beats profile in priority | Set `PREFECT_API_URL` or pass `prefect_server=` to force Cloud |
 
@@ -174,8 +165,7 @@ use cases:
 - **Users:** Limited to 2 users per workspace on the free plan.
 
 Cloud can be useful for local development on a laptop or workstation with
-internet access. If you'd like to experiment with it, the setup is
-straightforward.
+internet access. If you'd like to experiment with it, follow the steps below.
 :::
 
 ### Log in with the Prefect CLI

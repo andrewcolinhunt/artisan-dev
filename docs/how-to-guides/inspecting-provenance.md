@@ -49,7 +49,7 @@ Returns a Polars DataFrame with one row per step:
 |--------|-------------|
 | `step` | Step number |
 | `operation` | Step name |
-| `status` | `ok`, `skipped` |
+| `status` | `ok`, `skipped`, `cancelled`, `failed` |
 | `produced` | Artifact summary (e.g., `"5 data, 5 metric"` or `"3 passed"` for filters) |
 | `duration` | Wall-clock time (e.g., `"2.3s"`) |
 
@@ -325,11 +325,15 @@ timings.plot_execution_stats()  # Stacked bar chart of mean execution timings
 ### Quick triage after a failed run
 
 ```python
-# What happened?
-df = inspect_pipeline(delta_root)
+from artisan.visualization import inspect_pipeline, inspect_failures, inspect_step
 
-# Which step failed? Look for low artifact counts or short durations.
-# Drill into the suspect step:
+# What happened? The status column flags each step's outcome.
+df = inspect_pipeline(delta_root)  # look for status == "failed"
+
+# Get the failure code, recovery hint, error, and log for failed steps:
+failures = inspect_failures(delta_root)
+
+# Drill into a failed step's artifacts:
 inspect_step(delta_root, step_number=2)
 ```
 
@@ -342,7 +346,7 @@ from artisan.storage import ArtifactStore
 
 store = ArtifactStore(delta_root)
 sources = pl.DataFrame({"artifact_id": ["source_abc..."]})
-step_range = store.provenance.get_step_range(pl.Series(["source_abc..."]))
+step_range = store.provenance.get_step_range(["source_abc..."])
 edges = store.provenance.load_edges_df(*step_range, include_target_type=True)
 
 derived = walk_forward(sources, edges, target_type="metric")

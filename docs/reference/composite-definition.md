@@ -197,7 +197,7 @@ Reference a declared input of this composite.
 
 **Raises:** `ValueError` if role is not a declared input.
 
-#### `run(operation, *, inputs=None, params=None, ...) -> CompositeStepHandle`
+#### `run(operation, inputs=None, params=None, ...) -> CompositeStepHandle`
 
 Submit an operation or nested composite as a pipeline step.
 
@@ -283,7 +283,7 @@ internal operations.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `source` | `ArtifactSource \| None` | Internal in-memory artifact source; unset for ordinary step wiring |
+| `source` | `ArtifactSource \| None` | Currently unused (always `None`); retained for the frozen dataclass shape |
 | `output_reference` | `OutputReference \| None` | Pipeline reference to the producing step's output |
 | `role` | `str` | Output role name this ref points to |
 

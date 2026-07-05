@@ -56,7 +56,7 @@ boundary. An exception never crosses two boundaries.
   ├─────────────────────────────────────────────────────────────────┤
   │  Layer 2: Dispatch                                              │
   │  Catches: anything that escaped Layer 1, future failures        │
-  │  Returns: {"success": False, "error": "...", "item_count": N}   │
+  │  Returns: UnitResult(success=False, error="...", item_count=N)  │
   ├─────────────────────────────────────────────────────────────────┤
   │  Layer 3: Step executor                                         │
   │  Catches: dispatch crashes, commit failures                     │
@@ -89,13 +89,13 @@ raises an exception to the moment you see the result:
 1. operation.execute_function() raises ValueError("invalid input format")
        │
 2. Worker catches the exception
-   │   Formats error with full traceback via format_error()
+   │   Formats the error with its full traceback
    │   Stages failure record to Parquet (success=False)
    │   Writes human-readable failure log to disk
    │   Returns StagingResult(success=False, error="ValueError: ...")
        │
-3. Dispatch converts StagingResult to dict
-   │   {"success": False, "error": "ValueError: ...", "item_count": 1}
+3. Dispatch converts StagingResult to a UnitResult
+   │   UnitResult(success=False, error="ValueError: ...", item_count=1)
        │
 4. Step executor aggregates all worker results
    │   succeeded=9, failed=1
@@ -115,48 +115,33 @@ original type name and message. No layer replaces it with a generic string.
 
 ## The structured result types
 
-Three data types carry error information through the system, one per scope:
+Three data types carry error information through the system, one per scope.
+Each is a return value, never an exception. For the exact fields and types,
+see the [Glossary](../reference/glossary.md).
 
 ### StagingResult (single execution)
 
-The return type from both creator and curator flows. Never raised as an
-exception -- exceptions are caught and converted into this type at the worker
-boundary.
+The outcome of one creator or curator execution. Produced at the worker
+boundary, where exceptions are caught and converted into this type rather than
+raised. On failure it carries the error message; on success it carries the
+staging path -- where the run's Parquet files live -- and the IDs of the
+artifacts produced.
 
-```
-StagingResult
-├── success: bool
-├── error: str | None          # "ValueError: invalid input format"
-├── staging_path: Path | None  # where staged Parquet files live
-├── execution_run_id: str | None
-└── artifact_ids: list[str]    # empty on failure
-```
+### UnitResult (dispatch boundary)
 
-### Result dict (dispatch boundary)
-
-A plain dict that the dispatch layer produces from `StagingResult`. The step
-executor feeds these dicts to `aggregate_results()` (which reads `success`
-and `item_count`) and `extract_execution_run_ids()` (which collects the run
-IDs for commit).
-
-```
-{"success": bool, "error": str | None, "item_count": int, "execution_run_ids": [...]}
-```
+A frozen record the dispatch layer produces from each `StagingResult`. It
+captures whether the unit succeeded, the error message when it did not, how
+many items it processed, and the execution run IDs to commit. On SLURM backends
+it also carries the captured worker log, so stderr from a killed job survives
+back to the orchestrator. The step executor reads these records to tally
+successes and failures and to collect run IDs for the commit.
 
 ### StepResult (step aggregate)
 
-The final, immutable record for a step. Counts successes and failures across
-all workers.
-
-```
-StepResult
-├── success: bool
-├── succeeded_count: int
-├── failed_count: int
-├── total_count: int
-├── duration_seconds: float | None
-└── metadata: dict             # may contain "dispatch_error" or "commit_error"
-```
+The final, immutable record for a step. It counts successes and failures across
+all workers and reports the step's overall status and duration. Infrastructure
+problems -- a dispatch or commit that itself crashed -- are recorded in its
+metadata rather than as item failures.
 
 ---
 
@@ -357,6 +342,8 @@ to make that decision.
   Cooperative cancellation, signal handling, and cancelled step metadata
 - [Resume and Caching tutorial](../tutorials/03-caching/01-resume-and-caching.ipynb) --
   How caching interacts with failures during re-runs
+- [Glossary](../reference/glossary.md) -- Field-level definitions of StepResult,
+  ExecutionRecord, and other result types
 - [Execution Flow](execution-flow.md) -- Dispatch, execute, commit lifecycle
   where error boundaries live
 - [Design Principles](design-principles.md) -- Foundational design decisions

@@ -14,6 +14,8 @@ then explore topics relevant to your work.
   compositions of operations that expand into real pipeline steps
 - [Artifacts and Content Addressing](artifacts-and-content-addressing.md) --
   Immutable artifacts and hash-based identity
+- [Pipeline Configuration](pipeline-configuration.md) -- Orchestrator-level
+  settings captured by PipelineConfig
 
 ## Data and Tracking
 
