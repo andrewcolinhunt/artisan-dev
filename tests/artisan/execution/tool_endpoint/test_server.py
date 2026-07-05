@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from botocore.exceptions import EndpointConnectionError, NoCredentialsError
 
 from artisan.execution.tool_endpoint import server as server_mod
 from artisan.execution.tool_endpoint import transport as transport_mod
@@ -27,8 +28,16 @@ from artisan.execution.tool_endpoint.server import (
     run_tool_request,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import WaitTool
+from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.operation_config.compute import (
+    ComputeProvider,
+    ModalComputeConfig,
+)
 from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.specs.input_models import PostprocessInput, PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -116,6 +125,71 @@ class NoopTool(OperationDefinition):
         return [*self.tool.parts(), "-c", "true"]
 
 
+class _CloudInputTool(OperationDefinition):
+    """Endpoint-routed command op with a cloud ``large_file`` input.
+
+    Names its output from the input file stem (``<stem>_waited.csv``) and
+    declares ``infer_lineage_from`` so lineage capture ties the output back
+    to the input — the shape the endpoint-routing skip must preserve.
+    """
+
+    class InputRole(StrEnum):
+        source = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "cloud_input_tool_test"
+    description: ClassVar[str] = "Echo a cloud input into <stem>_waited.csv"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.source: InputSpec(artifact_type="large_file", required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type="data",
+            infer_lineage_from={"inputs": ["source"]},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+    compute_provider: ComputeProvider = ComputeProvider(
+        active="modal", modal=ModalComputeConfig()
+    )
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        return {
+            "source": PerArtifact(
+                [a.materialized_path for a in inputs.input_artifacts["source"]]
+            )
+        }
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        src = inputs["source"]
+        return [
+            *self.tool.parts(),
+            "-c",
+            (
+                f'src="{src}"; stem="$(basename "$src")"; stem="${{stem%.*}}"; '
+                f'printf "ok\\n" > "${{stem}}_waited.csv"'
+            ),
+        ]
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        drafts: list[Any] = []
+        for file_path in inputs.file_outputs:
+            if file_path.endswith(".csv"):
+                with open(file_path, "rb") as f:
+                    content = f.read()
+                drafts.append(
+                    DataArtifact.draft(
+                        content=content,
+                        original_name=os.path.basename(file_path),
+                        step_number=inputs.step_number,
+                    )
+                )
+        return ArtifactResult(success=True, artifacts={"output": drafts})
+
+
 def _tar_names(payload: bytes) -> list[str]:
     with tarfile.open(fileobj=BytesIO(payload), mode="r") as tar:
         return sorted(tar.getnames())
@@ -140,6 +214,20 @@ def _capture_tempdirs(monkeypatch) -> list[str]:
 
     monkeypatch.setattr(tempfile, "mkdtemp", spy)
     return created
+
+
+def _set_ambient_creds(storage, monkeypatch) -> None:
+    """Put the MinIO creds + endpoint on the env, exactly as the Modal Secret
+    would hand them to the worker, then clear the s3fs instance cache so a
+    filesystem built before the env was patched is not reused."""
+    import s3fs as s3fs_mod
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", storage.options["key"])
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", storage.options["secret"])
+    monkeypatch.setenv(
+        "AWS_ENDPOINT_URL", storage.options["client_kwargs"]["endpoint_url"]
+    )
+    s3fs_mod.S3FileSystem.clear_instance_cache()
 
 
 class TestRunToolRequest:
@@ -229,6 +317,37 @@ class TestRunToolRequest:
                 inputs=[InputRef(name="dataset", uri="s3://bucket/missing.pdb")]
             ),
         )
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.recovery_hint == "CHECK_INPUT"
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            NoCredentialsError(),
+            EndpointConnectionError(endpoint_url="https://typo.example"),
+        ],
+        ids=["no_credentials", "bad_endpoint"],
+    )
+    def test_botocore_root_fetch_failure_returns_envelope(self, monkeypatch, exc):
+        # The load-bearing guard-tuple regression: the two R2-shaped
+        # misconfigurations raise botocore roots s3fs returns untranslated
+        # (NoCredentialsError, EndpointConnectionError — both BotoCoreError,
+        # neither an OSError). They must land on INPUT_RESOLUTION_FAILED,
+        # NOT escape as a worker crash → OP_EXECUTE_FAILED. This test fails
+        # under the draft's (ValueError, OSError, RuntimeError) tuple.
+        def boom(self, refs, dest, fs=None):
+            raise exc
+
+        monkeypatch.setattr(
+            server_mod.InlineTransport, "unpack_inputs", boom, raising=True
+        )
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(inputs=[InputRef(name="dataset", uri="s3://bucket/x.csv")]),
+        )
+        assert result.output_tar is None
         error = result.manifest.error
         assert error is not None
         assert error.code == "input_resolution_failed"
@@ -405,6 +524,157 @@ class TestRunToolRequestStoredOutputs:
         assert result.manifest.error is not None
         assert created  # the job dir was allocated
         assert all(not os.path.exists(p) for p in created)
+
+
+class TestRunToolRequestUriInputMinIO:
+    """Worker resolves a cloud URI input against MinIO — the URI path the
+    endpoint-routing skip newly feeds (s3 marker via ``s3_fs``)."""
+
+    def test_uri_input_resolves_and_runs_below_inline_cap(self, s3_fs, monkeypatch):
+        fs, storage, uri_prefix = s3_fs
+        bucket = uri_prefix.removeprefix("s3://")
+        # a 50 KB input; the tiny WaitTool output tars to one 10 KB record
+        fs.pipe_file(f"{bucket}/inputs/dataset_00001.csv", b"x" * 50_000)
+        _set_ambient_creds(storage, monkeypatch)
+        # cap between the output tar (~10 KB) and the input (50 KB): the
+        # worker never checks the inline cap on the URI input path
+        # (pack_inputs is client-side) — a 50 KB input past a 20 KB cap
+        # still resolves and runs
+        monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 20_000)
+
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                params={"seconds": 1},
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        filename="dataset_00001.csv",
+                        uri=f"{uri_prefix}/inputs/dataset_00001.csv",
+                    )
+                ],
+            ),
+        )
+
+        assert result.manifest.error is None
+        assert result.manifest.output_names == ["dataset_00001_waited.csv"]
+        assert result.output_tar is not None
+
+
+class _WorkerLoopbackRouter:
+    """Drive the endpoint hop in-process: the client-side transport of
+    ``call_endpoint`` (``pack_inputs``) → the worker (``run_tool_request``,
+    which fetches ``s3://`` refs) → ``unpack_outputs`` into ``execute_dir``.
+
+    The HTTP/Modal hop is the only thing elided — the byte route (cloud
+    input by reference, tar output) is the real production code.
+    """
+
+    def __init__(self, op_cls: type[OperationDefinition]) -> None:
+        self._op_cls = op_cls
+
+    def route_execute(self, operation, execute_inputs, sandbox_root):
+        from artisan.execution.tool_endpoint.client import _file_inputs
+        from artisan.execution.tool_endpoint.transport import InlineTransport
+
+        params = json.loads(operation.params_json())
+        results: list[Any] = []
+        for execute_input in execute_inputs:
+            files = _file_inputs(operation.name, execute_input.inputs)
+            refs = InlineTransport().pack_inputs(files)
+            result = run_tool_request(
+                self._op_cls, ToolRequest(params=params, inputs=refs)
+            )
+            if result.manifest.error is not None:
+                results.append(RuntimeError(result.manifest.error.message))
+                continue
+            InlineTransport().unpack_outputs(
+                result.output_tar, execute_input.execute_dir
+            )
+            results.append(None)
+        return results
+
+
+class TestEndpointRoutedLineageMinIO:
+    """Lineage ship gate: a real cloud ``LargeFileArtifact`` crosses by
+    reference into an endpoint op; the input→output edge and the output's
+    human-readable name must survive the natural-basename route (s3 marker
+    via ``s3_fs``)."""
+
+    def test_edge_and_name_preserved_under_skip(self, s3_fs, tmp_path, monkeypatch):
+        import polars as pl
+
+        from artisan.execution.executors.creator import run_creator_lifecycle
+        from artisan.execution.models.execution_unit import ExecutionUnit
+        from artisan.schemas.artifact.large_file import LargeFileArtifact
+        from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+        from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
+
+        fs, storage, uri_prefix = s3_fs
+        bucket = uri_prefix.removeprefix("s3://")
+        # the cloud input: bytes in MinIO, metadata in a local Delta store.
+        # The files_root object name preserves original_name, so the worker
+        # materializes under a basename whose stem is the artifact's name.
+        external_path = f"{uri_prefix}/files/dataset_00001.bin"
+        fs.pipe_file(f"{bucket}/files/dataset_00001.bin", b"weights")
+        art = LargeFileArtifact.draft(
+            content_hash="c" * 32,
+            size_bytes=7,
+            step_number=0,
+            external_path=external_path,
+            original_name="dataset_00001",
+            extension=".bin",
+        ).finalize()
+
+        base = tmp_path / "delta"
+        pl.DataFrame(
+            [art.to_row()], schema=LargeFileArtifact.POLARS_SCHEMA
+        ).write_delta(str(base / "artifacts/large_files"))
+        pl.DataFrame(
+            [
+                {
+                    "artifact_id": art.artifact_id,
+                    "artifact_type": "large_file",
+                    "origin_step_number": 0,
+                    "metadata": "{}",
+                }
+            ],
+            schema=ARTIFACT_INDEX_SCHEMA,
+        ).write_delta(str(base / "artifacts/index"))
+
+        working = tmp_path / "working"
+        working.mkdir()
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        runtime_env = RuntimeEnvironment(
+            delta_root=str(base),
+            working_root=str(working),
+            staging_root=str(staging),
+        )
+        # ambient creds so the worker fetches external_path from MinIO
+        _set_ambient_creds(storage, monkeypatch)
+
+        unit = ExecutionUnit(
+            operation=_CloudInputTool(),
+            inputs={"source": [art.artifact_id]},
+            execution_spec_id="spec_lg" + "0" * 26,
+            step_number=1,
+        )
+        result = run_creator_lifecycle(
+            unit, runtime_env, execute_router=_WorkerLoopbackRouter(_CloudInputTool)
+        )
+
+        outputs = result.artifacts["output"]
+        assert len(outputs) == 1
+        out = outputs[0]
+        # human-readable name from the natural basename — no artifact_id
+        # prefix to strip (derive_human_names is a no-op with the empty map)
+        assert out.original_name == "dataset_00001_waited"
+        assert not out.original_name.startswith(art.artifact_id)
+        # input→output edge captured via the original_name stem fallback,
+        # even though the filesystem match map is empty under the skip
+        edges = {(e.source_artifact_id, e.target_artifact_id) for e in result.edges}
+        assert (art.artifact_id, out.artifact_id) in edges
 
 
 class TestResolveOp:

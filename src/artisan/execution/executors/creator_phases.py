@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from artisan.execution.executors.creator import LifecycleResult
 
+from artisan.execution.compute.routing import routes_to_endpoint
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.context.sandbox import create_sandbox, output_snapshot
 from artisan.execution.inputs.instantiation import instantiate_inputs
@@ -239,6 +240,7 @@ def prep_unit(
             input_specs,
             materialized_dir,
             artifact_store,
+            endpoint_routed=routes_to_endpoint(operation),
         )
 
     # --- preprocess phase ---
