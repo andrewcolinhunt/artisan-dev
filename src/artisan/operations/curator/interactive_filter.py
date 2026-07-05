@@ -204,7 +204,7 @@ class InteractiveFilter:
 
         # ── Build wide DataFrame via _build_metric_namespace ──
         wide_df, step_info = _build_metric_namespace(
-            primary_df, metric_pairs, self._store
+            primary_df, metric_pairs, self._store, self._pipeline_run_id
         )
         self._wide_df = wide_df.rename({"passthrough_id": "artifact_id"})
         self._step_info = step_info
@@ -236,7 +236,7 @@ class InteractiveFilter:
         )
 
         metric_step_map = self._store.provenance.load_step_map(all_found_metric_ids)
-        step_name_map = self._store.provenance.load_step_name_map(pipeline_run_id)
+        step_name_map = self._store.provenance.load_step_name_map(self._pipeline_run_id)
 
         # Build primary->metrics mapping from metric_pairs
         primary_to_metrics: dict[str, list[str]] = {}
