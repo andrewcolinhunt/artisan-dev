@@ -166,6 +166,62 @@ class TestExternalToolError:
         assert "line 0\n" not in result
 
 
+class TestExternalToolErrorEnvelope:
+    """The re-parented ExternalToolError carries a compute envelope.
+
+    ``__str__`` and the five fields are unchanged (asserted above); these
+    pin the added structure: ``OP_EXECUTE_FAILED`` / ``compute``, and the
+    recovery hint keyed on the timeout sentinel.
+    """
+
+    def test_is_artisan_error(self):
+        from artisan.errors import ArtisanError
+
+        err = ExternalToolError(
+            message="boom",
+            command=["tool"],
+            return_code=1,
+            stdout="",
+            stderr="",
+            runtime=None,
+        )
+        assert isinstance(err, ArtisanError)
+
+    def test_envelope_code_and_type(self):
+        err = ExternalToolError(
+            message="boom",
+            command=["tool"],
+            return_code=2,
+            stdout="",
+            stderr="",
+            runtime=None,
+        )
+        assert err.envelope.code == "op_execute_failed"
+        assert err.envelope.error_type == "compute"
+
+    def test_nonzero_exit_reports_to_user(self):
+        err = ExternalToolError(
+            message="boom",
+            command=["tool"],
+            return_code=3,
+            stdout="",
+            stderr="",
+            runtime=None,
+        )
+        assert err.envelope.recovery_hint == "REPORT_TO_USER"
+
+    def test_timeout_sentinel_retries_later(self):
+        err = ExternalToolError(
+            message="timed out",
+            command=["tool"],
+            return_code=-1,
+            stdout="",
+            stderr="",
+            runtime=None,
+        )
+        assert err.envelope.recovery_hint == "RETRY_LATER"
+
+
 class TestProcessCleanup:
     """Tests for subprocess process group cleanup."""
 

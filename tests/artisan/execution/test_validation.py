@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import pytest
 
+from artisan.errors import ArtisanError
 from artisan.execution.exceptions import (
     ArtifactValidationError,
     LineageCompletenessError,
     LineageIntegrityError,
+    PassthroughValidationError,
 )
 from artisan.execution.lineage.validation import (
     validate_artifacts_match_specs,
@@ -831,22 +833,46 @@ class TestValidateLineageIntegrity:
 
 
 class TestExceptions:
-    """Tests for exception classes."""
+    """Tests for the re-parented domain exception classes.
 
-    def test_artifact_validation_error_is_exception(self):
-        """ArtifactValidationError should be an Exception."""
+    Each keeps ``Exception`` identity (so by-type ``except``/
+    ``pytest.raises`` still catch it) and ``str(err) == message`` (so
+    log-matching holds), while gaining an ``ArtisanError`` envelope with a
+    validation code and ``REPORT_TO_USER`` recovery hint.
+    """
+
+    def test_artifact_validation_error_envelope(self):
         error = ArtifactValidationError("test message")
+        assert isinstance(error, ArtisanError)
         assert isinstance(error, Exception)
         assert str(error) == "test message"
+        assert error.envelope.code == "artifact_validation_failed"
+        assert error.envelope.error_type == "validation"
+        assert error.envelope.recovery_hint == "REPORT_TO_USER"
 
-    def test_lineage_completeness_error_is_exception(self):
-        """LineageCompletenessError should be an Exception."""
+    def test_lineage_completeness_error_envelope(self):
         error = LineageCompletenessError("test message")
+        assert isinstance(error, ArtisanError)
         assert isinstance(error, Exception)
         assert str(error) == "test message"
+        assert error.envelope.code == "lineage_incomplete"
+        assert error.envelope.error_type == "validation"
+        assert error.envelope.recovery_hint == "REPORT_TO_USER"
 
-    def test_lineage_integrity_error_is_exception(self):
-        """LineageIntegrityError should be an Exception."""
+    def test_lineage_integrity_error_envelope(self):
         error = LineageIntegrityError("test message")
+        assert isinstance(error, ArtisanError)
         assert isinstance(error, Exception)
         assert str(error) == "test message"
+        assert error.envelope.code == "lineage_integrity_failed"
+        assert error.envelope.error_type == "validation"
+        assert error.envelope.recovery_hint == "REPORT_TO_USER"
+
+    def test_passthrough_validation_error_envelope(self):
+        error = PassthroughValidationError("test message")
+        assert isinstance(error, ArtisanError)
+        assert isinstance(error, Exception)
+        assert str(error) == "test message"
+        assert error.envelope.code == "passthrough_validation_failed"
+        assert error.envelope.error_type == "validation"
+        assert error.envelope.recovery_hint == "REPORT_TO_USER"
