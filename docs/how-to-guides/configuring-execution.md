@@ -224,15 +224,54 @@ instructions in the error, before any network call.
 
 Input files ship inline in the submit request and outputs return as a
 tar — bounded at 100 MB per direction. Inputs that already live on object
-storage pass their `s3://` URI by reference (no re-upload, no bound), and
-outputs can be delivered to an object store with no size bound — see
-*Object-store output delivery* below. Large static data (model weights)
-belongs on Modal Volumes (`ModalComputeConfig.volumes`), not in the
-request.
+storage pass their `s3://` URI by reference (no re-upload, no bound — see
+*Object-store input delivery* below), and outputs can be delivered to an
+object store with no size bound — see *Object-store output delivery*
+below. Large static data (model weights) belongs on Modal Volumes
+(`ModalComputeConfig.volumes`), not in the request.
 
 External binaries (compiled tools), artisan, and the op's Python module
 must all be baked into the worker image; `local_python_sources` overlays
 dev-host source for iteration.
+
+(object-store-input-delivery)=
+### Object-store input delivery
+
+An input artifact whose bytes already live in an object store (a
+`LargeFileArtifact`, or any file-backed artifact produced on a cloud
+backend) crosses to the worker **by reference** on an endpoint step: the
+client sends the `s3://` URI, and the worker fetches it with its own
+ambient credentials. The client never downloads it and never inlines it,
+so the 100 MB inline bound does not apply — a 2 GB MSA database crosses
+the same way a 1 MB PDB does. Nothing changes for local execution, and
+nothing changes in your op: `preprocess` still reads
+`artifact.materialized_path` (now the URI). This is automatic — there is
+no flag to set.
+
+The worker reads inputs with the **same Modal Secret** that delivers
+outputs, so scope that Secret's IAM policy to grant **read** on the input
+buckets as well as write on the output prefixes.
+
+:::{warning}
+**R2 / custom-endpoint footgun — a required deploy step.** For a
+custom-endpoint store (Cloudflare R2, MinIO), the Secret must carry
+**`AWS_ENDPOINT_URL`** alongside `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`. botocore reads it, so a bare `s3://bucket/key`
+resolves to your store. **With only the key pair, an `s3://` fetch
+silently targets AWS**, not R2 — and fails. This is the same env var the
+output-delivery path relies on; one Secret carries creds **and** endpoint
+for both directions.
+:::
+
+A fetch failure — a missing object, a denied read, absent credentials, or
+an unreachable/typo'd `AWS_ENDPOINT_URL` — surfaces as an
+`INPUT_RESOLUTION_FAILED` / `CHECK_INPUT` envelope **before** the tool
+runs, so there is no partial work to clean up. Fix the ref or the Secret
+and resubmit.
+
+A local input larger than 100 MB on an endpoint step still fails at the
+inline cap (v1): host it in object storage first — a cloud-backend
+pipeline does this automatically via `files_root`.
 
 (object-store-output-delivery)=
 ### Object-store output delivery
