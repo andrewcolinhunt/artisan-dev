@@ -95,6 +95,7 @@ def _build_metric_namespace(
     passthrough_df: pl.DataFrame,
     metric_pairs: pl.DataFrame,
     artifact_store: ArtifactStore,
+    pipeline_run_id: str | None = None,
 ) -> tuple[pl.DataFrame, dict[str, Any] | None]:
     """Hydrate metrics and build wide DataFrame for evaluation.
 
@@ -102,6 +103,8 @@ def _build_metric_namespace(
         passthrough_df: DataFrame with passthrough artifact_id column.
         metric_pairs: DataFrame with [passthrough_id, metric_id].
         artifact_store: Store for metric loading.
+        pipeline_run_id: If given, restrict step-name resolution to this
+            pipeline run. None uses the latest available names across runs.
 
     Returns:
         Tuple of (wide DataFrame with passthrough_id + metric columns,
@@ -133,7 +136,7 @@ def _build_metric_namespace(
 
     # Enrich with step info
     step_number_map = artifact_store.provenance.load_step_map(set(unique_metric_ids))
-    step_name_map = artifact_store.provenance.load_step_name_map()
+    step_name_map = artifact_store.provenance.load_step_name_map(pipeline_run_id)
 
     # Build step_info: {field_name: {step_numbers}}
     step_info: dict[str, Any] = {"_step_names": {}}
