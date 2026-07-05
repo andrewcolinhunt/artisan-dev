@@ -12,6 +12,7 @@ from io import BytesIO
 from typing import Any, ClassVar
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from artisan.execution.tool_endpoint import server as server_mod
@@ -120,6 +121,13 @@ def _tar_names(payload: bytes) -> list[str]:
         return sorted(tar.getnames())
 
 
+def _http_error() -> httpx.HTTPStatusError:
+    """A refused presigned PUT, as upload_outputs would raise it."""
+    request = httpx.Request("PUT", "https://store.example/obj")
+    response = httpx.Response(403, request=request)
+    return httpx.HTTPStatusError("403 Forbidden", request=request, response=response)
+
+
 def _capture_tempdirs(monkeypatch) -> list[str]:
     """Record every ``mkdtemp`` path a request allocates, calling through."""
     created: list[str] = []
@@ -179,9 +187,62 @@ class TestRunToolRequest:
         assert "boom" in error.message  # stderr tail rides the envelope
         assert result.manifest.log_tail is not None
 
-    def test_invalid_params_raise(self):
-        with pytest.raises(Exception, match="(?i)extra"):
-            run_tool_request(WaitTool, ToolRequest(params={"no_such_param": 1}))
+    def test_invalid_params_returns_envelope(self):
+        # bad params that the /submit JSON-schema gate cannot express reach
+        # instantiate_op and raise pydantic ValidationError; the worker now
+        # returns a structured envelope instead of propagating (500).
+        result = run_tool_request(WaitTool, ToolRequest(params={"no_such_param": 1}))
+        assert result.output_tar is None
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "param_type_mismatch"
+        assert error.error_type == "validation"
+        assert error.recovery_hint == "CHECK_INPUT"
+        assert error.operation_name == "wait_tool"
+
+    def test_bad_input_ref_returns_envelope(self):
+        # a ref carrying neither uri nor data raises ValueError in
+        # unpack_inputs — the agent supplied the ref and can correct it
+        result = run_tool_request(
+            WaitTool, ToolRequest(inputs=[InputRef(name="dataset")])
+        )
+        assert result.output_tar is None
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.error_type == "io"
+        assert error.recovery_hint == "CHECK_INPUT"
+
+    def test_input_fetch_failure_returns_envelope(self, monkeypatch):
+        # an unreachable input URI surfaces as OSError from ref_fs.get; the
+        # (ValueError, OSError) guard maps it to the same CHECK_INPUT envelope
+        def boom(self, refs, dest, fs=None):
+            msg = "s3://bucket/missing.pdb"
+            raise FileNotFoundError(msg)
+
+        monkeypatch.setattr(
+            server_mod.InlineTransport, "unpack_inputs", boom, raising=True
+        )
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                inputs=[InputRef(name="dataset", uri="s3://bucket/missing.pdb")]
+            ),
+        )
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.recovery_hint == "CHECK_INPUT"
+
+    def test_input_failure_removes_job_dir(self, monkeypatch):
+        # warm-container reuse: an input-resolution failure still cleans up
+        created = _capture_tempdirs(monkeypatch)
+        result = run_tool_request(
+            WaitTool, ToolRequest(inputs=[InputRef(name="dataset")])
+        )
+        assert result.manifest.error is not None
+        assert created  # the job dir was allocated before unpack_inputs
+        assert all(not os.path.exists(p) for p in created)
 
     def test_success_removes_job_dir(self, monkeypatch):
         # warm-container reuse: the per-request job tree must not survive
@@ -293,6 +354,57 @@ class TestRunToolRequestStoredOutputs:
         assert result.manifest.stored is None
         assert result.output_tar is not None
         assert _tar_names(result.output_tar) == []
+
+    @pytest.mark.parametrize("exc", [OSError("disk full"), _http_error()])
+    def test_delivery_failure_returns_envelope_with_outputs(self, monkeypatch, exc):
+        # the tool ran; only delivery to the store failed — the envelope
+        # surfaces the outputs it produced and asks the agent to retry
+        # delivery (RETRY_LATER), not re-run the (possibly GPU) compute
+        def failing_upload(*args):
+            raise exc
+
+        monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
+        result = run_tool_request(WaitTool, self._REQUEST)
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "output_delivery_failed"
+        assert error.error_type == "io"
+        assert error.recovery_hint == "RETRY_LATER"
+        assert result.manifest.output_names == ["in_waited.csv"]  # produced
+        assert result.manifest.log_tail is not None  # the tool's log survives
+        assert result.manifest.stored is None
+        assert result.output_tar is None
+
+    def test_non_signing_store_returns_misconfigured(self, monkeypatch):
+        # a store that cannot presign fails 100% of requests — a deployment
+        # misconfiguration to report, not a transient to retry
+        def cannot_presign(*args):
+            msg = "filesystem cannot sign"
+            raise NotImplementedError(msg)
+
+        monkeypatch.setattr(server_mod, "upload_outputs", cannot_presign)
+        result = run_tool_request(WaitTool, self._REQUEST)
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "tool_endpoint_misconfigured"
+        assert error.error_type == "config"
+        assert error.recovery_hint == "REPORT_TO_USER"
+        assert result.manifest.output_names == ["in_waited.csv"]
+        assert result.manifest.log_tail is not None
+        assert result.output_tar is None
+
+    def test_delivery_failure_removes_job_dir(self, monkeypatch):
+        created = _capture_tempdirs(monkeypatch)
+
+        def failing_upload(*args):
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
+        result = run_tool_request(WaitTool, self._REQUEST)
+        assert result.manifest.error is not None
+        assert created  # the job dir was allocated
+        assert all(not os.path.exists(p) for p in created)
 
 
 class TestResolveOp:

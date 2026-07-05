@@ -1,4 +1,4 @@
-"""Tests for the ArtisanError envelope (Phase 1 of 02_error-envelope.md)."""
+"""Tests for the ArtisanError envelope."""
 
 from __future__ import annotations
 
@@ -21,33 +21,22 @@ class TestArtisanErrorEnvelope:
 
     def test_envelope_round_trips_through_json(self) -> None:
         err = ArtisanError(
-            code=ErrorCode.UNKNOWN_PARAM,
+            code=ErrorCode.PARAM_TYPE_MISMATCH,
             error_type="validation",
             message="Unknown params for op: ['multiplyer']",
             operation_name="data_transformer",
             field="params.multiplyer",
             suggestions=["multiplier"],
-            fix_example="step.params = {'multiplier': 2.0}",
             recovery_hint="CHECK_INPUT",
         )
 
         as_dict = err.to_dict()
         round_tripped = json.loads(json.dumps(as_dict))
         assert round_tripped == as_dict
-        assert round_tripped["code"] == "unknown_param"
+        assert round_tripped["code"] == "param_type_mismatch"
         assert round_tripped["error_type"] == "validation"
         assert round_tripped["recovery_hint"] == "CHECK_INPUT"
         assert round_tripped["suggestions"] == ["multiplier"]
-
-    def test_to_json_emits_indented_string(self) -> None:
-        err = ArtisanError(
-            code=ErrorCode.UNKNOWN_OPERATION,
-            error_type="validation",
-            message="oops",
-        )
-        text = err.to_json(indent=2)
-        assert isinstance(text, str)
-        assert '"code": "unknown_operation"' in text
 
     def test_default_doc_uri_uses_code(self) -> None:
         err = ArtisanError(
@@ -62,7 +51,7 @@ class TestArtisanErrorEnvelope:
 
     def test_explicit_doc_uri_overrides_default(self) -> None:
         err = ArtisanError(
-            code=ErrorCode.UNKNOWN_PARAM,
+            code=ErrorCode.PARAM_TYPE_MISMATCH,
             error_type="validation",
             message="x",
             doc_uri="https://example.com/custom",
@@ -74,11 +63,11 @@ class TestArtisanErrorEnvelope:
 
     def test_properties_proxy_envelope(self) -> None:
         err = ArtisanError(
-            code=ErrorCode.UNKNOWN_PARAM,
+            code=ErrorCode.PARAM_TYPE_MISMATCH,
             error_type="validation",
             message="x",
         )
-        assert err.code == "unknown_param"
+        assert err.code == "param_type_mismatch"
         assert err.error_type == "validation"
 
 
@@ -126,7 +115,7 @@ class TestCauseChain:
 
     def test_to_dict_omits_cause_when_no_chain(self) -> None:
         err = ArtisanError(
-            code=ErrorCode.UNKNOWN_PARAM,
+            code=ErrorCode.PARAM_TYPE_MISMATCH,
             error_type="validation",
             message="x",
         )

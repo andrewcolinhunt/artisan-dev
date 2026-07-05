@@ -93,6 +93,44 @@ class PlainTool(OperationDefinition):
         return [*self.tool.parts(), "-c", "true"]
 
 
+class DocstringParamsTool(OperationDefinition):
+    """Deployable op whose Params are described only in the docstring.
+
+    Gives the schema-drift test teeth: its ``Params`` field carries no
+    ``Field(description=...)``, so the description exists **only** in the
+    Google-style ``Attributes:`` section that ``params_schema_for`` merges.
+    A schema plane that bypassed the canonical builder would serve a
+    description-less schema — a divergence the drift test then catches.
+    """
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "docstring_params_tool_test"
+    description: ClassVar[str] = "Params described only via docstring"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = _OUTPUTS
+
+    class Params(BaseModel):
+        """Parameters for DocstringParamsTool.
+
+        Attributes:
+            threshold: Minimum score to keep — documented only here.
+        """
+
+        model_config = {"extra": "forbid"}
+
+        threshold: float = 0.5
+
+    params: Params = Params()
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+    compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [*self.tool.parts(), "-c", "true"]
+
+
 class FlagTool(OperationDefinition):
     """execute_as_tool op with a modal config — deployable without a ToolSpec."""
 

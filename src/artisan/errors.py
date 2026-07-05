@@ -1,20 +1,16 @@
-"""Structured error envelope for agent-recoverable failures.
+"""Structured error identity for agent-recoverable failures.
 
-Single ``ArtisanError`` class carrying a JSON-serializable
-``ArtisanErrorEnvelope``. Every Artisan-raised error eventually flows
-through this envelope so MCP tool responses are uniform and an agent can
-recover (or report) without parsing free-text messages.
-
-See ``_dev/design/0_active/agents-v2/02_error-envelope.md`` for the full
-design and the migration phases. This module ships Phase 1: envelope +
-exception class + ``ErrorCode`` namespace + ``suggest`` helper. Raise-site
-migration in ``pipeline_manager.py`` and re-parenting of
-``ArtifactValidationError`` / ``LineageCompletenessError`` are later phases.
+``ArtisanError`` + ``ErrorCode`` is the single source of truth for error
+*identity*; ``ArtisanErrorEnvelope`` is its *serialization*, produced only
+at the boundaries a machine reads the structure across — currently the
+tool-endpoint wire (``execution/tool_endpoint``) and registry discovery
+(``registry/api.py``). The envelope is not a field bolted onto every
+string-carrying result: a new ``ErrorCode`` or envelope field ships only
+together with a raise site **and** a reader that consumes it.
 """
 
 from __future__ import annotations
 
-import json
 from difflib import get_close_matches
 from typing import Any, Literal
 
@@ -40,19 +36,16 @@ class ArtisanErrorEnvelope(BaseModel):
 
     Attributes:
         error_type: Coarse category. Required at every raise site.
-        code: Stable agent-recognizable identifier (e.g. ``"unknown_param"``).
+        code: Stable agent-recognizable identifier (e.g. ``"op_execute_failed"``).
         message: Human-readable summary; unchanged from legacy string errors
             so log-matching tests keep working.
         operation_name: The operation whose validation/execution raised.
         step_name: The pipeline step name, when known.
         field: Dotted path locating the offending field
             (e.g. ``"params.multiplyer"``).
-        locator: JSONPath-style locator for parse-level errors.
         hint: Free-form note about what to do next; pairs with
             ``recovery_hint``.
         suggestions: ``difflib`` close matches for typo'd identifiers.
-        fix_example: Code snippet showing the corrected call site.
-            ``None`` when no honest snippet can be generated (runtime/IO).
         recovery_hint: Next-action signal for an agent. ``None`` allowed
             but discouraged.
         doc_uri: Stable URL keyed off ``code``; the URI may be repointed
@@ -66,11 +59,9 @@ class ArtisanErrorEnvelope(BaseModel):
     operation_name: str | None = None
     step_name: str | None = None
     field: str | None = None
-    locator: str | None = None
 
     hint: str | None = None
     suggestions: list[str] = []
-    fix_example: str | None = None
     recovery_hint: RecoveryHint | None = None
     doc_uri: str | None = None
 
@@ -97,10 +88,8 @@ class ArtisanError(Exception):
         operation_name: str | None = None,
         step_name: str | None = None,
         field: str | None = None,
-        locator: str | None = None,
         hint: str | None = None,
         suggestions: list[str] | None = None,
-        fix_example: str | None = None,
         recovery_hint: RecoveryHint | None = None,
         doc_uri: str | None = None,
     ) -> None:
@@ -113,10 +102,8 @@ class ArtisanError(Exception):
             operation_name: The operation whose validation/execution raised.
             step_name: The pipeline step name, when known.
             field: Dotted path locating the offending field.
-            locator: JSONPath-style locator for parse-level errors.
             hint: Free-form note about what to do next.
             suggestions: ``difflib`` close matches for typo'd identifiers.
-            fix_example: Code snippet showing the corrected call site.
             recovery_hint: Next-action signal for an agent.
             doc_uri: Stable URL keyed off ``code``; defaults to
                 ``https://artisan.dev/docs/errors/<code>``.
@@ -128,10 +115,8 @@ class ArtisanError(Exception):
             operation_name=operation_name,
             step_name=step_name,
             field=field,
-            locator=locator,
             hint=hint,
             suggestions=suggestions or [],
-            fix_example=fix_example,
             recovery_hint=recovery_hint,
             doc_uri=doc_uri or _default_doc_uri(code),
         )
@@ -166,46 +151,24 @@ class ArtisanError(Exception):
             }
         return data
 
-    def to_json(self, indent: int = 2) -> str:
-        """Serialize the envelope to a JSON string."""
-        return json.dumps(self.to_dict(), indent=indent)
-
 
 class ErrorCode:
     """Stable agent-recognizable identifiers used at raise sites.
 
-    Stringly-typed namespace (not an ``Enum``) so typos surface at the
-    raise site without importing an enum module. Trimmed to the MVP codes
-    that ship with the registry + envelope phases; compute-backend,
-    pipeline-spec, and storage codes return as later raise sites land in
-    scope.
+    Stringly-typed namespace (not an ``Enum``) so a typo surfaces at the
+    raise site. Codes are added on demand — a new one ships only with a
+    raise site and a reader that consumes it.
     """
 
-    # validation — spec & op-config
     UNKNOWN_OPERATION = "unknown_operation"
-    UNKNOWN_PARAM = "unknown_param"
-    UNKNOWN_ROLE = "unknown_role"
-    MISSING_REQUIRED_INPUT = "missing_required_input"
-    INPUT_TYPE_MISMATCH = "input_type_mismatch"
+    OP_PARAMS_UNDOCUMENTED = "op_params_undocumented"
+    OP_EXECUTE_FAILED = "op_execute_failed"
+    TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
-    # config — environment/setup
-    OP_PARAMS_UNDOCUMENTED = "op_params_undocumented"
-    PROJECT_CONFIG_INVALID = "project_config_invalid"
-
-    # runtime — execution
-    OP_EXECUTE_FAILED = "op_execute_failed"
-    ARTIFACT_VALIDATION_FAILED = "artifact_validation_failed"
-    LINEAGE_INCOMPLETE = "lineage_incomplete"
-
-    # compute — tool endpoints
-    TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
-
-    # io
-    ARTIFACT_NOT_FOUND = "artifact_not_found"
-
-    # safety net during migration
-    UNKNOWN_VALIDATION_ERROR = "unknown_validation_error"
+    # io — worker-side input resolution / output delivery (tool-endpoint wire)
+    INPUT_RESOLUTION_FAILED = "input_resolution_failed"
+    OUTPUT_DELIVERY_FAILED = "output_delivery_failed"
 
 
 class CommitError(Exception):

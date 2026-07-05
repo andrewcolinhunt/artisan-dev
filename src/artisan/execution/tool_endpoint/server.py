@@ -14,7 +14,10 @@ import tempfile
 from functools import reduce
 from typing import Any
 
-from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+import httpx
+from pydantic import ValidationError
+
+from artisan.errors import ArtisanError, ErrorCode, ErrorType, RecoveryHint
 from artisan.execution.compute.invoke import invoke_op_work
 from artisan.execution.tool_endpoint.protocol import (
     ToolManifest,
@@ -62,7 +65,9 @@ def run_tool_request(
     subprocess with ``cwd=outputs/``, and returns the manifest + output tar
     + tool-log tail. When the request names an ``output_store``, outputs
     are delivered there instead and the manifest carries the stored
-    pointer. Tool failures return an ``OP_EXECUTE_FAILED`` envelope.
+    pointer. Param-validation, input-resolution, tool-execution, and
+    output-delivery failures each return a structured error envelope on the
+    manifest (stable ``code`` + ``recovery_hint``) rather than raising.
 
     Inputs and outputs live in separate dirs so the tar never sweeps input
     files. The tool log is excluded from the manifest and tar — locally the
@@ -77,7 +82,20 @@ def run_tool_request(
     Returns:
         WorkerResult with the control manifest and, on success, the tar.
     """
-    op = instantiate_op(op_cls, request.params)
+    try:
+        op = instantiate_op(op_cls, request.params)
+    except ValidationError as exc:
+        # bad params the /submit JSON-schema gate could not express (no-Params
+        # ops, custom validators); the agent can fix its own call. Runs before
+        # the job dir exists, so no cleanup is owed here.
+        return _error_result(
+            op_cls.name,
+            ErrorCode.PARAM_TYPE_MISMATCH,
+            str(exc),
+            "validation",
+            "CHECK_INPUT",
+        )
+
     job_root = tempfile.mkdtemp(prefix=f"artisan-tool-{op_cls.name}-")
     # Modal reuses warm containers across requests; the job tree must not
     # outlive the call or per-request temp dirs accumulate in the container.
@@ -87,7 +105,19 @@ def run_tool_request(
         os.makedirs(outputs_dir)
 
         transport = InlineTransport()
-        inputs = transport.unpack_inputs(request.inputs, inputs_dir)
+        try:
+            inputs = transport.unpack_inputs(request.inputs, inputs_dir)
+        except (ValueError, OSError) as exc:
+            # malformed ref, or an input URI that would not resolve — the
+            # agent supplied the ref and can correct it
+            return _error_result(
+                op_cls.name,
+                ErrorCode.INPUT_RESOLUTION_FAILED,
+                f"could not resolve tool input: {exc}",
+                "io",
+                "CHECK_INPUT",
+            )
+
         log_path = os.path.join(outputs_dir, TOOL_OUTPUT_FILENAME)
         try:
             # The shared primitive — the same invocation as the local execute
@@ -101,17 +131,47 @@ def run_tool_request(
                 stream_output=True,
             )
         except ExternalToolError as exc:
-            return WorkerResult(
-                manifest=ToolManifest(
-                    error=_envelope(op_cls.name, exc), log_tail=_log_tail(log_path)
-                )
+            return _error_result(
+                op_cls.name,
+                ErrorCode.OP_EXECUTE_FAILED,
+                str(exc),
+                "compute",
+                "REPORT_TO_USER",
+                log_tail=_log_tail(log_path),
             )
+
         names = _list_outputs(outputs_dir)
-        stored = (
-            upload_outputs(outputs_dir, names, request.output_store, op_cls.name)
-            if request.output_store and names
-            else None
-        )
+        stored = None
+        if request.output_store and names:
+            try:
+                stored = upload_outputs(
+                    outputs_dir, names, request.output_store, op_cls.name
+                )
+            except NotImplementedError as exc:
+                # the deployment's store cannot presign — a misconfiguration,
+                # not a transient the agent can retry away
+                return _error_result(
+                    op_cls.name,
+                    ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+                    f"output store cannot presign: {exc}",
+                    "config",
+                    "REPORT_TO_USER",
+                    output_names=names,
+                    log_tail=_log_tail(log_path),
+                )
+            except (OSError, httpx.HTTPStatusError) as exc:
+                # the tool ran; only delivery failed — surface the outputs it
+                # produced and let the agent retry delivery, not the compute
+                return _error_result(
+                    op_cls.name,
+                    ErrorCode.OUTPUT_DELIVERY_FAILED,
+                    f"delivery to {request.output_store} failed: {exc}",
+                    "io",
+                    "RETRY_LATER",
+                    output_names=names,
+                    log_tail=_log_tail(log_path),
+                )
+
         return WorkerResult(
             manifest=ToolManifest(
                 output_names=names, stored=stored, log_tail=_log_tail(log_path)
@@ -149,15 +209,45 @@ def instantiate_op(
     return op_any(params=params_cls(**params))  # type: ignore[no-any-return]
 
 
-def _envelope(operation_name: str, exc: ExternalToolError) -> ArtisanErrorEnvelope:
-    """Wrap a tool failure in the standard error envelope."""
-    return ArtisanError(
-        code=ErrorCode.OP_EXECUTE_FAILED,
-        message=str(exc),
-        error_type="compute",
-        operation_name=operation_name,
-        recovery_hint="REPORT_TO_USER",
-    ).envelope
+def _error_result(
+    op_name: str,
+    code: str,
+    message: str,
+    error_type: ErrorType,
+    recovery_hint: RecoveryHint,
+    *,
+    output_names: list[str] | None = None,
+    log_tail: str | None = None,
+) -> WorkerResult:
+    """Return a WorkerResult carrying an error envelope on the manifest.
+
+    Args:
+        op_name: The deployed op's name, stamped on the envelope.
+        code: Stable ``ErrorCode`` identifier.
+        message: Human-readable summary (the underlying exception's text).
+        error_type: Coarse envelope category.
+        recovery_hint: Next-action signal for an agent.
+        output_names: Output files produced before the failure — set only on
+            a delivery failure, where the tool ran but its results were not
+            delivered.
+        log_tail: Tail of the tool log, when a log exists.
+
+    Returns:
+        A WorkerResult with no data plane and the error on its manifest.
+    """
+    return WorkerResult(
+        manifest=ToolManifest(
+            error=ArtisanError(
+                code=code,
+                message=message,
+                error_type=error_type,
+                operation_name=op_name,
+                recovery_hint=recovery_hint,
+            ).envelope,
+            output_names=output_names or [],
+            log_tail=log_tail,
+        )
+    )
 
 
 def _log_tail(log_path: str) -> str | None:
