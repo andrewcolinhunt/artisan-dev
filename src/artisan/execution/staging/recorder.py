@@ -28,6 +28,32 @@ logger = logging.getLogger(__name__)
 _MAX_TOOL_OUTPUT_CHARS = 500_000
 
 
+def error_envelope_dict(exc: BaseException) -> dict[str, Any] | None:
+    """Return the ArtisanError envelope dict for a caught failure.
+
+    Reads ``exc`` directly, or its one-level ``__cause__`` (matching
+    ``ArtisanError.to_dict``'s cause depth), so a re-parented
+    ``ExternalToolError`` or the tool-endpoint client's ``ArtisanError``
+    wrapped in a private ``_ExecuteFailure`` still yields its structured
+    code. Returns ``None`` for an unstructured failure — the caller then
+    persists only the error string, and ``inspect_failures`` degrades to
+    that string plus the failure-log pointer.
+
+    Args:
+        exc: The caught exception at an executor failure path.
+
+    Returns:
+        The envelope dict from ``ArtisanError.to_dict()``, or ``None``.
+    """
+    from artisan.errors import ArtisanError
+
+    if isinstance(exc, ArtisanError):
+        return exc.to_dict()
+    if isinstance(exc.__cause__, ArtisanError):
+        return exc.__cause__.to_dict()
+    return None
+
+
 def _read_tool_output(log_path: str | None) -> str | None:
     """Read tool output from a log file.
 
@@ -333,6 +359,7 @@ def record_execution_failure(
     user_overrides: dict[str, Any] | None = None,
     tool_output: str | None = None,
     failure_logs_root: str | None = None,
+    error_envelope: dict[str, Any] | None = None,
 ) -> StagingResult:
     """Stage an execution record for a failed run and write a failure log.
 
@@ -348,6 +375,10 @@ def record_execution_failure(
         user_overrides: User-provided parameter overrides before default merge.
         tool_output: Captured tool stdout/stderr.
         failure_logs_root: Directory for human-readable failure logs.
+        error_envelope: Structured ``ArtisanError`` envelope dict for the
+            failure (from ``error_envelope_dict``), or None for an
+            unstructured failure. Persisted as JSON in the
+            ``error_envelope`` column.
 
     Returns:
         StagingResult with ``success=False``.
@@ -391,6 +422,7 @@ def record_execution_failure(
             user_overrides=user_overrides,
             tool_output=tool_output,
             step_run_id=execution_context.step_run_id,
+            error_envelope=error_envelope,
         )
         _write_failure_log(
             failure_logs_root=failure_logs_root,

@@ -22,6 +22,8 @@ import polars as pl
 import pytest
 import xxhash
 
+from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.executors.creator import (
     LifecycleResult,
     run_creator_flow,
@@ -688,6 +690,65 @@ class TestRunExecutionFailureHandling:
         assert result.success is False
         assert result.error is not None
         assert "working_root" in result.error
+
+
+class _EnvelopeReturningRouter(ExecuteRouter):
+    """Router that returns an ArtisanError as a raw result.
+
+    Mirrors the endpoint batch contract: ``EndpointExecuteRouter._call_one``
+    catches the client's re-raised ``ArtisanError`` and returns it as a
+    ``raw_results`` entry rather than raising.
+    """
+
+    def __init__(self, error: ArtisanError) -> None:
+        self._error = error
+
+    def route_execute(self, operation, execute_inputs, sandbox_root):
+        return [self._error]
+
+
+class TestEndpointDoubleHop:
+    """Regression: a returned ArtisanError survives to executions.error_envelope.
+
+    Pins the ``creator.py`` ``from failures[0]`` chaining — without it the
+    batch-path ``_ExecuteFailure`` buries the client envelope and this
+    column persists NULL.
+    """
+
+    def test_returned_artisan_error_persists_envelope(
+        self, delta_root_with_input, working_root, staging_root
+    ):
+        delta_path, _ = delta_root_with_input
+        config = RuntimeEnvironment(
+            delta_root=str(delta_path),
+            working_root=str(working_root),
+            staging_root=str(staging_root),
+        )
+        worker_error = ArtisanError(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            message="worker tool exploded",
+            error_type="compute",
+            operation_name="generative_test",
+            recovery_hint="REPORT_TO_USER",
+        )
+        unit = ExecutionUnit(
+            operation=GenerativeTestOp(count=1),
+            inputs={},
+            execution_spec_id="spec_dhop" + "0" * 23,
+            step_number=1,
+        )
+
+        result = run_creator_flow(
+            unit, config, execute_router=_EnvelopeReturningRouter(worker_error)
+        )
+
+        assert result.success is False
+        df = pl.read_parquet(Path(result.staging_path) / "executions.parquet")
+        raw = df["error_envelope"][0]
+        assert raw is not None
+        env = ArtisanErrorEnvelope.model_validate_json(raw)
+        assert env.code == "op_execute_failed"
+        assert env.recovery_hint == "REPORT_TO_USER"
 
 
 class TestRunExecutionMetricOutputs:
