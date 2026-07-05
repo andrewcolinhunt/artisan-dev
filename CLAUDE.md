@@ -120,32 +120,54 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`
 ## Architecture
 
 ```
-src/artisan/               # Framework (domain-agnostic)
-├── composites/            # Composite operations (reusable op compositions)
-│   └── base/              # CompositeDefinition base class, context, provenance
-├── execution/             # Worker execution (context, executors, inputs, lineage, models, staging)
-├── operations/            # Base class + framework ops
-│   ├── base/              # OperationDefinition base class
-│   ├── curator/           # Curator ops (Filter, Merge, IngestFiles, IngestPipelineStep, IngestData)
-│   └── examples/          # Example operations (DataGenerator, DataTransformer, MetricCalculator)
-├── orchestration/         # Pipeline engine, dispatch, step execution
-│   └── engine/            # Batching, dispatch, step executor
-├── schemas/               # All data models
-│   ├── artifact/          # Artifact base, registry, types, metric, file_ref, data, execution_config
-│   ├── composites/        # CompositeRef, CompositeStepHandle, ExpandedCompositeResult
-│   ├── execution/         # Execution context, record, curator result
-│   ├── operation_config/  # Command/resource configuration schemas
-│   ├── orchestration/     # Pipeline/step result schemas
-│   ├── provenance/        # Provenance edge schemas
-│   └── specs/             # Input/output spec schemas
-├── storage/               # Artifact storage and persistence
-│   ├── cache/             # Cache lookup
-│   ├── core/              # Artifact store + table schemas
-│   └── io/                # Commit, staging, staging verification
-├── utils/                 # Hashing, paths, filenames, external tools, logging
-└── visualization/         # Provenance graphs and analytics
-    ├── graph/             # Micro/macro provenance graph rendering (Graphviz)
-    └── timing.py
+src/artisan/                # Framework (domain-agnostic)
+├── composites/             # Composite operations (reusable op compositions)
+│   └── base/               # CompositeDefinition base class, context, runtime results
+├── execution/              # Worker execution
+│   ├── compute/            # Compute-provider routing (local passthrough, tool-endpoint invoke)
+│   ├── context/            # Execution context builder + sandbox setup
+│   ├── executors/          # Creator/curator phase executors
+│   ├── inputs/             # Input grouping, instantiation, lineage matching, materialization
+│   ├── lineage/            # Lineage capture, enrichment, name derivation, validation
+│   ├── models/             # Execution unit + artifact source models
+│   ├── recording/          # Execution-record recorder + parquet writer
+│   ├── tool_endpoint/      # Operation-as-tool endpoint (client, server, deploy, docker)
+│   ├── transport/          # Transport log constants
+│   ├── exceptions.py       # Execution-phase exceptions
+│   └── utils.py            # Execution helpers (run-id generation, artifact finalization)
+├── operations/             # Base class + framework ops
+│   ├── base/               # OperationDefinition base class
+│   ├── curator/            # Curator ops (Filter, Merge, Ingest*, DeclareLineage, InteractiveFilter)
+│   └── examples/           # Example/demo operations (DataGenerator, DataTransformer, MetricCalculator)
+├── orchestration/          # Pipeline engine, dispatch, step execution
+│   ├── engine/             # Batching, dispatch, step executor/tracker, lifecycle router
+│   ├── runners/            # Compute runners (local, SLURM)
+│   ├── pipeline_manager.py # PipelineManager orchestration entry point
+│   ├── prefect_server.py   # Prefect server lifecycle helpers
+│   ├── run_history.py      # Run-history aggregation reader
+│   └── step_future.py      # Step future handle
+├── provenance/             # Domain-agnostic provenance traversal (Polars BFS)
+├── registry/               # Operation discovery and registration
+├── schemas/                # All data models
+│   ├── artifact/           # Artifact base, registry, types, metric, file_ref, data, execution_config
+│   ├── composites/         # CompositeRef dataclass (runtime results in composites/base/results.py)
+│   ├── execution/          # Execution context, record, results, runtime environment, storage config
+│   ├── operation_config/   # Command/resource/environment configuration schemas
+│   ├── orchestration/      # Pipeline/step config + result schemas
+│   ├── provenance/         # Provenance edge + lineage-mapping schemas
+│   ├── specs/              # Input/output spec schemas
+│   └── enums.py            # Framework enums (CachePolicy, FailurePolicy, GroupByStrategy, TablePath)
+├── storage/                # Artifact storage and persistence
+│   ├── cache/              # Cache lookup
+│   ├── core/               # Artifact store, provenance store, table schemas
+│   └── io/                 # Commit, staging, staging verification
+├── utils/                  # Hashing, paths, filenames, external tools, dotenv, logging
+├── visualization/          # Provenance graphs and analytics
+│   ├── graph/              # Micro/macro provenance rendering (Graphviz) + interactive stepper
+│   ├── inspect.py          # Pipeline/step/metric/data/failure inspection readers
+│   └── timing.py           # Timing analytics
+├── cli.py                  # CLI entry point (execute_as_tool op runner, schema export)
+└── errors.py               # ArtisanError base + domain exception hierarchy
 ```
 
 ---
