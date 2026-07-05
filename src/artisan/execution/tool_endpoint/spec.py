@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.registry.schemas import params_schema_for
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
     ModalComputeConfig,
@@ -54,7 +55,11 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
 
     Returns:
         The deploy spec read from class-level field defaults, including the
-        op's ``Params`` JSON schema for boundary validation.
+        op's ``Params`` JSON schema (from the registry's canonical
+        ``params_schema_for`` builder — the same schema the registry/MCP
+        plane serves) for boundary validation. A parameter-less op gets the
+        empty-``Params`` shape ``{"type": "object", "title": "Params",
+        "properties": {}}``, not ``{}``.
 
     Raises:
         ValueError: If the op is not a command op (ToolSpec +
@@ -78,12 +83,7 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
     resources = op_cls.model_fields["compute_resources"].default
     if not isinstance(resources, ComputeResources):
         resources = ComputeResources()
-    params_cls = getattr(op_cls, "Params", None)
-    params_schema = (
-        params_cls.model_json_schema()
-        if isinstance(params_cls, type) and issubclass(params_cls, BaseModel)
-        else {}
-    )
+    params_schema = params_schema_for(op_cls)
     return EndpointSpec(
         op_module=op_cls.__module__,
         op_qualname=op_cls.__qualname__,
