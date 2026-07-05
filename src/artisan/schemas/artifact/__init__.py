@@ -10,12 +10,14 @@ from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
 
 __all__ = [
     "AppendableArtifact",
     "Artifact",
     "ArtifactProvenanceEdge",
+    "ArtifactTypeDef",
     "ArtifactTypes",
     "DataArtifact",
     "ExecutionConfigArtifact",

@@ -3,9 +3,6 @@
 Public surface for the MCP server (``artisan_list_operations``,
 ``artisan_describe_operation``, ``artisan_examples``) and for Python-side
 callers introspecting available operations.
-
-See ``_dev/design/0_active/agents-v2/01_registry-and-schemas.md`` for the
-design.
 """
 
 from __future__ import annotations
