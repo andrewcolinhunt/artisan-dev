@@ -95,7 +95,7 @@ class IngestFiles(OperationDefinition):
         if not drafts:
             return ArtifactResult(
                 success=False,
-                error="No input files provided",
+                error="None of the provided file refs could be resolved from the artifact store",
             )
 
         return ArtifactResult(success=True, artifacts={output_role: drafts})

@@ -1,4 +1,4 @@
-"""Storage step_runner configuration for fsspec and delta-rs."""
+"""Storage configuration for fsspec and delta-rs."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 
 class StorageConfig(BaseModel):
-    """Storage step_runner configuration.
+    """Storage configuration.
 
     Credentials are NOT stored here — they come from the execution
     environment (IAM roles, env vars, service accounts). This config
@@ -21,7 +21,7 @@ class StorageConfig(BaseModel):
     ``AWS_ENDPOINT_URL``, ``GOOGLE_APPLICATION_CREDENTIALS``, etc.)
     via the Rust ``object_store`` crate. No key translation needed.
 
-    Args:
+    Attributes:
         protocol: fsspec protocol identifier. ``"file"`` for local
             filesystem, ``"s3"`` for S3, ``"gcs"`` for Google Cloud
             Storage.

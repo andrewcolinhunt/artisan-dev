@@ -1429,6 +1429,172 @@ class TestTypePreservation:
         assert set(labels) == {"good", "fair"}
 
 
+class TestRunScopedStepNames:
+    """Step-name labels must come from the detected run, not cross-run latest."""
+
+    def test_step_names_scoped_to_detected_run(self, tmp_path: Path) -> None:
+        """Same step_number, different name per run: labels use the detected run.
+
+        Two runs share step_number 1 with different step names. The
+        detected run ("run-detected") owns the most-recent step overall
+        (its step 2), but the *cross-run latest* record for step_number 1
+        belongs to "run-other". The metric lives at step 1 of the detected
+        run. Both the tidy path and the wide path (_step_info) must label
+        step 1 with the detected run's name, not the cross-run-latest name.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        root = tmp_path / "delta_runscope"
+        root.mkdir()
+
+        s_ids = [_pad("rs0"), _pad("rs1")]
+        m_ids = [_pad("rm0"), _pad("rm1")]
+
+        _write_delta(
+            root,
+            "artifacts/index",
+            [
+                *[
+                    {
+                        "artifact_id": sid,
+                        "artifact_type": "data",
+                        "origin_step_number": 0,
+                        "metadata": "{}",
+                    }
+                    for sid in s_ids
+                ],
+                *[
+                    {
+                        "artifact_id": mid,
+                        "artifact_type": "metric",
+                        "origin_step_number": 1,
+                        "metadata": "{}",
+                    }
+                    for mid in m_ids
+                ],
+            ],
+            ARTIFACT_INDEX_SCHEMA,
+        )
+
+        _write_delta(
+            root,
+            "artifacts/metrics",
+            [
+                {
+                    "artifact_id": m_ids[i],
+                    "origin_step_number": 1,
+                    "content": _metric_content({"score": 0.9 - i * 0.1}),
+                    "original_name": f"rm{i}",
+                    "extension": ".json",
+                    "metadata": "{}",
+                    "external_path": None,
+                }
+                for i in range(2)
+            ],
+            MetricArtifact.POLARS_SCHEMA,
+        )
+
+        _write_delta(
+            root,
+            "provenance/artifact_edges",
+            [
+                {
+                    "execution_run_id": _pad(f"ers{i}"),
+                    "source_artifact_id": s_ids[i],
+                    "target_artifact_id": m_ids[i],
+                    "source_artifact_type": "data",
+                    "target_artifact_type": "metric",
+                    "source_role": "samples",
+                    "target_role": "metrics",
+                    "group_id": None,
+                }
+                for i in range(2)
+            ],
+            ARTIFACT_EDGES_SCHEMA,
+        )
+
+        # Timestamp ordering (oldest -> newest):
+        #   detected step 0 < detected step 1 < other step 1 < detected step 2
+        # => detection picks "run-detected" (owns newest step overall),
+        #    but cross-run latest for step_number 1 is "run-other".
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+
+        def _step_row(
+            run_id: str,
+            step_number: int,
+            step_name: str,
+            ts: datetime,
+            tag: str,
+        ) -> dict:
+            return {
+                "step_run_id": _pad(f"sr{tag}"),
+                "step_spec_id": _pad(f"ss{tag}"),
+                "pipeline_run_id": run_id,
+                "step_number": step_number,
+                "step_name": step_name,
+                "status": "completed",
+                "operation_class": "SomeOp",
+                "params_json": "{}",
+                "input_refs_json": "{}",
+                "compute_backend": "local",
+                "compute_options_json": "{}",
+                "output_roles_json": "[]",
+                "output_types_json": "{}",
+                "total_count": 1,
+                "succeeded_count": 1,
+                "failed_count": 0,
+                "timestamp": ts,
+                "duration_seconds": 0.1,
+                "error": None,
+                "dispatch_error": None,
+                "commit_error": None,
+                "metadata": None,
+            }
+
+        _write_delta(
+            root,
+            "orchestration/steps",
+            [
+                _step_row("run-detected", 0, "ingest", base, "d0"),
+                _step_row(
+                    "run-detected",
+                    1,
+                    "eval_detected",
+                    base + timedelta(seconds=1),
+                    "d1",
+                ),
+                _step_row(
+                    "run-other", 1, "eval_other", base + timedelta(seconds=2), "o1"
+                ),
+                _step_row(
+                    "run-detected",
+                    2,
+                    "final_detected",
+                    base + timedelta(seconds=3),
+                    "d2",
+                ),
+            ],
+            STEPS_SCHEMA,
+        )
+
+        filt = InteractiveFilter(root)
+        filt.load()  # no pipeline_run_id -> auto-detects "run-detected"
+
+        assert filt._pipeline_run_id == "run-detected"
+
+        # Tidy path: step 1 labels use the detected run's name.
+        tidy_step1 = filt.tidy_df.filter(pl.col("step_number") == 1)
+        assert tidy_step1.height == 2
+        assert set(tidy_step1["step_name"].to_list()) == {"eval_detected"}
+
+        # Wide path: _step_info step-name map uses the detected run's name.
+        assert filt._step_info is not None
+        assert filt._step_info["_step_names"][1] == "eval_detected"
+
+        # Derived metric_sources reflect the detected run's name too.
+        assert {"step_number": 1, "step_name": "eval_detected"} in filt._metric_sources
+
+
 class TestExistingFloatMetricsStillWork:
     """Verify the original fixture (float-only metrics) still works."""
 

@@ -5,8 +5,8 @@ from __future__ import annotations
 from fsspec.implementations.local import LocalFileSystem
 from fsspec.implementations.memory import MemoryFileSystem
 
+from artisan.schemas.execution.fs import resolve_fs
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.utils.fs_resolve import resolve_fs
 
 
 class TestResolveFsProtocolMatch:

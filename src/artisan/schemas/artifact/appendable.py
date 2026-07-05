@@ -17,6 +17,7 @@ from pydantic import Field
 
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas.execution.fs import resolve_fs
 
 
 class AppendableArtifact(Artifact):
@@ -123,8 +124,6 @@ class AppendableArtifact(Artifact):
             msg = "Cannot read record: external_path not set"
             raise ValueError(msg)
         if fs is None:
-            from artisan.utils.fs_resolve import resolve_fs
-
             fs, source_path = resolve_fs(self.external_path, storage=None)
         else:
             source_path = self.external_path
@@ -157,6 +156,9 @@ class AppendableArtifact(Artifact):
             external_path: Path to the JSONL file.
             original_name: Record key for lineage inference.
             metadata: Optional metadata dict.
+
+        Returns:
+            Draft AppendableArtifact for the record.
         """
         return cls(
             artifact_id=None,

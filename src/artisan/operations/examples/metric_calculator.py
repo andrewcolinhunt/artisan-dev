@@ -75,7 +75,7 @@ class MetricCalculator(OperationDefinition):
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Execution ----------
-    batch_strategy: BatchStrategy = BatchStrategy(job_name="metric_calculator", artifacts_per_unit = 10000)  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="metric_calculator", artifacts_per_unit=10000)  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(

@@ -1,4 +1,4 @@
-"""SLURM step_runner — job array submission via submitit."""
+"""SLURM step runner — job array submission via submitit."""
 
 from __future__ import annotations
 

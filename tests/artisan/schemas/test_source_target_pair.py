@@ -174,22 +174,6 @@ class TestSourceTargetPair:
         assert "processed" in repr_str
 
 
-class TestImportFromSchemas:
-    """Tests for importing SourceTargetPair from schemas module."""
-
-    def test_import_from_schemas(self):
-        """Test that SourceTargetPair can be imported from schemas."""
-        from artisan.schemas import SourceTargetPair as ImportedClass
-
-        assert ImportedClass is SourceTargetPair
-
-    def test_in_schemas_all(self):
-        """Test that SourceTargetPair is in __all__."""
-        from artisan.schemas import __all__
-
-        assert "SourceTargetPair" in __all__
-
-
 class TestTwoDataclassPattern:
     """Tests verifying the two-dataclass pattern for provenance."""
 

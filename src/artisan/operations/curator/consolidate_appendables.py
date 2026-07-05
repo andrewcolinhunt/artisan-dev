@@ -27,8 +27,9 @@ class ConsolidateAppendables(OperationDefinition):
 
     Reads AppendableArtifacts from multiple worker files, concatenates
     all JSONL content into one combined file, and produces new artifacts
-    pointing to the combined path. Because external_path is included in
-    the content hash, consolidated artifacts get new artifact_ids.
+    pointing to the combined path. Because external_path feeds the
+    content-addressed artifact_id, consolidated artifacts get new
+    artifact_ids.
 
     Input Roles:
         records (appendable) -- Per-worker appendable artifacts
@@ -66,7 +67,23 @@ class ConsolidateAppendables(OperationDefinition):
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> ArtifactResult:
-        """Concatenate worker JSONL files and create consolidated artifacts."""
+        """Concatenate worker JSONL files and create consolidated artifacts.
+
+        Args:
+            inputs: Must contain a ``records`` key with a DataFrame of
+                appendable artifact IDs.
+            step_number: Current pipeline step number; also names the
+                subdirectory that holds the combined file.
+            artifact_store: Store for hydrating AppendableArtifact objects
+                and locating ``files_root``.
+
+        Returns:
+            ArtifactResult with consolidated appendable drafts keyed by the
+            ``records`` output role.
+
+        Raises:
+            ValueError: If the store has no ``files_root`` configured.
+        """
         if artifact_store.files_root is None:
             msg = "files_root required for ConsolidateAppendables"
             raise ValueError(msg)

@@ -2,11 +2,8 @@
 
 Query the executions table for a previous successful run with the same
 deterministic execution_spec_id. On a cache hit the caller skips
-execution entirely and reuses existing artifacts.
-
-Complements the file-based cache in ``execution/cache_validation.py``,
-which validates a specific sandbox directory. This module performs a
-global lookup across all prior executions.
+execution entirely and reuses existing artifacts. The lookup is global
+across all prior executions.
 """
 
 from __future__ import annotations

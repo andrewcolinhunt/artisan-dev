@@ -291,7 +291,7 @@ class OperationDefinition(BaseModel):
         Generative creators (no inputs) can use the default (returns ``{}``).
 
         Args:
-            inputs: Artifacts keyed by role and a working directory for
+            _inputs: Artifacts keyed by role and a working directory for
                 intermediate files.
 
         Returns:
@@ -446,7 +446,7 @@ class OperationDefinition(BaseModel):
         The default returns a successful result with no artifacts.
 
         Args:
-            inputs: File outputs, memory outputs, input context, and
+            _inputs: File outputs, memory outputs, input context, and
                 step metadata from the completed execution.
 
         Returns:

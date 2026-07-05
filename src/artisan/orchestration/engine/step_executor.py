@@ -29,8 +29,8 @@ from artisan.execution.executors.curator import (
 )
 from artisan.execution.inputs.grouping import group_inputs
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import record_execution_failure
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import record_execution_failure
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
@@ -212,7 +212,7 @@ def check_cache_for_batch(
     Args:
         execution_spec_id: Deterministic hash for the batch.
         delta_root: Root URI for Delta Lake tables.
-        config: Pipeline config for storage step_runner. When None,
+        config: Pipeline config for the storage backend. When None,
             uses local filesystem defaults.
 
     Returns:
@@ -467,8 +467,7 @@ def _create_runtime_environment(
     # failure_logs_root must be local (recorder._write_failure_log uses
     # os.makedirs/open). For local delta_root keep the historical
     # sibling-of-delta layout. For cloud delta_root derive from
-    # working_root, which is already declared local in
-    # runtime_environment.py:51.
+    # working_root, which RuntimeEnvironment already declares local.
     if config.storage.is_local:
         failure_logs_root = uri_join(uri_parent(config.delta_root), "logs", "failures")
     else:
@@ -511,7 +510,7 @@ def execute_step(
     This is the main entry point called by PipelineManager.run().
     It coordinates the three-phase workflow: dispatch, execute, commit.
 
-    For curator operations (MergeOp, FilterOp), a separate execution
+    For curator operations (Merge, Filter), a separate execution
     path is used that executes locally without worker dispatch.
 
     Args:
@@ -617,6 +616,7 @@ def _execute_curator_step(
         user_overrides: User-provided parameter overrides.
         step_spec_id: Pre-computed step spec ID; when provided, reused as
             execution_spec_id and cache check is skipped.
+        cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
         step_run_ids: Upstream step_number to step_run_id mapping.
@@ -929,6 +929,7 @@ def _execute_creator_step(
         failure_policy: Continue or fail-fast on errors.
         compact: Whether to run Delta Lake compaction.
         user_overrides: User-provided parameter overrides.
+        cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass per-batch execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
         step_run_ids: Upstream step_number to step_run_id mapping.

@@ -221,7 +221,7 @@ def build_micro_graph(
     - Execution nodes (operations) as rectangles
     - Artifact nodes (data, files, metrics) with type-specific shapes
     - Execution provenance edges (artifact ↔ execution)
-    - Lineage edges (artifact → artifact) in blue
+    - Lineage edges (artifact → artifact) in orange
 
     Layout uses strict left-to-right column ordering:
     - Step 0 executions → Step 0 outputs → Step 1 executions → Step 1 outputs → ...
@@ -231,6 +231,7 @@ def build_micro_graph(
         max_step: If provided, only include steps 0 through max_step (inclusive).
             Useful for step-by-step visualization of pipeline execution.
         storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
@@ -426,7 +427,7 @@ def build_micro_graph(
         else:
             graph.edge(exec_node, art_node, dir="both", arrowtail="dot")
 
-    # Add artifact lineage edges (artifact -> artifact) in blue
+    # Add artifact lineage edges (artifact -> artifact) in orange
     for row in artifact_edges.iter_rows(named=True):
         source_id = row["source_artifact_id"]
         target_id = row["target_artifact_id"]

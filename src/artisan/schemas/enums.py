@@ -16,7 +16,6 @@ class CacheValidationReason(Enum):
     cached result could not be reused.
     """
 
-    # Cache miss reasons
     NO_PREVIOUS_EXECUTION = "no_previous_execution"
     EXECUTION_FAILED = "execution_failed"
 

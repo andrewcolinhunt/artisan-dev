@@ -11,9 +11,9 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas import ArtifactResult
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources

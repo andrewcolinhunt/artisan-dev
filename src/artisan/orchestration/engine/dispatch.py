@@ -1,4 +1,4 @@
-"""Prefect task and flow factories for worker dispatch.
+"""Prefect task for worker dispatch.
 
 Provides the ``execute_unit_task`` Prefect task, unit serialization
 helpers, and result collection with SLURM log capture.
@@ -17,8 +17,8 @@ from prefect import task
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.utils.errors import format_error
 from artisan.utils.path import shard_uri
+from artisan.utils.traceback import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +55,12 @@ def execute_unit_task(
 
     Args:
         unit: Batch of artifacts to process.
-        runtime_env: Runtime paths and step_runner configuration.
+        runtime_env: Runtime paths and runner configuration.
 
     Returns:
         UnitResult with execution outcome.
     """
     try:
-        import os
-
         # Get worker_id from step_runner-specific environment variable
         env_var = runtime_env.worker_id_env_var
         worker_id = int(os.environ.get(env_var, "0")) if env_var else 0

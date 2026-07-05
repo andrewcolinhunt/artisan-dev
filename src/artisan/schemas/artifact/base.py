@@ -70,7 +70,7 @@ class Artifact(BaseModel):
     @field_validator("artifact_id")
     @classmethod
     def validate_artifact_id(cls, value: str | None) -> str | None:
-        """Validate artifact_id is exactly 32 hex chars when present."""
+        """Validate artifact_id is exactly 32 characters when present."""
         if value is not None and len(value) != 32:
             msg = "artifact_id must be exactly 32 characters when present"
             raise ValueError(msg)

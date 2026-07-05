@@ -21,6 +21,11 @@ def generate_execution_run_id(
 ) -> str:
     """Generate a deterministic execution run ID from spec, timestamp, and worker.
 
+    Args:
+        spec_id: Identifier of the execution spec.
+        timestamp: Execution timestamp, ISO-formatted into the digest.
+        worker_id: Worker index, disambiguating parallel workers. Defaults to 0.
+
     Returns:
         32-character xxh3_128 hex digest.
     """
@@ -32,7 +37,14 @@ def generate_execution_run_id(
 def finalize_artifacts(
     draft_artifacts: dict[str, list[Artifact]],
 ) -> dict[str, list[Artifact]]:
-    """Finalize all draft artifacts, computing content hashes and IDs."""
+    """Finalize all draft artifacts, computing content hashes and IDs.
+
+    Args:
+        draft_artifacts: Role -> draft artifacts to finalize.
+
+    Returns:
+        Role -> finalized artifacts.
+    """
     return {
         role: [draft.finalize() for draft in drafts]
         for role, drafts in draft_artifacts.items()

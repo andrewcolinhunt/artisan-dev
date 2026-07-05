@@ -60,8 +60,8 @@ def effective_config_payload(operation: Any) -> dict[str, Any]:
     The config counterpart to ``serialize_params``: both read the merged
     values (class defaults + applied overrides) off an already-instantiated
     operation, so the cache key reflects what actually runs — not just what
-    the caller typed at the call site. Every key is always present; the
-    legacy omit-when-unset rule is dropped.
+    the caller typed at the call site. Every cache-affecting key is
+    always present.
 
     Args:
         operation: A fully-instantiated ``OperationDefinition`` (post
@@ -179,7 +179,7 @@ def _serialize_input_spec(input_spec: dict[str, tuple[str, str]]) -> str:
 
 
 class _CanonicalEncoder(json.JSONEncoder):
-    """JSON encoder that handles sets and Paths for deterministic output."""
+    """JSON encoder that handles sets, Paths, and Enums for deterministic output."""
 
     def default(self, o: Any) -> Any:
         return artisan_json_default(o)

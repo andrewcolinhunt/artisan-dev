@@ -1,9 +1,7 @@
 """List and inspect persisted pipeline runs.
 
 Module-level entry point that reads the persisted ``steps`` Delta table
-and aggregates one row per pipeline run. Replaces the historical
-``PipelineManager.list_runs`` classmethod, which never referenced
-``cls`` and hard-coded ``StorageConfig()``.
+and aggregates one row per pipeline run.
 """
 
 from __future__ import annotations

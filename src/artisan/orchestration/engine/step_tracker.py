@@ -291,7 +291,7 @@ class StepTracker:
 
         Returns:
             DataFrame with pipeline_run_id, step_count, last_status,
-            min_timestamp, max_timestamp — one row per run.
+            started_at, ended_at — one row per run.
             Empty DataFrame if no table exists.
         """
         if not self._fs.exists(self._steps_path):
