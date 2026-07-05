@@ -26,9 +26,9 @@ from artisan.execution.utils import generate_execution_run_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.utils.errors import format_error
 from artisan.utils.path import cancel_sentinel_path
 from artisan.utils.timing import phase_timer
+from artisan.utils.traceback import format_error
 
 logger = logging.getLogger(__name__)
 

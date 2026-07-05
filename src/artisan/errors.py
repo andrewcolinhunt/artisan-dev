@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from artisan.utils.errors import format_error
+from artisan.utils.traceback import format_error
 
 ErrorType = Literal["validation", "runtime", "io", "compute", "config"]
 RecoveryHint = Literal[

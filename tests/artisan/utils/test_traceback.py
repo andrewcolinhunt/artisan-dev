@@ -1,8 +1,8 @@
-"""Tests for artisan.utils.errors."""
+"""Tests for artisan.utils.traceback."""
 
 from __future__ import annotations
 
-from artisan.utils.errors import format_error
+from artisan.utils.traceback import format_error
 
 
 class TestFormatError:
