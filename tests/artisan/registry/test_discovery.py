@@ -14,7 +14,11 @@ class TestDiscoverBuiltIn:
         report = discover()
         kinds = [(s.kind, s.module) for s in report.sources]
         assert ("builtin", "artisan.operations.curator") in kinds
-        assert ("builtin", "artisan.operations.examples") in kinds
+
+    def test_example_ops_not_auto_discovered(self) -> None:
+        report = discover()
+        modules = [s.module for s in report.sources]
+        assert "artisan.operations.examples" not in modules
 
     def test_operations_count_matches_registry(self) -> None:
         report = discover()
