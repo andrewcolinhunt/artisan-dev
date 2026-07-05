@@ -55,7 +55,7 @@ def execute_unit_task(
 
     Args:
         unit: Batch of artifacts to process.
-        runtime_env: Runtime paths and step_runner configuration.
+        runtime_env: Runtime paths and runner configuration.
 
     Returns:
         UnitResult with execution outcome.
