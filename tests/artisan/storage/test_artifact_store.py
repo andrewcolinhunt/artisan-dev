@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import polars as pl
 import pytest
+from fixtures.execution_records import executions_df
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
@@ -15,7 +16,6 @@ from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
-    EXECUTIONS_SCHEMA,
     STEPS_SCHEMA,
 )
 
@@ -991,26 +991,23 @@ class TestLoadStepNameMap:
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
         ts = datetime(2025, 1, 1, tzinfo=UTC)
-        pl.DataFrame(
-            {
-                "execution_run_id": ["e" * 32],
-                "execution_spec_id": ["s" * 32],
-                "step_run_id": [None],
-                "origin_step_number": [0],
-                "operation_name": ["ingest_fallback"],
-                "params": ["{}"],
-                "user_overrides": ["{}"],
-                "timestamp_start": [ts],
-                "timestamp_end": [ts],
-                "source_worker": [0],
-                "compute_backend": ["local"],
-                "success": [True],
-                "error": [None],
-                "tool_output": [None],
-                "worker_log": [None],
-                "metadata": ["{}"],
-            },
-            schema=EXECUTIONS_SCHEMA,
+        executions_df(
+            execution_run_id=["e" * 32],
+            execution_spec_id=["s" * 32],
+            step_run_id=[None],
+            origin_step_number=[0],
+            operation_name=["ingest_fallback"],
+            params=["{}"],
+            user_overrides=["{}"],
+            timestamp_start=[ts],
+            timestamp_end=[ts],
+            source_worker=[0],
+            compute_backend=["local"],
+            success=[True],
+            error=[None],
+            tool_output=[None],
+            worker_log=[None],
+            metadata=["{}"],
         ).write_delta(f"{root}/orchestration/executions", storage_options=opts)
         result = store.provenance.load_step_name_map()
         assert result[0] == "ingest_fallback"

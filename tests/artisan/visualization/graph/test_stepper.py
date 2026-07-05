@@ -6,10 +6,10 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fixtures.execution_records import executions_df
 
 from artisan.storage.core.table_schemas import (
     ARTIFACT_INDEX_SCHEMA,
-    EXECUTIONS_SCHEMA,
 )
 
 # Import conditionally to handle environments without ipywidgets
@@ -46,7 +46,7 @@ def delta_root_with_steps(tmp_path: Path) -> Path:
         "worker_log": [None, None, None],
         "metadata": ["{}", "{}", "{}"],
     }
-    exec_df = pl.DataFrame(exec_data, schema=EXECUTIONS_SCHEMA)
+    exec_df = executions_df(**exec_data)
     exec_df.write_delta(str(delta_root / "orchestration/executions"), mode="overwrite")
 
     # Create artifact_index

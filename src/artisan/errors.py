@@ -170,6 +170,12 @@ class ErrorCode:
     INPUT_RESOLUTION_FAILED = "input_resolution_failed"
     OUTPUT_DELIVERY_FAILED = "output_delivery_failed"
 
+    # validation — execution-time contract checks (domain-exception re-parenting)
+    ARTIFACT_VALIDATION_FAILED = "artifact_validation_failed"
+    LINEAGE_INCOMPLETE = "lineage_incomplete"
+    LINEAGE_INTEGRITY_FAILED = "lineage_integrity_failed"
+    PASSTHROUGH_VALIDATION_FAILED = "passthrough_validation_failed"
+
 
 class CommitError(Exception):
     """Raised when one or more table commits fail in ``commit_all_tables``.

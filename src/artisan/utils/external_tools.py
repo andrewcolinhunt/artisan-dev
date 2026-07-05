@@ -17,6 +17,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from artisan.errors import ArtisanError, ErrorCode
+
 # =============================================================================
 # COMMAND DATACLASS
 # =============================================================================
@@ -43,12 +45,15 @@ class Command:
 # =============================================================================
 
 
-@dataclass
-class ExternalToolError(Exception):
+class ExternalToolError(ArtisanError):
     """Structured error for external tool failures.
 
     Raised when an external tool exits with non-zero status or times out.
-    Contains all context needed to diagnose the failure.
+    Contains all context needed to diagnose the failure. Reuses
+    ``OP_EXECUTE_FAILED`` (``error_type="compute"``) — a local tool crash
+    and a remote one read the same code — and keeps the full multi-line
+    composition in ``__str__`` while the envelope ``message`` stays a short
+    one-line summary.
 
     Attributes:
         message: Human-readable error description.
@@ -59,12 +64,28 @@ class ExternalToolError(Exception):
         runtime: The EnvironmentSpec or context that was executed.
     """
 
-    message: str
-    command: list[str]
-    return_code: int
-    stdout: str
-    stderr: str
-    runtime: Any
+    def __init__(
+        self,
+        message: str,
+        *,
+        command: list[str],
+        return_code: int,
+        stdout: str,
+        stderr: str,
+        runtime: Any,
+    ) -> None:
+        super().__init__(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            error_type="compute",
+            message=message,
+            recovery_hint="RETRY_LATER" if return_code == -1 else "REPORT_TO_USER",
+        )
+        self.message = message
+        self.command = command
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
+        self.runtime = runtime
 
     def __str__(self) -> str:
         parts = [f"{self.message} (exit code {self.return_code})"]
