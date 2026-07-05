@@ -441,9 +441,7 @@ class TestProvenance:
 
     def test_backward_edges(self, tmp_path, capsys, seed_artifact_edges):
         seed_artifact_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
-        rc = main(
-            ["provenance", self.C, "--delta-root", str(tmp_path), "--json"]
-        )
+        rc = main(["provenance", self.C, "--delta-root", str(tmp_path), "--json"])
 
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
