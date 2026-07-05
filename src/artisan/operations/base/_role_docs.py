@@ -60,7 +60,8 @@ def validate_role_enums(cls: type, _class_label: str) -> None:
 
     Args:
         cls: The definition subclass being validated.
-        class_label: Human-readable label for error messages (e.g. "operation").
+        _class_label: Unused; accepted so the operation and composite call
+            sites share one signature.
     """
     # Accessed on OperationDefinition/CompositeDefinition subclasses which
     # declare `inputs`/`outputs` as ClassVars; `type` alone is too narrow.

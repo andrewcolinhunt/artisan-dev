@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
 
 @contextmanager
-def phase_timer(name: str, timings: dict[str, Any]):
+def phase_timer(name: str, timings: dict[str, Any]) -> Iterator[None]:
     """Record wall-clock seconds for a named phase into timings dict.
 
     Args:

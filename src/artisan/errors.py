@@ -76,7 +76,7 @@ class ArtisanError(Exception):
 
     Domain-specific subclasses (e.g. ``ArtifactValidationError``) inherit
     from this and supply their own ``code`` / ``recovery_hint`` in
-    ``__init__`` — see Phase 3 of the error-envelope design.
+    ``__init__``.
     """
 
     def __init__(

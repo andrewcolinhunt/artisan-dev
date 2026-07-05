@@ -21,12 +21,13 @@ class ExecutionUnit(BaseModel):
     ``independent_input_streams``.
 
     Attributes:
-        operation (OperationDefinition): Fully configured operation instance.
+        operation: Fully configured operation instance.
         inputs: Role-keyed lists of 32-char hex artifact IDs.
         execution_spec_id: Deterministic xxh3_128 hash for cache lookup.
         step_number: Pipeline step number for artifact metadata.
         group_ids: Per-index group IDs from framework pairing (optional).
         user_overrides: User-provided parameter overrides before merge.
+        step_run_id: Step run ID for output isolation scoping (optional).
     """
 
     operation: OperationDefinition

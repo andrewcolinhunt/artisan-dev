@@ -1,4 +1,4 @@
-"""SLURM intra-allocation step_runner — srun dispatch within an existing allocation."""
+"""SLURM intra-allocation step runner — srun dispatch within an existing allocation."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class SlurmIntraRunner(RunnerBase):
     """Execute within an existing SLURM allocation via srun.
 
     Unlike ``SlurmRunner`` which submits independent ``sbatch`` jobs to the
-    SLURM queue, this step_runner distributes work directly to allocated resources
+    SLURM queue, this step runner distributes work directly to allocated resources
     using ``srun``. This eliminates queue latency when resources are already
     reserved via ``salloc`` or ``sbatch``.
 

@@ -1,4 +1,4 @@
-"""Prefect task and flow factories for worker dispatch.
+"""Prefect task for worker dispatch.
 
 Provides the ``execute_unit_task`` Prefect task, unit serialization
 helpers, and result collection with SLURM log capture.
@@ -61,8 +61,6 @@ def execute_unit_task(
         UnitResult with execution outcome.
     """
     try:
-        import os
-
         # Get worker_id from step_runner-specific environment variable
         env_var = runtime_env.worker_id_env_var
         worker_id = int(os.environ.get(env_var, "0")) if env_var else 0

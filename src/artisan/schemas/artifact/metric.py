@@ -61,6 +61,8 @@ class MetricArtifact(JsonContentMixin, Artifact):
 
         Args:
             directory: Target directory for the output file.
+            fs: Accepted for base-class signature parity but unused;
+                metric content is inline, so no filesystem read is needed.
 
         Returns:
             Path to the written file.

@@ -70,6 +70,10 @@ class InteractiveFilter:
 
     Args:
         delta_root: Root directory of the Delta Lake store.
+        fs: Filesystem for reading and writing the store. Defaults to a
+            local filesystem when None.
+        storage_options: Backend storage options forwarded to the artifact
+            store and Delta scans (e.g. cloud credentials). Defaults to None.
     """
 
     def __init__(

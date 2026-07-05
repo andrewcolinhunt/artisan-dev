@@ -16,7 +16,7 @@ from artisan.utils.path import shard_uri
 
 logger = logging.getLogger(__name__)
 
-# The file that is ALWAYS written by finalize_and_stage()
+# The file that every staged execution writes (via _write_execution_record)
 REQUIRED_STAGING_FILE = "executions.parquet"
 
 
@@ -50,6 +50,9 @@ def verify_file_exists_nfs(path: str) -> bool:
 
     Args:
         path: File to verify.
+
+    Returns:
+        True if the file is visible and readable, else False.
     """
     _invalidate_nfs_dir_cache(path)
     try:

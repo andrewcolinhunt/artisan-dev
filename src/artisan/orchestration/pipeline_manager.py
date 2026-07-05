@@ -79,8 +79,6 @@ def _generate_run_id(name: str) -> str:
 
 def _generate_step_run_id(step_spec_id: str) -> str:
     """Generate a unique 32-char hex step run identifier."""
-    from artisan.utils.hashing import digest_utf8
-
     return digest_utf8(f"{step_spec_id}:{datetime.now(UTC).isoformat()}")
 
 
@@ -148,12 +146,7 @@ def _extract_name_from_run_id(run_id: str) -> str:
 
 def _is_file_path_input(inputs: Any) -> bool:
     """Return True if inputs is a non-empty list of raw file path strings."""
-    return (
-        isinstance(inputs, list)
-        and bool(inputs)
-        and isinstance(inputs[0], str)
-        and not isinstance(inputs[0], OutputReference)
-    )
+    return isinstance(inputs, list) and bool(inputs) and isinstance(inputs[0], str)
 
 
 def _promote_file_paths_to_store(
@@ -674,8 +667,7 @@ class PipelineManager:
 
             # logs_root must be local (configure_logging os.makedirs it
             # at DEBUG level). When delta_root is cloud, pass None so no
-            # file handler is attached. Cloud-side log persistence is
-            # tracked in _dev/design/1_future/cloud/failure-log-persistence.md.
+            # file handler is attached.
             logs_root = (
                 uri_join(uri_parent(config.delta_root), "logs")
                 if config.storage.is_local
@@ -1212,6 +1204,8 @@ class PipelineManager:
             environment: Environment override.
             tool: Tool overrides.
             compute_provider: Compute provider override (string or dict).
+            compute_resources: Compute-provider hardware override
+                (gpu, cpu, memory_gb, timeout).
             failure_policy: Override pipeline-level failure policy.
             group_by: Override the operation's class-level ``group_by`` for
                 this step only. ``None`` (default) preserves the operation's
@@ -1283,6 +1277,8 @@ class PipelineManager:
             environment: Environment override.
             tool: Tool overrides.
             compute_provider: Compute provider override (string or dict).
+            compute_resources: Compute-provider hardware override
+                (gpu, cpu, memory_gb, timeout).
             failure_policy: Override pipeline-level failure policy.
             group_by: Override the operation's class-level ``group_by`` for
                 this step only. ``None`` (default) preserves the operation's
@@ -1767,24 +1763,14 @@ class PipelineManager:
 
         # Internal compute_options keys stay "resources"/"execution" to
         # preserve persisted-record stability across the public-API renames.
-        # ov fields are already coerced to dicts/strs; _to_dict is a
-        # defensive no-op kept for record-JSON stability.
-        from pydantic import BaseModel as _BaseModel
-
-        def _to_dict(v: Any) -> Any:
-            if isinstance(v, _BaseModel):
-                return v.model_dump(mode="json")
-            return v
-
+        # ov fields are already coerced to dicts/strs by StepOverrides.from_user.
         compute_options_data = {
-            "resources": _to_dict(ov.runner_resources) or {},
-            "execution": _to_dict(ov.batch_strategy) or {},
-            "environment": (
-                _to_dict(ov.environment) if ov.environment is not None else {}
-            ),
-            "tool": _to_dict(ov.tool) or {},
+            "resources": ov.runner_resources or {},
+            "execution": ov.batch_strategy or {},
+            "environment": ov.environment if ov.environment is not None else {},
+            "tool": ov.tool or {},
             "compute_provider": (
-                _to_dict(ov.compute_provider) if ov.compute_provider is not None else {}
+                ov.compute_provider if ov.compute_provider is not None else {}
             ),
             "group_by": (ov.group_by.value if ov.group_by is not None else None),
         }

@@ -483,7 +483,8 @@ class Filter(OperationDefinition):
 
         Args:
             inputs: Role names to DataFrames with ``artifact_id``.
-            step_number: Current pipeline step number (unused).
+            step_number: Current filter step number; upper bound for the
+                forward provenance walk that discovers descendant metrics.
             artifact_store: Store for lineage matching and metric hydration.
 
         Returns:

@@ -134,13 +134,20 @@ def resolve_inputs(
         inputs: Input specification in any supported format.
         delta_root: Root URI for Delta Lake tables.
         fs: Filesystem implementation for path operations.
+        step_run_ids: Optional mapping of source step number to step run
+            ID. When provided, each reference is scoped to the matching
+            step run. Defaults to None.
         storage_options: Delta-rs storage options for cloud backends.
 
     Returns:
         Dict mapping role names to lists of artifact IDs.
 
     Raises:
-        ValueError: If raw file paths are passed (handled elsewhere).
+        ValueError: If raw file paths are passed as a list, or if an
+            artifact ID is not a 32-character hex string.
+        TypeError: If a dict value is neither an OutputReference nor a
+            list of artifact IDs, or a list element is not an
+            OutputReference.
 
     Example:
         # OutputReference inputs

@@ -78,7 +78,7 @@ class LargeFileArtifact(Artifact):
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Copy the file from external_path to the target directory.
 
-        Uses artifact_id as filename (per Design 1 convention).
+        Uses artifact_id as the output filename.
 
         Args:
             directory: Target directory for the output file.

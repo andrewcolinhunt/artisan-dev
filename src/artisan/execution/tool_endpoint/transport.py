@@ -104,6 +104,13 @@ class InlineTransport:
     def pack_outputs(self, src: str, names: list[str]) -> bytes:
         """Tar the named output files (paths relative to ``src``).
 
+        Args:
+            src: Directory holding the output files.
+            names: Output paths relative to ``src``.
+
+        Returns:
+            The tar payload as bytes.
+
         Raises:
             ValueError: When the tar exceeds ``MAX_INLINE_BYTES`` — pass
                 ``output_store`` for object-store delivery instead.

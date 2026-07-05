@@ -46,13 +46,18 @@ def capture_lineage_metadata(
             grouped lineage uses ``pair_index`` directly to resolve
             primary and co-input edges, bypassing the
             ``primary_id_to_idx`` lookup that would otherwise collapse
-            repeated-primary CROSS_PRODUCT batches (Bug A). Drafts
-            without an entry (e.g. memory-only outputs) fall back to the
-            legacy stem-match path.
+            repeated-primary CROSS_PRODUCT batches. Drafts without an
+            entry (e.g. memory-only outputs) fall back to the legacy
+            stem-match path.
 
     Returns:
         Dict mapping output role to list of LineageMapping entries.
         Each LineageMapping carries an optional group_id for co-input edges.
+
+    Raises:
+        RuntimeError: If an output artifact referenced by an
+            output-to-output lineage config has no ``artifact_id``.
+            Lineage capture requires finalized artifacts.
     """
     result: dict[str, list[LineageMapping]] = {}
 
@@ -121,8 +126,9 @@ def capture_lineage_metadata(
             if original_name is None:
                 continue
 
-            # Bug A path: when a per-output pair index is available
-            # (grouped + filesystem-output + per_artifact_dispatch=True),
+            # Direct pair-index path: when a per-output pair index is
+            # available (grouped + filesystem-output +
+            # per_artifact_dispatch=True),
             # resolve both the primary edge and all co-input edges
             # directly from ``input_artifacts[role][pair_idx]``. This
             # bypasses ``primary_id_to_idx`` which collapses to a single
@@ -173,11 +179,12 @@ def capture_lineage_metadata(
 
             # Legacy path: stem-match the output to an input candidate,
             # then look up the pair index via ``primary_id_to_idx``.
-            # Used for (a) ungrouped ops, (b) the curator path (no
-            # output_pair_map), and (c) memory-only outputs that have
-            # no entry in output_pair_map. The clobber for repeated
-            # primaries persists here for case (c) — documented as an
-            # op-author responsibility on ``OperationDefinition.group_by``.
+            # Used for ungrouped ops, the curator path (no
+            # output_pair_map), and memory-only outputs that have no
+            # entry in output_pair_map. For those memory-only outputs
+            # the clobber for repeated primaries persists here —
+            # documented as an op-author responsibility on
+            # ``OperationDefinition.group_by``.
             matched: tuple[str, str] | None = None
             if filesystem_match_map and original_name in filesystem_match_map:
                 fs_input_id = filesystem_match_map[original_name]
@@ -303,7 +310,7 @@ def _build_candidates_from_outputs(
 def _build_stem_index(
     candidates: list[tuple[str, str, str]],
 ) -> dict[str, list[tuple[str, str]]]:
-    """Pre-compute_provider stripped stems and build a lookup index.
+    """Pre-compute stripped stems and build a lookup index.
 
     Args:
         candidates: List of (original_name, artifact_id, role) tuples.

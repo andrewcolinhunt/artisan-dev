@@ -22,7 +22,3 @@ class OutputReference(BaseModel):
     )
 
     model_config = {"frozen": True}
-
-    def __hash__(self) -> int:
-        """Allow use as set members and dict keys."""
-        return hash((self.source_step, self.role, self.artifact_type))
