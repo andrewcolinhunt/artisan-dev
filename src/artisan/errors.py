@@ -169,6 +169,10 @@ class ErrorCode:
     TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
+    # config/io — CLI machine-read boundary (cli.py store-reading commands)
+    DELTA_ROOT_UNSET = "delta_root_unset"
+    STORE_NOT_FOUND = "store_not_found"
+
     # io — worker-side input resolution / output delivery (tool-endpoint wire)
     INPUT_RESOLUTION_FAILED = "input_resolution_failed"
     OUTPUT_DELIVERY_FAILED = "output_delivery_failed"
