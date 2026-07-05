@@ -18,6 +18,7 @@ from pydantic import Field
 
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas.execution.fs import resolve_fs
 
 
 class LargeFileArtifact(Artifact):
@@ -104,8 +105,6 @@ class LargeFileArtifact(Artifact):
             fs.get(self.external_path, dest)
         else:
             from fsspec.implementations.local import LocalFileSystem
-
-            from artisan.utils.fs_resolve import resolve_fs
 
             resolved_fs, source_path = resolve_fs(self.external_path, storage=None)
             if isinstance(resolved_fs, LocalFileSystem):

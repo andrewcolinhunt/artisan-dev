@@ -172,11 +172,11 @@ def _promote_file_paths_to_store(
 
     from artisan.schemas.artifact.file_ref import FileRefArtifact
     from artisan.schemas.enums import TablePath
+    from artisan.schemas.execution.fs import resolve_fs
     from artisan.storage.io.commit import DeltaCommitter
     from artisan.utils.filename import strip_extensions
-    from artisan.utils.fs_resolve import resolve_fs
 
-    # Per-path fs resolution (two-step rule from utils/fs_resolve.py):
+    # Per-path fs resolution (two-step rule from schemas/execution/fs.py):
     # protocol-match → config.storage.filesystem(); else → url_to_fs
     # ambient discovery. This lets a local pipeline ingest from S3, and
     # lets test fixtures with explicit credentials in StorageConfig
