@@ -45,5 +45,9 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
 
     mcp = FastMCP("artisan", lifespan=lifespan)
     tools.catalog.register(mcp)
+    tools.runs.register(mcp)
+    tools.artifacts.register(mcp)
+    tools.logs.register(mcp)
     resources.catalog.register(mcp)
+    resources.runs.register(mcp)
     return mcp

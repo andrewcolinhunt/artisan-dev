@@ -6,6 +6,6 @@ Each module exposes ``register(mcp)`` which attaches its tools to the
 
 from __future__ import annotations
 
-from artisan_mcp.tools import catalog
+from artisan_mcp.tools import artifacts, catalog, logs, runs
 
-__all__ = ["catalog"]
+__all__ = ["artifacts", "catalog", "logs", "runs"]
