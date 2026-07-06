@@ -94,6 +94,13 @@ beartype = "*"
 pydantic = "*"
 fsspec = "*"
 griffe = "*"          # Google-style docstring parsing for agent-facing schemas
+# Hold starlette/fastapi at the versions the repo used before adding fastmcp:
+# the fastmcp re-solve otherwise bumps them, and the newer releases break
+# prefect's embedded server (500s) and its PrefectRouter, and trip the
+# tool-endpoint TestClient's httpx deprecation under filterwarnings=error.
+# mcp/fastapi/sse-starlette all accept these ranges.
+starlette = "<0.51"
+fastapi = "<0.136"
 
 # Workflow orchestration
 prefect = { version = ">=3.6,<4.0", extras = ["dask"] }
