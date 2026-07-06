@@ -140,5 +140,19 @@ class TestDiagnoseRun:
         assert {"source_artifact_id": A, "target_artifact_id": B} in diag.upstream_edges
 
     def test_missing_executions_raises(self, tmp_path) -> None:
+        """A bogus root (no executions, no steps) raises for store_not_found."""
         with pytest.raises(FileNotFoundError):
             diagnose_run(str(tmp_path), "run-1")
+
+    def test_steps_but_no_executions_degrades(self, tmp_path) -> None:
+        """A real store with no executions recorded yields an empty diagnosis."""
+        steps = [_step_row("run-1", 1, "generate", "running", 0)]
+        pl.DataFrame(steps, schema=STEPS_SCHEMA).write_delta(
+            str(tmp_path / TablePath.STEPS)
+        )
+
+        diag = diagnose_run(str(tmp_path), "run-1")
+        assert isinstance(diag, RunDiagnosis)
+        assert diag.failed_steps == []
+        assert diag.last_status == "running"
+        assert diag.suggested_actions == []

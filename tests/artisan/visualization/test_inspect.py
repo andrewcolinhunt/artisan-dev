@@ -503,9 +503,30 @@ def test_inspect_failures_pipeline_run_id_filter(tmp_path: Path) -> None:
 
 
 def test_inspect_failures_no_table_raises(tmp_path: Path) -> None:
+    """A bogus root (no executions, no steps) raises for the store_not_found path."""
     delta_root = tmp_path / "delta"
     with pytest.raises(FileNotFoundError):
         inspect_failures(delta_root)
+
+
+def test_inspect_failures_steps_but_no_executions_returns_empty(tmp_path: Path) -> None:
+    """A real store where nothing executed yet yields the empty frame, not a raise."""
+    delta_root = tmp_path / "delta"
+    _write_steps(delta_root, [_step_row(step_number=0, step_name="data_generator")])
+
+    result = inspect_failures(delta_root)
+    assert result.is_empty()
+    assert result.columns == [
+        "step",
+        "operation",
+        "execution_run_id",
+        "code",
+        "recovery_hint",
+        "field",
+        "suggestions",
+        "error",
+        "log",
+    ]
 
 
 # ======================================================================
