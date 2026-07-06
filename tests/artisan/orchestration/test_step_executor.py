@@ -2067,3 +2067,116 @@ class TestGroupByEffectiveConfigHashing:
         spec_none = spec_for(None)
         assert spec_lineage != spec_cross
         assert spec_none not in {spec_lineage, spec_cross}
+
+
+class TestFailureRecordSynthesis:
+    """Seam tests for orchestrator-side failure-record synthesis (Fix 2)."""
+
+    def _config(self, tmp_path):
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        return PipelineConfig(
+            name="synth",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+
+    def test_backfills_empty_run_id_and_commit_makes_it_readable(self, tmp_path):
+        """A failed UnitResult with no run id is synthesized, committed, and read.
+
+        Covers the pre-try / unimportable-op path (Mechanism B) that cannot be
+        built importably: a worker returns success=False with empty
+        execution_run_ids, the orchestrator synthesizes the record, the commit
+        path lands the success=False parquet, and inspect_failures reads it.
+        """
+        from datetime import UTC, datetime
+
+        from artisan.execution.models.execution_unit import ExecutionUnit
+        from artisan.orchestration.engine.step_executor import (
+            _commit_and_compact,
+            _create_runtime_environment,
+            _synthesize_missing_failure_records,
+        )
+        from artisan.visualization.inspect import inspect_failures
+
+        config = self._config(tmp_path)
+        op = MockNoGroupByCreatorOp()
+        runtime_env = _create_runtime_environment(config, op)
+        unit = ExecutionUnit(
+            operation=op,
+            inputs={},
+            execution_spec_id="a" * 32,
+            step_number=0,
+        )
+        result = UnitResult(
+            success=False,
+            error="pre-try boom",
+            item_count=1,
+            execution_run_ids=[],
+        )
+
+        patched = _synthesize_missing_failure_records(
+            [unit],
+            [result],
+            runtime_env,
+            datetime.now(UTC),
+            None,
+            step_run_id=None,
+        )
+        assert patched[0].execution_run_ids == ["killed-" + "a" * 24]
+
+        _commit_and_compact(
+            config,
+            runtime_env,
+            0,
+            op.name,
+            {},
+            has_work=True,
+            compact=False,
+        )
+
+        failures = inspect_failures(config.delta_root)
+        rows = [r for r in failures.to_dicts() if r["operation"] == op.name]
+        assert len(rows) == 1
+        assert rows[0]["step"] == 0
+        assert rows[0]["code"] is None
+        assert "pre-try boom" in rows[0]["error"]
+        log_path = tmp_path / "logs" / "failures" / rows[0]["log"]
+        assert log_path.exists()
+
+    def test_skips_units_that_already_recorded(self, tmp_path):
+        """A failed result that already carries a run id is left untouched."""
+        from datetime import UTC, datetime
+
+        from artisan.execution.models.execution_unit import ExecutionUnit
+        from artisan.orchestration.engine.step_executor import (
+            _create_runtime_environment,
+            _synthesize_missing_failure_records,
+        )
+
+        config = self._config(tmp_path)
+        op = MockNoGroupByCreatorOp()
+        runtime_env = _create_runtime_environment(config, op)
+        unit = ExecutionUnit(operation=op, inputs={}, step_number=0)
+        recorded = UnitResult(
+            success=False,
+            error="worker already recorded this",
+            item_count=1,
+            execution_run_ids=["real_run_id"],
+        )
+
+        patched = _synthesize_missing_failure_records(
+            [unit],
+            [recorded],
+            runtime_env,
+            datetime.now(UTC),
+            None,
+            step_run_id=None,
+        )
+
+        # Unchanged, and nothing was staged (no delta/staging writes).
+        assert patched == [recorded]
+        assert not (tmp_path / "staging").exists() or not any(
+            (tmp_path / "staging").rglob("executions.parquet")
+        )
