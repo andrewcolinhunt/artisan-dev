@@ -7,6 +7,6 @@ re-fetch to refresh.
 
 from __future__ import annotations
 
-from artisan_mcp.resources import catalog, runs
+from artisan_mcp.resources import catalog, lineage, runs
 
-__all__ = ["catalog", "runs"]
+__all__ = ["catalog", "lineage", "runs"]

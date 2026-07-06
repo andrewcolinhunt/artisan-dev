@@ -41,13 +41,18 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
         report = discover(extra_modules=cfg.load_modules or None)
         yield {"discovery": report, "config": cfg}
 
-    from artisan_mcp import resources, tools
+    from artisan_mcp import prompts, resources, tools
 
     mcp = FastMCP("artisan", lifespan=lifespan)
     tools.catalog.register(mcp)
     tools.runs.register(mcp)
     tools.artifacts.register(mcp)
     tools.logs.register(mcp)
+    tools.provenance.register(mcp)
+    # Phase 2 write tools register here under `if cfg.write_enabled:`; unbuilt
+    # in v1, so a read-only agent sees exactly the ten read tools either way.
     resources.catalog.register(mcp)
     resources.runs.register(mcp)
+    resources.lineage.register(mcp)
+    prompts.register(mcp)
     return mcp

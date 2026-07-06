@@ -15,14 +15,18 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
+from pydantic import BaseModel
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.utils.dicts import flatten_dict
+
+if TYPE_CHECKING:
+    from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.utils.path import uri_join
 
 # ======================================================================
@@ -299,6 +303,151 @@ def inspect_failures(
     if not rows:
         return pl.DataFrame(schema=_FAILURES_SCHEMA)
     return pl.DataFrame(rows, schema=_FAILURES_SCHEMA)
+
+
+_RECOVERY_ACTIONS = {
+    "CHECK_INPUT": "Check the operation's inputs and parameters against its schema.",
+    "RETRY_LATER": "Retry the run; the failure may be transient.",
+    "TRY_ALTERNATIVE": "Try an alternative operation or configuration.",
+    "REPORT_TO_USER": "Surface this failure to the user; it needs human attention.",
+}
+"""Deterministic recovery_hint → next-action mapping (no heuristics)."""
+
+_DEFAULT_ACTION = "Read the failure log for the full error and traceback."
+
+
+class RunDiagnosis(BaseModel):
+    """Composite failure diagnosis for one run — pure composition, no new state.
+
+    Attributes:
+        pipeline_run_id: The diagnosed run.
+        last_status: The run's most recent step status, or None if unknown.
+        failed_steps: One deserialized ``inspect_failures`` row per failed
+            execution in the run.
+        similar_runs: Recent runs whose ``last_status`` was ``failed``,
+            excluding this run (context for a recurring failure).
+        upstream_edges: Backward provenance edges from the artifacts the
+            failed steps produced, deduplicated and depth-bounded.
+        suggested_actions: Deterministic next actions derived from the
+            failed steps' ``recovery_hint`` values.
+    """
+
+    pipeline_run_id: str
+    last_status: str | None
+    failed_steps: list[dict[str, Any]]
+    similar_runs: list[dict[str, Any]]
+    upstream_edges: list[dict[str, str]]
+    suggested_actions: list[str]
+
+
+def diagnose_run(
+    delta_root: str,
+    pipeline_run_id: str,
+    *,
+    storage: StorageConfig | None = None,
+) -> RunDiagnosis:
+    """Diagnose one run's failures by composing the shipped readers.
+
+    Composes ``inspect_failures`` (failed executions + envelopes),
+    ``run_history.list_runs`` (this run's status and recent failed runs),
+    and ``provenance_edges`` (backward lineage from the failed steps'
+    artifacts). ``suggested_actions`` is a fixed mapping from the failures'
+    ``recovery_hint`` values — no inference.
+
+    Args:
+        delta_root: Path to Delta Lake root.
+        pipeline_run_id: The run to diagnose.
+        storage: Storage configuration for cloud backends. Defaults to
+            local filesystem.
+
+    Returns:
+        A ``RunDiagnosis``.
+
+    Raises:
+        FileNotFoundError: If the executions table does not exist.
+    """
+    from artisan.orchestration.run_history import list_runs
+    from artisan.schemas.execution.storage_config import StorageConfig
+
+    storage = storage or StorageConfig()
+    failed_steps = inspect_failures(
+        delta_root,
+        pipeline_run_id=pipeline_run_id,
+        storage_options=storage.delta_storage_options(),
+        fs=storage.filesystem(),
+    ).to_dicts()
+
+    runs = list_runs(delta_root, storage=storage).to_dicts()
+    last_status = next(
+        (r["last_status"] for r in runs if r["pipeline_run_id"] == pipeline_run_id),
+        None,
+    )
+    similar_runs = [
+        r
+        for r in runs
+        if r["pipeline_run_id"] != pipeline_run_id and r["last_status"] == "failed"
+    ][:5]
+
+    upstream_edges = _failure_upstream_edges(
+        delta_root, pipeline_run_id, failed_steps, storage
+    )
+
+    hints = {step.get("recovery_hint") for step in failed_steps}
+    suggested = [
+        _RECOVERY_ACTIONS.get(hint, _DEFAULT_ACTION) for hint in sorted(hints - {None})
+    ]
+    if not suggested and failed_steps:
+        suggested = [_DEFAULT_ACTION]
+
+    return RunDiagnosis(
+        pipeline_run_id=pipeline_run_id,
+        last_status=last_status,
+        failed_steps=failed_steps,
+        similar_runs=similar_runs,
+        upstream_edges=upstream_edges,
+        suggested_actions=suggested,
+    )
+
+
+def _failure_upstream_edges(
+    delta_root: str,
+    pipeline_run_id: str,
+    failed_steps: list[dict[str, Any]],
+    storage: StorageConfig,
+) -> list[dict[str, str]]:
+    """Walk backward provenance from the failed steps' artifacts, deduplicated.
+
+    Best-effort and bounded: at most a handful of artifacts, depth 2. A
+    missing index or edges table degrades to no edges rather than raising.
+    """
+    from artisan.provenance import provenance_edges
+    from artisan.storage.core.artifact_query import query_artifacts
+
+    failed_numbers = {step["step"] for step in failed_steps}
+    if not failed_numbers:
+        return []
+    try:
+        refs = query_artifacts(
+            delta_root, pipeline_run_id=pipeline_run_id, storage=storage
+        )
+    except FileNotFoundError:
+        return []
+
+    artifact_ids = [
+        ref.artifact_id for ref in refs if ref.origin_step_number in failed_numbers
+    ][:10]
+    seen: set[tuple[str, str]] = set()
+    edges: list[dict[str, str]] = []
+    for artifact_id in artifact_ids:
+        walk = provenance_edges(
+            delta_root, artifact_id, direction="backward", depth=2, storage=storage
+        )
+        for edge in walk.edges:
+            key = (edge["source_artifact_id"], edge["target_artifact_id"])
+            if key not in seen:
+                seen.add(key)
+                edges.append(edge)
+    return edges
 
 
 def inspect_step(

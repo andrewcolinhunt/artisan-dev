@@ -39,6 +39,18 @@ class TestGetRunStatus:
         assert status["last_status"] is None
 
 
+class TestDiagnoseRun:
+    def test_diagnoses_seeded_failure(self, make_app, invoke, seeded_run) -> None:
+        app = make_app(delta_root=seeded_run.delta_root)
+        diag = invoke(
+            app, "artisan_diagnose_run", {"pipeline_run_id": seeded_run.run_id}
+        )
+        assert diag["last_status"] == "failed"
+        assert [s["operation"] for s in diag["failed_steps"]] == ["transform"]
+        assert diag["failed_steps"][0]["code"] == "op_execute_failed"
+        assert diag["suggested_actions"]
+
+
 class TestRunResources:
     def test_runs_list_resource(self, make_app, read_resource, seeded_run) -> None:
         import json
