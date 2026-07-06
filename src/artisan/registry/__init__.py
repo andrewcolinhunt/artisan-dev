@@ -8,6 +8,7 @@ callers introspecting available operations.
 from __future__ import annotations
 
 from artisan.registry.api import describe, examples, list_operations
+from artisan.registry.capabilities import CapabilitiesPayload, capabilities
 from artisan.registry.discovery import discover
 from artisan.registry.models import (
     DiscoveryError,
@@ -23,6 +24,7 @@ from artisan.registry.models import (
 from artisan.registry.schemas import params_schema_for
 
 __all__ = [
+    "CapabilitiesPayload",
     "DiscoveryError",
     "DiscoveryReport",
     "DiscoverySource",
@@ -32,6 +34,7 @@ __all__ = [
     "OperationMetadata",
     "OperationSummary",
     "OutputSpecMetadata",
+    "capabilities",
     "describe",
     "discover",
     "examples",

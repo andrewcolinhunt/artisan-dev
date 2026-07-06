@@ -45,6 +45,23 @@ class TestListOperations:
         assert "data_transformer" in names
         assert all("transformer" in s.name.lower() for s in results)
 
+    def test_filter_by_tag(self) -> None:
+        results = list_operations(tag="fixture")
+        names = {s.name for s in results}
+        assert "_test_docstring_only_op" in names  # declares tags=["test", "fixture"]
+        assert all("fixture" in s.tags for s in results)
+
+    def test_unknown_tag_returns_empty(self) -> None:
+        assert list_operations(tag="no_such_tag_anywhere") == []
+
+    def test_filters_and_together(self) -> None:
+        # The fixture op is a creator tagged "fixture"; the kind AND tag
+        # both match, so it survives; a mismatched kind excludes it.
+        assert {s.name for s in list_operations(kind="creator", tag="fixture")} == {
+            "_test_docstring_only_op"
+        }
+        assert list_operations(kind="curator", tag="fixture") == []
+
 
 class TestDescribe:
     def test_returns_full_metadata_for_known_op(self) -> None:
