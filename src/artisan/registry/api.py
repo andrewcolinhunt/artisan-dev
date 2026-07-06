@@ -20,13 +20,18 @@ from artisan.registry.models import OperationMetadata, OperationSummary
 def list_operations(
     kind: Literal["creator", "curator"] | None = None,
     query: str | None = None,
+    tag: str | None = None,
 ) -> list[OperationSummary]:
     """Return summaries of registered operations, sorted by name.
+
+    Filters AND together: an operation must match every provided filter.
 
     Args:
         kind: When set, restrict to creator or curator operations.
         query: When set, restrict to operations whose name or description
             contains the (case-insensitive) substring.
+        tag: When set, restrict to operations declaring this exact tag in
+            their ``tags``.
 
     Returns:
         Sorted list of ``OperationSummary``.
@@ -41,6 +46,8 @@ def list_operations(
             for s in summaries
             if needle in s.name.lower() or needle in s.description.lower()
         ]
+    if tag is not None:
+        summaries = [s for s in summaries if tag in s.tags]
     summaries.sort(key=lambda s: s.name)
     return summaries
 
