@@ -39,9 +39,9 @@ from artisan.orchestration.engine.batching import (
 from artisan.orchestration.engine.inputs import resolve_inputs
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
-    FailFastAbort,
     aggregate_results,
     extract_execution_run_ids,
+    raise_if_fail_fast,
 )
 from artisan.orchestration.runners.base import RunnerBase
 from artisan.schemas.enums import FailurePolicy, TablePath
@@ -808,8 +808,6 @@ def _execute_curator_step(
                 )
             ]
             succeeded, failed = 0, 1
-        except FailFastAbort:
-            raise  # fail_fast — intentional abort
         except Exception as exc:
             dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
                 exc, step_number
@@ -833,6 +831,9 @@ def _execute_curator_step(
         compact=compact,
     )
     _finalize_timings(timings, total_start, step_number, "Curator")
+
+    # fail_fast aborts only after the failure record is committed (above).
+    raise_if_fail_fast(failure_policy, failed, results, dispatch_error)
 
     return build_step_result(
         operation=operation,
@@ -1082,6 +1083,7 @@ def _execute_creator_step(
 
             succeeded = 0
             failed = 0
+            results: list[UnitResult] = []
 
             if units_to_dispatch:
                 try:
@@ -1116,8 +1118,6 @@ def _execute_creator_step(
                     )
                     results = []
                     succeeded, failed = 0, len(units_to_dispatch)
-                except FailFastAbort:
-                    raise  # fail_fast — intentional abort
                 except Exception as exc:
                     dispatch_error, results, succeeded, failed = (
                         _handle_dispatch_exception(
@@ -1170,6 +1170,9 @@ def _execute_creator_step(
             pass
 
     _finalize_timings(timings, total_start, step_number, "Creator")
+
+    # fail_fast aborts only after the failure records are committed (above).
+    raise_if_fail_fast(failure_policy, failed, results, dispatch_error)
 
     return build_step_result(
         operation=operation,

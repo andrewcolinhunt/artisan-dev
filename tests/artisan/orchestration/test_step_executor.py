@@ -1223,7 +1223,7 @@ class TestDispatchFailureHandling:
         mock_cache,
         tmp_path,
     ):
-        """fail_fast propagates FailFastAbort from aggregate_results."""
+        """fail_fast raises FailFastAbort out of the step (now after commit)."""
         from artisan.orchestration.engine.results import FailFastAbort
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -1235,7 +1235,8 @@ class TestDispatchFailureHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        # A failed unit under FAIL_FAST makes aggregate_results raise.
+        # A failed unit under FAIL_FAST raises via raise_if_fail_fast after
+        # the commit phase (aggregate_results no longer raises).
         mock_backend, _mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(
