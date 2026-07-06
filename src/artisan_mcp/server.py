@@ -41,4 +41,9 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
         report = discover(extra_modules=cfg.load_modules or None)
         yield {"discovery": report, "config": cfg}
 
-    return FastMCP("artisan", lifespan=lifespan)
+    from artisan_mcp import resources, tools
+
+    mcp = FastMCP("artisan", lifespan=lifespan)
+    tools.catalog.register(mcp)
+    resources.catalog.register(mcp)
+    return mcp
