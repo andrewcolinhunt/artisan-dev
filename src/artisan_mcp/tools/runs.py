@@ -69,6 +69,28 @@ def register(mcp: FastMCP) -> None:
 
         return boundary(payload)
 
+    @mcp.tool(annotations=_READ_ONLY)
+    async def artisan_diagnose_run(ctx: Context, pipeline_run_id: str) -> dict:
+        """Diagnose a run's failures in one call: what failed, why, and what to try.
+
+        Composes the failed executions (with their error envelopes and log
+        pointers), recent runs that also failed, backward provenance from the
+        failed steps' artifacts, and a deterministic list of suggested next
+        actions derived from the failures' recovery hints. Use this as the
+        first stop when a run failed and you want the whole picture; reach
+        for artisan_get_step_logs or artisan_get_provenance_graph to drill
+        into a specific step or artifact afterward.
+        """
+        config = ctx.lifespan_context["config"]
+
+        def payload() -> dict:
+            from artisan.visualization.inspect import diagnose_run
+
+            root = require_delta_root(config)
+            return diagnose_run(root, pipeline_run_id).model_dump()
+
+        return boundary(payload)
+
 
 def _jsonable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert datetime values to ISO strings so the rows serialize cleanly."""
