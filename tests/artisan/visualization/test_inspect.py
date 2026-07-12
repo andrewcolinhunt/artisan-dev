@@ -360,6 +360,62 @@ def test_inspect_pipeline_failed_steps(tmp_path: Path) -> None:
     assert result["duration"][1] == "-"
 
 
+def test_inspect_pipeline_completed_all_units_failed_is_failed(tmp_path: Path) -> None:
+    """A step that 'completed' under CONTINUE with every unit failed is failed.
+
+    The step row persists status='completed' (it ran to completion), but the
+    counts say 0 succeeded / 1 failed. This is the tutorial's transform step:
+    it must read as 'failed', not 'ok'.
+    """
+    delta_root = tmp_path / "delta"
+    row = _step_row(
+        step_number=0, step_name="transform", total_count=1, succeeded_count=0
+    )
+    assert row["status"] == "completed"
+    assert row["failed_count"] == 1
+    _write_steps(delta_root, [row])
+
+    result = inspect_pipeline(delta_root)
+    assert result["status"][0] == "failed"
+
+
+def test_inspect_pipeline_completed_some_units_failed_is_partial(
+    tmp_path: Path,
+) -> None:
+    """A completed step with a mix of succeeded and failed units is partial."""
+    delta_root = tmp_path / "delta"
+    row = _step_row(
+        step_number=0, step_name="transform", total_count=3, succeeded_count=2
+    )
+    assert row["failed_count"] == 1
+    _write_steps(delta_root, [row])
+
+    result = inspect_pipeline(delta_root)
+    assert result["status"][0] == "partial"
+
+
+def test_inspect_pipeline_filter_failed_count_stays_ok(tmp_path: Path) -> None:
+    """A filter's filtered-out artifacts are not failures — status stays ok.
+
+    A filter records one curator execution; artifacts that don't pass the
+    predicate are logged, never counted as failed. Even with a nonzero
+    failed_count on the row, a filter step is 'ok'.
+    """
+    delta_root = tmp_path / "delta"
+    row = _step_row(
+        step_number=0,
+        step_name="filter",
+        operation_class="artisan.operations.curator.Filter",
+        total_count=5,
+        succeeded_count=2,
+    )
+    assert row["failed_count"] == 3
+    _write_steps(delta_root, [row])
+
+    result = inspect_pipeline(delta_root)
+    assert result["status"][0] == "ok"
+
+
 # ======================================================================
 # inspect_failures tests
 # ======================================================================

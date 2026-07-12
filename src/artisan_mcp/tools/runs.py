@@ -52,12 +52,15 @@ def register(mcp: FastMCP) -> None:
         """Get one run's terminal step statuses to see how far it got and what failed.
 
         Returns the run rollup (last_status, step_count, started_at,
-        ended_at) plus a per-step list of terminal statuses (ok, skipped,
-        cancelled, failed) with a produced summary and duration. "Running"
-        is never persisted, so an in-flight step shows only its last
-        recorded terminal event. Use this to watch progress or locate a
-        failed step, then artisan_get_step_logs or artisan_diagnose_run to
-        dig in. An unknown run yields empty steps, not an error.
+        ended_at) plus a per-step list of terminal statuses (ok, partial,
+        failed, skipped, cancelled) with a produced summary and duration. A
+        step that completed with some units failing under CONTINUE is
+        "partial" ("failed" if every unit failed), so a failed step is not
+        mislabeled "ok". "Running" is never persisted, so an in-flight step
+        shows only its last recorded terminal event. Use this to watch
+        progress or locate a failed step, then artisan_get_step_logs or
+        artisan_diagnose_run to dig in. An unknown run yields empty steps,
+        not an error.
         """
         config = ctx.lifespan_context["config"]
 

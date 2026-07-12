@@ -24,13 +24,16 @@ class StepStatus(BaseModel):
     """Terminal state of one pipeline step.
 
     Fields mirror ``inspect_pipeline`` columns. ``status`` is one of
-    ``ok`` / ``skipped`` / ``cancelled`` / ``failed``; ``produced`` and
-    ``duration`` are the human-readable summaries that reader emits.
+    ``ok`` / ``partial`` / ``failed`` / ``skipped`` / ``cancelled``;
+    ``produced`` and ``duration`` are the human-readable summaries that
+    reader emits.
 
     Attributes:
         step_number: The step's number within the run.
         name: The step name.
-        status: Terminal status (ok/skipped/cancelled/failed).
+        status: Terminal status (ok/partial/failed/skipped/cancelled).
+            ``partial`` means some units failed under CONTINUE while others
+            succeeded; ``failed`` means every unit failed.
         produced: Human summary of what the step produced.
         duration: Human-readable duration (e.g. ``"1.2s"``).
     """
