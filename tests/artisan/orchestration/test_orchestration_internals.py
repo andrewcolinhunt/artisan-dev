@@ -8,8 +8,6 @@ Tests for:
 
 from __future__ import annotations
 
-import pytest
-
 from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
@@ -290,8 +288,8 @@ class TestAggregateResults:
         assert succeeded == 6
         assert failed == 1
 
-    def test_fail_fast_raises_on_failure(self):
-        """Test fail_fast policy raises on failure."""
+    def test_fail_fast_counts_without_raising(self):
+        """fail_fast aggregation counts failures; the abort moved post-commit."""
         results = [
             UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
             UnitResult(
@@ -301,8 +299,9 @@ class TestAggregateResults:
                 execution_run_ids=[],
             ),
         ]
-        with pytest.raises(RuntimeError, match="fail_fast policy"):
-            aggregate_results(results, FailurePolicy.FAIL_FAST)
+        succeeded, failed = aggregate_results(results, FailurePolicy.FAIL_FAST)
+        assert succeeded == 1
+        assert failed == 1
 
     def test_fail_fast_no_failures(self):
         """Test fail_fast policy with all successes."""

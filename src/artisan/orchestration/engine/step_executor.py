@@ -15,6 +15,7 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -39,9 +40,9 @@ from artisan.orchestration.engine.batching import (
 from artisan.orchestration.engine.inputs import resolve_inputs
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
-    FailFastAbort,
     aggregate_results,
     extract_execution_run_ids,
+    raise_if_fail_fast,
 )
 from artisan.orchestration.runners.base import RunnerBase
 from artisan.schemas.enums import FailurePolicy, TablePath
@@ -734,7 +735,6 @@ def _execute_curator_step(
 
         # Capture before subprocess spawn — needed for failure record on kill
         timestamp_start = datetime.now(UTC)
-        params_dict = _get_params(operation)
 
         # Execute in subprocess for memory isolation
         try:
@@ -771,45 +771,23 @@ def _execute_curator_step(
                 error_msg = _format_subprocess_kill_error(unit)
             logger.error("Step %d (%s): %s", step_number, operation.name, error_msg)
 
-            synthetic_run_id = f"killed-{unit.execution_spec_id[:24]}"
-            kill_fs = runtime_env.storage.filesystem()
-            kill_so = runtime_env.storage.delta_storage_options()
-            execution_context = build_execution_context(
-                execution_run_id=synthetic_run_id,
-                execution_spec_id=unit.execution_spec_id,
-                step_number=unit.step_number,
-                timestamp_start=timestamp_start,
-                worker_id=0,
-                delta_root=runtime_env.delta_root,
-                staging_root=runtime_env.staging_root,
-                fs=kill_fs,
-                storage_options=kill_so,
-                operation=unit.operation,
-                compute_backend_name=runtime_env.compute_backend_name,
-                shared_filesystem=runtime_env.shared_filesystem,
+            run_id = _synthesize_failure_record(
+                unit,
+                runtime_env,
+                error_msg,
+                timestamp_start,
+                user_overrides,
                 step_run_id=step_run_id,
-                files_root=runtime_env.files_root,
-            )
-            staging_result = record_execution_failure(
-                execution_context=execution_context,
-                error=error_msg,
-                inputs=unit.inputs,
-                timestamp_end=datetime.now(UTC),
-                params=params_dict,
-                user_overrides=user_overrides,
-                failure_logs_root=runtime_env.failure_logs_root,
             )
             results = [
                 UnitResult(
                     success=False,
                     error=error_msg,
                     item_count=1,
-                    execution_run_ids=[synthetic_run_id],
+                    execution_run_ids=[run_id] if run_id else [],
                 )
             ]
             succeeded, failed = 0, 1
-        except FailFastAbort:
-            raise  # fail_fast — intentional abort
         except Exception as exc:
             dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
                 exc, step_number
@@ -833,6 +811,9 @@ def _execute_curator_step(
         compact=compact,
     )
     _finalize_timings(timings, total_start, step_number, "Curator")
+
+    # fail_fast aborts only after the failure record is committed (above).
+    raise_if_fail_fast(failure_policy, failed, results, dispatch_error)
 
     return build_step_result(
         operation=operation,
@@ -900,6 +881,124 @@ def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
     parts.append(f"Input artifacts: {n_inputs}.")
     parts.append("Consider reducing input size or increasing available memory.")
     return " ".join(parts)
+
+
+def _synthesize_failure_record(
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+    error: str,
+    timestamp_start: datetime,
+    user_overrides: dict[str, Any] | None,
+    *,
+    step_run_id: str | None,
+) -> str:
+    """Stage a synthetic failure record for a unit the worker left unrecorded.
+
+    Covers the two shapes where the worker stages nothing itself: a process
+    pool break (``BrokenProcessPool``) that kills the worker mid-run, and a
+    pre-try failure (an unimportable or unpicklable op caught in the dispatch
+    task) that fails before the executor's own record path. Also writes the
+    human failure log. Fully best-effort — any synthesis error is swallowed so
+    it never crashes the step.
+
+    Args:
+        unit: The execution unit whose failure went unrecorded.
+        runtime_env: Runtime paths and storage for the failing step.
+        error: Error string to persist (and write to the failure log).
+        timestamp_start: Start time captured before dispatch.
+        user_overrides: User-provided parameter overrides for the record.
+        step_run_id: Owning step run id, or None for composite-internal steps.
+
+    Returns:
+        The synthetic ``killed-<spec>`` execution run id, or ``""`` if
+        synthesis itself failed.
+    """
+    synthetic_run_id = f"killed-{unit.execution_spec_id[:24]}"
+    try:
+        fs = runtime_env.storage.filesystem()
+        storage_options = runtime_env.storage.delta_storage_options()
+        execution_context = build_execution_context(
+            execution_run_id=synthetic_run_id,
+            execution_spec_id=unit.execution_spec_id,
+            step_number=unit.step_number,
+            timestamp_start=timestamp_start,
+            worker_id=0,
+            delta_root=runtime_env.delta_root,
+            staging_root=runtime_env.staging_root,
+            fs=fs,
+            storage_options=storage_options,
+            operation=unit.operation,
+            compute_backend_name=runtime_env.compute_backend_name,
+            shared_filesystem=runtime_env.shared_filesystem,
+            step_run_id=step_run_id,
+            files_root=runtime_env.files_root,
+        )
+        record_execution_failure(
+            execution_context=execution_context,
+            error=error,
+            inputs=unit.inputs,
+            timestamp_end=datetime.now(UTC),
+            params=_get_params(unit.operation),
+            user_overrides=user_overrides,
+            failure_logs_root=runtime_env.failure_logs_root,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to synthesize failure record for unit %s",
+            unit.execution_spec_id,
+        )
+        return ""
+    return synthetic_run_id
+
+
+def _synthesize_missing_failure_records(
+    units: list[ExecutionUnit],
+    results: list[UnitResult],
+    runtime_env: RuntimeEnvironment,
+    timestamp_start: datetime,
+    user_overrides: dict[str, Any] | None,
+    *,
+    step_run_id: str | None,
+) -> list[UnitResult]:
+    """Backfill records for failed units whose worker recorded nothing.
+
+    A ``UnitResult`` that failed before the executor's try-block staged
+    anything (an unimportable or unpicklable op caught in the dispatch task)
+    carries an empty ``execution_run_ids``. Synthesize a failure record for
+    each so ``inspect_failures`` can see it. Results are paired to units
+    positionally; a length mismatch skips the backfill (best-effort).
+
+    Args:
+        units: The dispatched units, positionally aligned with ``results``.
+        results: Unit results from aggregation.
+        runtime_env: Runtime paths and storage for the failing step.
+        timestamp_start: Start time captured before dispatch.
+        user_overrides: User-provided parameter overrides for the record.
+        step_run_id: Owning step run id, or None for composite-internal steps.
+
+    Returns:
+        Results with synthetic run ids filled in for the backfilled units.
+    """
+    if len(results) != len(units):
+        return results
+    patched: list[UnitResult] = []
+    for unit, result in zip(units, results, strict=True):
+        if result.success or result.execution_run_ids:
+            patched.append(result)
+            continue
+        error = result.error or (
+            "Operation failed before recording (no execution record staged)."
+        )
+        run_id = _synthesize_failure_record(
+            unit,
+            runtime_env,
+            error,
+            timestamp_start,
+            user_overrides,
+            step_run_id=step_run_id,
+        )
+        patched.append(replace(result, execution_run_ids=[run_id] if run_id else []))
+    return patched
 
 
 def _execute_creator_step(
@@ -1082,6 +1181,9 @@ def _execute_creator_step(
 
             succeeded = 0
             failed = 0
+            results: list[UnitResult] = []
+            # Captured before dispatch — start time for any synthesized record.
+            timestamp_start = datetime.now(UTC)
 
             if units_to_dispatch:
                 try:
@@ -1106,6 +1208,16 @@ def _execute_creator_step(
                         cancel_event=cancel_event,
                     )
                     succeeded, failed = aggregate_results(results, failure_policy)
+                    # Backfill any pre-try failures the worker never recorded
+                    # (unimportable/unpicklable op -> empty execution_run_ids).
+                    results = _synthesize_missing_failure_records(
+                        units_to_dispatch,
+                        results,
+                        runtime_env,
+                        timestamp_start,
+                        user_overrides,
+                        step_run_id=step_run_id,
+                    )
                 except BrokenProcessPool:
                     dispatch_error = "Worker process killed (signal or OOM)"
                     logger.warning(
@@ -1114,10 +1226,28 @@ def _execute_creator_step(
                         operation.name,
                         dispatch_error,
                     )
+                    # The pool died before workers could stage records —
+                    # synthesize one failure record per lost unit (attribution
+                    # is imperfect after a crash; be conservative).
                     results = []
+                    for lost_unit in units_to_dispatch:
+                        run_id = _synthesize_failure_record(
+                            lost_unit,
+                            runtime_env,
+                            dispatch_error,
+                            timestamp_start,
+                            user_overrides,
+                            step_run_id=step_run_id,
+                        )
+                        results.append(
+                            UnitResult(
+                                success=False,
+                                error=dispatch_error,
+                                item_count=1,
+                                execution_run_ids=[run_id] if run_id else [],
+                            )
+                        )
                     succeeded, failed = 0, len(units_to_dispatch)
-                except FailFastAbort:
-                    raise  # fail_fast — intentional abort
                 except Exception as exc:
                     dispatch_error, results, succeeded, failed = (
                         _handle_dispatch_exception(
@@ -1170,6 +1300,9 @@ def _execute_creator_step(
             pass
 
     _finalize_timings(timings, total_start, step_number, "Creator")
+
+    # fail_fast aborts only after the failure records are committed (above).
+    raise_if_fail_fast(failure_policy, failed, results, dispatch_error)
 
     return build_step_result(
         operation=operation,
