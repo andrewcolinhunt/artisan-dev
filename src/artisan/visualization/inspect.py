@@ -241,7 +241,10 @@ def inspect_failures(
         it with ``<runs_dir>/logs/failures/``.
 
     Raises:
-        FileNotFoundError: If the executions table does not exist.
+        FileNotFoundError: If the delta root is not an Artisan store — no
+            executions table *and* no steps table. A real store whose
+            executions table simply does not exist yet (steps table present,
+            nothing has executed or failed) returns the empty frame instead.
     """
     if fs is None:
         from fsspec.implementations.local import LocalFileSystem
@@ -249,6 +252,14 @@ def inspect_failures(
         fs = LocalFileSystem()
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
     if not fs.exists(executions_path):
+        # Distinguish a real store with nothing recorded yet from a bogus
+        # root. The steps table is written at the first step's start, so its
+        # presence means a pipeline ran here (empty frame); its absence means
+        # this is not an Artisan store (FileNotFoundError -> store_not_found
+        # envelope at the CLI/MCP boundary).
+        steps_path = uri_join(delta_root, TablePath.STEPS)
+        if fs.exists(steps_path):
+            return pl.DataFrame(schema=_FAILURES_SCHEMA)
         msg = f"Executions table not found at {executions_path}"
         raise FileNotFoundError(msg)
 
@@ -361,10 +372,14 @@ def diagnose_run(
             local filesystem.
 
     Returns:
-        A ``RunDiagnosis``.
+        A ``RunDiagnosis``. When the store exists but no executions have been
+        recorded (steps table present, executions table absent), the
+        diagnosis simply carries no failed steps rather than raising.
 
     Raises:
-        FileNotFoundError: If the executions table does not exist.
+        FileNotFoundError: If the delta root is not an Artisan store (neither
+            executions nor steps table present), propagated from
+            ``inspect_failures``.
     """
     from artisan.orchestration.run_history import list_runs
     from artisan.schemas.execution.storage_config import StorageConfig
