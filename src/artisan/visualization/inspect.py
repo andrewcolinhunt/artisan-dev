@@ -33,6 +33,36 @@ from artisan.utils.path import uri_join
 # Public API
 # ======================================================================
 
+# Step-status vocabulary for a "completed" step, derived from per-unit
+# counts. Shared by inspect_pipeline (step grain) and the run rollup
+# (run_history.list_runs) so both read a step's health the same way.
+STATUS_OK = "ok"
+STATUS_PARTIAL = "partial"
+STATUS_FAILED = "failed"
+
+
+def _completed_status(succeeded_count: int, failed_count: int) -> str:
+    """Resolve a completed step's status from its per-unit counts.
+
+    A step row persists ``status="completed"`` once it finishes, even when
+    units failed under ``FailurePolicy.CONTINUE``. The real outcome lives in
+    the counts: no successes with failures present is a full failure, a mix
+    is partial, and anything else is clean.
+
+    Args:
+        succeeded_count: Units that succeeded in the step.
+        failed_count: Units that failed in the step.
+
+    Returns:
+        ``"failed"`` (all units failed), ``"partial"`` (some failed), or
+        ``"ok"`` (none failed).
+    """
+    if succeeded_count == 0 and failed_count > 0:
+        return STATUS_FAILED
+    if failed_count > 0:
+        return STATUS_PARTIAL
+    return STATUS_OK
+
 
 def inspect_pipeline(
     delta_root: str,
@@ -51,6 +81,9 @@ def inspect_pipeline(
 
     Returns:
         DataFrame with columns: step, operation, status, produced, duration.
+        ``status`` is ok / partial / failed / skipped / cancelled — a step
+        that completed with some units failing under CONTINUE is ``partial``
+        (or ``failed`` if every unit failed), not ``ok``.
 
     Raises:
         FileNotFoundError: If steps table doesn't exist.
@@ -79,6 +112,7 @@ def inspect_pipeline(
             "operation_class",
             "status",
             "succeeded_count",
+            "failed_count",
             "duration_seconds",
         )
         .sort("step_number")
@@ -166,7 +200,10 @@ def inspect_pipeline(
         is_filter = "Filter" in op_class or "filter" in (row["step_name"] or "")
 
         if is_filter:
+            # A filter's "failed_count" is artifacts filtered out, not errors —
+            # a filter that ran is always "ok" regardless of how many passed.
             produced = f"{row['succeeded_count'] or 0} passed"
+            status = "ok"
         else:
             counts = index_counts.get(step_num, {})
             if counts:
@@ -174,6 +211,11 @@ def inspect_pipeline(
                 produced = ", ".join(parts)
             else:
                 produced = "-"
+            # The step row is "completed" even when units failed under
+            # CONTINUE; the per-unit counts carry the real outcome.
+            status = _completed_status(
+                row["succeeded_count"] or 0, row["failed_count"] or 0
+            )
 
         duration_s = row["duration_seconds"]
         duration = f"{duration_s:.1f}s" if duration_s is not None else "-"
@@ -182,7 +224,7 @@ def inspect_pipeline(
             {
                 "step": step_num,
                 "operation": row["step_name"],
-                "status": "ok",
+                "status": status,
                 "produced": produced,
                 "duration": duration,
             }
