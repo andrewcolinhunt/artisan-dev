@@ -291,7 +291,11 @@ class StepTracker:
 
         Returns:
             DataFrame with pipeline_run_id, step_count, last_status,
-            started_at, ended_at — one row per run.
+            started_at, ended_at — one row per run. ``last_status`` is the
+            count-aware status of the most recent step event: a last step
+            that completed with failed units surfaces as ``failed`` or
+            ``partial`` rather than ``completed``. Runs whose failing step is
+            not the last are not reflected here (last-event semantics).
             Empty DataFrame if no table exists.
         """
         if not self._fs.exists(self._steps_path):
@@ -305,13 +309,29 @@ class StepTracker:
                 }
             )
 
+        # A step row is "completed" even when units failed under CONTINUE;
+        # refine only that case from the last step's counts, leaving explicit
+        # failed/running/skipped/cancelled statuses untouched.
+        last_raw = pl.col("status").last()
+        last_succ = pl.col("succeeded_count").last().fill_null(0)
+        last_fail = pl.col("failed_count").last().fill_null(0)
+        refined_status = (
+            pl.when(last_raw != "completed")
+            .then(last_raw)
+            .when((last_succ == 0) & (last_fail > 0))
+            .then(pl.lit("failed"))
+            .when(last_fail > 0)
+            .then(pl.lit("partial"))
+            .otherwise(pl.lit("completed"))
+            .alias("last_status")
+        )
         return (
             pl.scan_delta(self._steps_path, storage_options=self._storage_options)
             .sort("timestamp")
             .group_by("pipeline_run_id")
             .agg(
                 pl.col("step_number").n_unique().alias("step_count"),
-                pl.col("status").last().alias("last_status"),
+                refined_status,
                 pl.col("timestamp").first().alias("started_at"),
                 pl.col("timestamp").last().alias("ended_at"),
             )
