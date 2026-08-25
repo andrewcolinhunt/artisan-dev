@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-time post-install fixups. Invoked by `pixi run setup` once after
+# One-time post-install fixups. Invoked by `pixi run --locked setup` once after
 # cloning. Idempotent: rerunning is cheap and safe.
 #
 # Add more steps below as the project accretes post-install concerns.
@@ -18,8 +18,8 @@ if [ ! -f "$CONDA_PREFIX/lib/graphviz/config8" ]; then
 fi
 
 # Pre-commit hooks: auto-install when pre-commit is on PATH (i.e. the user
-# ran `pixi run -e dev setup`). The default env does not include pre-commit,
-# so contributors who only ran `pixi run setup` without `-e dev` get the
+# ran `pixi run --locked -e dev setup`). The default env lacks pre-commit,
+# so contributors who only ran `pixi run --locked setup` without `-e dev` get the
 # graphviz fix but no hooks — they can opt in later by running the dev-env
 # setup. The full hook suite passes on the tree as of Phase 4 of the
 # pre-commit backlog cleanup.

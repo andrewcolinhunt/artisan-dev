@@ -16,30 +16,34 @@ Project conventions for contributors (human and AI).
 IMPORTANT: Always use the full pixi path (`~/.pixi/bin/pixi`) when running
 commands. The short `pixi` form is for user-facing docs only.
 
-**Pixi locked mode (recommended).** Add `export PIXI_LOCKED=true` to
-your shell init (`~/.zshrc` / `~/.bashrc`). With it set, `pixi run` and
-`pixi install` abort on lockfile / manifest drift instead of silently
-regenerating `pixi.lock`. Refresh the lock deliberately with `pixi
-update` when you change deps; escape with `pixi install --no-locked` if
-you must.
+### Pixi lock discipline
+
+Use `--locked` for routine installs and tasks so Pixi stops instead of silently
+rewriting `pixi.lock`. Run an unlocked Pixi command only when intentionally
+changing dependencies, and commit `pyproject.toml` and `pixi.lock` together.
+
+If `pixi.lock` becomes dirty unexpectedly, inspect the diff. When the only
+changes are the editable project's Git-derived `version` and `sha256`, and no
+dependency change was intended, restore `pixi.lock`. Do not discard it when
+`pyproject.toml` or dependencies were intentionally changed.
 
 ---
 
 ## Commands
 
 ```bash
-pixi install                              # Install dependencies
-pixi run -e dev test                      # Run all tests (unit seq + integration + s3 parallel + tutorial notebooks)
-pixi run -e dev test-unit                 # Run only unit tests (no external services)
-pixi run -e dev test-integration          # End-to-end pipeline tests (parallel, no external services)
-pixi run -e dev test-s3                   # S3-backend tests (parallel; needs Docker/MinIO or ARTISAN_S3_ENDPOINT)
-pixi run -e dev test-notebook             # Run every CI-runnable tutorial notebook (needs `pixi run prefect-start`)
-pixi run -e dev test-notebook-modal       # Modal tutorial notebooks (needs Modal credentials + prefect-start)
-pixi run -e dev test-notebook-slurm       # SLURM tutorial notebooks (run on a cluster + prefect-start)
-pixi run -e dev test-seq                  # All tests sequentially (for debugging)
-pixi run -e dev fmt                       # Format and lint
-pixi run -e docs docs-build              # Build docs
-pixi run python script.py                # Run scripts
+~/.pixi/bin/pixi install --locked
+~/.pixi/bin/pixi run --locked -e dev test
+~/.pixi/bin/pixi run --locked -e dev test-unit
+~/.pixi/bin/pixi run --locked -e dev test-integration
+~/.pixi/bin/pixi run --locked -e dev test-s3
+~/.pixi/bin/pixi run --locked -e dev test-notebook
+~/.pixi/bin/pixi run --locked -e dev test-notebook-modal
+~/.pixi/bin/pixi run --locked -e dev test-notebook-slurm
+~/.pixi/bin/pixi run --locked -e dev test-seq
+~/.pixi/bin/pixi run --locked -e dev fmt
+~/.pixi/bin/pixi run --locked -e docs docs-build
+~/.pixi/bin/pixi run --locked python script.py
 ```
 
 ---
@@ -107,12 +111,12 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`
 
 ### PR Validation Order
 
-1. `pixi run -e dev fmt`
-2. `pixi run -e dev test-unit`
-3. `pixi run -e dev test-integration`
-4. `pixi run -e dev test-s3`
-5. `pixi run -e dev test-notebook`
-6. `pixi run -e docs docs-build`
+1. `~/.pixi/bin/pixi run --locked -e dev fmt`
+2. `~/.pixi/bin/pixi run --locked -e dev test-unit`
+3. `~/.pixi/bin/pixi run --locked -e dev test-integration`
+4. `~/.pixi/bin/pixi run --locked -e dev test-s3`
+5. `~/.pixi/bin/pixi run --locked -e dev test-notebook`
+6. `~/.pixi/bin/pixi run --locked -e docs docs-build`
 
 ---
 
@@ -197,9 +201,9 @@ docs/
 ## Pre-PR Checklist
 
 - [ ] Code: no debug prints, no commented-out code
-- [ ] Tests pass (`pixi run -e dev test` — unit + integration + tutorial notebooks), new code has tests
-- [ ] Formatted and linted (`pixi run -e dev fmt`)
-- [ ] Docs build (`pixi run -e docs docs-build`)
+- [ ] Tests pass (`~/.pixi/bin/pixi run --locked -e dev test`), new code has tests
+- [ ] Formatted and linted (`~/.pixi/bin/pixi run --locked -e dev fmt`)
+- [ ] Docs build (`~/.pixi/bin/pixi run --locked -e docs docs-build`)
 - [ ] Commits are atomic with proper messages
 - [ ] Self-reviewed all changes
 

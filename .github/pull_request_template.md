@@ -18,9 +18,9 @@ Closes #<!-- issue number -->
 
 <!-- How did you verify these changes? -->
 
-- [ ] Existing tests pass (`pixi run -e dev test`)
+- [ ] Existing tests pass (`pixi run --locked -e dev test`)
 - [ ] New/updated tests cover changed behavior
-- [ ] Linting passes (`pixi run -e dev fmt && git diff --exit-code`)
+- [ ] Linting passes (`pixi run --locked -e dev fmt && git diff --exit-code`)
 
 ## Checklist
 
