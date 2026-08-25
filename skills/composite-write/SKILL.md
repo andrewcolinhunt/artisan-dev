@@ -1,12 +1,13 @@
 ---
 name: composite-write
 description: Write or scaffold an Artisan composite operation. Use this skill when the user asks to create a composite, write a composite operation, scaffold a composite, compose operations, or any request involving CompositeDefinition subclasses. Trigger on phrases like "write a composite", "create a composite operation", "scaffold a composite", "compose operations", or any request to combine multiple operations into a reusable unit.
-argument-hint: "[CompositeClassName or description of what the composite should do]"
 ---
 
 # Write an Artisan Composite
 
-Write or scaffold a composite operation for `$ARGUMENTS`.
+Write or scaffold the composite operation described in the user's request. If
+the invoking client supplies explicit skill arguments, treat them as the
+request details.
 
 Before writing, read the example composites in the integration test
 (`tests/integration/test_composite.py`) and the base class at

@@ -325,15 +325,16 @@ providing readable output without requiring a full TUI framework.
 
 ---
 
-## AI assistance: Claude Code plugin
+## AI assistance: Agent Skills and Claude Code plugin
 
 **The problem.** Writing operations and pipelines requires knowing framework
 conventions, base classes, and patterns. New contributors face a steep ramp-up.
 
-**Why a plugin.** Artisan ships a Claude Code plugin so that both the framework
-repo and downstream repos get framework-aware skills. The plugin is defined using
-the inline marketplace pattern (`.claude-plugin/marketplace.json` with
-`"source": "./"`).
+**Why skills plus a plugin.** Artisan uses portable Agent Skills for local
+cross-agent discovery and retains a Claude Code plugin so downstream Claude
+repositories can install the same framework-aware workflows. The plugin is
+defined using the inline marketplace pattern (`.claude-plugin/marketplace.json`
+with `"source": "./"`).
 
 **What's included.** Three skills in `skills/`:
 
@@ -341,20 +342,23 @@ the inline marketplace pattern (`.claude-plugin/marketplace.json` with
 - `composite-write` — scaffold or review a `CompositeDefinition` subclass
 - `pipeline-write` — scaffold a pipeline script composing operations
 
-**Two discovery paths.** Skill definitions live in `skills/` at the repo root —
-this is the single source of truth.
+**Discovery paths.** Skill definitions live in `skills/` at the repo root —
+this is the single source of truth and remains the published path.
 
+- **Cross-agent development:** compatible clients discover symlinks under
+  `.agents/skills/`.
 - **In this repo:** Claude Code discovers project-level skills from
   `.claude/skills/`, which contains symlinks back to `skills/`.
 - **In downstream repos:** Claude Code fetches skills via the marketplace. A
   downstream repo adds the marketplace and plugin to `.claude/settings.json`
   (see [Using Claude Code](../getting-started/using-claude-code.md) for setup).
 
-This dual-path design keeps one copy of each skill definition while serving both
-local development and cross-repo distribution.
+These adapters keep one copy of each skill definition while serving local
+development and Claude-specific cross-repo distribution.
 
-**The trade-off.** Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
-Skills need updating when framework APIs change.
+**The trade-off.** Downstream automatic distribution is currently
+Claude-specific; other clients need to install or link the public skills
+explicitly. Skills need updating when framework APIs change.
 
 ---
 
