@@ -53,6 +53,7 @@ packages = ["src/artisan", "src/artisan_mcp"]
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
+requires-pixi = "==0.66.0"
 
 # =============================================================================
 # DEFAULT ENVIRONMENT - Core runtime dependencies
@@ -197,8 +198,8 @@ docs = { features = ["docs"], solve-group = "default" }
 # TASKS
 # =============================================================================
 [tool.pixi.tasks]
-# One-time post-install fixups. Contributors run `pixi run setup` once after
-# cloning (or `pixi run -e dev setup` to also install pre-commit hooks).
+# One-time fixups. Contributors run `pixi run --locked setup` after cloning
+# (or `pixi run --locked -e dev setup` to also install pre-commit hooks).
 # Body lives in scripts/setup.sh so it has a real shell; idempotent.
 setup = "bash scripts/setup.sh"
 

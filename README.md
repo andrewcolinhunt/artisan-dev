@@ -50,10 +50,10 @@ curl -fsSL https://pixi.sh/install.sh | bash
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
 
-pixi install
+pixi install --locked
 
 # Verify
-pixi run python -c "import artisan; print('Artisan installed successfully')"
+pixi run --locked python -c "import artisan; print('Artisan installed successfully')"
 ```
 
 → **[Getting Started guide](docs/getting-started/index.md)** for detailed setup, Prefect setup,
@@ -121,26 +121,26 @@ Pixi manages three environments, all sharing a single dependency solve:
 | `dev` | `pixi run -e dev …` | Testing, linting, formatting, notebooks |
 | `docs` | `pixi run -e docs …` | Documentation building (Jupyter Book 2) |
 
-### Pixi locked mode (recommended)
+### Pixi locked mode
 
-Add `export PIXI_LOCKED=true` to your shell init (`~/.zshrc` /
-`~/.bashrc`). With this set, `pixi run` aborts on lockfile / manifest
-drift instead of silently regenerating `pixi.lock` — run `pixi update`
-to refresh the lock when you change deps.
+Use `pixi install --locked` and `pixi run --locked ...` for routine work so
+manifest drift stops with an error instead of rewriting `pixi.lock`. Use an
+unlocked Pixi dependency command only for deliberate dependency maintenance,
+then commit `pyproject.toml` and `pixi.lock` together.
 
 ### Running Tests
 
 ```bash
-pixi run -e dev test              # Unit (sequential) + integration (parallel)
-pixi run -e dev test-unit         # Unit tests only
-pixi run -e dev test-integration  # Integration tests only (parallel)
-pixi run -e dev test-seq          # All tests sequentially (for debugging)
+pixi run --locked -e dev test
+pixi run --locked -e dev test-unit
+pixi run --locked -e dev test-integration
+pixi run --locked -e dev test-seq
 ```
 
 ### Formatting and Linting
 
 ```bash
-pixi run -e dev fmt               # Ruff format + lint with auto-fix
+pixi run --locked -e dev fmt
 ```
 
 ### Shell Completions
@@ -162,9 +162,9 @@ Restart your shell or `source` the file to activate.
 ## Documentation
 
 ```bash
-pixi run -e docs docs-build       # Build HTML docs
-pixi run -e docs docs-serve       # Serve locally at http://localhost:8000
-pixi run -e docs docs-clean       # Remove build artifacts
+pixi run --locked -e docs docs-build
+pixi run --locked -e docs docs-serve
+pixi run --locked -e docs docs-clean
 ```
 
 - **[Getting Started](docs/getting-started/index.md)** — Installation and first

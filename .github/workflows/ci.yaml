@@ -14,13 +14,16 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "1"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.54.0
+          pixi-version: v0.66.0
           environments: dev
+          locked: true
 
       - name: Lint
         run: pixi run -e dev fmt
@@ -30,52 +33,64 @@ jobs:
 
   pre-commit:
     runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "1"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.54.0
+          pixi-version: v0.66.0
           environments: dev
+          locked: true
 
       - name: Run pre-commit
         run: pixi run -e dev pre-commit run --all-files --show-diff-on-failure
 
   test:
     runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "1"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.54.0
+          pixi-version: v0.66.0
           environments: dev
+          locked: true
 
       - name: Run tests
         run: pixi run -e dev test
 
   test-notebooks:
     runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "1"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.54.0
+          pixi-version: v0.66.0
           environments: dev
+          locked: true
 
       - name: Execute every CI-runnable tutorial notebook end-to-end
         run: pixi run -e dev test-notebook
 
   build:
     runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "1"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.54.0
+          pixi-version: v0.66.0
           environments: dev
+          locked: true
 
       - name: Build distribution
         run: pixi run -e dev build-dist
