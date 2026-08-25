@@ -179,21 +179,21 @@ pixi run -e docs docs-clean       # Remove build artifacts
 
 ---
 
-## Claude Code Integration
+## Coding Agent Integration
 
-Artisan includes a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-plugin with skills for scaffolding operations, pipelines, and documentation.
+Artisan includes portable Agent Skills for scaffolding operations, composites,
+and pipelines. Compatible agents discover them through `.agents/skills/`;
+Claude Code also receives them through the repository's published plugin.
 
 | Skill | Description |
 |-------|-------------|
-| `/operation-write` | Scaffold or review an `OperationDefinition` subclass |
-| `/composite-write` | Scaffold or review a `CompositeDefinition` subclass |
-| `/pipeline-write` | Scaffold a pipeline script composing operations |
-| `/docs-write` | Write or edit documentation pages, tutorials, and guides |
+| `operation-write` | Scaffold or review an `OperationDefinition` subclass |
+| `composite-write` | Scaffold or review a `CompositeDefinition` subclass |
+| `pipeline-write` | Scaffold a pipeline script composing operations |
 
-The plugin is included in the repository and activates automatically.
-Downstream repos can install it by pointing their settings to this repo. See
-[Using Claude Code](docs/getting-started/using-claude-code.md) for details.
+The canonical skill packages remain under `skills/`. Downstream Claude Code
+repositories can install the plugin by pointing their settings to this repo.
+See [Using Claude Code](docs/getting-started/using-claude-code.md) for details.
 
 ---
 

@@ -14,7 +14,7 @@ repos:
           (?x)^(
             docs/how-to-guides/creating-artifact-types\.md|
             docs/contributing/coding-conventions\.md|
-            skills/write-pipeline/SKILL\.md|
+            skills/pipeline-write/SKILL\.md|
             docs/how-to-guides/writing-curator-operations\.md
           )$
 

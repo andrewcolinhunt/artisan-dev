@@ -31,17 +31,16 @@ cd artisan
 claude
 ```
 
-When Claude Code starts, it reads `CLAUDE.md` at the repo root. This file
-teaches it about Artisan's architecture, testing commands, code style, and Git
-conventions. You don't need to explain the project from scratch each time — the
-context is built in.
+When Claude Code starts, `CLAUDE.md` imports the repository's shared
+`AGENTS.md`. This teaches coding agents about Artisan's architecture, testing
+commands, code style, and Git conventions without duplicating instructions.
 
 ---
 
 ## Artisan skills
 
-The repo ships with framework-specific skills (slash commands) that teach Claude
-Code how to write Artisan code that follows project conventions.
+The repo ships with framework-specific Agent Skills that teach compatible
+coding agents how to write Artisan code that follows project conventions.
 
 | Skill | Description |
 |-------|-------------|
@@ -51,11 +50,14 @@ Code how to write Artisan code that follows project conventions.
 
 ### How skills are discovered
 
-Skill definitions live in `skills/` at the repo root — this is the canonical
-source of truth. Claude Code discovers project-level skills from
-`.claude/skills/`, so the repo maintains symlinks:
+Skill definitions live in `skills/` at the repo root — this remains the
+canonical source of truth and the public Claude plugin contract. The repo adds
+discovery symlinks for both cross-agent clients and Claude Code:
 
 ```
+.agents/skills/operation-write  →  ../../skills/operation-write
+.agents/skills/composite-write  →  ../../skills/composite-write
+.agents/skills/pipeline-write   →  ../../skills/pipeline-write
 .claude/skills/operation-write  →  ../../skills/operation-write
 .claude/skills/composite-write  →  ../../skills/composite-write
 .claude/skills/pipeline-write   →  ../../skills/pipeline-write
