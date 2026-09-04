@@ -47,6 +47,7 @@ from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
+from artisan.schemas.orchestration.step_state import StepState
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import (
     compute_artifact_id,
@@ -66,6 +67,8 @@ if TYPE_CHECKING:
 _OpLike = type[OperationDefinition] | type["CompositeDefinition"]
 
 logger = logging.getLogger(__name__)
+
+_PIPELINE_DEFAULT_RUNNER_OPTION = "pipeline_default_step_runner"
 
 
 # =============================================================================
@@ -143,6 +146,33 @@ def _extract_name_from_run_id(run_id: str) -> str:
     """Extract the pipeline name prefix from a run ID."""
     parts = run_id.rsplit("_", 3)
     return parts[0]
+
+
+def _load_stored_default_runner(steps: list[StepState]) -> str | None:
+    """Read a pipeline's default runner from persisted step options.
+
+    Args:
+        steps: Completed states for one pipeline run.
+
+    Returns:
+        The stored runner name, or None for legacy records without the field.
+
+    Raises:
+        ValueError: If stored runner metadata is invalid.
+    """
+    for step in steps:
+        options = json.loads(step.compute_options_json)
+        if (
+            not isinstance(options, dict)
+            or _PIPELINE_DEFAULT_RUNNER_OPTION not in options
+        ):
+            continue
+        name = options[_PIPELINE_DEFAULT_RUNNER_OPTION]
+        if not isinstance(name, str) or not name:
+            msg = "Persisted default_step_runner must be a non-empty string"
+            raise ValueError(msg)
+        return name
+    return None
 
 
 def _is_file_path_input(inputs: Any) -> bool:
@@ -1134,8 +1164,9 @@ class PipelineManager:
             working_root: Root path for worker sandboxes. If None, uses
                 tempfile.gettempdir() (respects $TMPDIR).
             default_step_runner: Runtime default runner. Built-in names can be
-                reconstructed directly; external providers must be supplied as
-                instances when resuming.
+                reconstructed from persisted state; external providers must be
+                supplied as matching instances. For legacy records without a
+                stored default, an omitted value falls back to local.
             files_root: Root path for Artisan-managed external files. If None,
                 derives a sibling path from a local delta_root.
             failure_policy: Default failure handling for subsequent steps.
@@ -1169,6 +1200,7 @@ class PipelineManager:
             raise ValueError(msg)
 
         run_id = pipeline_run_id or completed_steps[0].pipeline_run_id
+        stored_runner_name = _load_stored_default_runner(completed_steps)
         config_kwargs: dict[str, Any] = {
             "name": name or _extract_name_from_run_id(run_id),
             "pipeline_run_id": run_id,
@@ -1184,12 +1216,28 @@ class PipelineManager:
             "skip_cache": skip_cache,
             "storage": storage,
         }
-        runtime_runner: RunnerBase | None = None
+        runtime_runner: RunnerBase | None
+        requested_runner_name: str | None
         if isinstance(default_step_runner, RunnerBase):
             runtime_runner = default_step_runner
-            config_kwargs["default_step_runner"] = default_step_runner.name
-        elif default_step_runner is not None:
-            config_kwargs["default_step_runner"] = default_step_runner
+            requested_runner_name = default_step_runner.name
+        else:
+            runtime_runner = None
+            requested_runner_name = default_step_runner
+        if (
+            stored_runner_name is not None
+            and requested_runner_name is not None
+            and requested_runner_name != stored_runner_name
+        ):
+            msg = (
+                f"Requested default_step_runner {requested_runner_name!r} does not "
+                f"match persisted default_step_runner {stored_runner_name!r} for "
+                f"pipeline run {run_id!r}. Resume with the original provider runner."
+            )
+            raise ValueError(msg)
+        resumed_runner_name = stored_runner_name or requested_runner_name
+        if resumed_runner_name is not None:
+            config_kwargs["default_step_runner"] = resumed_runner_name
         if working_root is not None:
             config_kwargs["working_root"] = working_root
         config = PipelineConfig(**config_kwargs)
@@ -1825,6 +1873,9 @@ class PipelineManager:
                 ov.compute_provider if ov.compute_provider is not None else {}
             ),
             "group_by": (ov.group_by.value if ov.group_by is not None else None),
+            # Effective compute_backend may be a per-step override or forced
+            # local curator, so it cannot recover the pipeline default.
+            _PIPELINE_DEFAULT_RUNNER_OPTION: self._config.default_step_runner,
         }
         start_record = StepStartRecord(
             step_run_id=step_run_id,

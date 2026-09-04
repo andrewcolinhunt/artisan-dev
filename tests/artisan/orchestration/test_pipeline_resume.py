@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum, auto
+from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
+import polars as pl
 import pytest
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.orchestration.step_result import StepResult
+from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -74,6 +80,62 @@ def _mock_execute_step(**kwargs):
         failed_count=0,
         failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
     )
+
+
+def _write_legacy_completed_step(delta_root: Path) -> str:
+    """Write a pre-runner-metadata step row for compatibility coverage."""
+    pipeline_run_id = "legacy_20260904_120000_abcdef12"
+    tracker = StepTracker(str(delta_root), pipeline_run_id)
+    record = StepStartRecord(
+        step_run_id="legacy_step_run",
+        step_spec_id="legacy_step_spec",
+        step_number=0,
+        step_name="Ingest",
+        operation_class=f"{IngestMockOp.__module__}.{IngestMockOp.__qualname__}",
+        params_json="{}",
+        input_refs_json="null",
+        compute_backend="local",
+        compute_options_json="{}",
+        output_roles_json='["file"]',
+        output_types_json='{"file": "data"}',
+    )
+    result = StepResult(
+        step_name="Ingest",
+        step_number=0,
+        success=True,
+        total_count=1,
+        succeeded_count=1,
+        failed_count=0,
+        output_roles=frozenset({"file"}),
+        output_types={"file": ArtifactTypes.DATA},
+    )
+    tracker.record_step_start(record)
+    tracker.record_step_completed(record, result)
+    return pipeline_run_id
+
+
+def _run_external_default_pipeline(
+    delta_root: Path,
+    staging_root: Path,
+    *,
+    local_override: bool = False,
+) -> tuple[PipelineManager, ExternalRunner]:
+    """Run steps whose effective runners can differ from an external default."""
+    runner = ExternalRunner()
+    pipeline = PipelineManager.create(
+        name="test",
+        delta_root=str(delta_root),
+        staging_root=str(staging_root),
+        default_step_runner=runner,
+    )
+    pipeline.run(IngestMockOp, inputs=None)
+    if local_override:
+        pipeline.run(
+            MockOp,
+            inputs={"data": pipeline[0].output("file")},
+            step_runner="local",
+        )
+    return pipeline, runner
 
 
 class TestResume:
@@ -171,15 +233,13 @@ class TestResume:
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_mock_execute_step,
     )
-    def test_resume_accepts_external_runner_instance(self, mock_exec, tmp_path):
-        """An imported provider instance survives resume as the runtime default."""
+    def test_resume_accepts_matching_persisted_external_runner_instance(
+        self, mock_exec, tmp_path
+    ):
+        """An imported provider instance restores its persisted default."""
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        p1.run(IngestMockOp, inputs=None)
-        runner = ExternalRunner()
+        p1, runner = _run_external_default_pipeline(delta, staging)
 
         resumed = PipelineManager.resume(
             delta_root=str(delta),
@@ -195,16 +255,65 @@ class TestResume:
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_mock_execute_step,
     )
+    def test_resume_does_not_infer_default_from_curator_or_override(
+        self, mock_exec, tmp_path
+    ):
+        """Effective local step runners cannot hide a persisted external default."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        p1, _ = _run_external_default_pipeline(
+            delta,
+            staging,
+            local_override=True,
+        )
+
+        rows = pl.read_delta(delta / "orchestration" / "steps").filter(
+            pl.col("status") == "completed"
+        )
+        assert set(rows["compute_backend"]) == {"local"}
+        assert {
+            json.loads(options)["pipeline_default_step_runner"]
+            for options in rows["compute_options_json"]
+        } == {"external_test"}
+
+        with pytest.raises(ValueError, match="initialized provider runner"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=p1.config.pipeline_run_id,
+            )
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_rejects_runner_mismatch_with_persisted_default(
+        self, mock_exec, tmp_path
+    ):
+        """An explicit runner cannot replace the persisted pipeline default."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        p1, _ = _run_external_default_pipeline(delta, staging)
+
+        with pytest.raises(ValueError, match="does not match persisted"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=p1.config.pipeline_run_id,
+                default_step_runner=LocalRunner(),
+            )
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
     def test_resume_rejects_external_runner_name_without_instance(
         self, mock_exec, tmp_path
     ):
         """A historical provider name cannot be reconstructed by core alone."""
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        p1.run(IngestMockOp, inputs=None)
+        p1, _ = _run_external_default_pipeline(delta, staging)
 
         with pytest.raises(ValueError, match="initialized provider runner"):
             PipelineManager.resume(
@@ -213,6 +322,38 @@ class TestResume:
                 pipeline_run_id=p1.config.pipeline_run_id,
                 default_step_runner="external_test",
             )
+
+    def test_resume_legacy_record_defaults_to_local(self, tmp_path):
+        """Rows predating runner metadata retain the historical local fallback."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta)
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=run_id,
+        )
+
+        assert resumed.config.default_step_runner == "local"
+        assert isinstance(resumed._default_step_runner, LocalRunner)
+
+    def test_resume_legacy_record_accepts_explicit_external_runner(self, tmp_path):
+        """Legacy rows allow callers to restore an external default explicitly."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta)
+        runner = ExternalRunner()
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=run_id,
+            default_step_runner=runner,
+        )
+
+        assert resumed.config.default_step_runner == "external_test"
+        assert resumed._default_step_runner is runner
 
 
 # NOTE: TestListRuns moved to test_run_history.py (PR 4 — list_runs is now
