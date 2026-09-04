@@ -189,7 +189,8 @@ def _load_stored_default_runner(
         steps: Completed states for one pipeline run.
 
     Returns:
-        Stored runner metadata, or None for legacy records without the field.
+        Stored runner metadata. Legacy records infer a single external runner
+        from their effective compute backend; all-local records return None.
 
     Raises:
         ValueError: If stored runner metadata is invalid.
@@ -220,7 +221,21 @@ def _load_stored_default_runner(
             local_max_workers = current_local_max
 
     if stored_name is None:
-        return None
+        legacy_provider_names = {
+            step.compute_backend
+            for step in steps
+            if step.compute_backend != LocalRunner.name
+        }
+        if len(legacy_provider_names) > 1:
+            msg = (
+                "Legacy step records contain multiple external runner names; "
+                "the pipeline default cannot be inferred safely"
+            )
+            raise ValueError(msg)
+        if legacy_provider_names:
+            stored_name = legacy_provider_names.pop()
+        else:
+            return None
     return _StoredDefaultRunner(stored_name, local_max_workers)
 
 
