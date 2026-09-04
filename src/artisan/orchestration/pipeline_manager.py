@@ -182,11 +182,13 @@ def _parse_stored_local_runner(options: dict[str, Any]) -> int | None:
 
 def _load_stored_default_runner(
     steps: list[StepState],
+    requested_name: str | None = None,
 ) -> _StoredDefaultRunner | None:
     """Read a pipeline's default runner from persisted step options.
 
     Args:
         steps: Completed states for one pipeline run.
+        requested_name: Explicit runner name supplied for resume, when any.
 
     Returns:
         Stored runner metadata. Legacy records infer a single external runner
@@ -221,20 +223,29 @@ def _load_stored_default_runner(
             local_max_workers = current_local_max
 
     if stored_name is None:
-        legacy_provider_names = {
-            step.compute_backend
-            for step in steps
-            if step.compute_backend != LocalRunner.name
-        }
+        legacy_names = {step.compute_backend for step in steps}
+        legacy_provider_names = legacy_names - {LocalRunner.name}
         if len(legacy_provider_names) > 1:
-            msg = (
-                "Legacy step records contain multiple external runner names; "
-                "the pipeline default cannot be inferred safely"
-            )
-            raise ValueError(msg)
+            if requested_name not in legacy_names:
+                msg = (
+                    "Legacy step records contain multiple runner names; pass an "
+                    "explicit matching default_step_runner because the historical "
+                    "pipeline default cannot be inferred safely"
+                )
+                raise ValueError(msg)
+            stored_name = requested_name
+        elif legacy_provider_names and LocalRunner.name in legacy_names:
+            if requested_name not in legacy_names:
+                msg = (
+                    "Legacy step records mix local and external runners; pass an "
+                    "explicit matching default_step_runner because the historical "
+                    "pipeline default cannot be inferred safely"
+                )
+                raise ValueError(msg)
+            stored_name = requested_name
         if legacy_provider_names:
-            stored_name = legacy_provider_names.pop()
-        else:
+            stored_name = stored_name or legacy_provider_names.pop()
+        elif stored_name is None:
             return None
     return _StoredDefaultRunner(stored_name, local_max_workers)
 
@@ -1293,7 +1304,18 @@ class PipelineManager:
             raise ValueError(msg)
 
         run_id = pipeline_run_id or completed_steps[0].pipeline_run_id
-        stored_runner = _load_stored_default_runner(completed_steps)
+        runtime_runner: RunnerBase | None
+        requested_runner_name: str | None
+        if isinstance(default_step_runner, RunnerBase):
+            runtime_runner = default_step_runner
+            requested_runner_name = default_step_runner.name
+        else:
+            runtime_runner = None
+            requested_runner_name = default_step_runner
+        stored_runner = _load_stored_default_runner(
+            completed_steps,
+            requested_name=requested_runner_name,
+        )
         stored_runner_name = stored_runner.name if stored_runner is not None else None
         config_kwargs: dict[str, Any] = {
             "name": name or _extract_name_from_run_id(run_id),
@@ -1310,14 +1332,6 @@ class PipelineManager:
             "skip_cache": skip_cache,
             "storage": storage,
         }
-        runtime_runner: RunnerBase | None
-        requested_runner_name: str | None
-        if isinstance(default_step_runner, RunnerBase):
-            runtime_runner = default_step_runner
-            requested_runner_name = default_step_runner.name
-        else:
-            runtime_runner = None
-            requested_runner_name = default_step_runner
         if (
             stored_runner_name is not None
             and requested_runner_name is not None
@@ -2066,6 +2080,7 @@ class PipelineManager:
                     output_types=output_types_map,
                     metadata={"cancelled": True},
                 )
+                self._step_tracker.record_step_cancelled(start_record)
                 self._step_results.append(cancelled_result)
                 self._named_steps.setdefault(cancelled_result.step_name, []).append(
                     cancelled_result
