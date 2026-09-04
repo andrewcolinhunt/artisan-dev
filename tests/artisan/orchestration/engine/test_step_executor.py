@@ -350,8 +350,11 @@ class TestComputeRoutingSelection:
         )
 
         mock_backend.create_lifecycle_router.assert_called_once()
+        router_kwargs = mock_backend.create_lifecycle_router.call_args.kwargs
+        assert "log_folder" not in router_kwargs
         mock_handle.run.assert_called_once()
         mock_persist_worker_logs.assert_called_once()
+        assert "fs" in mock_persist_worker_logs.call_args.kwargs
         mock_backend.capture_logs.assert_not_called()
 
 

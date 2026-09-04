@@ -1173,7 +1173,7 @@ def _execute_creator_step(
         return _cancelled_result(operation, step_number, failure_policy)
 
     dispatch_dir = uri_join(config.staging_root, "_dispatch")
-    fs_cleanup = config.storage.filesystem()
+    staging_fs = config.storage.filesystem()
     try:
         # --- execute phase ---
         dispatch_error: str | None = None
@@ -1198,9 +1198,6 @@ def _execute_creator_step(
                         operation.batch_strategy,
                         step_number,
                         job_name=operation.batch_strategy.job_name or operation.name,
-                        log_folder=uri_join(
-                            uri_parent(config.delta_root), "logs", "slurm"
-                        ),
                         staging_root=config.staging_root,
                     )
 
@@ -1275,6 +1272,7 @@ def _execute_creator_step(
                     runtime_env.failure_logs_root,
                     operation.name,
                     step_number,
+                    fs=staging_fs,
                 )
 
         # =====================================================================
@@ -1296,8 +1294,8 @@ def _execute_creator_step(
         )
     finally:
         try:
-            if fs_cleanup.exists(dispatch_dir):
-                fs_cleanup.rm(dispatch_dir, recursive=True)
+            if staging_fs.exists(dispatch_dir):
+                staging_fs.rm(dispatch_dir, recursive=True)
         except Exception:
             pass
 
