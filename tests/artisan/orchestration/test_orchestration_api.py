@@ -10,6 +10,7 @@ Tests for:
 
 from __future__ import annotations
 
+import inspect
 import tempfile
 
 import pytest
@@ -18,11 +19,18 @@ from pydantic import ValidationError
 from artisan.orchestration import (
     PipelineManager,
 )
+from artisan.orchestration.runners.local import LocalRunner
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
+
+
+class _ExternalRunner(LocalRunner):
+    """Concrete stand-in for a runner supplied by an external provider."""
+
+    name = "external_test"
 
 
 class TestOutputReference:
@@ -340,18 +348,54 @@ class TestPipelineManager:
         assert isinstance(pipeline.config.staging_root, str)
 
     def test_create_custom_config(self):
-        """Test create() with custom configuration."""
+        """Test create() with custom configuration and external runner."""
+        runner = _ExternalRunner()
         pipeline = PipelineManager.create(
             name="custom",
             delta_root="/data/delta",
             staging_root="/data/staging",
             working_root="/tmp/work",
             failure_policy="fail_fast",
-            default_step_runner="slurm",
+            default_step_runner=runner,
         )
         assert pipeline.config.working_root == "/tmp/work"
         assert pipeline.config.failure_policy == FailurePolicy.FAIL_FAST
-        assert pipeline.config.default_step_runner == "slurm"
+        assert pipeline.config.default_step_runner == "external_test"
+        assert pipeline._default_step_runner is runner
+
+    def test_prefect_server_removed_from_factory_signatures(self):
+        """The removed server adapter must not remain as an ignored shim."""
+        assert (
+            "prefect_server" not in inspect.signature(PipelineManager.create).parameters
+        )
+        assert (
+            "prefect_server" not in inspect.signature(PipelineManager.resume).parameters
+        )
+
+    def test_external_runner_name_requires_runtime_instance(self):
+        """Core cannot reconstruct an external runner from persisted text."""
+        config = PipelineConfig(
+            name="external",
+            delta_root="/data/delta",
+            staging_root="/data/staging",
+            default_step_runner="external_test",
+        )
+
+        with pytest.raises(ValueError, match="initialized provider runner"):
+            PipelineManager(config)
+
+    def test_local_runner_name_is_reconstructed(self):
+        """Core reconstructs its built-in local runner from persisted text."""
+        config = PipelineConfig(
+            name="local",
+            delta_root="/data/delta",
+            staging_root="/data/staging",
+            recover_staging=False,
+        )
+
+        pipeline = PipelineManager(config, configure_logging=False)
+
+        assert isinstance(pipeline._default_step_runner, LocalRunner)
 
     def test_finalize_empty(self):
         """Test finalize() with no steps."""

@@ -615,6 +615,43 @@ def _atexit_shutdown_executor(ref: weakref.ref[ThreadPoolExecutor]) -> None:
         executor.shutdown(wait=False)
 
 
+def _resolve_runtime_default_runner(
+    stored_name: str,
+    runtime_runner: RunnerBase | None,
+) -> RunnerBase:
+    """Resolve a persisted runner name or validate its runtime instance.
+
+    Args:
+        stored_name: Stable runner name stored in ``PipelineConfig``.
+        runtime_runner: Explicit provider instance, when one is required.
+
+    Returns:
+        Runner instance used for default step dispatch.
+
+    Raises:
+        ValueError: If the instance does not match the stored name or core
+            cannot reconstruct an external provider by name.
+    """
+    if runtime_runner is not None:
+        if runtime_runner.name != stored_name:
+            msg = (
+                f"Runtime runner name {runtime_runner.name!r} does not match "
+                f"stored default_step_runner {stored_name!r}"
+            )
+            raise ValueError(msg)
+        return runtime_runner
+
+    try:
+        return resolve_runner(stored_name)
+    except ValueError as exc:
+        msg = (
+            f"Step runner {stored_name!r} is not built into Artisan and cannot "
+            "be reconstructed by name. Pass an initialized provider runner as "
+            "default_step_runner."
+        )
+        raise ValueError(msg) from exc
+
+
 class PipelineManager:
     """Main interface for defining and executing pipelines.
 
@@ -622,7 +659,7 @@ class PipelineManager:
     - Step sequencing and numbering
     - Step-level caching via steps delta table
     - OutputReference resolution
-    - Worker dispatch (local or SLURM)
+    - Worker dispatch through local or external runners
     - Delta Lake commits
     - Error handling and failure policies
     - Async step execution via submit()
@@ -651,7 +688,8 @@ class PipelineManager:
         self,
         config: PipelineConfig,
         configure_logging: bool = True,
-    ):
+        default_step_runner: RunnerBase | None = None,
+    ) -> None:
         """Initialize from a PipelineConfig.
 
         Prefer ``PipelineManager.create()`` over direct instantiation.
@@ -661,7 +699,15 @@ class PipelineManager:
             configure_logging: If True (default), call
                 :func:`~artisan.utils.logging.configure_logging` so
                 users don't need to set up logging manually.
+            default_step_runner: Runtime runner instance corresponding to
+                ``config.default_step_runner``. Required when the stored name
+                belongs to an external provider that core cannot reconstruct.
         """
+        self._default_step_runner = _resolve_runtime_default_runner(
+            config.default_step_runner,
+            default_step_runner,
+        )
+
         if configure_logging:
             from artisan.utils.logging import configure_logging as _configure
 
@@ -721,7 +767,7 @@ class PipelineManager:
 
     def __del__(self) -> None:
         """Release executor threads if finalize() was never called."""
-        if not self._finalized:
+        if not getattr(self, "_finalized", True):
             self._shutdown_executor(wait=False)
 
     def __enter__(self) -> PipelineManager:
@@ -1008,16 +1054,11 @@ class PipelineManager:
         preserve_working: bool = False,
         recover_staging: bool = True,
         skip_cache: bool = False,
-        prefect_server: str | None = None,
     ) -> PipelineManager:
         """Factory method to create a PipelineManager.
 
-        Automatically discovers and connects to a running Prefect server.
-        Resolution order: explicit argument > PREFECT_SUBMITIT_SERVER env var
-        > PREFECT_API_URL env var > discovery file > error with instructions.
-
         Args:
-            name: Pipeline identifier (used for logging and Prefect).
+            name: Pipeline identifier used for logging and run IDs.
             delta_root: Root path for Delta Lake tables.
             staging_root: Root path for worker staging files.
             working_root: Root path for worker sandboxes. If None, uses
@@ -1027,30 +1068,18 @@ class PipelineManager:
             failure_policy: Default failure handling for steps.
             cache_policy: Controls when completed steps qualify as cache hits.
             default_step_runner: Default step runner for step execution. Accepts a
-                RunnerBase instance or string name (e.g. "local", "slurm").
+                ``RunnerBase`` instance or a built-in string name (currently
+                ``"local"``). External providers are passed as instances.
             default_compute_provider: Default compute provider for step execution.
             preserve_staging: Debug flag to preserve staging files after commit.
             preserve_working: Debug flag to preserve sandbox after execution.
             recover_staging: Commit leftover staging files from prior crashed
                 runs at pipeline init. Defaults to True.
             skip_cache: Bypass all cache lookups for every step.
-            prefect_server: Prefect server URL. If None, auto-discovered.
 
         Returns:
             Configured PipelineManager instance.
-
-        Raises:
-            PrefectServerNotFound: If no server can be discovered.
-            PrefectServerUnreachable: If the server is not responding.
         """
-        from artisan.orchestration.prefect_server import (
-            activate_server,
-            discover_server,
-        )
-
-        server_info = discover_server(prefect_server)
-        activate_server(server_info)
-
         resolved = resolve_runner(default_step_runner)
         pipeline_run_id = _generate_run_id(name)
         config = PipelineConfig(
@@ -1069,7 +1098,7 @@ class PipelineManager:
             recover_staging=recover_staging,
             skip_cache=skip_cache,
         )
-        instance = cls(config)
+        instance = cls(config, default_step_runner=resolved)
         logger.info("Pipeline '%s' initialized (run_id=%s)", name, pipeline_run_id)
         logger.info("  delta_root: %s", config.delta_root)
         logger.info("  staging_root: %s", config.staging_root)
@@ -1083,7 +1112,7 @@ class PipelineManager:
         pipeline_run_id: str | None = None,
         name: str | None = None,
         working_root: str | None = None,
-        prefect_server: str | None = None,
+        default_step_runner: str | RunnerBase | None = None,
         **kwargs: Any,
     ) -> PipelineManager:
         """Resume a pipeline from persisted step state.
@@ -1095,7 +1124,9 @@ class PipelineManager:
             name: Pipeline name override.
             working_root: Root path for worker sandboxes. If None, uses
                 tempfile.gettempdir() (respects $TMPDIR).
-            prefect_server: Prefect server URL. If None, auto-discovered.
+            default_step_runner: Runtime default runner. Built-in names can be
+                reconstructed directly; external providers must be supplied as
+                instances when resuming.
             **kwargs: Additional PipelineConfig options.
 
         Returns:
@@ -1103,17 +1134,7 @@ class PipelineManager:
 
         Raises:
             ValueError: If no pipeline run found to resume.
-            PrefectServerNotFound: If no server can be discovered.
-            PrefectServerUnreachable: If the server is not responding.
         """
-        from artisan.orchestration.prefect_server import (
-            activate_server,
-            discover_server,
-        )
-
-        server_info = discover_server(prefect_server)
-        activate_server(server_info)
-
         from artisan.schemas.execution.storage_config import StorageConfig
 
         storage = kwargs.get("storage") or StorageConfig()
@@ -1138,11 +1159,17 @@ class PipelineManager:
             staging_root=staging_root,
             **kwargs,
         )
+        runtime_runner: RunnerBase | None = None
+        if isinstance(default_step_runner, RunnerBase):
+            runtime_runner = default_step_runner
+            config_kwargs["default_step_runner"] = default_step_runner.name
+        elif default_step_runner is not None:
+            config_kwargs["default_step_runner"] = default_step_runner
         if working_root is not None:
             config_kwargs["working_root"] = working_root
         config = PipelineConfig(**config_kwargs)
 
-        instance = cls(config)
+        instance = cls(config, default_step_runner=runtime_runner)
         for step_state in completed_steps:
             result = step_state.to_step_result()
             instance._step_results.append(result)
@@ -1385,7 +1412,7 @@ class PipelineManager:
                 return file_result
             inputs = file_result  # type: ignore[assignment]
 
-        # 7. Dispatch: register the step, resolve the step_runner (local vs SLURM),
+        # 7. Dispatch: register the step, resolve its runner,
         #    record the step start in Delta, and submit the _run() closure to
         #    the thread pool executor for background execution.
         return self._dispatch_step(
@@ -1759,7 +1786,7 @@ class PipelineManager:
         elif ov.step_runner is not None:
             resolved_runner = resolve_runner(ov.step_runner)
         else:
-            resolved_runner = resolve_runner(self._config.default_step_runner)
+            resolved_runner = self._default_step_runner
 
         # Internal compute_options keys stay "resources"/"execution" to
         # preserve persisted-record stability across the public-API renames.

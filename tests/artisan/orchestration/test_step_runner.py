@@ -8,7 +8,6 @@ tests live in runners/test_resolve.py.
 from __future__ import annotations
 
 import inspect
-from unittest.mock import patch
 
 from artisan.orchestration.runners import Runner
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -16,7 +15,7 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
 class TestRunnerRouting:
-    """Tests for Runner.LOCAL and Runner.SLURM create_lifecycle_router routing."""
+    """Tests for built-in local lifecycle-router construction."""
 
     def test_local_runner_returns_lifecycle_router(self):
         from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
@@ -27,47 +26,6 @@ class TestRunnerRouting:
             runner_resources, batch_strategy, step_number=0, job_name="test_op"
         )
         assert isinstance(handle, LifecycleRouter)
-
-    @patch("prefect_submitit.SlurmTaskRunner")
-    def test_slurm_runner_returns_lifecycle_router(self, mock_slurm_runner):
-        from artisan.orchestration.runners.slurm import SlurmLifecycleRouter
-
-        runner_resources = RunnerResources(
-            cpus=4,
-            memory_gb=8,
-            gpus=1,
-            time_limit="02:00:00",
-            extra={"partition": "gpu"},
-        )
-        batch_strategy = BatchStrategy(units_per_worker=1)
-
-        handle = Runner.SLURM.create_lifecycle_router(
-            runner_resources, batch_strategy, step_number=3, job_name="test_op"
-        )
-
-        assert isinstance(handle, SlurmLifecycleRouter)
-        mock_slurm_runner.assert_called_once()
-        call_kwargs = mock_slurm_runner.call_args[1]
-        assert call_kwargs["partition"] == "gpu"
-        assert call_kwargs["slurm_job_name"] == "s3_test_op"
-
-    @patch("prefect_submitit.SlurmTaskRunner")
-    def test_slurm_intra_runner_returns_lifecycle_router(self, mock_slurm_runner):
-        from artisan.orchestration.runners.slurm import SlurmLifecycleRouter
-
-        runner_resources = RunnerResources(
-            cpus=4, memory_gb=8, gpus=1, time_limit="02:00:00"
-        )
-        batch_strategy = BatchStrategy(units_per_worker=1)
-
-        handle = Runner.SLURM_INTRA.create_lifecycle_router(
-            runner_resources, batch_strategy, step_number=1, job_name="test"
-        )
-
-        assert isinstance(handle, SlurmLifecycleRouter)
-        mock_slurm_runner.assert_called_once()
-        call_kwargs = mock_slurm_runner.call_args[1]
-        assert call_kwargs["execution_mode"] == "srun"
 
 
 class TestPipelineManagerStepRunnerParam:

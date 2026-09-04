@@ -36,6 +36,7 @@ from artisan.orchestration.pipeline_manager import (
     _validate_required_inputs,
     _validate_resources,
 )
+from artisan.orchestration.runners.local import LocalRunner
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
@@ -74,6 +75,12 @@ class _MockOp(OperationDefinition):
         return None
 
 
+class _ExternalRunner(LocalRunner):
+    """Concrete stand-in for a runner supplied by an external provider."""
+
+    name = "external_test"
+
+
 def _make_pipeline(tmp_path) -> PipelineManager:
     """Create a minimal PipelineManager without Prefect."""
     config = PipelineConfig(
@@ -83,6 +90,37 @@ def _make_pipeline(tmp_path) -> PipelineManager:
         working_root=str(tmp_path / "working"),
     )
     return PipelineManager(config)
+
+
+class TestDefaultRunnerRetention:
+    """The runtime provider object must survive configuration serialization."""
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_custom_default_instance_reaches_dispatch(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ):
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+        mock_execute.return_value = StepResult(
+            step_name=_MockOp.name,
+            step_number=0,
+            success=True,
+        )
+        runner = _ExternalRunner()
+        pipeline = PipelineManager.create(
+            name="external",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            default_step_runner=runner,
+            recover_staging=False,
+        )
+
+        pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
+
+        assert pipeline.config.default_step_runner == "external_test"
+        assert mock_execute.call_args.kwargs["step_runner"] is runner
 
 
 class TestRunReturnsFailedStepResult:

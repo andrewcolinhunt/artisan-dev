@@ -10,9 +10,16 @@ import pytest
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
+from artisan.orchestration.runners.local import LocalRunner
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+
+
+class ExternalRunner(LocalRunner):
+    """Concrete stand-in for a runner supplied by an external provider."""
+
+    name = "external_test"
 
 
 class MockOp(OperationDefinition):
@@ -158,6 +165,53 @@ class TestResume:
             PipelineManager.resume(
                 delta_root=str(tmp_path / "delta"),
                 staging_root=str(tmp_path / "staging"),
+            )
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_accepts_external_runner_instance(self, mock_exec, tmp_path):
+        """An imported provider instance survives resume as the runtime default."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
+        p1.run(IngestMockOp, inputs=None)
+        runner = ExternalRunner()
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=p1.config.pipeline_run_id,
+            default_step_runner=runner,
+        )
+
+        assert resumed.config.default_step_runner == "external_test"
+        assert resumed._default_step_runner is runner
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_rejects_external_runner_name_without_instance(
+        self, mock_exec, tmp_path
+    ):
+        """A historical provider name cannot be reconstructed by core alone."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
+        p1.run(IngestMockOp, inputs=None)
+
+        with pytest.raises(ValueError, match="initialized provider runner"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=p1.config.pipeline_run_id,
+                default_step_runner="external_test",
             )
 
 
