@@ -7,11 +7,19 @@ import sys
 import threading
 from types import ModuleType
 
-_main_reimport_lock = threading.Lock()
-_main_reimport_guard_count = 0
-_saved_main_module: ModuleType | None = None
-_saved_main_file: str | None = None
-_saved_main_had_file = False
+
+class _MainReimportState:
+    """Process-wide state shared by overlapping spawn guards."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.guard_count = 0
+        self.saved_module: ModuleType | None = None
+        self.saved_file: str | None = None
+        self.saved_had_file = False
+
+
+_main_reimport_state = _MainReimportState()
 
 
 def ignore_sigint() -> None:
@@ -46,45 +54,37 @@ class suppress_main_reimport:
     """
 
     def __enter__(self) -> suppress_main_reimport:
-        global _main_reimport_guard_count
-        global _saved_main_file
-        global _saved_main_had_file
-        global _saved_main_module
-
-        with _main_reimport_lock:
-            if _main_reimport_guard_count == 0:
-                _saved_main_module = sys.modules.get("__main__")
-                _saved_main_had_file = hasattr(_saved_main_module, "__file__")
-                _saved_main_file = getattr(_saved_main_module, "__file__", None)
-                if _saved_main_module is not None:
-                    _saved_main_module.__file__ = None
-            _main_reimport_guard_count += 1
+        state = _main_reimport_state
+        with state.lock:
+            if state.guard_count == 0:
+                state.saved_module = sys.modules.get("__main__")
+                state.saved_had_file = hasattr(state.saved_module, "__file__")
+                state.saved_file = getattr(state.saved_module, "__file__", None)
+                if state.saved_module is not None:
+                    state.saved_module.__file__ = None
+            state.guard_count += 1
         self._entered = True
         return self
 
     def __exit__(self, *args: object) -> None:
-        global _main_reimport_guard_count
-
         if not getattr(self, "_entered", False):
             return
-        with _main_reimport_lock:
-            _main_reimport_guard_count -= 1
-            if _main_reimport_guard_count == 0:
+        state = _main_reimport_state
+        with state.lock:
+            state.guard_count -= 1
+            if state.guard_count == 0:
                 _restore_main_file()
             self._entered = False
 
 
 def _restore_main_file() -> None:
     """Restore the process-wide main module after the final guard exits."""
-    global _saved_main_file
-    global _saved_main_had_file
-    global _saved_main_module
-
-    if _saved_main_module is not None:
-        if _saved_main_had_file:
-            _saved_main_module.__file__ = _saved_main_file
+    state = _main_reimport_state
+    if state.saved_module is not None:
+        if state.saved_had_file:
+            state.saved_module.__file__ = state.saved_file
         else:
-            delattr(_saved_main_module, "__file__")
-    _saved_main_module = None
-    _saved_main_file = None
-    _saved_main_had_file = False
+            delattr(state.saved_module, "__file__")
+    state.saved_module = None
+    state.saved_file = None
+    state.saved_had_file = False
