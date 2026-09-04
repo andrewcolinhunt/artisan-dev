@@ -73,12 +73,21 @@ repos:
         files: src|tests
         args: []
         additional_dependencies:
+          - botocore
+          - cloudpickle
+          - fastmcp>=3
+          - fsspec
+          - griffe
+          - httpx
           - pytest
           - pydantic
           - polars>=0.20.0
+          - pydantic-settings
+          - python-dotenv
           - xxhash
           - deltalake>=0.14.0
           - rich
+          - typer
 
   # Fix common misspellings in text files.
   - repo: https://github.com/codespell-project/codespell
