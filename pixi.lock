@@ -4630,9 +4630,22 @@ packages:
   requires_python: '>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*'
 - pypi: ./
   name: dexterity-artisan
-  version: 0.1.dev880+ge20c44b7f.d20260904
-  sha256: a5e2014a84c146834e8d65b60f1dabaacebd2de905a59a9bae6117927eebbf02
+  version: 0.1.2a6.dev542+g8c25068cf.d20260904
+  sha256: 940e12be177c66a4524339710182d53a2b8eee49c43e80295fb8b15d2814f663
   requires_dist:
+  - deltalake>=0.14.0
+  - fsspec
+  - graphviz
+  - griffe
+  - httpx
+  - ipython
+  - ipywidgets
+  - matplotlib
+  - polars>=0.20.0
+  - pydantic>=2
+  - python-dotenv
+  - rich
+  - xxhash
   - gcsfs ; extra == 'gcs'
   - fastmcp>=3 ; extra == 'mcp'
   - pydantic-settings ; extra == 'mcp'

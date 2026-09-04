@@ -18,7 +18,21 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = []  # All dependencies managed by Pixi
+dependencies = [
+    "deltalake>=0.14.0",
+    "fsspec",
+    "graphviz",
+    "griffe",
+    "httpx",
+    "ipython",
+    "ipywidgets",
+    "matplotlib",
+    "polars>=0.20.0",
+    "pydantic>=2",
+    "python-dotenv",
+    "rich",
+    "xxhash",
+]
 
 [project.optional-dependencies]
 s3 = ["s3fs"]
