@@ -356,7 +356,7 @@ See [Provenance System](../concepts/provenance-system.md).
 
 Portable hardware resource requirements declared on an operation. Specifies
 `cpus`, `memory_gb`, `gpus`, `time_limit`, and an `extra` dict for
-backend-specific settings (e.g. `{"partition": "gpu"}`). Each
+provider-specific settings (e.g. `{"slurm_partition": "gpu"}`). Each
 [backend](#glossary-backend) translates these to its native format.
 
 ---

@@ -764,7 +764,7 @@ class HeavyOp(OperationDefinition):
         cpus=4,
         memory_gb=32,
         gpus=1,
-        extra={"partition": "gpu"},
+        extra={"slurm_partition": "gpu"},
     )
     batch_strategy: BatchStrategy = BatchStrategy(
         artifacts_per_unit=5,

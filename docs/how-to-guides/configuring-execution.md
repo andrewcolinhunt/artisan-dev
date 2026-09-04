@@ -35,7 +35,7 @@ pipeline.run(
     name="inference",
     inputs={"dataset": pipeline.output("preprocess", "dataset")},
     step_runner=SlurmRunner(),
-    runner_resources={"gpus": 1, "memory_gb": 32, "extra": {"partition": "gpu"}},
+    runner_resources={"gpus": 1, "memory_gb": 32, "extra": {"slurm_partition": "gpu"}},
     batch_strategy={"artifacts_per_unit": 1},
 )
 ```
@@ -381,7 +381,7 @@ pipeline.run(
         "memory_gb": 32,
         "time_limit": "04:00:00",
         "cpus": 4,
-        "extra": {"partition": "gpu"},
+        "extra": {"slurm_partition": "gpu"},
     },
 )
 ```
@@ -394,7 +394,7 @@ pipeline.run(
 | `memory_gb` | `int` | `4` | Memory in GB |
 | `gpus` | `int` | `0` | Number of GPUs requested |
 | `time_limit` | `str` | `"01:00:00"` | Wall-clock time limit (HH:MM:SS) |
-| `extra` | `dict` | `{}` | Runner-specific settings (e.g., `{"partition": "gpu"}`) |
+| `extra` | `dict` | `{}` | Runner-specific settings (e.g., `{"slurm_partition": "gpu"}`) |
 
 `RunnerResources` is portable across step runners — each runner translates these
 fields to its native format. Use `extra` for runner-specific settings like
@@ -494,7 +494,7 @@ class GpuInference(OperationDefinition):
         gpus=1,
         memory_gb=32,
         time_limit="02:00:00",
-        extra={"partition": "gpu"},
+        extra={"slurm_partition": "gpu"},
     )
 
     batch_strategy: BatchStrategy = BatchStrategy(
@@ -827,10 +827,10 @@ pipeline.run(
     inputs=...,
     runner_resources={
         "extra": {
-            "partition": "gpu",
-            "constraint": "a100",
-            "account": "my_allocation",
-            "exclude": "node[001-003]",
+            "slurm_partition": "gpu",
+            "slurm_constraint": "a100",
+            "slurm_account": "my_allocation",
+            "slurm_exclude": "node[001-003]",
         }
     },
 )
