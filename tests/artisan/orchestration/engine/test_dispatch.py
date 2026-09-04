@@ -1,14 +1,17 @@
-"""Tests for parallel result collection in dispatch.py."""
+"""Tests for transport-neutral execution and result validation."""
 
 from __future__ import annotations
 
-import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from artisan.orchestration.engine.dispatch import _collect_results
+from artisan.orchestration.engine.dispatch import (
+    execute_unit,
+    execute_unit_batch,
+    failure_results_for_units,
+    validate_batch_results,
+)
 from artisan.schemas.execution.unit_result import UnitResult
 
 
@@ -23,77 +26,59 @@ def _result(**overrides: object) -> UnitResult:
     return UnitResult(**{**defaults, **overrides})
 
 
-class TestCollectResults:
-    """Tests for _collect_results with parallel collection."""
-
-    def test_results_preserve_order_when_futures_complete_out_of_order(self):
-        """Results must match the order of the input futures list."""
-        barriers = [threading.Event() for _ in range(3)]
-        # Release in reverse order to force out-of-order completion
-        release_order = [2, 0, 1]
-
-        def _make_future(idx: int, value: UnitResult) -> MagicMock:
-            mock = MagicMock()
-
-            def _result():
-                barriers[idx].wait(timeout=5)
-                return value
-
-            mock.result = _result
-            return mock
-
-        expected = [
-            _result(item_count=1, execution_run_ids=["a"]),
-            _result(item_count=2, execution_run_ids=["b"]),
-            _result(item_count=3, execution_run_ids=["c"]),
-        ]
-        futures = [_make_future(i, expected[i]) for i in range(3)]
-
-        # Release futures out of order in a background thread
-        def _release():
-            for idx in release_order:
-                barriers[idx].set()
-                time.sleep(0.01)
-
-        t = threading.Thread(target=_release)
-        t.start()
-
-        results = _collect_results(futures)
-        t.join()
-
-        assert results == expected
-
-    def test_exception_produces_failure_result(self):
-        """A future that raises should become a failure result at the correct index."""
-        good = MagicMock()
-        good.result.return_value = _result(execution_run_ids=["ok"])
-
-        bad = MagicMock()
-        bad.result.side_effect = RuntimeError("boom")
-
-        results = _collect_results([good, bad])
-
-        assert results[0].success is True
-        assert results[1].success is False
-        assert "boom" in results[1].error
-        assert results[1].item_count == 1
-
-    def test_empty_futures_list(self):
-        """An empty futures list should return an empty results list."""
-        assert _collect_results([]) == []
-
-
-class TestExecuteUnitTaskKeyboardInterrupt:
-    """KeyboardInterrupt in subprocess is converted to RuntimeError."""
-
-    def test_keyboard_interrupt_raises_runtime_error(self):
-        """execute_unit_task converts KeyboardInterrupt to RuntimeError."""
-        from artisan.orchestration.engine.dispatch import execute_unit_task
-
+class TestExecuteUnit:
+    def test_creator_result_preserves_unit_cardinality(self) -> None:
         unit = MagicMock()
         unit.operation = MagicMock()
-        runtime_env = MagicMock()
-        runtime_env.worker_id_env_var = None
+        unit.get_batch_size.return_value = 3
+        runtime_env = MagicMock(worker_id_env_var=None)
+        flow_result = MagicMock(
+            success=True,
+            error=None,
+            execution_run_id="run-1",
+        )
+
+        with (
+            patch(
+                "artisan.execution.executors.curator.is_curator_operation",
+                return_value=False,
+            ),
+            patch(
+                "artisan.execution.executors.creator.run_creator_flow",
+                return_value=flow_result,
+            ),
+        ):
+            result = execute_unit(unit, runtime_env)
+
+        assert result.success is True
+        assert result.item_count == 3
+        assert result.execution_run_ids == ["run-1"]
+
+    def test_operation_exception_becomes_failure(self) -> None:
+        unit = MagicMock()
+        unit.operation = MagicMock()
+        runtime_env = MagicMock(worker_id_env_var=None)
+
+        with (
+            patch(
+                "artisan.execution.executors.curator.is_curator_operation",
+                return_value=False,
+            ),
+            patch(
+                "artisan.execution.executors.creator.run_creator_flow",
+                side_effect=ValueError("bad input"),
+            ),
+        ):
+            result = execute_unit(unit, runtime_env)
+
+        assert result.success is False
+        assert "ValueError: bad input" in result.error
+        assert result.execution_run_ids == []
+
+    def test_keyboard_interrupt_raises_runtime_error(self) -> None:
+        unit = MagicMock()
+        unit.operation = MagicMock()
+        runtime_env = MagicMock(worker_id_env_var=None)
 
         with (
             patch(
@@ -106,4 +91,79 @@ class TestExecuteUnitTaskKeyboardInterrupt:
             ),
             pytest.raises(RuntimeError, match="SIGINT"),
         ):
-            execute_unit_task(unit, runtime_env)
+            execute_unit(unit, runtime_env)
+
+
+class TestExecuteUnitBatch:
+    def test_returns_one_ordered_result_per_unit(self) -> None:
+        units = [MagicMock(), MagicMock(), MagicMock()]
+        expected = [
+            _result(execution_run_ids=["a"]),
+            _result(execution_run_ids=["b"]),
+            _result(execution_run_ids=["c"]),
+        ]
+
+        with patch(
+            "artisan.orchestration.engine.dispatch.execute_unit",
+            side_effect=expected,
+        ) as mock_execute:
+            results = execute_unit_batch(units, MagicMock())
+
+        assert results == expected
+        assert [call.args[0] for call in mock_execute.call_args_list] == units
+
+
+class TestFailureResultsForUnits:
+    def test_returns_one_failure_per_unit(self) -> None:
+        units = [MagicMock(), MagicMock()]
+
+        results = failure_results_for_units(units, OSError("transport down"))
+
+        assert len(results) == 2
+        assert all(result.success is False for result in results)
+        assert all("OSError: transport down" in result.error for result in results)
+
+
+class TestValidateBatchResults:
+    def test_returns_valid_ordered_results(self) -> None:
+        units = [MagicMock(), MagicMock()]
+        expected = [
+            _result(execution_run_ids=["first"]),
+            _result(execution_run_ids=["second"]),
+        ]
+
+        assert validate_batch_results(units, expected) is expected
+
+    @pytest.mark.parametrize("returned_count", [0, 1, 3])
+    def test_cardinality_mismatch_fails_entire_batch(
+        self,
+        returned_count: int,
+    ) -> None:
+        units = [MagicMock(), MagicMock()]
+
+        results = validate_batch_results(
+            units,
+            [_result() for _ in range(returned_count)],
+        )
+
+        assert len(results) == len(units)
+        assert all(result.success is False for result in results)
+        assert all("submitted units" in result.error for result in results)
+
+    def test_non_list_fails_entire_batch(self) -> None:
+        units = [MagicMock(), MagicMock()]
+
+        results = validate_batch_results(units, (_result(), _result()))
+
+        assert len(results) == 2
+        assert all(result.success is False for result in results)
+        assert "expected list[UnitResult]" in results[0].error
+
+    def test_invalid_result_type_fails_entire_batch(self) -> None:
+        units = [MagicMock(), MagicMock()]
+
+        results = validate_batch_results(units, [_result(), {"success": True}])
+
+        assert len(results) == 2
+        assert all(result.success is False for result in results)
+        assert "expected UnitResult" in results[0].error

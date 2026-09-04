@@ -1,183 +1,118 @@
-"""Tests for cancel-through-run flow on concrete lifecycle routers.
-
-Verifies the integration between ``run(cancel_event=...)``, the
-background thread, and each handle's ``cancel()`` method.
-"""
+"""Tests for native local lifecycle cancellation."""
 
 from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
+from collections.abc import Callable
+from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
-from artisan.orchestration.engine.lifecycle_router import _RouterState
-from artisan.orchestration.runners.local import LocalRunner
-from artisan.orchestration.runners.slurm import SlurmLifecycleRouter
-from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.orchestration.runners.local import LocalLifecycleRouter
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
-def _result(**overrides: object) -> UnitResult:
-    defaults = {
-        "success": True,
-        "error": None,
-        "item_count": 1,
-        "execution_run_ids": [],
-    }
-    return UnitResult(**{**defaults, **overrides})
+def _success() -> UnitResult:
+    return UnitResult(True, None, 1, [])
 
 
-def _fake_flow(**flow_kwargs):
-    """Mock ``@flow`` decorator: returns a wrapper that sleeps then returns results."""
+class TestLocalLifecycleRouterCancel:
+    def test_cancel_before_dispatch_is_noop(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
 
-    def decorator(fn):
-        def wrapper(*args, **kwargs):
-            time.sleep(0.3)
-            return [_result()]
-
-        return wrapper
-
-    return decorator
-
-
-class TestLocalLifecycleRouterCancelFlow:
-    """Cancel-through-run on a real LocalLifecycleRouter."""
-
-    @patch("prefect.unmapped", MagicMock())
-    @patch("prefect.flow", side_effect=_fake_flow)
-    def test_run_with_pre_set_cancel_event(self, _mock_flow) -> None:
-        """run() with an already-set cancel_event completes without hanging."""
-        handle = LocalRunner(default_max_workers=1).create_lifecycle_router(
-            RunnerResources(), BatchStrategy(), step_number=0, job_name="test"
-        )
-
-        cancel_event = threading.Event()
-        cancel_event.set()
-
-        results = handle.run([], MagicMock(), cancel_event=cancel_event)
-        assert isinstance(results, list)
-
-    @patch("prefect.unmapped", MagicMock())
-    @patch("prefect.flow", side_effect=_fake_flow)
-    def test_run_completes_after_delayed_cancel(self, _mock_flow) -> None:
-        """run() returns after cancel_event is set mid-execution."""
-        handle = LocalRunner(default_max_workers=1).create_lifecycle_router(
-            RunnerResources(), BatchStrategy(), step_number=0, job_name="test"
-        )
-
-        cancel_event = threading.Event()
-
-        def _set_after_delay():
-            time.sleep(0.1)
-            cancel_event.set()
-
-        threading.Thread(target=_set_after_delay, daemon=True).start()
-
-        start = time.monotonic()
-        results = handle.run([], MagicMock(), cancel_event=cancel_event)
-        elapsed = time.monotonic() - start
-
-        assert isinstance(results, list)
-        assert elapsed < 3.0
-
-
-class TestSlurmLifecycleRouterCancelFlow:
-    """Cancel-through-run on a real SlurmLifecycleRouter."""
-
-    @patch("artisan.orchestration.runners.slurm.subprocess")
-    def test_run_with_pre_set_cancel_calls_scancel(
-        self, mock_subprocess: MagicMock
-    ) -> None:
-        """run() with pre-set cancel_event calls scancel before completing."""
-        with (
-            patch("prefect.flow", side_effect=_fake_flow),
-            patch("prefect.unmapped", MagicMock()),
-            patch(
-                "artisan.orchestration.engine.dispatch._save_units",
-                return_value=Path("/fake/units.pkl"),
-            ),
-            patch(
-                "artisan.orchestration.engine.dispatch._load_units",
-                return_value=[],
-            ),
-        ):
-            handle = SlurmLifecycleRouter(
-                task_runner=MagicMock(),
-                job_name="s0_test_op",
-                staging_root="/staging",
-                step_number=0,
-            )
-
-            cancel_event = threading.Event()
-            cancel_event.set()
-
-            results = handle.run([], MagicMock(), cancel_event=cancel_event)
-
-        mock_subprocess.run.assert_called_with(
-            ["scancel", "--name", "s0_test_op"],
-            check=False,
-            capture_output=True,
-        )
-        assert isinstance(results, list)
-
-    @patch("artisan.orchestration.runners.slurm.subprocess")
-    def test_run_with_delayed_cancel_calls_scancel(
-        self, mock_subprocess: MagicMock
-    ) -> None:
-        """Delayed cancel_event triggers scancel during run() poll loop."""
-        with (
-            patch("prefect.flow", side_effect=_fake_flow),
-            patch("prefect.unmapped", MagicMock()),
-            patch(
-                "artisan.orchestration.engine.dispatch._save_units",
-                return_value=Path("/fake/units.pkl"),
-            ),
-            patch(
-                "artisan.orchestration.engine.dispatch._load_units",
-                return_value=[],
-            ),
-        ):
-            handle = SlurmLifecycleRouter(
-                task_runner=MagicMock(),
-                job_name="s1_my_op",
-                staging_root="/staging",
-                step_number=1,
-            )
-
-            cancel_event = threading.Event()
-
-            def _set_after_delay():
-                time.sleep(0.1)
-                cancel_event.set()
-
-            threading.Thread(target=_set_after_delay, daemon=True).start()
-
-            results = handle.run([], MagicMock(), cancel_event=cancel_event)
-
-        mock_subprocess.run.assert_called_with(
-            ["scancel", "--name", "s1_my_op"],
-            check=False,
-            capture_output=True,
-        )
-        assert isinstance(results, list)
-
-
-class TestSlurmLifecycleRouterCancelBeforeDispatch:
-    """Cancel on a SlurmLifecycleRouter that hasn't dispatched yet."""
-
-    @patch("artisan.orchestration.runners.slurm.subprocess")
-    def test_cancel_before_dispatch_calls_scancel(
-        self, mock_subprocess: MagicMock
-    ) -> None:
-        handle = SlurmLifecycleRouter(
-            task_runner=MagicMock(),
-            job_name="s2_early",
-            staging_root="/staging",
-            step_number=2,
-        )
-
-        assert handle._state is _RouterState.IDLE
         handle.cancel()
-        mock_subprocess.run.assert_called_once()
+
+        assert handle._cancel_requested is False
+
+    def test_cancel_after_empty_dispatch_is_noop(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        assert handle.run([], MagicMock()) == []
+
+        handle.cancel()
+
+        assert handle._cancel_requested is False
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_cancel_pending_future_returns_aligned_failure(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        pending: Future[list[UnitResult]] = Future()
+        executor.submit.return_value = pending
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        handle.dispatch([MagicMock()], MagicMock())
+        _wait_until(lambda: executor.submit.called)
+
+        handle.cancel()
+        handle.cancel()
+        assert handle._done.wait(timeout=2)
+        results = handle.collect()
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert "CancelledError" in results[0].error
+        executor.shutdown.assert_any_call(wait=False, cancel_futures=True)
+        assert (
+            sum(
+                call.kwargs.get("wait") is False
+                for call in executor.shutdown.call_args_list
+            )
+            == 1
+        )
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_in_flight_future_finishes_best_effort(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        running: Future[list[UnitResult]] = Future()
+        running.set_running_or_notify_cancel()
+        executor.submit.return_value = running
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        handle.dispatch([MagicMock()], MagicMock())
+        _wait_until(lambda: executor.submit.called)
+
+        handle.cancel()
+        assert running.cancelled() is False
+        running.set_result([_success()])
+        assert handle._done.wait(timeout=2)
+
+        assert handle.collect() == [_success()]
+        executor.shutdown.assert_any_call(wait=False, cancel_futures=True)
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_run_observes_delayed_cancel_event(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        running: Future[list[UnitResult]] = Future()
+        running.set_running_or_notify_cancel()
+        executor.submit.return_value = running
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        cancel_event = threading.Event()
+
+        def _cancel_then_finish() -> None:
+            time.sleep(0.05)
+            cancel_event.set()
+            time.sleep(0.15)
+            running.set_result([_success()])
+
+        threading.Thread(target=_cancel_then_finish, daemon=True).start()
+
+        results = handle.run([MagicMock(step_run_id=None)], MagicMock(), cancel_event)
+
+        assert results == [_success()]
+        assert handle._cancel_requested is True
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
+    """Wait for an asynchronous router condition in a bounded loop."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            msg = "condition was not met before timeout"
+            raise AssertionError(msg)
+        time.sleep(0.01)

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import warnings
-from unittest.mock import MagicMock
+from concurrent.futures import Future
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -61,7 +62,7 @@ class TestLocalRunnerCreateLifecycleRouter:
             step_number=0,
             job_name="test_op",
         )
-        assert handle._task_runner._max_workers == 8
+        assert handle._max_workers == 8
 
     def test_gpu_defaults_to_sequential(self, local_runner: LocalRunner) -> None:
         handle = local_runner.create_lifecycle_router(
@@ -70,7 +71,7 @@ class TestLocalRunnerCreateLifecycleRouter:
             step_number=0,
             job_name="test_op",
         )
-        assert handle._task_runner._max_workers == 1
+        assert handle._max_workers == 1
 
     def test_cpu_defaults_to_pool_size(self, local_runner: LocalRunner) -> None:
         handle = local_runner.create_lifecycle_router(
@@ -79,7 +80,7 @@ class TestLocalRunnerCreateLifecycleRouter:
             step_number=0,
             job_name="test_op",
         )
-        assert handle._task_runner._max_workers == 2  # fixture default
+        assert handle._max_workers == 2  # fixture default
 
     def test_explicit_max_workers_overrides_gpu(
         self, local_runner: LocalRunner
@@ -90,7 +91,7 @@ class TestLocalRunnerCreateLifecycleRouter:
             step_number=0,
             job_name="test_op",
         )
-        assert handle._task_runner._max_workers == 3
+        assert handle._max_workers == 3
 
     def test_explicit_max_workers_overrides_cpu_default(
         self,
@@ -102,7 +103,38 @@ class TestLocalRunnerCreateLifecycleRouter:
             step_number=0,
             job_name="test_op",
         )
-        assert handle._task_runner._max_workers == 6
+        assert handle._max_workers == 6
+
+    def test_passes_units_per_worker_to_router(
+        self,
+        local_runner: LocalRunner,
+    ) -> None:
+        handle = local_runner.create_lifecycle_router(
+            RunnerResources(),
+            BatchStrategy(units_per_worker=7),
+            step_number=0,
+            job_name="test_op",
+        )
+
+        assert handle._units_per_worker == 7
+
+    def test_rejects_non_positive_default_workers(self) -> None:
+        with pytest.raises(ValueError, match="default_max_workers"):
+            LocalRunner(default_max_workers=0)
+
+    def test_rejects_non_positive_operation_workers(
+        self,
+        local_runner: LocalRunner,
+    ) -> None:
+        strategy = BatchStrategy.model_construct(max_workers=0, units_per_worker=1)
+
+        with pytest.raises(ValueError, match="max_workers"):
+            local_runner.create_lifecycle_router(
+                RunnerResources(),
+                strategy,
+                step_number=0,
+                job_name="test_op",
+            )
 
 
 class TestLocalRunnerValidateOperation:
@@ -126,7 +158,7 @@ class TestLocalRunnerValidateOperation:
         self, local_runner: LocalRunner, mock_operation: MagicMock
     ) -> None:
         mock_operation.runner_resources.extra = {"partition": "gpu"}
-        with pytest.warns(UserWarning, match="SLURM-specific resources"):
+        with pytest.warns(UserWarning, match="provider-specific resources"):
             local_runner.validate_operation(mock_operation)
 
     def test_warns_on_runner_gpus_with_modal_provider(
@@ -146,9 +178,73 @@ class TestLocalRunnerValidateOperation:
         local_runner.validate_operation(mock_operation)
 
 
-class TestLocalRunnerCaptureLogs:
-    def test_capture_logs_is_noop(self, local_runner: LocalRunner) -> None:
-        results = [
-            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[])
+class TestLocalLifecycleRouter:
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_pool_creation_failure_returns_one_result_per_unit(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        message = "process creation denied"
+        mock_executor_class.side_effect = OSError(message)
+        handle = LocalLifecycleRouter(max_workers=2, units_per_worker=2)
+
+        results = handle.run([MagicMock(), MagicMock()], MagicMock())
+
+        assert len(results) == 2
+        assert all(result.success is False for result in results)
+        assert all("process creation denied" in result.error for result in results)
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_collects_batches_in_submission_order(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        first: Future[list[UnitResult]] = Future()
+        second: Future[list[UnitResult]] = Future()
+        first.set_result(
+            [
+                UnitResult(True, None, 1, ["a"]),
+                UnitResult(True, None, 1, ["b"]),
+            ]
+        )
+        second.set_result([UnitResult(True, None, 1, ["c"])])
+        executor.submit.side_effect = [first, second]
+        units = [MagicMock(), MagicMock(), MagicMock()]
+        handle = LocalLifecycleRouter(max_workers=2, units_per_worker=2)
+
+        results = handle.run(units, MagicMock())
+
+        assert [result.execution_run_ids[0] for result in results] == ["a", "b", "c"]
+        assert [call.args[1] for call in executor.submit.call_args_list] == [
+            units[:2],
+            units[2:],
         ]
-        local_runner.capture_logs(results, MagicMock(), None, "test_op", 1)
+        executor.shutdown.assert_called_once_with(wait=True, cancel_futures=False)
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_future_failure_becomes_one_result_per_batched_unit(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        failed: Future[list[UnitResult]] = Future()
+        failed.set_exception(OSError("worker unavailable"))
+        executor.submit.return_value = failed
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=2)
+
+        results = handle.run([MagicMock(), MagicMock()], MagicMock())
+
+        assert len(results) == 2
+        assert all(result.success is False for result in results)
+        assert all("worker unavailable" in result.error for result in results)
+
+    def test_empty_dispatch_avoids_creating_pool(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=2, units_per_worker=1)
+
+        with patch(
+            "artisan.orchestration.runners.local.ProcessPoolExecutor"
+        ) as mock_executor_class:
+            assert handle.run([], MagicMock()) == []
+
+        mock_executor_class.assert_not_called()

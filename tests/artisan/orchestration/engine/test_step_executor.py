@@ -306,12 +306,14 @@ class TestComputeRoutingSelection:
         mock_backend.create_lifecycle_router.assert_called_once()
         mock_handle.run.assert_called_once()
 
+    @patch("artisan.orchestration.engine.step_executor.persist_worker_logs")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_local_compute_uses_backend_dispatch(
         self,
         mock_resolve,
         mock_cache,
+        mock_persist_worker_logs,
         tmp_path,
     ):
         """LocalComputeConfig uses the standard step_runner dispatch path."""
@@ -349,6 +351,8 @@ class TestComputeRoutingSelection:
 
         mock_backend.create_lifecycle_router.assert_called_once()
         mock_handle.run.assert_called_once()
+        mock_persist_worker_logs.assert_called_once()
+        mock_backend.capture_logs.assert_not_called()
 
 
 class TestInstantiateOperationComputeOverrides:
