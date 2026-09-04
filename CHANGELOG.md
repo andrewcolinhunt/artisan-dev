@@ -37,6 +37,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server or runtime dependency. The `prefect_server` pipeline argument and
   built-in SLURM runner names are removed; install `artisan-submitit` and pass
   a `SlurmRunner()` or `SlurmIntraRunner()` instance for SLURM execution.
+- **BREAKING — third-party runner lifecycle contract updated.** Import provider
+  types from `artisan.orchestration.runner_api`. `LifecycleRouter.dispatch()` is
+  now the concrete state-transition template; providers implement `_dispatch()`
+  and `cancel()`. Routers return one ordered `UnitResult` per submitted unit and
+  attach captured stdout/stderr to `UnitResult.worker_log`. The former
+  `RunnerBase.capture_logs()` hook has been removed.
+- Resuming a historical scheduler pipeline now requires its provider runner
+  instance through `default_step_runner`. For example, pass a configured
+  `SlurmRunner()` to `PipelineManager.resume()`. Legacy rows whose runner
+  provenance is missing or contradictory fail fast instead of silently
+  selecting local execution.
+- Cancellation now discards records and artifacts staged by the cancelled step,
+  records queued and running steps as cancelled, and removes only that step's
+  cancellation sentinel. Provider/bootstrap failures now synthesize one
+  inspectable execution failure record per affected unit.
 - **`GroupByStrategy.LINEAGE` contract narrowed to directed ancestry.**
   `match_by_ancestry` now requires a directed path from candidate back
   to target, not just a shared ancestor. This eliminates a
@@ -94,8 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pipeline.submit_composite(..., expand=True)`.
 - Renamed pytest marker `slow` to `integration` across `pyproject.toml`,
   pixi tasks, all 17 files in `tests/integration/`, and contributor docs.
-  The new name describes the requirement (real infra: Delta Lake + Prefect
-  harness) rather than a speed adjective. Select with `pytest -m integration`;
+  The new name describes the requirement (real infrastructure and end-to-end
+  execution) rather than a speed adjective. Select with `pytest -m integration`;
   deselect with `pytest -m 'not integration'`.
 - Tightened pre-commit hook scope: per-hook excludes for blacken-docs (4
   files with intentional pseudo-code), check-yaml / prettier
@@ -125,7 +140,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mypy strict-mode now passes on `src/artisan/**`. Added
   `[[tool.mypy.overrides]]` relaxing `tests/**` (ignore_errors) and
   silencing third-party untyped imports (fsspec, graphviz,
-  cloudpickle, prefect_submitit, ipywidgets, matplotlib, modal,
+  cloudpickle, ipywidgets, matplotlib, modal,
   IPython). Cleared ~290 real type errors in src via an 8-agent
   parallel dispatch plus coordinator residuals — primarily type
   annotations, narrowing casts, and specific-code `type: ignore`
