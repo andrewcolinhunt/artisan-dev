@@ -1,7 +1,7 @@
 """Logging configuration for pipeline execution.
 
-Uses a Prefect-inspired Rich console handler that colorizes log levels and URLs
-via regex highlighting while keeping output clean (no Rich chrome).
+Uses a Rich console handler that colorizes log levels and URLs via regex
+highlighting while keeping output clean (no Rich chrome).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.highlighter import RegexHighlighter
 from rich.theme import Theme
 
-_NOISY_LOGGERS = ("prefect", "httpx", "httpcore", "asyncio")
+_NOISY_LOGGERS = ("httpx", "httpcore", "asyncio")
 
 _LOG_FORMAT = "%(asctime)s.%(msecs)03d | %(levelname)-7s | %(name)s - %(message)s"
 _LOG_DATEFMT = "%H:%M:%S"
@@ -57,9 +57,8 @@ _LOG_STYLES = {
 class _ConsoleHandler(logging.StreamHandler):  # type: ignore[type-arg]  # StreamHandler generic only in typeshed; supports any stream-like object
     """StreamHandler that renders formatted log lines through Rich Console.
 
-    Follows the same pattern as Prefect's ``PrefectConsoleHandler``:
-    a standard ``logging.Formatter`` produces the log line as plain text,
-    then ``Console.print()`` colorizes it via ``RegexHighlighter``.
+    A standard ``logging.Formatter`` produces the log line as plain text, then
+    ``Console.print()`` colorizes it via ``RegexHighlighter``.
     """
 
     def __init__(self, stream: object = None) -> None:
@@ -97,10 +96,8 @@ def configure_logging(
 
     Args:
         level: Log level for the configured loggers. Defaults to ``"INFO"``.
-        suppress_noise: If True, suppress noisy third-party loggers
-            (Prefect lifecycle, HTTP client chatter) and set the
-            ``PREFECT_LOGGING_LEVEL`` env var to ``"CRITICAL"`` so
-            child processes (workers) inherit the suppression.
+        suppress_noise: If True, suppress noisy third-party loggers such as
+            HTTP client chatter.
         loggers: Root logger names to configure. Defaults to ``("artisan",)``.
         logs_root: When provided with ``level="DEBUG"``, a rotating file
             handler is added that writes to ``logs_root / "pipeline.log"``.
@@ -138,10 +135,8 @@ def configure_logging(
         logger.propagate = False
 
     if suppress_noise:
-        os.environ.setdefault("PREFECT_LOGGING_LEVEL", "CRITICAL")
         for name in _NOISY_LOGGERS:
             logging.getLogger(name).setLevel(logging.CRITICAL)
     else:
-        os.environ.pop("PREFECT_LOGGING_LEVEL", None)
         for name in _NOISY_LOGGERS:
             logging.getLogger(name).setLevel(logging.INFO)

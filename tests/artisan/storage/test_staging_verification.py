@@ -198,7 +198,7 @@ class TestAwaitStagingFiles:
         assert "not visible after" in error_msg
         assert "Missing 2/2" in error_msg
         assert "abcdef" in error_msg
-        assert "SLURM worker logs" in error_msg
+        assert "provider worker logs" in error_msg
 
     def test_partial_files_still_raises_timeout(self, tmp_path):
         """Raises TimeoutError even when some files are present."""

@@ -113,13 +113,13 @@ class TestFromUserCoercion:
 
     def test_step_runner_and_scalars_uncoerced(self) -> None:
         ov = StepOverrides.from_user(
-            step_runner="slurm",
+            step_runner="external_test",
             group_by=GroupByStrategy.ZIP,
             compact=False,
             skip_cache=True,
             name="custom",
         )
-        assert ov.step_runner == "slurm"
+        assert ov.step_runner == "external_test"
         assert ov.group_by is GroupByStrategy.ZIP
         assert ov.compact is False
         assert ov.skip_cache is True

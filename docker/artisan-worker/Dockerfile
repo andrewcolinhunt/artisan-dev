@@ -22,4 +22,3 @@ COPY --from=build /app/.pixi/envs/default /app/.pixi/envs/default
 COPY --from=build /app/src /app/src
 ENV PATH="/app/.pixi/envs/default/bin:$PATH"
 ENV CONDA_PREFIX="/app/.pixi/envs/default"
-ENV PREFECT_LOGGING_LEVEL="CRITICAL"

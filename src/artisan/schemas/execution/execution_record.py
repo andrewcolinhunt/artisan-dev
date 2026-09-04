@@ -31,7 +31,7 @@ class ExecutionRecord(BaseModel):
         timestamp_start: Execution start time.
         timestamp_end: Execution end time.
         source_worker: Worker ID that executed this.
-        compute_backend: local or slurm.
+        compute_backend: Stable runner/provider name.
         success: Whether execution succeeded (row-level).
         error: Error message if failed (row-level).
         metadata: Additional metadata (JSON-serializable).

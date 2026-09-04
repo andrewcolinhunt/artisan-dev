@@ -35,7 +35,7 @@ class ExecutionContext:
         operation_name: Operation name string.
         operation: Fully configured OperationDefinition instance.
         sandbox_path: Creator sandbox directory. None for curators.
-        compute_backend: Backend name (e.g. "local", "slurm").
+        compute_backend: Stable runner/provider name recorded for provenance.
         shared_filesystem: Whether workers share a filesystem with
             the orchestrator.
         step_run_id: Step run ID linking this execution to a specific

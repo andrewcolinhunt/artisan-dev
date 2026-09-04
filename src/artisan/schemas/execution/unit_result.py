@@ -20,7 +20,7 @@ class UnitResult:
         error: Error message if execution failed, else None.
         item_count: Number of items processed.
         execution_run_ids: Run IDs produced by this unit.
-        worker_log: Captured worker stdout/stderr (SLURM backends).
+        worker_log: Captured worker stdout/stderr supplied by the runner.
     """
 
     success: bool

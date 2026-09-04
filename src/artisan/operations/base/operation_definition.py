@@ -72,7 +72,7 @@ class OperationDefinition(BaseModel):
         description (str): Human-readable summary shown in docs and logs.
         inputs (dict[str, InputSpec]): Named input specifications.
         outputs (dict[str, OutputSpec]): Named output specifications.
-        runner_resources (RunnerResources): Hardware resource allocation for SLURM jobs.
+        runner_resources (RunnerResources): Hardware resources for worker dispatch.
         batch_strategy (BatchStrategy): Batching and scheduling configuration.
     """
 
@@ -223,7 +223,7 @@ class OperationDefinition(BaseModel):
 
     When True (default), the framework splits preprocess output into
     per-artifact ExecuteInputs and dispatches each separately. Modal
-    sends them to parallel containers; local/SLURM loops sequentially.
+    sends them to parallel containers; in-process execution loops sequentially.
 
     Set to False for operations that run external tools via
     ``run_command()`` where a single subprocess should process all
@@ -276,7 +276,7 @@ class OperationDefinition(BaseModel):
 
     # ---------- Runner resources ----------
     runner_resources: RunnerResources = RunnerResources()  # type: ignore[call-arg]
-    """Hardware resources for the step runner (local / SLURM)."""
+    """Hardware resources for the active step runner."""
 
     # ---------- Batch strategy ----------
     batch_strategy: BatchStrategy = BatchStrategy()  # type: ignore[call-arg]

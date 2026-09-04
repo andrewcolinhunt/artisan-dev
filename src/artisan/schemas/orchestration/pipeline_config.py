@@ -39,7 +39,10 @@ class PipelineConfig(BaseModel):
     )
     default_step_runner: str = Field(
         default="local",
-        description="Default step_runner name for step execution.",
+        description=(
+            "Stable default step-runner name. External providers must supply "
+            "the corresponding runtime instance when resuming."
+        ),
     )
     default_compute_provider: str = Field(
         default="local",
