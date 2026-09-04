@@ -172,12 +172,13 @@ a parallel path for the grouped case. Keeping them separate lets each
 concern be solved once, in the layer that owns it.
 
 The runner layer answers placement directly. The optional
-`artisan-submitit` package's `SlurmIntraRunner` dispatches each step via
-`srun` inside an existing allocation — for *every* step, whether or not it is
-wrapped in a composite. Because composite-level overrides are step defaults,
-passing `step_runner=SlurmIntraRunner()` to the composite forwards it to every
-child step, giving you one-allocation execution without a second execution
-model.
+`artisan-submitit` package's `SlurmIntraRunner` dispatches creator steps via
+`srun` inside an existing allocation, whether or not they are wrapped in a
+composite. Because composite-level overrides are child-step defaults, passing
+`step_runner=SlurmIntraRunner()` to the composite forwards it to creator
+children. Curator children remain in isolated local subprocesses because they
+read and write pipeline metadata directly. This gives creator work
+one-allocation execution without a second execution model.
 
 ---
 

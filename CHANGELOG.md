@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING — Prefect orchestration removed.** Artisan now sequences and
+  dispatches work through its native local process runner, with no Prefect
+  server or runtime dependency. The `prefect_server` pipeline argument and
+  built-in SLURM runner names are removed; install `artisan-submitit` and pass
+  a `SlurmRunner()` or `SlurmIntraRunner()` instance for SLURM execution.
 - **`GroupByStrategy.LINEAGE` contract narrowed to directed ancestry.**
   `match_by_ancestry` now requires a directed path from candidate back
   to target, not just a shared ancestor. This eliminates a

@@ -259,8 +259,9 @@ def compose(self, ctx: CompositeContext) -> None:
 
 To co-locate a composite's steps in one compute allocation, install the
 optional `artisan-submitit` package and pass
-`run_composite(..., step_runner=SlurmIntraRunner())`. It dispatches every child
-step via `srun` inside the current allocation. See
+`run_composite(..., step_runner=SlurmIntraRunner())`. Creator children inherit
+that provider and run via `srun` inside the current allocation; curator
+children remain in isolated local subprocesses. See
 [Configure Execution](configuring-execution.md).
 
 ---

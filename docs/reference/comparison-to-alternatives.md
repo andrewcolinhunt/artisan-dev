@@ -166,13 +166,13 @@ still launch an Artisan pipeline as an external scheduler, but it is not part of
 the pipeline runtime.
 
 ```
-PipelineManager                                (Artisan: step sequencing, caching, provenance)
+PipelineManager                                  (step sequencing, caching, provenance)
   └─ execute_step()
-       └─ RunnerBase.create_lifecycle_router() (Artisan: step-runner abstraction)
-            └─ LifecycleRouter.run()          (router owns dispatch lifecycle + cancellation)
-                 └─ execute_unit_batch(units)  (native or provider worker transport)
-                      ├─ run_creator_flow()    (Artisan: creator operation lifecycle)
-                      └─ run_curator_flow()    (Artisan: curator operation lifecycle)
+       ├─ curator → local spawned subprocess → run_curator_flow()
+       └─ creator → RunnerBase.create_lifecycle_router()
+                     └─ LifecycleRouter.run()   (dispatch lifecycle + cancellation)
+                          └─ execute_unit_batch(units)
+                               └─ run_creator_flow()
 ```
 
 Core ships a local runner. Optional providers implement the same public API:
@@ -190,7 +190,7 @@ Core ships a local runner. Optional providers implement the same public API:
 | Step runner selection and dispatch handle creation | Artisan (`RunnerBase`) |
 | Parallel dispatch to workers | Selected Artisan lifecycle router |
 | Operation lifecycle (preprocess/execute/postprocess) | Artisan (execution layer) |
-| Creator vs. curator dispatch | Artisan (`execute_unit`) |
+| Creator vs. curator placement | Artisan (`PipelineManager` keeps curators local) |
 | Composite expansion into pipeline steps | Artisan (`PipelineManager`) |
 | Lineage capture, staging | Artisan (execution layer) |
 | Atomic commit to Delta Lake | Artisan (orchestration layer) |
@@ -200,6 +200,8 @@ Workers run the same execution code regardless of step runner. Custom runners
 subclass `RunnerBase`, create a `LifecycleRouter`, and return one ordered
 `UnitResult` per submitted `ExecutionUnit`. Providers are passed explicitly as
 instances; no global plugin registry or control-plane service is required.
+Normal pipeline dispatch sends creator units to the selected provider and keeps
+curator operations in an isolated local subprocess.
 
 ---
 

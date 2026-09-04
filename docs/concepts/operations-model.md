@@ -24,9 +24,10 @@ input preparation from computation from output construction.
 
 **Curators** perform lightweight coordination — filtering artifacts, merging
 streams, ingesting external files. They receive DataFrames of artifact metadata,
-return immediately, and never leave the orchestrator process. A single method
-replaces the three-phase lifecycle because the overhead would add complexity
-with no benefit.
+and run in an isolated local subprocess owned by the orchestrator. They never
+use an external step runner. A single method replaces the three-phase lifecycle
+because the sandbox and remote-dispatch overhead would add complexity with no
+benefit.
 
 | Aspect | Creator | Curator |
 |--------|---------|---------|
@@ -34,7 +35,7 @@ with no benefit.
 | Lifecycle | `preprocess` → `execute_function` / `execute_command` → `postprocess` | `execute_curator` |
 | Sandboxing | Isolated directories per phase | None (in-memory) |
 | Input delivery | Files written to disk | DataFrames of artifact metadata |
-| Worker dispatch | Local process pool or runner provider | Local only |
+| Worker dispatch | Built-in local runner or external provider instance | Local spawned subprocess only |
 | Return type | `ArtifactResult` (from postprocess) | `ArtifactResult` or `PassthroughResult` |
 
 **The framework detects the type automatically.** If your class overrides

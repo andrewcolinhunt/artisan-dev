@@ -95,17 +95,41 @@ Both methods accept identical parameters. `run()` blocks and returns
 pipeline.run(
     operation,                # type[OperationDefinition]
     inputs=None,              # Input wiring (see below)
-    name=None,                # str — step name for wiring and display
     params=None,              # dict — operation parameters
-    tool=None,                # dict — external tool config
-    environment=None,         # str | dict — Apptainer/env config
-    execution=None,           # dict — batching config
-    backend=None,             # str — "local" or "slurm"
-    resources=None,           # dict — CPU/memory/GPU
+    step_runner=None,         # "local" | RunnerBase — None uses pipeline default
+    runner_resources=None,    # dict | RunnerResources — CPU/memory/GPU
+    batch_strategy=None,      # dict | BatchStrategy — batching and concurrency
+    environment=None,         # str | dict | Environments — runtime environment
+    tool=None,                # dict | ToolSpec — external tool config
+    compute_provider=None,    # str | dict | ComputeProvider
+    compute_resources=None,   # dict | ComputeResources
     failure_policy=None,      # FailurePolicy — CONTINUE or FAIL_FAST
+    group_by=None,            # GroupByStrategy — per-step pairing override
     compact=True,             # bool — compact provenance
+    name=None,                # str — step name for wiring and display
+    skip_cache=False,         # bool — bypass cache lookup for this step
 ) -> StepResult
 ```
+
+Core accepts `"local"` as its only string runner name. For any optional runner,
+import the provider package and pass a configured instance:
+
+```python
+from artisan_submitit import SlurmRunner
+
+slurm = SlurmRunner(slurm_partition="gpu")
+pipeline.run(
+    TrainModel,
+    name="train",
+    inputs={"dataset": output("prepare", "dataset")},
+    step_runner=slurm,
+    runner_resources={"gpus": 1, "memory_gb": 32},
+)
+```
+
+External runners apply to creator operations. Curator operations always run in
+an isolated local subprocess, so do not add a runner override to a curator
+step.
 
 ## run_composite() / submit_composite() API
 
@@ -137,6 +161,8 @@ Composite-level overrides are defaults for each child step; a value set on a
 `ctx.run()` call wins for that step. `submit_composite()` returns a
 `CompositeResult` with `.output(role)` for downstream wiring and `.wait()` to
 block on the children; `run_composite()` returns the resolved `CompositeResult`.
+External runner defaults apply to creator children; curator children remain
+local.
 
 ---
 
@@ -162,13 +188,17 @@ pipelines for readability. Bind `output = pipeline.output` at the top.
 |---|---|---|
 | `name` | `str` | Step name for wiring and display |
 | `params` | `dict` | Operation parameters (keys match `Params` fields) |
-| `tool` | `dict` | External tool overrides |
-| `environment` | `str \| dict` | Apptainer/environment config |
-| `execution` | `dict` | Batching: `artifacts_per_unit`, `units_per_worker`, `max_workers` |
-| `backend` | `str` | `"local"` (default) or `"slurm"` |
-| `resources` | `dict` | `cpus`, `memory_gb`, `gpus`, `time_limit` |
+| `tool` | `dict \| ToolSpec` | External tool overrides |
+| `environment` | `str \| dict \| Environments` | Runtime environment override |
+| `step_runner` | `str \| RunnerBase` | `"local"` or an initialized external provider instance |
+| `runner_resources` | `dict \| RunnerResources` | `cpus`, `memory_gb`, `gpus`, `time_limit`, provider `extra` values |
+| `batch_strategy` | `dict \| BatchStrategy` | `artifacts_per_unit`, `units_per_worker`, `max_workers` |
+| `compute_provider` | `str \| dict \| ComputeProvider` | Execute-phase routing target |
+| `compute_resources` | `dict \| ComputeResources` | Compute-provider CPU, memory, GPU, and timeout |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` (default) or `FAIL_FAST` |
-| `compact` | `bool` | Compact provenance graph (default `True`) |
+| `group_by` | `GroupByStrategy` | Per-step input-pairing override |
+| `compact` | `bool` | Compact Delta tables after commit (default `True`) |
+| `skip_cache` | `bool` | Bypass cache lookup for this step |
 
 ---
 
@@ -371,12 +401,15 @@ summary = pipeline.finalize()
 | `delta_root` | `Path \| str` | *(required)* | Delta Lake storage path |
 | `staging_root` | `Path \| str` | *(required)* | Temporary worker output path |
 | `working_root` | `Path \| str \| None` | `$TMPDIR` | Sandbox for execution |
+| `files_root` | `Path \| str \| None` | Derived beside `delta_root` | Artisan-managed external files |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | Default for all steps |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When to cache step results |
-| `backend` | `str` | `"local"` | Default backend for all steps |
+| `default_step_runner` | `str \| RunnerBase` | `"local"` | Built-in local runner or external provider instance |
+| `default_compute_provider` | `str` | `"local"` | Default execute-phase compute target |
 | `preserve_staging` | `bool` | `False` | Keep staging dirs after commit |
 | `preserve_working` | `bool` | `False` | Keep working dirs after execution |
 | `recover_staging` | `bool` | `True` | Recover incomplete staging on resume |
+| `skip_cache` | `bool` | `False` | Bypass cache lookups for every step |
 
 ---
 
@@ -409,6 +442,21 @@ output = pipeline.output
 # Completed steps are restored — wire new steps from their outputs
 pipeline.run(DataTransformer, name="new_step",
     inputs={"dataset": output("previous_step", "dataset")})
+```
+
+Artisan persists an external runner's stable name, not its configured object.
+Recreate the provider and pass it as `default_step_runner` when resuming a
+pipeline that used it as the default:
+
+```python
+from artisan_submitit import SlurmRunner
+
+provider = SlurmRunner(slurm_partition="gpu")
+pipeline = PipelineManager.resume(
+    delta_root=delta_root,
+    staging_root=staging_root,
+    default_step_runner=provider,
+)
 ```
 
 ---

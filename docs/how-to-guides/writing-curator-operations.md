@@ -90,16 +90,17 @@ before you start writing code.
 | | Creator | Curator |
 |---|---------|---------|
 | **Purpose** | Heavy computation, file I/O | Route, filter, merge, or ingest artifacts |
-| **Execution** | Three phases (preprocess / execute / postprocess) | Single `execute_curator` method |
-| **Sandboxing** | Full sandbox with file materialization | None — in-memory only |
-| **Dispatch** | Workers (local ProcessPool or SLURM) | Direct in-process call |
+| **Execution** | Three phases (`preprocess` / `execute_function` / `postprocess`) | Single `execute_curator` method |
+| **Sandboxing** | Full sandbox with file materialization | No working sandbox; memory-isolated subprocess |
+| **Dispatch** | Built-in local runner or an external provider instance | Local spawned subprocess; step-runner overrides do not relocate it |
 | **Returns** | `ArtifactResult` (always creates new artifacts) | `ArtifactResult` or `PassthroughResult` |
 
 **Choose curator when** the operation routes, filters, merges, or annotates
 existing artifacts without heavy computation.
 
 **Choose creator when** the operation runs external tools, processes files, or
-needs GPU/SLURM dispatch.
+needs compute dispatched through an external provider such as a SLURM runner.
+Curators stay local even when the pipeline's default step runner is external.
 
 ---
 
@@ -544,7 +545,7 @@ etc.).
 | Empty `inputs` dict | Input role name mismatch | Check that `pipeline.run(inputs={...})` keys match what the operation expects |
 | `ArtifactResult` with unfinalizable drafts | Missing `step_number` on `draft()` | Use the `step_number` parameter |
 | `PassthroughResult` with invalid IDs | Passed artifact objects instead of ID strings | Use `artifact.artifact_id`, not the artifact itself |
-| Operation dispatched to SLURM unexpectedly | Operation overrides `execute_function()` instead of `execute_curator()` | Override `execute_curator` — curators run in-process |
+| Operation used the external runner instead of staying local | Operation overrides `execute_function()` and is therefore a creator | Override `execute_curator()` — curators run in an isolated local subprocess |
 
 ---
 

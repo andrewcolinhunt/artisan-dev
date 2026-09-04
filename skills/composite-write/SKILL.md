@@ -123,13 +123,15 @@ primitives on the `CompositeContext`:
 `ctx.run()` accepts optional execution overrides applied to that step:
 
 ```python
+from artisan.orchestration import Runner
+
 ctx.run(
     DataTransformer,
     inputs={"dataset": ctx.input("data")},
     params={"scale_factor": 2.0},
     runner_resources={"cpus": 4, "memory_gb": 16},
     batch_strategy={"artifacts_per_unit": 10},
-    step_runner="slurm",
+    step_runner=Runner.LOCAL,
     environment="my_container",
     tool={"executable": "/path/to/tool"},
 )
@@ -138,6 +140,24 @@ ctx.run(
 Composite-level overrides passed to `run_composite`/`submit_composite` are the
 defaults for every child step; a value set on a `ctx.run()` call wins for that
 step and that knob.
+
+Core recognizes only the built-in `"local"` name. Pass an initialized runner
+from an optional provider at the pipeline boundary when creator children need
+external dispatch:
+
+```python
+from artisan_submitit import SlurmRunner
+
+pipeline.run_composite(
+    TransformAndScore,
+    inputs={"data": output("generate", "datasets")},
+    step_runner=SlurmRunner(slurm_partition="gpu"),
+)
+```
+
+That default applies to creator children. Curator children always run in an
+isolated local subprocess; do not put provider instances on curator
+`ctx.run()` calls.
 
 ---
 
@@ -171,7 +191,7 @@ Composites are **not** operations. Key differences:
 
 | Feature | OperationDefinition | CompositeDefinition |
 |---|---|---|
-| Core method | `execute()` or `execute_curator()` | `compose()` |
+| Core method | `execute_function()` / `execute_command()` or `execute_curator()` | `compose()` |
 | Lifecycle hooks | `preprocess()`, `postprocess()` | None |
 | `tool` / `environments` | Supported | Not supported (set per-op in compose) |
 | `infer_lineage_from` on outputs | Required for creators | Not supported |
