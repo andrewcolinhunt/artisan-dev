@@ -13,7 +13,6 @@ import polars as pl
 import pytest
 from fixtures.csv import make_csv
 from fsspec import AbstractFileSystem
-from prefect.testing.utilities import prefect_test_harness
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -29,23 +28,6 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _prefect_harness():
-    """Activate Prefect test harness and bridge PREFECT_API_URL to os.environ.
-
-    The test harness provides an ephemeral Prefect server. We use session scope
-    so each xdist worker shares a single server (instead of one per module),
-    and a longer timeout to handle concurrent startup under load.
-    """
-    with prefect_test_harness(server_startup_timeout=60):
-        from prefect.settings import PREFECT_API_URL
-
-        url = PREFECT_API_URL.value()
-        os.environ["PREFECT_API_URL"] = url
-        yield
-        os.environ.pop("PREFECT_API_URL", None)
 
 
 @pytest.fixture

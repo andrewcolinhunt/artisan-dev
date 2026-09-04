@@ -1,46 +1,43 @@
-"""Runner namespace and resolution for step execution.
+"""Built-in runner namespace and resolution for step execution.
 
 Usage::
 
     from artisan.orchestration.runners import Runner
 
-    pipeline.run(MyOp, inputs=..., step_runner=Runner.SLURM)
-    pipeline.run(MyOp, inputs=..., step_runner="slurm")  # string shorthand
+    pipeline.run(MyOp, inputs=..., step_runner=Runner.LOCAL)
+
+External providers are passed as runner instances rather than registered by
+name in Artisan core.
 """
 
 from __future__ import annotations
 
 from artisan.orchestration.runners.base import RunnerBase
 from artisan.orchestration.runners.local import LocalRunner
-from artisan.orchestration.runners.slurm import SlurmRunner
-from artisan.orchestration.runners.slurm_intra import SlurmIntraRunner
 
 
 class Runner:
-    """Pre-built runner instances for IDE discoverability.
+    """Built-in runner instances for IDE discoverability.
 
     Usage::
 
         from artisan.orchestration.runners import Runner
 
-        pipeline.run(MyOp, inputs=..., step_runner=Runner.SLURM)
+        pipeline.run(MyOp, inputs=..., step_runner=Runner.LOCAL)
     """
 
     LOCAL = LocalRunner()
-    SLURM = SlurmRunner()
-    SLURM_INTRA = SlurmIntraRunner()
 
 
-_REGISTRY: dict[str, RunnerBase] = {
-    b.name: b for b in [Runner.LOCAL, Runner.SLURM, Runner.SLURM_INTRA]
-}
+_REGISTRY: dict[str, RunnerBase] = {Runner.LOCAL.name: Runner.LOCAL}
 
 
 def resolve_runner(step_runner: str | RunnerBase) -> RunnerBase:
     """Resolve a runner from a string key or pass through an instance.
 
     Args:
-        step_runner: Runner instance or string name (e.g. "local", "slurm").
+        step_runner: Runner instance or built-in string name (currently
+            ``"local"``).
 
     Returns:
         Resolved RunnerBase instance.
