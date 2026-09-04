@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 from enum import StrEnum, auto
@@ -49,6 +51,24 @@ pytestmark = [
     pytest.mark.filterwarnings("ignore::ResourceWarning"),
     pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning"),
 ]
+
+
+def test_tool_endpoint_imports_without_botocore() -> None:
+    """The base package must not require the optional S3 dependency stack."""
+    code = """
+import sys
+
+class BlockBotocore:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "botocore" or fullname.startswith("botocore."):
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+sys.meta_path.insert(0, BlockBotocore())
+from artisan.execution.tool_endpoint import run_tool_request
+assert callable(run_tool_request)
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 class FailTool(OperationDefinition):

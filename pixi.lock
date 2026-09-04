@@ -4644,10 +4644,9 @@ packages:
   requires_python: '>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*'
 - pypi: ./
   name: dexterity-artisan
-  version: 0.1.2a6.dev551+g07dadd583.d20260904
-  sha256: 7b5f02f572e0e5055ca94f5bcdb56ca8fee60ae97eca0eb57b307fa6d3402414
+  version: 0.1.2a6.dev553+g802c44d9e.d20260904
+  sha256: ec667e6e66a819ed87f931742866626ecdae7f79992aed8654e3a6c6a7d4c12e
   requires_dist:
-  - botocore
   - cloudpickle
   - deltalake>=0.14.0
   - fsspec
