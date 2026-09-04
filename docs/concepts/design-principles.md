@@ -139,7 +139,7 @@ for tool output, and a `metadata` dict for engine-provided context.
 - **Testable in isolation.** You can unit test a creator by constructing inputs
   directly, without running a pipeline or connecting to storage.
 - **Portable.** The same operation runs unchanged on a laptop with a process
-  pool or on a cluster with SLURM.
+  pool or on a cluster through a runner provider.
 - **Composable.** Operations can be combined freely because they have no hidden
   dependencies on each other or on global state. The composite executor passes
   artifacts between operations in memory without Delta Lake round-trips, which
@@ -166,12 +166,11 @@ three-phase lifecycle, and spec system.
 ## Scale is transparent
 
 The same code path runs for one artifact on a laptop or ten thousand artifacts
-on an HPC cluster. Only the compute backend changes — from `LOCAL` (process
-pool) to `SLURM` (cluster job submission). Both backends build a Prefect flow
-with a backend-specific task runner, then dispatch the same `ExecutionUnit`
-objects through it. The backend interface is extensible, so additional backends
-(cloud, Kubernetes) can be added without changing operations, execution logic,
-provenance capture, or storage commits.
+on an HPC cluster. Only the runner changes — from the native local process pool
+to an optional cluster provider such as `artisan-submitit`. Every runner
+dispatches the same `ExecutionUnit` objects through Artisan's lifecycle-router
+contract. Additional providers can be added without changing operations,
+execution logic, provenance capture, or storage commits.
 
 **Why this principle exists:** Research pipelines start as local prototypes
 and grow to cluster-scale production. If different execution environments use
@@ -183,8 +182,8 @@ depending on where it runs is a pipeline you cannot trust.
 clean boundary. The orchestrator dispatches `ExecutionUnit` objects — sealed
 packages containing everything a worker needs: the operation instance, input
 artifact IDs, execution spec ID, and step number. Workers execute them
-identically regardless of whether they are processes in a local pool or SLURM
-jobs on remote nodes. The staging-commit pattern ensures that results are
+identically regardless of whether they are processes in a local pool or jobs
+on remote nodes. The staging-commit pattern ensures that results are
 collected the same way in all cases.
 
 Each backend declares two trait objects that capture the behavioral
@@ -256,7 +255,7 @@ orchestration  →  execution  →  operations  →  schemas
 **Why layering matters:**
 
 - **Testing.** You can test operations without orchestration, execution without
-  SLURM, and schemas without anything else.
+  a cluster provider, and schemas without anything else.
 - **Change isolation.** Modifying the orchestration layer cannot break
   operations. Adding a new artifact type (schemas) does not require changes
   to execution or orchestration.

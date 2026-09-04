@@ -18,8 +18,8 @@ the framework treats them differently.
 
 **Creators** wrap heavy computation — running external tools, performing ML
 inference, transforming files. They need isolated working directories, input
-files written to disk, and the ability to run on remote workers (SLURM nodes,
-process pools). The framework provides a three-phase lifecycle that separates
+files written to disk, and the ability to run in process pools or through a
+remote-runner provider. The framework provides a three-phase lifecycle that separates
 input preparation from computation from output construction.
 
 **Curators** perform lightweight coordination — filtering artifacts, merging
@@ -34,7 +34,7 @@ with no benefit.
 | Lifecycle | `preprocess` → `execute_function` / `execute_command` → `postprocess` | `execute_curator` |
 | Sandboxing | Isolated directories per phase | None (in-memory) |
 | Input delivery | Files written to disk | DataFrames of artifact metadata |
-| Worker dispatch | SLURM, ProcessPool | Local only |
+| Worker dispatch | Local process pool or runner provider | Local only |
 | Return type | `ArtifactResult` (from postprocess) | `ArtifactResult` or `PassthroughResult` |
 
 **The framework detects the type automatically.** If your class overrides
@@ -296,9 +296,9 @@ nested `Params` class.
 
 Built-in fields control how the framework runs the operation:
 
-- **`runner_resources`** — portable hardware requirements for the step runner
-  (local / SLURM): CPU count, memory, GPUs, time limit, plus an `extra` dict for
-  backend-specific settings like SLURM partition
+- **`runner_resources`** — portable hardware requirements for the step runner:
+  CPU count, memory, GPUs, time limit, plus an `extra` dict for provider-specific
+  settings such as a scheduler partition
 - **`batch_strategy`** — batching and scheduling: artifacts per unit, units per
   worker, max workers, estimated seconds per unit
 - **`compute_provider`** — where the execute phase runs: local, or a Modal tool
@@ -391,9 +391,9 @@ capture, result staging, atomic commit — is handled by the execution and
 orchestration layers above.
 
 The consequence: you can unit test an operation by constructing its inputs
-directly. You can run the same operation unchanged on a laptop or a thousand
-SLURM nodes. You can compose operations freely because they have no hidden
-dependencies on each other or on global state.
+directly. You can run the same operation unchanged on a laptop or through a
+cluster provider. You can compose operations freely because they have no
+hidden dependencies on each other or on global state.
 
 ---
 

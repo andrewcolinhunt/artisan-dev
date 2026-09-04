@@ -111,8 +111,8 @@ artifact IDs, parameters, and cache key. `RuntimeEnvironment` specifies
 - **Fault isolation.** Workers write to isolated staging directories. If a
   worker crashes, its partial results are ignored. Shared state is never
   corrupted.
-- **Scale transparency.** The same code runs locally (process pool) or on a
-  cluster (SLURM job arrays). The step-runner abstraction swaps the dispatch
+- **Scale transparency.** The same code runs locally (process pool) or through
+  an optional cluster provider. The step-runner abstraction swaps the dispatch
   mechanism while keeping operations, execution logic, and storage identical.
 - **No shared mutable state.** Workers never write to Delta Lake directly.
   Thousands of concurrent workers would cause write conflicts. Instead, they
@@ -121,23 +121,23 @@ artifact IDs, parameters, and cache key. `RuntimeEnvironment` specifies
 ### Step runners
 
 The dispatch mechanism is pluggable through the step-runner abstraction.
-A step runner bundles three concerns: how to dispatch work (Prefect flow
-configuration), how workers behave (filesystem sharing, worker IDs), and
-how the orchestrator handles post-dispatch verification (NFS attribute
-caching, staging timeouts).
+A step runner bundles three concerns: how to dispatch work, how workers behave
+(filesystem sharing, worker IDs), and how the orchestrator handles post-
+dispatch verification (NFS attribute caching, staging timeouts).
 
-The framework ships three step runners:
+Core ships one step runner. External packages can implement the same public
+`RunnerBase` and `LifecycleRouter` contract:
 
 | Step runner | Dispatch mechanism | Filesystem | Use case |
 |-------------|-------------------|------------|----------|
 | Local | ProcessPool on the orchestrator machine | Local (no sharing) | Development, small jobs |
-| SLURM | Job arrays via submitit | Shared NFS | HPC clusters, large-scale runs |
-| SLURM Intra | srun within existing allocation | Shared NFS | Interactive salloc sessions, zero queue wait |
+| `artisan-submitit` (optional) | SLURM arrays or srun via Submitit | Shared NFS | HPC clusters and existing allocations |
 
-All step runners use Prefect as the underlying task execution layer. The step
-runner controls which `TaskRunner` Prefect uses — `ProcessPoolTaskRunner` for
-local, `SlurmTaskRunner` for SLURM and SLURM Intra — but everything above and
-below that boundary stays the same.
+The native lifecycle router owns dispatch, polling, ordered result collection,
+and cancellation. Local execution uses Python's `ProcessPoolExecutor` directly.
+Provider runners receive the same `ExecutionUnit` objects and return the same
+ordered `UnitResult` records, so everything above and below that boundary stays
+the same.
 
 ---
 

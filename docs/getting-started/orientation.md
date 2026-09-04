@@ -115,9 +115,9 @@ result = pipeline.finalize()
 ```
 
 Each `run()` call executes a step, and `output("step_name", "role")` creates a
-lazy reference that connects one step's outputs to another step's inputs. Steps
-can run on different backends — `"local"` for in-process execution or
-`"slurm"` for cluster dispatch — configured per-pipeline or per-step.
+lazy reference that connects one step's outputs to another step's inputs. Core
+uses the native `"local"` process runner; optional packages provide runner
+instances for cluster dispatch. Configure either per pipeline or per step.
 
 > **Deep dive:** [Execution Flow](../concepts/execution-flow.md)
 

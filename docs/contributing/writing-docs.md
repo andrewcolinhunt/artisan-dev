@@ -141,7 +141,7 @@ docs/
 │   ├── 04-batching/             # Two-level batching, per-artifact dispatch
 │   ├── 05-errors-and-control/   # Step overrides, errors, cancellation
 │   ├── 06-storage/              # Layout, logging, external files
-│   ├── 07-compute-backends/     # Compute routing, SLURM, Modal
+│   ├── 07-compute-backends/     # Compute routing and Modal
 │   ├── 08-analysis/             # Provenance, filtering, timing
 │   └── 09-writing-operations/   # Building custom operations and composites
 ├── concepts/                    # Explanations of design and architecture
@@ -605,6 +605,6 @@ Before finishing a documentation change, verify:
 
 - [Coding Conventions](coding-conventions.md) -- Code style, naming, and
   project structure
-- [Tooling Decisions](tooling-decisions.md) -- Why Pixi and Prefect
+- [Tooling Decisions](tooling-decisions.md) -- Why Pixi and native runners
 - [Orientation](../getting-started/orientation.md) -- How the docs are
   organized from a reader's perspective

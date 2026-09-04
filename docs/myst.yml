@@ -66,8 +66,6 @@ project:
         - title: Compute Backends
           children:
             - file: tutorials/07-compute-backends/01-compute-routing.ipynb
-            - file: tutorials/07-compute-backends/02-slurm-execution.ipynb
-            - file: tutorials/07-compute-backends/03-slurm-intra-execution.ipynb
             - file: tutorials/07-compute-backends/04-modal-execution.ipynb
             - file: tutorials/07-compute-backends/05-modal-r2-outputs.ipynb
         - title: Analysis
@@ -121,7 +119,6 @@ project:
             - file: how-to-guides/configuring-execution.md
             - file: how-to-guides/configuring-s3.md
             - file: how-to-guides/op-container-images.md
-            - file: how-to-guides/connect-to-prefect.md
         - title: Results
           children:
             - file: how-to-guides/inspecting-provenance.md

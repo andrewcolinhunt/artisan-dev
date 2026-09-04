@@ -1,7 +1,7 @@
 # Installation
 
-This page covers installing Artisan and its dependencies, starting the Prefect
-orchestration server, and configuring your editor.
+This page covers installing Artisan and its dependencies and configuring your
+editor.
 
 ---
 
@@ -29,7 +29,7 @@ Restart your terminal after installing Pixi so it appears on your `PATH`.
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
 
-# Install all dependencies (Python 3.12, scientific stack, Prefect, etc.)
+# Install all dependencies (Python 3.12, scientific stack, etc.)
 pixi install
 ```
 
@@ -56,7 +56,7 @@ is enforced in CI. Customize via `.pre-commit-config.yaml`.
 :::{dropdown} What is Pixi?
 Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
 it creates an isolated environment — but Pixi also handles Python itself and
-all non-Python dependencies (PostgreSQL, Graphviz, etc.) from a single lockfile.
+non-Python dependencies such as Graphviz from a single lockfile.
 Each clone gets its own environment.
 
 | Tool | Manages Python? | Manages system deps? | Project-scoped? |
@@ -66,8 +66,8 @@ Each clone gets its own environment.
 | uv | Yes | No | Yes |
 | **Pixi** | **Yes** | **Yes** | **Yes** |
 
-**Why Pixi for this project?** Artisan needs PostgreSQL and Graphviz
-alongside Python (plus Node.js for documentation builds). Pixi resolves all of them from conda-forge and PyPI in one
+**Why Pixi for this project?** Artisan needs Graphviz alongside Python (plus
+Node.js for documentation builds). Pixi resolves them from conda-forge and PyPI in one
 lockfile (`pixi.lock`), so every contributor gets an identical environment
 regardless of platform. See [Tooling Decisions](../contributing/tooling-decisions.md)
 for the full rationale.
@@ -75,67 +75,14 @@ for the full rationale.
 
 ---
 
-## Start the Prefect server
+## Optional cluster runners
 
-```bash
-pixi run prefect-start
-```
-
-This starts a local Prefect server (backed by PostgreSQL) in the background and
-writes a discovery file so Artisan can locate it automatically. The server binds
-to a UID-based port to avoid collisions when multiple users share a machine.
-Check the terminal output for the URL, then open it in your browser to verify.
-
-To stop the server when you're done:
-
-```bash
-pixi run prefect-stop
-```
-
-:::{tip}
-**On HPC clusters:** Don't run the Prefect server on the head node. Use a
-persistent interactive session (long-running CPU allocation). The server must
-stay running and accessible while pipelines execute.
-:::
-
-:::{note}
-**Prefect Cloud** is also supported as an alternative, though the self-hosted
-server is recommended for most use cases — especially on HPC clusters. See
-[Connect to Prefect](../how-to-guides/connect-to-prefect.md) for details on
-both options.
-:::
-
-:::{dropdown} What is Prefect?
-Artisan uses [Prefect](https://www.prefect.io/) as a dispatch layer for
-parallel task execution. Prefect is **not** a workflow engine here — Artisan
-owns pipeline definition, step sequencing, caching, and provenance. Prefect
-dispatches work to local processes or SLURM nodes and provides an optional
-monitoring UI.
-
-The server is required for all execution modes — both local and SLURM. Even
-local execution uses Prefect to dispatch tasks to a process pool. See
-[Tooling Decisions](../contributing/tooling-decisions.md) for the full
-rationale.
-:::
-
-### Use an existing server
-
-If you already have a Prefect server running elsewhere, point Artisan to it
-instead of starting a local one:
-
-```bash
-export PREFECT_SUBMITIT_SERVER=http://<host>:<port>/api
-```
-
-When connecting, Artisan checks for a server URL in this order:
-
-| Priority | Source | How to set |
-|----------|--------|-----------|
-| Highest | Explicit `prefect_server` argument | `PipelineManager.create(prefect_server="...")` |
-| | `PREFECT_SUBMITIT_SERVER` env var | `export PREFECT_SUBMITIT_SERVER=http://...` |
-| | `PREFECT_API_URL` env var | `export PREFECT_API_URL=http://...` |
-| | Discovery file | Written by `pixi run prefect-start` |
-| Lowest | Prefect profile | `~/.prefect/profiles.toml` (set via `pixi run prefect cloud login`) |
+Artisan includes a native local process-pool runner and requires no orchestration
+server. Install a runner provider only when the target infrastructure needs it.
+For example, the separate `artisan-submitit` package supplies SLURM job-array
+and intra-allocation runners while reusing the same Artisan execution contract.
+Provider installation and cluster setup live with that package so a local
+Artisan installation does not carry scheduler dependencies.
 
 ---
 
@@ -201,8 +148,6 @@ setup and usage.
 | `pixi: command not found` | Pixi not on `PATH` | Restart your terminal, or add `~/.pixi/bin` to your `PATH` manually |
 | Thread-spawn panic during `pixi install` | Too many threads on constrained node | `RAYON_NUM_THREADS=4 pixi install` |
 | `pixi install` is very slow | First run downloads Python + all deps | Expected on first install — subsequent runs are fast |
-| `PrefectServerNotFound` when running a pipeline | No Prefect server detected | Run `pixi run prefect-start`, or set `PREFECT_SUBMITIT_SERVER` |
-| `PrefectServerUnreachable` | Server URL found but server is not responding | Check that the server process is running (`pixi run prefect-start`) |
 | `dot` / Graphviz errors in provenance graphs | Graphviz layout plugins not registered | Run `pixi run dot -c` to register plugins (normally handled automatically) |
 | Jupyter kernel missing "Artisan" option | Kernel not registered | Run `pixi run install-kernel` and restart your notebook |
 

@@ -21,9 +21,9 @@ For the design rationale behind the differences highlighted here, see
 | General-purpose Python workflow orchestration and observability | **Prefect** |
 | Batch scientific computation needing per-artifact lineage and queryable results on HPC | **Artisan** |
 
-These are not mutually exclusive. Artisan uses Prefect internally as its
-dispatch layer (see [below](#comparison-prefect-relationship)), and a team could use
-Airflow to trigger Artisan pipelines on a schedule.
+These are not mutually exclusive. A team can use Airflow or Prefect to trigger
+Artisan pipelines on a schedule while Artisan owns scientific execution,
+artifacts, and provenance.
 
 ---
 
@@ -38,8 +38,8 @@ Airflow to trigger Artisan pipelines on a schedule.
 | **Caching** | Hash of inputs + command, automatic | Timestamp + Merkle tree | None built-in | Opt-in per-task (`cache_key_fn`) | Content-addressed hashes, automatic (configurable via `CachePolicy`) |
 | **Result storage** | Files in `work/` dirs | Files on filesystem | External (user-managed) | External (opt-in persistence) | Delta Lake tables (queryable, ACID) |
 | **Result querying** | Parse files or use Seqera Platform | Parse files | External tools | External tools | Direct SQL-like queries via Polars/DuckDB |
-| **HPC / SLURM** | Native (+ PBS, LSF, SGE) | Native (plugin-based) | None | Indirect (Dask + SLURMCluster) | Native (`SlurmRunner` via job arrays) |
-| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Extensible `RunnerBase` architecture (LOCAL, SLURM, SLURM_INTRA built-in) |
+| **HPC / SLURM** | Native (+ PBS, LSF, SGE) | Native (plugin-based) | None | Indirect (Dask + SLURMCluster) | Optional `artisan-submitit` provider |
+| **Other executors** | Kubernetes, AWS Batch, Google Cloud | Kubernetes, cloud via plugins | Extensive operator ecosystem | Work pools (K8s, ECS, etc.) | Native local runner plus external `RunnerBase` providers |
 | **Infrastructure** | None (file-based) | None (file-based) | Scheduler + DB + web server | Server or Prefect Cloud | None (Delta Lake on filesystem) |
 | **Error model** | Per-process retry with resource escalation | Delete incomplete, retry with escalation | Task retry + SLA alerts | Task retry + state machine | Per-item containment with configurable policy (CONTINUE or FAIL_FAST) |
 | **Ecosystem** | nf-core (100+ pipelines) | Workflow Catalog, Bioconda | 1,000+ provider operators | Growing integrations | Domain-extensible artifact type registry |
@@ -130,9 +130,9 @@ a different problem.
 
 ### vs. Prefect
 
-Prefect is a Python-native orchestration framework. Artisan uses Prefect
-internally as its step runner, so this comparison describes what Artisan
-adds on top.
+Prefect is a Python-native general-purpose orchestration framework. Artisan is
+independent of Prefect; this comparison describes when each tool is the better
+fit and how they can be composed.
 
 **What Prefect gives you that Artisan does not:**
 
@@ -142,7 +142,7 @@ adds on top.
 - Transactions with commit/rollback semantics across tasks
 - Managed cloud offering (Prefect Cloud)
 
-**What Artisan adds on top of Prefect:**
+**What Artisan provides for scientific batch computation:**
 
 - Typed, immutable, content-addressed artifact data model
 - Automatic provenance tracking at the artifact level, not only task level
@@ -151,57 +151,55 @@ adds on top.
 - Delta Lake storage with ACID commits and direct queryability
 - Staging-commit pattern for safe concurrent writes from thousands of workers
 - Composites that group multiple operations into a reusable unit for tightly coupled computations
-- Step-runner abstraction (`RunnerBase`) that decouples operation logic from
-  compute dispatch — swap LOCAL for SLURM without changing operations
+- Native runner abstraction (`RunnerBase`) that decouples operation logic from
+  dispatch — install an external provider without changing operations
 - Extensible type system where domain layers add artifact types and get full
   infrastructure for free
 
 ---
 
 (comparison-prefect-relationship)=
-## How Artisan uses Prefect
+## Artisan's native orchestration boundary
 
-Artisan does not compete with Prefect. It uses Prefect as a transport layer
-for dispatching work to workers, wrapped behind a `RunnerBase` abstraction.
-Understanding this relationship clarifies every comparison above.
+Artisan owns pipeline sequencing and worker dispatch directly. Prefect can
+still launch an Artisan pipeline as an external scheduler, but it is not part of
+the pipeline runtime.
 
 ```
 PipelineManager                                (Artisan: step sequencing, caching, provenance)
   └─ execute_step()
        └─ RunnerBase.create_lifecycle_router() (Artisan: step-runner abstraction)
             └─ LifecycleRouter.run()          (router owns dispatch lifecycle + cancellation)
-                 └─ @flow(task_runner=...)      (Prefect: parallel dispatch + observability)
-                      └─ execute_unit_task.map(units)
-                           ├─ run_creator_flow()    (Artisan: creator operation lifecycle)
-                           └─ run_curator_flow()    (Artisan: curator operation lifecycle)
+                 └─ execute_unit_batch(units)  (native or provider worker transport)
+                      ├─ run_creator_flow()    (Artisan: creator operation lifecycle)
+                      └─ run_curator_flow()    (Artisan: curator operation lifecycle)
 ```
 
-Three built-in step runners control which Prefect `task_runner` is used:
+Core ships a local runner. Optional providers implement the same public API:
 
-| Step runner | Task runner | Dispatch mechanism |
+| Step runner | Package | Dispatch mechanism |
 |---|---|---|
-| `LocalRunner` | `ProcessPoolTaskRunner` | Process pool on the orchestrator machine |
-| `SlurmRunner` | `SlurmTaskRunner` (from `prefect_submitit`) | SLURM job arrays via `submitit` |
-| `SlurmIntraRunner` | `SlurmTaskRunner` (from `prefect_submitit`, srun mode) | srun within existing SLURM allocation |
+| `LocalRunner` | `artisan` | Native process pool on the orchestrator machine |
+| `SlurmRunner` | `artisan-submitit` | SLURM job arrays via Submitit |
+| `SlurmIntraRunner` | `artisan-submitit` | srun within an existing SLURM allocation |
 
 | Responsibility | Handled by |
 |---|---|
 | Pipeline definition, step sequencing | Artisan (`PipelineManager`) |
 | Input resolution, cache lookup | Artisan (orchestration layer) |
 | Step runner selection and dispatch handle creation | Artisan (`RunnerBase`) |
-| Parallel dispatch to workers | Prefect (via runner-selected `task_runner`) |
+| Parallel dispatch to workers | Selected Artisan lifecycle router |
 | Operation lifecycle (preprocess/execute/postprocess) | Artisan (execution layer) |
-| Creator vs. curator dispatch | Artisan (`execute_unit_task`) |
+| Creator vs. curator dispatch | Artisan (`execute_unit`) |
 | Composite expansion into pipeline steps | Artisan (`PipelineManager`) |
 | Lineage capture, staging | Artisan (execution layer) |
 | Atomic commit to Delta Lake | Artisan (orchestration layer) |
-| Flow/task run observability UI | Prefect |
+| Durable run observability | Artisan step status, execution records, logs, inspection, and timing |
 
-Workers run the same execution code regardless of step runner — Prefect is the
-transport, not the brain. Curator operations bypass Prefect dispatch and
-execute locally in a subprocess on the orchestrator. Custom step runners can be
-created by subclassing
-`RunnerBase` and implementing `create_lifecycle_router()` and `capture_logs()`.
+Workers run the same execution code regardless of step runner. Custom runners
+subclass `RunnerBase`, create a `LifecycleRouter`, and return one ordered
+`UnitResult` per submitted `ExecutionUnit`. Providers are passed explicitly as
+instances; no global plugin registry or control-plane service is required.
 
 ---
 
@@ -213,7 +211,7 @@ created by subclassing
   structure, five layers, and the orchestrator-worker split
 - [Operations Model](../concepts/operations-model.md) — two operation types,
   the three-phase lifecycle, and the spec system
-- [Execution Flow](../concepts/execution-flow.md) — how Prefect integrates
-  into the dispatch-execute-commit lifecycle
+- [Execution Flow](../concepts/execution-flow.md) — native
+  dispatch-execute-commit lifecycle
 - [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) — why Delta
   Lake and the staging-commit pattern

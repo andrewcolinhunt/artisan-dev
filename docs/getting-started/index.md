@@ -2,8 +2,8 @@
 
 Everything you need to go from zero to a running pipeline.
 
-- **[Installation](installation.md)** -- Install Pixi, clone the repo, start the
-  Prefect server, and configure your editor
+- **[Installation](installation.md)** -- Install Pixi, clone the repo, and
+  configure your editor
 - **[Using Pixi](using-pixi.md)** -- Environments, running commands, and
   day-to-day dependency management
 - **[Your First Pipeline](../tutorials/01-getting-started/01-first-pipeline.ipynb)**

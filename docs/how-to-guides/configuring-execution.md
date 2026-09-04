@@ -1,12 +1,12 @@
 # Configure Execution
 
 How to control where operations run, what resources they get, and how work
-is batched — from local development through production SLURM.
+is batched — from local development through optional cluster runners.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Building a Pipeline](building-a-pipeline.md)
 
-**Key types:** `Runner`, `RunnerResources`, `BatchStrategy`, `ToolSpec`,
+**Key types:** `Runner`, `RunnerBase`, `RunnerResources`, `BatchStrategy`, `ToolSpec`,
 `Environments`, `CachePolicy`, `FailurePolicy`, `ComputeProvider`,
 `ModalComputeConfig`, `ComputeResources`
 
@@ -14,10 +14,12 @@ is batched — from local development through production SLURM.
 
 ## Minimal working example
 
-A pipeline running one step locally and one on SLURM with GPU resources:
+A pipeline running one step locally and one on SLURM with GPU resources. The
+SLURM runner comes from the optional `artisan-submitit` package:
 
 ```python
-from artisan.orchestration import Runner, PipelineManager
+from artisan.orchestration import PipelineManager
+from artisan_submitit import SlurmRunner
 from myops import PreprocessOp, InferenceOp
 
 pipeline = PipelineManager.create(
@@ -32,7 +34,7 @@ pipeline.run(
     operation=InferenceOp,
     name="inference",
     inputs={"dataset": pipeline.output("preprocess", "dataset")},
-    step_runner=Runner.SLURM,
+    step_runner=SlurmRunner(),
     runner_resources={"gpus": 1, "memory_gb": 32, "extra": {"partition": "gpu"}},
     batch_strategy={"artifacts_per_unit": 1},
 )
@@ -49,9 +51,10 @@ default:
 
 ```python
 from artisan.orchestration import Runner
+from artisan_submitit import SlurmIntraRunner, SlurmRunner
 
 # Pipeline-wide default
-pipeline = PipelineManager.create(..., default_step_runner=Runner.SLURM)
+pipeline = PipelineManager.create(..., default_step_runner=SlurmRunner())
 
 # Step-level override
 pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
@@ -60,17 +63,17 @@ pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
 | Step runner | How it runs | When to use |
 |-------------|-------------|-------------|
 | `Runner.LOCAL` (default) | Process pool on your machine | Development, testing, lightweight ops |
-| `Runner.SLURM` | SLURM job array on cluster | Production, GPU work, HPC |
-| `Runner.SLURM_INTRA` | srun within existing SLURM allocation | Interactive salloc sessions, zero queue wait |
+| `SlurmRunner()` (`artisan-submitit`) | SLURM job array on cluster | Production, GPU work, HPC |
+| `SlurmIntraRunner()` (`artisan-submitit`) | `srun` within an existing SLURM allocation | Interactive `salloc` sessions, zero queue wait |
 
-For `SLURM_INTRA`, you must be inside an existing SLURM allocation
+For `SlurmIntraRunner`, you must be inside an existing SLURM allocation
 (`salloc` or `sbatch`). Work is distributed via `srun` with no queue wait:
 
 ```python
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    step_runner=Runner.SLURM_INTRA,
+    step_runner=SlurmIntraRunner(),
     runner_resources={"gpus": 1, "cpus": 4, "memory_gb": 16},
 )
 ```
@@ -372,7 +375,7 @@ Pass a `runner_resources` dict to override resource allocation for a step:
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    step_runner=Runner.SLURM,
+    step_runner=SlurmRunner(),
     runner_resources={
         "gpus": 1,
         "memory_gb": 32,
@@ -402,9 +405,9 @@ specify the fields you want to override.
 
 ### Runner resources vs compute resources
 
-`runner_resources` describes the SLURM job that the step runner books — CPUs,
-memory, time limit, and partition. The dispatcher uses these fields to request
-the allocation that hosts the worker process.
+`runner_resources` describes resources for the step runner — CPUs, memory,
+time limit, and provider-specific fields. A cluster provider uses these fields
+to request the allocation that hosts the worker process.
 
 `compute_resources` (a `ComputeResources` typed model or dict) describes the
 remote container hardware that the worker actually runs on — GPU type,
@@ -449,27 +452,27 @@ Batching happens at two levels:
     │
     │  units_per_worker = 2
     ▼
-5 SLURM jobs (each runs 2 units sequentially)
+5 workers (each runs 2 units sequentially)
 ```
 
 **Level 1 — `artifacts_per_unit`**: How many artifacts each execution unit
 processes. Set this based on your operation's workload: 1 for GPU inference
 (one artifact per job), 50–100 for fast metrics calculations.
 
-**Level 2 — `units_per_worker`**: How many execution units a single SLURM job
-runs sequentially. Use this to amortize job startup overhead without changing
-your operation's batch logic.
+**Level 2 — `units_per_worker`**: How many execution units a single worker
+runs sequentially. Use this to amortize process, container, or scheduler startup
+overhead without changing your operation's batch logic.
 
 ### BatchStrategy fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `artifacts_per_unit` | `int` | `1` | Artifacts per execution unit |
-| `units_per_worker` | `int` | `1` | Execution units per SLURM job |
+| `units_per_worker` | `int` | `1` | Execution units per worker invocation |
 | `max_workers` | `int \| None` | `None` | Cap on concurrent workers |
 | `max_artifacts_per_unit` | `int \| None` | `None` | Upper bound on artifacts per unit when using adaptive batching |
 | `estimated_seconds` | `float \| None` | `None` | Expected wall-clock time per unit, used for scheduler hints |
-| `job_name` | `str \| None` | `None` | Custom SLURM job name (defaults to operation name) |
+| `job_name` | `str \| None` | `None` | Custom worker or scheduler job name (defaults to operation name) |
 
 ---
 
@@ -719,14 +722,14 @@ waiting:
 future = pipeline.submit(
     operation=BranchAOp,
     inputs={"data": pipeline.output("preprocess", "data")},
-    step_runner=Runner.SLURM,
+    step_runner=SlurmRunner(),
 )
 
 # Submit another step concurrently
 pipeline.submit(
     operation=BranchBOp,
     inputs={"data": pipeline.output("preprocess", "data")},
-    step_runner=Runner.SLURM,
+    step_runner=SlurmRunner(),
 )
 
 # Downstream steps that depend on a submitted step automatically wait
@@ -806,7 +809,7 @@ For operations with fast per-artifact execution (< 1 second), increase
 pipeline.run(
     operation=FastMetrics,
     inputs=...,
-    step_runner=Runner.SLURM,
+    step_runner=SlurmRunner(),
     batch_strategy={"artifacts_per_unit": 100, "units_per_worker": 5},
 )
 ```
@@ -851,9 +854,9 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 | SLURM jobs OOM-killed | Default `memory_gb=4` too low | Set `runner_resources={"memory_gb": 32}` or add to operation defaults |
 | Thousands of tiny SLURM jobs | `artifacts_per_unit=1` on a fast operation | Increase `artifacts_per_unit` to batch work |
 | `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` (or `("/host", "/container", "ro")` for read-only) |
-| Step ignores `runner_resources` | Forgot `step_runner=Runner.SLURM` | Resources only apply to SLURM steps |
+| Step ignores scheduler-specific `runner_resources` | Forgot to pass `SlurmRunner()` | Scheduler-specific resources require the provider runner |
 | Workers contend on shared filesystem | Default `working_root` on NFS | Omit `working_root` — default uses `$TMPDIR` (node-local) |
-| GPU/extra resource warning on local | SLURM-specific resources on `Runner.LOCAL` | These are ignored locally — switch to `Runner.SLURM` or remove them |
+| GPU/extra resource warning on local | SLURM-specific resources on `Runner.LOCAL` | These are ignored locally — use `SlurmRunner()` or remove them |
 
 ---
 
@@ -867,7 +870,7 @@ assert step.success
 print(f"Processed {step.succeeded_count} artifacts")
 ```
 
-Then switch to `Runner.SLURM` for production. Check SLURM job logs if
+Then switch to `SlurmRunner()` for production. Check SLURM job logs if
 failures occur — the job name format is `s{step_number}_{operation_name}`.
 
 ---
@@ -875,7 +878,7 @@ failures occur — the job name format is `s{step_number}_{operation_name}`.
 ## Cross-references
 
 - [Execution Flow](../concepts/execution-flow.md) — dispatch, execute, commit lifecycle
-- [SLURM Execution Tutorial](../tutorials/07-compute-backends/02-slurm-execution.ipynb) — interactive SLURM walkthrough
+- The `artisan-submitit` README — installing and configuring the optional SLURM provider
 - [Writing Creator Operations](writing-creator-operations.md) — declaring operation-level defaults
 - [Compute Routing Tutorial](../tutorials/07-compute-backends/01-compute-routing.ipynb) — interactive compute routing walkthrough
 - [Running on Modal Tutorial](../tutorials/07-compute-backends/04-modal-execution.ipynb) — Modal-specific configuration and debugging

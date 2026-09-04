@@ -13,7 +13,7 @@ specific workflow.
 
 | Environment | Flag | What it includes | When to use it |
 |-------------|------|------------------|----------------|
-| `default` | *(none)* | Python 3.12, Artisan, Prefect, scientific stack | Running pipelines and scripts |
+| `default` | *(none)* | Python 3.12, Artisan, scientific stack | Running pipelines and scripts |
 | `dev` | `-e dev` | Everything in default + pytest, ruff, ipython, build tools | Testing, formatting, debugging |
 | `docs` | `-e docs` | Everything in default + jupyter-book, Node.js | Building documentation |
 
@@ -136,21 +136,18 @@ flags and command sequences.
 | Task | Command | Description |
 |------|---------|-------------|
 | `setup` | `bash scripts/setup.sh` | One-time post-install fixups; run once after cloning |
-| `prefect-start` | `prefect-server start --bg` | Start the Prefect server in the background |
-| `prefect-stop` | `prefect-server stop --force` | Stop the Prefect server |
 | `install-kernel` | `python -m ipykernel install ...` | Register the Artisan Jupyter kernel |
 
 ### Dev environment
 
 | Task | Command | Description |
 |------|---------|-------------|
-| `test` | `pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 4 && pytest -m 'notebook and not modal and not slurm' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Unit (sequential) + integration (parallel) + S3 (parallel) + tutorial notebooks |
+| `test` | `pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 4 && pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Unit (sequential) + integration (parallel) + S3 (parallel) + tutorial notebooks |
 | `test-unit` | `pytest -m 'not integration and not notebook and not modal and not s3'` | Run only unit tests (no external services) |
 | `test-integration` | `pytest -m 'integration and not s3' -n 4` | End-to-end pipeline tests (parallel, no external services) |
 | `test-s3` | `pytest -m s3 -n 4` | S3-backend tests (parallel); needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
-| `test-notebook` | `pytest -m 'notebook and not modal and not slurm' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Run every CI-runnable tutorial notebook |
-| `test-notebook-modal` | `pytest -m 'notebook and modal' --nbval-lax docs/tutorials/` | Modal tutorial notebooks; needs Modal credentials + `prefect-start` |
-| `test-notebook-slurm` | `pytest -m 'notebook and slurm' --nbval-lax docs/tutorials/` | SLURM tutorial notebooks; run on a cluster + `prefect-start` |
+| `test-notebook` | `pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Run every CI-runnable tutorial notebook |
+| `test-notebook-modal` | `pytest -m 'notebook and modal' --nbval-lax docs/tutorials/` | Modal tutorial notebooks; needs Modal credentials |
 | `test-seq` | `pytest -m 'not notebook and not modal'` | Run tests sequentially, excluding notebook/modal (useful for debugging) |
 | `fmt` | `ruff format . && ruff check --fix .` | Format and lint the codebase |
 | `build-dist` | `rm -rf dist/ && python -m build` | Build distribution packages |
