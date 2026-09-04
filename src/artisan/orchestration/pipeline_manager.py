@@ -32,6 +32,7 @@ from artisan.orchestration.engine.step_executor import (
 )
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.runners import Runner, RunnerBase, resolve_runner
+from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy
@@ -69,6 +70,15 @@ _OpLike = type[OperationDefinition] | type["CompositeDefinition"]
 logger = logging.getLogger(__name__)
 
 _PIPELINE_DEFAULT_RUNNER_OPTION = "pipeline_default_step_runner"
+_PIPELINE_DEFAULT_LOCAL_RUNNER_OPTION = "pipeline_default_local_runner"
+
+
+@dataclass(frozen=True)
+class _StoredDefaultRunner:
+    """Serializable default-runner metadata recovered from step records."""
+
+    name: str
+    local_default_max_workers: int | None = None
 
 
 # =============================================================================
@@ -148,31 +158,70 @@ def _extract_name_from_run_id(run_id: str) -> str:
     return parts[0]
 
 
-def _load_stored_default_runner(steps: list[StepState]) -> str | None:
+def _parse_stored_local_runner(options: dict[str, Any]) -> int | None:
+    """Return a persisted built-in local pool size, when present."""
+    config = options.get(_PIPELINE_DEFAULT_LOCAL_RUNNER_OPTION)
+    if config is None:
+        return None
+    if options.get(_PIPELINE_DEFAULT_RUNNER_OPTION) != LocalRunner.name:
+        msg = "Persisted local runner configuration requires default runner 'local'"
+        raise ValueError(msg)
+    if not isinstance(config, dict):
+        msg = "Persisted local runner configuration must be a JSON object"
+        raise ValueError(msg)
+    max_workers = config.get("default_max_workers")
+    if (
+        isinstance(max_workers, bool)
+        or not isinstance(max_workers, int)
+        or max_workers < 1
+    ):
+        msg = "Persisted LocalRunner.default_max_workers must be a positive integer"
+        raise ValueError(msg)
+    return max_workers
+
+
+def _load_stored_default_runner(
+    steps: list[StepState],
+) -> _StoredDefaultRunner | None:
     """Read a pipeline's default runner from persisted step options.
 
     Args:
         steps: Completed states for one pipeline run.
 
     Returns:
-        The stored runner name, or None for legacy records without the field.
+        Stored runner metadata, or None for legacy records without the field.
 
     Raises:
         ValueError: If stored runner metadata is invalid.
     """
+    stored_name: str | None = None
+    local_max_workers: int | None = None
     for step in steps:
         options = json.loads(step.compute_options_json)
-        if (
-            not isinstance(options, dict)
-            or _PIPELINE_DEFAULT_RUNNER_OPTION not in options
-        ):
+        if not isinstance(options, dict):
             continue
-        name = options[_PIPELINE_DEFAULT_RUNNER_OPTION]
-        if not isinstance(name, str) or not name:
-            msg = "Persisted default_step_runner must be a non-empty string"
-            raise ValueError(msg)
-        return name
-    return None
+        if _PIPELINE_DEFAULT_RUNNER_OPTION in options:
+            name = options[_PIPELINE_DEFAULT_RUNNER_OPTION]
+            if not isinstance(name, str) or not name:
+                msg = "Persisted default_step_runner must be a non-empty string"
+                raise ValueError(msg)
+            if stored_name is not None and name != stored_name:
+                msg = (
+                    "Persisted default_step_runner is inconsistent across step records"
+                )
+                raise ValueError(msg)
+            stored_name = name
+
+        current_local_max = _parse_stored_local_runner(options)
+        if current_local_max is not None:
+            if local_max_workers is not None and current_local_max != local_max_workers:
+                msg = "Persisted LocalRunner configuration is inconsistent across steps"
+                raise ValueError(msg)
+            local_max_workers = current_local_max
+
+    if stored_name is None:
+        return None
+    return _StoredDefaultRunner(stored_name, local_max_workers)
 
 
 def _is_file_path_input(inputs: Any) -> bool:
@@ -681,6 +730,35 @@ def _resolve_runtime_default_runner(
             "default_step_runner."
         )
         raise ValueError(msg) from exc
+
+
+def _restore_persisted_local_runner(
+    stored_runner: _StoredDefaultRunner | None,
+    runtime_runner: RunnerBase | None,
+    run_id: str,
+) -> RunnerBase | None:
+    """Reconstruct or validate the narrowly persisted LocalRunner config."""
+    if stored_runner is None or stored_runner.local_default_max_workers is None:
+        return runtime_runner
+
+    expected = stored_runner.local_default_max_workers
+    if runtime_runner is None:
+        return LocalRunner(default_max_workers=expected)
+    if type(runtime_runner) is not LocalRunner:
+        msg = (
+            "Persisted built-in LocalRunner configuration cannot be restored with "
+            f"{type(runtime_runner).__name__}; resume run {run_id!r} without a runner "
+            "or pass a LocalRunner instance."
+        )
+        raise ValueError(msg)
+    if runtime_runner.default_max_workers != expected:
+        msg = (
+            f"LocalRunner(default_max_workers={runtime_runner.default_max_workers}) "
+            "does not match persisted "
+            f"LocalRunner(default_max_workers={expected}) for pipeline run {run_id!r}."
+        )
+        raise ValueError(msg)
+    return runtime_runner
 
 
 class PipelineManager:
@@ -1200,7 +1278,8 @@ class PipelineManager:
             raise ValueError(msg)
 
         run_id = pipeline_run_id or completed_steps[0].pipeline_run_id
-        stored_runner_name = _load_stored_default_runner(completed_steps)
+        stored_runner = _load_stored_default_runner(completed_steps)
+        stored_runner_name = stored_runner.name if stored_runner is not None else None
         config_kwargs: dict[str, Any] = {
             "name": name or _extract_name_from_run_id(run_id),
             "pipeline_run_id": run_id,
@@ -1235,6 +1314,11 @@ class PipelineManager:
                 f"pipeline run {run_id!r}. Resume with the original provider runner."
             )
             raise ValueError(msg)
+        runtime_runner = _restore_persisted_local_runner(
+            stored_runner,
+            runtime_runner,
+            run_id,
+        )
         resumed_runner_name = stored_runner_name or requested_runner_name
         if resumed_runner_name is not None:
             config_kwargs["default_step_runner"] = resumed_runner_name
@@ -1458,10 +1542,13 @@ class PipelineManager:
         #    the cached StepResult immediately without re-executing.
         if not (ov.skip_cache or self._config.skip_cache):
             cached = self._try_cached_step(
-                step_spec_id,
-                step_number,
-                step_name,
-                operation.outputs,
+                operation,
+                inputs,
+                ov,
+                step_spec_id=step_spec_id,
+                step_number=step_number,
+                step_name=step_name,
+                temp_instance=temp_instance,
             )
             if cached is not None:
                 return cached
@@ -1690,19 +1777,86 @@ class PipelineManager:
 
         return step_spec_id, temp_instance
 
+    def _resolve_step_runner(
+        self,
+        temp_instance: OperationDefinition,
+        ov: StepOverrides,
+    ) -> RunnerBase:
+        """Resolve the effective runner for one step."""
+        if is_curator_operation(temp_instance):
+            return Runner.LOCAL
+        if ov.step_runner is not None:
+            return resolve_runner(ov.step_runner)
+        return self._default_step_runner
+
+    def _default_runner_metadata(self) -> dict[str, Any]:
+        """Build the durable, core-owned default-runner metadata."""
+        # ``compute_backend`` is the effective runner and may reflect a curator's
+        # forced-local route or a step override, so it cannot recover the default.
+        metadata: dict[str, Any] = {
+            _PIPELINE_DEFAULT_RUNNER_OPTION: self._config.default_step_runner,
+        }
+        if type(self._default_step_runner) is LocalRunner:
+            metadata[_PIPELINE_DEFAULT_LOCAL_RUNNER_OPTION] = {
+                "default_max_workers": self._default_step_runner.default_max_workers,
+            }
+        return metadata
+
+    def _build_step_start_record(
+        self,
+        operation: type[OperationDefinition],
+        inputs: Any,
+        ov: StepOverrides,
+        *,
+        step_name: str,
+        step_number: int,
+        step_spec_id: str,
+        step_run_id: str,
+        resolved_runner: RunnerBase,
+    ) -> StepStartRecord:
+        """Build common persisted metadata for executed and cached steps."""
+        # Keep the internal resources/execution keys stable across their public
+        # API renames; StepOverrides has already canonicalized the value shapes.
+        compute_options_data = {
+            "resources": ov.runner_resources or {},
+            "execution": ov.batch_strategy or {},
+            "environment": ov.environment if ov.environment is not None else {},
+            "tool": ov.tool or {},
+            "compute_provider": (
+                ov.compute_provider if ov.compute_provider is not None else {}
+            ),
+            "group_by": (ov.group_by.value if ov.group_by is not None else None),
+            **self._default_runner_metadata(),
+        }
+        return StepStartRecord(
+            step_run_id=step_run_id,
+            step_spec_id=step_spec_id,
+            step_number=step_number,
+            step_name=step_name,
+            operation_class=_qualified_name(operation),
+            params_json=json.dumps(ov.params or {}, default=_set_default),
+            input_refs_json=_serialize_input_refs(inputs),
+            compute_backend=resolved_runner.name,
+            compute_options_json=json.dumps(compute_options_data, default=_set_default),
+            output_roles_json=json.dumps(sorted(operation.outputs.keys())),
+            output_types_json=json.dumps(self._build_output_types(operation.outputs)),
+        )
+
     def _try_cached_step(
         self,
+        operation: type[OperationDefinition],
+        inputs: Any,
+        ov: StepOverrides,
+        *,
         step_spec_id: str,
         step_number: int,
         step_name: str,
-        operation_outputs: dict[str, OutputSpec],
+        temp_instance: OperationDefinition,
     ) -> StepFuture | None:
         """Return a resolved StepFuture if step is cached, None otherwise.
 
-        Looks up step_spec_id in the steps delta table. On a hit, records
-        the cached result in all bookkeeping structures (step_results,
-        step_registry, named_steps) and advances the step counter — so the
-        caller can return immediately without any execution.
+        A hit writes one current-run completed row, then records the result in
+        memory and advances the step counter without executing the operation.
         """
         cached = self._step_tracker.check_cache(
             step_spec_id,
@@ -1716,21 +1870,39 @@ class PipelineManager:
             step_number,
             step_name,
         )
+        result = cached.model_copy(
+            update={"step_name": step_name, "step_number": step_number}
+        )
+        resolved_runner = self._resolve_step_runner(temp_instance, ov)
+        # Cached outputs remain owned by their original execution attempt. Reusing
+        # that identity keeps downstream resolution scoped to the actual rows.
+        start_record = self._build_step_start_record(
+            operation,
+            inputs,
+            ov,
+            step_name=step_name,
+            step_number=step_number,
+            step_spec_id=step_spec_id,
+            step_run_id=result.step_run_id or "",
+            resolved_runner=resolved_runner,
+        )
+        self._step_tracker.record_step_completed(start_record, result)
+
         self._step_spec_ids[step_number] = step_spec_id
-        if cached.step_run_id:
-            self._step_run_ids[step_number] = cached.step_run_id
-        self._step_results.append(cached)
-        self._register_step(step_name, step_number, operation_outputs)
-        self._named_steps.setdefault(cached.step_name, []).append(cached)
+        if result.step_run_id:
+            self._step_run_ids[step_number] = result.step_run_id
+        self._step_results.append(result)
+        self._register_step(step_name, step_number, operation.outputs)
+        self._named_steps.setdefault(result.step_name, []).append(result)
         self._current_step += 1
 
         resolved: Future[StepResult] = Future()
-        resolved.set_result(cached)
+        resolved.set_result(result)
         return StepFuture(
             step_number=step_number,
-            step_name=cached.step_name,
-            output_roles=cached.output_roles,
-            output_types=cached.output_types,
+            step_name=result.step_name,
+            output_roles=result.output_roles,
+            output_types=result.output_types,
             future=resolved,
         )
 
@@ -1851,44 +2023,16 @@ class PipelineManager:
 
         output_types_map = self._build_output_types(operation.outputs)
 
-        # Curator operations always run locally (they read/write Delta
-        # directly). Non-curator: per-step override > pipeline default.
-        resolved_runner: RunnerBase
-        if is_curator_operation(temp_instance):
-            resolved_runner = Runner.LOCAL
-        elif ov.step_runner is not None:
-            resolved_runner = resolve_runner(ov.step_runner)
-        else:
-            resolved_runner = self._default_step_runner
-
-        # Internal compute_options keys stay "resources"/"execution" to
-        # preserve persisted-record stability across the public-API renames.
-        # ov fields are already coerced to dicts/strs by StepOverrides.from_user.
-        compute_options_data = {
-            "resources": ov.runner_resources or {},
-            "execution": ov.batch_strategy or {},
-            "environment": ov.environment if ov.environment is not None else {},
-            "tool": ov.tool or {},
-            "compute_provider": (
-                ov.compute_provider if ov.compute_provider is not None else {}
-            ),
-            "group_by": (ov.group_by.value if ov.group_by is not None else None),
-            # Effective compute_backend may be a per-step override or forced
-            # local curator, so it cannot recover the pipeline default.
-            _PIPELINE_DEFAULT_RUNNER_OPTION: self._config.default_step_runner,
-        }
-        start_record = StepStartRecord(
-            step_run_id=step_run_id,
-            step_spec_id=step_spec_id,
-            step_number=step_number,
+        resolved_runner = self._resolve_step_runner(temp_instance, ov)
+        start_record = self._build_step_start_record(
+            operation,
+            inputs,
+            ov,
             step_name=step_name,
-            operation_class=_qualified_name(operation),
-            params_json=json.dumps(ov.params or {}, default=_set_default),
-            input_refs_json=_serialize_input_refs(inputs),
-            compute_backend=resolved_runner.name,
-            compute_options_json=json.dumps(compute_options_data, default=_set_default),
-            output_roles_json=json.dumps(sorted(operation.outputs.keys())),
-            output_types_json=json.dumps(output_types_map),
+            step_number=step_number,
+            step_spec_id=step_spec_id,
+            step_run_id=step_run_id,
+            resolved_runner=resolved_runner,
         )
         self._step_tracker.record_step_start(start_record)
 

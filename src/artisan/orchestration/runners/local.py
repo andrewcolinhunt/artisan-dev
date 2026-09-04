@@ -182,6 +182,11 @@ class LocalRunner(RunnerBase):
             raise ValueError(msg)
         self._default_max_workers = default_max_workers
 
+    @property
+    def default_max_workers(self) -> int:
+        """Default process pool size used when a step does not override it."""
+        return self._default_max_workers
+
     def create_lifecycle_router(
         self,
         runner_resources: RunnerResources,

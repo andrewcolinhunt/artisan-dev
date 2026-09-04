@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from enum import StrEnum, auto
 from typing import ClassVar
@@ -130,7 +131,7 @@ class TestPersistence:
         p1 = PipelineManager.create(
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
-        p1.run(IngestMockOp, inputs=None)
+        first_result = p1.run(IngestMockOp, inputs=None)
         assert mock_exec.call_count == 1
 
         # Second run — same operation, same step position, same params
@@ -142,6 +143,21 @@ class TestPersistence:
         assert mock_exec.call_count == 1
         assert result.step_name == "Ingest"
         assert result.success is True
+        assert result.step_run_id == first_result.step_run_id
+
+        rows = pl.read_delta(delta / "orchestration" / "steps").filter(
+            pl.col("pipeline_run_id") == p2.config.pipeline_run_id
+        )
+        assert rows.height == 1
+        row = rows.row(0, named=True)
+        assert row["status"] == "completed"
+        assert row["step_run_id"] == first_result.step_run_id
+        assert row["total_count"] == 5
+        assert json.loads(row["output_roles_json"]) == ["file"]
+        assert row["compute_backend"] == "local"
+        options = json.loads(row["compute_options_json"])
+        assert options["pipeline_default_step_runner"] == "local"
+        assert options["pipeline_default_local_runner"] == {"default_max_workers": 4}
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
