@@ -58,13 +58,6 @@ wandb/
 *.pt
 *.parquet
 
-# SLURM job logs
-slurm_logs/
-**/slurm_logs/
-
-# Prefect
-.prefect-postgres/
-
 # Documentation build output
 _build/
 docs/_build/

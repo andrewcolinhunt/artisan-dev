@@ -68,15 +68,6 @@ ipywidgets = "*"
 # Jupyter kernel (allows registering the artisan env as a Jupyter kernel)
 ipykernel = "*"
 
-# Pin packaging for Prefect 3.x compatibility
-packaging = ">=21.3,<25.1"
-
-# Pin importlib-metadata for opentelemetry-api compatibility (via prefect)
-importlib-metadata = ">=6.0,<8.8"
-
-# PostgreSQL for Prefect server (handles concurrency better than SQLite)
-postgresql = ">=16"
-
 # Graphviz system binary (dot) for provenance graph rendering
 graphviz = "*"
 
@@ -95,19 +86,9 @@ beartype = "*"
 pydantic = "*"
 fsspec = "*"
 griffe = "*"          # Google-style docstring parsing for agent-facing schemas
-# Hold starlette/fastapi at the versions the repo used before adding fastmcp:
-# the fastmcp re-solve otherwise bumps them, and the newer releases break
-# prefect's embedded server (500s) and its PrefectRouter, and trip the
-# tool-endpoint TestClient's httpx deprecation under filterwarnings=error.
-# mcp/fastapi/sse-starlette all accept these ranges.
-starlette = "<0.51"
-fastapi = "<0.136"
-
-# Workflow orchestration
-prefect = { version = ">=3.6,<4.0", extras = ["dask"] }
-prefect-submitit = ">=0.1.5"
-submitit = "*"  # For SLURM job submission
-asyncpg = "*"  # PostgreSQL async driver for Prefect server
+# Tool-endpoint HTTP service
+starlette = "*"
+fastapi = "*"
 
 # Lineage tracking dependencies
 xxhash = "*"           # Fast hashing for file tracking
@@ -168,11 +149,10 @@ testcontainers = { version = "*", extras = ["minio"] }
 # =============================================================================
 # MCP FEATURE - Model Context Protocol server (artisan[mcp] extra)
 # =============================================================================
-# fastmcp is the only dep not already in the default/dev env; typer and
-# pydantic-settings arrive transitively (prefect) but are pinned in the
-# artisan[mcp] pip extra for standalone installs.
 [tool.pixi.feature.mcp.pypi-dependencies]
 fastmcp = ">=3"
+pydantic-settings = "*"
+typer = "*"
 
 # =============================================================================
 # DOCS FEATURE - Documentation packages (Jupyter Book 2)
@@ -203,19 +183,16 @@ docs = { features = ["docs"], solve-group = "default" }
 # Body lives in scripts/setup.sh so it has a real shell; idempotent.
 setup = "bash scripts/setup.sh"
 
-prefect-start = "prefect-server start --bg"
-prefect-stop = "prefect-server stop --force"
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
-test = "pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 4 && pytest -m 'notebook and not modal and not slurm' -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + s3 parallel + tutorial notebooks
+test = "pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 4 && pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + s3 parallel + tutorial notebooks
 test-seq = "pytest -m 'not notebook and not modal'"  # Fully sequential (for debugging test interactions)
 test-unit = "pytest -m 'not integration and not notebook and not modal and not s3'"  # Run only unit tests (no external services)
 test-integration = "pytest -m 'integration and not s3' -n 4"  # End-to-end pipeline tests in parallel (no external services)
 test-s3 = "pytest -m s3 -n 4"  # S3-backend tests in parallel; needs Docker (MinIO) or ARTISAN_S3_ENDPOINT
-test-notebook = "pytest -m 'notebook and not modal and not slurm' -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Execute every CI-runnable tutorial notebook end-to-end (loadfile keeps all cells of one notebook on one worker)
-test-notebook-modal = "pytest -m 'notebook and modal' --nbval-lax docs/tutorials/"  # Modal tutorial notebooks; needs Modal credentials + prefect-start (sequential: notebooks may target the same deployed app)
-test-notebook-slurm = "pytest -m 'notebook and slurm' --nbval-lax docs/tutorials/"  # SLURM tutorial notebooks; run on a cluster + prefect-start (slurm-intra also needs an active allocation)
+test-notebook = "pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Execute every CI-runnable tutorial notebook end-to-end (loadfile keeps all cells of one notebook on one worker)
+test-notebook-modal = "pytest -m 'notebook and modal' --nbval-lax docs/tutorials/"  # Modal tutorial notebooks; needs Modal credentials (sequential: notebooks may target the same deployed app)
 test-modal = "pytest -m modal -n 2"  # Real-Modal smoke tests; needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET (or ~/.modal.toml)
 test-modal-seq = "pytest -m modal"  # Sequential variant for debugging Modal tests
 test-modal-endpoint = "pytest tests/integration/test_tool_endpoint_modal_r2.py -v"  # Live E2E: deploy wait_tool, deliver outputs to R2 (Modal + R2 creds + r2-artisan secret; see module docstring)
@@ -243,11 +220,10 @@ xfail_strict = true
 addopts = ["-ra", "--strict-config", "--strict-markers"]
 filterwarnings = ["error"]
 markers = [
-    "integration: end-to-end pipeline tests (self-booted Prefect harness, local FS) — run with '-m integration'",
+    "integration: end-to-end pipeline tests using local filesystem storage — run with '-m integration'",
     "s3: needs an S3 backend — MinIO via Docker, or ARTISAN_S3_ENDPOINT — run with '-m s3' (auto-applied to s3_fs/minio_endpoint users by tests/conftest.py)",
     "notebook: executes a tutorial notebook end-to-end via nbval (auto-applied by docs/tutorials/conftest.py)",
     "modal: ships work to real Modal cloud — needs MODAL_TOKEN_ID/MODAL_TOKEN_SECRET — run with '-m modal' (also auto-applied to Modal tutorial notebooks by docs/tutorials/conftest.py)",
-    "slurm: tutorial notebook needs SLURM cluster access — run with '-m \"notebook and slurm\"' on a cluster (auto-applied by docs/tutorials/conftest.py)",
 ]
 
 [tool.mypy]
@@ -294,7 +270,6 @@ module = [
     "jsonschema",
     "jsonschema.*",
     "graphviz",
-    "prefect_submitit.*",
     "ipywidgets",
     "matplotlib",
     "matplotlib.*",
@@ -338,7 +313,6 @@ ignore = [
   "PLR09",    # Too many <...>
   "PLR2004",  # Magic value used in comparison
   "G004",     # logging-f-string — readable idiom; lazy-eval perf cost is negligible here
-  "PLW0603",  # global-statement — intentional for module-level state (e.g. prefect server settings context)
 ]
 isort.required-imports = ["from __future__ import annotations"]
 # Uncomment if using a _compat.typing backport
