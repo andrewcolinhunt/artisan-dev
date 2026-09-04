@@ -20,6 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "botocore",
+    "cloudpickle",
     "deltalake>=0.14.0",
     "fsspec",
     "graphviz",

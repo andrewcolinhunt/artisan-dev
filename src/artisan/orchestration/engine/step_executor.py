@@ -58,6 +58,7 @@ from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
 from artisan.utils.hashing import effective_config_payload, serialize_params
 from artisan.utils.path import uri_join, uri_parent
+from artisan.utils.process_call import execute_process_call, serialize_process_call
 from artisan.utils.spawn import suppress_main_reimport
 from artisan.utils.timing import phase_timer
 
@@ -832,12 +833,13 @@ def _run_curator_in_subprocess(
     cancel_event: threading.Event | None = None,
 ) -> StagingResult:
     """Run curator flow in a spawned subprocess for memory isolation."""
+    call = serialize_process_call(run_curator_flow, unit, runtime_env, 0)
     ctx = multiprocessing.get_context("spawn")
     with (
         suppress_main_reimport(),
         ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool,
     ):
-        future = pool.submit(run_curator_flow, unit, runtime_env, 0)
+        future = pool.submit(execute_process_call, call)
         # Poll done() and call result() exactly once after completion. On
         # Python 3.12 concurrent.futures.TimeoutError IS builtins.TimeoutError,
         # so calling result(timeout=) in the loop would swallow a task-raised
