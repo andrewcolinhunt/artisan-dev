@@ -57,6 +57,7 @@ class TestExecuteUnit:
     def test_operation_exception_becomes_failure(self) -> None:
         unit = MagicMock()
         unit.operation = MagicMock()
+        unit.get_batch_size.return_value = 3
         runtime_env = MagicMock(worker_id_env_var=None)
 
         with (
@@ -72,6 +73,7 @@ class TestExecuteUnit:
             result = execute_unit(unit, runtime_env)
 
         assert result.success is False
+        assert result.item_count == 3
         assert "ValueError: bad input" in result.error
         assert result.execution_run_ids == []
 
@@ -116,10 +118,13 @@ class TestExecuteUnitBatch:
 class TestFailureResultsForUnits:
     def test_returns_one_failure_per_unit(self) -> None:
         units = [MagicMock(), MagicMock()]
+        units[0].get_batch_size.return_value = 2
+        units[1].get_batch_size.return_value = 3
 
         results = failure_results_for_units(units, OSError("transport down"))
 
         assert len(results) == 2
+        assert [result.item_count for result in results] == [2, 3]
         assert all(result.success is False for result in results)
         assert all("OSError: transport down" in result.error for result in results)
 

@@ -60,6 +60,15 @@ class TestOutputRoles:
         future = _make_future(output_roles=frozenset(), output_types={})
         assert future.output_roles == frozenset()
 
+    def test_output_types_returns_copy(self):
+        """Callers cannot mutate the future's declared output types."""
+        future = _make_future()
+
+        output_types = future.output_types
+        output_types["data"] = "changed"
+
+        assert future.output_types["data"] == "data"
+
 
 class TestOutput:
     """Tests for StepFuture.output()."""
@@ -131,6 +140,13 @@ class TestStatus:
         cf.set_exception(RuntimeError("boom"))
         future = _make_future(cf_future=cf)
         assert future.status == "failed"
+
+    def test_status_cancelled(self):
+        """'cancelled' when executor cancellation prevents execution."""
+        cf = Future()
+        cf.cancel()
+        future = _make_future(cf_future=cf)
+        assert future.status == "cancelled"
 
 
 class TestResult:

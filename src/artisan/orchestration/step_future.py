@@ -49,6 +49,11 @@ class StepFuture:
         """Available output role names for this step."""
         return self._output_roles
 
+    @property
+    def output_types(self) -> dict[str, str | None]:
+        """Return a copy of the declared output-role type mapping."""
+        return dict(self._output_types)
+
     def output(self, role: str) -> OutputReference:
         """Create a lazy reference to a step output without blocking.
 
@@ -78,7 +83,9 @@ class StepFuture:
 
     @property
     def status(self) -> str:
-        """Current status: 'running', 'completed', or 'failed'."""
+        """Current status: running, completed, failed, or cancelled."""
+        if self._future.cancelled():
+            return "cancelled"
         if not self._future.done():
             return "running"
         exc = self._future.exception()

@@ -141,10 +141,11 @@ class LifecycleRouter(ABC):
         self.dispatch(units, runtime_env)
         cancelled = False
         while not self.is_done():
-            if not cancelled and cancel_event is not None and cancel_event.is_set():
-                self._write_cancel_sentinel(units, runtime_env)
+            if cancel_event is not None and cancel_event.is_set():
+                if not cancelled:
+                    self._write_cancel_sentinel(units, runtime_env)
+                    cancelled = True
                 self.cancel()
-                cancelled = True
             time.sleep(0.1)
         return self.collect()
 

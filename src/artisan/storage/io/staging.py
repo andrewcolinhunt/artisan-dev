@@ -30,6 +30,8 @@ from artisan.utils.path import step_dir_name
 
 logger = logging.getLogger(__name__)
 
+_RESERVED_STAGING_DIRS = frozenset({"_dispatch"})
+
 
 class StagingArea:
     """Per-worker staging area for writing Parquet files.
@@ -190,6 +192,7 @@ class StagingManager:
             for e in entries
             if self._fs.isdir(e)
             and not posixpath.basename(e.rstrip("/")).startswith(".")
+            and posixpath.basename(e.rstrip("/")) not in _RESERVED_STAGING_DIRS
         ]
 
     def get_staged_files_for_table(

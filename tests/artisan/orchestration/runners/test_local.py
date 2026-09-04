@@ -201,7 +201,10 @@ class TestLocalLifecycleRouter:
         mock_executor_class.side_effect = OSError(message)
         handle = LocalLifecycleRouter(max_workers=2, units_per_worker=2)
 
-        results = handle.run([MagicMock(), MagicMock()], MagicMock())
+        units = [MagicMock(), MagicMock()]
+        for unit in units:
+            unit.get_batch_size.return_value = 1
+        results = handle.run(units, MagicMock())
 
         assert len(results) == 2
         assert all(result.success is False for result in results)
@@ -239,6 +242,29 @@ class TestLocalLifecycleRouter:
             units[2:],
         ]
         executor.shutdown.assert_called_once_with(wait=True, cancel_futures=False)
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_partial_submission_failure_preserves_completed_prefix(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        completed: Future[list[UnitResult]] = Future()
+        completed.set_result([UnitResult(True, None, 1, ["completed"])])
+        executor.submit.side_effect = [completed, OSError("submission denied")]
+        handle = LocalLifecycleRouter(max_workers=2, units_per_worker=1)
+
+        units = [MagicMock(), MagicMock(), MagicMock()]
+        for unit in units:
+            unit.get_batch_size.return_value = 1
+        results = handle.run(units, MagicMock())
+
+        assert len(results) == 3
+        assert results[0].success is True
+        assert results[0].execution_run_ids == ["completed"]
+        assert all(result.success is False for result in results[1:])
+        assert all("submission denied" in result.error for result in results[1:])
+        assert executor.submit.call_count == 2
 
     def test_cloudpickles_locally_defined_operation_for_spawn(self, tmp_path) -> None:
         class NotebookOperation(OperationDefinition):
@@ -305,7 +331,10 @@ class TestLocalLifecycleRouter:
         executor.submit.return_value = failed
         handle = LocalLifecycleRouter(max_workers=1, units_per_worker=2)
 
-        results = handle.run([MagicMock(), MagicMock()], MagicMock())
+        units = [MagicMock(), MagicMock()]
+        for unit in units:
+            unit.get_batch_size.return_value = 1
+        results = handle.run(units, MagicMock())
 
         assert len(results) == 2
         assert all(result.success is False for result in results)

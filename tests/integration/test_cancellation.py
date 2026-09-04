@@ -256,3 +256,63 @@ def test_cancelled_creator_staging_is_not_recovered_or_cached(
     assert result.succeeded_count == 1
     assert executions.height == 1
     assert executions.item(0, "step_run_id") == rerun._step_run_ids[0]
+
+
+def test_finalize_terminalizes_running_and_queued_cancellations(
+    pipeline_env: dict[str, str],
+) -> None:
+    """Bounded finalization leaves no started step permanently running."""
+    import time
+    from concurrent.futures import CancelledError
+    from pathlib import Path
+
+    import polars as pl
+
+    from artisan.operations.examples import Wait
+
+    pipeline = PipelineManager.create(
+        name="test_finalize_terminal_cancellation",
+        delta_root=pipeline_env["delta_root"],
+        staging_root=pipeline_env["staging_root"],
+        working_root=pipeline_env["working_root"],
+    )
+    running = pipeline.submit(
+        Wait,
+        name="running",
+        params={"duration": 6.0},
+        step_runner=Runner.LOCAL,
+    )
+
+    working_root = Path(pipeline_env["working_root"])
+    deadline = time.monotonic() + 10
+    while not any(working_root.rglob("execute")):
+        assert time.monotonic() < deadline, "Wait worker did not start"
+        time.sleep(0.05)
+
+    queued = pipeline.submit(
+        Wait,
+        name="queued",
+        params={"duration": 0.0},
+        step_runner=Runner.LOCAL,
+    )
+    pipeline.cancel()
+
+    summary = pipeline.finalize()
+
+    assert summary["total_steps"] == 2
+    assert [step["name"] for step in summary["steps"]] == ["running", "queued"]
+    assert all(result.metadata["cancelled"] is True for result in pipeline)
+    assert queued.status == "cancelled"
+    with pytest.raises(CancelledError):
+        queued.result()
+
+    steps = pl.read_delta(Path(pipeline_env["delta_root"]) / "orchestration/steps")
+    for step_number in (0, 1):
+        statuses = steps.filter(pl.col("step_number") == step_number)[
+            "status"
+        ].to_list()
+        assert "cancelled" in statuses
+
+    running.result(timeout=5)
+    assert pipeline.finalize() is summary
+    assert len(pipeline) == 2

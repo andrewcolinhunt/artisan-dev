@@ -191,8 +191,8 @@ def _load_stored_default_runner(
         requested_name: Explicit runner name supplied for resume, when any.
 
     Returns:
-        Stored runner metadata. Legacy records infer a single external runner
-        from their effective compute backend; all-local records return None.
+        Stored runner metadata. Legacy records require the caller to state the
+        historical default because they persist only each step's effective runner.
 
     Raises:
         ValueError: If stored runner metadata is invalid.
@@ -223,30 +223,13 @@ def _load_stored_default_runner(
             local_max_workers = current_local_max
 
     if stored_name is None:
-        legacy_names = {step.compute_backend for step in steps}
-        legacy_provider_names = legacy_names - {LocalRunner.name}
-        if len(legacy_provider_names) > 1:
-            if requested_name not in legacy_names:
-                msg = (
-                    "Legacy step records contain multiple runner names; pass an "
-                    "explicit matching default_step_runner because the historical "
-                    "pipeline default cannot be inferred safely"
-                )
-                raise ValueError(msg)
-            stored_name = requested_name
-        elif legacy_provider_names and LocalRunner.name in legacy_names:
-            if requested_name not in legacy_names:
-                msg = (
-                    "Legacy step records mix local and external runners; pass an "
-                    "explicit matching default_step_runner because the historical "
-                    "pipeline default cannot be inferred safely"
-                )
-                raise ValueError(msg)
-            stored_name = requested_name
-        if legacy_provider_names:
-            stored_name = stored_name or legacy_provider_names.pop()
-        elif stored_name is None:
-            return None
+        if requested_name is None:
+            msg = (
+                "Legacy step records do not persist the historical pipeline "
+                "default; pass an explicit default_step_runner to resume safely"
+            )
+            raise ValueError(msg)
+        stored_name = requested_name
     return _StoredDefaultRunner(stored_name, local_max_workers)
 
 
@@ -891,6 +874,8 @@ class PipelineManager:
         self._prev_sigint: Any = None
         self._prev_sigterm: Any = None
         self._active_futures: dict[int, StepFuture] = {}
+        self._step_start_records: dict[int, StepStartRecord] = {}
+        self._cancelled_result_lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="pipeline-step"
         )
@@ -2063,6 +2048,7 @@ class PipelineManager:
             step_run_id=step_run_id,
             resolved_runner=resolved_runner,
         )
+        self._step_start_records[step_number] = start_record
         self._step_tracker.record_step_start(start_record)
 
         def _run() -> StepResult:
@@ -2080,11 +2066,7 @@ class PipelineManager:
                     output_types=output_types_map,
                     metadata={"cancelled": True},
                 )
-                self._step_tracker.record_step_cancelled(start_record)
-                self._step_results.append(cancelled_result)
-                self._named_steps.setdefault(cancelled_result.step_name, []).append(
-                    cancelled_result
-                )
+                self._record_cancelled_result(start_record, cancelled_result)
                 return cancelled_result
 
             logger.info(
@@ -2122,14 +2104,12 @@ class PipelineManager:
                 # return a result with metadata={"cancelled": True}
                 # rather than raising — record and bail.
                 if result.metadata.get("cancelled"):
-                    self._step_tracker.record_step_cancelled(start_record)
                     logger.info(
                         "Step %d (%s): cancelled.",
                         step_number,
                         step_name,
                     )
-                    self._step_results.append(result)
-                    self._named_steps.setdefault(result.step_name, []).append(result)
+                    self._record_cancelled_result(start_record, result)
                     return result
 
                 # Empty inputs at dispatch time: the step is "skipped"
@@ -2199,6 +2179,39 @@ class PipelineManager:
         )
         self._active_futures[step_number] = future
         return future
+
+    def _record_cancelled_result(
+        self,
+        start_record: StepStartRecord,
+        result: StepResult,
+    ) -> None:
+        """Persist and append one cancellation result for a started step."""
+        with self._cancelled_result_lock:
+            if any(r.step_number == result.step_number for r in self._step_results):
+                return
+            self._step_tracker.record_step_cancelled(start_record)
+            self._step_results.append(result)
+            self._named_steps.setdefault(result.step_name, []).append(result)
+
+    def _settle_unfinished_cancellations(self) -> None:
+        """Give every unfinished started step a terminal cancellation result."""
+        for step_number, future in self._active_futures.items():
+            start_record = self._step_start_records.get(step_number)
+            if start_record is None or future.done:
+                continue
+            result = StepResult(
+                step_name=future.step_name,
+                step_number=step_number,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                output_roles=future.output_roles,
+                output_types=future.output_types,
+                metadata={"cancelled": True, "cleanup_pending": True},
+                step_run_id=self._step_run_ids.get(step_number),
+            )
+            self._record_cancelled_result(start_record, result)
 
     def submit_composite(
         self,
@@ -2480,8 +2493,8 @@ class PipelineManager:
         """
         if self._finalized:
             return self._summary  # type: ignore[return-value]
-        self._finalized = True
 
+        cancellation_deadline: float | None = None
         for step_num, future in self._active_futures.items():
             try:
                 while not self._cancel_event.is_set():
@@ -2492,8 +2505,11 @@ class PipelineManager:
                         continue
                 else:
                     # Cancel detected — short wait for cleanup
+                    if cancellation_deadline is None:
+                        cancellation_deadline = time.monotonic() + 5.0
+                    remaining = max(0.0, cancellation_deadline - time.monotonic())
                     with contextlib.suppress(TimeoutError, Exception):
-                        future.result(timeout=5.0)
+                        future.result(timeout=remaining)
             except Exception as exc:
                 logger.error(
                     "Step %d future failed during finalize: %s: %s",
@@ -2502,6 +2518,8 @@ class PipelineManager:
                     exc,
                 )
 
+        if self._cancel_event.is_set():
+            self._settle_unfinished_cancellations()
         self._shutdown_executor()
         self._restore_signal_handlers()
 
@@ -2546,4 +2564,5 @@ class PipelineManager:
             ],
             "overall_success": all(r.success for r in self._step_results),
         }
+        self._finalized = True
         return self._summary

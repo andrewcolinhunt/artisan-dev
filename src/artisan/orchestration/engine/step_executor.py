@@ -735,7 +735,7 @@ def _execute_curator_step(
                     item_count=(
                         len(staging_result.artifact_ids)
                         if staging_result.success
-                        else 1
+                        else unit.get_batch_size() or 1
                     ),
                     execution_run_ids=[staging_result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
                 )
@@ -772,11 +772,11 @@ def _execute_curator_step(
                 UnitResult(
                     success=False,
                     error=error_msg,
-                    item_count=1,
+                    item_count=unit.get_batch_size() or 1,
                     execution_run_ids=[run_id] if run_id else [],
                 )
             ]
-            succeeded, failed = 0, 1
+            succeeded, failed = 0, unit.get_batch_size() or 1
         except Exception as exc:
             dispatch_error, results, succeeded, failed = _record_dispatch_failure(
                 exc,
@@ -1029,7 +1029,8 @@ def _record_dispatch_failure(
         user_overrides,
         step_run_id=step_run_id,
     )
-    return dispatch_error, results, 0, len(units)
+    succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
+    return dispatch_error, results, succeeded, failed
 
 
 def _discard_cancelled_staging(
@@ -1299,11 +1300,11 @@ def _execute_creator_step(
                             UnitResult(
                                 success=False,
                                 error=dispatch_error,
-                                item_count=1,
+                                item_count=lost_unit.get_batch_size() or 1,
                                 execution_run_ids=[run_id] if run_id else [],
                             )
                         )
-                    succeeded, failed = 0, len(units_to_dispatch)
+                    succeeded, failed = aggregate_results(results, failure_policy)
                 except Exception as exc:
                     dispatch_error, results, succeeded, failed = (
                         _record_dispatch_failure(
