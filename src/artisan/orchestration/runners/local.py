@@ -26,6 +26,7 @@ from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.utils.process_call import execute_process_call, serialize_process_call
 from artisan.utils.spawn import ignore_sigint, suppress_main_reimport
 
 
@@ -112,7 +113,10 @@ class LocalLifecycleRouter(LifecycleRouter):
             if self._cancel_requested:
                 return []
             self._futures = [
-                executor.submit(execute_unit_batch, batch, runtime_env)
+                executor.submit(
+                    execute_process_call,
+                    serialize_process_call(execute_unit_batch, batch, runtime_env),
+                )
                 for batch in batches
             ]
             return list(self._futures)

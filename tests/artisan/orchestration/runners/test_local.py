@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import warnings
 from concurrent.futures import Future
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import cloudpickle
 import pytest
 
+from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.runners.local import LocalLifecycleRouter, LocalRunner
 from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.specs.input_spec import InputSpec
+from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.process_call import execute_process_call
 
 
 @pytest.fixture
@@ -216,11 +224,70 @@ class TestLocalLifecycleRouter:
         results = handle.run(units, MagicMock())
 
         assert [result.execution_run_ids[0] for result in results] == ["a", "b", "c"]
-        assert [call.args[1] for call in executor.submit.call_args_list] == [
+        calls = executor.submit.call_args_list
+        assert all(call.args[0] is execute_process_call for call in calls)
+        submitted_batches = [
+            cloudpickle.loads(call.args[1].payload)[1][0] for call in calls
+        ]
+        assert submitted_batches == [
             units[:2],
             units[2:],
         ]
         executor.shutdown.assert_called_once_with(wait=True, cancel_futures=False)
+
+    def test_cloudpickles_locally_defined_operation_for_spawn(self, tmp_path) -> None:
+        class NotebookOperation(OperationDefinition):
+            name: ClassVar[str] = "notebook_operation"
+            inputs: ClassVar[dict[str, InputSpec]] = {}
+            outputs: ClassVar[dict[str, OutputSpec]] = {}
+            marker: str
+
+            def execute_function(self, inputs, output_dir):
+                raise NotImplementedError
+
+        def _execute_notebook_batch(
+            batch: list[ExecutionUnit],
+            runtime_env: RuntimeEnvironment,
+        ) -> list[UnitResult]:
+            del runtime_env
+            return [
+                UnitResult(
+                    success=True,
+                    error=None,
+                    item_count=1,
+                    execution_run_ids=[unit.operation.marker],
+                )
+                for unit in batch
+            ]
+
+        units = [
+            ExecutionUnit.model_construct(
+                operation=NotebookOperation(marker=marker),
+                inputs={},
+                execution_spec_id=f"spec-{marker}",
+                step_number=0,
+                group_ids=None,
+                user_overrides=None,
+                step_run_id=None,
+            )
+            for marker in ("first", "second")
+        ]
+        runtime_env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        )
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=2)
+
+        with patch(
+            "artisan.orchestration.runners.local.execute_unit_batch",
+            _execute_notebook_batch,
+        ):
+            results = handle.run(units, runtime_env)
+
+        assert [result.execution_run_ids for result in results] == [
+            ["first"],
+            ["second"],
+        ]
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_future_failure_becomes_one_result_per_batched_unit(

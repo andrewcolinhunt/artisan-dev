@@ -1732,6 +1732,10 @@ class TestCuratorSubprocessIsolation:
         from artisan.orchestration.engine.step_executor import (
             _run_curator_in_subprocess,
         )
+        from artisan.utils.process_call import (
+            SerializedProcessCall,
+            execute_process_call,
+        )
 
         unit = MagicMock()
         runtime_env = MagicMock()
@@ -1755,6 +1759,62 @@ class TestCuratorSubprocessIsolation:
         assert call_kwargs["max_workers"] == 1
         assert call_kwargs["mp_context"].get_start_method() == "spawn"
         mock_pool.submit.assert_called_once()
+        submit_args = mock_pool.submit.call_args.args
+        assert submit_args[0] is execute_process_call
+        assert isinstance(submit_args[1], SerializedProcessCall)
+
+    def test_cloudpickles_locally_defined_curator_for_spawn(self, tmp_path) -> None:
+        from artisan.execution.models.execution_unit import ExecutionUnit
+        from artisan.execution.recording.parquet_writer import StagingResult
+        from artisan.orchestration.engine.step_executor import (
+            _run_curator_in_subprocess,
+        )
+        from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+
+        class NotebookCurator(OperationDefinition):
+            name: ClassVar[str] = "notebook_curator"
+            inputs: ClassVar[dict[str, InputSpec]] = {}
+            outputs: ClassVar[dict[str, OutputSpec]] = {}
+            marker: str
+
+            def execute_curator(self, inputs, step_number, artifact_store):
+                raise NotImplementedError
+
+        def _run_notebook_curator(
+            child_unit: ExecutionUnit,
+            child_runtime_env: RuntimeEnvironment,
+            worker_id: int,
+        ) -> StagingResult:
+            del child_runtime_env
+            return StagingResult(
+                success=True,
+                execution_run_id=f"run-{worker_id}",
+                artifact_ids=[child_unit.operation.marker],
+            )
+
+        unit = ExecutionUnit.model_construct(
+            operation=NotebookCurator(marker="notebook-artifact"),
+            inputs={},
+            execution_spec_id="notebook-spec",
+            step_number=0,
+            group_ids=None,
+            user_overrides=None,
+            step_run_id=None,
+        )
+        runtime_env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        )
+
+        with patch(
+            "artisan.orchestration.engine.step_executor.run_curator_flow",
+            _run_notebook_curator,
+        ):
+            result = _run_curator_in_subprocess(unit, runtime_env)
+
+        assert result.success is True
+        assert result.execution_run_id == "run-0"
+        assert result.artifact_ids == ["notebook-artifact"]
 
     def test_curator_task_timeouterror_surfaces_as_failure(self) -> None:
         """A task raising TimeoutError surfaces, not an infinite poll loop.
