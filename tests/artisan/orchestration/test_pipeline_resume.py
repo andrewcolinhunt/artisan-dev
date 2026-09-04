@@ -28,6 +28,12 @@ class ExternalRunner(LocalRunner):
     name = "external_test"
 
 
+class LegacySlurmRunner(LocalRunner):
+    """Stand-in for the external provider required by historical SLURM rows."""
+
+    name = "slurm"
+
+
 class MockOp(OperationDefinition):
     class InputRole(StrEnum):
         data = auto()
@@ -82,7 +88,11 @@ def _mock_execute_step(**kwargs):
     )
 
 
-def _write_legacy_completed_step(delta_root: Path) -> str:
+def _write_legacy_completed_step(
+    delta_root: Path,
+    *,
+    compute_backend: str = "local",
+) -> str:
     """Write a pre-runner-metadata step row for compatibility coverage."""
     pipeline_run_id = "legacy_20260904_120000_abcdef12"
     tracker = StepTracker(str(delta_root), pipeline_run_id)
@@ -94,7 +104,7 @@ def _write_legacy_completed_step(delta_root: Path) -> str:
         operation_class=f"{IngestMockOp.__module__}.{IngestMockOp.__qualname__}",
         params_json="{}",
         input_refs_json="null",
-        compute_backend="local",
+        compute_backend=compute_backend,
         compute_options_json="{}",
         output_roles_json='["file"]',
         output_types_json='{"file": "data"}',
@@ -445,6 +455,55 @@ class TestResume:
 
         assert resumed.config.default_step_runner == "external_test"
         assert resumed._default_step_runner is runner
+
+    @pytest.mark.parametrize("backend", ["slurm", "slurm_intra"])
+    def test_resume_legacy_slurm_record_requires_provider_instance(
+        self,
+        tmp_path,
+        backend,
+    ):
+        """Historical SLURM work must never silently resume on LocalRunner."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta, compute_backend=backend)
+
+        with pytest.raises(ValueError, match="initialized provider runner"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=run_id,
+            )
+
+    def test_resume_legacy_slurm_record_accepts_matching_provider(self, tmp_path):
+        """A matching provider instance safely restores a historical SLURM run."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta, compute_backend="slurm")
+        runner = LegacySlurmRunner()
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=run_id,
+            default_step_runner=runner,
+        )
+
+        assert resumed.config.default_step_runner == "slurm"
+        assert resumed._default_step_runner is runner
+
+    def test_resume_legacy_slurm_record_rejects_mismatched_provider(self, tmp_path):
+        """A different provider cannot reinterpret historical SLURM work."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta, compute_backend="slurm")
+
+        with pytest.raises(ValueError, match="does not match persisted"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=run_id,
+                default_step_runner=ExternalRunner(),
+            )
 
 
 # NOTE: TestListRuns moved to test_run_history.py (PR 4 — list_runs is now
