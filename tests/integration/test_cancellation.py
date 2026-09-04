@@ -199,3 +199,60 @@ def test_cancel_event_reaches_lifecycle_router(pipeline_env: dict[str, str]):
     # Should finish much faster than 30s — cancel interrupted the wait
     assert elapsed < 15.0
     assert "pipeline_name" in summary
+
+
+def test_cancelled_creator_staging_is_not_recovered_or_cached(
+    pipeline_env: dict[str, str],
+):
+    """Successful in-flight work from a cancelled step stays invisible."""
+    import time
+    from pathlib import Path
+
+    import polars as pl
+
+    from artisan.operations.examples import Wait
+
+    pipeline = PipelineManager.create(
+        name="test_cancelled_staging",
+        delta_root=pipeline_env["delta_root"],
+        staging_root=pipeline_env["staging_root"],
+        working_root=pipeline_env["working_root"],
+    )
+    future = pipeline.submit(
+        Wait,
+        params={"duration": 1.0},
+        step_runner=Runner.LOCAL,
+    )
+
+    working_root = Path(pipeline_env["working_root"])
+    deadline = time.monotonic() + 10
+    while not any(working_root.rglob("execute")):
+        assert time.monotonic() < deadline, "Wait worker did not start"
+        time.sleep(0.05)
+
+    pipeline.cancel()
+    cancelled = future.result(timeout=10)
+    pipeline.finalize()
+
+    executions_path = Path(pipeline_env["delta_root"]) / "orchestration/executions"
+    assert cancelled.metadata["cancelled"] is True
+    assert not executions_path.exists()
+    assert not list(Path(pipeline_env["staging_root"]).rglob("*.parquet"))
+
+    rerun = PipelineManager.create(
+        name="test_cancelled_staging",
+        delta_root=pipeline_env["delta_root"],
+        staging_root=pipeline_env["staging_root"],
+        working_root=pipeline_env["working_root"],
+    )
+    result = rerun.run(
+        Wait,
+        params={"duration": 1.0},
+        step_runner=Runner.LOCAL,
+    )
+    rerun.finalize()
+
+    executions = pl.read_delta(executions_path)
+    assert result.succeeded_count == 1
+    assert executions.height == 1
+    assert executions.item(0, "step_run_id") == rerun._step_run_ids[0]

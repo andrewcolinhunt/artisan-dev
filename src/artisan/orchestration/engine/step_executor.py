@@ -36,6 +36,7 @@ from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
 )
+from artisan.orchestration.engine.dispatch import failure_results_for_units
 from artisan.orchestration.engine.inputs import resolve_inputs
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
@@ -57,7 +58,12 @@ from artisan.schemas.orchestration.step_result import StepResult, StepResultBuil
 from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
 from artisan.utils.hashing import effective_config_payload, serialize_params
-from artisan.utils.path import uri_join, uri_parent
+from artisan.utils.path import (
+    cancel_sentinel_path,
+    shard_uri,
+    uri_join,
+    uri_parent,
+)
 from artisan.utils.process_call import execute_process_call, serialize_process_call
 from artisan.utils.spawn import suppress_main_reimport
 from artisan.utils.timing import phase_timer
@@ -397,24 +403,6 @@ def _build_step_metadata(
     if dispatch_error:
         metadata["dispatch_error"] = dispatch_error
     return metadata
-
-
-def _handle_dispatch_exception(
-    exc: Exception,
-    step_number: int,
-    *,
-    label: str = "Dispatch",
-    unit_count: int = 1,
-) -> tuple[str, list[UnitResult], int, int]:
-    """Handle a generic dispatch exception; returns (error, results, succeeded, failed)."""
-    dispatch_error = f"{type(exc).__name__}: {exc}"
-    logger.error(
-        "%s failed for step %d: %s",
-        label,
-        step_number,
-        dispatch_error,
-    )
-    return dispatch_error, [], 0, unit_count
 
 
 def _verify_staging_if_needed(
@@ -790,8 +778,14 @@ def _execute_curator_step(
             ]
             succeeded, failed = 0, 1
         except Exception as exc:
-            dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
-                exc, step_number
+            dispatch_error, results, succeeded, failed = _record_dispatch_failure(
+                exc,
+                [unit],
+                runtime_env,
+                timestamp_start,
+                user_overrides,
+                step_number=step_number,
+                step_run_id=step_run_id,
             )
 
     # --- verify_staging phase (no-op: curator runs in-process, no NFS delay) ---
@@ -800,6 +794,12 @@ def _execute_curator_step(
 
     # --- cancel check: before commit ---
     if cancel_event is not None and cancel_event.is_set():
+        _discard_cancelled_staging(
+            results,
+            runtime_env,
+            operation.name,
+            step_number,
+        )
         return _cancelled_result(operation, step_number, failure_policy)
 
     commit_error = _commit_and_compact(
@@ -1003,6 +1003,64 @@ def _synthesize_missing_failure_records(
     return patched
 
 
+def _record_dispatch_failure(
+    exc: Exception,
+    units: list[ExecutionUnit],
+    runtime_env: RuntimeEnvironment,
+    timestamp_start: datetime,
+    user_overrides: dict[str, Any] | None,
+    *,
+    step_number: int,
+    step_run_id: str | None,
+) -> tuple[str, list[UnitResult], int, int]:
+    """Create ordered, inspectable failure results for a dispatch exception."""
+    dispatch_error = f"{type(exc).__name__}: {exc}"
+    logger.error(
+        "Dispatch failed for step %d: %s",
+        step_number,
+        dispatch_error,
+    )
+    results = failure_results_for_units(units, dispatch_error)
+    results = _synthesize_missing_failure_records(
+        units,
+        results,
+        runtime_env,
+        timestamp_start,
+        user_overrides,
+        step_run_id=step_run_id,
+    )
+    return dispatch_error, results, 0, len(units)
+
+
+def _discard_cancelled_staging(
+    results: list[UnitResult],
+    runtime_env: RuntimeEnvironment,
+    operation_name: str,
+    step_number: int,
+) -> None:
+    """Best-effort removal of staged records produced by cancelled work."""
+    fs = runtime_env.storage.filesystem()
+    for result in results:
+        for run_id in result.execution_run_ids:
+            if not run_id:
+                continue
+            staging_path = shard_uri(
+                runtime_env.staging_root,
+                run_id,
+                step_number=step_number,
+                operation_name=operation_name,
+            )
+            try:
+                if fs.exists(staging_path):
+                    fs.rm(staging_path, recursive=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to discard cancelled staging for execution %s: %s",
+                    run_id,
+                    exc,
+                )
+
+
 def _execute_creator_step(
     operation: OperationDefinition,
     inputs: Any,
@@ -1172,7 +1230,6 @@ def _execute_creator_step(
     if cancel_event is not None and cancel_event.is_set():
         return _cancelled_result(operation, step_number, failure_policy)
 
-    dispatch_dir = uri_join(config.staging_root, "_dispatch")
     staging_fs = config.storage.filesystem()
     try:
         # --- execute phase ---
@@ -1249,8 +1306,14 @@ def _execute_creator_step(
                     succeeded, failed = 0, len(units_to_dispatch)
                 except Exception as exc:
                     dispatch_error, results, succeeded, failed = (
-                        _handle_dispatch_exception(
-                            exc, step_number, unit_count=len(units_to_dispatch)
+                        _record_dispatch_failure(
+                            exc,
+                            units_to_dispatch,
+                            runtime_env,
+                            timestamp_start,
+                            user_overrides,
+                            step_number=step_number,
+                            step_run_id=step_run_id,
                         )
                     )
 
@@ -1281,6 +1344,12 @@ def _execute_creator_step(
 
         # --- cancel check: before commit ---
         if cancel_event is not None and cancel_event.is_set():
+            _discard_cancelled_staging(
+                results,
+                runtime_env,
+                operation.name,
+                step_number,
+            )
             return _cancelled_result(operation, step_number, failure_policy)
 
         commit_error = _commit_and_compact(
@@ -1293,11 +1362,13 @@ def _execute_creator_step(
             compact=compact,
         )
     finally:
-        try:
-            if staging_fs.exists(dispatch_dir):
-                staging_fs.rm(dispatch_dir, recursive=True)
-        except Exception:
-            pass
+        if step_run_id is not None:
+            sentinel = cancel_sentinel_path(config.staging_root, step_run_id)
+            try:
+                if staging_fs.exists(sentinel):
+                    staging_fs.rm(sentinel)
+            except Exception:
+                pass
 
     _finalize_timings(timings, total_start, step_number, "Creator")
 

@@ -1274,6 +1274,7 @@ class TestDispatchFailureHandling:
         """
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+        from artisan.visualization.inspect import inspect_failures
 
         config = PipelineConfig(
             name="test",
@@ -1286,6 +1287,74 @@ class TestDispatchFailureHandling:
             flow_side_effect=RuntimeError("dispatch machinery exploded"),
         )
 
+        mock_resolve.return_value = {"data": [_ID_S1, _ID_S2]}
+        mock_cache.return_value = None
+
+        result = _execute_creator_step(
+            operation=MockNoGroupByCreatorOp(),
+            inputs={"data": [_ID_S1, _ID_S2]},
+            step_runner=mock_backend,
+            step_number=1,
+            config=config,
+            failure_policy=FailurePolicy.CONTINUE,
+            compact=False,
+        )
+
+        assert result.succeeded_count == 0
+        assert result.failed_count == 2
+        assert "dispatch_error" in result.metadata
+        assert "RuntimeError" in result.metadata["dispatch_error"]
+        assert "dispatch machinery exploded" in result.metadata["dispatch_error"]
+
+        failures = inspect_failures(config.delta_root)
+        assert failures.height == 2
+        assert set(failures["operation"]) == {MockNoGroupByCreatorOp.name}
+        assert all(
+            "dispatch machinery exploded" in error for error in failures["error"]
+        )
+        for failure_log in failures["log"]:
+            assert (tmp_path / "logs" / "failures" / failure_log).exists()
+
+
+class TestCreatorCancellationCleanup:
+    """Cancelled creator work must never survive into staging recovery."""
+
+    @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
+    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
+    def test_cancelled_pending_failure_record_is_discarded(
+        self,
+        mock_resolve,
+        mock_cache,
+        tmp_path,
+    ):
+        """A synthesized pending-future failure is removed before returning."""
+        import threading
+
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        cancel_event = threading.Event()
+        mock_backend, mock_handle = _make_mock_backend()
+
+        def _cancel_with_failure(units, runtime_env, **kwargs):
+            cancel_event.set()
+            return [
+                UnitResult(
+                    success=False,
+                    error="CancelledError: pending work cancelled",
+                    item_count=1,
+                    execution_run_ids=[],
+                )
+                for _ in units
+            ]
+
+        mock_handle.run.side_effect = _cancel_with_failure
         mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
 
@@ -1297,13 +1366,66 @@ class TestDispatchFailureHandling:
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
             compact=False,
+            cancel_event=cancel_event,
+            step_run_id="cancelled-step",
         )
 
-        assert result.succeeded_count == 0
-        assert result.failed_count == 1
-        assert "dispatch_error" in result.metadata
-        assert "RuntimeError" in result.metadata["dispatch_error"]
-        assert "dispatch machinery exploded" in result.metadata["dispatch_error"]
+        assert result.metadata["cancelled"] is True
+        assert not list((tmp_path / "staging").rglob("*.parquet"))
+        assert not (tmp_path / "delta" / "orchestration" / "executions").exists()
+
+    @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
+    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
+    def test_cleanup_removes_only_current_cancel_sentinel(
+        self,
+        mock_resolve,
+        mock_cache,
+        tmp_path,
+    ):
+        """Finishing one step cannot erase another step's cancellation signal."""
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+        from artisan.utils.path import cancel_sentinel_path
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        own_sentinel = cancel_sentinel_path(config.staging_root, "current-step")
+        other_sentinel = cancel_sentinel_path(config.staging_root, "other-step")
+        fs = config.storage.filesystem()
+        fs.makedirs(str(tmp_path / "staging" / "_dispatch"), exist_ok=True)
+        fs.touch(own_sentinel)
+        fs.touch(other_sentinel)
+
+        mock_backend, _ = _make_mock_backend(
+            flow_return_value=[
+                UnitResult(
+                    success=True,
+                    error=None,
+                    item_count=1,
+                    execution_run_ids=[],
+                )
+            ]
+        )
+        mock_resolve.return_value = {"data": [_ID_S1]}
+        mock_cache.return_value = None
+
+        _execute_creator_step(
+            operation=MockNoGroupByCreatorOp(),
+            inputs={"data": [_ID_S1]},
+            step_runner=mock_backend,
+            step_number=1,
+            config=config,
+            failure_policy=FailurePolicy.CONTINUE,
+            compact=False,
+            step_run_id="current-step",
+        )
+
+        assert not fs.exists(own_sentinel)
+        assert fs.exists(other_sentinel)
 
 
 class TestCommitFailureHandling:
