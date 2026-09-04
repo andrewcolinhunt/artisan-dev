@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 
 import pytest
 
@@ -43,4 +44,44 @@ class TestSuppressMainReimport:
             msg = "boom"
             raise ValueError(msg)
 
+        assert main_mod.__file__ == original
+
+    def test_overlapping_contexts_restore_after_last_exit(self) -> None:
+        """One router exiting must not restore while another remains active."""
+        main_mod = sys.modules["__main__"]
+        original = main_mod.__file__
+        first_entered = threading.Event()
+        second_entered = threading.Event()
+        first_exited = threading.Event()
+        observations: list[str | None] = []
+        synchronization_errors: list[str] = []
+
+        def _first_context() -> None:
+            with suppress_main_reimport():
+                first_entered.set()
+                if not second_entered.wait(timeout=2):
+                    synchronization_errors.append("second context did not enter")
+            first_exited.set()
+
+        def _second_context() -> None:
+            if not first_entered.wait(timeout=2):
+                synchronization_errors.append("first context did not enter")
+                return
+            with suppress_main_reimport():
+                second_entered.set()
+                if not first_exited.wait(timeout=2):
+                    synchronization_errors.append("first context did not exit")
+                observations.append(main_mod.__file__)
+
+        first = threading.Thread(target=_first_context)
+        second = threading.Thread(target=_second_context)
+        first.start()
+        second.start()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert synchronization_errors == []
+        assert observations == [None]
         assert main_mod.__file__ == original
