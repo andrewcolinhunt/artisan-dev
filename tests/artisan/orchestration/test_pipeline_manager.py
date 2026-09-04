@@ -999,6 +999,58 @@ class TestCancellation:
         assert result.metadata.get("skipped") is True
         assert result.metadata.get("skip_reason") == "cancelled"
 
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_queued_run_closure_records_terminal_cancelled_state(
+        self,
+        mock_tracker_cls,
+        mock_execute,
+        tmp_path,
+    ):
+        """A recorded running step becomes terminal when cancelled in the queue."""
+        import threading
+
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        def _execute(**kwargs):
+            if kwargs["step_number"] == 0:
+                first_started.set()
+                release_first.wait(timeout=5)
+            return StepResult(
+                step_name="mock_op",
+                step_number=kwargs["step_number"],
+                success=True,
+                total_count=1,
+                succeeded_count=1,
+                failed_count=0,
+                output_roles=frozenset(["output"]),
+                output_types={"output": "data"},
+            )
+
+        mock_execute.side_effect = _execute
+        pipeline = _make_pipeline(tmp_path)
+        first = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="first")
+        assert first_started.wait(timeout=2)
+        queued = pipeline.submit(
+            _MockOp,
+            inputs={"data": ["b" * 32]},
+            name="queued",
+        )
+
+        pipeline.cancel()
+        release_first.set()
+        first.result(timeout=5)
+        result = queued.result(timeout=5)
+
+        assert result.metadata["cancelled"] is True
+        cancelled_record = mock_tracker.record_step_cancelled.call_args.args[0]
+        assert cancelled_record.step_number == 1
+        assert cancelled_record.step_name == "queued"
+
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_finalize_cancel_during_future_wait(self, mock_tracker_cls, tmp_path):
         """finalize() returns cleanly when cancel fires while waiting on futures."""
