@@ -322,6 +322,16 @@ class TestPipelineConfig:
         )
         assert config.pipeline_run_id == "my_run_20260215_120000_abcd1234"
 
+    def test_pipeline_config_rejects_removed_prefect_server(self):
+        """Removed configuration must fail instead of being silently ignored."""
+        with pytest.raises(ValidationError, match="prefect_server"):
+            PipelineConfig(
+                name="test",
+                delta_root="/data/delta",
+                staging_root="/data/staging",
+                prefect_server=False,  # type: ignore[call-arg]
+            )
+
 
 class TestPipelineManager:
     """Tests for PipelineManager class."""
@@ -371,6 +381,18 @@ class TestPipelineManager:
         assert (
             "prefect_server" not in inspect.signature(PipelineManager.resume).parameters
         )
+        assert all(
+            parameter.kind is not inspect.Parameter.VAR_KEYWORD
+            for parameter in inspect.signature(
+                PipelineManager.resume
+            ).parameters.values()
+        )
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            PipelineManager.resume(
+                delta_root="/data/delta",
+                staging_root="/data/staging",
+                prefect_server=False,  # type: ignore[call-arg]
+            )
 
     def test_external_runner_name_requires_runtime_instance(self):
         """Core cannot reconstruct an external runner from persisted text."""

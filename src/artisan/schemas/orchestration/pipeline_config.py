@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tempfile
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.execution.storage_config import StorageConfig
@@ -77,7 +77,7 @@ class PipelineConfig(BaseModel):
         description="Storage configuration.",
     )
 
-    model_config = {"frozen": True}
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     @model_validator(mode="after")
     def _default_files_root(self) -> PipelineConfig:

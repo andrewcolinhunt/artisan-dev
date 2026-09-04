@@ -36,6 +36,7 @@ from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environments import Environments
@@ -1113,7 +1114,15 @@ class PipelineManager:
         name: str | None = None,
         working_root: str | None = None,
         default_step_runner: str | RunnerBase | None = None,
-        **kwargs: Any,
+        files_root: str | None = None,
+        failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
+        cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
+        default_compute_provider: str = "local",
+        preserve_staging: bool = False,
+        preserve_working: bool = False,
+        recover_staging: bool = True,
+        skip_cache: bool = False,
+        storage: StorageConfig | None = None,
     ) -> PipelineManager:
         """Resume a pipeline from persisted step state.
 
@@ -1127,7 +1136,17 @@ class PipelineManager:
             default_step_runner: Runtime default runner. Built-in names can be
                 reconstructed directly; external providers must be supplied as
                 instances when resuming.
-            **kwargs: Additional PipelineConfig options.
+            files_root: Root path for Artisan-managed external files. If None,
+                derives a sibling path from a local delta_root.
+            failure_policy: Default failure handling for subsequent steps.
+            cache_policy: Controls when completed steps qualify as cache hits.
+            default_compute_provider: Default compute provider for subsequent
+                step execution.
+            preserve_staging: Preserve staging files after commit.
+            preserve_working: Preserve worker sandboxes after execution.
+            recover_staging: Commit leftover staging from interrupted runs.
+            skip_cache: Bypass cache lookups for subsequent steps.
+            storage: Filesystem and Delta storage configuration.
 
         Returns:
             PipelineManager with state restored from delta.
@@ -1135,9 +1154,7 @@ class PipelineManager:
         Raises:
             ValueError: If no pipeline run found to resume.
         """
-        from artisan.schemas.execution.storage_config import StorageConfig
-
-        storage = kwargs.get("storage") or StorageConfig()
+        storage = storage or StorageConfig()
         tracker = StepTracker(
             delta_root,
             storage_options=storage.delta_storage_options(),
@@ -1152,13 +1169,21 @@ class PipelineManager:
             raise ValueError(msg)
 
         run_id = pipeline_run_id or completed_steps[0].pipeline_run_id
-        config_kwargs: dict[str, Any] = dict(
-            name=name or _extract_name_from_run_id(run_id),
-            pipeline_run_id=run_id,
-            delta_root=delta_root,
-            staging_root=staging_root,
-            **kwargs,
-        )
+        config_kwargs: dict[str, Any] = {
+            "name": name or _extract_name_from_run_id(run_id),
+            "pipeline_run_id": run_id,
+            "delta_root": delta_root,
+            "staging_root": staging_root,
+            "files_root": files_root,
+            "failure_policy": failure_policy,
+            "cache_policy": cache_policy,
+            "default_compute_provider": default_compute_provider,
+            "preserve_staging": preserve_staging,
+            "preserve_working": preserve_working,
+            "recover_staging": recover_staging,
+            "skip_cache": skip_cache,
+            "storage": storage,
+        }
         runtime_runner: RunnerBase | None = None
         if isinstance(default_step_runner, RunnerBase):
             runtime_runner = default_step_runner
