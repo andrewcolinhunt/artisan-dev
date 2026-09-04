@@ -56,6 +56,11 @@ class TestLocalRunnerTraits:
 
 
 class TestLocalRunnerCreateLifecycleRouter:
+    def test_exposes_configured_default_workers(
+        self, local_runner: LocalRunner
+    ) -> None:
+        assert local_runner.default_max_workers == 2
+
     def test_returns_lifecycle_router(self, local_runner: LocalRunner) -> None:
         handle = local_runner.create_lifecycle_router(
             RunnerResources(), BatchStrategy(), step_number=0, job_name="test_op"

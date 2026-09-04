@@ -18,6 +18,7 @@ pytestmark = pytest.mark.integration
 from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager, list_runs
 from artisan.orchestration.runners import Runner
+from artisan.orchestration.runners.local import LocalRunner
 
 from .conftest import read_table
 
@@ -69,9 +70,102 @@ def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     assert result2.step_name == result1.step_name
     assert result2.success is True
 
-    # Cache hit should NOT add new running/completed rows
+    # A cache hit adds one terminal row for the current run, but no execution.
     steps_df2 = read_table(delta, "orchestration/steps")
-    assert len(steps_df2) == first_run_rows
+    assert len(steps_df2) == first_run_rows + 1
+    cached_rows = steps_df2.filter(
+        pl.col("pipeline_run_id") == p2.config.pipeline_run_id
+    )
+    assert cached_rows.height == 1
+    assert cached_rows.item(0, "status") == "completed"
+    assert cached_rows.item(0, "step_run_id") == result1.step_run_id
+
+
+def test_cache_only_run_can_resume_and_extend(
+    pipeline_env: dict[str, str],
+) -> None:
+    """A cached topology resumes and scopes downstream reads to source outputs."""
+    delta = pipeline_env["delta_root"]
+    staging = pipeline_env["staging_root"]
+    working = pipeline_env["working_root"]
+
+    source = PipelineManager.create(
+        name="test_cache_resume",
+        delta_root=delta,
+        staging_root=staging,
+        working_root=working,
+    )
+    source_result = source.run(
+        DataGenerator,
+        params={"count": 2, "seed": 42},
+    )
+    source.finalize()
+
+    cached = PipelineManager.create(
+        name="test_cache_resume",
+        delta_root=delta,
+        staging_root=staging,
+        working_root=working,
+        default_step_runner=LocalRunner(default_max_workers=2),
+    )
+    cached_result = cached.run(
+        DataGenerator,
+        params={"count": 2, "seed": 42},
+        name="cached_generator",
+    )
+    cached_run_id = cached.config.pipeline_run_id
+    cached.finalize()
+
+    assert cached_result.step_run_id == source_result.step_run_id
+    resumed = PipelineManager.resume(
+        delta_root=delta,
+        staging_root=staging,
+        working_root=working,
+        pipeline_run_id=cached_run_id,
+    )
+    assert resumed.current_step == 1
+    assert len(resumed) == 1
+    assert resumed[0].step_name == "cached_generator"
+    assert resumed[0].output_roles == source_result.output_roles
+    assert resumed[0].total_count == source_result.total_count
+    assert resumed._step_run_ids[0] == source_result.step_run_id
+    assert type(resumed._default_step_runner) is LocalRunner
+    assert resumed._default_step_runner.default_max_workers == 2
+
+    downstream = resumed.run(
+        DataTransformer,
+        inputs={"dataset": resumed.output("cached_generator", "datasets")},
+        params={
+            "scale_factor": 1.5,
+            "noise_amplitude": 0.0,
+            "variants": 1,
+            "seed": 100,
+        },
+    )
+    resumed.finalize()
+    assert downstream.success is True
+    assert downstream.succeeded_count == 2
+
+    mixed = PipelineManager.resume(
+        delta_root=delta,
+        staging_root=staging,
+        working_root=working,
+        pipeline_run_id=cached_run_id,
+    )
+    assert mixed.current_step == 2
+    assert [step.step_name for step in mixed] == [
+        "cached_generator",
+        "data_transformer",
+    ]
+    assert mixed._step_run_ids[0] == source_result.step_run_id
+
+    rows = read_table(delta, "orchestration/steps").filter(
+        pl.col("pipeline_run_id") == cached_run_id
+    )
+    assert rows.filter(pl.col("step_number") == 0).height == 1
+    assert sorted(
+        rows.filter(pl.col("status") == "completed")["step_number"].to_list()
+    ) == [0, 1]
 
 
 # =============================================================================

@@ -271,10 +271,16 @@ class TestResume:
             pl.col("status") == "completed"
         )
         assert set(rows["compute_backend"]) == {"local"}
+        decoded_options = [
+            json.loads(options) for options in rows["compute_options_json"]
+        ]
         assert {
-            json.loads(options)["pipeline_default_step_runner"]
-            for options in rows["compute_options_json"]
+            options["pipeline_default_step_runner"] for options in decoded_options
         } == {"external_test"}
+        assert all(
+            "pipeline_default_local_runner" not in options
+            for options in decoded_options
+        )
 
         with pytest.raises(ValueError, match="initialized provider runner"):
             PipelineManager.resume(
@@ -301,6 +307,91 @@ class TestResume:
                 staging_root=str(staging),
                 pipeline_run_id=p1.config.pipeline_run_id,
                 default_step_runner=LocalRunner(),
+            )
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_reconstructs_configured_local_runner(self, mock_exec, tmp_path):
+        """A built-in local pool size survives an omitted resume argument."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(delta),
+            staging_root=str(staging),
+            default_step_runner=LocalRunner(default_max_workers=9),
+        )
+        pipeline.run(IngestMockOp, inputs=None)
+
+        completed = pl.read_delta(delta / "orchestration" / "steps").filter(
+            pl.col("status") == "completed"
+        )
+        options = json.loads(completed.item(0, "compute_options_json"))
+        assert options["pipeline_default_step_runner"] == "local"
+        assert options["pipeline_default_local_runner"] == {"default_max_workers": 9}
+        assert completed.item(0, "compute_backend") == "local"
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=pipeline.config.pipeline_run_id,
+        )
+
+        assert type(resumed._default_step_runner) is LocalRunner
+        assert resumed._default_step_runner.default_max_workers == 9
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_retains_matching_configured_local_runner(self, mock_exec, tmp_path):
+        """An explicit compatible LocalRunner remains the runtime instance."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(delta),
+            staging_root=str(staging),
+            default_step_runner=LocalRunner(default_max_workers=9),
+        )
+        pipeline.run(IngestMockOp, inputs=None)
+        supplied = LocalRunner(default_max_workers=9)
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=pipeline.config.pipeline_run_id,
+            default_step_runner=supplied,
+        )
+
+        assert resumed._default_step_runner is supplied
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_rejects_incompatible_configured_local_runner(
+        self, mock_exec, tmp_path
+    ):
+        """An explicit LocalRunner must match the persisted pool size."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(delta),
+            staging_root=str(staging),
+            default_step_runner=LocalRunner(default_max_workers=9),
+        )
+        pipeline.run(IngestMockOp, inputs=None)
+
+        with pytest.raises(ValueError, match="does not match persisted"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=pipeline.config.pipeline_run_id,
+                default_step_runner=LocalRunner(default_max_workers=4),
             )
 
     @patch(
