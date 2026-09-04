@@ -39,7 +39,6 @@ dependency change was intended, restore `pixi.lock`. Do not discard it when
 ~/.pixi/bin/pixi run --locked -e dev test-s3
 ~/.pixi/bin/pixi run --locked -e dev test-notebook
 ~/.pixi/bin/pixi run --locked -e dev test-notebook-modal
-~/.pixi/bin/pixi run --locked -e dev test-notebook-slurm
 ~/.pixi/bin/pixi run --locked -e dev test-seq
 ~/.pixi/bin/pixi run --locked -e dev fmt
 ~/.pixi/bin/pixi run --locked -e docs docs-build
@@ -144,9 +143,9 @@ src/artisan/                # Framework (domain-agnostic)
 │   └── examples/           # Example/demo operations (DataGenerator, DataTransformer, MetricCalculator)
 ├── orchestration/          # Pipeline engine, dispatch, step execution
 │   ├── engine/             # Batching, dispatch, step executor/tracker, lifecycle router
-│   ├── runners/            # Compute runners (local, SLURM)
+│   ├── runners/            # Native local runner and public provider contract
 │   ├── pipeline_manager.py # PipelineManager orchestration entry point
-│   ├── prefect_server.py   # Prefect server lifecycle helpers
+│   ├── runner_api.py       # Stable API for external runner providers
 │   ├── run_history.py      # Run-history aggregation reader
 │   └── step_future.py      # Step future handle
 ├── provenance/             # Domain-agnostic provenance traversal (Polars BFS)
@@ -187,7 +186,7 @@ docs/
 │   ├── 04-batching/             # Two-level batching, per-artifact dispatch
 │   ├── 05-errors-and-control/   # Step overrides, error visibility, pipeline cancellation
 │   ├── 06-storage/              # Layout, logging, external files
-│   ├── 07-compute-backends/     # Compute routing, SLURM, Modal
+│   ├── 07-compute-backends/     # Compute routing, external runners, Modal
 │   ├── 08-analysis/             # Provenance graphs, interactive filter, timing
 │   └── 09-writing-operations/   # Writing operations and composites
 ├── concepts/                    # Architecture, design principles, provenance, execution flow
