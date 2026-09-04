@@ -1,18 +1,19 @@
-{% set name = "artisan" %}
-{% set version = "0.1.0" %}
+{% set name = "dexterity-artisan" %}
+{% set version = environ.get("GIT_DESCRIBE_TAG", "v0.0.0").lstrip("v") %}
 
 package:
   name: {{ name|lower }}
   version: {{ version }}
 
 source:
-  url: https://pypi.org/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
-  # sha256 will be filled in after the first PyPI release
-  # sha256: <hash>
+  # Build the checked-out release tag. hatch-vcs derives the Python package
+  # version from the same Git source, so Conda and Python package metadata agree.
+  git_url: ../
 
 build:
   noarch: python
   number: 0
+  skip: {{ (environ.get("GIT_DESCRIBE_NUMBER", 0) | int) != 0 }}
   script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
 
 requirements:
