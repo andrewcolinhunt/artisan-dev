@@ -22,8 +22,8 @@ Pick one. The framework detects the type by which method you override.
 
 | Type | Override | Use when | Runs on |
 |---|---|---|---|
-| **Creator** | `execute()` | Heavy computation, file I/O, external tools | Workers (ThreadPool / SLURM) |
-| **Curator** | `execute_curator()` | Lightweight metadata: filter, merge, ingest, route | Local process |
+| **Creator** | `execute_function()` or `execute_command()` | Heavy computation, file I/O, external tools | Built-in local runner or an external provider instance |
+| **Curator** | `execute_curator()` | Lightweight metadata: filter, merge, ingest, route | Isolated local subprocess |
 
 ---
 
@@ -31,30 +31,31 @@ Pick one. The framework detects the type by which method you override.
 
 Follow this structure exactly. Use the `# ---------- Section ----------` comment
 style. Declare sections in this order: Metadata, Inputs, Outputs, Parameters,
-Resources, Execution, Lifecycle.
+Runner Resources, Batch Strategy, Lifecycle.
 
 ```python
 """One-line module docstring describing what this operation does."""
 
 from __future__ import annotations
 
-from enum import StrEnum, auto
+from enum import StrEnum
+from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
-from artisan.schemas.specs.input_models import (
+from artisan.operations.base import OperationDefinition
+from artisan.schemas import (
+    ArtifactResult,
+    BatchStrategy,
+    DataArtifact,
     ExecuteInput,
+    InputSpec,
+    OutputSpec,
     PostprocessInput,
     PreprocessInput,
+    RunnerResources,
 )
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
 
 
 class MyOperation(OperationDefinition):
@@ -104,11 +105,11 @@ class MyOperation(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    # ---------- Runner Resources ----------
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="my_operation")
+    # ---------- Batch Strategy ----------
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="my_operation")
 
     # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
@@ -118,14 +119,15 @@ class MyOperation(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute(self, inputs: ExecuteInput) -> Any:
+    def execute_function(self, inputs: ExecuteInput) -> Any:
         """Core computation. Read from inputs, write to execute_dir."""
         ...
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build draft artifacts from execution outputs."""
         drafts = []
-        for file_path in inputs.file_outputs:
+        for file_name in inputs.file_outputs:
+            file_path = Path(file_name)
             if file_path.suffix == ".csv":
                 drafts.append(
                     DataArtifact.draft(
@@ -140,6 +142,27 @@ class MyOperation(OperationDefinition):
             artifacts={"dataset": drafts},
         )
 ```
+
+## Runner selection belongs in the pipeline
+
+Operation classes declare provider-neutral `runner_resources` and
+`batch_strategy` defaults. They do not select or register a scheduler runner.
+Pipeline code may send a creator to an optional provider by passing its
+initialized runner instance:
+
+```python
+from artisan_submitit import SlurmRunner
+
+pipeline.run(
+    MyOperation,
+    inputs=...,
+    step_runner=SlurmRunner(slurm_partition="gpu"),
+)
+```
+
+Core accepts `"local"` as its only string runner name. Curators are always
+executed in an isolated local subprocess, even when a pipeline has an external
+default runner; do not add a runner to curator definitions or examples.
 
 ---
 
@@ -257,9 +280,9 @@ supported** — use separate output roles instead.
 
 | Field | Type | Default | Effect |
 |---|---|---|---|
-| `execute_dir` | `Path` | — | Directory for writing output files |
+| `execute_dir` | `str` | — | Directory for writing output files |
 | `inputs` | `dict[str, Any]` | `{}` | Prepared inputs from `preprocess()` |
-| `log_path` | `Path \| None` | `None` | Path for external tool stdout/stderr capture |
+| `log_path` | `str \| None` | `None` | Path for external tool stdout/stderr capture |
 | `metadata` | `dict[str, Any]` | `{}` | Extensibility escape hatch from the engine |
 
 ## PostprocessInput Fields
@@ -267,9 +290,9 @@ supported** — use separate output roles instead.
 | Field | Type | Default | Effect |
 |---|---|---|---|
 | `step_number` | `int` | — | Current pipeline step number (required for `draft()`) |
-| `postprocess_dir` | `Path` | — | Directory for postprocess artifacts (rarely needed) |
-| `file_outputs` | `list[Path]` | `[]` | All files in `execute_dir` after execute completes |
-| `memory_outputs` | `Any` | `None` | Whatever `execute()` returned |
+| `postprocess_dir` | `str` | — | Directory for postprocess artifacts (rarely needed) |
+| `file_outputs` | `list[str]` | `[]` | All files in `execute_dir` after execute completes |
+| `memory_outputs` | `Any` | `None` | Whatever `execute_function()` returned |
 | `input_artifacts` | `dict[str, list[Artifact]]` | `{}` | Full input context with metadata for output naming and lineage |
 | `metadata` | `dict[str, Any]` | `{}` | Extensibility escape hatch from the engine |
 
@@ -285,7 +308,7 @@ that need input context in postprocess (e.g., propagating annotations) use
 - Omit `InputRole`
 - Set `inputs: ClassVar[dict] = {}`
 - Set `infer_lineage_from={"inputs": []}` on all outputs
-- Implement only `execute()` and `postprocess()` (no `preprocess()`)
+- Implement only `execute_function()` and `postprocess()` (no `preprocess()`)
 
 See `src/artisan/operations/examples/data_generator.py`.
 
@@ -315,10 +338,17 @@ See `src/artisan/operations/examples/data_transformer_script.py`.
 
 - Set `tool: ToolSpec = ToolSpec(executable=SCRIPT_PATH, interpreter="python")`
 - Configure `environments: Environments = Environments(local=..., docker=...)`
-- In `execute`, call `run_command(env, [*self.tool.parts(), *args])`
-- Import `from artisan.utils.external_tools import format_args, run_command`
+- For a function op that controls several tool calls, override
+  `execute_function()` and call
+  `run_command(env, [*self.tool.parts(), *args])`
+- For a command op whose execute phase is one framework-managed invocation,
+  override `execute_command(inputs: dict[str, Any]) -> list[str]` and return the
+  argv; the framework executes it
+- Import `format_args` and `run_command` only for the function-op form
 
-See `src/artisan/operations/examples/data_transformer_script.py`.
+See `src/artisan/operations/examples/data_transformer_script.py` for the
+function-op form and `src/artisan/operations/examples/wait_tool.py` for the
+command-op form.
 
 ## Variant: Config Artifacts with $artifact References
 
@@ -347,7 +377,8 @@ See `src/artisan/operations/examples/data_generator_with_metrics.py`.
 The framework validates at class definition time (import). These cause
 `TypeError` immediately:
 
-- Must override either `execute()` or `execute_curator()` (not neither, not both)
+- Must declare exactly one execution slot: `execute_function()`,
+  `execute_command()`, or `execute_curator()`
 - Creator outputs must set `infer_lineage_from` (cannot be `None`)
 - Creator operations with inputs must implement `preprocess()`
 - Must define `OutputRole(StrEnum)` with values matching `outputs` keys exactly
@@ -389,16 +420,17 @@ def test_my_operation(tmp_path):
     input_csv.write_text("id,value\n1,0.9\n2,0.3\n")
 
     execute_dir = tmp_path / "execute"
+    execute_dir.mkdir()
     execute_input = ExecuteInput(
-        execute_dir=execute_dir,
+        execute_dir=str(execute_dir),
         inputs={"dataset": [str(input_csv)]},
     )
-    memory_outputs = op.execute(execute_input)
+    memory_outputs = op.execute_function(execute_input)
 
     post_input = PostprocessInput(
         step_number=0,
-        postprocess_dir=tmp_path / "post",
-        file_outputs=list(execute_dir.iterdir()),
+        postprocess_dir=str(tmp_path / "post"),
+        file_outputs=[str(path) for path in execute_dir.iterdir()],
         memory_outputs=memory_outputs,
     )
     result = op.postprocess(post_input)
@@ -431,8 +463,8 @@ Follow these conventions from the existing examples:
   manually write Input/Output Roles sections (auto-generated by the framework)
 - **Section comments**: Use `# ---------- Section ----------` with exactly 10
   dashes on each side
-- **Section order**: Metadata, Inputs, Outputs, Parameters, Resources, Execution,
-  Lifecycle (omit sections that use defaults)
+- **Section order**: Metadata, Inputs, Outputs, Parameters, Runner Resources,
+  Batch Strategy, Lifecycle (omit sections that use defaults)
 - **Lifecycle docstrings**: One-line imperative summary (e.g. "Extract
   materialized paths from input artifacts.")
 - **name value**: `snake_case` matching the class name's snake_case form
@@ -442,8 +474,8 @@ Follow these conventions from the existing examples:
   `default`, constraints (`ge`, `le`), and `description` for every parameter
 - **No bare constants**: Put algorithm-specific values in `Params`, not as
   module-level constants
-- **execute() is a black box**: It reads files and writes files. No framework
-  imports, no Artifact objects, no ArtifactStore access
+- **execute_function() is a black box**: It reads files and writes files. No
+  framework imports, no Artifact objects, no ArtifactStore access
 - **preprocess() bridges in**: Converts Artifact objects to plain paths/dicts
 - **postprocess() bridges out**: Converts files/memory_outputs to draft Artifacts
 - **Return metadata**: Include operation name and key params in `ArtifactResult.metadata`

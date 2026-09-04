@@ -269,10 +269,11 @@ Two execution modes have their own error containment strategies.
 ### Curator operations in subprocesses
 
 Curator operations run in a spawned subprocess for memory isolation. If the
-subprocess is killed (out-of-memory, SLURM timeout), the framework catches the
-`BrokenProcessPool` exception, generates a synthetic execution run ID, records
-the failure to Delta Lake with the error details, and returns a failed
-`StepResult`. The killed process does not take down the orchestrator.
+subprocess is killed (for example, by the operating system's OOM killer), the
+framework catches the `BrokenProcessPool` exception, generates a synthetic
+execution run ID, records the failure to Delta Lake with the error details, and
+returns a failed `StepResult`. The killed process does not take down the
+orchestrator.
 
 ### Composite operations
 

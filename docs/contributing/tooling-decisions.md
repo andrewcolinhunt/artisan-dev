@@ -64,15 +64,20 @@ submission, polling, ordered result collection, and cancellation for one step.
 - **One data model.** `ExecutionUnit` and `UnitResult` are the boundary for local
   and external providers, so failures, logs, caching, and provenance retain
   Artisan semantics everywhere.
-- **Explicit extensibility.** External packages implement `RunnerBase` and
-  `LifecycleRouter` and are passed as runner instances. Core does not import,
-  register, or deserialize third-party implementations.
+- **Explicit extensibility.** External packages import `RunnerBase`,
+  `LifecycleRouter`, and their transport-neutral helpers from the stable
+  `artisan.orchestration.runner_api` facade, then pass configured runner
+  instances to pipelines. Core does not import, register, or deserialize
+  third-party implementations.
 - **Durable observability.** Step status, execution records, failure logs,
   inspection, and timing data live with the pipeline results.
 
 **The trade-off:** Artisan does not include a live orchestration dashboard,
 scheduled deployments, or a distributed control plane. Those are separate
 concerns from batch execution and can be provided externally when needed.
+
+See [External step-runner providers](coding-conventions.md#external-step-runner-providers)
+for the stable facade and lifecycle contract.
 
 ---
 

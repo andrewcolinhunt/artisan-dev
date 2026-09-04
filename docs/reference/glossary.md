@@ -48,13 +48,13 @@ Registration is automatic at class definition time via `__init_subclass__`.
 ---
 
 (glossary-backend)=
-## Backend
+## Step runner
 
-An execution backend that controls where and how workers run. Artisan core ships
-the `local` process-pool runner. External packages can add backends such as the
-`slurm` and `slurm_intra` runners from `artisan-submitit`. Each backend defines
-`WorkerTraits` (worker-side I/O behavior) and `OrchestratorTraits` (post-dispatch
-behavior on the orchestrator).
+An execution component that controls where and how creator workers run. Artisan
+core ships the `local` process-pool runner. External packages can add runners
+such as `SlurmRunner` and `SlurmIntraRunner` from `artisan-submitit`. Each runner
+defines `WorkerTraits` (worker-side I/O behavior) and `OrchestratorTraits`
+(post-dispatch behavior on the orchestrator).
 
 ---
 
@@ -124,9 +124,10 @@ deduplication and deterministic caching.
 
 An [operation](#glossary-operation) subclass that runs heavy computation
 (external tools, GPU work) through a three-phase lifecycle: `preprocess`,
-`execute`, `postprocess`. Creators produce new artifacts from inputs, run in
-worker processes via a [backend](#glossary-backend), and execute inside an
-isolated [sandbox](#glossary-sandbox) directory. See
+`execute_function` or `execute_command`, and `postprocess`. Creators produce
+new artifacts from inputs, run in worker processes via a
+[step runner](#glossary-backend), and execute inside an isolated
+[sandbox](#glossary-sandbox) directory. See
 [Operations Model](../concepts/operations-model.md).
 
 ---
@@ -136,8 +137,8 @@ isolated [sandbox](#glossary-sandbox) directory. See
 
 A lightweight [operation](#glossary-operation) subclass that routes, filters,
 or merges artifacts without heavy computation. Curators implement a single
-`execute_curator()` method and run in-process on the orchestrator, with no
-worker dispatch or sandboxing. See
+`execute_curator()` method and run in an isolated spawned subprocess on the
+orchestrator, with no external step-runner dispatch or working sandbox. See
 [Operations Model](../concepts/operations-model.md).
 
 ---

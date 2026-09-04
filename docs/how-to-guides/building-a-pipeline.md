@@ -215,11 +215,15 @@ summary = pipeline.finalize()
 block ends:
 
 ```python
-with PipelineManager.create(name="batch", delta_root="runs/delta",
-                            staging_root="runs/staging") as pipeline:
+with PipelineManager.create(
+    name="batch", delta_root="runs/delta", staging_root="runs/staging"
+) as pipeline:
     pipeline.run(operation=DataGenerator, name="generate")
-    pipeline.run(operation=DataTransformer, name="transform",
-                 inputs={"dataset": pipeline.output("generate", "datasets")})
+    pipeline.run(
+        operation=DataTransformer,
+        name="transform",
+        inputs={"dataset": pipeline.output("generate", "datasets")},
+    )
 # __exit__ calls finalize() automatically.
 ```
 
@@ -411,6 +415,23 @@ pipeline = PipelineManager.resume(
 so new steps continue the sequence. Pass `pipeline_run_id="..."` to resume a
 specific run; omit it to resume the most recent. Pass `name="..."` to override
 the pipeline name.
+
+If the pipeline used an external default step runner, create that provider
+again and pass the instance when resuming. Artisan persists the runner's stable
+name for provenance, not the configured Python object:
+
+```python
+from artisan_submitit import SlurmRunner
+
+pipeline = PipelineManager.resume(
+    delta_root="runs/delta",
+    staging_root="runs/staging",
+    default_step_runner=SlurmRunner(slurm_partition="gpu"),
+)
+```
+
+Core can reconstruct the built-in `"local"` runner by name; it does not
+register or reconstruct external providers.
 
 ### List previous runs
 

@@ -251,9 +251,80 @@ internal wiring.
 | A new enum value | `schemas/enums.py` | Add to existing enum class |
 | A new enum type | `schemas/enums.py` | New class in same file |
 | A new execution concern | `execution/<existing_subpackage>/` | File in the sub-package that owns the responsibility |
-| A new orchestration step runner | `orchestration/runners/<name>.py` | Subclass of `RunnerBase` + register in `runners/__init__.py` |
+| A new orchestration step-runner provider | A separate provider package | Import the stable runner facade, subclass `RunnerBase`, and pass instances to pipelines |
 | A shared utility function | `utils/<topic>.py` | New file or add to existing file by topic, add re-export |
 | A helper used by one operation only | `operations/<tool>/utils.py` | Inside the operation's own package |
+
+### External step-runner providers
+
+Core owns the local runner and recognizes only its built-in `"local"` name.
+Scheduler and cloud runners live in separate packages; they are not added to
+`artisan.orchestration.runners` or registered by string in core. Provider
+packages depend on the stable facade rather than Artisan's internal module
+layout:
+
+```python
+from artisan.orchestration.runner_api import (
+    BatchStrategy,
+    ExecutionUnit,
+    LifecycleRouter,
+    OrchestratorTraits,
+    RunnerBase,
+    RunnerResources,
+    RuntimeEnvironment,
+    UnitResult,
+    WorkerTraits,
+    execute_unit,
+    execute_unit_batch,
+    failure_results_for_units,
+    pack_units,
+    validate_batch_results,
+)
+```
+
+A provider defines a `RunnerBase` subclass with a stable `name`, worker and
+orchestrator traits, optional operation validation, and
+`create_lifecycle_router(...)`. Its `LifecycleRouter` implements only the
+provider hooks:
+
+- `_dispatch(units, runtime_env)` raises synchronous precondition failures;
+  after submission it starts asynchronous collection with
+  `_start_background()`;
+- `cancel()` is thread-safe and idempotent, and targets only the exact handles
+  submitted by that router;
+- collection preserves submission order and returns exactly one `UnitResult`
+  for every `ExecutionUnit`.
+
+Use `pack_units()` and `execute_unit_batch()` at the transport boundary.
+Validate each returned batch with `validate_batch_results()` and convert a
+job-level exception with `failure_results_for_units()` so one failed job never
+changes result cardinality. `LifecycleRouter.dispatch()`, `is_done()`,
+`collect()`, and `run()` own the shared state machine and must not be
+reimplemented by providers.
+If submission fails after creating some handles, cancel only those handles and
+still settle one result for every original unit.
+
+Users pass the configured provider object directly:
+
+```python
+from artisan.orchestration import PipelineManager
+from artisan_submitit import SlurmRunner
+
+runner = SlurmRunner(slurm_partition="gpu")
+pipeline = PipelineManager.create(
+    name="training",
+    delta_root="runs/delta",
+    staging_root="runs/staging",
+    default_step_runner=runner,
+)
+pipeline.run(TrainModel, inputs=...)
+```
+
+The persisted pipeline config records `runner.name`, not the provider object.
+Supply an initialized provider instance again as `default_step_runner` when
+resuming a pipeline whose default is external. Curator operations are always
+run in an isolated local subprocess, regardless of the pipeline or step
+runner default.
 
 ## Naming
 
