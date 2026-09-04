@@ -41,6 +41,7 @@ INFRA_NOTEBOOKS = {
 # Currently empty — entries should land here, not be silently broken.
 SKIP_NOTEBOOKS_BROKEN: set[str] = set()
 
+
 def _relative_to_tutorials(item: pytest.Item) -> str | None:
     """Return the item's path relative to docs/tutorials/, or None if outside."""
     fspath = Path(str(item.fspath))
@@ -57,6 +58,7 @@ def pytest_collection_modifyitems(
     items: list[pytest.Item],
 ) -> None:
     """Apply notebook and infrastructure markers and skip broken notebooks."""
+    del config
     skip_broken = pytest.mark.skip(
         reason="Notebook has pre-existing runtime bugs; tracked separately"
     )
