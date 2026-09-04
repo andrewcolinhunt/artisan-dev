@@ -15,7 +15,6 @@ from functools import reduce
 from typing import Any
 
 import httpx
-from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import ValidationError
 
 from artisan.errors import ArtisanError, ErrorCode, ErrorType, RecoveryHint
@@ -34,6 +33,14 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.utils.external_tools import ExternalToolError
+
+_INPUT_RESOLUTION_ERRORS: tuple[type[BaseException], ...] = (ValueError, OSError)
+try:
+    from botocore.exceptions import BotoCoreError  # type: ignore[import-untyped]
+except ModuleNotFoundError:
+    pass
+else:
+    _INPUT_RESOLUTION_ERRORS += (BotoCoreError,)
 
 
 def resolve_op(module: str, qualname: str) -> type[OperationDefinition]:
@@ -108,7 +115,7 @@ def run_tool_request(
         transport = InlineTransport()
         try:
             inputs = transport.unpack_inputs(request.inputs, inputs_dir)
-        except (ValueError, OSError, BotoCoreError, ClientError) as exc:
+        except _INPUT_RESOLUTION_ERRORS as exc:
             # malformed ref; a URI that would not resolve (missing object,
             # denied read — s3fs maps these to FileNotFoundError/
             # PermissionError); or a botocore root s3fs returns untranslated

@@ -23,18 +23,21 @@ requirements:
     - hatch-vcs
   run:
     - python >=3.12
-    - beartype
-    - pydantic >=2
-    - rich
-    - rootutils >=1.0
-    - xxhash
+    - cloudpickle
     - deltalake >=0.14.0
-    - polars >=0.20.0
-    - pandas >=2.2
+    - fsspec
     - graphviz
     - python-graphviz
-    - cloudpickle >=3.0
+    - griffe
+    - httpx
+    - ipython
     - ipywidgets
+    - matplotlib-base
+    - polars >=0.20.0
+    - pydantic >=2
+    - python-dotenv
+    - rich
+    - xxhash
 
 test:
   imports:

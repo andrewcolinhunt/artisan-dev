@@ -19,7 +19,6 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "botocore",
     "cloudpickle",
     "deltalake>=0.14.0",
     "fsspec",
