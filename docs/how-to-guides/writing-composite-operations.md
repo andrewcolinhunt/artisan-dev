@@ -257,12 +257,11 @@ def compose(self, ctx: CompositeContext) -> None:
     ctx.output("metrics", scored.output("metrics"))
 ```
 
-To co-locate a composite's steps in one compute allocation, forward the
-intra-allocation runner: `run_composite(..., step_runner=Runner.SLURM_INTRA)`
-dispatches every child step via `srun` inside the current allocation. See
-[Configure Execution](configuring-execution.md) and the
-[Running Inside a SLURM Allocation](../tutorials/07-compute-backends/03-slurm-intra-execution.ipynb)
-tutorial.
+To co-locate a composite's steps in one compute allocation, install the
+optional `artisan-submitit` package and pass
+`run_composite(..., step_runner=SlurmIntraRunner())`. It dispatches every child
+step via `srun` inside the current allocation. See
+[Configure Execution](configuring-execution.md).
 
 ---
 

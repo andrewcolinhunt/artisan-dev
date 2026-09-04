@@ -19,7 +19,7 @@ is frozen, and how its values reach every worker.
 decided once and covers the settings that must be identical everywhere the
 pipeline executes, grouped by concern:
 
-**Identity.** A human-readable `name` used for logging and Prefect, plus a
+**Identity.** A human-readable `name` used for logging, plus a
 `pipeline_run_id` that tags one run session (see [Where the run id comes
 from](#where-the-run-id-comes-from)).
 
@@ -30,8 +30,8 @@ configuration for local, S3, or GCS. Worker sandboxes use `working_root`, which
 is always local.
 
 **Execution defaults.** The default step runner and compute provider that steps
-inherit unless a step overrides them — for example a local runner versus a
-SLURM or Modal backend.
+inherit unless a step overrides them — for example the local runner, an
+external SLURM runner, or a Modal compute target.
 
 **Policies.** How the pipeline reacts to a failed step (`failure_policy`) and
 when a completed step counts as a cache hit (`cache_policy`).

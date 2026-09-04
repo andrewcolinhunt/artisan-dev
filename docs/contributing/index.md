@@ -6,5 +6,5 @@ Project-level conventions and integration guides for contributors.
   page templates, and cross-linking conventions
 - **[Coding Conventions](coding-conventions.md)** -- Code style, naming,
   testing patterns, and project standards
-- **[Tooling Decisions](tooling-decisions.md)** -- Why Pixi, Prefect,
+- **[Tooling Decisions](tooling-decisions.md)** -- Why Pixi, native runners,
   Delta Lake, and other tool choices

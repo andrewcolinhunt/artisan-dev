@@ -11,8 +11,8 @@ solves, why it was chosen over alternatives, and what trade-offs come with it.
 The project uses [Pixi](https://pixi.sh) as its environment and task manager.
 
 **The problem.** The project depends on both Python packages (from PyPI) and
-non-Python system binaries — PostgreSQL (for Prefect server), Graphviz (`dot`
-binary for provenance graph rendering), and Node.js (for Jupyter Book 2). A
+non-Python system binaries — Graphviz (`dot` binary for provenance graph
+rendering) and Node.js (for Jupyter Book 2). A
 pure-pip approach cannot install these.
 
 **Why Pixi:**
@@ -51,47 +51,37 @@ backend.
 
 ---
 
-## Orchestration dispatch: Prefect
+## Orchestration dispatch: native runners
 
-The framework uses [Prefect](https://www.prefect.io/) as its orchestration
-dispatch layer, not as its workflow engine. Artisan owns pipeline definition,
-step sequencing, caching, and provenance. Prefect handles parallel task dispatch
-and observability.
+Artisan owns its orchestration and dispatch boundary. `PipelineManager` handles
+sequencing, caching, durable status, and commit. A `LifecycleRouter` handles
+submission, polling, ordered result collection, and cancellation for one step.
 
-**Why Prefect:**
+**Why native runners:**
 
-- **Python-native.** No DSL, no YAML. Task dispatch expressed as decorated
-  Python functions. Dependencies flow through normal Python variables.
-- **TaskRunner extensibility.** The `TaskRunner` interface provides a clean
-  extension point for compute backends. The project ships three backends: a
-  `ProcessPoolTaskRunner` for local execution, a `SlurmTaskRunner` (via
-  `prefect-submitit`) for HPC cluster job arrays, and the same
-  `SlurmTaskRunner` in srun mode for intra-allocation dispatch. Additional
-  backends (Kubernetes, cloud) can be added by implementing the same interface.
-- **Thin dispatch layer.** Prefect handles task dispatch and provides a UI for
-  run observability, but does not own the data model. All artifacts, provenance,
-  and pipeline state live in Delta Lake. The framework is not locked to Prefect —
-  replacing it would mean swapping the dispatch layer, not rewriting the
-  application.
+- **No control-plane service.** Local pipelines run through Python's
+  `ProcessPoolExecutor` without a server, database, or network dependency.
+- **One data model.** `ExecutionUnit` and `UnitResult` are the boundary for local
+  and external providers, so failures, logs, caching, and provenance retain
+  Artisan semantics everywhere.
+- **Explicit extensibility.** External packages implement `RunnerBase` and
+  `LifecycleRouter` and are passed as runner instances. Core does not import,
+  register, or deserialize third-party implementations.
+- **Durable observability.** Step status, execution records, failure logs,
+  inspection, and timing data live with the pipeline results.
 
-**The trade-off:** Prefect requires a server process for SLURM execution
-(workers need a coordination point). The project manages this via
-`prefect-start` and `prefect-stop` pixi tasks. For local-only execution, the server is not
-required.
-
-**See:** [How Artisan Uses
-Prefect](../reference/comparison-to-alternatives.md#comparison-prefect-relationship)
-for the dispatch architecture diagram.
+**The trade-off:** Artisan does not include a live orchestration dashboard,
+scheduled deployments, or a distributed control plane. Those are separate
+concerns from batch execution and can be provided externally when needed.
 
 ---
 
-## SLURM integration: submitit and prefect-submitit
+## SLURM integration: optional artisan-submitit
 
-HPC cluster execution uses
-[submitit](https://github.com/facebookincubator/submitit) (Meta's SLURM job
-submission library) through the
-[prefect-submitit](https://github.com/dexterity-systems/prefect-submitit)
-bridge.
+HPC cluster execution is supplied by the separate `artisan-submitit` runner
+provider. It uses [Submitit](https://github.com/facebookincubator/submitit)
+(Meta's SLURM job submission library) without making Submitit a core Artisan
+dependency.
 
 **Why submitit:**
 
@@ -101,13 +91,13 @@ bridge.
 - **Job arrays.** Batch many execution units into a single SLURM job array,
   reducing scheduler overhead.
 
-**Why prefect-submitit:**
+**Why a separate provider:**
 
-- **Bridges Prefect and SLURM.** Implements Prefect's `TaskRunner` interface
-  using submitit, so the same dispatch code path works for both local and SLURM
-  execution.
-- **Server discovery.** Manages Prefect server connection for remote SLURM
-  workers that need to communicate results back to the orchestrator.
+- **Clean core.** Local users do not install scheduler-specific packages.
+- **Native contract.** The provider implements Artisan's runner API directly
+  and executes the same unit batches as the local runner.
+- **Scheduler ownership.** SLURM parameters, array chunking, job logs, exact
+  cancellation, and the Docker test cluster evolve with the provider.
 
 ---
 

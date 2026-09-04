@@ -19,8 +19,8 @@ Computational pipelines on HPC clusters face a specific set of storage
 challenges that general-purpose solutions handle poorly:
 
 **Concurrent writes from many workers.** A pipeline step may dispatch thousands
-of SLURM jobs. If each worker writes directly to shared state, write conflicts
-and partial corruption are inevitable.
+of local processes or provider jobs. If each worker writes directly to shared
+state, write conflicts and partial corruption are inevitable.
 
 **No database services.** HPC clusters provide shared filesystems, not managed
 database instances. A storage solution that requires PostgreSQL, Redis, or any
@@ -252,14 +252,14 @@ these checks.
 
 ## NFS consistency
 
-When workers run on SLURM cluster nodes and the staging directory lives on a
-shared NFS filesystem, a write-then-read race condition exists: a worker writes
+When provider workers run on cluster nodes and the staging directory lives on
+a shared NFS filesystem, a write-then-read race condition exists: a worker writes
 a file, but the orchestrator (running on a different node) may not see it
 immediately due to NFS caching.
 
 The framework handles this with a three-part strategy:
 
-**Writer-side fsync.** After writing all staging files, SLURM workers call
+**Writer-side fsync.** After writing all staging files, shared-filesystem workers call
 `fsync()` on each file and its containing directory. This forces the NFS client
 to flush data to the server. The fsync is conditional — it runs only when the
 execution is on a shared filesystem, avoiding unnecessary I/O overhead for

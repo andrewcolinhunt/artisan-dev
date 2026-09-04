@@ -61,15 +61,15 @@ pipeline = PipelineManager.create(
 | `working_root` | `str \| None` | `tempfile.gettempdir()` | Worker sandbox directory. Defaults to `$TMPDIR` |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | How to handle step failures (`CONTINUE` or `FAIL_FAST`) |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When completed steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
-| `default_step_runner` | `str \| RunnerBase` | `"local"` | Default step runner. Accepts an instance or string name (`"local"`, `"slurm"`, `"slurm_intra"`) |
+| `default_step_runner` | `str \| RunnerBase` | `"local"` | Default step runner. Core accepts `"local"`; optional providers are passed as runner instances |
 | `default_compute_provider` | `str` | `"local"` | Default compute provider for execute-phase routing (`"local"` or `"modal"`) |
 | `preserve_staging` | `bool` | `False` | Keep staging files after commit (debugging) |
 | `preserve_working` | `bool` | `False` | Keep worker sandboxes after execution (debugging) |
 | `recover_staging` | `bool` | `True` | Commit leftover staging files from prior crashed runs at init |
 
 Both `delta_root` and `staging_root` are created automatically if they do not
-exist. For production SLURM runs, omit `working_root` — the default uses
-node-local scratch, which avoids shared filesystem contention.
+exist. Cluster runner providers can map the default `working_root` to
+node-local scratch to avoid shared filesystem contention.
 
 ---
 
@@ -375,18 +375,19 @@ Composite-level execution overrides (`step_runner`, `runner_resources`,
 guide on writing composites, see
 [Writing Composite Operations](writing-composite-operations.md).
 
-### SLURM execution
+### Optional SLURM execution
 
-Dispatch a step to SLURM:
+Install `artisan-submitit`, then pass its runner instance to dispatch a step to
+SLURM:
 
 ```python
-from artisan.orchestration import Runner
+from artisan_submitit import SlurmRunner
 
 pipeline.run(
     operation=DataTransformer,
     name="transform",
     inputs={"dataset": output("generate", "datasets")},
-    step_runner=Runner.SLURM,
+    step_runner=SlurmRunner(),
     runner_resources={"gpus": 1, "memory_gb": 16, "extra": {"partition": "gpu"}},
 )
 ```

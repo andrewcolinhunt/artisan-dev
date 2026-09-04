@@ -30,8 +30,9 @@ outputs, implement three methods, and the framework handles the rest.
 automatically. Same content, same identity. Every result traces back to the
 inputs and parameters that produced it.
 
-**Scale-invariant** — The same pipeline code runs on a laptop or an HPC
-cluster. Switch from local to SLURM execution with a single parameter.
+**Scale-invariant** — The same operation code runs on a laptop or an HPC
+cluster. Core includes local process execution; optional runner packages add
+cluster backends without changing operation implementations.
 
 **Queryable** — Artifacts, metrics, and provenance live in a single store,
 accessible as dataframes. No log parsing, no directory archaeology.
@@ -56,7 +57,7 @@ pixi install --locked
 pixi run --locked python -c "import artisan; print('Artisan installed successfully')"
 ```
 
-→ **[Getting Started guide](docs/getting-started/index.md)** for detailed setup, Prefect setup,
+→ **[Getting Started guide](docs/getting-started/index.md)** for detailed setup,
 your first pipeline, and the mental model behind the framework.
 
 ---
@@ -102,12 +103,6 @@ pipeline.run(
 
 result = pipeline.finalize()
 ```
-
-:::{note}
-This example requires a running Prefect server. See the
-[Getting Started guide](docs/getting-started/installation.md#start-the-prefect-server)
-for setup instructions.
-:::
 
 ## Development Setup
 

@@ -131,8 +131,8 @@ artifacts produced.
 
 A frozen record the dispatch layer produces from each `StagingResult`. It
 captures whether the unit succeeded, the error message when it did not, how
-many items it processed, and the execution run IDs to commit. On SLURM backends
-it also carries the captured worker log, so stderr from a killed job survives
+many items it processed, and the execution run IDs to commit. Runner providers
+can also attach a captured worker log, so stderr from a killed job survives
 back to the orchestrator. The step executor reads these records to tally
 successes and failures and to collect run IDs for the commit.
 
@@ -169,8 +169,8 @@ in `dispatch_error` and `commit_error` columns.
 Beyond the structured records in Delta Lake, the framework writes
 human-readable failure log files for each failed execution. These logs include
 the execution run ID, operation name, step number, compute backend, timestamp,
-and full error traceback. When running on SLURM, worker stderr is appended
-to the log after job completion. These files provide a quick diagnostic path
+and full error traceback. When a runner provider captures worker output, it is
+appended to the log after job completion. These files provide a quick diagnostic path
 without needing to query Delta Lake.
 
 ### The double-fault handler

@@ -134,9 +134,9 @@ objects -- the sealed packages that travel to workers.
 unit processes. An ML inference operation might set this to 1 (one structure per
 GPU job). A metrics calculation might set it to 100 (batch for efficiency).
 
-**Level 2 batching** (`units_per_worker`) controls how many units a single SLURM
-job processes. This adapts to cluster characteristics without changing the
-operation.
+**Level 2 batching** (`units_per_worker`) controls how many units one worker
+processes sequentially. Core applies this policy before dispatch, so local and
+external runners use identical packing semantics.
 
 Each `ExecutionUnit` carries the fully configured operation instance (not a class
 reference), the batch of artifact IDs, the cache key, the step number, and any
@@ -312,11 +312,11 @@ merges small Parquet files into larger ones for better read performance.
 
 ### Worker log capture
 
-For SLURM step runners, worker stdout/stderr is captured after dispatch completes
-and patched into the `executions.parquet` staging files before commit. Failed
-executions also get human-readable log files written to a per-step directory
-under `logs/failures/`. This happens on a best-effort basis -- missing logs
-never block the commit.
+Runner providers can attach worker stdout/stderr to each `UnitResult` before
+collection completes. Artisan then patches those logs into the
+`executions.parquet` staging files before commit. Failed executions also get
+human-readable log files written to a per-step directory under `logs/failures/`.
+This happens on a best-effort basis -- missing logs never block the commit.
 
 ---
 
@@ -409,12 +409,11 @@ initializer), so only the orchestrator handles the signal. In Jupyter
 notebooks, signal handlers are not installed -- use `pipeline.cancel()`
 directly.
 
-### SLURM cancellation
+### Provider cancellation
 
-On SLURM, the dispatch handle calls `scancel --name` automatically when
-cancellation is triggered, killing in-flight jobs by their SLURM job name.
-This works even before job IDs are returned, because the job name is set
-at submission time. No manual `scancel` is needed.
+Each lifecycle router owns the exact futures, jobs, or processes it submits.
+Cancellation targets those handles only. The optional Submitit provider cancels
+its submitted job IDs rather than issuing a broad name-based scheduler query.
 
 ### Cache interaction
 
@@ -453,6 +452,6 @@ re-executes cancelled steps while completed steps load from cache.
 - [Glossary](../reference/glossary.md) -- Definitions for the terms used
   throughout this page
 - [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) -- See the execution flow in action
-- [SLURM Execution Tutorial](../tutorials/07-compute-backends/02-slurm-execution.ipynb) -- Run operations on a SLURM cluster
+- `artisan-submitit` documentation -- Run operations on a SLURM cluster
 - [Pipeline Cancellation Tutorial](../tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb) -- Cooperative cancellation in action
 - [Compute Routing Tutorial](../tutorials/07-compute-backends/01-compute-routing.ipynb) -- Route the execute phase to local or remote compute targets

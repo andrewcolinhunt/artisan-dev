@@ -171,16 +171,13 @@ every step-level subsystem — caching, provenance, cancellation — to grow
 a parallel path for the grouped case. Keeping them separate lets each
 concern be solved once, in the layer that owns it.
 
-The runner layer answers placement directly. The intra-allocation runner
-(`Runner.SLURM_INTRA`) dispatches each step via `srun` inside an existing
-allocation — for *every* step, whether or not it is wrapped in a
-composite. Because composite-level overrides are step defaults, setting
-`step_runner=Runner.SLURM_INTRA` on the composite forwards it to every
-child step, giving you one-allocation execution without a second
-execution model.
-
-See [Running Inside a SLURM Allocation](../tutorials/07-compute-backends/03-slurm-intra-execution.ipynb)
-for the placement story in practice.
+The runner layer answers placement directly. The optional
+`artisan-submitit` package's `SlurmIntraRunner` dispatches each step via
+`srun` inside an existing allocation — for *every* step, whether or not it is
+wrapped in a composite. Because composite-level overrides are step defaults,
+passing `step_runner=SlurmIntraRunner()` to the composite forwards it to every
+child step, giving you one-allocation execution without a second execution
+model.
 
 ---
 
@@ -255,7 +252,5 @@ pipeline DAG.
   composites compose
 - [Execution Flow](execution-flow.md) — how a composite's steps fit into the
   dispatch-execute-commit lifecycle
-- [Running Inside a SLURM Allocation](../tutorials/07-compute-backends/03-slurm-intra-execution.ipynb) —
-  co-locating a composite's steps in one allocation
 - [Architecture Overview](architecture-overview.md) — where composites sit in
   the five-layer architecture

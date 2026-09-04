@@ -378,12 +378,12 @@ execution context fails, a bare `StagingResult` is returned.
 
 ### The dispatch catch pattern
 
-The dispatch layer wraps each worker call so the Prefect task never raises.
-It also routes between creator and curator executors:
+The dispatch layer wraps each worker call so an ordinary operation failure
+becomes a `UnitResult` instead of escaping the worker. It also routes between
+creator and curator executors:
 
 ```python
-@task
-def execute_unit_task(unit, runtime_env):
+def execute_unit(unit, runtime_env):
     try:
         if is_curator_operation(unit.operation):
             result = run_curator_flow(unit, runtime_env, worker_id=...)
