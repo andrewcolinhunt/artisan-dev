@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
-from botocore.exceptions import EndpointConnectionError, NoCredentialsError
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
 
 from artisan.execution.tool_endpoint import server as server_mod
 from artisan.execution.tool_endpoint import transport as transport_mod
@@ -347,14 +347,18 @@ class TestRunToolRequest:
         [
             NoCredentialsError(),
             EndpointConnectionError(endpoint_url="https://typo.example"),
+            ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+                "GetObject",
+            ),
         ],
-        ids=["no_credentials", "bad_endpoint"],
+        ids=["no_credentials", "bad_endpoint", "service_error"],
     )
     def test_botocore_root_fetch_failure_returns_envelope(self, monkeypatch, exc):
-        # The load-bearing guard-tuple regression: the two R2-shaped
-        # misconfigurations raise botocore roots s3fs returns untranslated
-        # (NoCredentialsError, EndpointConnectionError — both BotoCoreError,
-        # neither an OSError). They must land on INPUT_RESOLUTION_FAILED,
+        # The load-bearing guard-tuple regression: these S3-shaped
+        # failures raise botocore exceptions s3fs returns untranslated
+        # (NoCredentialsError, EndpointConnectionError, and ClientError —
+        # none an OSError). They must land on INPUT_RESOLUTION_FAILED,
         # NOT escape as a worker crash → OP_EXECUTE_FAILED. This test fails
         # under the draft's (ValueError, OSError, RuntimeError) tuple.
         def boom(self, refs, dest, fs=None):

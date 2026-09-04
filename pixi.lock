@@ -4644,10 +4644,10 @@ packages:
   requires_python: '>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*'
 - pypi: ./
   name: dexterity-artisan
-  version: 0.1.2a6.dev553+g802c44d9e.d20260904
-  sha256: ec667e6e66a819ed87f931742866626ecdae7f79992aed8654e3a6c6a7d4c12e
+  version: 0.1.2a6.dev558+g13bff083a.d20260904
+  sha256: 38a789380f8cacd7fc062c6c71be5134b623b96d8b3abaf9756a81dbe6206e8a
   requires_dist:
-  - cloudpickle
+  - cloudpickle>=3,<4
   - deltalake>=0.14.0
   - fsspec
   - graphviz
@@ -4666,6 +4666,7 @@ packages:
   - pydantic-settings ; extra == 'mcp'
   - typer ; extra == 'mcp'
   - modal ; extra == 'modal'
+  - botocore ; extra == 's3'
   - s3fs ; extra == 's3'
   requires_python: '>=3.12'
 - conda: https://conda.anaconda.org/conda-forge/noarch/distlib-0.4.0-pyhd8ed1ab_0.conda
