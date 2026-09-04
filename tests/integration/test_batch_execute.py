@@ -85,7 +85,7 @@ def test_split_lifecycle_matches_monolithic(pipeline_env):
 
 
 def test_pipeline_with_batched_transform(pipeline_env):
-    """Full pipeline with batched transform step runs correctly."""
+    """Local level-two packing preserves every transformed unit."""
     pipeline = PipelineManager.create(
         name="batched_pipeline",
         delta_root=pipeline_env["delta_root"],
@@ -105,6 +105,7 @@ def test_pipeline_with_batched_transform(pipeline_env):
         name="transform",
         inputs={"dataset": output("generate", "datasets")},
         params={"scale_factor": 0.5, "variants": 1},
+        batch_strategy={"artifacts_per_unit": 1, "units_per_worker": 2},
     )
 
     result = pipeline.finalize()
