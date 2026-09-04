@@ -6,9 +6,10 @@ import logging
 import os
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.utils.path import shard_uri
+from artisan.utils.path import shard_uri, uri_join
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,8 @@ def persist_worker_logs(
     failure_logs_root: str | None,
     operation_name: str,
     step_number: int,
+    *,
+    fs: AbstractFileSystem,
 ) -> None:
     """Write provider logs into staged records and failure logs.
 
@@ -28,6 +31,7 @@ def persist_worker_logs(
         failure_logs_root: Directory containing human-readable failure logs.
         operation_name: Operation name used in the staging path.
         step_number: Pipeline step number used in the staging path.
+        fs: Configured filesystem containing staged records.
     """
     for result in results:
         if not result.worker_log:
@@ -39,9 +43,10 @@ def persist_worker_logs(
                 operation_name,
                 step_number,
                 result.worker_log,
+                fs=fs,
             )
             if not result.success and failure_logs_root:
-                _append_worker_stderr(
+                _append_worker_log(
                     failure_logs_root,
                     run_id,
                     result.worker_log,
@@ -54,6 +59,8 @@ def _patch_staged_record(
     operation_name: str,
     step_number: int,
     worker_log: str,
+    *,
+    fs: AbstractFileSystem,
 ) -> None:
     """Patch one staged execution record, best-effort."""
     try:
@@ -62,17 +69,20 @@ def _patch_staged_record(
             execution_run_id,
             step_number,
             operation_name,
+            fs=fs,
         )
         if staging_dir is None:
             return
-        parquet_path = os.path.join(staging_dir, "executions.parquet")
-        if not os.path.exists(parquet_path):
+        parquet_path = uri_join(staging_dir, "executions.parquet")
+        if not fs.exists(parquet_path):
             return
-        frame = pl.read_parquet(parquet_path)
-        frame.with_columns(pl.lit(worker_log).alias("worker_log")).write_parquet(
-            parquet_path,
-            compression="zstd",
-        )
+        with fs.open(parquet_path, "rb") as file:
+            frame = pl.read_parquet(file)
+        with fs.open(parquet_path, "wb") as file:
+            frame.with_columns(pl.lit(worker_log).alias("worker_log")).write_parquet(
+                file,
+                compression="zstd",
+            )
     except Exception:
         logger.debug(
             "Failed to persist worker_log for %s",
@@ -81,21 +91,13 @@ def _patch_staged_record(
         )
 
 
-def _append_worker_stderr(
+def _append_worker_log(
     failure_logs_root: str,
     execution_run_id: str,
     worker_log: str,
 ) -> None:
-    """Append captured stderr to an existing failure log, best-effort."""
+    """Append opaque provider output to an existing failure log, best-effort."""
     try:
-        stderr_marker = "--- stderr ---\n"
-        marker_index = worker_log.find(stderr_marker)
-        if marker_index < 0:
-            return
-        stderr = worker_log[marker_index + len(stderr_marker) :]
-        if not stderr:
-            return
-
         for entry in os.listdir(failure_logs_root):
             step_dir = os.path.join(failure_logs_root, entry)
             if not os.path.isdir(step_dir):
@@ -103,11 +105,11 @@ def _append_worker_stderr(
             log_path = os.path.join(step_dir, f"{execution_run_id}.log")
             if os.path.exists(log_path):
                 with open(log_path, "a") as file:
-                    file.write(f"\n\n=== Worker Stderr ===\n{stderr}")
+                    file.write(f"\n\n=== Worker Log ===\n{worker_log}")
                 return
     except Exception:
         logger.debug(
-            "Failed to append worker stderr to failure log for %s",
+            "Failed to append worker log to failure log for %s",
             execution_run_id,
             exc_info=True,
         )
@@ -118,6 +120,8 @@ def _find_staging_dir(
     execution_run_id: str,
     step_number: int,
     operation_name: str,
+    *,
+    fs: AbstractFileSystem,
 ) -> str | None:
     """Return the sharded staging directory when it exists."""
     candidate = shard_uri(
@@ -126,4 +130,4 @@ def _find_staging_dir(
         step_number=step_number,
         operation_name=operation_name,
     )
-    return candidate if os.path.isdir(candidate) else None
+    return candidate if fs.isdir(candidate) else None

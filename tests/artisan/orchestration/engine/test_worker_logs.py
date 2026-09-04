@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
+import fsspec
 import polars as pl
 
 from artisan.orchestration.engine.worker_logs import (
@@ -34,12 +36,34 @@ class TestPersistWorkerLogs:
         )
         results = [_result(execution_run_ids=[run_id], worker_log="worker output")]
 
-        persist_worker_logs(results, str(tmp_path), None, "op", 1)
+        fs = fsspec.filesystem("file")
+        persist_worker_logs(results, str(tmp_path), None, "op", 1, fs=fs)
 
         frame = pl.read_parquet(parquet_path)
         assert frame["worker_log"][0] == "worker output"
 
-    def test_appends_stderr_to_existing_failure_log(self, tmp_path: Path) -> None:
+    def test_patches_record_on_configured_memory_filesystem(self) -> None:
+        fs = fsspec.filesystem("memory")
+        run_id = "abcdef123456"
+        staging_root = f"memory://worker-logs-{uuid4().hex}"
+        staging_dir = f"{staging_root}/1_op/ab/cd/{run_id}"
+        parquet_path = f"{staging_dir}/executions.parquet"
+        fs.makedirs(staging_dir, exist_ok=True)
+        with fs.open(parquet_path, "wb") as file:
+            pl.DataFrame(
+                {"execution_run_id": [run_id], "success": [True]}
+            ).write_parquet(file)
+        results = [_result(execution_run_ids=[run_id], worker_log="worker output")]
+
+        persist_worker_logs(results, staging_root, None, "op", 1, fs=fs)
+
+        with fs.open(parquet_path, "rb") as file:
+            frame = pl.read_parquet(file)
+        assert frame["worker_log"][0] == "worker output"
+
+    def test_appends_opaque_worker_log_to_existing_failure_log(
+        self, tmp_path: Path
+    ) -> None:
         run_id = "abcdef123456"
         staging_dir = tmp_path / "staging" / "1_op" / "ab" / "cd" / run_id
         staging_dir.mkdir(parents=True)
@@ -55,7 +79,7 @@ class TestPersistWorkerLogs:
                 success=False,
                 error="failed",
                 execution_run_ids=[run_id],
-                worker_log="stdout\n--- stderr ---\ncontainer failed",
+                worker_log="provider output without structured separators",
             )
         ]
 
@@ -65,9 +89,13 @@ class TestPersistWorkerLogs:
             str(tmp_path / "failures"),
             "op",
             1,
+            fs=fsspec.filesystem("file"),
         )
 
-        assert "=== Worker Stderr ===\ncontainer failed" in failure_log.read_text()
+        assert (
+            "=== Worker Log ===\nprovider output without structured separators"
+            in failure_log.read_text()
+        )
 
     def test_missing_staged_record_is_ignored(self, tmp_path: Path) -> None:
         results = [
@@ -77,10 +105,24 @@ class TestPersistWorkerLogs:
             )
         ]
 
-        persist_worker_logs(results, str(tmp_path), None, "op", 1)
+        persist_worker_logs(
+            results,
+            str(tmp_path),
+            None,
+            "op",
+            1,
+            fs=fsspec.filesystem("file"),
+        )
 
     def test_result_without_worker_log_is_ignored(self, tmp_path: Path) -> None:
-        persist_worker_logs([_result()], str(tmp_path), None, "op", 1)
+        persist_worker_logs(
+            [_result()],
+            str(tmp_path),
+            None,
+            "op",
+            1,
+            fs=fsspec.filesystem("file"),
+        )
 
 
 class TestFindStagingDir:
@@ -89,7 +131,22 @@ class TestFindStagingDir:
         staging_dir = tmp_path / "1_op" / "ab" / "cd" / run_id
         staging_dir.mkdir(parents=True)
 
-        assert _find_staging_dir(str(tmp_path), run_id, 1, "op") == str(staging_dir)
+        assert _find_staging_dir(
+            str(tmp_path),
+            run_id,
+            1,
+            "op",
+            fs=fsspec.filesystem("file"),
+        ) == str(staging_dir)
 
     def test_returns_none_when_directory_is_missing(self, tmp_path: Path) -> None:
-        assert _find_staging_dir(str(tmp_path), "nonexistent", 1, "op") is None
+        assert (
+            _find_staging_dir(
+                str(tmp_path),
+                "nonexistent",
+                1,
+                "op",
+                fs=fsspec.filesystem("file"),
+            )
+            is None
+        )
