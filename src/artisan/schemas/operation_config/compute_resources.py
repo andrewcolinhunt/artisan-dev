@@ -1,10 +1,10 @@
 """Hardware resources requested from a compute provider (e.g. Modal).
 
-Distinct from ``RunnerResources`` — runner resources govern the SLURM
-job / local process; compute resources govern the per-call container
-allocation when ``compute_provider`` routes the execute phase to a remote
-provider. Modal's API translates these directly into ``modal.App.function``
-arguments. ``None`` defers to the provider default.
+Distinct from ``RunnerResources`` — runner resources govern worker dispatch;
+compute resources govern the per-call container allocation when
+``compute_provider`` routes the execute phase to a remote provider. Modal's API
+translates these directly into ``modal.App.function`` arguments. ``None``
+defers to the provider default.
 """
 
 from __future__ import annotations

@@ -43,12 +43,12 @@ EXECUTIONS_SCHEMA = {
         "us", "UTC"
     ),  # Execution end (microseconds, UTC); nullable
     "source_worker": pl.Int32,  # Worker ID
-    "compute_backend": pl.String,  # local or slurm
+    "compute_backend": pl.String,  # Stable runner/provider name
     "success": pl.Boolean,  # Whether execution succeeded (row-level)
     "error": pl.String,  # Error message if failed (row-level)
     "error_envelope": pl.String,  # JSON - structured ArtisanError envelope (nullable)
     "tool_output": pl.String,  # Captured stdout+stderr from external command
-    "worker_log": pl.String,  # SLURM job or worker stdout+stderr
+    "worker_log": pl.String,  # Provider-captured worker stdout+stderr
     "metadata": pl.String,  # JSON - additional data
 }
 

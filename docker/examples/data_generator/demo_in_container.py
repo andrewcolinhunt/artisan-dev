@@ -1,4 +1,4 @@
-"""Validate execute_unit_task runs correctly inside a Docker container.
+"""Validate native unit execution inside a Docker container.
 
 Constructs execution objects directly (bypassing the orchestrator),
 mirroring what a cloud dispatch handle does when calling workers.
@@ -9,13 +9,9 @@ from __future__ import annotations
 import os
 import sys
 
-# Trigger PREFECT_LOGGING_LEVEL=CRITICAL setdefault before Prefect imports.
-# Belt-and-suspenders: the Dockerfile ENV already sets this, but importing
-# the orchestration package ensures it even when run outside Docker.
-import artisan.orchestration  # noqa: F401  # isort: skip
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.examples import DataGenerator
-from artisan.orchestration.engine.dispatch import execute_unit_task
+from artisan.orchestration.engine.dispatch import execute_unit
 from artisan.schemas.execution import RuntimeEnvironment
 
 DEMO_ROOT = "/tmp/artisan-demo"
@@ -32,8 +28,8 @@ def main() -> None:
         working_root=os.path.join(DEMO_ROOT, "working"),
     )
 
-    print("--- execute_unit_task ---")
-    result = execute_unit_task(unit, runtime_env)
+    print("--- execute_unit ---")
+    result = execute_unit(unit, runtime_env)
 
     print(f"success:           {result.success}")
     print(f"error:             {result.error}")

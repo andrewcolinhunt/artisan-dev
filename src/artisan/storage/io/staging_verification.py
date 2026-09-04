@@ -1,7 +1,7 @@
 """NFS-aware staging file verification.
 
 On distributed filesystems (NFS) the orchestrator may not immediately see
-files written by SLURM workers due to directory attribute caching. This
+files written by remote workers due to directory attribute caching. This
 module forces cache invalidation and uses ``open()``-based close-to-open
 consistency checks to confirm staging files are visible before commit.
 """
@@ -209,6 +209,6 @@ def _raise_timeout_error(
         f"Staging files not visible after {timeout_seconds}s.\n"
         f"Missing {len(missing)}/{total_count} execution_run_ids:\n"
         f"{details_str}\n"
-        f"Check SLURM worker logs for these executions."
+        "Check provider worker logs for these executions."
     )
     raise TimeoutError(msg)

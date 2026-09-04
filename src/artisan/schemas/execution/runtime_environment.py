@@ -90,7 +90,7 @@ class RuntimeEnvironment(BaseModel):
     # Backend traits (flattened from WorkerTraits for serialization)
     worker_id_env_var: str | None = Field(
         None,
-        description="Environment variable for worker ID (e.g. SLURM_ARRAY_TASK_ID).",
+        description="Provider-defined environment variable containing a worker ID.",
     )
     shared_filesystem: bool = Field(
         False,

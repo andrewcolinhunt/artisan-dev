@@ -22,8 +22,8 @@ class BatchStrategy(BaseModel):
         units_per_worker: ExecutionUnits per worker (level 2 batching).
         max_workers: Maximum number of parallel workers. None for
             unlimited.
-        estimated_seconds: Expected wall-clock time per unit, used for
-            scheduler hints (e.g. SLURM time limits).
+        estimated_seconds: Expected wall-clock time per unit, available to
+            runners for scheduling hints.
         job_name: Human-readable job name for logging and scheduler
             labels. Resolved from the operation name if None.
     """

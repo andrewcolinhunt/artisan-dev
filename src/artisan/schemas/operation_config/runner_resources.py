@@ -1,8 +1,8 @@
 """Portable hardware resource requirements consumed by step runners.
 
-Each step runner (local / SLURM / SLURM intra) translates these to its
-native format. The ``extra`` dict is an escape hatch for runner-specific
-settings (e.g. SLURM partition, gres flags). For Modal compute, see
+Each step runner translates these to its native format. The ``extra`` dict is
+an escape hatch for provider-specific settings such as a queue or accelerator
+constraint. For Modal compute, see
 ``ComputeResources`` in ``compute_resources.py``.
 """
 
@@ -16,15 +16,15 @@ from pydantic import BaseModel, Field
 class RunnerResources(BaseModel):
     """Portable hardware resource requirements for the step runner.
 
-    Read by SLURM / SLURM-intra / local runners at dispatch time. Modal
-    has its own hardware-spec schema (``ComputeResources``).
+    Read by the active runner at dispatch time. Modal has its own hardware-spec
+    schema (``ComputeResources``).
 
     Attributes:
         cpus: Number of CPU cores per task.
         memory_gb: Memory in gigabytes per task.
         gpus: Number of GPUs requested.
         time_limit: Wall-clock time limit (HH:MM:SS format).
-        extra: Runner-specific settings (e.g. {"partition": "gpu"}).
+        extra: Runner-specific settings (e.g. {"queue": "gpu"}).
     """
 
     cpus: int = Field(1, ge=1)
