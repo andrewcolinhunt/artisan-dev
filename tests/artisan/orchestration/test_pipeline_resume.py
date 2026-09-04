@@ -92,14 +92,15 @@ def _write_legacy_completed_step(
     delta_root: Path,
     *,
     compute_backend: str = "local",
+    step_number: int = 0,
 ) -> str:
     """Write a pre-runner-metadata step row for compatibility coverage."""
     pipeline_run_id = "legacy_20260904_120000_abcdef12"
     tracker = StepTracker(str(delta_root), pipeline_run_id)
     record = StepStartRecord(
-        step_run_id="legacy_step_run",
-        step_spec_id="legacy_step_spec",
-        step_number=0,
+        step_run_id=f"legacy_step_run_{step_number}",
+        step_spec_id=f"legacy_step_spec_{step_number}",
+        step_number=step_number,
         step_name="Ingest",
         operation_class=f"{IngestMockOp.__module__}.{IngestMockOp.__qualname__}",
         params_json="{}",
@@ -111,7 +112,7 @@ def _write_legacy_completed_step(
     )
     result = StepResult(
         step_name="Ingest",
-        step_number=0,
+        step_number=step_number,
         success=True,
         total_count=1,
         succeeded_count=1,
@@ -504,6 +505,67 @@ class TestResume:
                 pipeline_run_id=run_id,
                 default_step_runner=ExternalRunner(),
             )
+
+    def test_resume_mixed_legacy_runners_requires_explicit_default(self, tmp_path):
+        """Mixed effective runners do not reveal the historical default."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta)
+        _write_legacy_completed_step(
+            delta,
+            compute_backend="slurm",
+            step_number=1,
+        )
+
+        with pytest.raises(ValueError, match="historical pipeline default"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=run_id,
+            )
+
+    def test_resume_mixed_legacy_runners_accepts_explicit_local(self, tmp_path):
+        """The caller may identify local as the ambiguous historical default."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta)
+        _write_legacy_completed_step(
+            delta,
+            compute_backend="slurm",
+            step_number=1,
+        )
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=run_id,
+            default_step_runner="local",
+        )
+
+        assert resumed.config.default_step_runner == "local"
+        assert isinstance(resumed._default_step_runner, LocalRunner)
+
+    def test_resume_mixed_legacy_runners_accepts_explicit_provider(self, tmp_path):
+        """The caller may identify SLURM as the ambiguous historical default."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta)
+        _write_legacy_completed_step(
+            delta,
+            compute_backend="slurm",
+            step_number=1,
+        )
+        runner = LegacySlurmRunner()
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=run_id,
+            default_step_runner=runner,
+        )
+
+        assert resumed.config.default_step_runner == "slurm"
+        assert resumed._default_step_runner is runner
 
 
 # NOTE: TestListRuns moved to test_run_history.py (PR 4 — list_runs is now
