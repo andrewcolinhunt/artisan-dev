@@ -112,13 +112,20 @@ class LocalLifecycleRouter(LifecycleRouter):
             self._executor = executor
             if self._cancel_requested:
                 return []
-            self._futures = [
-                executor.submit(
-                    execute_process_call,
-                    serialize_process_call(execute_unit_batch, batch, runtime_env),
-                )
-                for batch in batches
-            ]
+            self._futures = []
+            for index, batch in enumerate(batches):
+                try:
+                    future = executor.submit(
+                        execute_process_call,
+                        serialize_process_call(execute_unit_batch, batch, runtime_env),
+                    )
+                except Exception as exc:
+                    for unsent_batch in batches[index:]:
+                        failed: Future[list[UnitResult]] = Future()
+                        failed.set_result(failure_results_for_units(unsent_batch, exc))
+                        self._futures.append(failed)
+                    break
+                self._futures.append(future)
             return list(self._futures)
 
     def cancel(self) -> None:

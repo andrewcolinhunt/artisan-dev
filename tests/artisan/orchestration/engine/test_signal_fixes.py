@@ -48,6 +48,7 @@ class TestCreatorBrokenProcessPool:
         mock_cache.return_value = None  # No cache hit
 
         mock_unit = MagicMock()
+        mock_unit.get_batch_size.return_value = 1
         mock_eu_cls.return_value = mock_unit
 
         mock_backend = MagicMock()

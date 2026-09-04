@@ -134,6 +134,22 @@ class TestRunTemplateMethod:
         assert len(results) == 1
         assert results[0].error == "Cancelled"
 
+    def test_run_retries_idempotent_cancel_until_done(self) -> None:
+        class _RetryCancelHandle(_SlowStubHandle):
+            def cancel(self) -> None:
+                self.cancel_count += 1
+                if self.cancel_count == 2:
+                    self.complete([_result(success=False, error="Cancelled")])
+
+        handle = _RetryCancelHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        results = handle.run([object()], None, cancel_event=cancel_event)
+
+        assert handle.cancel_count == 2
+        assert results[0].error == "Cancelled"
+
     def test_run_propagates_errors(self) -> None:
         class _ErrorHandle(LifecycleRouter):
             def _dispatch(self, units, runtime_env):

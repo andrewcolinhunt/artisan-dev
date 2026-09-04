@@ -225,5 +225,15 @@ class TestStagingManager:
 
     def test_cleanup_all(self, populated_staging):
         """Cleanup all batches."""
+        dispatch_sentinel = (
+            f"{populated_staging.staging_dir}/_dispatch/cancel-other-step"
+        )
+        populated_staging._fs.makedirs(
+            f"{populated_staging.staging_dir}/_dispatch", exist_ok=True
+        )
+        populated_staging._fs.touch(dispatch_sentinel)
+
         populated_staging.cleanup_all()
+
         assert populated_staging.list_batch_ids() == []
+        assert populated_staging._fs.exists(dispatch_sentinel)

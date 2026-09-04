@@ -425,8 +425,21 @@ class TestResume:
                 default_step_runner="external_test",
             )
 
-    def test_resume_legacy_record_defaults_to_local(self, tmp_path):
-        """Rows predating runner metadata retain the historical local fallback."""
+    def test_resume_legacy_record_requires_explicit_default(self, tmp_path):
+        """All-local effective rows do not prove the historical default was local."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        run_id = _write_legacy_completed_step(delta)
+
+        with pytest.raises(ValueError, match="historical pipeline default"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=run_id,
+            )
+
+    def test_resume_legacy_record_accepts_explicit_local(self, tmp_path):
+        """The caller may explicitly restore local as a legacy default."""
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
         run_id = _write_legacy_completed_step(delta)
@@ -435,6 +448,7 @@ class TestResume:
             delta_root=str(delta),
             staging_root=str(staging),
             pipeline_run_id=run_id,
+            default_step_runner="local",
         )
 
         assert resumed.config.default_step_runner == "local"
@@ -468,7 +482,7 @@ class TestResume:
         staging = tmp_path / "staging"
         run_id = _write_legacy_completed_step(delta, compute_backend=backend)
 
-        with pytest.raises(ValueError, match="initialized provider runner"):
+        with pytest.raises(ValueError, match="historical pipeline default"):
             PipelineManager.resume(
                 delta_root=str(delta),
                 staging_root=str(staging),
@@ -492,19 +506,22 @@ class TestResume:
         assert resumed.config.default_step_runner == "slurm"
         assert resumed._default_step_runner is runner
 
-    def test_resume_legacy_slurm_record_rejects_mismatched_provider(self, tmp_path):
-        """A different provider cannot reinterpret historical SLURM work."""
+    def test_resume_legacy_rows_accept_explicit_unobserved_provider(self, tmp_path):
+        """Effective legacy runners do not constrain an explicitly stated default."""
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
         run_id = _write_legacy_completed_step(delta, compute_backend="slurm")
+        runner = ExternalRunner()
 
-        with pytest.raises(ValueError, match="does not match persisted"):
-            PipelineManager.resume(
-                delta_root=str(delta),
-                staging_root=str(staging),
-                pipeline_run_id=run_id,
-                default_step_runner=ExternalRunner(),
-            )
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=run_id,
+            default_step_runner=runner,
+        )
+
+        assert resumed.config.default_step_runner == "external_test"
+        assert resumed._default_step_runner is runner
 
     def test_resume_mixed_legacy_runners_requires_explicit_default(self, tmp_path):
         """Mixed effective runners do not reveal the historical default."""

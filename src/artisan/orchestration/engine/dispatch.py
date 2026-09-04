@@ -60,7 +60,7 @@ def execute_unit(
         msg = "Operation interrupted by SIGINT"
         raise RuntimeError(msg) from None
     except Exception as exc:
-        return _failed_unit_result(exc)
+        return _failed_unit_result(exc, item_count=unit.get_batch_size() or 1)
 
 
 def execute_unit_batch(
@@ -93,7 +93,10 @@ def failure_results_for_units(
         Failed results positionally aligned with ``units``.
     """
     error_text = error if isinstance(error, str) else format_error(error)
-    return [_failed_unit_result(error_text) for _ in units]
+    return [
+        _failed_unit_result(error_text, item_count=unit.get_batch_size() or 1)
+        for unit in units
+    ]
 
 
 def validate_batch_results(
@@ -133,12 +136,16 @@ def validate_batch_results(
     return results
 
 
-def _failed_unit_result(error: BaseException | str) -> UnitResult:
+def _failed_unit_result(
+    error: BaseException | str,
+    *,
+    item_count: int = 1,
+) -> UnitResult:
     """Build one failed unit result from an exception or error string."""
     error_text = error if isinstance(error, str) else format_error(error)
     return UnitResult(
         success=False,
         error=error_text,
-        item_count=1,
+        item_count=item_count,
         execution_run_ids=[],
     )

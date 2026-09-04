@@ -2022,7 +2022,7 @@ class TestCuratorSubprocessIsolation:
             compact=False,
         )
 
-        assert result.failed_count == 1
+        assert result.failed_count == 2
         assert result.succeeded_count == 0
         mock_record_failure.assert_called_once()
 
