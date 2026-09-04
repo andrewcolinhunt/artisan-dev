@@ -4630,9 +4630,10 @@ packages:
   requires_python: '>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*'
 - pypi: ./
   name: dexterity-artisan
-  version: 0.1.2a6.dev542+g8c25068cf.d20260904
-  sha256: 940e12be177c66a4524339710182d53a2b8eee49c43e80295fb8b15d2814f663
+  version: 0.1.2a6.dev550+g440b6929a.d20260904
+  sha256: 8f1bb98979720773a1e5c8e8b81df6ecca804099daab132b2d48415fcfc3ff83
   requires_dist:
+  - botocore
   - deltalake>=0.14.0
   - fsspec
   - graphviz
