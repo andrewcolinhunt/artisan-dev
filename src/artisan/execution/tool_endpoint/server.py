@@ -36,11 +36,14 @@ from artisan.utils.external_tools import ExternalToolError
 
 _INPUT_RESOLUTION_ERRORS: tuple[type[BaseException], ...] = (ValueError, OSError)
 try:
-    from botocore.exceptions import BotoCoreError  # type: ignore[import-untyped]
+    from botocore.exceptions import (  # type: ignore[import-untyped]
+        BotoCoreError,
+        ClientError,
+    )
 except ModuleNotFoundError:
     pass
 else:
-    _INPUT_RESOLUTION_ERRORS += (BotoCoreError,)
+    _INPUT_RESOLUTION_ERRORS += (BotoCoreError, ClientError)
 
 
 def resolve_op(module: str, qualname: str) -> type[OperationDefinition]:

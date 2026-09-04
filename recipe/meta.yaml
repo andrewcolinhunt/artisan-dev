@@ -23,7 +23,7 @@ requirements:
     - hatch-vcs
   run:
     - python >=3.12
-    - cloudpickle
+    - cloudpickle >=3,<4
     - deltalake >=0.14.0
     - fsspec
     - graphviz
