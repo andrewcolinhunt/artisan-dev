@@ -1,8 +1,7 @@
 """Main coordinator for step execution.
 
 Ties together the three-phase workflow (dispatch, execute, commit) for
-both creator operations (dispatched via Prefect) and curator operations
-(executed locally in a subprocess).
+creator and curator operations.
 """
 
 from __future__ import annotations
@@ -44,6 +43,7 @@ from artisan.orchestration.engine.results import (
     extract_execution_run_ids,
     raise_if_fail_fast,
 )
+from artisan.orchestration.engine.worker_logs import persist_worker_logs
 from artisan.orchestration.runners.base import RunnerBase
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
@@ -601,10 +601,10 @@ def _execute_curator_step(
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
 ) -> StepResult:
-    """Execute a curator operation locally without Prefect dispatch.
+    """Execute a curator operation locally in an isolated subprocess.
 
-    Curator ops produce a single ExecutionUnit and run in a subprocess
-    for memory isolation, bypassing Prefect's JSONB size limit.
+    Curator ops produce a single ExecutionUnit and use a subprocess for
+    memory isolation.
 
     Args:
         operation: Fully configured curator operation instance.
@@ -1016,7 +1016,7 @@ def _execute_creator_step(
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
 ) -> StepResult:
-    """Execute a creator operation step by dispatching to workers via Prefect.
+    """Execute a creator operation step through its lifecycle runner.
 
     Args:
         operation: Fully configured creator operation instance.
@@ -1163,7 +1163,7 @@ def _execute_creator_step(
         )
 
     # =========================================================================
-    # PHASE 2: EXECUTE (via Prefect)
+    # PHASE 2: EXECUTE
     # =========================================================================
 
     # --- cancel check: before execute ---
@@ -1267,7 +1267,7 @@ def _execute_creator_step(
         # --- capture_logs phase ---
         with phase_timer("capture_logs", timings):
             if units_to_dispatch:
-                step_runner.capture_logs(
+                persist_worker_logs(
                     results,
                     config.staging_root,
                     runtime_env.failure_logs_root,

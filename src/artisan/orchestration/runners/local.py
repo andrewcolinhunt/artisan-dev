@@ -1,16 +1,22 @@
-"""Local step_runner — ProcessPool execution on the orchestrator machine."""
+"""Native local runner backed by a spawn-context process pool."""
 
 from __future__ import annotations
 
 import multiprocessing
+import threading
 import warnings
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from typing import Any
 
-from prefect.task_runners import ProcessPoolTaskRunner
-
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.orchestration.engine.lifecycle_router import LifecycleRouter, _RouterState
+from artisan.orchestration.engine.batching import pack_units
+from artisan.orchestration.engine.dispatch import (
+    execute_unit_batch,
+    failure_results_for_units,
+    validate_batch_results,
+)
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.runners.base import (
     OrchestratorTraits,
     RunnerBase,
@@ -23,95 +29,143 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.utils.spawn import ignore_sigint, suppress_main_reimport
 
 
-class SIGINTSafeProcessPoolTaskRunner(ProcessPoolTaskRunner):
-    """ProcessPoolTaskRunner whose workers ignore SIGINT.
-
-    Prevents child processes from receiving KeyboardInterrupt, which causes
-    noisy tracebacks. The parent process handles SIGINT via PipelineManager's
-    signal handler and propagates cancellation cleanly.
-
-    Also prevents ``multiprocessing.spawn`` from re-importing the caller's
-    ``__main__`` module in worker processes.
-    """
-
-    def __enter__(self) -> SIGINTSafeProcessPoolTaskRunner:
-        # Workers are spawned lazily, so the guard stays until __exit__.
-        self._spawn_guard = suppress_main_reimport()
-        self._spawn_guard.__enter__()
-
-        result = super().__enter__()
-        # Replace the process pool with one whose workers ignore SIGINT
-        if self._executor is not None:
-            self._executor.shutdown(wait=False)
-        mp_context = multiprocessing.get_context("spawn")
-        self._executor = ProcessPoolExecutor(
-            max_workers=self._max_workers,
-            mp_context=mp_context,
-            initializer=ignore_sigint,
-        )
-        return result
-
-    def __exit__(self, *args: object, **kwargs: object) -> None:
-        try:
-            super().__exit__(*args, **kwargs)
-        finally:
-            self._spawn_guard.__exit__(None, None, None)
-
-
 class LocalLifecycleRouter(LifecycleRouter):
-    """Lifecycle router for local ProcessPool execution.
-
-    Units are passed to workers in-memory via multiprocessing pickle
-    serialization — no intermediate pickle file is written.
+    """Run ordered unit batches in local worker processes.
 
     Args:
-        task_runner: Configured ProcessPool task runner.
+        max_workers: Maximum number of worker processes.
+        units_per_worker: Maximum execution units per worker invocation.
     """
 
-    def __init__(self, task_runner: SIGINTSafeProcessPoolTaskRunner) -> None:
+    def __init__(self, max_workers: int, units_per_worker: int) -> None:
         super().__init__()
-        self._task_runner = task_runner
+        self._max_workers = max_workers
+        self._units_per_worker = units_per_worker
+        self._lock = threading.Lock()
+        self._executor: ProcessPoolExecutor | None = None
+        self._futures: list[Future[list[UnitResult]]] = []
+        self._dispatch_started = False
+        self._cancel_requested = False
 
-    def dispatch(
+    def _dispatch(
         self,
         units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,
     ) -> None:
-        """Start local ProcessPool execution in a background thread."""
-        self._assert_idle()
-        self._state = _RouterState.DISPATCHED
+        """Start native process-pool execution in a background thread."""
+        batches = pack_units(units, self._units_per_worker)
+        with self._lock:
+            self._dispatch_started = True
+        self._start_background(lambda: self._run_batches(batches, runtime_env))
 
-        task_runner = self._task_runner
+    def _run_batches(
+        self,
+        batches: list[list[ExecutionUnit]],
+        runtime_env: RuntimeEnvironment,
+    ) -> list[UnitResult]:
+        """Own the process pool until all submitted batches are resolved."""
+        if not batches:
+            return []
 
-        def _flow_fn() -> list[UnitResult]:
-            from prefect import flow, unmapped
+        try:
+            return self._execute_batches(batches, runtime_env)
+        except BrokenProcessPool:
+            raise
+        except Exception as exc:
+            units = [unit for batch in batches for unit in batch]
+            return failure_results_for_units(units, exc)
 
-            from artisan.orchestration.engine.dispatch import (
-                _collect_results,
-                execute_unit_task,
+    def _execute_batches(
+        self,
+        batches: list[list[ExecutionUnit]],
+        runtime_env: RuntimeEnvironment,
+    ) -> list[UnitResult]:
+        """Create the process pool, submit batches, and collect results."""
+
+        mp_context = multiprocessing.get_context("spawn")
+        with suppress_main_reimport():
+            executor = ProcessPoolExecutor(
+                max_workers=self._max_workers,
+                mp_context=mp_context,
+                initializer=ignore_sigint,
             )
-
-            @flow(task_runner=task_runner)  # type: ignore[arg-type]  # SIGINTSafeProcessPoolTaskRunner subclasses ProcessPoolTaskRunner; prefect's type stub is narrow
-            def step_flow() -> list[UnitResult]:
-                futures = execute_unit_task.map(
-                    units, runtime_env=unmapped(runtime_env)
+            try:
+                futures = self._submit_batches(executor, batches, runtime_env)
+                return _collect_batch_futures(batches, futures)
+            finally:
+                executor.shutdown(
+                    wait=True,
+                    cancel_futures=self._cancel_requested,
                 )
-                return _collect_results(futures)
+                with self._lock:
+                    self._executor = None
 
-            return step_flow()
-
-        self._start_background(_flow_fn)
+    def _submit_batches(
+        self,
+        executor: ProcessPoolExecutor,
+        batches: list[list[ExecutionUnit]],
+        runtime_env: RuntimeEnvironment,
+    ) -> list[Future[list[UnitResult]]]:
+        """Submit all batches unless cancellation arrived before pool startup."""
+        with self._lock:
+            self._executor = executor
+            if self._cancel_requested:
+                return []
+            self._futures = [
+                executor.submit(execute_unit_batch, batch, runtime_env)
+                for batch in batches
+            ]
+            return list(self._futures)
 
     def cancel(self) -> None:
-        """No-op — local ProcessPool workers cannot be interrupted."""
+        """Cancel pending work and stop accepting new submissions.
+
+        Running worker processes cannot be terminated reliably through Python
+        3.12's public process-pool API and therefore finish best-effort.
+        """
+        with self._lock:
+            if not self._dispatch_started or self._cancel_requested or self.is_done():
+                return
+            self._cancel_requested = True
+            futures = list(self._futures)
+            executor = self._executor
+        for future in futures:
+            future.cancel()
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _collect_batch_futures(
+    batches: list[list[ExecutionUnit]],
+    futures: list[Future[list[UnitResult]]],
+) -> list[UnitResult]:
+    """Collect future results in submission order and validate each batch."""
+    if not futures:
+        return failure_results_for_units(
+            [unit for batch in batches for unit in batch],
+            "Local execution cancelled before submission",
+        )
+
+    results: list[UnitResult] = []
+    for batch, future in zip(batches, futures, strict=True):
+        try:
+            batch_results = future.result()
+        except BrokenProcessPool:
+            raise
+        except Exception as exc:
+            batch_results = failure_results_for_units(batch, exc)
+        else:
+            batch_results = validate_batch_results(batch, batch_results)
+        results.extend(batch_results)
+    return results
 
 
 class LocalRunner(RunnerBase):
-    """ProcessPool execution on the orchestrator machine.
+    """Process-pool execution on the orchestrator machine.
 
     Args:
         default_max_workers: Default process pool size. Overridden by
-            operation.batch_strategy.max_workers when set.
+            ``BatchStrategy.max_workers`` when set.
     """
 
     name = "local"
@@ -119,6 +173,9 @@ class LocalRunner(RunnerBase):
     orchestrator_traits = OrchestratorTraits()
 
     def __init__(self, default_max_workers: int = 4) -> None:
+        if default_max_workers < 1:
+            msg = "default_max_workers must be at least 1"
+            raise ValueError(msg)
         self._default_max_workers = default_max_workers
 
     def create_lifecycle_router(
@@ -130,11 +187,10 @@ class LocalRunner(RunnerBase):
         log_folder: str | None = None,
         staging_root: str | None = None,
     ) -> LifecycleRouter:
-        """Build a local ProcessPool lifecycle router.
+        """Build a native local process-pool router.
 
-        GPU operations default to sequential execution (max_workers=1) to
-        avoid GPU memory contention and CUDA context conflicts. CPU
-        operations use the configured pool size.
+        GPU operations default to one process to avoid GPU memory contention.
+        An explicit ``max_workers`` always takes precedence.
         """
         if batch_strategy.max_workers is not None:
             max_workers = batch_strategy.max_workers
@@ -142,40 +198,30 @@ class LocalRunner(RunnerBase):
             max_workers = 1
         else:
             max_workers = self._default_max_workers
+        if max_workers < 1:
+            msg = "max_workers must be at least 1"
+            raise ValueError(msg)
 
         return LocalLifecycleRouter(
-            SIGINTSafeProcessPoolTaskRunner(max_workers=max_workers)
+            max_workers=max_workers,
+            units_per_worker=batch_strategy.units_per_worker,
         )
 
-    def capture_logs(
-        self,
-        results: list[UnitResult],
-        staging_root: str,
-        failure_logs_root: str | None,
-        operation_name: str,
-        step_number: int,
-    ) -> None:
-        """No-op — local logs are in the orchestrator's stdout."""
-
     def validate_operation(self, operation: Any) -> None:
-        """Warn on local-runner config that is likely a mistake."""
-        r = operation.runner_resources
-        if r.extra:
+        """Warn on local-runner configuration that is likely a mistake."""
+        resources = operation.runner_resources
+        if resources.extra:
             warnings.warn(
-                f"Operation {operation.name!r} has SLURM-specific resources "
-                f"(extra={r.extra!r}) but step_runner is 'local'. "
-                f"These will be ignored.",
+                f"Operation {operation.name!r} has provider-specific resources "
+                f"(extra={resources.extra!r}) but step_runner is 'local'. "
+                "These will be ignored.",
                 stacklevel=2,
             )
-        # runner_resources.gpus > 0 serializes the local pool to one worker —
-        # correct when execute runs locally on a GPU, surprising when execute
-        # ships to Modal (the container GPU belongs in compute_resources.gpu).
-        if r.gpus > 0 and operation.compute_provider.active == "modal":
+        if resources.gpus > 0 and operation.compute_provider.active == "modal":
             warnings.warn(
                 f"Operation {operation.name!r} sets runner_resources.gpus="
-                f"{r.gpus} with compute_provider='modal'. The GPU request "
-                f"serializes the local lifecycle pool, but execute runs on "
-                f"Modal — request the container GPU via "
-                f"compute_resources.gpu instead.",
+                f"{resources.gpus} with compute_provider='modal'. The GPU request "
+                "serializes the local lifecycle pool, but execute runs on Modal — "
+                "request the container GPU via compute_resources.gpu instead.",
                 stacklevel=2,
             )

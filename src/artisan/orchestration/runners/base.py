@@ -1,8 +1,7 @@
-"""Step runner abstraction base classes.
+"""Public step-runner abstraction and execution traits.
 
 Defines the ABC and trait dataclasses that all step runners implement.
-Users interact with pre-built instances via the ``Runner`` namespace,
-not with ``RunnerBase`` directly.
+Third-party providers subclass ``RunnerBase`` and pass instances to Artisan.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ from typing import Any, ClassVar
 
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 
 
@@ -59,11 +57,11 @@ class RunnerBase(ABC):
 
     Bundles compute dispatch, storage traits, and worker configuration
     into a single object. Subclasses implement concrete runners.
-    Users access pre-built instances via the Runner namespace
-    (e.g., Runner.SLURM), not this class directly.
+    Core exposes a pre-built local runner. External providers subclass this
+    class and supply configured instances directly.
 
     Subclasses must define three ClassVar attributes:
-        name: Short string identifier (e.g. "local", "slurm").
+        name: Stable identifier used in execution provenance.
         worker_traits: WorkerTraits instance.
         orchestrator_traits: OrchestratorTraits instance.
     """
@@ -102,26 +100,6 @@ class RunnerBase(ABC):
 
         Returns:
             Configured lifecycle router.
-        """
-        ...
-
-    @abstractmethod
-    def capture_logs(
-        self,
-        results: list[UnitResult],
-        staging_root: str,
-        failure_logs_root: str | None,
-        operation_name: str,
-        step_number: int,
-    ) -> None:
-        """Post-dispatch: capture step_runner-specific worker logs into results.
-
-        Args:
-            results: Unit results from dispatch.
-            staging_root: Root staging directory.
-            failure_logs_root: Root directory for failure log files.
-            operation_name: Operation name for log directory structure.
-            step_number: Pipeline step number for staging path computation.
         """
         ...
 

@@ -45,26 +45,43 @@ class LifecycleRouter(ABC):
 
     def __init__(self) -> None:
         self._state = _RouterState.IDLE
+        self._expected_result_count = 0
         self._thread: threading.Thread | None = None
         self._results: list[UnitResult] | None = None
         self._error: Exception | None = None
         self._done = threading.Event()
 
     # ------------------------------------------------------------------
-    # Abstract — subclasses implement these
+    # Provider hooks
     # ------------------------------------------------------------------
 
-    @abstractmethod
     def dispatch(
         self,
         units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,
     ) -> None:
-        """Start execution, return immediately.
+        """Start execution through the provider hook, returning immediately.
 
-        The handle owns unit transport — it decides how to deliver
-        units to workers. Must be called exactly once.
+        This template owns the router state transition. Providers implement
+        :meth:`_dispatch` and never need access to the private state enum.
         """
+        self._assert_idle()
+        self._expected_result_count = len(units)
+        self._state = _RouterState.DISPATCHED
+        try:
+            self._dispatch(units, runtime_env)
+        except Exception as exc:
+            self._error = exc
+            self._done.set()
+            raise
+
+    @abstractmethod
+    def _dispatch(
+        self,
+        units: list[ExecutionUnit],
+        runtime_env: RuntimeEnvironment,
+    ) -> None:
+        """Submit work and arrange for completion state to be populated."""
 
     @abstractmethod
     def cancel(self) -> None:
@@ -89,10 +106,23 @@ class LifecycleRouter(ABC):
             raise RuntimeError(msg)
         if self._thread is not None:
             self._thread.join()
+        self._state = _RouterState.DONE
         if self._error is not None:
             raise self._error
-        self._state = _RouterState.DONE
-        return self._results  # type: ignore[return-value]
+        results = self._results
+        if not isinstance(results, list):
+            msg = "Lifecycle router completed without a list of UnitResult values"
+            raise RuntimeError(msg)
+        if len(results) != self._expected_result_count:
+            msg = (
+                f"Lifecycle router returned {len(results)} results for "
+                f"{self._expected_result_count} submitted units"
+            )
+            raise RuntimeError(msg)
+        if not all(isinstance(result, UnitResult) for result in results):
+            msg = "Lifecycle router returned a value that is not a UnitResult"
+            raise RuntimeError(msg)
+        return results
 
     def run(
         self,
@@ -156,9 +186,8 @@ class LifecycleRouter(ABC):
     def _start_background(self, fn: Callable[[], list[UnitResult]]) -> None:
         """Run *fn* in a daemon thread, storing results for ``collect()``.
 
-        Copies the current ``contextvars`` context so that Prefect's
-        ``SettingsContext`` (set by ``activate_server``) is visible
-        inside the thread.
+        Copies the current ``contextvars`` context so caller context remains
+        available inside provider collection threads.
         """
         ctx = contextvars.copy_context()
 

@@ -57,11 +57,6 @@ class TestInitSubclassValidation:
                 def create_lifecycle_router(self, *a, **kw):
                     pass
 
-                def capture_logs(
-                    self, results, staging_root, failure_logs_root, op, step
-                ):
-                    pass
-
     def test_missing_worker_traits_raises(self) -> None:
         with pytest.raises(TypeError, match="must define 'worker_traits'"):
 
@@ -72,11 +67,6 @@ class TestInitSubclassValidation:
                 def create_lifecycle_router(self, *a, **kw):
                     pass
 
-                def capture_logs(
-                    self, results, staging_root, failure_logs_root, op, step
-                ):
-                    pass
-
     def test_missing_orchestrator_traits_raises(self) -> None:
         with pytest.raises(TypeError, match="must define 'orchestrator_traits'"):
 
@@ -85,11 +75,6 @@ class TestInitSubclassValidation:
                 worker_traits = WorkerTraits()
 
                 def create_lifecycle_router(self, *a, **kw):
-                    pass
-
-                def capture_logs(
-                    self, results, staging_root, failure_logs_root, op, step
-                ):
                     pass
 
     def test_valid_subclass_succeeds(self) -> None:
@@ -103,8 +88,8 @@ class TestInitSubclassValidation:
             def create_lifecycle_router(self, *a, **kw):
                 return MagicMock()
 
-            def capture_logs(self, results, staging_root, failure_logs_root, op, step):
-                pass
-
         step_runner = GoodRunner()
         assert step_runner.name == "good"
+
+    def test_capture_logs_is_not_part_of_runner_contract(self) -> None:
+        assert not hasattr(RunnerBase, "capture_logs")

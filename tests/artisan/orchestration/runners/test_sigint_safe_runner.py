@@ -1,91 +1,68 @@
-"""Tests for SIGINTSafeProcessPoolTaskRunner."""
+"""Tests for SIGINT-safe native process-pool construction."""
 
 from __future__ import annotations
 
 import sys
+from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
-from artisan.orchestration.runners.local import SIGINTSafeProcessPoolTaskRunner
+from artisan.orchestration.runners.local import LocalLifecycleRouter, LocalRunner
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.utils.spawn import ignore_sigint
 
 
-class TestSIGINTSafeProcessPoolTaskRunner:
-    """Fix 2e: process pool workers ignore SIGINT."""
+class TestNativeProcessPool:
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_uses_spawn_context_and_sigint_initializer(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        future: Future[list[UnitResult]] = Future()
+        future.set_result([UnitResult(True, None, 1, [])])
+        mock_executor_class.return_value.submit.return_value = future
+        handle = LocalLifecycleRouter(max_workers=2, units_per_worker=1)
+
+        handle.run([MagicMock()], MagicMock())
+
+        kwargs = mock_executor_class.call_args.kwargs
+        assert kwargs["max_workers"] == 2
+        assert kwargs["mp_context"].get_start_method() == "spawn"
+        assert kwargs["initializer"] is ignore_sigint
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
-    def test_enter_creates_pool_with_initializer(self, mock_ppe_cls):
-        """__enter__ re-creates executor with ignore_sigint initializer."""
-        from artisan.utils.spawn import ignore_sigint
+    def test_suppresses_main_reimport_for_pool_lifetime(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        main_module = sys.modules["__main__"]
+        original_file = main_module.__file__
+        observed_files: list[str | None] = []
+        future: Future[list[UnitResult]] = Future()
+        future.set_result([UnitResult(True, None, 1, [])])
 
-        # Mock the parent's __enter__ to set _executor
-        mock_original_executor = MagicMock()
-        mock_new_executor = MagicMock()
-        mock_ppe_cls.return_value = mock_new_executor
+        def _record_submit(*args: object) -> Future[list[UnitResult]]:
+            observed_files.append(main_module.__file__)
+            return future
 
-        runner = SIGINTSafeProcessPoolTaskRunner(max_workers=2)
+        mock_executor_class.return_value.submit.side_effect = _record_submit
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
 
-        with patch.object(
-            SIGINTSafeProcessPoolTaskRunner.__bases__[0],
-            "__enter__",
-            return_value=runner,
-        ):
-            runner._executor = mock_original_executor
-            runner._max_workers = 2
-            runner.__enter__()
+        handle.run([MagicMock()], MagicMock())
 
-        # Original executor should be shut down
-        mock_original_executor.shutdown.assert_called_once_with(wait=False)
+        assert observed_files == [None]
+        assert main_module.__file__ == original_file
 
-        # New executor should be created with initializer
-        call_kwargs = mock_ppe_cls.call_args[1]
-        assert call_kwargs["max_workers"] == 2
-        assert call_kwargs["initializer"] is ignore_sigint
+    def test_local_runner_builds_native_lifecycle_router(self) -> None:
+        runner = LocalRunner(default_max_workers=2)
 
-        # Clean up the spawn guard
-        runner.__exit__(None, None, None)
-
-    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
-    def test_enter_neuters_main_file(self, mock_ppe_cls):
-        """__enter__ neuters __main__.__file__, __exit__ restores it."""
-        main_mod = sys.modules["__main__"]
-        original = main_mod.__file__
-
-        runner = SIGINTSafeProcessPoolTaskRunner(max_workers=1)
-
-        with (
-            patch.object(
-                SIGINTSafeProcessPoolTaskRunner.__bases__[0],
-                "__enter__",
-                return_value=runner,
-            ),
-            patch.object(
-                SIGINTSafeProcessPoolTaskRunner.__bases__[0],
-                "__exit__",
-                return_value=None,
-            ),
-        ):
-            runner._executor = MagicMock()
-            runner._max_workers = 1
-            runner.__enter__()
-            assert main_mod.__file__ is None
-
-            runner.__exit__(None, None, None)
-            assert main_mod.__file__ == original
-
-    def test_is_subclass_of_process_pool_task_runner(self):
-        """SIGINTSafeProcessPoolTaskRunner is a ProcessPoolTaskRunner."""
-        from prefect.task_runners import ProcessPoolTaskRunner
-
-        assert issubclass(SIGINTSafeProcessPoolTaskRunner, ProcessPoolTaskRunner)
-
-    def test_create_lifecycle_router_uses_sigint_safe_runner(self):
-        """LocalRunner.create_lifecycle_router uses SIGINTSafeProcessPoolTaskRunner."""
-        from artisan.orchestration.runners.local import LocalRunner
-        from artisan.schemas.execution.batch_strategy import BatchStrategy
-        from artisan.schemas.operation_config.runner_resources import RunnerResources
-
-        step_runner = LocalRunner(default_max_workers=2)
-        handle = step_runner.create_lifecycle_router(
-            RunnerResources(), BatchStrategy(), step_number=0, job_name="test"
+        router = runner.create_lifecycle_router(
+            RunnerResources(),
+            BatchStrategy(),
+            step_number=0,
+            job_name="test",
         )
 
-        assert isinstance(handle._task_runner, SIGINTSafeProcessPoolTaskRunner)
+        assert isinstance(router, LocalLifecycleRouter)
+        assert router._max_workers == 2

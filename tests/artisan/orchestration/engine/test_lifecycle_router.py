@@ -8,7 +8,6 @@ import pytest
 
 from artisan.orchestration.engine.lifecycle_router import (
     LifecycleRouter,
-    _RouterState,
 )
 from artisan.schemas.execution.unit_result import UnitResult
 
@@ -33,9 +32,7 @@ class _StubHandle(LifecycleRouter):
         self.cancel_count = 0
         self.dispatch_called = False
 
-    def dispatch(self, units, runtime_env) -> None:
-        self._assert_idle()
-        self._state = _RouterState.DISPATCHED
+    def _dispatch(self, units, runtime_env) -> None:
         self.dispatch_called = True
         self._results = self._stub_results
         self._done.set()
@@ -51,10 +48,9 @@ class _SlowStubHandle(LifecycleRouter):
         super().__init__()
         self.cancel_count = 0
 
-    def dispatch(self, units, runtime_env) -> None:
-        self._assert_idle()
-        self._state = _RouterState.DISPATCHED
+    def _dispatch(self, units, runtime_env) -> None:
         # Don't set _done or _results — stays in DISPATCHED state
+        return None
 
     def cancel(self) -> None:
         self.cancel_count += 1
@@ -68,7 +64,7 @@ class _SlowStubHandle(LifecycleRouter):
 class TestLifecycleRouterStateMachine:
     def test_dispatch_then_collect(self) -> None:
         handle = _StubHandle()
-        handle.dispatch([], None)
+        handle.dispatch([object()], None)
         assert handle.is_done()
         results = handle.collect()
         assert len(results) == 1
@@ -76,13 +72,13 @@ class TestLifecycleRouterStateMachine:
 
     def test_double_dispatch_raises(self) -> None:
         handle = _StubHandle()
-        handle.dispatch([], None)
+        handle.dispatch([object()], None)
         with pytest.raises(RuntimeError, match="dispatch.*already called"):
-            handle.dispatch([], None)
+            handle.dispatch([object()], None)
 
     def test_collect_before_done_raises(self) -> None:
         handle = _SlowStubHandle()
-        handle.dispatch([], None)
+        handle.dispatch([object()], None)
         with pytest.raises(RuntimeError, match="before completion"):
             handle.collect()
 
@@ -93,7 +89,7 @@ class TestLifecycleRouterStateMachine:
 
     def test_cancel_after_done_noop(self) -> None:
         handle = _StubHandle()
-        handle.dispatch([], None)
+        handle.dispatch([object()], None)
         assert handle.is_done()
         handle.cancel()
         assert handle.cancel_count == 1
@@ -112,7 +108,7 @@ class TestLifecycleRouterStateMachine:
 class TestRunTemplateMethod:
     def test_run_calls_dispatch_and_collect(self) -> None:
         handle = _StubHandle(results=[_result(item_count=5)])
-        results = handle.run([], None)
+        results = handle.run([object()], None)
         assert handle.dispatch_called
         assert len(results) == 1
         assert results[0].item_count == 5
@@ -131,7 +127,7 @@ class TestRunTemplateMethod:
         t = threading.Thread(target=_complete_after_cancel, daemon=True)
         t.start()
 
-        results = handle.run([], None, cancel_event=cancel_event)
+        results = handle.run([object()], None, cancel_event=cancel_event)
         t.join(timeout=2)
 
         assert handle.cancel_count >= 1
@@ -140,9 +136,7 @@ class TestRunTemplateMethod:
 
     def test_run_propagates_errors(self) -> None:
         class _ErrorHandle(LifecycleRouter):
-            def dispatch(self, units, runtime_env):
-                self._assert_idle()
-                self._state = _RouterState.DISPATCHED
+            def _dispatch(self, units, runtime_env):
                 self._error = ValueError("boom")
                 self._done.set()
 
@@ -151,7 +145,49 @@ class TestRunTemplateMethod:
 
         handle = _ErrorHandle()
         with pytest.raises(ValueError, match="boom"):
-            handle.run([], None)
+            handle.run([object()], None)
+
+    def test_collect_rejects_wrong_result_count(self) -> None:
+        handle = _StubHandle(results=[_result()])
+        handle.dispatch([object(), object()], None)
+
+        with pytest.raises(RuntimeError, match="1 results for 2 submitted units"):
+            handle.collect()
+
+    def test_background_failure_propagates(self) -> None:
+        class _BackgroundErrorHandle(LifecycleRouter):
+            def _dispatch(self, units, runtime_env):
+                def _raise():
+                    msg = "transport failed"
+                    raise OSError(msg)
+
+                self._start_background(_raise)
+
+            def cancel(self):
+                pass
+
+        handle = _BackgroundErrorHandle()
+        handle.dispatch([object()], None)
+        assert handle._done.wait(timeout=2)
+
+        with pytest.raises(OSError, match="transport failed"):
+            handle.collect()
+
+    def test_synchronous_dispatch_failure_marks_router_done(self) -> None:
+        class _DispatchErrorHandle(LifecycleRouter):
+            def _dispatch(self, units, runtime_env):
+                msg = "submission failed"
+                raise OSError(msg)
+
+            def cancel(self):
+                pass
+
+        handle = _DispatchErrorHandle()
+
+        with pytest.raises(OSError, match="submission failed"):
+            handle.dispatch([object()], None)
+
+        assert handle.is_done()
 
 
 class TestCancelSentinel:
@@ -229,6 +265,7 @@ class TestCancelSentinel:
 
         t = threading.Thread(target=_complete_after_cancel, daemon=True)
         t.start()
-        results = handle.run([], None, cancel_event=cancel_event)
+        unit = type("Unit", (), {"step_run_id": None})()
+        results = handle.run([unit], None, cancel_event=cancel_event)
         t.join(timeout=2)
         assert len(results) == 1

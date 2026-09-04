@@ -6,6 +6,7 @@ Level 2 (units_per_worker): ExecutionUnits per worker
 
 from __future__ import annotations
 
+from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.orchestration.batch_config import BatchConfig
 
@@ -88,3 +89,28 @@ def generate_execution_unit_batches(
         batches.append((batch, batch_group_ids))
 
     return batches
+
+
+def pack_units(
+    units: list[ExecutionUnit],
+    units_per_worker: int,
+) -> list[list[ExecutionUnit]]:
+    """Pack execution units into ordered worker batches.
+
+    Args:
+        units: Execution units in submission order.
+        units_per_worker: Maximum units assigned to one worker invocation.
+
+    Returns:
+        Ordered batches containing at most ``units_per_worker`` units.
+
+    Raises:
+        ValueError: If ``units_per_worker`` is not positive.
+    """
+    if units_per_worker < 1:
+        msg = "units_per_worker must be at least 1"
+        raise ValueError(msg)
+    return [
+        units[start : start + units_per_worker]
+        for start in range(0, len(units), units_per_worker)
+    ]
