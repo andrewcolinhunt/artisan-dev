@@ -48,14 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SlurmRunner()` to `PipelineManager.resume()`. Every legacy history that
   predates persisted pipeline-default metadata requires an explicit default,
   because even all-local effective rows cannot prove the historical default.
-- Cancellation now discards records and artifacts staged by the cancelled step,
-  terminalizes queued and running steps within the bounded finalization window,
-  and protects per-step cancellation sentinels from normal cleanup and staged
-  recovery. Cancellation is retried through idempotent runner hooks until work
-  settles. Provider/bootstrap failures now synthesize one inspectable execution
-  failure record per affected unit and count every affected artifact. Partial
-  local process-pool submission preserves completed prefix batches and fails
-  only the unsent suffix.
+- Cancellation now immediately cancels queued pipeline futures, terminates the
+  exact process-pool workers owned by the local runner, and waits for running
+  runner collection and pipeline work to settle before `finalize()` returns.
+  It discards records and artifacts staged by the cancelled step and protects
+  per-step cancellation sentinels from normal cleanup and staged recovery.
+  Cancellation is retried through idempotent runner hooks until work settles.
+  Provider/bootstrap failures now synthesize one inspectable execution failure
+  record per affected unit and count every affected artifact. Partial local
+  process-pool submission preserves completed prefix batches and fails only the
+  unsent suffix.
 - **`GroupByStrategy.LINEAGE` contract narrowed to directed ancestry.**
   `match_by_ancestry` now requires a directed path from candidate back
   to target, not just a shared ancestor. This eliminates a

@@ -129,11 +129,7 @@ class LocalLifecycleRouter(LifecycleRouter):
             return list(self._futures)
 
     def cancel(self) -> None:
-        """Cancel pending work and stop accepting new submissions.
-
-        Running worker processes cannot be terminated reliably through Python
-        3.12's public process-pool API and therefore finish best-effort.
-        """
+        """Cancel pending work and terminate this router's worker processes."""
         with self._lock:
             if not self._dispatch_started or self._cancel_requested or self.is_done():
                 return
@@ -143,7 +139,24 @@ class LocalLifecycleRouter(LifecycleRouter):
         for future in futures:
             future.cancel()
         if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+            _terminate_process_pool(executor)
+
+
+def _terminate_process_pool(executor: ProcessPoolExecutor) -> None:
+    """Terminate workers owned by one process pool without affecting others."""
+    terminate_workers = getattr(type(executor), "terminate_workers", None)
+    if callable(terminate_workers):
+        terminate_workers(executor)
+        return
+
+    # Python 3.12 has no public termination API. These are the exact processes
+    # owned by this executor; shutdown alone cannot stop an in-flight call.
+    processes_by_pid = getattr(executor, "_processes", None)
+    processes = () if processes_by_pid is None else tuple(processes_by_pid.values())
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _collect_batch_futures(

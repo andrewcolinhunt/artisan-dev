@@ -85,7 +85,12 @@ class LifecycleRouter(ABC):
 
     @abstractmethod
     def cancel(self) -> None:
-        """Cancel in-flight work. Thread-safe and idempotent."""
+        """Cancel in-flight work. Thread-safe and idempotent.
+
+        Providers must promptly drive dispatched work to completion after a
+        successful cancellation request. Once ``is_done()`` is true,
+        ``collect()`` must join any provider-owned collection thread.
+        """
 
     # ------------------------------------------------------------------
     # Concrete — shared across all handles
