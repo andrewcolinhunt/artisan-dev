@@ -6,7 +6,6 @@ Key exports: ``PipelineManager`` (create, run, submit, finalize).
 from __future__ import annotations
 
 import atexit
-import contextlib
 import contextvars
 import json
 import logging
@@ -16,7 +15,7 @@ import threading
 import time
 import weakref
 from collections.abc import Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -1045,15 +1044,14 @@ class PipelineManager:
     def cancel(self) -> None:
         """Request cancellation of the running pipeline.
 
-        Idempotent and thread-safe. Cancels queued steps and sets an event that
-        running step executors check between phases, causing them to return
-        early with ``metadata={"cancelled": True}``.
+        Idempotent and thread-safe. Sets an event that step executors check
+        between phases, causing them to return early with
+        ``metadata={"cancelled": True}``. Executor shutdown belongs to
+        :meth:`finalize`, outside signal-handler context.
         """
         if not self._cancel_event.is_set():
             logger.warning("Pipeline '%s': cancellation requested.", self._config.name)
         self._cancel_event.set()
-        if self._executor is not None:
-            self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _install_signal_handlers(self) -> None:
         """Install SIGINT/SIGTERM handlers that call cancel().
@@ -2195,11 +2193,11 @@ class PipelineManager:
             self._step_results.append(result)
             self._named_steps.setdefault(result.step_name, []).append(result)
 
-    def _settle_unfinished_cancellations(self) -> None:
-        """Give every unfinished started step a terminal cancellation result."""
+    def _settle_cancelled_futures(self) -> None:
+        """Record steps whose closure was cancelled before it could execute."""
         for step_number, future in self._active_futures.items():
             start_record = self._step_start_records.get(step_number)
-            if start_record is None or (future.done and future.status != "cancelled"):
+            if start_record is None or future.status != "cancelled":
                 continue
             result = StepResult(
                 step_name=future.step_name,
@@ -2210,7 +2208,7 @@ class PipelineManager:
                 failed_count=0,
                 output_roles=future.output_roles,
                 output_types=future.output_types,
-                metadata={"cancelled": True, "cleanup_pending": True},
+                metadata={"cancelled": True},
                 step_run_id=self._step_run_ids.get(step_number),
             )
             self._record_cancelled_result(start_record, result)
@@ -2475,10 +2473,9 @@ class PipelineManager:
     def finalize(self) -> dict[str, Any]:
         """Finalize pipeline execution and return summary.
 
-        Waits for any active futures and shuts down the executor.
-        When cancellation has been requested, uses a short timeout while
-        collecting individual futures, then waits for the pipeline executor
-        itself to settle before returning.
+        Shuts down the executor and waits for all running step closures to
+        finish their terminal writes before collecting their futures. Queued
+        closures are cancelled when cancellation has been requested.
 
         Safe to call multiple times — subsequent calls return the cached
         summary without re-running cleanup.
@@ -2495,22 +2492,12 @@ class PipelineManager:
         if self._finalized:
             return self._summary  # type: ignore[return-value]
 
-        cancellation_deadline: float | None = None
+        self._shutdown_executor()
         for step_num, future in self._active_futures.items():
             try:
-                while not self._cancel_event.is_set():
-                    try:
-                        future.result(timeout=0.5)
-                        break
-                    except TimeoutError:
-                        continue
-                else:
-                    # Cancel detected — short wait for cleanup
-                    if cancellation_deadline is None:
-                        cancellation_deadline = time.monotonic() + 5.0
-                    remaining = max(0.0, cancellation_deadline - time.monotonic())
-                    with contextlib.suppress(TimeoutError, Exception):
-                        future.result(timeout=remaining)
+                future.result()
+            except CancelledError:
+                continue
             except Exception as exc:
                 logger.error(
                     "Step %d future failed during finalize: %s: %s",
@@ -2520,8 +2507,7 @@ class PipelineManager:
                 )
 
         if self._cancel_event.is_set():
-            self._settle_unfinished_cancellations()
-        self._shutdown_executor()
+            self._settle_cancelled_futures()
         self._restore_signal_handlers()
 
         # Results may arrive out of order (sync skips before async completions)
