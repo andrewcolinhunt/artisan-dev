@@ -11,7 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from artisan.orchestration.runners.local import LocalLifecycleRouter
+from artisan.orchestration.runners.local import (
+    LocalLifecycleRouter,
+    _terminate_process_pool,
+)
 from artisan.schemas.execution.unit_result import UnitResult
 
 
@@ -114,6 +117,22 @@ class TestLocalLifecycleRouterCancel:
 
         assert results == [_success()]
         assert handle._cancel_requested is True
+
+    def test_process_exit_races_do_not_skip_executor_shutdown(self) -> None:
+        executor = MagicMock()
+        exited = MagicMock()
+        exited.is_alive.side_effect = ValueError("process already closed")
+        vanished = MagicMock()
+        vanished.is_alive.return_value = True
+        vanished.terminate.side_effect = ProcessLookupError("already exited")
+        remaining = MagicMock()
+        remaining.is_alive.return_value = True
+        executor._processes = {1: exited, 2: vanished, 3: remaining}
+
+        _terminate_process_pool(executor)
+
+        remaining.terminate.assert_called_once_with()
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
 
 
 def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:

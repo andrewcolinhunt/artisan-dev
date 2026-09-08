@@ -153,10 +153,15 @@ def _terminate_process_pool(executor: ProcessPoolExecutor) -> None:
     # owned by this executor; shutdown alone cannot stop an in-flight call.
     processes_by_pid = getattr(executor, "_processes", None)
     processes = () if processes_by_pid is None else tuple(processes_by_pid.values())
-    for process in processes:
-        if process.is_alive():
-            process.terminate()
-    executor.shutdown(wait=False, cancel_futures=True)
+    try:
+        for process in processes:
+            try:
+                if process.is_alive():
+                    process.terminate()
+            except (ProcessLookupError, ValueError):
+                pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _collect_batch_futures(

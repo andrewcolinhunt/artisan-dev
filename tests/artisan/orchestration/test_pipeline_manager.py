@@ -37,6 +37,7 @@ from artisan.orchestration.pipeline_manager import (
     _validate_resources,
 )
 from artisan.orchestration.runners.local import LocalRunner
+from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
@@ -879,6 +880,36 @@ class TestCancellation:
         assert result.metadata.get("skipped") is True
         assert result.metadata.get("skip_reason") == "cancelled"
 
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_cancel_between_early_gate_and_executor_submit(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ):
+        """Cancellation intent cannot close the executor under submit()."""
+        mock_tracker = MagicMock()
+        mock_tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = mock_tracker
+        pipeline = _make_pipeline(tmp_path)
+        prepare = pipeline._prepare_step_spec
+
+        def _prepare_then_cancel(*args, **kwargs):
+            prepared = prepare(*args, **kwargs)
+            pipeline.cancel()
+            return prepared
+
+        with patch.object(
+            pipeline,
+            "_prepare_step_spec",
+            side_effect=_prepare_then_cancel,
+        ):
+            future = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]})
+
+        result = future.result(timeout=2)
+        pipeline.finalize()
+
+        assert result.metadata["cancelled"] is True
+        mock_execute.assert_not_called()
+
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_finalize_returns_cleanly_after_cancellation(
         self, mock_tracker_cls, tmp_path
@@ -1009,7 +1040,7 @@ class TestCancellation:
     ):
         """A recorded running step becomes terminal when cancelled in the queue."""
         import threading
-        from concurrent.futures import CancelledError
+        import time
 
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
@@ -1034,7 +1065,7 @@ class TestCancellation:
 
         mock_execute.side_effect = _execute
         pipeline = _make_pipeline(tmp_path)
-        first = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="first")
+        pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="first")
         assert first_started.wait(timeout=2)
         queued = pipeline.submit(
             _MockOp,
@@ -1043,12 +1074,22 @@ class TestCancellation:
         )
 
         pipeline.cancel()
-        release_first.set()
-        first.result(timeout=5)
-        with pytest.raises(CancelledError):
-            queued.result(timeout=5)
-        pipeline.finalize()
+        finalized = threading.Event()
 
+        def _finalize() -> None:
+            pipeline.finalize()
+            finalized.set()
+
+        finalize_thread = threading.Thread(target=_finalize)
+        finalize_thread.start()
+        deadline = time.monotonic() + 2
+        while queued.status != "cancelled":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        release_first.set()
+        finalize_thread.join(timeout=5)
+
+        assert finalized.is_set()
         assert queued.status == "cancelled"
         result = next(result for result in pipeline if result.step_number == 1)
         assert result.metadata["cancelled"] is True
@@ -1071,7 +1112,6 @@ class TestCancellation:
         future = Future()
 
         def _resolve_after_cancel():
-            # Wait for cancel, then let the future sit until the 5s grace
             blocker.wait(timeout=10)
             future.set_result(None)
 
@@ -1098,73 +1138,78 @@ class TestCancellation:
 
         assert "pipeline_name" in summary
         assert "overall_success" in summary
-        # Should finish within ~7s (0.5s cancel delay + 5s grace + margin)
-        assert elapsed < 8.0
+        assert elapsed < 3.0
         # Signal handlers should be restored
         assert pipeline._prev_sigint is None
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_finalize_cancel_already_set(self, mock_tracker_cls, tmp_path):
-        """finalize() with pre-set cancel skips polling and uses short timeout."""
-        import time
-
+        """cancel() records intent without shutting down from a signal path."""
         mock_tracker_cls.return_value = MagicMock()
-
         pipeline = _make_pipeline(tmp_path)
+        executor = pipeline._executor
+
         pipeline.cancel()
 
-        # Inject a future that will time out
-        future = Future()
-        pipeline._active_futures[0] = future
-
-        start = time.time()
-        summary = pipeline.finalize()
-        elapsed = time.time() - start
-
-        assert "pipeline_name" in summary
-        # Should finish in ~5s (the grace timeout), not hang
-        assert elapsed < 7.0
+        assert executor is not None
+        assert executor._shutdown is False
+        pipeline.finalize()
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_cancelled_finalize_waits_for_pipeline_executor(
+    def test_cancelled_finalize_waits_beyond_five_seconds_for_terminal_write(
         self, mock_tracker_cls, tmp_path
     ):
-        """finalize() never leaves pipeline work active after cancellation."""
+        """Finalization joins late writers before synthesizing cancellations."""
         import threading
+        import time
 
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         started = threading.Event()
         release = threading.Event()
 
-        def _blocking_step() -> None:
+        def _late_terminal_write() -> StepResult:
             started.set()
-            release.wait(timeout=2)
+            release.wait(timeout=10)
+            result = StepResult(
+                step_name="late",
+                step_number=0,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                metadata={"cancelled": True, "terminal_writer": True},
+            )
+            pipeline._step_results.append(result)
+            return result
 
         assert pipeline._executor is not None
-        pipeline._executor.submit(_blocking_step)
+        future = pipeline._executor.submit(_late_terminal_write)
+        pipeline._active_futures[0] = StepFuture(
+            step_number=0,
+            step_name="late",
+            output_roles=frozenset(),
+            output_types={},
+            future=future,
+        )
+        pipeline._step_start_records[0] = MagicMock()
         assert started.wait(timeout=1)
         pipeline.cancel()
-        pending = MagicMock()
-        pending.result.side_effect = TimeoutError
-        pending.done = False
-        pipeline._active_futures[0] = pending
+        timer = threading.Timer(5.1, release.set)
+        timer.start()
+        started_at = time.monotonic()
+        pipeline.finalize()
+        elapsed = time.monotonic() - started_at
+        timer.join(timeout=1)
 
-        finalized = threading.Event()
-
-        def _finalize() -> None:
-            pipeline.finalize()
-            finalized.set()
-
-        thread = threading.Thread(target=_finalize)
-        thread.start()
-        assert not finalized.wait(timeout=0.1)
-
-        release.set()
-        thread.join(timeout=2)
-
-        assert finalized.is_set()
+        assert elapsed >= 5.0
         assert pipeline._executor is None
+        assert len(pipeline._step_results) == 1
+        assert pipeline._step_results[0].metadata == {
+            "cancelled": True,
+            "terminal_writer": True,
+        }
+        mock_tracker_cls.return_value.record_step_cancelled.assert_not_called()
 
 
 class TestStepRegistry:

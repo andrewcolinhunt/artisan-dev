@@ -48,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SlurmRunner()` to `PipelineManager.resume()`. Every legacy history that
   predates persisted pipeline-default metadata requires an explicit default,
   because even all-local effective rows cannot prove the historical default.
-- Cancellation now immediately cancels queued pipeline futures, terminates the
+- Cancellation finalization cancels queued pipeline futures, terminates the
   exact process-pool workers owned by the local runner, and waits for running
   runner collection and pipeline work to settle before `finalize()` returns.
   It discards records and artifacts staged by the cancelled step and protects
