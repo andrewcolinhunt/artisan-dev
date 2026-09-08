@@ -1009,6 +1009,7 @@ class TestCancellation:
     ):
         """A recorded running step becomes terminal when cancelled in the queue."""
         import threading
+        from concurrent.futures import CancelledError
 
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
@@ -1044,8 +1045,12 @@ class TestCancellation:
         pipeline.cancel()
         release_first.set()
         first.result(timeout=5)
-        result = queued.result(timeout=5)
+        with pytest.raises(CancelledError):
+            queued.result(timeout=5)
+        pipeline.finalize()
 
+        assert queued.status == "cancelled"
+        result = next(result for result in pipeline if result.step_number == 1)
         assert result.metadata["cancelled"] is True
         cancelled_record = mock_tracker.record_step_cancelled.call_args.args[0]
         assert cancelled_record.step_number == 1
@@ -1119,6 +1124,47 @@ class TestCancellation:
         assert "pipeline_name" in summary
         # Should finish in ~5s (the grace timeout), not hang
         assert elapsed < 7.0
+
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_cancelled_finalize_waits_for_pipeline_executor(
+        self, mock_tracker_cls, tmp_path
+    ):
+        """finalize() never leaves pipeline work active after cancellation."""
+        import threading
+
+        mock_tracker_cls.return_value = MagicMock()
+        pipeline = _make_pipeline(tmp_path)
+        started = threading.Event()
+        release = threading.Event()
+
+        def _blocking_step() -> None:
+            started.set()
+            release.wait(timeout=2)
+
+        assert pipeline._executor is not None
+        pipeline._executor.submit(_blocking_step)
+        assert started.wait(timeout=1)
+        pipeline.cancel()
+        pending = MagicMock()
+        pending.result.side_effect = TimeoutError
+        pending.done = False
+        pipeline._active_futures[0] = pending
+
+        finalized = threading.Event()
+
+        def _finalize() -> None:
+            pipeline.finalize()
+            finalized.set()
+
+        thread = threading.Thread(target=_finalize)
+        thread.start()
+        assert not finalized.wait(timeout=0.1)
+
+        release.set()
+        thread.join(timeout=2)
+
+        assert finalized.is_set()
+        assert pipeline._executor is None
 
 
 class TestStepRegistry:

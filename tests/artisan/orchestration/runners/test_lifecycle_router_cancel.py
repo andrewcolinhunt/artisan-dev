@@ -6,7 +6,10 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from artisan.orchestration.runners.local import LocalLifecycleRouter
 from artisan.schemas.execution.unit_result import UnitResult
@@ -62,11 +65,14 @@ class TestLocalLifecycleRouterCancel:
         )
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
-    def test_in_flight_future_finishes_best_effort(
+    def test_cancel_terminates_in_flight_worker(
         self,
         mock_executor_class: MagicMock,
     ) -> None:
         executor = mock_executor_class.return_value
+        process = MagicMock()
+        process.is_alive.return_value = True
+        executor._processes = {123: process}
         running: Future[list[UnitResult]] = Future()
         running.set_running_or_notify_cancel()
         executor.submit.return_value = running
@@ -76,10 +82,12 @@ class TestLocalLifecycleRouterCancel:
 
         handle.cancel()
         assert running.cancelled() is False
-        running.set_result([_success()])
+        process.terminate.assert_called_once_with()
+        running.set_exception(BrokenProcessPool("worker terminated"))
         assert handle._done.wait(timeout=2)
 
-        assert handle.collect() == [_success()]
+        with pytest.raises(BrokenProcessPool, match="worker terminated"):
+            handle.collect()
         executor.shutdown.assert_any_call(wait=False, cancel_futures=True)
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")

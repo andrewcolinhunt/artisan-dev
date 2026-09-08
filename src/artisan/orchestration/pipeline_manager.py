@@ -1045,13 +1045,15 @@ class PipelineManager:
     def cancel(self) -> None:
         """Request cancellation of the running pipeline.
 
-        Idempotent and thread-safe. Sets an event that step executors
-        check between phases, causing them to return early with
-        ``metadata={"cancelled": True}``.
+        Idempotent and thread-safe. Cancels queued steps and sets an event that
+        running step executors check between phases, causing them to return
+        early with ``metadata={"cancelled": True}``.
         """
         if not self._cancel_event.is_set():
             logger.warning("Pipeline '%s': cancellation requested.", self._config.name)
         self._cancel_event.set()
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _install_signal_handlers(self) -> None:
         """Install SIGINT/SIGTERM handlers that call cancel().
@@ -2197,7 +2199,7 @@ class PipelineManager:
         """Give every unfinished started step a terminal cancellation result."""
         for step_number, future in self._active_futures.items():
             start_record = self._step_start_records.get(step_number)
-            if start_record is None or future.done:
+            if start_record is None or (future.done and future.status != "cancelled"):
                 continue
             result = StepResult(
                 step_name=future.step_name,
@@ -2467,17 +2469,16 @@ class PipelineManager:
         """
         if self._executor is not None:
             cancelled = self._cancel_event.is_set()
-            self._executor.shutdown(
-                wait=wait and not cancelled, cancel_futures=cancelled
-            )
+            self._executor.shutdown(wait=wait, cancel_futures=cancelled)
             self._executor = None
 
     def finalize(self) -> dict[str, Any]:
         """Finalize pipeline execution and return summary.
 
         Waits for any active futures and shuts down the executor.
-        When cancellation has been requested, uses a short timeout
-        on futures to avoid blocking indefinitely.
+        When cancellation has been requested, uses a short timeout while
+        collecting individual futures, then waits for the pipeline executor
+        itself to settle before returning.
 
         Safe to call multiple times — subsequent calls return the cached
         summary without re-running cleanup.
