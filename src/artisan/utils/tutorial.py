@@ -38,9 +38,21 @@ def tutorial_setup(
 
     Returns:
         TutorialEnv with runs_dir, delta_root, staging_root, working_root.
+
+    Raises:
+        ValueError: If ``name`` resolves outside the tutorial runs directory.
     """
     base_dir = base_dir or get_caller_dir(stack_level=2)
-    runs_dir = os.path.join(str(base_dir), "runs", name)
+    runs_root = (Path(base_dir) / "runs").resolve()
+    runs_path = (runs_root / name).resolve()
+    if (
+        not name.strip()
+        or runs_path == runs_root
+        or not runs_path.is_relative_to(runs_root)
+    ):
+        msg = f"tutorial name must resolve beneath {runs_root}: {name!r}"
+        raise ValueError(msg)
+    runs_dir = str(runs_path)
 
     if clean and os.path.exists(runs_dir):
         shutil.rmtree(runs_dir)

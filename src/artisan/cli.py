@@ -443,13 +443,16 @@ def _op_run(args: argparse.Namespace) -> int:
         return 1
     fd, log_path = tempfile.mkstemp(prefix="artisan-op-run-", suffix=".log")
     os.close(fd)
-    result = op.execute_function(
-        ExecuteInput(
-            execute_dir=args.execute_dir or os.getcwd(),
-            inputs=normalized,
-            log_path=log_path,
+    try:
+        result = op.execute_function(
+            ExecuteInput(
+                execute_dir=args.execute_dir or os.getcwd(),
+                inputs=normalized,
+                log_path=log_path,
+            )
         )
-    )
+    finally:
+        Path(log_path).unlink(missing_ok=True)
     if result is not None:
         sys.stderr.write(
             f"{op_cls.__name__}.execute_function returned "

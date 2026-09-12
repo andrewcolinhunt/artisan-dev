@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
@@ -203,6 +205,33 @@ class TestOpRun:
         # the runner's log tempfile lives outside execute_dir
         assert [p.name for p in tmp_path.iterdir()] == ["marker.txt"]
 
+    def test_removes_log_tempfile(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        log_paths: list[Path] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def tracked_mkstemp(*, prefix: str, suffix: str) -> tuple[int, str]:
+            fd, path = real_mkstemp(prefix=prefix, suffix=suffix, dir=tmp_path)
+            log_paths.append(Path(path))
+            return fd, path
+
+        monkeypatch.setattr("artisan.cli.tempfile.mkstemp", tracked_mkstemp)
+
+        rc = main(
+            [
+                "op",
+                "run",
+                f"{__name__}:RunnerOp",
+                "--execute-dir",
+                str(output_dir),
+            ]
+        )
+
+        assert rc == 0
+        assert len(log_paths) == 1
+        assert not log_paths[0].exists()
+
     def test_bare_str_input_delivered_as_one_element_list(self, tmp_path):
         """The wire's one-file-per-role shape is re-wrapped: str -> [str]."""
         RunnerOp.seen.clear()
@@ -258,13 +287,20 @@ class TestOpRun:
         assert "source" in err
         assert "file path" in err
 
-    def test_non_none_return_rejected(self, tmp_path, capsys):
+    def test_non_none_return_rejected(self, tmp_path, capsys, monkeypatch):
+        fd, log_path = tempfile.mkstemp(dir=tmp_path)
+        os.close(fd)
+        monkeypatch.setattr(
+            "artisan.cli.tempfile.mkstemp",
+            lambda **_kwargs: (os.open(log_path, os.O_RDWR), log_path),
+        )
         rc = main(
             ["op", "run", f"{__name__}:ReturningOp", "--execute-dir", str(tmp_path)]
         )
 
         assert rc == 1
         assert "return None" in capsys.readouterr().err
+        assert not Path(log_path).exists()
 
     def test_bad_target_exits_nonzero(self, capsys):
         rc = main(["op", "run", "no.such.module:Nope"])
