@@ -24,6 +24,7 @@ from typing import Any
 import modal
 
 from artisan.execution.tool_endpoint.spec import endpoint_spec
+from artisan.execution.tool_endpoint.transport import MAX_INLINE_BYTES
 from artisan.operations.base.operation_definition import OperationDefinition
 
 ENDPOINT_PYTHON_VERSION = "3.12"
@@ -89,6 +90,7 @@ def build_app(
     op_description = spec.description
     params_schema = spec.params_schema
     input_roles = spec.input_roles
+    max_inline_bytes = MAX_INLINE_BYTES
 
     @app.function(**worker_kwargs)
     @modal.concurrent(max_inputs=1)  # one job per container; fan out, don't pack
@@ -122,6 +124,98 @@ def build_app(
             title=f"artisan-tool-{op_name}",
             description=f"Tool endpoint for the '{op_name}' operation.",
         )
+
+        def _string_map(raw: str, field: str) -> dict[str, str]:
+            """Parse a JSON string-to-string map without losing duplicate keys."""
+
+            def _unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+                parsed_map: dict[str, Any] = {}
+                for key, value in pairs:
+                    if key in parsed_map:
+                        msg = f"{field} contains duplicate role {key!r}"
+                        raise ValueError(msg)
+                    parsed_map[key] = value
+                return parsed_map
+
+            parsed_map = json.loads(raw, object_pairs_hook=_unique)
+            if not isinstance(parsed_map, dict) or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in parsed_map.items()
+            ):
+                msg = f"{field} must be a JSON object mapping strings to strings"
+                raise ValueError(msg)
+            return parsed_map
+
+        def _file_roles(
+            uploads: list[UploadFile],
+            uris: dict[str, str],
+            filenames: dict[str, str],
+        ) -> list[str]:
+            """Validate submitted roles and return multipart roles in order."""
+            roles = [upload.filename or "input" for upload in uploads]
+            seen: set[str] = set()
+            duplicates: set[str] = set()
+            for role in [*roles, *uris]:
+                if role in seen:
+                    duplicates.add(role)
+                seen.add(role)
+            if duplicates:
+                msg = f"duplicate input roles: {sorted(duplicates)}"
+                raise ValueError(msg)
+
+            known = set(input_roles)
+            provided = set(roles) | set(uris)
+            unknown = (provided | set(filenames)) - known
+            if unknown:
+                msg = f"unknown input roles: {sorted(unknown)}"
+                raise ValueError(msg)
+            required = {
+                role for role, contract in input_roles.items() if contract["required"]
+            }
+            missing = required - provided
+            if missing:
+                msg = f"missing required input roles: {sorted(missing)}"
+                raise ValueError(msg)
+            dangling = set(filenames) - provided
+            if dangling:
+                msg = f"input_filenames has no matching input: {sorted(dangling)}"
+                raise ValueError(msg)
+            return roles
+
+        async def _inline_refs(
+            uploads: list[UploadFile],
+            roles: list[str],
+            filenames: dict[str, str],
+        ) -> list[dict[str, Any]]:
+            """Read multipart inputs without crossing the aggregate inline bound."""
+            refs: list[dict[str, Any]] = []
+            total = 0
+            for upload, role in zip(uploads, roles, strict=True):
+                data = bytearray()
+                while True:
+                    remaining = max_inline_bytes - total
+                    chunk = await upload.read(min(1024 * 1024, remaining + 1))
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_inline_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "inline inputs exceed the "
+                                f"{max_inline_bytes}-byte aggregate limit"
+                            ),
+                        )
+                    data.extend(chunk)
+                refs.append(
+                    {
+                        "name": role,
+                        "filename": filenames.get(role),
+                        "uri": None,
+                        "data": bytes(data),
+                    }
+                )
+            return refs
 
         @web.get("/schema")
         def schema() -> dict[str, Any]:
@@ -157,10 +251,14 @@ def build_app(
             """
             try:
                 parsed = json.loads(params)
-                uris: dict[str, str] = json.loads(input_uris)
-                filenames: dict[str, str] = json.loads(input_filenames)
+                if not isinstance(parsed, dict):
+                    msg = "params must be a JSON object"
+                    raise ValueError(msg)
+                uris = _string_map(input_uris, "input_uris")
+                filenames = _string_map(input_filenames, "input_filenames")
                 if params_schema:
                     jsonschema.validate(parsed, params_schema)
+                roles = _file_roles(files, uris, filenames)
             except (ValueError, jsonschema.ValidationError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             if output_store and "://" not in output_store:
@@ -171,15 +269,7 @@ def build_app(
                         "(s3://…) or a presigned PUT URL (https://…)"
                     ),
                 )
-            refs: list[dict[str, Any]] = [
-                {
-                    "name": f.filename or "input",
-                    "filename": filenames.get(f.filename or "input"),
-                    "uri": None,
-                    "data": await f.read(),
-                }
-                for f in files
-            ]
+            refs = await _inline_refs(files, roles, filenames)
             refs += [
                 {
                     "name": name,
@@ -205,10 +295,14 @@ def build_app(
             fc = modal_rt.FunctionCall.from_id(call_id)
             try:
                 raw: dict[str, Any] = fc.get(timeout=0)
-            except TimeoutError:
-                return "pending"
             except modal_rt.exception.OutputExpiredError:
                 return "expired"
+            except modal_rt.exception.FunctionTimeoutError:
+                return "failed"
+            except modal_rt.exception.TimeoutError:
+                return "pending"
+            except modal_rt.exception.Error:
+                return "failed"
             return raw
 
         @web.get("/result")

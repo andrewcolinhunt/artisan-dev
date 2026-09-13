@@ -124,7 +124,9 @@ class TestUnpackInputs:
 
     def test_empty_ref_raises(self, tmp_path: Path):
         with pytest.raises(ValueError, match="neither uri nor data"):
-            InlineTransport().unpack_inputs([InputRef(name="x")], str(tmp_path))
+            InlineTransport().unpack_inputs(
+                [InputRef.model_construct(name="x")], str(tmp_path)
+            )
 
 
 class TestOutputs:
