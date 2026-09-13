@@ -36,8 +36,10 @@ def _load_completed_steps(
     delta_root: str,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
 ) -> pl.DataFrame:
-    """Return completed steps, deduplicated by step_number (keeps last)."""
+    """Return completed steps, optionally scoped to one pipeline run."""
     if fs is None:
         from fsspec.implementations.local import LocalFileSystem
 
@@ -54,20 +56,21 @@ def _load_completed_steps(
             }
         )
 
-    df = (
-        pl.scan_delta(table_path, storage_options=storage_options)
-        .filter(pl.col("status") == "completed")
-        .select(
-            [
-                "step_number",
-                "step_name",
-                "output_roles_json",
-                "output_types_json",
-                "input_refs_json",
-            ]
-        )
-        .collect()
+    scanner = pl.scan_delta(table_path, storage_options=storage_options).filter(
+        pl.col("status") == "completed"
     )
+    if pipeline_run_id is not None:
+        scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
+
+    df = scanner.select(
+        [
+            "step_number",
+            "step_name",
+            "output_roles_json",
+            "output_types_json",
+            "input_refs_json",
+        ]
+    ).collect()
 
     # Deduplicate by step_number (keep last row per step)
     if not df.is_empty():
@@ -123,6 +126,8 @@ def build_macro_graph(
     delta_root: str,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
 ) -> graphviz.Digraph:
     """Create a step-level pipeline graph from the steps table.
 
@@ -136,11 +141,18 @@ def build_macro_graph(
         delta_root: Path to Delta Lake root directory.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        pipeline_run_id: Pipeline run to render. None renders the unscoped
+            steps table, preserving the existing Python API behavior.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    steps_df = _load_completed_steps(delta_root, storage_options=storage_options, fs=fs)
+    steps_df = _load_completed_steps(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+        pipeline_run_id=pipeline_run_id,
+    )
 
     graph = graphviz.Digraph("pipeline", format="svg")
     apply_default_layout(graph)
