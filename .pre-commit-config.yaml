@@ -14,6 +14,7 @@ repos:
           (?x)^(
             docs/how-to-guides/creating-artifact-types\.md|
             docs/contributing/coding-conventions\.md|
+            docs/reference/composite-definition\.md|
             skills/pipeline-write/SKILL\.md|
             docs/how-to-guides/writing-curator-operations\.md
           )$
@@ -33,7 +34,7 @@ repos:
       - id: mixed-line-ending # Replaces or checks mixed line ending.
       - id: name-tests-test # verifies that test files are named correctly.
         args: ["--pytest-test-first"] # ensure tests match test_.*\.py
-        exclude: ^tests/fixtures/csv\.py$ # fixture-builder helper, not a test
+        exclude: ^tests/fixtures/ # importable fixture helpers, not tests
       - id: trailing-whitespace # Trims trailing whitespace.
         exclude: ^docs/tutorials/[^/]+/runs/ # Delta Lake fixture subtree
 
@@ -76,10 +77,12 @@ repos:
         additional_dependencies:
           - botocore
           - cloudpickle
+          - fastapi==0.135.4
           - fastmcp>=3
           - fsspec
           - griffe
           - httpx
+          - modal==1.4.1
           - pytest
           - pydantic
           - polars>=0.20.0
@@ -95,6 +98,8 @@ repos:
     rev: "v2.4.1"
     hooks:
       - id: codespell
+        # Deliberate misspellings used to test validation and suggestions.
+        args: ["--ignore-words-list=multiplyer,protcol,ser"]
         additional_dependencies:
           - tomli
 
