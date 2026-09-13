@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
+from artisan_mcp._boundary import boundary
+from artisan_mcp._common import resource_fits
+
 
 def register(mcp: FastMCP) -> None:
     """Attach the operations resource to ``mcp``."""
@@ -20,4 +23,17 @@ def register(mcp: FastMCP) -> None:
         """
         from artisan.registry import describe
 
-        return describe(name).model_dump()
+        def payload() -> dict:
+            metadata = describe(name).model_dump()
+            if resource_fits(metadata):
+                return metadata
+            return {
+                "name": name,
+                "truncated": True,
+                "message": (
+                    "Operation metadata exceeds the resource limit; use "
+                    "artisan_describe_operation when full metadata is required."
+                ),
+            }
+
+        return boundary(payload)

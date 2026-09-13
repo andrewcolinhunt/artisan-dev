@@ -38,14 +38,12 @@ def make_app(monkeypatch) -> Callable[..., FastMCP]:
     def _make(
         *,
         delta_root: Path | str | None = None,
-        write: bool = False,
         load_modules: str | None = _DEFAULT_LOAD,
     ) -> FastMCP:
         if delta_root is not None:
             monkeypatch.setenv("ARTISAN_DELTA_ROOT", str(delta_root))
         else:
             monkeypatch.delenv("ARTISAN_DELTA_ROOT", raising=False)
-        monkeypatch.setenv("ARTISAN_WRITE", "true" if write else "false")
         if load_modules:
             monkeypatch.setenv("ARTISAN_LOAD_MODULES", load_modules)
         else:
@@ -66,6 +64,20 @@ def invoke() -> Callable[..., Any]:
                 # structured_content is the dict every tool returns; .data is
                 # None for an empty dict, so prefer the structured form.
                 return result.structured_content
+
+        return asyncio.run(_run())
+
+    return _invoke
+
+
+@pytest.fixture
+def invoke_result() -> Callable[..., Any]:
+    """Return a helper preserving FastMCP tool-error metadata."""
+
+    def _invoke(app: FastMCP, name: str, args: dict | None = None) -> Any:
+        async def _run() -> Any:
+            async with Client(app) as client:
+                return await client.call_tool(name, args or {}, raise_on_error=False)
 
         return asyncio.run(_run())
 

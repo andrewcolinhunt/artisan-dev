@@ -1,10 +1,4 @@
-"""Write-gate tests: the read-only surface is exactly ten tools.
-
-Phase 2 write tools are unbuilt, so ``ARTISAN_WRITE`` changes only the
-``read_only`` capability flag today — the tool set stays the ten read tools
-either way. When write tools land, this test grows to assert their
-appearance under the flag.
-"""
+"""The MCP surface is honestly and unconditionally read-only."""
 
 from __future__ import annotations
 
@@ -22,14 +16,9 @@ _READ_TOOLS = {
 }
 
 
-class TestWriteGate:
+class TestReadOnlySurface:
     def test_read_only_registers_ten_tools(self, make_app, tool_names) -> None:
-        assert tool_names(make_app(write=False)) == _READ_TOOLS
+        assert tool_names(make_app()) == _READ_TOOLS
 
-    def test_write_enabled_registers_same_ten(self, make_app, tool_names) -> None:
-        # No write tools exist yet (Phase 2); the surface is unchanged.
-        assert tool_names(make_app(write=True)) == _READ_TOOLS
-
-    def test_flag_flips_read_only_in_capabilities(self, make_app, invoke) -> None:
-        assert invoke(make_app(write=False), "artisan_capabilities")["read_only"]
-        assert not invoke(make_app(write=True), "artisan_capabilities")["read_only"]
+    def test_capabilities_report_read_only(self, make_app, invoke) -> None:
+        assert invoke(make_app(), "artisan_capabilities")["read_only"] is True

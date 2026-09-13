@@ -40,7 +40,8 @@ class TestEnvelopeBoundary:
         assert env["code"] == "store_not_found"
         assert env["error_type"] == "io"
         assert env["recovery_hint"] == "CHECK_INPUT"
-        assert env["cause"]["type"] == "FileNotFoundError"
+        assert "cause" not in env
+        assert str(tmp_path) not in str(env)
 
     def test_diagnose_store_not_found(self, make_app, invoke, tmp_path) -> None:
         env = invoke(

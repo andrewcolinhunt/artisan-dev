@@ -11,15 +11,14 @@ from __future__ import annotations
 from fastmcp import Context, FastMCP
 
 from artisan_mcp._boundary import boundary, require_delta_root
+from artisan_mcp._common import READ_ONLY
 from artisan_mcp._pagination import paginate
-
-_READ_ONLY = {"readOnlyHint": True, "idempotentHint": True}
 
 
 def register(mcp: FastMCP) -> None:
     """Attach the artifact tools to ``mcp``."""
 
-    @mcp.tool(annotations=_READ_ONLY)
+    @mcp.tool(annotations=READ_ONLY)
     async def artisan_query_artifacts(
         ctx: Context,
         artifact_type: str | None = None,
@@ -31,7 +30,8 @@ def register(mcp: FastMCP) -> None:
 
         Returns a page of artifact references — artifact_id, artifact_type,
         origin_step_number, and index metadata — filtered by artifact_type
-        and/or pipeline_run_id (AND-ed), with has_more and next_cursor.
+        and/or pipeline_run_id (AND-ed), with has_more and next_cursor. Pages
+        are capped at 100 items.
         References only: never artifact content. Use the returned
         artifact_id with artisan_get_provenance_graph to walk lineage. The
         index is not run-scoped, so a run filter resolves the run's step
@@ -52,7 +52,7 @@ def register(mcp: FastMCP) -> None:
 
         return boundary(payload)
 
-    @mcp.tool(annotations=_READ_ONLY)
+    @mcp.tool(annotations=READ_ONLY)
     async def artisan_get_step_result(
         ctx: Context, pipeline_run_id: str, step_name: str
     ) -> dict:
