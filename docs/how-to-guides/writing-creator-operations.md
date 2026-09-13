@@ -641,7 +641,7 @@ endpoint remotely, a standalone container CLI — set one flag:
 ```python
 class EmbedSequences(OperationDefinition):
     name = "embed_sequences"
-    execute_as_tool: ClassVar[bool] = True   # the entire opt-in
+    execute_as_tool: ClassVar[bool] = True  # the entire opt-in
     ...
 
     class Params(BaseModel):
@@ -649,8 +649,9 @@ class EmbedSequences(OperationDefinition):
 
     params: Params = Params()
 
-    def execute_function(self, inputs: ExecuteInput) -> None:
-        ...  # read input files, write output files to inputs.execute_dir
+    def execute_function(
+        self, inputs: ExecuteInput
+    ) -> None: ...  # read input files, write output files to inputs.execute_dir
 ```
 
 No `ToolSpec`, no `execute_command` — the framework supplies the command

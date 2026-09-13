@@ -190,7 +190,9 @@ class GpuInference(OperationDefinition):
             max_containers=50,
         ),
     )
-    compute_resources = ComputeResources(gpu="A100", cpu=4.0, memory_gb=64, timeout=7200)
+    compute_resources = ComputeResources(
+        gpu="A100", cpu=4.0, memory_gb=64, timeout=7200
+    )
     ...
 ```
 
@@ -292,7 +294,7 @@ op = FoldComplex(
         active="modal",
         modal=ModalComputeConfig(
             image="ghcr.io/your-org/boltz-worker:0.4",
-            secrets=["aws-s3"],                    # worker upload credentials
+            secrets=["aws-s3"],  # worker upload credentials
             output_store="s3://your-bucket/runs",  # this caller's choice
         ),
     )
@@ -624,10 +626,17 @@ that matches what you want to do.
 pipeline.submit(MyOp, environment="docker")
 
 # Dict form (configure provider — must set 'active'):
-pipeline.submit(MyOp, environment={"active": "docker", "docker": {"image": "myimg:latest"}})
+pipeline.submit(
+    MyOp, environment={"active": "docker", "docker": {"image": "myimg:latest"}}
+)
 
 # Typed-model form (autocomplete + validation):
-pipeline.submit(MyOp, environment=Environments(active="docker", docker=DockerEnvironmentSpec(image="myimg:latest")))
+pipeline.submit(
+    MyOp,
+    environment=Environments(
+        active="docker", docker=DockerEnvironmentSpec(image="myimg:latest")
+    ),
+)
 ```
 
 `compute_provider`:
@@ -640,7 +649,10 @@ pipeline.submit(MyOp, compute_provider="modal")
 # on compute_resources, not the provider's modal block:
 pipeline.submit(
     MyOp,
-    compute_provider={"active": "modal", "modal": {"image": "ghcr.io/your-org/img:latest"}},
+    compute_provider={
+        "active": "modal",
+        "modal": {"image": "ghcr.io/your-org/img:latest"},
+    },
     compute_resources={"gpu": "A100", "memory_gb": 32},
 )
 
