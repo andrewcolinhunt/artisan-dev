@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Never
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def boundary(payload_fn: Callable[[], Any]) -> Any:
+def boundary[T](payload_fn: Callable[[], T]) -> T | dict[str, Any]:
     """Run a tool body, returning its payload or an error envelope.
 
     Args:
@@ -47,7 +47,7 @@ def boundary(payload_fn: Callable[[], Any]) -> Any:
         return exc.to_dict(include_cause=False)
 
 
-def invalid_input(field: str, message: str) -> None:
+def invalid_input(field: str, message: str) -> Never:
     """Raise a structured error for an invalid MCP argument.
 
     Args:

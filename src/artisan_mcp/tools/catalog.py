@@ -8,7 +8,7 @@ shared boundary.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastmcp import Context, FastMCP
 
@@ -21,7 +21,7 @@ def register(mcp: FastMCP) -> None:
     """Attach the catalog tools to ``mcp``."""
 
     @mcp.tool(annotations=READ_ONLY)
-    async def artisan_capabilities(ctx: Context) -> dict:
+    async def artisan_capabilities(ctx: Context) -> dict[str, Any]:
         """Report what this server can do before you plan any other call.
 
         Returns the artisan and server versions, whether the server is
@@ -49,7 +49,7 @@ def register(mcp: FastMCP) -> None:
         tag: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """List registered operations to discover what a pipeline can be built from.
 
         Filters AND together: kind ('creator' or 'curator'), a
@@ -63,14 +63,14 @@ def register(mcp: FastMCP) -> None:
         """
         from artisan.registry import list_operations
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             summaries = list_operations(kind=kind, query=query, tag=tag)
             return paginate([s.model_dump() for s in summaries], limit, cursor)
 
         return boundary(payload)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def artisan_describe_operation(name: str) -> dict:
+    async def artisan_describe_operation(name: str) -> dict[str, Any]:
         """Describe one operation in full before configuring it in a pipeline.
 
         Returns the complete metadata for the named op: input and output

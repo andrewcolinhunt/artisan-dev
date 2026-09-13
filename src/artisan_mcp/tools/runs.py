@@ -8,6 +8,8 @@ shipped envelope.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastmcp import Context, FastMCP
 
 from artisan_mcp._boundary import boundary, require_delta_root
@@ -21,7 +23,7 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(annotations=READ_ONLY)
     async def artisan_list_runs(
         ctx: Context, limit: int = 20, cursor: str | None = None
-    ) -> dict:
+    ) -> dict[str, Any]:
         """List persisted pipeline runs, most recent first, to pick one to inspect.
 
         Returns a page of run rollups — pipeline_run_id, step_count,
@@ -34,7 +36,7 @@ def register(mcp: FastMCP) -> None:
         """
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             from artisan.orchestration.run_history import list_runs
 
             root = require_delta_root(config)
@@ -44,7 +46,9 @@ def register(mcp: FastMCP) -> None:
         return boundary(payload)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def artisan_get_run_status(ctx: Context, pipeline_run_id: str) -> dict:
+    async def artisan_get_run_status(
+        ctx: Context, pipeline_run_id: str
+    ) -> dict[str, Any]:
         """Get one run's terminal step statuses to see how far it got and what failed.
 
         Returns the run rollup (last_status, step_count, started_at,
@@ -60,7 +64,7 @@ def register(mcp: FastMCP) -> None:
         """
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             from artisan.orchestration.run_status import run_status
 
             root = require_delta_root(config)
@@ -69,7 +73,9 @@ def register(mcp: FastMCP) -> None:
         return boundary(payload)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def artisan_diagnose_run(ctx: Context, pipeline_run_id: str) -> dict:
+    async def artisan_diagnose_run(
+        ctx: Context, pipeline_run_id: str
+    ) -> dict[str, Any]:
         """Diagnose a run's failures in one call: what failed, why, and what to try.
 
         Composes the failed executions (with their error envelopes and log
@@ -82,7 +88,7 @@ def register(mcp: FastMCP) -> None:
         """
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             from artisan.visualization.inspect import diagnose_run
 
             root = require_delta_root(config)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 from fastmcp import Context, FastMCP
 
@@ -34,7 +35,7 @@ def register(mcp: FastMCP) -> None:
         pipeline_run_id: str,
         step_name: str,
         tail_lines: int = 200,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Tail the failure logs of a failed step to read its error output.
 
         Failure logs only (v1): this reads the human failure log files a
@@ -48,7 +49,7 @@ def register(mcp: FastMCP) -> None:
         """
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             import polars as pl
 
             from artisan.orchestration.run_status import resolve_step_number
@@ -99,7 +100,7 @@ def _contained_log_path(logs_root: str, relative_path: str) -> str:
     return resolved_path
 
 
-def _tail_logs(paths: list[str], tail_lines: int) -> dict:
+def _tail_logs(paths: list[str], tail_lines: int) -> dict[str, Any]:
     """Tail several files within aggregate file, byte, and line bounds."""
     selected = paths[-MAX_LOG_FILES:]
     chunks: list[bytes] = []

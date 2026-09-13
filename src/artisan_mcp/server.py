@@ -9,7 +9,7 @@ directly — no server-side logic.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 
@@ -32,7 +32,7 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
     cfg = config or ArtisanMCPConfig()
 
     @asynccontextmanager
-    async def lifespan(_app: FastMCP) -> AsyncIterator[dict]:
+    async def lifespan(_app: FastMCP) -> AsyncIterator[dict[str, Any]]:
         # Discovery runs once at startup; tools read the report and config
         # back via ctx.lifespan_context. Kept a plain dict per the design.
         from artisan.registry import discover

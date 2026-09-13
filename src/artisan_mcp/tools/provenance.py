@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastmcp import Context, FastMCP
 
@@ -21,7 +21,7 @@ def register(mcp: FastMCP) -> None:
         artifact_id: str,
         direction: Literal["backward", "forward"] = "backward",
         depth: int = 3,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Walk provenance edges around one artifact to trace where it came from.
 
         Returns a bounded edge list (source_artifact_id, target_artifact_id
@@ -35,7 +35,7 @@ def register(mcp: FastMCP) -> None:
         """
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             from artisan.provenance import provenance_edges
 
             validate_int_range(
