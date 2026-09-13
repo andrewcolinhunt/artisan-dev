@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import posixpath
 import uuid
+from types import TracebackType
 
 import polars as pl
 from fsspec import AbstractFileSystem
@@ -154,7 +155,12 @@ class StagingArea:
         """Enter the staging context."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Exit the staging context, preserving files for debugging on error."""
         if exc_type is None:
             # No exception - cleanup is typically handled by orchestrator

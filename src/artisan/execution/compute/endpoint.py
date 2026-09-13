@@ -66,11 +66,12 @@ class EndpointExecuteRouter(ExecuteRouter):
         if self._cancel_check is None:
             yield
             return
+        cancel_check = self._cancel_check
         stop = threading.Event()
 
         def _watch() -> None:
             while not stop.wait(_CANCEL_POLL_SECONDS):
-                if self._cancel_check():
+                if cancel_check():
                     self._cancel.set()
                     return
 

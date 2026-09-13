@@ -10,6 +10,7 @@ and any future CLI command share one contract.
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -183,6 +184,6 @@ def resolve_step_number(
     return int(matches["step_number"][0])
 
 
-def _iso(value: object) -> str | None:
+def _iso(value: date | datetime | None) -> str | None:
     """Return a timestamp's ISO string, or None."""
     return value.isoformat() if value is not None else None

@@ -7,6 +7,7 @@ are plain ``str``: ``ArtifactTypes.DATA == "data"`` is True.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import StrEnum
 from typing import ClassVar
 
@@ -29,7 +30,7 @@ class _ArtifactTypesMeta(type):
             return False
         return item in cls._registry  # type: ignore[attr-defined]
 
-    def __iter__(cls):
+    def __iter__(cls) -> Iterator[str]:
         """Iterate over all registered type keys."""
         return iter(cls._registry)  # type: ignore[attr-defined]
 
