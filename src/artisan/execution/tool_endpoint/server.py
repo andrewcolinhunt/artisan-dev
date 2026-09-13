@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import os
 import shutil
+import tarfile
 import tempfile
 from functools import reduce
 from typing import Any
@@ -24,7 +25,11 @@ from artisan.execution.tool_endpoint.protocol import (
     ToolRequest,
     WorkerResult,
 )
-from artisan.execution.tool_endpoint.transport import InlineTransport, upload_outputs
+from artisan.execution.tool_endpoint.transport import (
+    MAX_ARCHIVE_MEMBERS,
+    InlineTransport,
+    upload_outputs,
+)
 from artisan.execution.transport.log_constants import (
     MAX_TOOL_OUTPUT_BYTES,
     TOOL_OUTPUT_FILENAME,
@@ -34,7 +39,17 @@ from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSp
 from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.utils.external_tools import ExternalToolError
 
-_INPUT_RESOLUTION_ERRORS: tuple[type[BaseException], ...] = (ValueError, OSError)
+_INPUT_RESOLUTION_ERRORS: tuple[type[BaseException], ...] = (
+    ValueError,
+    OSError,
+    shutil.Error,
+)
+_OUTPUT_BOUNDARY_ERRORS: tuple[type[BaseException], ...] = (
+    OSError,
+    shutil.Error,
+    tarfile.TarError,
+    httpx.HTTPError,
+)
 try:
     from botocore.exceptions import (  # type: ignore[import-untyped]
         BotoCoreError,
@@ -44,6 +59,7 @@ except ModuleNotFoundError:
     pass
 else:
     _INPUT_RESOLUTION_ERRORS += (BotoCoreError, ClientError)
+    _OUTPUT_BOUNDARY_ERRORS += (BotoCoreError, ClientError)
 
 
 def resolve_op(module: str, qualname: str) -> type[OperationDefinition]:
@@ -107,17 +123,43 @@ def run_tool_request(
             "CHECK_INPUT",
         )
 
-    job_root = tempfile.mkdtemp(prefix=f"artisan-tool-{op_cls.name}-")
+    try:
+        job_root = tempfile.mkdtemp(prefix=f"artisan-tool-{op_cls.name}-")
+    except OSError as exc:
+        return _error_result(
+            op_cls.name,
+            ErrorCode.OP_EXECUTE_FAILED,
+            f"could not create tool workspace: {exc}",
+            "io",
+            "RETRY_LATER",
+        )
     # Modal reuses warm containers across requests; the job tree must not
     # outlive the call or per-request temp dirs accumulate in the container.
     try:
         inputs_dir = os.path.join(job_root, "inputs")
         outputs_dir = os.path.join(job_root, "outputs")
-        os.makedirs(outputs_dir)
+        try:
+            os.makedirs(outputs_dir)
+        except OSError as exc:
+            return _error_result(
+                op_cls.name,
+                ErrorCode.OP_EXECUTE_FAILED,
+                f"could not create tool output directory: {exc}",
+                "io",
+                "RETRY_LATER",
+            )
 
         transport = InlineTransport()
         try:
             inputs = transport.unpack_inputs(request.inputs, inputs_dir)
+        except ImportError as exc:
+            return _error_result(
+                op_cls.name,
+                ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+                f"input filesystem dependency is unavailable: {exc}",
+                "config",
+                "REPORT_TO_USER",
+            )
         except _INPUT_RESOLUTION_ERRORS as exc:
             # malformed ref; a URI that would not resolve (missing object,
             # denied read — s3fs maps these to FileNotFoundError/
@@ -146,7 +188,7 @@ def run_tool_request(
                 environment=LocalEnvironmentSpec(),
                 stream_output=True,
             )
-        except ExternalToolError as exc:
+        except (ExternalToolError, OSError) as exc:
             return _error_result(
                 op_cls.name,
                 ErrorCode.OP_EXECUTE_FAILED,
@@ -156,43 +198,57 @@ def run_tool_request(
                 log_tail=_log_tail(log_path),
             )
 
-        names = _list_outputs(outputs_dir)
-        stored = None
-        if request.output_store and names:
-            try:
+        names: list[str] = []
+        try:
+            names = _list_outputs(outputs_dir)
+            stored = None
+            if request.output_store and names:
                 stored = upload_outputs(
                     outputs_dir, names, request.output_store, op_cls.name
                 )
-            except NotImplementedError as exc:
-                # the deployment's store cannot presign — a misconfiguration,
-                # not a transient the agent can retry away
-                return _error_result(
-                    op_cls.name,
-                    ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-                    f"output store cannot presign: {exc}",
-                    "config",
-                    "REPORT_TO_USER",
-                    output_names=names,
-                    log_tail=_log_tail(log_path),
-                )
-            except (OSError, httpx.HTTPStatusError) as exc:
-                # the tool ran; only delivery failed — surface the outputs it
-                # produced and let the agent retry delivery, not the compute
-                return _error_result(
-                    op_cls.name,
-                    ErrorCode.OUTPUT_DELIVERY_FAILED,
-                    f"delivery to {request.output_store} failed: {exc}",
-                    "io",
-                    "RETRY_LATER",
-                    output_names=names,
-                    log_tail=_log_tail(log_path),
-                )
+            output_tar = (
+                None
+                if stored is not None
+                else transport.pack_outputs(outputs_dir, names)
+            )
+        except (ImportError, NotImplementedError) as exc:
+            return _error_result(
+                op_cls.name,
+                ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+                f"tool output transport is unavailable: {exc}",
+                "config",
+                "REPORT_TO_USER",
+                output_names=names,
+                log_tail=_log_tail(log_path),
+            )
+        except ValueError as exc:
+            return _error_result(
+                op_cls.name,
+                ErrorCode.OUTPUT_DELIVERY_FAILED,
+                f"tool output transport rejected the result: {exc}",
+                "io",
+                "CHECK_INPUT",
+                output_names=names,
+                log_tail=_log_tail(log_path),
+            )
+        except _OUTPUT_BOUNDARY_ERRORS as exc:
+            # Compute completed; preserve its output names and log while making
+            # the delivery failure explicit to the caller.
+            return _error_result(
+                op_cls.name,
+                ErrorCode.OUTPUT_DELIVERY_FAILED,
+                f"tool output transport failed: {exc}",
+                "io",
+                "RETRY_LATER",
+                output_names=names,
+                log_tail=_log_tail(log_path),
+            )
 
         return WorkerResult(
             manifest=ToolManifest(
                 output_names=names, stored=stored, log_tail=_log_tail(log_path)
             ),
-            output_tar=None if stored else transport.pack_outputs(outputs_dir, names),
+            output_tar=output_tar,
         )
     finally:
         # Result values (tar bytes, log tail, stored pointer) are fully
@@ -267,13 +323,17 @@ def _error_result(
 
 
 def _log_tail(log_path: str) -> str | None:
-    """Last ``MAX_TOOL_OUTPUT_BYTES`` of the tool log, or None if absent."""
-    if not os.path.exists(log_path):
+    """Last ``MAX_TOOL_OUTPUT_BYTES`` of the tool log, or None if unavailable."""
+    try:
+        size = os.path.getsize(log_path)
+    except OSError:
         return None
-    size = os.path.getsize(log_path)
-    with open(log_path, "rb") as f:
-        f.seek(max(0, size - MAX_TOOL_OUTPUT_BYTES))
-        return f.read().decode("utf-8", errors="replace")
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(max(0, size - MAX_TOOL_OUTPUT_BYTES))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 def _list_outputs(outputs_dir: str) -> list[str]:
@@ -282,9 +342,18 @@ def _list_outputs(outputs_dir: str) -> list[str]:
     Excludes the tool log — it travels as ``log_tail`` on the manifest,
     not on the data plane (local runs keep it outside ``execute_dir``).
     """
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
     names: list[str] = []
-    for root, _dirs, files in os.walk(outputs_dir):
-        names.extend(
-            os.path.relpath(os.path.join(root, fname), outputs_dir) for fname in files
-        )
-    return sorted(name for name in names if name != TOOL_OUTPUT_FILENAME)
+    for root, _dirs, files in os.walk(outputs_dir, onerror=raise_walk_error):
+        for fname in files:
+            name = os.path.relpath(os.path.join(root, fname), outputs_dir)
+            if name == TOOL_OUTPUT_FILENAME:
+                continue
+            if len(names) >= MAX_ARCHIVE_MEMBERS:
+                msg = f"Archive exceeds {MAX_ARCHIVE_MEMBERS} members"
+                raise ValueError(msg)
+            names.append(name)
+    return sorted(names)

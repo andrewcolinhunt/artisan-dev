@@ -324,6 +324,40 @@ class TestRunToolRequest:
         assert error.error_type == "io"
         assert error.recovery_hint == "CHECK_INPUT"
 
+    def test_duplicate_input_roles_return_envelope(self):
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                inputs=[
+                    InputRef(name="dataset", data=b"one"),
+                    InputRef(name="dataset", data=b"two"),
+                ]
+            ),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert "Duplicate input roles" in error.message
+        assert error.recovery_hint == "CHECK_INPUT"
+
+    def test_missing_input_filesystem_dependency_returns_envelope(self, monkeypatch):
+        def boom(self, refs, dest, fs=None):
+            msg = "Install s3fs to access S3"
+            raise ImportError(msg)
+
+        monkeypatch.setattr(server_mod.InlineTransport, "unpack_inputs", boom)
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(inputs=[InputRef(name="dataset", uri="s3://bucket/x")]),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "tool_endpoint_misconfigured"
+        assert error.error_type == "config"
+        assert error.recovery_hint == "REPORT_TO_USER"
+
     def test_input_fetch_failure_returns_envelope(self, monkeypatch):
         # an unreachable input URI surfaces as OSError from ref_fs.get; the
         # (ValueError, OSError) guard maps it to the same CHECK_INPUT envelope
@@ -416,6 +450,33 @@ class TestRunToolRequest:
         assert created  # the worker did allocate a job dir
         assert all(not os.path.exists(p) for p in created)
 
+    def test_workspace_creation_failure_returns_envelope(self, monkeypatch):
+        def boom(*args, **kwargs):
+            msg = "worker disk unavailable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(server_mod.tempfile, "mkdtemp", boom)
+        result = run_tool_request(NoopTool, ToolRequest())
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "op_execute_failed"
+        assert error.error_type == "io"
+        assert error.recovery_hint == "RETRY_LATER"
+
+    def test_execute_filesystem_failure_returns_envelope(self, monkeypatch):
+        def boom(*args, **kwargs):
+            msg = "cannot launch executable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(server_mod, "invoke_op_work", boom)
+        result = run_tool_request(NoopTool, ToolRequest())
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "op_execute_failed"
+        assert error.error_type == "compute"
+
     def test_flag_op_spawns_op_run_with_wire_params_and_inputs(self):
         """The worker path composes for execute_as_tool ops: instantiate
         from wire params, then spawn the generated op-run argv whose
@@ -504,7 +565,23 @@ class TestRunToolRequestStoredOutputs:
         assert result.output_tar is not None
         assert _tar_names(result.output_tar) == []
 
-    @pytest.mark.parametrize("exc", [OSError("disk full"), _http_error()])
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            OSError("disk full"),
+            _http_error(),
+            httpx.ConnectError(
+                "store unavailable",
+                request=httpx.Request("PUT", "https://store.example/obj"),
+            ),
+            NoCredentialsError(),
+            ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+                "PutObject",
+            ),
+        ],
+        ids=["filesystem", "http_status", "request", "credentials", "service"],
+    )
     def test_delivery_failure_returns_envelope_with_outputs(self, monkeypatch, exc):
         # the tool ran; only delivery to the store failed — the envelope
         # surfaces the outputs it produced and asks the agent to retry
@@ -523,6 +600,34 @@ class TestRunToolRequestStoredOutputs:
         assert result.manifest.log_tail is not None  # the tool's log survives
         assert result.manifest.stored is None
         assert result.output_tar is None
+
+    def test_invalid_delivery_returns_check_input_envelope(self, monkeypatch):
+        def failing_upload(*args):
+            msg = "Archive expands beyond budget"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
+        result = run_tool_request(WaitTool, self._REQUEST)
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "output_delivery_failed"
+        assert error.recovery_hint == "CHECK_INPUT"
+        assert result.manifest.output_names == ["in_waited.csv"]
+
+    def test_missing_output_filesystem_dependency_returns_envelope(self, monkeypatch):
+        def failing_upload(*args):
+            msg = "Install s3fs to access S3"
+            raise ImportError(msg)
+
+        monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
+        result = run_tool_request(WaitTool, self._REQUEST)
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "tool_endpoint_misconfigured"
+        assert error.error_type == "config"
+        assert error.recovery_hint == "REPORT_TO_USER"
 
     def test_non_signing_store_returns_misconfigured(self, monkeypatch):
         # a store that cannot presign fails 100% of requests — a deployment
@@ -554,6 +659,54 @@ class TestRunToolRequestStoredOutputs:
         assert result.manifest.error is not None
         assert created  # the job dir was allocated
         assert all(not os.path.exists(p) for p in created)
+
+
+class TestRunToolRequestInlinePackaging:
+    @pytest.mark.parametrize(
+        ("exc", "recovery_hint"),
+        [
+            (ValueError("archive budget exceeded"), "CHECK_INPUT"),
+            (OSError("disk read failed"), "RETRY_LATER"),
+            (tarfile.TarError("invalid archive member"), "RETRY_LATER"),
+        ],
+    )
+    def test_packaging_failure_returns_envelope(self, monkeypatch, exc, recovery_hint):
+        def failing_pack(self, src, names):
+            raise exc
+
+        monkeypatch.setattr(server_mod.InlineTransport, "pack_outputs", failing_pack)
+        result = run_tool_request(NoopTool, ToolRequest())
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "output_delivery_failed"
+        assert error.error_type == "io"
+        assert error.recovery_hint == recovery_hint
+        assert result.output_tar is None
+
+    def test_output_enumeration_failure_returns_envelope(self, monkeypatch):
+        def failing_list(_outputs_dir):
+            msg = "cannot scan output directory"
+            raise OSError(msg)
+
+        monkeypatch.setattr(server_mod, "_list_outputs", failing_list)
+        result = run_tool_request(NoopTool, ToolRequest())
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "output_delivery_failed"
+        assert error.recovery_hint == "RETRY_LATER"
+
+    def test_output_count_excludes_reserved_log(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(server_mod, "MAX_ARCHIVE_MEMBERS", 1)
+        (tmp_path / "tool_output.log").write_text("log")
+        (tmp_path / "result.csv").write_text("result")
+
+        assert server_mod._list_outputs(str(tmp_path)) == ["result.csv"]
+
+        (tmp_path / "second.csv").write_text("second")
+        with pytest.raises(ValueError, match="exceeds 1 members"):
+            server_mod._list_outputs(str(tmp_path))
 
 
 class TestRunToolRequestUriInputMinIO:

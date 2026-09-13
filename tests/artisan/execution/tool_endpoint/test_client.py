@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from artisan.errors import ArtisanError, ErrorCode
@@ -45,6 +46,7 @@ def _response(json_data: Any = None, status: int = 200, content: bytes = b""):
     response.json.return_value = json_data
     response.content = content
     response.text = str(json_data)
+    response.is_stream_consumed = True
     return response
 
 
@@ -185,7 +187,10 @@ class TestStoredOutputs:
         client.get.return_value = _response(
             {"status": "done", "manifest": self._MANIFEST.model_dump()}
         )
-        mock_http.get.return_value = _response(content=_tar_payload(tmp_path))
+        payload = _tar_payload(tmp_path)
+        streamed = _response()
+        streamed.iter_bytes.return_value = [payload[:7], payload[7:]]
+        mock_http.stream.return_value.__enter__.return_value = streamed
         execute_dir = tmp_path / "execute"
         execute_dir.mkdir()
 
@@ -194,10 +199,14 @@ class TestStoredOutputs:
             ExecuteInput(inputs={}, execute_dir=str(execute_dir)),
         )
 
-        # bare one-shot GET on the module, not the proxy-authenticated
+        # bare streaming GET on the module, not the proxy-authenticated
         # client: positional URL, timeout only — no headers ride along
-        assert mock_http.get.call_args.args == ("https://signed.example/get?sig=x",)
-        assert "headers" not in mock_http.get.call_args.kwargs
+        assert mock_http.stream.call_args.args == (
+            "GET",
+            "https://signed.example/get?sig=x",
+        )
+        assert "headers" not in mock_http.stream.call_args.kwargs
+        streamed.iter_bytes.assert_called_once_with(chunk_size=1024 * 1024)
         assert (execute_dir / "out.txt").read_text() == "hi\n"
         # /download is never hit — every client.get was a /result poll
         assert all(call.args[0] == "/result" for call in client.get.call_args_list)
@@ -214,7 +223,25 @@ class TestStoredOutputs:
         )
         with pytest.raises(ArtisanError, match="no presigned URL"):
             call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
-        mock_http.get.assert_not_called()
+        mock_http.stream.assert_not_called()
+
+    def test_streaming_download_http_error_is_structured(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": self._MANIFEST.model_dump()}
+        )
+        streamed = httpx.Response(
+            403,
+            request=httpx.Request("GET", "https://signed.example/get?sig=x"),
+            stream=httpx.ByteStream(b"denied"),
+        )
+        mock_http.stream.return_value.__enter__.return_value = streamed
+
+        with pytest.raises(ArtisanError, match="403") as exc_info:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc_info.value.code == "op_execute_failed"
 
 
 class TestCallEndpointFailures:
@@ -341,7 +368,7 @@ class TestCallEndpointFailures:
         assert "ran fine" in log_path.read_text()
         # the error short-circuits before the output_names download branch —
         # output_names on an error manifest is purely informational
-        mock_http.get.assert_not_called()  # no presigned GET
+        mock_http.stream.assert_not_called()  # no presigned GET
         assert all(call.args[0] == "/result" for call in client.get.call_args_list)
 
     def test_expired_result_raises(self, mock_http, tmp_path):
