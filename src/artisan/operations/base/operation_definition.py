@@ -465,16 +465,12 @@ class OperationDefinition(BaseModel):
         """
         super().__pydantic_init_subclass__(**kwargs)
 
-        # Skip abstract classes (no name set)
-        if not cls.name:
+        # The empty string is the explicit marker for abstract operation bases.
+        # Other falsey values are malformed concrete declarations and must fail.
+        if cls.name == "":
             return
 
-        if not isinstance(cls.version, str) or not cls.version:
-            msg = (
-                f"{cls.__name__}.version must be a non-empty string "
-                f"(got {cls.version!r}) — it is folded verbatim into the cache key"
-            )
-            raise TypeError(msg)
+        cls._validate_registry_metadata()
 
         # Exactly one execute slot must be implemented
         has_execute_function = (
@@ -538,6 +534,8 @@ class OperationDefinition(BaseModel):
             )
             raise TypeError(msg)
 
+        cls._validate_lineage_roles()
+
         # Creator ops (custom execute or tool command) must declare explicit
         # lineage for all outputs
         is_creator = has_execute_function or has_execute_command
@@ -574,6 +572,89 @@ class OperationDefinition(BaseModel):
                 OperationDefinition._name_collisions.append(
                     (cls.name, existing.__module__, cls.__module__)
                 )
+
+    @classmethod
+    def _validate_registry_metadata(cls) -> None:
+        """Validate metadata consumed by registry serialization and discovery."""
+        for field_name in ("name", "version"):
+            value = getattr(cls, field_name)
+            if not isinstance(value, str) or not value.strip():
+                msg = f"{cls.__name__}.{field_name} must be a non-empty string (got {value!r})"
+                raise TypeError(msg)
+        description: object = cls.description
+        if not isinstance(description, str):
+            msg = f"{cls.__name__}.description must be a string (got {description!r})"
+            raise TypeError(msg)
+        tags: object = cls.tags
+        if not isinstance(tags, list) or not all(
+            isinstance(tag, str) and bool(tag.strip()) for tag in tags
+        ):
+            msg = (
+                f"{cls.__name__}.tags must be a list of non-empty strings "
+                f"(got {tags!r})"
+            )
+            raise TypeError(msg)
+        examples: object = cls.examples
+        if not isinstance(examples, list) or not all(
+            isinstance(example, OperationExample) for example in examples
+        ):
+            msg = (
+                f"{cls.__name__}.examples must be a list of OperationExample instances "
+                f"(got {examples!r})"
+            )
+            raise TypeError(msg)
+        cls._validate_spec_mapping("inputs", cls.inputs, InputSpec)
+        cls._validate_spec_mapping("outputs", cls.outputs, OutputSpec)
+
+    @classmethod
+    def _validate_spec_mapping(
+        cls,
+        field_name: str,
+        value: Any,
+        spec_type: type[InputSpec] | type[OutputSpec],
+    ) -> None:
+        """Validate a role-to-spec mapping used by registry payloads."""
+        if not isinstance(value, dict) or not all(
+            isinstance(role, str) and isinstance(spec, spec_type)
+            for role, spec in value.items()
+        ):
+            msg = (
+                f"{cls.__name__}.{field_name} must be a dict mapping strings to "
+                f"{spec_type.__name__} instances (got {value!r})"
+            )
+            raise TypeError(msg)
+
+    @classmethod
+    def _validate_lineage_roles(cls) -> None:
+        """Validate each output's lineage references against declared roles."""
+        for output_role, spec in cls.outputs.items():
+            lineage = spec.infer_lineage_from
+            if lineage is None:
+                continue
+            input_refs = lineage.get("inputs")
+            if input_refs is not None:
+                unknown = [role for role in input_refs if role not in cls.inputs]
+                if unknown:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] references unknown "
+                        f"input roles {unknown}; declared roles are {list(cls.inputs)}"
+                    )
+                    raise TypeError(msg)
+            output_refs = lineage.get("outputs")
+            if output_refs is not None:
+                if output_role in output_refs:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] cannot infer "
+                        "lineage from itself"
+                    )
+                    raise TypeError(msg)
+                unknown = [role for role in output_refs if role not in cls.outputs]
+                if unknown:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] references unknown "
+                        f"output roles {unknown}; declared roles are {list(cls.outputs)}"
+                    )
+                    raise TypeError(msg)
 
     @classmethod
     def _validate_execute_as_tool(
@@ -676,6 +757,11 @@ class OperationDefinition(BaseModel):
 
     # ---------- Introspection (agent-facing) ----------
     @classmethod
+    def _copy_examples(cls) -> list[OperationExample]:
+        """Return examples without exposing mutable class-level model data."""
+        return [example.model_copy(deep=True) for example in cls.examples]
+
+    @classmethod
     def _kind(cls) -> Literal["creator", "curator"]:
         """Return ``"curator"`` if ``execute_curator`` is overridden, else ``"creator"``."""
         if cls.execute_curator is not OperationDefinition.execute_curator:
@@ -726,7 +812,7 @@ class OperationDefinition(BaseModel):
                 for role, spec in cls.outputs.items()
             },
             params_schema=params_schema_for(cls),
-            examples=list(cls.examples),
+            examples=cls._copy_examples(),
             source_module=cls.__module__,
         )
 

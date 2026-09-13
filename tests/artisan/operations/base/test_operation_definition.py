@@ -121,6 +121,72 @@ class FlagOp(OperationDefinition):
         return None
 
 
+def _define_operation_with_metadata(
+    field_name: str,
+    value: Any,
+) -> type[OperationDefinition]:
+    """Build an operation whose one metadata field is supplied by the test."""
+
+    def execute_function(
+        _self: OperationDefinition,
+        _inputs: ExecuteInput,
+    ) -> None:
+        return None
+
+    operation_name = f"_invalid_metadata_{field_name}"
+    annotations: dict[str, Any] = {
+        "name": ClassVar[str],
+        field_name: ClassVar[Any],
+    }
+    namespace: dict[str, Any] = {
+        "__module__": __name__,
+        "__annotations__": annotations,
+        "name": operation_name,
+        field_name: value,
+        "execute_function": execute_function,
+    }
+    return type("MetadataValidationOperation", (OperationDefinition,), namespace)
+
+
+def _define_operation_with_lineage(
+    operation_name: str,
+    lineage: dict[str, list[str]],
+) -> type[OperationDefinition]:
+    """Build a two-output operation with configurable lineage for one output."""
+
+    class LineageValidationOperation(OperationDefinition):
+        name: ClassVar[str] = operation_name
+
+        class InputRole(StrEnum):
+            source = auto()
+
+        class OutputRole(StrEnum):
+            intermediate = auto()
+            result = auto()
+
+        inputs: ClassVar[dict[str, InputSpec]] = {
+            InputRole.source: InputSpec(artifact_type=ArtifactTypes.DATA),
+        }
+        outputs: ClassVar[dict[str, OutputSpec]] = {
+            OutputRole.intermediate: OutputSpec(
+                artifact_type=ArtifactTypes.DATA,
+                infer_lineage_from={"inputs": ["source"]},
+            ),
+            OutputRole.result: OutputSpec(
+                artifact_type=ArtifactTypes.DATA,
+                infer_lineage_from=lineage,
+            ),
+        }
+
+        def preprocess(self, _inputs: Any) -> dict[str, Any]:
+            return {}
+
+        def execute_function(self, _inputs: ExecuteInput) -> None:
+            return None
+
+    return LineageValidationOperation
+
+
 class TestOperationDefinitionValidation:
     """Tests for OperationDefinition validation."""
 
@@ -165,6 +231,92 @@ class TestOperationDefinitionValidation:
 
         assert op.input_file == "in.txt"
         assert op.output_file == "out.txt"
+
+
+class TestRegistryMetadataValidation:
+    """Registry-facing ClassVars fail before a malformed class is registered."""
+
+    @pytest.mark.parametrize(
+        ("field_name", "value", "message"),
+        [
+            ("name", 0, "name must be a non-empty string"),
+            ("name", "   ", "name must be a non-empty string"),
+            ("version", 0, "version must be a non-empty string"),
+            ("version", "   ", "version must be a non-empty string"),
+            ("description", 0, "description must be a string"),
+            ("tags", ("tag",), "tags must be a list of non-empty strings"),
+            ("tags", [1], "tags must be a list of non-empty strings"),
+            ("tags", ["   "], "tags must be a list of non-empty strings"),
+            ("examples", ({},), "examples must be a list"),
+            ("examples", [{}], "examples must be a list"),
+            ("inputs", [], "inputs must be a dict"),
+            ("inputs", {1: InputSpec()}, "inputs must be a dict"),
+            ("inputs", {"source": object()}, "inputs must be a dict"),
+            ("outputs", [], "outputs must be a dict"),
+            ("outputs", {1: OutputSpec()}, "outputs must be a dict"),
+            ("outputs", {"result": object()}, "outputs must be a dict"),
+        ],
+    )
+    def test_invalid_metadata_raises_without_registry_mutation(
+        self,
+        field_name: str,
+        value: Any,
+        message: str,
+    ) -> None:
+        registry_before = dict(OperationDefinition._registry)
+        collisions_before = list(OperationDefinition._name_collisions)
+
+        with pytest.raises(TypeError, match=message):
+            _define_operation_with_metadata(field_name, value)
+
+        assert OperationDefinition._registry == registry_before
+        assert OperationDefinition._name_collisions == collisions_before
+
+
+class TestLineageRoleValidation:
+    @pytest.mark.parametrize(
+        ("name", "lineage", "message"),
+        [
+            (
+                "_unknown_input_lineage",
+                {"inputs": ["missing"]},
+                "references unknown input roles",
+            ),
+            (
+                "_unknown_output_lineage",
+                {"outputs": ["missing"]},
+                "references unknown output roles",
+            ),
+            (
+                "_self_output_lineage",
+                {"outputs": ["result"]},
+                "cannot infer lineage from itself",
+            ),
+        ],
+    )
+    def test_invalid_role_reference_raises_without_registration(
+        self,
+        name: str,
+        lineage: dict[str, list[str]],
+        message: str,
+    ) -> None:
+        with pytest.raises(TypeError, match=message):
+            _define_operation_with_lineage(name, lineage)
+
+        assert name not in OperationDefinition._registry
+
+    def test_reference_to_another_declared_output_is_valid(self) -> None:
+        name = "_valid_output_lineage"
+
+        operation = _define_operation_with_lineage(
+            name,
+            {"outputs": ["intermediate"]},
+        )
+
+        try:
+            assert OperationDefinition._registry[name] is operation
+        finally:
+            OperationDefinition._registry.pop(name, None)
 
 
 class TestOperationDefinitionExecute:
