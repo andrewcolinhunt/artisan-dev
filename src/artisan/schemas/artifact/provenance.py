@@ -80,7 +80,7 @@ class ArtifactProvenanceEdge(BaseModel):
     step_boundary: bool = Field(
         default=True,
         description="Whether this edge crosses a step boundary. "
-        "True for edges visible at the pipeline level (default, backward compatible). "
+        "True for edges visible at the pipeline level (the default). "
         "False for edges internal to a composite.",
     )
 

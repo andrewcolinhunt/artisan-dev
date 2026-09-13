@@ -4,7 +4,7 @@ Returns the DOT source of the existing macro renderer via its cheap
 ``.source`` attribute. Note: ``build_macro_graph`` renders the whole steps
 table, not a single run — at single-run scale (the common case) this equals
 the run's graph; a run-scoped renderer would need a core change (out of
-Phase 1 scope).
+scope for this read-only adapter).
 """
 
 from __future__ import annotations

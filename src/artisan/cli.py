@@ -391,7 +391,7 @@ def _file_shaped(inputs: dict[str, Any]) -> dict[str, list[str]]:
     A bare string is a single file (the endpoint protocol's
     one-file-per-role shape, wrapped str → [str]); lists of paths pass
     through. This is what makes ``execute_function``'s view identical
-    in-process, under the local shim, and behind the endpoint worker.
+    in-process, under the local command adapter, and behind the endpoint worker.
 
     Args:
         inputs: Parsed ``--inputs`` JSON (role → path or paths).
@@ -419,7 +419,7 @@ def _file_shaped(inputs: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _op_run(args: argparse.Namespace) -> int:
-    """Run an execute_as_tool op's ``execute_function`` — the recursion leaf of the shim.
+    """Run an execute_as_tool op's function through the command adapter.
 
     Resolves the class by ``module:Qualname`` (no registry discovery),
     rebuilds the op from the params JSON, and calls the Python body
