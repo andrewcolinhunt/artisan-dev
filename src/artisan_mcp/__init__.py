@@ -2,8 +2,7 @@
 
 Ships in the core wheel; its fastmcp dependencies install only via the
 ``artisan[mcp]`` extra. Every tool delegates to an artisan core reader and
-serializes plain data — no server-side logic. See
-``_dev/design/0_active/agents-v2/03_mcp-server.md``.
+serializes plain data — no server-side domain logic.
 """
 
 from __future__ import annotations

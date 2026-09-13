@@ -243,11 +243,11 @@ class OperationDefinition(BaseModel):
       whole, as shared data, to every per-artifact subprocess). Scalars
       belong in ``Params``.
     - Multi-element list values (the ``per_artifact_dispatch=False``
-      shape) run under the local shim but cannot cross the endpoint —
+      shape) run under the local command adapter but cannot cross the endpoint —
       the wire protocol carries one file per role.
     - Outputs are files written to ``execute_dir``;
       ``execute_function`` returns None (a non-None return is a runtime
-      error under the shim).
+      error under the adapter).
     - All per-run config lives in the nested ``Params`` model (enforced
       at class definition).
     - ``ExecuteInput.metadata`` and ``files_dir`` are unavailable, and
