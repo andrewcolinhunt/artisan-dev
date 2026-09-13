@@ -133,9 +133,13 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
                 )
             # bare one-shot GET: the presigned URL must never receive the
             # Modal proxy-auth headers riding `client`
-            download = httpx.get(manifest.stored.presigned_url, timeout=_HTTP_TIMEOUT)
-            _check(download, operation.name)
-            transport.unpack_outputs(download.content, inputs.execute_dir)
+            with httpx.stream(
+                "GET", manifest.stored.presigned_url, timeout=_HTTP_TIMEOUT
+            ) as download:
+                _check(download, operation.name)
+                transport.unpack_output_stream(
+                    download.iter_bytes(chunk_size=1024 * 1024), inputs.execute_dir
+                )
         elif manifest.output_names:
             download = client.get("/download", params={"call_id": call_id})
             _check(download, operation.name)
@@ -257,11 +261,14 @@ def _check(response: httpx.Response, op_name: str) -> None:
             recovery_hint="CHECK_INPUT",
         )
     if response.status_code >= 400:
+        detail = (
+            response.text[:500]
+            if response.is_stream_consumed
+            else "response body was not buffered"
+        )
         raise ArtisanError(
             code=ErrorCode.OP_EXECUTE_FAILED,
-            message=(
-                f"tool endpoint returned {response.status_code}: {response.text[:500]}"
-            ),
+            message=(f"tool endpoint returned {response.status_code}: {detail}"),
             error_type="compute",
             operation_name=op_name,
         )

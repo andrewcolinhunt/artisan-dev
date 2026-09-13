@@ -7,6 +7,7 @@ import re
 import shutil
 import tarfile
 import tempfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -82,6 +83,31 @@ class TestPackInputs:
         with pytest.raises(ValueError, match="s3://"):
             InlineTransport().pack_inputs({"big": str(src)})
 
+    def test_aggregate_size_is_preflighted_before_open(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 4)
+        first = tmp_path / "first.bin"
+        second = tmp_path / "second.bin"
+        first.write_bytes(b"123")
+        second.write_bytes(b"45")
+
+        def fail_open(*args, **kwargs):
+            pytest.fail("oversized inputs must fail before a file is opened")
+
+        monkeypatch.setattr("builtins.open", fail_open)
+        with pytest.raises(ValueError, match="Inline inputs exceed"):
+            InlineTransport().pack_inputs({"first": str(first), "second": str(second)})
+
+    def test_read_bound_catches_file_growth(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 4)
+        src = tmp_path / "growing.bin"
+        src.write_bytes(b"12345")
+        monkeypatch.setattr(transport_mod.os.path, "getsize", lambda _path: 4)
+
+        with pytest.raises(ValueError, match="Inline inputs exceed"):
+            InlineTransport().pack_inputs({"growing": str(src)})
+
 
 class TestUnpackInputs:
     def test_inline_ref_written_to_dest(self, tmp_path: Path):
@@ -90,7 +116,7 @@ class TestUnpackInputs:
             [InputRef(name="pdb", data=b"ATOM")], str(dest)
         )
         assert Path(paths["pdb"]).read_bytes() == b"ATOM"
-        assert Path(paths["pdb"]).parent == dest
+        assert Path(paths["pdb"]).parent == dest / "pdb"
 
     def test_uri_ref_fetched_via_fs(self, tmp_path: Path):
         fs = _FakeFs()
@@ -110,17 +136,47 @@ class TestUnpackInputs:
         paths = InlineTransport().unpack_inputs(refs, str(tmp_path / "inputs"))
         assert Path(paths["dataset"]).name == "dataset_00001.csv"
 
-    def test_name_is_sanitized_to_basename(self, tmp_path: Path):
+    def test_name_is_sanitized_to_safe_role_directory(self, tmp_path: Path):
         paths = InlineTransport().unpack_inputs(
             [InputRef(name="../evil.txt", data=b"x")], str(tmp_path)
         )
-        assert Path(paths["../evil.txt"]).parent == tmp_path
+        local = Path(paths["../evil.txt"])
+        assert tmp_path in local.parents
+        assert local.parent.parent == tmp_path
+        assert local.parent.name != ".."
 
     def test_filename_is_sanitized_to_basename(self, tmp_path: Path):
         paths = InlineTransport().unpack_inputs(
             [InputRef(name="x", filename="../../evil.txt", data=b"x")], str(tmp_path)
         )
-        assert Path(paths["x"]).parent == tmp_path
+        assert Path(paths["x"]).parent == tmp_path / "x"
+
+    def test_same_basename_roles_materialize_distinct_bytes(self, tmp_path: Path):
+        paths = InlineTransport().unpack_inputs(
+            [
+                InputRef(name="left", filename="data.csv", data=b"left"),
+                InputRef(name="right", filename="data.csv", data=b"right"),
+            ],
+            str(tmp_path),
+        )
+
+        assert paths["left"] != paths["right"]
+        assert Path(paths["left"]).read_bytes() == b"left"
+        assert Path(paths["right"]).read_bytes() == b"right"
+        assert Path(paths["left"]).relative_to(tmp_path) == Path("left/data.csv")
+        assert Path(paths["right"]).relative_to(tmp_path) == Path("right/data.csv")
+
+    def test_duplicate_roles_fail_before_materialization(self, tmp_path: Path):
+        dest = tmp_path / "inputs"
+        with pytest.raises(ValueError, match="Duplicate input roles.*'source'"):
+            InlineTransport().unpack_inputs(
+                [
+                    InputRef(name="source", data=b"one"),
+                    InputRef(name="source", data=b"two"),
+                ],
+                str(dest),
+            )
+        assert not dest.exists()
 
     def test_empty_ref_raises(self, tmp_path: Path):
         with pytest.raises(ValueError, match="neither uri nor data"):
@@ -153,9 +209,7 @@ class TestOutputs:
 
     def test_unpack_rejects_path_traversal(self, tmp_path: Path):
         # Hand-craft a malicious tar with an absolute-escaping member.
-        import io
-
-        buf = io.BytesIO()
+        buf = BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
             payload_file = tmp_path / "x.txt"
             payload_file.write_text("evil")
@@ -164,6 +218,113 @@ class TestOutputs:
         with pytest.raises(tarfile.TarError):
             InlineTransport().unpack_outputs(buf.getvalue(), str(dest))
         shutil.rmtree(dest, ignore_errors=True)
+
+    def test_pack_expanded_limit_is_preflighted(self, tmp_path: Path, monkeypatch):
+        src = tmp_path / "outputs"
+        src.mkdir()
+        (src / "big.bin").write_bytes(b"12345")
+        monkeypatch.setattr(transport_mod, "MAX_EXPANDED_BYTES", 4)
+
+        with pytest.raises(ValueError, match="expands beyond"):
+            InlineTransport().pack_outputs(str(src), ["big.bin"])
+
+    def test_pack_member_limit_is_preflighted(self, tmp_path: Path, monkeypatch):
+        src = tmp_path / "outputs"
+        src.mkdir()
+        (src / "a").touch()
+        (src / "b").touch()
+        monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_MEMBERS", 1)
+
+        with pytest.raises(ValueError, match="exceeds 1 members"):
+            InlineTransport().pack_outputs(str(src), ["a", "b"])
+
+    def test_pack_counts_recursive_directories_and_symlinks(
+        self, tmp_path: Path, monkeypatch
+    ):
+        src = tmp_path / "outputs"
+        tree = src / "tree"
+        tree.mkdir(parents=True)
+        (tree / "file.txt").write_text("payload")
+        (tree / "link.txt").symlink_to("file.txt")
+        monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_MEMBERS", 2)
+
+        with pytest.raises(ValueError, match="exceeds 2 members"):
+            InlineTransport().pack_outputs(str(src), ["tree"])
+
+    def test_unpack_rejects_compressed_size_before_extracting(
+        self, tmp_path: Path, monkeypatch
+    ):
+        payload = _tar_with_files({"x": b"payload"})
+        monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_BYTES", len(payload) - 1)
+        dest = tmp_path / "dest"
+
+        with pytest.raises(ValueError, match="compressed"):
+            InlineTransport().unpack_outputs(payload, str(dest))
+        assert not dest.exists()
+
+    def test_unpack_rejects_expanded_size_before_extracting(
+        self, tmp_path: Path, monkeypatch
+    ):
+        payload = _tar_with_files({"a": b"123", "b": b"45"})
+        monkeypatch.setattr(transport_mod, "MAX_EXPANDED_BYTES", 4)
+        dest = tmp_path / "dest"
+
+        with pytest.raises(ValueError, match="expands beyond"):
+            InlineTransport().unpack_outputs(payload, str(dest))
+        assert list(dest.iterdir()) == []
+
+    def test_unpack_rejects_member_count_before_extracting(
+        self, tmp_path: Path, monkeypatch
+    ):
+        payload = _tar_with_files({"a": b"", "b": b""})
+        monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_MEMBERS", 1)
+        dest = tmp_path / "dest"
+
+        with pytest.raises(ValueError, match="exceeds 1 members"):
+            InlineTransport().unpack_outputs(payload, str(dest))
+        assert list(dest.iterdir()) == []
+
+    def test_streamed_archive_is_spooled_and_extracted(
+        self, tmp_path: Path, monkeypatch
+    ):
+        payload = _tar_with_files({"out.txt": b"streamed"})
+        chunks = (payload[index : index + 7] for index in range(0, len(payload), 7))
+        dest = tmp_path / "dest"
+        created = _capture_tempdirs(monkeypatch)
+
+        InlineTransport().unpack_output_stream(chunks, str(dest))
+
+        assert (dest / "out.txt").read_bytes() == b"streamed"
+        assert all(not os.path.exists(path) for path in created)
+
+    def test_streamed_archive_stops_at_compressed_limit(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_BYTES", 4)
+        created = _capture_tempdirs(monkeypatch)
+        consumed: list[bytes] = []
+
+        def chunks():
+            for chunk in (b"123", b"45", b"unread"):
+                consumed.append(chunk)
+                yield chunk
+
+        with pytest.raises(ValueError, match="compressed"):
+            InlineTransport().unpack_output_stream(chunks(), str(tmp_path / "dest"))
+
+        assert consumed == [b"123", b"45"]
+        assert all(not os.path.exists(path) for path in created)
+
+
+def _tar_with_files(files: dict[str, bytes]) -> bytes:
+    """Build an in-memory tar from name-to-bytes fixtures."""
+    buf = BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, data in files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            tar.addfile(member, BytesIO(data))
+    return buf.getvalue()
 
 
 class TestUploadOutputsPrefixMode:
@@ -289,6 +450,20 @@ class TestUploadOutputsSpoolCleanup:
             upload_outputs(_make_outputs(tmp_path), ["out.txt"], put_url, "op")
         assert created  # the call did allocate a spool dir
         assert all(not os.path.exists(p) for p in created)
+
+    def test_compressed_limit_stops_archive_before_upload(self, tmp_path, monkeypatch):
+        fake = _FakeFs()
+        monkeypatch.setattr(
+            transport_mod, "_resolve_fs", lambda uri, fs, **options: (fake, uri)
+        )
+        monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_BYTES", 4)
+        created = _capture_tempdirs(monkeypatch)
+
+        with pytest.raises(ValueError, match="compressed"):
+            upload_outputs(_make_outputs(tmp_path), ["out.txt"], "s3://b/p", "op")
+
+        assert fake.puts == []
+        assert all(not os.path.exists(path) for path in created)
 
 
 class TestUploadOutputsMinIO:
