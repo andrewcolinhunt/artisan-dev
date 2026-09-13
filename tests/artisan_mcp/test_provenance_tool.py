@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import polars as pl
 
@@ -90,17 +91,35 @@ class TestLineageResource:
         assert "Lineage is unavailable" in content.text
         assert "Traceback" not in content.text
 
+    def test_passes_resource_run_to_macro_graph(
+        self, make_app, read_resource, monkeypatch, tmp_path
+    ) -> None:
+        from artisan.visualization.graph import macro
+
+        seen: list[str] = []
+
+        def build_graph(_root: str, *, pipeline_run_id: str) -> SimpleNamespace:
+            seen.append(pipeline_run_id)
+            return SimpleNamespace(source="digraph pipeline {}")
+
+        monkeypatch.setattr(macro, "build_macro_graph", build_graph)
+
+        content = read_resource(
+            make_app(delta_root=tmp_path), "artisan://lineage/run/requested-run"
+        )
+
+        assert "digraph pipeline" in content.text
+        assert seen == ["requested-run"]
+
     def test_oversized_graph_returns_bounded_dot(
         self, make_app, read_resource, monkeypatch, tmp_path
     ) -> None:
-        from types import SimpleNamespace
-
         from artisan.visualization.graph import macro
 
         monkeypatch.setattr(
             macro,
             "build_macro_graph",
-            lambda _root: SimpleNamespace(source="x" * 100_000),
+            lambda _root, *, pipeline_run_id: SimpleNamespace(source="x" * 100_000),
         )
 
         content = read_resource(

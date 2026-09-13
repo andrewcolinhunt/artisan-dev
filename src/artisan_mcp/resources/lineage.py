@@ -1,10 +1,7 @@
 """Lineage resource: the macro (step-level) pipeline graph as Graphviz DOT.
 
 Returns the DOT source of the existing macro renderer via its cheap
-``.source`` attribute. Note: ``build_macro_graph`` renders the whole steps
-table, not a single run — at single-run scale (the common case) this equals
-the run's graph; a run-scoped renderer would need a core change (out of
-scope for this read-only adapter).
+``.source`` attribute, scoped to the pipeline run named in the resource URI.
 """
 
 from __future__ import annotations
@@ -38,7 +35,7 @@ def register(mcp: FastMCP) -> None:
 
         def payload() -> str:
             root = require_delta_root(config)
-            source = build_macro_graph(root).source
+            source = build_macro_graph(root, pipeline_run_id=pipeline_run_id).source
             return source if len(source) <= MAX_RESOURCE_CHARS else _OVERSIZED_GRAPH
 
         result = boundary(payload)

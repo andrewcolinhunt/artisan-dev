@@ -375,6 +375,48 @@ class TestBuildMacroGraph:
         assert "_anchor_exec_" in source
         assert "style=invis" in source
 
+    def test_pipeline_run_id_excludes_other_runs(self, tmp_path: Path) -> None:
+        """Run-scoped graphs filter before deduplicating shared step numbers."""
+        delta_root = tmp_path / "delta"
+        delta_root.mkdir()
+        _write_steps(
+            delta_root,
+            [
+                {
+                    "pipeline_run_id": "pipe-a",
+                    "step_number": 0,
+                    "step_name": "RunAIngest",
+                },
+                {
+                    "pipeline_run_id": "pipe-a",
+                    "step_number": 1,
+                    "step_name": "RunATransform",
+                },
+                {
+                    "pipeline_run_id": "pipe-b",
+                    "step_number": 0,
+                    "step_name": "RunBIngest",
+                },
+                {
+                    "pipeline_run_id": "pipe-b",
+                    "step_number": 1,
+                    "step_name": "RunBTransform",
+                },
+            ],
+        )
+
+        run_a = build_macro_graph(delta_root, pipeline_run_id="pipe-a").source
+        run_b = build_macro_graph(delta_root, pipeline_run_id="pipe-b").source
+
+        assert "RunAIngest" in run_a
+        assert "RunATransform" in run_a
+        assert "RunBIngest" not in run_a
+        assert "RunBTransform" not in run_a
+        assert "RunBIngest" in run_b
+        assert "RunBTransform" in run_b
+        assert "RunAIngest" not in run_b
+        assert "RunATransform" not in run_b
+
 
 class TestPassthroughStyling:
     """Tests for passthrough (null output_type) data nodes."""
