@@ -43,7 +43,7 @@ EXECUTIONS_SCHEMA = {
         "us", "UTC"
     ),  # Execution end (microseconds, UTC); nullable
     "source_worker": pl.Int32,  # Worker ID
-    "compute_backend": pl.String,  # Stable runner/provider name
+    "compute_backend": pl.String,  # Resolved step-runner name
     "success": pl.Boolean,  # Whether execution succeeded (row-level)
     "error": pl.String,  # Error message if failed (row-level)
     "error_envelope": pl.String,  # JSON - structured ArtisanError envelope (nullable)

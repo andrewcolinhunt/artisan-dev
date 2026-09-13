@@ -142,6 +142,9 @@ class FileRefArtifact(Artifact):
             metadata: Optional metadata dict.
             original_name: Filename stem for lineage inference.
             extension: File extension from original path.
+
+        Returns:
+            Draft FileRefArtifact for the referenced file.
         """
         return cls(
             artifact_id=None,

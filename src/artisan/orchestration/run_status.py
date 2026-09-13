@@ -3,9 +3,8 @@
 Composes ``inspect_pipeline`` (per-step terminal status from the steps
 table) with ``run_history.list_runs`` (the run rollup). "Running" is never
 persisted, so only terminal statuses surface — the honest read a polling,
-read-only server can serve. Shapes live beside this reader (the
-``ProvenanceEdges`` precedent) so the MCP ``artisan_get_run_status`` tool
-and any future CLI command share one contract.
+read-only server can serve. The core reader and MCP
+``artisan_get_run_status`` tool share these shapes as one contract.
 """
 
 from __future__ import annotations

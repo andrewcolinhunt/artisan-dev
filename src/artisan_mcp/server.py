@@ -33,8 +33,8 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
 
     @asynccontextmanager
     async def lifespan(_app: FastMCP) -> AsyncIterator[dict[str, Any]]:
-        # Discovery runs once at startup; tools read the report and config
-        # back via ctx.lifespan_context. Kept a plain dict per the design.
+        # Discovery runs once at startup; FastMCP exposes this mapping to tools
+        # as ctx.lifespan_context.
         from artisan.registry import discover
 
         report = discover(extra_modules=cfg.load_modules or None)

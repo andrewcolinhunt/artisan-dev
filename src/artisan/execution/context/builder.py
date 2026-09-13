@@ -47,8 +47,7 @@ def build_execution_context(
         sandbox_path: Sandbox directory for the file-based I/O of a
             creator's preprocess/execute/postprocess phases. None for
             curators, which operate on in-memory DataFrames.
-        compute_backend_name: Stable runner/provider name recorded in
-            provenance.
+        compute_backend_name: Resolved step-runner name recorded in provenance.
         shared_filesystem: Whether workers share a filesystem with the
             orchestrator.
         step_run_id: Identifier of the owning pipeline step run, or None

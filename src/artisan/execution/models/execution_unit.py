@@ -22,7 +22,7 @@ class ExecutionUnit(BaseModel):
 
     Attributes:
         operation: Fully configured operation instance.
-        inputs: Role-keyed lists of 32-char hex artifact IDs.
+        inputs: Role-keyed lists of 32-character artifact IDs.
         execution_spec_id: Deterministic xxh3_128 hash for cache lookup.
         step_number: Pipeline step number for artifact metadata.
         group_ids: Per-index group IDs from framework pairing (optional).
@@ -69,11 +69,7 @@ class ExecutionUnit(BaseModel):
         # Check if operation accepts runtime-defined inputs
         runtime_defined = getattr(self.operation, "runtime_defined_inputs", False)
 
-        if runtime_defined:
-            # Runtime-defined inputs: skip role name validation
-            # Any role names are allowed (user-provided or auto-generated)
-            pass
-        else:
+        if not runtime_defined:
             # Fixed inputs: validate against inputs
             op_name = type(self.operation).__name__
             for role in self.inputs:
@@ -84,7 +80,7 @@ class ExecutionUnit(BaseModel):
                     )
                     raise ValueError(msg)
 
-        # Validate all values are lists of 32-char hex strings
+        # Validate all values are lists of 32-character strings
         for role, artifact_ids in self.inputs.items():
             if not isinstance(artifact_ids, list):
                 msg = f"inputs['{role}'] must be a list, got {type(artifact_ids).__name__}"  # type: ignore[unreachable]
@@ -97,7 +93,7 @@ class ExecutionUnit(BaseModel):
                     raise ValueError(msg)
 
         # Validate all roles have same batch size
-        # Some operations (e.g., MergeOp) allow independent input streams
+        # Some operations allow independent input streams.
         independent = getattr(self.operation, "independent_input_streams", False)
         if self.inputs and not independent:
             sizes = {role: len(ids) for role, ids in self.inputs.items()}

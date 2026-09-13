@@ -558,7 +558,7 @@ class OperationDefinition(BaseModel):
                 )
                 raise TypeError(msg)
 
-        validate_role_enums(cls, "operation")
+        validate_role_enums(cls)
         append_role_docs(cls)
         cls._validate_params_documented()
 

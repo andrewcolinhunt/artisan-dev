@@ -16,7 +16,7 @@ class StepStartRecord(BaseModel):
         operation_class: Fully qualified operation class name.
         params_json: JSON-encoded operation parameters.
         input_refs_json: JSON-encoded input references.
-        compute_backend: Stable runner/provider name.
+        compute_backend: Resolved step-runner name.
         compute_options_json: JSON-encoded execution options and pipeline runner
             metadata.
         output_roles_json: JSON-encoded output role names.

@@ -75,7 +75,7 @@ class CompositeDefinition(BaseModel):
             msg = f"{cls.__name__} must implement compose() method"
             raise TypeError(msg)
 
-        validate_role_enums(cls, "composite")
+        validate_role_enums(cls)
         append_role_docs(cls)
 
         # Register in composite registry
