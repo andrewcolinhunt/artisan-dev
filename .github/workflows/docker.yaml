@@ -8,7 +8,7 @@ on:
       - src/**
       - pyproject.toml
       - pixi.lock
-      - README.md # the Dockerfile COPYs it
+      - README.md # the Dockerfile copies it
   workflow_dispatch:
 
 concurrency:

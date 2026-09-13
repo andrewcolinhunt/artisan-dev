@@ -143,8 +143,8 @@ class TestSuggest:
         assert suggest("multiplyer", ["multiplier", "scale", "seed"]) == ["multiplier"]
 
     def test_respects_n(self) -> None:
-        # Two candidates similar to "fo"; n=1 returns only the closest.
-        result = suggest("fo", ["foo", "for", "bar"], n=1, cutoff=0.4)
+        # Two candidates similar to "cat"; n=1 returns only the closest.
+        result = suggest("cat", ["cats", "cut", "bar"], n=1, cutoff=0.4)
         assert len(result) == 1
 
     def test_returns_empty_when_no_match_above_cutoff(self) -> None:
