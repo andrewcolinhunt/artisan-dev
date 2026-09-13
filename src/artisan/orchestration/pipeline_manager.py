@@ -1517,7 +1517,12 @@ class PipelineManager:
         # 1. Reject composites at the boundary — they have a separate surface
         #    (``submit_composite``/``run_composite``) so composite-only kwargs
         #    don't pollute operation signatures.
-        if isinstance(operation, type) and issubclass(operation, CompositeDefinition):
+        # Keep the runtime guard for untyped Python callers while the public
+        # annotation continues to describe valid calls only.
+        operation_value: object = operation
+        if isinstance(operation_value, type) and issubclass(
+            operation_value, CompositeDefinition
+        ):
             msg = (
                 f"submit() rejects composites — got {operation.__name__}. "
                 "Use submit_composite() / run_composite() for "
@@ -1631,10 +1636,12 @@ class PipelineManager:
             _validate_compute_provider(ov.compute_provider)
         if isinstance(ov.compute_resources, dict):
             _validate_compute_resources(ov.compute_resources)
-        if ov.group_by is not None and not isinstance(ov.group_by, GroupByStrategy):
+        # StepOverrides annotations do not constrain untyped runtime callers.
+        group_by: object = ov.group_by
+        if group_by is not None and not isinstance(group_by, GroupByStrategy):
             msg = (
                 f"group_by must be a GroupByStrategy member, got "
-                f"{type(ov.group_by).__name__}: {ov.group_by!r}. Valid members: "
+                f"{type(group_by).__name__}: {group_by!r}. Valid members: "
                 f"{[s.name for s in GroupByStrategy]}."
             )
             raise TypeError(msg)
@@ -2284,8 +2291,12 @@ class PipelineManager:
             skip_cache=skip_cache,
         )
 
+        # Keep the runtime guard for untyped Python callers while the public
+        # annotation continues to describe valid calls only.
+        composite_value: object = composite
         if not (
-            isinstance(composite, type) and issubclass(composite, CompositeDefinition)
+            isinstance(composite_value, type)
+            and issubclass(composite_value, CompositeDefinition)
         ):
             msg = (
                 "submit_composite() requires a CompositeDefinition subclass, "
