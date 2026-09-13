@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from artisan.schemas.artifact.data import DataArtifact
 from artisan.operations.examples import DataTransformerConfig
 from artisan.schemas import (
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
 )
+from artisan.schemas.artifact.data import DataArtifact
 
 
 def _mock_data_artifact(name: str = "dataset_00000.csv") -> DataArtifact:
@@ -31,9 +31,13 @@ def _run_config_op(operation, artifacts, output_dir: Path):
     input_artifacts = {"dataset": list(artifacts)}
 
     prepared = operation.preprocess(
-        PreprocessInput(input_artifacts=input_artifacts, preprocess_dir=output_dir / "pre")
+        PreprocessInput(
+            input_artifacts=input_artifacts, preprocess_dir=output_dir / "pre"
+        )
     )
-    raw = operation.execute_function(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
+    raw = operation.execute_function(
+        ExecuteInput(inputs=prepared, execute_dir=execute_dir)
+    )
     return operation.postprocess(
         PostprocessInput(
             file_outputs=[],
@@ -66,12 +70,14 @@ class TestDataTransformerConfig:
         )
         result = _run_config_op(op, _mock_data_artifact(), tmp_path / "out")
         assert result.success
-        assert len(result.artifacts["config"]) == 6  # 3 × 2
+        assert len(result.artifacts["config"]) == 6  # 3 x 2
 
     def test_artifact_reference(self, tmp_path: Path):
         artifact = _mock_data_artifact()
         op = DataTransformerConfig(
-            params=DataTransformerConfig.Params(scale_factors=[1.0], noise_amplitudes=[0.0])
+            params=DataTransformerConfig.Params(
+                scale_factors=[1.0], noise_amplitudes=[0.0]
+            )
         )
         result = _run_config_op(op, artifact, tmp_path / "out")
         config = result.artifacts["config"][0]

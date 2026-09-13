@@ -116,7 +116,7 @@ class WaitTool(OperationDefinition):
                 # generic "modal" inside the sandbox); hostname locally
                 f'src="{source}"; stem="$(basename "$src")"; stem="${{stem%.*}}"; '
                 f'host="${{MODAL_TASK_ID:-$(hostname)}}"; '
-                f'for i in $(seq 1 {n}); do '
+                f"for i in $(seq 1 {n}); do "
                 f'echo "wait_tool [$host] tick $i / {n}"; sleep 1; done; '
                 f'printf "seconds,host,source\\n{n},$host,$(basename "$src")\\n" '
                 f'> "${{stem}}_waited.csv"'

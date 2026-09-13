@@ -1,5 +1,7 @@
 """Tests for DataGenerator operation."""
 
+from __future__ import annotations
+
 import csv
 import glob
 import os
@@ -11,13 +13,16 @@ from artisan.schemas import ExecuteInput, PostprocessInput
 
 class TestDataGenerator:
     def _run(self, output_dir: Path, count: int = 3, rows: int = 5, seed: int = 42):
-        op = DataGenerator(params=DataGenerator.Params(count=count, rows_per_file=rows, seed=seed))
+        op = DataGenerator(
+            params=DataGenerator.Params(count=count, rows_per_file=rows, seed=seed)
+        )
         execute_dir = str(output_dir / "execute")
         os.makedirs(execute_dir, exist_ok=True)
 
         result = op.execute_function(ExecuteInput(inputs={}, execute_dir=execute_dir))
         files = sorted(
-            f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
+            f
+            for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
             if os.path.isfile(f)
         )
 
@@ -48,7 +53,7 @@ class TestDataGenerator:
     def test_reproducible_with_seed(self, tmp_path: Path):
         _, files_a, _ = self._run(tmp_path / "a", seed=42)
         _, files_b, _ = self._run(tmp_path / "b", seed=42)
-        for a, b in zip(files_a, files_b):
+        for a, b in zip(files_a, files_b, strict=True):
             with open(a, "rb") as fa, open(b, "rb") as fb:
                 assert fa.read() == fb.read()
 

@@ -81,7 +81,7 @@ class TestLargeFileGenerator:
         assert hashes_1 != hashes_2
 
     def test_one_artifact_per_file(self, tmp_path: Path) -> None:
-        raw, result = _run(tmp_path, count=3)
+        _raw, result = _run(tmp_path, count=3)
         paths = {a.external_path for a in result.artifacts["files"]}
         assert len(paths) == 3
 
@@ -165,9 +165,7 @@ class TestLargeFileGeneratorLifecycle:
         )
         unit = ExecutionUnit(
             operation=LargeFileGenerator(
-                params=LargeFileGenerator.Params(
-                    count=2, file_size_bytes=256, seed=0
-                )
+                params=LargeFileGenerator.Params(count=2, file_size_bytes=256, seed=0)
             ),
             inputs={},
             execution_spec_id="lfg_smoke_" + "0" * 22,

@@ -88,13 +88,15 @@ class LargeFileGenerator(OperationDefinition):
             data = rng.randbytes(self.params.file_size_bytes)
             with open(output_path, "wb") as f:
                 f.write(data)
-            files_meta.append({
-                "path": output_path,
-                "content_hash": compute_artifact_id(data),
-                "size_bytes": len(data),
-                "original_name": f"output_{i:05d}",
-                "extension": ".bin",
-            })
+            files_meta.append(
+                {
+                    "path": output_path,
+                    "content_hash": compute_artifact_id(data),
+                    "size_bytes": len(data),
+                    "original_name": f"output_{i:05d}",
+                    "extension": ".bin",
+                }
+            )
 
         return {"files": files_meta}
 
