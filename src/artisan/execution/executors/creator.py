@@ -26,6 +26,7 @@ from artisan.execution.utils import generate_execution_run_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.utils.hashing import serialize_params
 from artisan.utils.path import cancel_sentinel_path
 from artisan.utils.timing import phase_timer
 from artisan.utils.traceback import format_error
@@ -197,6 +198,8 @@ def run_creator_flow(
     Returns:
         StagingResult indicating success or failure with staged paths.
     """
+    from artisan.execution.executors.creator_phases import _extract_inputs
+
     timings: dict[str, Any] = {}
     timestamp_start = datetime.now(UTC)
     operation = unit.operation
@@ -232,7 +235,7 @@ def run_creator_flow(
             runtime_env,
             operation,
         )
-        params_dict = _get_params_dict(operation)
+        params_dict = serialize_params(operation)
 
         # --- record phase ---
         with phase_timer("record", timings):
@@ -263,7 +266,7 @@ def run_creator_flow(
             runtime_env,
             operation,
         )
-        params_dict = _get_params_dict(operation)
+        params_dict = serialize_params(operation)
         staging_result = record_execution_failure(
             execution_context=execution_context,
             error=error,
@@ -294,7 +297,7 @@ def run_creator_flow(
                 artifact_ids=[],
             )
         else:
-            params_dict = _get_params_dict(operation)
+            params_dict = serialize_params(operation)
             staging_result = record_execution_failure(
                 execution_context=execution_context,
                 error=error,
@@ -309,13 +312,6 @@ def run_creator_flow(
     timings["total"] = round(time.perf_counter() - total_start, 4)
     logger.debug("Execution %s timings: %s", execution_run_id, timings)
     return staging_result
-
-
-def _get_params_dict(operation: Any) -> dict[str, Any]:
-    """Extract serialized params from an operation."""
-    from artisan.utils.hashing import serialize_params
-
-    return serialize_params(operation)
 
 
 def _build_execution_context(
@@ -387,10 +383,3 @@ def _try_build_execution_context(
             "Unexpected failure building execution context for %s", execution_run_id
         )
         return None
-
-
-def _extract_inputs(unit: ExecutionUnit) -> dict[str, list[str]]:
-    """Copy input artifact IDs from the execution unit."""
-    if not unit.inputs:
-        return {}
-    return {role: list(ids) for role, ids in unit.inputs.items()}

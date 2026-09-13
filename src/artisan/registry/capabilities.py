@@ -1,10 +1,9 @@
 """Capabilities payload — the server's self-description for agents.
 
-Co-located with its shape (the ``ProvenanceEdges`` precedent) so the MCP
-``artisan_capabilities`` tool and any future CLI ``capabilities`` command
-share one contract. The reader composes the artisan version and the
-one-time ``DiscoveryReport`` with the server-supplied bits (version, delta
-root, read-only flag); it holds no MCP dependency.
+Kept in core so the MCP ``artisan_capabilities`` tool and other callers share
+one contract. The reader composes the artisan version and the one-time
+``DiscoveryReport`` with the server-supplied bits (version, delta root,
+read-only flag); it holds no MCP dependency.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ class CapabilitiesPayload(BaseModel):
         artisan_version: Installed artisan package version.
         server_version: Version of the surface serving this payload (the
             MCP server package version).
-        read_only: True when write tools are unregistered (the v1 default).
+        read_only: Whether the serving surface exposes only read operations.
         delta_root: Configured Delta root, or None when unset (store-reading
             tools will then return the ``delta_root_unset`` envelope).
         discovery: Outcome of the one startup ``discover()`` — imported

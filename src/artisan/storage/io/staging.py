@@ -98,8 +98,8 @@ class StagingArea:
         if df.is_empty():
             return parquet_uri
 
-        # Append by concat if we already staged this table
-        # rechunk=True ensures contiguous memory (default changed in Polars v0.20.26)
+        # Append by concat if we already staged this table. rechunk=True keeps
+        # the concatenated buffers contiguous.
         if table_name in self._staged_tables and self._fs.exists(parquet_uri):
             with self._fs.open(parquet_uri, "rb") as f:
                 existing = pl.read_parquet(f)

@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 # ``ArtifactProvenanceEdge``'s 32-char constraint at construction time.
 _SENTINEL_RUN_ID = "0" * 32
 
-# v1: edges always use these fixed role names on the artifact_edges row.
+# Edges always use these fixed role names on the artifact_edges row.
 _SOURCE_ROLE = "parents"
 _TARGET_ROLE = "children"
 
@@ -290,9 +290,9 @@ def _dedup_against_existing(
     """Drop pairs whose edge tuple already exists in artifact_edges.
 
     Dedup key: ``(source_id, target_id, source_role, target_role,
-    group_id)`` — matching the storage-level edge identity. v1 fixes
-    ``source_role=parents``, ``target_role=children``, ``group_id=NULL``,
-    so the filter narrows to those rows.
+    group_id)`` — matching the storage-level edge identity. This operation
+    fixes ``source_role=parents``, ``target_role=children``, and
+    ``group_id=NULL``, so the filter narrows to those rows.
     """
     if not pairs:
         return []

@@ -124,7 +124,7 @@ def resolve_inputs(
     Handles multiple input formats:
     - dict[str, OutputReference]: Resolve each reference
     - dict[str, list[str]]: Pass through (already artifact IDs)
-    - list[OutputReference]: For runtime-defined inputs (MergeOp), auto-generate role names
+    - list[OutputReference]: For runtime-defined inputs, auto-generate role names
     - None: Return empty dict (generative operations)
 
     Note: Raw file paths (list[str] of paths) are NOT handled here.
@@ -157,7 +157,7 @@ def resolve_inputs(
         )
         # Returns: {"data": ["abc123...", "def456...", ...]}
 
-        # List of OutputReferences (for MergeOp) - flattened to single role
+        # List of OutputReferences - flattened to a single role
         resolved = resolve_inputs(
             [OutputReference(source_step=1, role="out"), OutputReference(source_step=2, role="out")],
             delta_root,

@@ -51,6 +51,7 @@ from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.utils.hashing import serialize_params
 from artisan.utils.timing import phase_timer
 from artisan.utils.traceback import format_error
 
@@ -64,13 +65,6 @@ def is_curator_operation(op: type[OperationDefinition] | OperationDefinition) ->
         hasattr(op_class, "execute_curator")
         and op_class.execute_curator is not OperationDefinition.execute_curator
     )
-
-
-def _get_params(operation: OperationDefinition) -> dict[str, Any]:
-    """Serialize operation params via serialize_params."""
-    from artisan.utils.hashing import serialize_params
-
-    return serialize_params(operation)
 
 
 def _hydrate_inputs_for_lineage(
@@ -190,7 +184,7 @@ def _handle_artifact_result(
             )
         )
 
-    params_dict = _get_params(operation)
+    params_dict = serialize_params(operation)
     return record_execution_success(
         execution_context=execution_context,
         artifacts=dict(finalized),
@@ -224,7 +218,7 @@ def _handle_passthrough_result(
         lineage_edges=result.lineage_edges,
         inputs=inputs,
         timestamp_end=timestamp_end,
-        params=_get_params(operation),
+        params=serialize_params(operation),
         result_metadata=result.metadata if result.metadata else None,
         user_overrides=user_overrides,
     )
@@ -255,7 +249,7 @@ def run_curator_flow(
         timestamp_start,
         worker_id,
     )
-    params_dict = _get_params(operation)
+    params_dict = serialize_params(operation)
     user_overrides = unit.user_overrides
     execution_context = None
 

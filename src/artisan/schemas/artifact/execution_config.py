@@ -191,6 +191,9 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
             original_name: Filename for lineage inference (extensions stripped).
             step_number: Pipeline step number.
             metadata: Optional metadata dict.
+
+        Returns:
+            Draft ExecutionConfigArtifact containing the encoded config.
         """
         encoded = json.dumps(content, sort_keys=True).encode("utf-8")
         return cls(

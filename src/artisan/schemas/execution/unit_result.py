@@ -18,7 +18,7 @@ class UnitResult:
         error: Error message if execution failed, else None.
         item_count: Number of items processed.
         execution_run_ids: Run IDs produced by this unit.
-        worker_log: Optional stdout/stderr captured by the runner provider.
+        worker_log: Optional stdout/stderr captured by the step runner.
     """
 
     success: bool

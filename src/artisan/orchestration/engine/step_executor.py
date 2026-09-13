@@ -23,7 +23,6 @@ from pydantic import BaseModel
 
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.executors.curator import (
-    _get_params,
     is_curator_operation,
     run_curator_flow,
 )
@@ -490,8 +489,8 @@ def _create_runtime_environment(
     is_curator = is_curator_operation(operation)
 
     # failure_logs_root must be local (recorder._write_failure_log uses
-    # os.makedirs/open). For local delta_root keep the historical
-    # sibling-of-delta layout. For cloud delta_root derive from
+    # os.makedirs/open). For local delta_root keep the sibling-of-delta
+    # layout. For cloud delta_root derive from
     # working_root, which RuntimeEnvironment already declares local.
     if config.storage.is_local:
         failure_logs_root = uri_join(uri_parent(config.delta_root), "logs", "failures")
@@ -542,7 +541,7 @@ def execute_step(
         operation_class: OperationDefinition subclass to execute.
         inputs: Input specification (see PipelineManager.run() for formats).
         ov: Coerced per-step overrides (params + cache/runtime knobs).
-        step_runner: Resolved backend to use for execution.
+        step_runner: Resolved lifecycle runner to use for execution.
         step_number: Pipeline step number.
         config: Pipeline configuration.
         step_spec_id: Pre-computed step spec ID from PipelineManager. When
@@ -975,7 +974,7 @@ def _synthesize_failure_record(
             error=error,
             inputs=unit.inputs,
             timestamp_end=datetime.now(UTC),
-            params=_get_params(unit.operation),
+            params=serialize_params(unit.operation),
             user_overrides=user_overrides,
             failure_logs_root=runtime_env.failure_logs_root,
         )
@@ -1117,7 +1116,7 @@ def _execute_creator_step(
     Args:
         operation: Fully configured creator operation instance.
         inputs: Input specification.
-        step_runner: Backend for worker dispatch.
+        step_runner: Resolved lifecycle runner for worker dispatch.
         config_overrides: Merged environment + tool overrides (for hashing only).
         step_number: Pipeline step number.
         config: Pipeline configuration.

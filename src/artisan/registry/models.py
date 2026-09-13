@@ -42,9 +42,9 @@ class OperationSummary(BaseModel):
 class InputSpecMetadata(BaseModel):
     """Wire shape for a single ``InputSpec``.
 
-    Trimmed vs the source spec to the fields an agent uses today;
-    ``materialize_as``, ``hydrate``, and ``with_associated`` return when an
-    MCP tool needs them.
+    Exposes the subset used by the agent-facing registry payload. Source-only
+    controls such as ``materialize_as``, ``hydrate``, and ``with_associated``
+    are intentionally omitted.
 
     Attributes:
         artifact_type: Expected artifact type string.
@@ -63,8 +63,8 @@ class InputSpecMetadata(BaseModel):
 class OutputSpecMetadata(BaseModel):
     """Wire shape for a single ``OutputSpec``.
 
-    ``infer_lineage_from`` is omitted until ``artisan_get_provenance_graph``
-    needs it.
+    Exposes only the fields needed to describe the output shape;
+    ``infer_lineage_from`` remains an execution-time concern.
 
     Attributes:
         artifact_type: Artifact type this output produces.

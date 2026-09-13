@@ -1,11 +1,10 @@
-"""Log tool: get_step_logs (failure logs only, v1 scope).
+"""Failure-log tail tool for failed step executions.
 
 Only failed executions have discoverable log paths — ``inspect_failures``
 emits a relative fragment under ``<runs_dir>/logs/failures/``. This tool
-tails those files for a named step. Success-step logs are out of scope
-(deferred to the full log-reading design). Failure logs are always local
-files, matching the standard layout where ``runs_dir`` is the parent of
-``delta_root``.
+tails those files for a named step and does not expose success-step logs.
+Failure logs are always local files, matching the standard layout where
+``runs_dir`` is the parent of ``delta_root``.
 """
 
 from __future__ import annotations
@@ -38,14 +37,13 @@ def register(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Tail the failure logs of a failed step to read its error output.
 
-        Failure logs only (v1): this reads the human failure log files a
-        failed execution writes, not success-step logs. Resolves the step
-        name to its number, finds that step's failed-execution log paths via
-        the failures report, reads them, and returns the last tail_lines
-        lines with a truncated flag. The request is capped at 1,000 lines and
-        256 KiB. A step that did not fail — or a store with no failures —
-        yields an empty lines list. Use it after artisan_get_run_status flags
-        a failed step.
+        This reads the human failure log files a failed execution writes, not
+        success-step logs. It resolves the step name to its number, finds that
+        step's failed-execution log paths via the failures report, reads them,
+        and returns the last tail_lines lines with a truncated flag. The
+        request is capped at 1,000 lines and 256 KiB. A step that did not fail
+        — or a store with no failures — yields an empty lines list. Use it
+        after artisan_get_run_status flags a failed step.
         """
         config = ctx.lifespan_context["config"]
 

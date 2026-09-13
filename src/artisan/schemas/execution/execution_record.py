@@ -31,7 +31,7 @@ class ExecutionRecord(BaseModel):
         timestamp_start: Execution start time.
         timestamp_end: Execution end time.
         source_worker: Worker ID that executed this.
-        compute_backend: Stable runner/provider name.
+        compute_backend: Resolved step-runner name.
         success: Whether execution succeeded (row-level).
         error: Error message if failed (row-level).
         metadata: Additional metadata (JSON-serializable).
@@ -97,7 +97,7 @@ class ExecutionRecord(BaseModel):
     )
     compute_backend: str = Field(
         default="local",
-        description="Where the execution ran",
+        description="Resolved step-runner name",
     )
 
     # Row-level success/error

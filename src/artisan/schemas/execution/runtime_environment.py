@@ -87,7 +87,7 @@ class RuntimeEnvironment(BaseModel):
         description="Don't cleanup sandbox directory after execution",
     )
 
-    # Backend traits (flattened from WorkerTraits for serialization)
+    # Runner traits (flattened from WorkerTraits for serialization)
     worker_id_env_var: str | None = Field(
         None,
         description="Provider-defined environment variable containing a worker ID.",
@@ -98,7 +98,7 @@ class RuntimeEnvironment(BaseModel):
     )
     compute_backend_name: str = Field(
         "local",
-        description="Backend name for provenance records.",
+        description="Resolved step-runner name for provenance records.",
     )
 
     # Storage

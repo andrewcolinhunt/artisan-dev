@@ -1,8 +1,8 @@
 """Cursor pagination shared by the list tools.
 
-Every paginated tool returns ``{items, has_more, next_cursor}`` per the
-"refs, not blobs" criterion. The cursor is an opaque offset token the
-server issues and the agent echoes back — never parsed by the agent.
+Every paginated tool returns ``{items, has_more, next_cursor}``. The cursor
+is an opaque offset token the server issues and the agent echoes back — never
+parsed by the agent.
 """
 
 from __future__ import annotations

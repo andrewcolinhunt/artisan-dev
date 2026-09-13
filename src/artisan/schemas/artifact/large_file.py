@@ -136,6 +136,9 @@ class LargeFileArtifact(Artifact):
             original_name: Human-readable filename stem.
             extension: File extension (e.g., .bin, .npy).
             metadata: Optional metadata dict.
+
+        Returns:
+            Draft LargeFileArtifact for the external file.
         """
         return cls(
             artifact_id=None,

@@ -1,11 +1,10 @@
 """Structured error identity for agent-recoverable failures.
 
 ``ArtisanError`` + ``ErrorCode`` is the single source of truth for error
-*identity*; ``ArtisanErrorEnvelope`` is its *serialization*, produced only
-at the boundaries a machine reads the structure across — currently the
-tool-endpoint wire (``execution/tool_endpoint``) and registry discovery
-(``registry/api.py``). The envelope is not a field bolted onto every
-string-carrying result: a new ``ErrorCode`` or envelope field ships only
+*identity*; ``ArtisanErrorEnvelope`` is its *serialization*, consumed at
+machine-readable boundaries including CLI/MCP responses, the tool-endpoint
+wire, and persisted failure records. The envelope is not a field bolted onto
+every string-carrying result: a new ``ErrorCode`` or envelope field ships only
 together with a raise site **and** a reader that consumes it.
 """
 
@@ -35,8 +34,7 @@ class ArtisanErrorEnvelope(BaseModel):
     Attributes:
         error_type: Coarse category. Required at every raise site.
         code: Stable agent-recognizable identifier (e.g. ``"op_execute_failed"``).
-        message: Human-readable summary; unchanged from legacy string errors
-            so log-matching tests keep working.
+        message: Human-readable failure summary.
         operation_name: The operation whose validation/execution raised.
         step_name: The pipeline step name, when known.
         field: Dotted path locating the offending field
@@ -169,7 +167,7 @@ class ErrorCode:
     TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
-    # config/io — CLI machine-read boundary (cli.py store-reading commands)
+    # config/io — machine-readable store APIs
     DELTA_ROOT_UNSET = "delta_root_unset"
     STORE_NOT_FOUND = "store_not_found"
 
