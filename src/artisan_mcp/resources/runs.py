@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastmcp import Context, FastMCP
 
 from artisan_mcp._boundary import boundary, require_delta_root
@@ -13,11 +15,11 @@ def register(mcp: FastMCP) -> None:
     """Attach the run resources to ``mcp``."""
 
     @mcp.resource("artisan://runs", mime_type="application/json")
-    async def runs_list(ctx: Context) -> dict:
+    async def runs_list(ctx: Context) -> dict[str, Any]:
         """The 100 most recent persisted run rollups with page metadata."""
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             from artisan.orchestration.run_history import list_runs
 
             root = require_delta_root(config)
@@ -27,11 +29,11 @@ def register(mcp: FastMCP) -> None:
         return boundary(payload)
 
     @mcp.resource("artisan://runs/{pipeline_run_id}", mime_type="application/json")
-    async def run_detail(pipeline_run_id: str, ctx: Context) -> dict:
+    async def run_detail(pipeline_run_id: str, ctx: Context) -> dict[str, Any]:
         """One run's ``RunStatus`` — rollup plus per-step terminal statuses."""
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             from artisan.orchestration.run_status import run_status
 
             root = require_delta_root(config)

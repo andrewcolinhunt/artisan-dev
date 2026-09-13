@@ -25,7 +25,7 @@ class ArtisanMCPConfig(BaseSettings):
             ``ARTISAN_LOAD_MODULES``.
     """
 
-    delta_root: str | None = Field(None, validation_alias="ARTISAN_DELTA_ROOT")
+    delta_root: str | None = Field(default=None, validation_alias="ARTISAN_DELTA_ROOT")
     load_modules: Annotated[list[str], NoDecode] = Field(
         default_factory=list, validation_alias="ARTISAN_LOAD_MODULES"
     )

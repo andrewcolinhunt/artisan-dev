@@ -119,13 +119,15 @@ def _bounded(value: Any) -> Any:
         return value[:MAX_EVIDENCE_STRING_CHARS] + "… [truncated]"
     if isinstance(value, dict):
         items = list(value.items())
-        bounded = {key: _bounded(item) for key, item in items[:MAX_RESOURCE_ITEMS]}
+        bounded_dict = {key: _bounded(item) for key, item in items[:MAX_RESOURCE_ITEMS]}
         if len(items) > MAX_RESOURCE_ITEMS:
-            bounded["__truncated_items__"] = len(items) - MAX_RESOURCE_ITEMS
-        return bounded
+            bounded_dict["__truncated_items__"] = len(items) - MAX_RESOURCE_ITEMS
+        return bounded_dict
     if isinstance(value, (list, tuple)):
-        bounded = [_bounded(item) for item in value[:MAX_RESOURCE_ITEMS]]
+        bounded_list = [_bounded(item) for item in value[:MAX_RESOURCE_ITEMS]]
         if len(value) > MAX_RESOURCE_ITEMS:
-            bounded.append({"__truncated_items__": len(value) - MAX_RESOURCE_ITEMS})
-        return bounded
+            bounded_list.append(
+                {"__truncated_items__": len(value) - MAX_RESOURCE_ITEMS}
+            )
+        return bounded_list
     return value

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastmcp import FastMCP
 
 from artisan_mcp._boundary import boundary
@@ -12,7 +14,7 @@ def register(mcp: FastMCP) -> None:
     """Attach the operations resource to ``mcp``."""
 
     @mcp.resource("artisan://operations/{name}", mime_type="application/json")
-    async def operation_metadata(name: str) -> dict:
+    async def operation_metadata(name: str) -> dict[str, Any]:
         """Full ``OperationMetadata`` for the named operation.
 
         Args:
@@ -23,7 +25,7 @@ def register(mcp: FastMCP) -> None:
         """
         from artisan.registry import describe
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             metadata = describe(name).model_dump()
             if resource_fits(metadata):
                 return metadata

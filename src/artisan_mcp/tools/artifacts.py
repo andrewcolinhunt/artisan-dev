@@ -8,6 +8,8 @@ the step's refs.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastmcp import Context, FastMCP
 
 from artisan_mcp._boundary import boundary, require_delta_root
@@ -25,7 +27,7 @@ def register(mcp: FastMCP) -> None:
         pipeline_run_id: str | None = None,
         limit: int = 50,
         cursor: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Find artifacts by type or run to get ids for provenance walks.
 
         Returns a page of artifact references — artifact_id, artifact_type,
@@ -39,7 +41,7 @@ def register(mcp: FastMCP) -> None:
         """
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             from artisan.storage.core.artifact_query import query_artifacts
 
             root = require_delta_root(config)
@@ -55,7 +57,7 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool(annotations=READ_ONLY)
     async def artisan_get_step_result(
         ctx: Context, pipeline_run_id: str, step_name: str
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Get the artifacts one step produced, grouped by artifact type.
 
         Resolves the step name to its number within the run, then returns
@@ -68,7 +70,7 @@ def register(mcp: FastMCP) -> None:
         """
         config = ctx.lifespan_context["config"]
 
-        def payload() -> dict:
+        def payload() -> dict[str, Any]:
             from artisan.orchestration.run_status import resolve_step_number
             from artisan.schemas.execution.storage_config import StorageConfig
             from artisan.storage.core.artifact_query import query_artifacts
@@ -88,7 +90,7 @@ def register(mcp: FastMCP) -> None:
             refs = query_artifacts(
                 root, pipeline_run_id=pipeline_run_id, storage=storage
             )
-            grouped: dict[str, list[dict]] = {}
+            grouped: dict[str, list[dict[str, Any]]] = {}
             for ref in refs:
                 if ref.origin_step_number == number:
                     grouped.setdefault(ref.artifact_type, []).append(ref.model_dump())

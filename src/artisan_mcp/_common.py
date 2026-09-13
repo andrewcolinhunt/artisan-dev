@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-READ_ONLY = {"readOnlyHint": True, "idempotentHint": True}
+READ_ONLY: dict[str, bool] = {"readOnlyHint": True, "idempotentHint": True}
 MAX_RESOURCE_ITEMS = 100
 MAX_RESOURCE_CHARS = 64_000
 
