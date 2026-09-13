@@ -9,6 +9,8 @@ discovery.
 
 from __future__ import annotations
 
+from typing import cast
+
 import fsspec
 from fsspec import AbstractFileSystem
 from fsspec.utils import get_protocol
@@ -46,4 +48,4 @@ def resolve_fs(
         fs = storage.filesystem()
         stripped = path.split("://", 1)[1] if "://" in path else path
         return fs, stripped
-    return fsspec.core.url_to_fs(path)
+    return cast(tuple[AbstractFileSystem, str], fsspec.core.url_to_fs(path))

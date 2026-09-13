@@ -201,8 +201,8 @@ class Artifact(BaseModel):
             row: Dict with keys matching ``POLARS_SCHEMA`` columns.
         """
         decoders = cls._row_decoders()
-        return cls(
-            **{
+        return cls.model_validate(
+            {
                 column: decoders[column](row.get(column))
                 if column in decoders
                 else row.get(column)
