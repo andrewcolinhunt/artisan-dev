@@ -71,7 +71,8 @@ repos:
     hooks:
       - id: mypy
         files: src|tests
-        args: []
+        pass_filenames: false
+        args: ["src/artisan", "src/artisan_mcp", "tests"]
         additional_dependencies:
           - botocore
           - cloudpickle
