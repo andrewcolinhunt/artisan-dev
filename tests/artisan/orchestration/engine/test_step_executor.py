@@ -7,6 +7,9 @@ from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import pytest
+from pydantic import ValidationError
+
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.step_executor import (
     _cancelled_result,
@@ -15,6 +18,7 @@ from artisan.orchestration.engine.step_executor import (
 )
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
@@ -22,6 +26,7 @@ from artisan.schemas.operation_config.compute import (
 )
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
@@ -445,3 +450,57 @@ class TestInstantiateOperationEnvironmentOverrides:
         )
         assert result.environments.docker.image == "new:v2"
         assert result.environments.docker.gpu is True
+
+
+class TestInstantiateOperationValidatedMappingOverrides:
+    @pytest.mark.parametrize(
+        ("operation_class", "overrides"),
+        [
+            (_SimpleCreatorOp, {"runner_resources": {"cpus": 0}}),
+            (_SimpleCreatorOp, {"batch_strategy": {"artifacts_per_unit": 0}}),
+            (
+                _SimpleCreatorOp,
+                {"environment": {"local": {"unknown": True}}},
+            ),
+            (
+                _SimpleCreatorOp,
+                {"compute_provider": {"modal": {"min_container": 2}}},
+            ),
+            (_SimpleCreatorOp, {"compute_resources": {"cpu": 0}}),
+            (_SimpleToolOp, {"tool": {"executable": None}}),
+        ],
+    )
+    def test_invalid_mapping_patch_is_revalidated(
+        self,
+        operation_class: type[OperationDefinition],
+        overrides: dict[str, object],
+    ) -> None:
+        with pytest.raises(ValidationError):
+            instantiate_operation(
+                operation_class,
+                StepOverrides.from_user(**overrides),  # type: ignore[arg-type]
+            )
+
+    def test_valid_mapping_patches_preserve_unset_defaults(self) -> None:
+        operation = instantiate_operation(
+            _SimpleCreatorOp,
+            StepOverrides.from_user(
+                runner_resources={"cpus": 2},
+                batch_strategy={"max_workers": 3},
+            ),
+        )
+
+        assert operation.runner_resources == RunnerResources(cpus=2)
+        assert operation.batch_strategy == BatchStrategy(max_workers=3)
+
+    def test_valid_tool_patch_preserves_executable(self) -> None:
+        operation = instantiate_operation(
+            _SimpleToolOp,
+            StepOverrides.from_user(tool={"subcommand": "run"}),
+        )
+
+        assert operation.tool == ToolSpec(
+            executable="bash",
+            interpreter=None,
+            subcommand="run",
+        )

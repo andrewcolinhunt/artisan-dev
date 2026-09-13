@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 
@@ -74,3 +75,12 @@ class TestToolSpec:
         script.touch()
         ts = ToolSpec(executable=str(script))
         ts.validate_tool()  # should not raise
+
+    @pytest.mark.parametrize("executable", [None, "", "   "])
+    def test_executable_must_be_present(self, executable):
+        with pytest.raises(ValidationError, match="non-empty"):
+            ToolSpec(executable=executable)
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValidationError, match="executabl"):
+            ToolSpec(executable="bash", executabl="python")

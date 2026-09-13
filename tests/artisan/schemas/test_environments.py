@@ -89,3 +89,11 @@ class TestEnvironments:
         current = envs.current()
         assert isinstance(current, ApptainerEnvironmentSpec)
         assert isinstance(current, EnvironmentSpec)
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValueError, match="dockr"):
+            Environments(dockr={"image": "img:latest"})
+
+    def test_unknown_nested_field_rejected(self):
+        with pytest.raises(ValueError, match="gpux"):
+            Environments(docker={"image": "img:latest", "gpux": True})

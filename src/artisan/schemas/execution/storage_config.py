@@ -39,7 +39,7 @@ class StorageConfig(BaseModel):
             on-prem S3) without leaking credentials into the process env.
     """
 
-    model_config = {"frozen": True}
+    model_config = {"extra": "forbid", "frozen": True}
 
     protocol: str = "file"
     options: dict[str, Any] = Field(default_factory=dict)

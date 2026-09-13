@@ -60,3 +60,18 @@ class TestRunnerResources:
         rc2 = RunnerResources()
         rc1.extra["key"] = "value"
         assert rc2.extra == {}
+
+    @pytest.mark.parametrize(
+        "time_limit",
+        ["", "1:00:00", "01:00", "01:60:00", "01:00:60", "00:00:00"],
+    )
+    def test_time_limit_requires_positive_hh_mm_ss(self, time_limit: str):
+        with pytest.raises(ValidationError, match="HH:MM:SS"):
+            RunnerResources(time_limit=time_limit)
+
+    def test_time_limit_allows_hours_above_one_day(self):
+        assert RunnerResources(time_limit="99:59:59").time_limit == "99:59:59"
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValidationError, match="cpu"):
+            RunnerResources(cpu=2)

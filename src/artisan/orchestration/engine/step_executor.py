@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Never, cast
 
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel
@@ -100,6 +100,23 @@ def _deep_merge_model[ModelT: BaseModel](
     return model_cls.model_validate(base)
 
 
+def _validated_model_update[ModelT: BaseModel](
+    base_model: BaseModel,
+    override: dict[str, Any],
+    model_cls: type[ModelT],
+) -> ModelT:
+    """Shallow-merge a mapping patch and validate the complete result."""
+    merged = base_model.model_dump()
+    merged.update(override)
+    return model_cls.model_validate(merged)
+
+
+def _raise_invalid_override(field_name: str, value: object) -> Never:
+    """Reject a malformed internal override carrier with a useful error."""
+    msg = f"{field_name} override must be a mapping or typed model, got {type(value).__name__}"
+    raise TypeError(msg)
+
+
 def instantiate_operation(
     operation_class: type[OperationDefinition],
     ov: StepOverrides,
@@ -120,12 +137,12 @@ def instantiate_operation(
         Fully configured operation instance.
     """
     params = ov.params
-    runner_resources = ov.runner_resources
-    batch_strategy = ov.batch_strategy
-    environment = ov.environment
-    tool = ov.tool
-    compute_provider = ov.compute_provider
-    compute_resources = ov.compute_resources
+    runner_resources: object = ov.runner_resources
+    batch_strategy: object = ov.batch_strategy
+    environment: object = ov.environment
+    tool: object = ov.tool
+    compute_provider: object = ov.compute_provider
+    compute_resources: object = ov.compute_resources
     group_by = ov.group_by
 
     init_kwargs: dict[str, Any] = {}
@@ -153,24 +170,34 @@ def instantiate_operation(
     if runner_resources:
         if isinstance(runner_resources, _RunnerResources):
             updates["runner_resources"] = runner_resources
-        else:
-            updates["runner_resources"] = instance.runner_resources.model_copy(
-                update=runner_resources
+        elif isinstance(runner_resources, dict):
+            updates["runner_resources"] = _validated_model_update(
+                instance.runner_resources,
+                runner_resources,
+                _RunnerResources,
             )
+        else:
+            _raise_invalid_override("runner_resources", runner_resources)
     if batch_strategy:
         if isinstance(batch_strategy, _BatchStrategy):
             updates["batch_strategy"] = batch_strategy
-        else:
-            updates["batch_strategy"] = instance.batch_strategy.model_copy(
-                update=batch_strategy
+        elif isinstance(batch_strategy, dict):
+            updates["batch_strategy"] = _validated_model_update(
+                instance.batch_strategy,
+                batch_strategy,
+                _BatchStrategy,
             )
+        else:
+            _raise_invalid_override("batch_strategy", batch_strategy)
     if tool and instance.tool is not None:
         from artisan.schemas.operation_config.tool_spec import ToolSpec
 
         if isinstance(tool, ToolSpec):
             updates["tool"] = tool
+        elif isinstance(tool, dict):
+            updates["tool"] = _validated_model_update(instance.tool, tool, ToolSpec)
         else:
-            updates["tool"] = instance.tool.model_copy(update=tool)
+            _raise_invalid_override("tool", tool)
     if environment is not None:
         if isinstance(environment, str):
             updates["environments"] = instance.environments.model_copy(
@@ -178,10 +205,12 @@ def instantiate_operation(
             )
         elif isinstance(environment, Environments):
             updates["environments"] = environment
-        else:
+        elif isinstance(environment, dict):
             updates["environments"] = _deep_merge_model(
                 instance.environments, environment, Environments
             )
+        else:
+            _raise_invalid_override("environment", environment)
     if compute_provider is not None:
         if isinstance(compute_provider, str):
             updates["compute_provider"] = instance.compute_provider.model_copy(
@@ -189,19 +218,25 @@ def instantiate_operation(
             )
         elif isinstance(compute_provider, ComputeProvider):
             updates["compute_provider"] = compute_provider
-        else:
+        elif isinstance(compute_provider, dict):
             updates["compute_provider"] = _deep_merge_model(
                 instance.compute_provider, compute_provider, ComputeProvider
             )
+        else:
+            _raise_invalid_override("compute_provider", compute_provider)
     if compute_resources is not None:
         from artisan.schemas.operation_config.compute_resources import ComputeResources
 
         if isinstance(compute_resources, ComputeResources):
             updates["compute_resources"] = compute_resources
-        else:
-            updates["compute_resources"] = instance.compute_resources.model_copy(
-                update=compute_resources
+        elif isinstance(compute_resources, dict):
+            updates["compute_resources"] = _validated_model_update(
+                instance.compute_resources,
+                compute_resources,
+                ComputeResources,
             )
+        else:
+            _raise_invalid_override("compute_resources", compute_resources)
     if group_by is not None:
         updates["group_by"] = group_by
     if updates:
