@@ -12,9 +12,9 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -131,15 +131,17 @@ class DataGeneratorWithMetrics(OperationDefinition):
             created_files.append(filepath)
 
             n = len(xs)
-            calculated_metrics.append({
-                "metric_key": f"dataset_{i:05d}_metrics.json",
-                "mean_x": statistics.mean(xs),
-                "mean_y": statistics.mean(ys),
-                "mean_z": statistics.mean(zs),
-                "mean_score": statistics.mean(scores),
-                "std_score": statistics.stdev(scores) if n >= 2 else 0.0,
-                "row_count": n,
-            })
+            calculated_metrics.append(
+                {
+                    "metric_key": f"dataset_{i:05d}_metrics.json",
+                    "mean_x": statistics.mean(xs),
+                    "mean_y": statistics.mean(ys),
+                    "mean_z": statistics.mean(zs),
+                    "mean_score": statistics.mean(scores),
+                    "std_score": statistics.stdev(scores) if n >= 2 else 0.0,
+                    "row_count": n,
+                }
+            )
 
         return {
             "created_files": created_files,

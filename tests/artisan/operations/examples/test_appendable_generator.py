@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.executors.creator import run_creator_lifecycle
@@ -124,7 +123,7 @@ class TestNumFiles:
     """Tests for the num_files parameter."""
 
     def test_splits_records_evenly(self, tmp_path: Path) -> None:
-        raw, result = _run(tmp_path, count=6, num_files=3)
+        _raw, result = _run(tmp_path, count=6, num_files=3)
         paths = {a.external_path for a in result.artifacts["records"]}
         assert len(paths) == 3
         for path in paths:
@@ -133,7 +132,7 @@ class TestNumFiles:
             assert len(lines) == 2
 
     def test_uneven_split(self, tmp_path: Path) -> None:
-        raw, result = _run(tmp_path, count=7, num_files=3)
+        _raw, result = _run(tmp_path, count=7, num_files=3)
         paths = sorted({a.external_path for a in result.artifacts["records"]})
         assert len(paths) == 3
         line_counts = []

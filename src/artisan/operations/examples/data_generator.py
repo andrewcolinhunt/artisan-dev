@@ -101,13 +101,15 @@ class DataGenerator(OperationDefinition):
                 writer = csv.writer(f)
                 writer.writerow(["id", "x", "y", "z", "score"])
                 for row_idx in range(self.params.rows_per_file):
-                    writer.writerow([
-                        row_idx,
-                        round(rng.uniform(0.0, 10.0), 4),
-                        round(rng.uniform(0.0, 10.0), 4),
-                        round(rng.uniform(0.0, 10.0), 4),
-                        round(rng.uniform(0.0, 1.0), 4),
-                    ])
+                    writer.writerow(
+                        [
+                            row_idx,
+                            round(rng.uniform(0.0, 10.0), 4),
+                            round(rng.uniform(0.0, 10.0), 4),
+                            round(rng.uniform(0.0, 10.0), 4),
+                            round(rng.uniform(0.0, 1.0), 4),
+                        ]
+                    )
 
             created_files.append(filepath)
 

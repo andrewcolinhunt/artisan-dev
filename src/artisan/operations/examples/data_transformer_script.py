@@ -9,9 +9,9 @@ from typing import Any, ClassVar, cast
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
+from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
@@ -110,10 +110,12 @@ class DataTransformerScript(OperationDefinition):
         prepared_inputs: list[dict[str, Any]] = []
         for group in inputs.grouped():
             config = cast(ExecutionConfigArtifact, group["config"])
-            prepared_inputs.append({
-                "config_path": str(config.materialized_path),
-                "design_name": config.original_name,
-            })
+            prepared_inputs.append(
+                {
+                    "config_path": str(config.materialized_path),
+                    "design_name": config.original_name,
+                }
+            )
 
         return {"items": PerArtifact(prepared_inputs)}
 
@@ -126,11 +128,13 @@ class DataTransformerScript(OperationDefinition):
             config_path = item["config_path"]
             design_name = item["design_name"]
 
-            args = format_args({
-                "config": config_path,
-                "output-dir": execute_dir,
-                "output-basename": design_name,
-            })
+            args = format_args(
+                {
+                    "config": config_path,
+                    "output-dir": execute_dir,
+                    "output-basename": design_name,
+                }
+            )
             run_command(
                 env,
                 [*self.tool.parts(), *args],
