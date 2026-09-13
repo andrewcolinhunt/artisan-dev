@@ -116,6 +116,14 @@ class OutputSpec(BaseModel):
             )
             raise ValueError(msg)
 
+        reference_kind, roles = next(iter(v.items()))
+        if reference_kind == "outputs" and not roles:
+            msg = "Output lineage must reference at least one output role."
+            raise ValueError(msg)
+        if len(roles) != len(set(roles)):
+            msg = f"Duplicate roles are not allowed in infer_lineage_from: {roles!r}"
+            raise ValueError(msg)
+
         return v
 
     def __hash__(self) -> int:

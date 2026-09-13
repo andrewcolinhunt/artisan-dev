@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from textwrap import dedent
+
 import pytest
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.registry import discover
-from artisan.registry.discovery import _manual_modules
+from artisan.registry.discovery import _import_and_attribute, _manual_modules
+from artisan.registry.models import DiscoveryError
 
 
 class TestDiscoverBuiltIn:
@@ -44,6 +48,61 @@ class TestManualModules:
             and e.error_type == "ModuleNotFoundError"
             for e in report.errors
         )
+
+    def test_failing_import_restores_registry_and_collisions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        module_name = "_artisan_test_partial_plugin"
+        plugin_path = tmp_path / f"{module_name}.py"
+        plugin_path.write_text(
+            dedent(
+                """
+                from typing import ClassVar
+
+                from artisan.operations.base.operation_definition import OperationDefinition
+                from artisan.schemas.specs.input_spec import InputSpec
+                from artisan.schemas.specs.output_spec import OutputSpec
+
+
+                class PartialOperation(OperationDefinition):
+                    name: ClassVar[str] = "_test_partial_import_op"
+                    description: ClassVar[str] = "Must be rolled back."
+                    inputs: ClassVar[dict[str, InputSpec]] = {}
+                    outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                    def execute_function(self, inputs):
+                        return None
+
+
+                class CollidingOperation(OperationDefinition):
+                    name: ClassVar[str] = "_test_docstring_only_op"
+                    description: ClassVar[str] = "Must not leave a collision."
+                    inputs: ClassVar[dict[str, InputSpec]] = {}
+                    outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                    def execute_function(self, inputs):
+                        return None
+
+
+                raise RuntimeError("failure after class definitions")
+                """
+            )
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        registry_before = dict(OperationDefinition._registry)
+        collisions_before = list(OperationDefinition._name_collisions)
+        errors: list[DiscoveryError] = []
+
+        source = _import_and_attribute(module_name, "manual", errors)
+
+        assert source is None
+        assert OperationDefinition._registry == registry_before
+        assert OperationDefinition._name_collisions == collisions_before
+        assert [(error.error_type, error.error_message) for error in errors] == [
+            ("RuntimeError", "failure after class definitions")
+        ]
 
     def test_env_var_and_kwarg_merged_and_deduped(
         self,
