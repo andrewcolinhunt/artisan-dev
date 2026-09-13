@@ -240,6 +240,30 @@ class TestLoad:
         assert "accuracy" in metric_cols
         assert "score" in metric_cols
 
+    def test_metric_from_step_zero_uses_recorded_step_name(
+        self, delta_root: Path
+    ) -> None:
+        """Step zero is a valid producing step, not an unknown sentinel."""
+        metric_id = _pad("m1_0")
+        index_path = delta_root / "artifacts/index"
+        index = pl.read_delta(str(index_path)).with_columns(
+            pl.when(pl.col("artifact_id") == metric_id)
+            .then(pl.lit(0))
+            .otherwise(pl.col("origin_step_number"))
+            .alias("origin_step_number")
+        )
+        index.write_delta(str(index_path), mode="overwrite")
+
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+
+        row = filt.tidy_df.filter(
+            (pl.col("artifact_id") == _pad("s0"))
+            & (pl.col("metric_name") == "confidence")
+        ).row(0, named=True)
+        assert row["step_number"] == 0
+        assert row["step_name"] == "ingest"
+
     def test_load_with_step_numbers_filters_primary_artifacts(
         self, delta_root: Path
     ) -> None:
@@ -707,6 +731,25 @@ class TestCommit:
         assert diag["funnel"][0]["count"] == 4
         assert "eliminated" in diag["funnel"][1]
 
+    def test_commit_resolves_step_name_in_diagnostics(self, delta_root: Path) -> None:
+        """A step-qualified criterion records its resolved numeric step."""
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+        filt.set_criteria(
+            [
+                {
+                    "metric": "confidence",
+                    "operator": "gt",
+                    "value": 50,
+                    "step": "calc_metrics",
+                }
+            ]
+        )
+
+        result = filt.commit()
+
+        assert result.metadata["diagnostics"]["criteria"][0]["resolved_from_step"] == 1
+
     def test_commit_diagnostics_full_dict_golden(self, delta_root: Path) -> None:
         """Full v4 diagnostics dict is stable (multi-criterion)."""
         filt = InteractiveFilter(delta_root)
@@ -726,8 +769,16 @@ class TestCommit:
             "total_metrics_discovered": 8,
             "total_passed": 2,
             "metric_sources": [
-                {"step_number": 1, "step_name": "calc_metrics"},
-                {"step_number": 2, "step_name": "extra_metrics"},
+                {
+                    "step_number": 1,
+                    "step_name": "calc_metrics",
+                    "metric_count": 4,
+                },
+                {
+                    "step_number": 2,
+                    "step_name": "extra_metrics",
+                    "metric_count": 4,
+                },
             ],
             "criteria": [
                 {
@@ -798,7 +849,8 @@ class TestCommit:
         assert row["compute_backend"] == "local"
         assert row["success"] is True
         assert row["error"] is None
-        assert row["step_run_id"] is None
+        assert result.step_run_id is not None
+        assert row["step_run_id"] == result.step_run_id
         assert row["metadata"] == json.dumps(
             {"diagnostics": result.metadata["diagnostics"]}
         )
@@ -1592,7 +1644,11 @@ class TestRunScopedStepNames:
         assert filt._step_info["_step_names"][1] == "eval_detected"
 
         # Derived metric_sources reflect the detected run's name too.
-        assert {"step_number": 1, "step_name": "eval_detected"} in filt._metric_sources
+        assert {
+            "step_number": 1,
+            "step_name": "eval_detected",
+            "metric_count": 2,
+        } in filt._metric_sources
 
 
 class TestExistingFloatMetricsStillWork:

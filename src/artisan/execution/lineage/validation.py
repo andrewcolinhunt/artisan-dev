@@ -7,6 +7,7 @@ from artisan.execution.exceptions import (
     LineageCompletenessError,
     LineageIntegrityError,
 )
+from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
@@ -67,15 +68,31 @@ def validate_lineage_completeness(
         if not artifact_list:
             continue
 
-        mapped_names = {
-            mapping.draft_original_name for mapping in lineage.get(role, [])
-        }
+        mapped_roles_by_name: dict[str, set[str]] = {}
+        for mapping in lineage.get(role, []):
+            mapped_roles_by_name.setdefault(mapping.draft_original_name, set()).add(
+                mapping.source_role
+            )
+        required_source_roles = (
+            set(next(iter(lineage_config.values()))) if lineage_config else set()
+        )
         for artifact in artifact_list:
             original_name = getattr(artifact, "original_name", None)
-            if original_name not in mapped_names:
+            if not isinstance(original_name, str):
+                msg = f"Artifact in role '{role}' has no valid original_name"
+                raise LineageCompletenessError(msg)
+            mapped_roles = mapped_roles_by_name.get(original_name, set())
+            if not mapped_roles:
                 msg = (
                     f"Artifact '{original_name}' in role '{role}' "
                     f"has no lineage mapping"
+                )
+                raise LineageCompletenessError(msg)
+            missing_roles = required_source_roles - mapped_roles
+            if missing_roles:
+                msg = (
+                    f"Artifact '{original_name}' in role '{role}' is missing "
+                    f"lineage mappings from source roles: {sorted(missing_roles)}"
                 )
                 raise LineageCompletenessError(msg)
 
@@ -105,11 +122,12 @@ def _check_mapping_uniqueness(
     """
     # _require_one_source_ref on LineageMapping guarantees exactly one of
     # source_artifact_id or source_original_name is set.
-    source_identity: str = (
-        mapping.source_artifact_id
-        if mapping.source_artifact_id is not None
-        else mapping.source_original_name
-    )
+    source_identity = mapping.source_artifact_id
+    if source_identity is None:
+        source_identity = mapping.source_original_name
+    if source_identity is None:
+        msg = "Lineage mapping has no source reference"
+        raise LineageIntegrityError(msg)
     triple = (
         mapping.draft_original_name,
         mapping.source_role,
@@ -152,34 +170,28 @@ def validate_lineage_integrity(
             within a single ``source_role`` (split into separate roles
             instead).
     """
-    input_ids = {
-        artifact.artifact_id
-        for artifacts in input_artifacts.values()
-        for artifact in artifacts
-    }
-    output_ids = {
-        artifact.artifact_id
-        for artifacts in output_artifacts.values()
-        for artifact in artifacts
-        if artifact.artifact_id
-    }
-    all_source_ids = input_ids | output_ids
-    output_names = {
-        getattr(artifact, "original_name", None)
-        for artifacts in output_artifacts.values()
-        for artifact in artifacts
-    }
+    source_ids_by_role: dict[str, set[str]] = {}
+    for artifacts_by_role in (input_artifacts, output_artifacts):
+        for role, artifacts in artifacts_by_role.items():
+            source_ids_by_role.setdefault(role, set()).update(
+                artifact.artifact_id
+                for artifact in artifacts
+                if artifact.artifact_id is not None
+            )
     output_names_by_role: dict[str, set[str]] = {}
     for role, artifacts in output_artifacts.items():
-        output_names_by_role[role] = {
-            artifact.original_name
-            for artifact in artifacts
-            if getattr(artifact, "original_name", None)
-        }
+        output_names_by_role[role] = set()
+        for artifact in artifacts:
+            original_name = getattr(artifact, "original_name", None)
+            if isinstance(original_name, str):
+                output_names_by_role[role].add(original_name)
 
-    for mappings in lineage.values():
+    for target_role, mappings in lineage.items():
         seen_triples: set[tuple[str, str, str]] = set()
         for mapping in mappings:
+            if mapping.group_id is not None and not is_hex_id(mapping.group_id):
+                msg = f"Invalid lineage group_id: {mapping.group_id!r}"
+                raise LineageIntegrityError(msg)
             if mapping.source_original_name is not None:
                 role_names = output_names_by_role.get(mapping.source_role, set())
                 if mapping.source_original_name not in role_names:
@@ -189,10 +201,23 @@ def validate_lineage_integrity(
                         f"in role '{mapping.source_role}'"
                     )
                     raise LineageIntegrityError(msg)
-            elif mapping.source_artifact_id not in all_source_ids:
-                msg = f"Lineage references non-existent source: {mapping.source_artifact_id}"
+            elif not is_hex_id(mapping.source_artifact_id):
+                msg = f"Lineage contains malformed source ID: {mapping.source_artifact_id!r}"
                 raise LineageIntegrityError(msg)
-            if mapping.draft_original_name not in output_names:
-                msg = f"Lineage references non-existent output: {mapping.draft_original_name}"
+            elif mapping.source_artifact_id not in source_ids_by_role.get(
+                mapping.source_role, set()
+            ):
+                msg = (
+                    f"Lineage references non-existent source: "
+                    f"{mapping.source_artifact_id} in role '{mapping.source_role}'"
+                )
+                raise LineageIntegrityError(msg)
+            if mapping.draft_original_name not in output_names_by_role.get(
+                target_role, set()
+            ):
+                msg = (
+                    f"Lineage references non-existent output: "
+                    f"{mapping.draft_original_name} in role '{target_role}'"
+                )
                 raise LineageIntegrityError(msg)
             _check_mapping_uniqueness(mapping, seen_triples)

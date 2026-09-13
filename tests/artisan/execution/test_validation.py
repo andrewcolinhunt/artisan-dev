@@ -365,6 +365,30 @@ class TestValidateLineageCompleteness:
         # Should not raise
         validate_lineage_completeness(artifacts, specs, lineage)
 
+    def test_explicit_multi_input_lineage_requires_every_declared_role(
+        self, draft_artifact, finalized_artifact
+    ):
+        """One mapping is incomplete when the spec declares two parents."""
+        artifacts = {"outputs": [draft_artifact]}
+        specs = {
+            "outputs": OutputSpec(
+                artifact_type=ArtifactTypes.METRIC,
+                infer_lineage_from={"inputs": ["primary", "secondary"]},
+            )
+        }
+        lineage = {
+            "outputs": [
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact.artifact_id,
+                    source_role="primary",
+                )
+            ]
+        }
+
+        with pytest.raises(LineageCompletenessError, match="secondary"):
+            validate_lineage_completeness(artifacts, specs, lineage)
+
     def test_output_to_output_lineage(self, draft_artifact, finalized_artifact):
         """Output->output lineage (outputs key) still requires mapping."""
         draft_for_test = MetricArtifact.draft(
@@ -428,6 +452,46 @@ class TestValidateLineageIntegrity:
         with pytest.raises(LineageIntegrityError, match="non-existent source"):
             validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
+    def test_malformed_source_id_raises_error(self, draft_artifact):
+        """A length-correct but non-hex source ID is invalid."""
+        lineage = {
+            "outputs": [
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id="g" * 32,
+                    source_role="input_metrics",
+                )
+            ]
+        }
+
+        with pytest.raises(LineageIntegrityError, match="malformed source ID"):
+            validate_lineage_integrity(
+                lineage,
+                {"input_metrics": []},
+                {"outputs": [draft_artifact]},
+            )
+
+    def test_source_id_must_exist_in_declared_role(
+        self, draft_artifact, finalized_artifact
+    ):
+        """An ID present only under another role cannot satisfy a mapping."""
+        lineage = {
+            "outputs": [
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact.artifact_id,
+                    source_role="secondary",
+                )
+            ]
+        }
+
+        with pytest.raises(LineageIntegrityError, match="role 'secondary'"):
+            validate_lineage_integrity(
+                lineage,
+                {"primary": [finalized_artifact], "secondary": []},
+                {"outputs": [draft_artifact]},
+            )
+
     def test_nonexistent_draft_raises_error(self, finalized_artifact):
         """Reference to non-existent draft should raise error."""
         lineage = {
@@ -444,6 +508,47 @@ class TestValidateLineageIntegrity:
 
         with pytest.raises(LineageIntegrityError, match="non-existent output"):
             validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
+
+    def test_draft_name_must_exist_in_target_role(
+        self, draft_artifact, draft_artifact_2, finalized_artifact
+    ):
+        """A name present only in another output role cannot satisfy a target."""
+        lineage = {
+            "outputs": [
+                LineageMapping(
+                    draft_original_name="sample_002",
+                    source_artifact_id=finalized_artifact.artifact_id,
+                    source_role="input_metrics",
+                )
+            ]
+        }
+
+        with pytest.raises(LineageIntegrityError, match="role 'outputs'"):
+            validate_lineage_integrity(
+                lineage,
+                {"input_metrics": [finalized_artifact]},
+                {"outputs": [draft_artifact], "other": [draft_artifact_2]},
+            )
+
+    def test_malformed_group_id_raises_error(self, draft_artifact, finalized_artifact):
+        """Explicit lineage rejects noncanonical group IDs."""
+        lineage = {
+            "outputs": [
+                LineageMapping(
+                    draft_original_name="sample_001",
+                    source_artifact_id=finalized_artifact.artifact_id,
+                    source_role="input_metrics",
+                    group_id="not-a-content-hash",
+                )
+            ]
+        }
+
+        with pytest.raises(LineageIntegrityError, match="Invalid lineage group_id"):
+            validate_lineage_integrity(
+                lineage,
+                {"input_metrics": [finalized_artifact]},
+                {"outputs": [draft_artifact]},
+            )
 
     def test_duplicate_mapping_raises_error(
         self,

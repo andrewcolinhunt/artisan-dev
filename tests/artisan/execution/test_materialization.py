@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import ANY, MagicMock
 
+import pytest
+
 from artisan.execution.inputs.materialization import _is_remote, materialize_inputs
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
@@ -96,6 +98,36 @@ class TestMaterializeAsForwarded:
         )
         assert config.artifact_id in materialized_ids
         assert "c" * 32 in materialized_ids
+
+    def test_missing_config_reference_fails_before_materialization(
+        self, tmp_path: Path
+    ) -> None:
+        """A missing fixed reference fails before any input is written."""
+        from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+
+        config = ExecutionConfigArtifact.draft(
+            content={"input": {"$artifact": "c" * 32}},
+            original_name="config.json",
+            step_number=1,
+        ).finalize()
+        ordinary = MagicMock(spec=Artifact)
+        ordinary.is_hydrated = True
+        ordinary.artifact_id = "a" * 32
+        store = MagicMock()
+        store.get_artifact.return_value = None
+
+        with pytest.raises(ValueError, match="Referenced artifact"):
+            materialize_inputs(
+                {"data": [ordinary], "config": [config]},
+                {
+                    "data": InputSpec(materialize=True),
+                    "config": InputSpec(materialize=True),
+                },
+                str(tmp_path),
+                store,
+            )
+
+        ordinary.materialize_to.assert_not_called()
 
 
 class TestIsRemote:
