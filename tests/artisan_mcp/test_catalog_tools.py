@@ -64,7 +64,25 @@ class TestListOperations:
         assert second["items"][0]["name"] != first["items"][0]["name"]
 
     def test_last_page_has_no_cursor(self, make_app, invoke) -> None:
-        page = invoke(make_app(), "artisan_list_operations", {"limit": 100})
+        app = make_app()
+        cursor = None
+        seen_cursors: set[str] = set()
+
+        for _ in range(100):
+            args: dict[str, int | str] = {"limit": 100}
+            if cursor is not None:
+                args["cursor"] = cursor
+            page = invoke(app, "artisan_list_operations", args)
+            if not page["has_more"]:
+                break
+
+            cursor = page["next_cursor"]
+            assert cursor is not None
+            assert cursor not in seen_cursors
+            seen_cursors.add(cursor)
+        else:
+            pytest.fail("operation pagination did not terminate within 100 pages")
+
         assert page["has_more"] is False
         assert page["next_cursor"] is None
 
