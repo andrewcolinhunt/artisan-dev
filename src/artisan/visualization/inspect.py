@@ -26,6 +26,8 @@ from artisan.schemas.enums import TablePath
 from artisan.utils.dicts import flatten_dict
 
 if TYPE_CHECKING:
+    from polars.datatypes import DataType, DataTypeClass
+
     from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.utils.path import uri_join
 
@@ -233,7 +235,7 @@ def inspect_pipeline(
     return pl.DataFrame(rows)
 
 
-_FAILURES_SCHEMA = {
+_FAILURES_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "step": pl.Int32,
     "operation": pl.String,
     "execution_run_id": pl.String,
@@ -449,10 +451,12 @@ def diagnose_run(
         delta_root, pipeline_run_id, failed_steps, storage
     )
 
-    hints = {step.get("recovery_hint") for step in failed_steps}
-    suggested = [
-        _RECOVERY_ACTIONS.get(hint, _DEFAULT_ACTION) for hint in sorted(hints - {None})
-    ]
+    hints = {
+        hint
+        for step in failed_steps
+        if isinstance(hint := step.get("recovery_hint"), str)
+    }
+    suggested = [_RECOVERY_ACTIONS.get(hint, _DEFAULT_ACTION) for hint in sorted(hints)]
     if not suggested and failed_steps:
         suggested = [_DEFAULT_ACTION]
 

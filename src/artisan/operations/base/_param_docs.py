@@ -18,20 +18,15 @@ can use these without ``operations`` having to import ``registry``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import griffe
 from pydantic import BaseModel
 
-if TYPE_CHECKING:
-    from artisan.operations.base.operation_definition import OperationDefinition
 
-
-def _params_class(op_cls: type[OperationDefinition]) -> type[BaseModel] | None:
+def _params_class(op_cls: type[BaseModel]) -> type[BaseModel] | None:
     """Resolve the op's ``Params`` class via the single lookup rule.
 
     Args:
-        op_cls: The ``OperationDefinition`` subclass to inspect.
+        op_cls: The operation or composite ``BaseModel`` subclass to inspect.
 
     Returns:
         The ``Params`` ``BaseModel`` subclass, or ``None`` for
