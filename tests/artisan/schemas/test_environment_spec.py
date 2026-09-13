@@ -40,6 +40,10 @@ class TestEnvironmentSpec:
         spec = EnvironmentSpec()
         spec.validate_environment()  # should not raise
 
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            EnvironmentSpec(unknown=True)
+
 
 class TestLocalEnvironmentSpec:
     def test_defaults(self):
@@ -164,6 +168,10 @@ class TestDockerEnvironmentSpec:
         data = spec.model_dump()
         restored = DockerEnvironmentSpec.model_validate(data)
         assert restored == spec
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValueError, match="imgae"):
+            DockerEnvironmentSpec(image="img:latest", imgae="typo")
 
 
 class TestApptainerEnvironmentSpec:

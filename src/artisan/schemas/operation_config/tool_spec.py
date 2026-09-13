@@ -10,12 +10,16 @@ import os
 import shutil
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator
+from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 
 def _coerce_to_str(v: object) -> str:
     """Accept Path objects from operations, store as str."""
-    return str(v)
+    value = str(v) if v is not None else ""
+    if not value.strip():
+        msg = "executable must be a non-empty string or path"
+        raise ValueError(msg)
+    return value
 
 
 class ToolSpec(BaseModel):
@@ -28,6 +32,8 @@ class ToolSpec(BaseModel):
         interpreter: Optional interpreter prefix (e.g. "python", "python -u").
         subcommand: Optional subcommand inserted after the executable.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     executable: Annotated[str, BeforeValidator(_coerce_to_str)]
     interpreter: str | None = None

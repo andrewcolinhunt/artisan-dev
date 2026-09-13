@@ -87,7 +87,7 @@ class TestFromUserCoercion:
         assert ov.compute_provider == {"active": "modal", "modal": {}}
         assert ov.compute_resources == {"gpu": "A100", "memory_gb": 16}
 
-    def test_dicts_pass_through_unchanged(self) -> None:
+    def test_dict_values_are_preserved(self) -> None:
         ov = StepOverrides.from_user(
             runner_resources={"cpus": 2},
             tool={"executable": "python"},
@@ -96,6 +96,40 @@ class TestFromUserCoercion:
         assert ov.runner_resources == {"cpus": 2}
         assert ov.tool == {"executable": "python"}
         assert ov.compute_resources == {"gpu": "H100"}
+
+    def test_caller_mappings_are_deep_copied(self) -> None:
+        params = {"config": {"values": [1]}}
+        runner_resources = {"extra": {"queue": "cpu"}}
+        batch_strategy = {"artifacts_per_unit": 2}
+        environment = {"docker": {"env": {"MODE": "fast"}}}
+        tool = {"subcommand": "run"}
+        compute_provider = {"modal": {"env": {"MODE": "fast"}}}
+        compute_resources = {"memory_gb": 8}
+
+        ov = StepOverrides.from_user(
+            params=params,
+            runner_resources=runner_resources,
+            batch_strategy=batch_strategy,
+            environment=environment,
+            tool=tool,
+            compute_provider=compute_provider,
+            compute_resources=compute_resources,
+        )
+        params["config"]["values"].append(2)
+        runner_resources["extra"]["queue"] = "gpu"
+        batch_strategy["artifacts_per_unit"] = 99
+        environment["docker"]["env"]["MODE"] = "slow"
+        tool["subcommand"] = "other"
+        compute_provider["modal"]["env"]["MODE"] = "slow"
+        compute_resources["memory_gb"] = 99
+
+        assert ov.params == {"config": {"values": [1]}}
+        assert ov.runner_resources == {"extra": {"queue": "cpu"}}
+        assert ov.batch_strategy == {"artifacts_per_unit": 2}
+        assert ov.environment == {"docker": {"env": {"MODE": "fast"}}}
+        assert ov.tool == {"subcommand": "run"}
+        assert ov.compute_provider == {"modal": {"env": {"MODE": "fast"}}}
+        assert ov.compute_resources == {"memory_gb": 8}
 
     def test_string_selectors_pass_through(self) -> None:
         ov = StepOverrides.from_user(environment="docker", compute_provider="modal")

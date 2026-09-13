@@ -20,8 +20,9 @@ config-hash field.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, overload
 
 from pydantic import BaseModel
 
@@ -41,6 +42,24 @@ if TYPE_CHECKING:
     from artisan.orchestration.runners.base import RunnerBase
 
 
+@overload
+def _coerce(
+    value: dict[str, Any] | BaseModel | None,
+    model_cls: type[BaseModel],
+    *,
+    allow_str: Literal[False] = False,
+) -> dict[str, Any] | None: ...
+
+
+@overload
+def _coerce(
+    value: str | dict[str, Any] | BaseModel | None,
+    model_cls: type[BaseModel],
+    *,
+    allow_str: Literal[True],
+) -> str | dict[str, Any] | None: ...
+
+
 def _coerce(
     value: str | dict[str, Any] | BaseModel | None,
     model_cls: type[BaseModel],
@@ -51,8 +70,8 @@ def _coerce(
 
     A typed Pydantic model is dumped to a dict via
     ``model_dump(exclude_defaults=True)`` so downstream hashing and
-    override application see a single shape; a raw dict passes through
-    unchanged.
+    override application see a single shape; a raw dict is deep-copied
+    so later caller mutation cannot change hashing or execution.
 
     Args:
         value: A ``model_cls`` instance, a dict, ``None``, or (when
@@ -71,7 +90,10 @@ def _coerce(
         return value
     if isinstance(value, model_cls):
         return value.model_dump(exclude_defaults=True)
-    return value
+    if isinstance(value, dict):
+        return deepcopy(value)
+    msg = f"Expected {model_cls.__name__} or dict, got {type(value).__name__}"
+    raise TypeError(msg)
 
 
 @dataclass(frozen=True)
@@ -166,7 +188,7 @@ class StepOverrides:
             A frozen ``StepOverrides`` with all overrides coerced.
         """
         return cls(
-            params=params,
+            params=deepcopy(params),
             step_runner=step_runner,
             runner_resources=_coerce(runner_resources, RunnerResources),
             batch_strategy=_coerce(batch_strategy, BatchStrategy),

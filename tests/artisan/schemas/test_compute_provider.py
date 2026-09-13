@@ -54,6 +54,18 @@ class TestCompute:
         assert isinstance(current, ComputeConfig)
         assert isinstance(current, LocalComputeConfig)
 
+    @pytest.mark.parametrize(
+        ("model", "kwargs"),
+        [
+            (ComputeConfig, {"bogus": True}),
+            (LocalComputeConfig, {"bogus": True}),
+            (ComputeProvider, {"bogus": True}),
+        ],
+    )
+    def test_unknown_fields_rejected(self, model, kwargs):
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            model(**kwargs)
+
 
 class TestModalComputeConfig:
     """ModalComputeConfig now carries Modal-specific non-hardware fields only.
@@ -109,6 +121,36 @@ class TestModalComputeConfig:
     def test_poll_interval_must_be_positive(self):
         with pytest.raises(ValueError, match="poll_interval"):
             ModalComputeConfig(image="img", poll_interval=0)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("retries", -1),
+            ("min_containers", -1),
+            ("max_containers", 0),
+            ("scaledown_window", 0),
+            ("scaledown_window", 1201),
+        ],
+    )
+    def test_scaling_values_enforce_documented_bounds(self, field, value):
+        with pytest.raises(ValueError, match=field):
+            ModalComputeConfig(**{field: value})
+
+    def test_scaling_boundary_values_are_valid(self):
+        config = ModalComputeConfig(
+            retries=0,
+            min_containers=0,
+            max_containers=1,
+            scaledown_window=1200,
+        )
+        assert config.retries == 0
+        assert config.min_containers == 0
+        assert config.max_containers == 1
+        assert config.scaledown_window == 1200
+
+    def test_unknown_nested_field_rejected(self):
+        with pytest.raises(ValueError, match="min_container"):
+            ModalComputeConfig(min_container=2)
 
     def test_custom_fields(self):
         config = ModalComputeConfig(

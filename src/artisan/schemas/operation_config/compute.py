@@ -6,7 +6,7 @@ selector. Pipeline-level overrides change ``active`` via ``model_copy()``.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ARTISAN_WORKER_IMAGE = "ghcr.io/dexterity-systems/artisan-worker:latest"
 
@@ -17,6 +17,8 @@ class ComputeConfig(BaseModel):
     Mirrors the ``EnvironmentSpec`` hierarchy — each provider
     extends this base and ``create_execute_router()`` dispatches by type.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class LocalComputeConfig(ComputeConfig):
@@ -120,10 +122,10 @@ class ModalComputeConfig(ComputeConfig):
     """
 
     image: str = ARTISAN_WORKER_IMAGE
-    retries: int = 3
-    min_containers: int = 0
-    max_containers: int | None = None
-    scaledown_window: int | None = None
+    retries: int = Field(default=3, ge=0)
+    min_containers: int = Field(default=0, ge=0)
+    max_containers: int | None = Field(default=None, ge=1)
+    scaledown_window: int | None = Field(default=None, gt=0, le=1200)
     image_registry_secret: str | None = None
     secrets: list[str] = Field(default_factory=list)
     volumes: dict[str, str] = Field(default_factory=dict)
@@ -160,6 +162,8 @@ class ComputeProvider(BaseModel):
         active: Name of the currently selected provider.
         local: Local compute provider config (always available).
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     active: str = "local"
     local: LocalComputeConfig = Field(
