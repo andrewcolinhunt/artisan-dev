@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
-
 from fastmcp import Context, FastMCP
 
 from artisan_mcp._boundary import boundary, require_delta_root
+from artisan_mcp._common import MAX_RESOURCE_ITEMS, jsonable_rows, resource_fits
+from artisan_mcp._pagination import MAX_PAGE_SIZE, paginate
 
 
 def register(mcp: FastMCP) -> None:
@@ -15,14 +14,15 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.resource("artisan://runs", mime_type="application/json")
     async def runs_list(ctx: Context) -> dict:
-        """All persisted runs as ``{"items": [...]}`` (rollup rows)."""
+        """The 100 most recent persisted run rollups with page metadata."""
         config = ctx.lifespan_context["config"]
 
         def payload() -> dict:
             from artisan.orchestration.run_history import list_runs
 
             root = require_delta_root(config)
-            return {"items": _jsonable(list_runs(root).to_dicts())}
+            rows = jsonable_rows(list_runs(root).to_dicts())
+            return paginate(rows, MAX_PAGE_SIZE, None)
 
         return boundary(payload)
 
@@ -35,14 +35,19 @@ def register(mcp: FastMCP) -> None:
             from artisan.orchestration.run_status import run_status
 
             root = require_delta_root(config)
-            return run_status(root, pipeline_run_id).model_dump()
+            result = run_status(root, pipeline_run_id).model_dump()
+            steps = result["steps"]
+            result["steps"] = steps[:MAX_RESOURCE_ITEMS]
+            result["steps_truncated"] = len(steps) > MAX_RESOURCE_ITEMS
+            if resource_fits(result):
+                return result
+            return {
+                "pipeline_run_id": pipeline_run_id,
+                "truncated": True,
+                "message": (
+                    "Run status exceeds the resource limit; use "
+                    "artisan_get_run_status for full detail."
+                ),
+            }
 
         return boundary(payload)
-
-
-def _jsonable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert datetime values to ISO strings so the rows serialize cleanly."""
-    return [
-        {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in row.items()}
-        for row in rows
-    ]

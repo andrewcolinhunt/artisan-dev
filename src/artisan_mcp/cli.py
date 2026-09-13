@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from enum import Enum
 
 import typer
 
@@ -19,13 +20,15 @@ app = typer.Typer(
 )
 
 
+class Transport(str, Enum):
+    """Supported MCP transports."""
+
+    STDIO = "stdio"
+    HTTP = "http"
+
+
 @app.callback(invoke_without_command=True)
 def serve(
-    write: bool | None = typer.Option(
-        None,
-        "--write/--no-write",
-        help="Register write tools (Phase 2). Sets ARTISAN_WRITE.",
-    ),
     delta_root: str | None = typer.Option(
         None,
         "--delta-root",
@@ -36,8 +39,8 @@ def serve(
         "--load",
         help="Extra op module to import (repeatable). Sets ARTISAN_LOAD_MODULES.",
     ),
-    transport: str = typer.Option(
-        "stdio",
+    transport: Transport = typer.Option(
+        Transport.STDIO,
         "--transport",
         help="MCP transport: 'stdio' (default) or 'http'.",
     ),
@@ -48,8 +51,6 @@ def serve(
     ),
 ) -> None:
     """Resolve configuration from flags + environment and run the server."""
-    if write is not None:
-        os.environ["ARTISAN_WRITE"] = "true" if write else "false"
     if delta_root is not None:
         os.environ["ARTISAN_DELTA_ROOT"] = delta_root
     if load:
@@ -63,7 +64,7 @@ def serve(
         typer.echo(json.dumps(config.model_dump(), indent=2))
         return
 
-    build_mcp_app(config).run(transport=transport)
+    build_mcp_app(config).run(transport=transport.value)
 
 
 def main() -> None:

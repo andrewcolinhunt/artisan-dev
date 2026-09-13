@@ -8,21 +8,17 @@ shipped envelope.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
-
 from fastmcp import Context, FastMCP
 
 from artisan_mcp._boundary import boundary, require_delta_root
+from artisan_mcp._common import READ_ONLY, jsonable_rows
 from artisan_mcp._pagination import paginate
-
-_READ_ONLY = {"readOnlyHint": True, "idempotentHint": True}
 
 
 def register(mcp: FastMCP) -> None:
     """Attach the run-inspection tools to ``mcp``."""
 
-    @mcp.tool(annotations=_READ_ONLY)
+    @mcp.tool(annotations=READ_ONLY)
     async def artisan_list_runs(
         ctx: Context, limit: int = 20, cursor: str | None = None
     ) -> dict:
@@ -30,7 +26,7 @@ def register(mcp: FastMCP) -> None:
 
         Returns a page of run rollups — pipeline_run_id, step_count,
         last_status, started_at, ended_at — with has_more and next_cursor
-        for paging. Use this to find a run to feed to
+        for paging, capped at 100 items. Use this to find a run to feed to
         artisan_get_run_status, artisan_get_step_result, or
         artisan_diagnose_run. Reads the steps Delta table; an empty or
         unconfigured store yields an empty page (or the delta_root_unset
@@ -42,12 +38,12 @@ def register(mcp: FastMCP) -> None:
             from artisan.orchestration.run_history import list_runs
 
             root = require_delta_root(config)
-            rows = _jsonable(list_runs(root).to_dicts())
+            rows = jsonable_rows(list_runs(root).to_dicts())
             return paginate(rows, limit, cursor)
 
         return boundary(payload)
 
-    @mcp.tool(annotations=_READ_ONLY)
+    @mcp.tool(annotations=READ_ONLY)
     async def artisan_get_run_status(ctx: Context, pipeline_run_id: str) -> dict:
         """Get one run's terminal step statuses to see how far it got and what failed.
 
@@ -72,7 +68,7 @@ def register(mcp: FastMCP) -> None:
 
         return boundary(payload)
 
-    @mcp.tool(annotations=_READ_ONLY)
+    @mcp.tool(annotations=READ_ONLY)
     async def artisan_diagnose_run(ctx: Context, pipeline_run_id: str) -> dict:
         """Diagnose a run's failures in one call: what failed, why, and what to try.
 
@@ -93,11 +89,3 @@ def register(mcp: FastMCP) -> None:
             return diagnose_run(root, pipeline_run_id).model_dump()
 
         return boundary(payload)
-
-
-def _jsonable(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert datetime values to ISO strings so the rows serialize cleanly."""
-    return [
-        {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in row.items()}
-        for row in rows
-    ]

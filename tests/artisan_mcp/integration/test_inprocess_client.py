@@ -15,7 +15,7 @@ class TestEndToEnd:
     def test_capabilities(self, make_app, invoke, seeded_run) -> None:
         cap = invoke(make_app(delta_root=seeded_run.delta_root), "artisan_capabilities")
         assert cap["read_only"] is True
-        assert cap["delta_root"] == str(seeded_run.delta_root)
+        assert cap["delta_root"] is None
 
     def test_catalog_chain(self, make_app, invoke, seeded_run) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
