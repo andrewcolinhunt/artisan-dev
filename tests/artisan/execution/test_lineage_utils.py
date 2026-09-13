@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import pytest
 
+from artisan.execution.inputs.grouping import compute_group_id
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.capture import (
     _build_candidates_from_inputs,
     _build_candidates_from_outputs,
     _build_stem_index,
     _match_by_stem_indexed,
+    _validate_grouped_inputs,
     capture_lineage_metadata,
 )
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
@@ -1295,8 +1297,46 @@ def _make_metric_from_name(name: str, step: int = 0) -> MetricArtifact:
     ).finalize()
 
 
+def _valid_group_id(label: str) -> str:
+    """Create a deterministic, canonical-shaped group ID for a test pair."""
+    return compute_group_id([label])
+
+
 class TestCaptureLineageMultiRoleCoInputs:
     """Tests for capture_lineage_metadata with group_by and co-input edges."""
+
+    def test_grouped_inputs_reject_unequal_role_lengths(self):
+        """A grouped batch cannot silently omit a co-input role member."""
+        inputs = {
+            "primary": [_make_metric_from_name("primary_0")],
+            "secondary": [],
+        }
+
+        with pytest.raises(ValueError, match="equal input lengths"):
+            _validate_grouped_inputs(inputs, [_valid_group_id("pair_0")])
+
+    def test_grouped_inputs_reject_wrong_group_id_count(self):
+        """The group ID sequence must align one-to-one with pairs."""
+        inputs = {
+            "primary": [_make_metric_from_name("primary_0")],
+            "secondary": [_make_metric_from_name("secondary_0")],
+        }
+
+        with pytest.raises(ValueError, match="expected 1, got 2"):
+            _validate_grouped_inputs(
+                inputs,
+                [_valid_group_id("pair_0"), _valid_group_id("pair_1")],
+            )
+
+    def test_grouped_inputs_reject_malformed_group_id(self):
+        """Group IDs must use the canonical 32-character hexadecimal shape."""
+        inputs = {
+            "primary": [_make_metric_from_name("primary_0")],
+            "secondary": [_make_metric_from_name("secondary_0")],
+        }
+
+        with pytest.raises(ValueError, match="invalid group_id"):
+            _validate_grouped_inputs(inputs, ["not-a-content-hash"])
 
     def test_co_input_edges_created_when_group_by_set(self):
         """When group_by is set, co-input edges from non-primary roles are created."""
@@ -1328,7 +1368,7 @@ class TestCaptureLineageMultiRoleCoInputs:
                 infer_lineage_from={"inputs": ["config"]},
             )
         }
-        group_ids = ["gid_0", "gid_1"]
+        group_ids = [_valid_group_id("pair_0"), _valid_group_id("pair_1")]
 
         lineage = capture_lineage_metadata(
             output_artifacts,
@@ -1384,7 +1424,7 @@ class TestCaptureLineageMultiRoleCoInputs:
                 infer_lineage_from={"inputs": ["config"]},
             )
         }
-        group_ids = ["gid_0", "gid_1", "gid_2"]
+        group_ids = [_valid_group_id(f"pair_{i}") for i in range(3)]
 
         lineage = capture_lineage_metadata(
             output_artifacts,
@@ -1425,7 +1465,7 @@ class TestCaptureLineageMultiRoleCoInputs:
                 infer_lineage_from={"inputs": ["config"]},
             )
         }
-        group_ids = ["group_abc"]
+        group_ids = [_valid_group_id("group_abc")]
 
         lineage = capture_lineage_metadata(
             output_artifacts,
@@ -1438,7 +1478,7 @@ class TestCaptureLineageMultiRoleCoInputs:
         # Both edges should carry the same group_id
         assert len(lineage["samples"]) == 2
         for mapping in lineage["samples"]:
-            assert mapping.group_id == "group_abc"
+            assert mapping.group_id == group_ids[0]
 
     def test_single_input_no_group_id(self):
         """Single-input operations produce group_id=None (no group_by)."""
@@ -1493,7 +1533,7 @@ class TestCaptureLineageMultiRoleCoInputs:
                 infer_lineage_from={"inputs": ["config"]},
             )
         }
-        group_ids = ["gid_AAA", "gid_BBB", "gid_CCC"]
+        group_ids = [_valid_group_id(f"pair_{i}") for i in range(3)]
 
         lineage = capture_lineage_metadata(
             output_artifacts,
@@ -1515,8 +1555,8 @@ class TestCaptureLineageMultiRoleCoInputs:
             for edge in edges_for_i:
                 assert edge.group_id == group_ids[i]
 
-    def test_group_by_without_group_ids_gives_none_group_id(self):
-        """When group_by is set but group_ids is None, group_id is None."""
+    def test_group_by_without_group_ids_raises(self):
+        """Grouped lineage requires one framework-generated ID per pair."""
         config = _make_config("cfg_0")
         item = _make_metric_from_name("struct_0")
 
@@ -1535,18 +1575,14 @@ class TestCaptureLineageMultiRoleCoInputs:
             )
         }
 
-        lineage = capture_lineage_metadata(
-            output_artifacts,
-            input_artifacts,
-            output_specs,
-            group_by=GroupByStrategy.ZIP,
-            group_ids=None,
-        )
-
-        # Co-input edges are still created (group_by is set), but group_id is None
-        assert len(lineage["samples"]) == 2
-        for mapping in lineage["samples"]:
-            assert mapping.group_id is None
+        with pytest.raises(ValueError, match="one group_id per input pair"):
+            capture_lineage_metadata(
+                output_artifacts,
+                input_artifacts,
+                output_specs,
+                group_by=GroupByStrategy.ZIP,
+                group_ids=None,
+            )
 
     def test_three_input_roles_all_get_co_input_edges(self):
         """Three input roles: primary (config) + 2 co-input roles."""
@@ -1572,7 +1608,7 @@ class TestCaptureLineageMultiRoleCoInputs:
                 infer_lineage_from={"inputs": ["config"]},
             )
         }
-        group_ids = ["gid_triple"]
+        group_ids = [_valid_group_id("triple")]
 
         lineage = capture_lineage_metadata(
             output_artifacts,
@@ -1588,7 +1624,7 @@ class TestCaptureLineageMultiRoleCoInputs:
         assert roles == {"config", "data", "reference"}
         # All share same group_id
         for m in lineage["samples"]:
-            assert m.group_id == "gid_triple"
+            assert m.group_id == group_ids[0]
 
 
 class TestCaptureLineageOutputPairMap:
@@ -1626,7 +1662,7 @@ class TestCaptureLineageOutputPairMap:
                 infer_lineage_from={"inputs": ["primary", "secondary"]},
             )
         }
-        group_ids = ["g0", "g1", "g2"]
+        group_ids = [_valid_group_id(f"pair_{i}") for i in range(3)]
         # Keys are extension-stripped stems matching ``artifact.original_name``
         # after ``draft()`` (and the value emitted by ``_reassemble_results``).
         output_pair_map = {"out_0": 0, "out_1": 1, "out_2": 2}
@@ -1660,8 +1696,8 @@ class TestCaptureLineageOutputPairMap:
             assert primary_edge.source_artifact_id == primary_a.artifact_id
             assert secondary_edge.source_artifact_id == secondaries[i].artifact_id
             # Both edges of a pair share the same group_id.
-            assert primary_edge.group_id == f"g{i}"
-            assert secondary_edge.group_id == f"g{i}"
+            assert primary_edge.group_id == group_ids[i]
+            assert secondary_edge.group_id == group_ids[i]
 
     def test_missing_basename_falls_back_to_legacy_path(self):
         """Drafts not in ``output_pair_map`` (e.g. memory-only outputs) fall
@@ -1688,12 +1724,13 @@ class TestCaptureLineageOutputPairMap:
 
         # The map exists but doesn't contain this output's basename —
         # forces fallback to stem-matching.
+        group_ids = [_valid_group_id("pair_0"), _valid_group_id("pair_1")]
         lineage = capture_lineage_metadata(
             output_artifacts,
             input_artifacts,
             output_specs,
             group_by=GroupByStrategy.LINEAGE,
-            group_ids=["g0", "g1"],
+            group_ids=group_ids,
             output_pair_map={"some_other_basename.json": 0},
         )
 
@@ -1701,7 +1738,7 @@ class TestCaptureLineageOutputPairMap:
         edge = lineage["result"][0]
         assert edge.source_artifact_id == primary_a.artifact_id
         assert edge.source_role == "primary"
-        assert edge.group_id == "g0"
+        assert edge.group_id == group_ids[0]
 
 
 class TestGroupIdFlowThroughBuildEdges:
@@ -1729,7 +1766,7 @@ class TestGroupIdFlowThroughBuildEdges:
                 infer_lineage_from={"inputs": ["config"]},
             )
         }
-        group_ids = ["gid_flow_test"]
+        group_ids = [_valid_group_id("flow_test")]
 
         lineage = capture_lineage_metadata(
             output_artifacts,
@@ -1743,7 +1780,7 @@ class TestGroupIdFlowThroughBuildEdges:
 
         assert len(edges) == 2
         for edge in edges:
-            assert edge.group_id == "gid_flow_test"
+            assert edge.group_id == group_ids[0]
 
     def test_none_group_id_propagated_when_no_group_by(self):
         """Without group_by, group_id on edges is None."""

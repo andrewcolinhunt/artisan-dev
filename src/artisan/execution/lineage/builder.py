@@ -62,6 +62,9 @@ def build_edges(
                     raise ValueError(msg)
             else:
                 source_id = mapping.source_artifact_id
+                if source_id is None:
+                    msg = "Lineage mapping has no source reference"
+                    raise ValueError(msg)
             if target_id:
                 edges.append(
                     SourceTargetPair(
@@ -69,7 +72,7 @@ def build_edges(
                         target=target_id,
                         source_role=mapping.source_role,
                         target_role=role,
-                        group_id=getattr(mapping, "group_id", None),
+                        group_id=mapping.group_id,
                     )
                 )
 

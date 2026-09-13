@@ -6,6 +6,7 @@ pair each output artifact with its source input artifact.
 
 from __future__ import annotations
 
+from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
@@ -55,10 +56,14 @@ def capture_lineage_metadata(
         Each LineageMapping carries an optional group_id for co-input edges.
 
     Raises:
+        ValueError: If grouped inputs or group IDs are incomplete or invalid.
         RuntimeError: If an output artifact referenced by an
             output-to-output lineage config has no ``artifact_id``.
             Lineage capture requires finalized artifacts.
     """
+    if group_by is not None:
+        _validate_grouped_inputs(input_artifacts, group_ids)
+
     result: dict[str, list[LineageMapping]] = {}
 
     for role, artifacts in output_artifacts.items():
@@ -236,6 +241,30 @@ def capture_lineage_metadata(
         result[role] = role_mappings
 
     return result
+
+
+def _validate_grouped_inputs(
+    input_artifacts: dict[str, list[Artifact]], group_ids: list[str] | None
+) -> None:
+    """Reject incomplete grouped inputs and malformed per-pair IDs."""
+    role_lengths = {role: len(artifacts) for role, artifacts in input_artifacts.items()}
+    if len(set(role_lengths.values())) > 1:
+        msg = f"Grouped lineage requires equal input lengths, got: {role_lengths}"
+        raise ValueError(msg)
+
+    expected_count = next(iter(role_lengths.values()), 0)
+    if group_ids is None or len(group_ids) != expected_count:
+        actual_count = None if group_ids is None else len(group_ids)
+        msg = (
+            "Grouped lineage requires one group_id per input pair: "
+            f"expected {expected_count}, got {actual_count}"
+        )
+        raise ValueError(msg)
+
+    invalid = [group_id for group_id in group_ids if not is_hex_id(group_id)]
+    if invalid:
+        msg = f"Grouped lineage received invalid group_id values: {invalid!r}"
+        raise ValueError(msg)
 
 
 def _match_outputs_to_candidates(

@@ -21,6 +21,7 @@ from artisan.operations.curator.filter import (
     _assemble_diagnostics,
     _build_funnel,
     _build_metric_namespace,
+    _build_metric_sources,
     _check_collision,
     _compute_funnel_counts,
     _criterion_stats,
@@ -209,28 +210,13 @@ class InteractiveFilter:
         self._wide_df = wide_df.rename({"passthrough_id": "artifact_id"})
         self._step_info = step_info
 
-        # Build metric_sources from step_info
-        self._metric_sources = []
-        if step_info is not None:
-            step_names: dict[int, str] = step_info.get("_step_names", {})
-            seen_steps: set[int] = set()
-            for field, step_nums in step_info.items():
-                if field.startswith("_"):
-                    continue
-                for sn in step_nums:
-                    seen_steps.add(sn)
-            for sn in sorted(seen_steps):
-                self._metric_sources.append(
-                    {
-                        "step_number": sn,
-                        "step_name": step_names.get(sn, ""),
-                    }
-                )
-
         # ── Build tidy DataFrame for exploration ──
         # Tidy uses qualified names (step_name.metric_name) for exploration.
         # Source metric IDs from walk_result.
         all_found_metric_ids = set(metric_pairs["metric_id"].unique().to_list())
+        self._metric_sources = _build_metric_sources(
+            all_found_metric_ids, self._store, self._pipeline_run_id
+        )
         metric_artifacts = self._store.get_artifacts_by_type(
             list(all_found_metric_ids), "metric"
         )
@@ -258,7 +244,9 @@ class InteractiveFilter:
 
                 step_num = metric_step_map.get(mid)
                 step_name = (
-                    step_name_map.get(step_num, "unknown") if step_num else "unknown"
+                    step_name_map.get(step_num, "unknown")
+                    if step_num is not None
+                    else "unknown"
                 )
 
                 for metric_name, raw_value in flatten_dict(values).items():
@@ -631,7 +619,7 @@ class InteractiveFilter:
             sandbox_path=None,
             compute_backend="local",
             shared_filesystem=False,
-            step_run_id=None,
+            step_run_id=step_run_id,
         )
         record_passthrough(
             execution_context=execution_context,
@@ -665,6 +653,7 @@ class InteractiveFilter:
             output_roles=frozenset(["passthrough"]),
             output_types={"passthrough": ArtifactTypes.ANY},
             metadata={"diagnostics": diagnostics},
+            step_run_id=step_run_id,
         )
         tracker.record_step_completed(start_record, result)
 
@@ -697,6 +686,14 @@ class InteractiveFilter:
             resolved: int | None = None
             if crit.step_number is not None:
                 resolved = crit.step_number
+            elif crit.step is not None and self._step_info is not None:
+                matching_steps = [
+                    sn
+                    for sn, name in self._step_info.get("_step_names", {}).items()
+                    if name == crit.step
+                ]
+                if len(matching_steps) == 1:
+                    resolved = matching_steps[0]
             elif self._step_info is not None and crit.metric in self._step_info:
                 step_nums = self._step_info[crit.metric]
                 if len(step_nums) == 1:

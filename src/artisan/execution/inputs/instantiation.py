@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
+from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
-
-logger = logging.getLogger(__name__)
 
 
 def instantiate_inputs(
@@ -39,7 +37,20 @@ def instantiate_inputs(
     """
     # Bulk-resolve artifact types (1 delta scan instead of N)
     all_ids = [aid for ids in inputs.values() for aid in ids]
+    for role, artifact_ids in inputs.items():
+        for artifact_id in artifact_ids:
+            if not is_hex_id(artifact_id):
+                msg = (
+                    f"Invalid artifact ID for role '{role}': {artifact_id!r}. "
+                    "Expected a 32-character hexadecimal string."
+                )
+                raise ValueError(msg)
+
     type_map = artifact_store.provenance.load_type_map(all_ids) if all_ids else {}
+    missing_ids = sorted(set(all_ids) - set(type_map))
+    if missing_ids:
+        msg = f"Input artifact IDs not found in the artifact store: {missing_ids}"
+        raise ValueError(msg)
 
     # Pre-load hydrated artifacts in bulk by type
     hydrated_ids_by_type: dict[str, list[str]] = {}
@@ -86,24 +97,13 @@ def instantiate_inputs(
             elif not hydrate and artifact_id in non_hydrated_cache:
                 artifacts.append(non_hydrated_cache[artifact_id])
             else:
-                atype = type_map.get(artifact_id)
-                if atype is None:
-                    logger.warning(
-                        "Artifact %s for role '%s' not found in type map — skipping",
-                        artifact_id,
-                        role,
-                    )
-                    continue
+                atype = type_map[artifact_id]
                 artifact = artifact_store.get_artifact(
                     artifact_id, artifact_type=atype, hydrate=hydrate
                 )
                 if artifact is None:
-                    logger.warning(
-                        "Artifact %s for role '%s' could not be loaded — skipping",
-                        artifact_id,
-                        role,
-                    )
-                    continue
+                    msg = f"Artifact {artifact_id!r} for role '{role}' could not be loaded"
+                    raise ValueError(msg)
                 artifacts.append(artifact)
 
         result[role] = artifacts

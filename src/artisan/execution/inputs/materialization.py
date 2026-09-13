@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 def _is_remote(path: str | None) -> bool:
     """True when ``path`` is a cloud URI (``scheme://`` other than file)."""
-    return bool(path) and "://" in path and not path.startswith("file://")
+    return path is not None and "://" in path and not path.startswith("file://")
 
 
 def materialize_inputs(
@@ -75,8 +75,10 @@ def materialize_inputs(
                 continue
             seen_ids.add(ref_id)
             ref_artifact = artifact_store.get_artifact(ref_id, hydrate=True)
-            if ref_artifact is not None:
-                non_configs.append((ref_artifact, None))
+            if ref_artifact is None:
+                msg = f"Referenced artifact {ref_id!r} could not be loaded"
+                raise ValueError(msg)
+            non_configs.append((ref_artifact, None))
 
     # Get fs from artifact_store for cloud-capable source reads
     fs = artifact_store._fs
