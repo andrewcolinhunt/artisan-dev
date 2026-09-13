@@ -8,6 +8,7 @@ from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import jsonschema
+import modal
 import pytest
 from fastapi.testclient import TestClient
 from fixtures.endpoint_ops import GpuTool, PlainTool
@@ -15,7 +16,8 @@ from fixtures.endpoint_ops import GpuTool, PlainTool
 from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint.deploy import build_app
 from artisan.execution.tool_endpoint.protocol import SchemaResponse
-from artisan.operations.examples import DataGenerator
+from artisan.execution.tool_endpoint.spec import endpoint_spec
+from artisan.operations.examples import DataGenerator, WaitTool
 from artisan.registry.schemas import params_schema_for
 
 _PARAMS = json.dumps({"contigs": "10-20"})
@@ -147,6 +149,85 @@ class TestEndpointRoutes:
         response = client.post("/submit", data={"params": json.dumps({"contigs": 1})})
         assert response.status_code == 422
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("input_uris", "[]"),
+            ("input_uris", '{"reference": 1}'),
+            ("input_filenames", "[]"),
+            ("input_filenames", '{"reference": 1}'),
+        ],
+    )
+    def test_submit_rejects_non_string_maps(
+        self, client: TestClient, worker: MagicMock, field: str, value: str
+    ):
+        response = client.post("/submit", data={"params": _PARAMS, field: value})
+        assert response.status_code == 422
+        assert "mapping strings to strings" in response.json()["detail"]
+        worker.spawn.aio.assert_not_called()
+
+    def test_submit_rejects_unknown_role(self, client: TestClient, worker: MagicMock):
+        response = client.post(
+            "/submit",
+            data={"params": _PARAMS, "input_uris": '{"unknown": "s3://b/k"}'},
+        )
+        assert response.status_code == 422
+        assert "unknown input roles" in response.json()["detail"]
+        worker.spawn.aio.assert_not_called()
+
+    def test_submit_rejects_duplicate_role_across_planes(
+        self, client: TestClient, worker: MagicMock
+    ):
+        response = client.post(
+            "/submit",
+            data={
+                "params": _PARAMS,
+                "input_uris": '{"reference": "s3://b/k"}',
+            },
+            files=[("files", ("reference", b"inline"))],
+        )
+        assert response.status_code == 422
+        assert "duplicate input roles" in response.json()["detail"]
+        worker.spawn.aio.assert_not_called()
+
+    def test_submit_rejects_duplicate_json_role(
+        self, client: TestClient, worker: MagicMock
+    ):
+        response = client.post(
+            "/submit",
+            data={
+                "params": _PARAMS,
+                "input_uris": (
+                    '{"reference": "s3://b/one", "reference": "s3://b/two"}'
+                ),
+            },
+        )
+        assert response.status_code == 422
+        assert "duplicate role" in response.json()["detail"]
+        worker.spawn.aio.assert_not_called()
+
+    def test_submit_forwards_valid_inline_input(
+        self, client: TestClient, worker: MagicMock
+    ):
+        worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
+        response = client.post(
+            "/submit",
+            data={
+                "params": _PARAMS,
+                "input_filenames": '{"reference": "source.pdb"}',
+            },
+            files=[("files", ("reference", b"ATOM"))],
+        )
+        assert response.status_code == 200
+        assert worker.spawn.aio.call_args.args[0]["inputs"] == [
+            {
+                "name": "reference",
+                "filename": "source.pdb",
+                "uri": None,
+                "data": b"ATOM",
+            }
+        ]
+
     def test_submit_forwards_output_store(self, client: TestClient, worker: MagicMock):
         worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
         response = client.post(
@@ -187,6 +268,51 @@ class TestEndpointRoutes:
         ]
         assert stores == ["s3://team-a/runs", "s3://team-b/other"]
 
+    def test_missing_required_role_rejected_before_dispatch(
+        self, mock_modal: MagicMock
+    ):
+        build_app(WaitTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        client = TestClient(endpoint_fn())
+        worker = mock_modal.App.return_value.function.return_value.return_value
+
+        response = client.post("/submit", data={"params": json.dumps({"seconds": 1})})
+
+        assert response.status_code == 422
+        assert "missing required input roles" in response.json()["detail"]
+        worker.spawn.aio.assert_not_called()
+
+    def test_inline_uploads_enforce_aggregate_limit(
+        self, mock_modal: MagicMock, monkeypatch
+    ):
+        spec = endpoint_spec(GpuTool).model_copy(
+            update={
+                "input_roles": {
+                    "left": {"required": True, "description": ""},
+                    "right": {"required": True, "description": ""},
+                }
+            }
+        )
+        monkeypatch.setattr(deploy_mod, "endpoint_spec", lambda _op: spec)
+        monkeypatch.setattr(deploy_mod, "MAX_INLINE_BYTES", 4)
+        build_app(GpuTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        client = TestClient(endpoint_fn())
+        worker = mock_modal.App.return_value.function.return_value.return_value
+
+        response = client.post(
+            "/submit",
+            data={"params": _PARAMS},
+            files=[
+                ("files", ("left", b"abc")),
+                ("files", ("right", b"de")),
+            ],
+        )
+
+        assert response.status_code == 413
+        assert "4-byte aggregate limit" in response.json()["detail"]
+        worker.spawn.aio.assert_not_called()
+
 
 class TestRetainedResultRoutes:
     """/result and /download against a mocked retained FunctionCall result."""
@@ -208,6 +334,33 @@ class TestRetainedResultRoutes:
         fc = MagicMock()
         fc.get.return_value = raw
         monkeypatch.setattr("modal.FunctionCall.from_id", lambda call_id: fc)
+
+    def _raise(self, monkeypatch, exc: Exception) -> None:
+        fc = MagicMock()
+        fc.get.side_effect = exc
+        monkeypatch.setattr("modal.FunctionCall.from_id", lambda call_id: fc)
+
+    def test_pending_modal_timeout_returns_pending(self, client, monkeypatch):
+        self._raise(monkeypatch, modal.exception.TimeoutError())
+        body = client.get("/result", params={"call_id": "fc-1"}).json()
+        assert body == {"status": "pending", "manifest": None}
+
+    def test_expired_modal_timeout_returns_expired(self, client, monkeypatch):
+        self._raise(monkeypatch, modal.exception.OutputExpiredError())
+        body = client.get("/result", params={"call_id": "fc-1"}).json()
+        assert body == {"status": "expired", "manifest": None}
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            modal.exception.FunctionTimeoutError("worker timed out"),
+            modal.exception.RemoteError("worker failed"),
+        ],
+    )
+    def test_terminal_modal_error_returns_failed(self, client, monkeypatch, exc):
+        self._raise(monkeypatch, exc)
+        body = client.get("/result", params={"call_id": "fc-1"}).json()
+        assert body == {"status": "failed", "manifest": None}
 
     def test_result_carries_stored_pointer_untouched(self, client, monkeypatch):
         manifest = {"output_names": ["a.txt"], "stored": self.STORED, "error": None}
@@ -273,3 +426,19 @@ class TestParameterlessSubmit:
     def test_non_object_body_now_422s(self, client: TestClient):
         # a JSON array is not an object — rejected at the boundary
         assert client.post("/submit", data={"params": "[]"}).status_code == 422
+
+    def test_non_object_body_rejected_without_schema(
+        self, mock_modal: MagicMock, monkeypatch
+    ):
+        spec = endpoint_spec(PlainTool).model_copy(update={"params_schema": {}})
+        monkeypatch.setattr(deploy_mod, "endpoint_spec", lambda _op: spec)
+        build_app(PlainTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        client = TestClient(endpoint_fn())
+        worker = mock_modal.App.return_value.function.return_value.return_value
+
+        response = client.post("/submit", data={"params": "[]"})
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "params must be a JSON object"
+        worker.spawn.aio.assert_not_called()

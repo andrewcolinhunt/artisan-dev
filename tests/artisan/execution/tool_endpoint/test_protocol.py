@@ -28,6 +28,14 @@ class TestInputRef:
         ref = InputRef(name="pdb", uri="s3://bucket/key.pdb")
         assert ref.data is None
 
+    def test_rejects_ref_without_data_plane(self):
+        with pytest.raises(ValidationError, match="exactly one of uri or data"):
+            InputRef(name="pdb")
+
+    def test_rejects_ref_with_both_data_planes(self):
+        with pytest.raises(ValidationError, match="exactly one of uri or data"):
+            InputRef(name="pdb", uri="s3://bucket/key.pdb", data=b"ATOM")
+
 
 class TestToolRequest:
     def test_defaults(self):

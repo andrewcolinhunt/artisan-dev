@@ -310,9 +310,12 @@ class TestRunToolRequest:
 
     def test_bad_input_ref_returns_envelope(self):
         # a ref carrying neither uri nor data raises ValueError in
-        # unpack_inputs — the agent supplied the ref and can correct it
+        # unpack_inputs when an internal caller bypasses InputRef validation
         result = run_tool_request(
-            WaitTool, ToolRequest(inputs=[InputRef(name="dataset")])
+            WaitTool,
+            ToolRequest.model_construct(
+                inputs=[InputRef.model_construct(name="dataset")]
+            ),
         )
         assert result.output_tar is None
         error = result.manifest.error
@@ -381,7 +384,10 @@ class TestRunToolRequest:
         # warm-container reuse: an input-resolution failure still cleans up
         created = _capture_tempdirs(monkeypatch)
         result = run_tool_request(
-            WaitTool, ToolRequest(inputs=[InputRef(name="dataset")])
+            WaitTool,
+            ToolRequest.model_construct(
+                inputs=[InputRef.model_construct(name="dataset")]
+            ),
         )
         assert result.manifest.error is not None
         assert created  # the job dir was allocated before unpack_inputs

@@ -37,6 +37,14 @@ class InputRef(BaseModel):
     uri: str | None = None
     data: bytes | None = None
 
+    @model_validator(mode="after")
+    def _one_data_plane(self) -> InputRef:
+        """Require exactly one inline or referenced input payload."""
+        if (self.uri is None) == (self.data is None):
+            msg = "InputRef must carry exactly one of uri or data"
+            raise ValueError(msg)
+        return self
+
 
 class ToolRequest(BaseModel):
     """Internal worker payload: validated params + input refs."""
