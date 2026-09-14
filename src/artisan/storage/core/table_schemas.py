@@ -1,12 +1,12 @@
 """Polars schemas for framework Delta Lake tables.
 
-Define column schemas for Artisan's framework tables: executions,
-execution_edges, artifact_edges, artifact_index, cache reuse, and steps. Artifact
-content table schemas are owned by their respective models via
-``ArtifactTypeDef``.
+Define ownerless staged schemas and centrally owned physical schemas for
+Artisan's framework tables. Artifact content staging schemas remain owned by
+their models; the storage layer adds internal commit ownership at persistence.
 
 Key exports:
-    FRAMEWORK_SCHEMAS: Registry mapping ``TablePath`` to schema dicts.
+    FRAMEWORK_SCHEMAS: Registry mapping ``TablePath`` to ownerless schemas.
+    get_physical_schema: Add internal commit ownership for Delta persistence.
     NON_PARTITIONED_TABLES: Tables not partitioned by origin_step_number.
     get_schema: Look up a schema by ``TablePath``.
     create_empty_dataframe: Build an empty DataFrame with the correct schema.
@@ -140,7 +140,6 @@ STEPS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "state_sequence": pl.UInt32,
     "disposition": pl.String,
     "cancellation_status": pl.String,
-    "logical_commit_id": pl.String,
     "operation_class": pl.String,
     "params_json": pl.String,
     "input_refs_json": pl.String,
@@ -155,6 +154,17 @@ STEPS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "duration_seconds": pl.Float64,
     "error": pl.String,
     "metadata": pl.String,
+}
+
+LOGICAL_COMMITS_SCHEMA: dict[str, DataType | DataTypeClass] = {
+    "logical_commit_id": pl.String,
+    "commit_kind": pl.String,
+    "step_run_id": pl.String,
+    "state": pl.String,
+    "plan_digest": pl.String,
+    "created_at": pl.Datetime("us", "UTC"),
+    "completed_at": pl.Datetime("us", "UTC"),
+    "abandon_reason": pl.String,
 }
 
 # =============================================================================
@@ -173,7 +183,38 @@ FRAMEWORK_SCHEMAS: dict[TablePath, dict[str, Any]] = {
     TablePath.ARTIFACT_INDEX: ARTIFACT_INDEX_SCHEMA,
     TablePath.ARTIFACT_LOCATIONS: ARTIFACT_LOCATIONS_SCHEMA,
     TablePath.CACHE_REUSE: CACHE_REUSE_SCHEMA,
+    TablePath.LOGICAL_COMMITS: LOGICAL_COMMITS_SCHEMA,
     TablePath.STEPS: STEPS_SCHEMA,
+}
+
+COMMIT_OWNED_TABLES: frozenset[TablePath] = frozenset(
+    {
+        TablePath.ARTIFACT_INDEX,
+        TablePath.ARTIFACT_LOCATIONS,
+        TablePath.EXECUTIONS,
+        TablePath.EXECUTION_EDGES,
+        TablePath.ARTIFACT_EDGES,
+        TablePath.STEPS,
+    }
+)
+
+NATURAL_KEYS: dict[TablePath, tuple[str, ...]] = {
+    TablePath.ARTIFACT_INDEX: ("artifact_id",),
+    TablePath.ARTIFACT_LOCATIONS: ("artifact_id", "uri"),
+    TablePath.EXECUTIONS: ("execution_run_id",),
+    TablePath.EXECUTION_EDGES: (
+        "execution_run_id",
+        "direction",
+        "role",
+        "artifact_id",
+    ),
+    TablePath.ARTIFACT_EDGES: tuple(ARTIFACT_EDGES_SCHEMA),
+    TablePath.CACHE_REUSE: (
+        "current_step_run_id",
+        "cached_execution_run_id",
+    ),
+    TablePath.STEPS: ("step_run_id", "state_sequence"),
+    TablePath.LOGICAL_COMMITS: ("logical_commit_id",),
 }
 
 # Tables that are NOT partitioned by origin_step_number
@@ -185,6 +226,7 @@ NON_PARTITIONED_TABLES: frozenset[TablePath] = frozenset(
         TablePath.ARTIFACT_EDGES,
         TablePath.EXECUTION_EDGES,
         TablePath.CACHE_REUSE,
+        TablePath.LOGICAL_COMMITS,
         TablePath.STEPS,
     }
 )
@@ -219,3 +261,41 @@ def create_empty_dataframe(table: TablePath) -> pl.DataFrame:
     """
     schema = get_schema(table)
     return pl.DataFrame(schema=schema)
+
+
+def get_physical_schema(table: TablePath) -> dict[str, Any]:
+    """Return the Delta schema, including internal commit ownership."""
+    schema = {
+        name: pl.Int32 if dtype == pl.UInt32 else dtype
+        for name, dtype in get_schema(table).items()
+    }
+    if table in COMMIT_OWNED_TABLES:
+        schema["logical_commit_id"] = pl.String
+    return schema
+
+
+def get_physical_schema_for_path(table: str | TablePath) -> dict[str, Any]:
+    """Return the physical schema for a registered table path."""
+    if isinstance(table, TablePath):
+        return get_physical_schema(table)
+    try:
+        return get_physical_schema(TablePath(table))
+    except ValueError:
+        from artisan.schemas.artifact.registry import ArtifactTypeDef
+
+        type_def = next(
+            definition
+            for definition in ArtifactTypeDef.get_all().values()
+            if definition.table_path == table
+        )
+        return {**type_def.polars_schema(), "logical_commit_id": pl.String}
+
+
+def get_natural_key(table: str | TablePath) -> tuple[str, ...]:
+    """Return the exact retry key for a framework or artifact table."""
+    if not isinstance(table, TablePath):
+        try:
+            table = TablePath(table)
+        except ValueError:
+            return ("artifact_id",)
+    return NATURAL_KEYS[table]

@@ -19,7 +19,6 @@ written by ``execution/recording/parquet_writer.py``.
 
 from __future__ import annotations
 
-import logging
 import posixpath
 import re
 import uuid
@@ -30,8 +29,6 @@ from fsspec import AbstractFileSystem
 
 from artisan.storage.core.table_schemas import CACHE_REUSE_SCHEMA
 from artisan.utils.path import step_dir_name
-
-logger = logging.getLogger(__name__)
 
 _RESERVED_STAGING_DIRS = frozenset({"_dispatch"})
 _HEX_ID = re.compile(r"[0-9a-f]{32}")
@@ -257,6 +254,39 @@ class StagingManager:
             df.write_parquet(stream, compression="zstd")
         return parquet_uri
 
+    def stage_orchestrator_dataframe(
+        self,
+        df: pl.DataFrame,
+        table_path: str,
+        *,
+        step_run_id: str,
+        step_number: int,
+        operation_name: str,
+    ) -> str | None:
+        """Stage one ownerless orchestrator table inside the exact attempt dir."""
+        if df.is_empty():
+            return None
+        if "logical_commit_id" in df.columns:
+            msg = "Staged rows must not carry logical_commit_id"
+            raise ValueError(msg)
+        orchestrator_dir = (
+            f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
+            f"/_orchestrator/{step_run_id}"
+        )
+        self._fs.makedirs(orchestrator_dir, exist_ok=True)
+        table_name = table_path.rsplit("/", 1)[-1]
+        parquet_uri = f"{orchestrator_dir}/{table_name}.parquet"
+        if self._fs.exists(parquet_uri):
+            with self._fs.open(parquet_uri, "rb") as stream:
+                existing = pl.read_parquet(stream)
+            if not existing.equals(df, null_equal=True):
+                msg = f"Conflicting staged retry for {table_path}"
+                raise ValueError(msg)
+            return parquet_uri
+        with self._fs.open(parquet_uri, "wb") as stream:
+            df.write_parquet(stream, compression="zstd")
+        return parquet_uri
+
     def get_staged_files_for_table(
         self,
         table_name: str,
@@ -307,7 +337,7 @@ class StagingManager:
     ) -> pl.DataFrame | None:
         """Read and concatenate all staged Parquet files for a table.
 
-        Corrupted files are logged and skipped rather than raising.
+        Any unreadable file raises; discovery never turns corruption into absence.
 
         Args:
             table_name: Delta table name to collect files for.
@@ -327,19 +357,19 @@ class StagingManager:
 
         dfs = []
         for uri in files:
-            try:
-                with self._fs.open(uri, "rb") as f:
-                    dfs.append(pl.read_parquet(f))
-            except Exception as exc:
-                logger.warning(
-                    "Skipping corrupted staging file %s: %s: %s",
-                    uri,
-                    type(exc).__name__,
-                    exc,
-                )
-        if not dfs:
-            return None
+            with self._fs.open(uri, "rb") as f:
+                dfs.append(pl.read_parquet(f))
         return pl.concat(dfs, rechunk=True)
+
+    def cleanup_plan(self, relative_paths: list[str]) -> None:
+        """Delete only staging directories named by a completed plan."""
+        directories = {
+            posixpath.dirname(relative_path) for relative_path in relative_paths
+        }
+        for relative_dir in sorted(directories, reverse=True):
+            directory = f"{self.staging_dir}/{relative_dir}"
+            if self._fs.exists(directory):
+                self._fs.rm(directory, recursive=True)
 
     def cleanup_batch(self, batch_id: str) -> None:
         """Remove a batch's staging directory.

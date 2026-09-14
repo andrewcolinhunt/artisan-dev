@@ -20,6 +20,8 @@ from artisan.storage.core.table_schemas import (
     FRAMEWORK_SCHEMAS,
     NON_PARTITIONED_TABLES,
     create_empty_dataframe,
+    get_physical_schema,
+    get_physical_schema_for_path,
     get_schema,
 )
 
@@ -166,6 +168,7 @@ class TestFrameworkSchemaDefinitions:
             TablePath.EXECUTION_EDGES,
             TablePath.ARTIFACT_LOCATIONS,
             TablePath.CACHE_REUSE,
+            TablePath.LOGICAL_COMMITS,
         }
         for table_name, schema in FRAMEWORK_SCHEMAS.items():
             if table_name in tables_without_metadata:
@@ -226,6 +229,7 @@ class TestSchemaRegistry:
             TablePath.EXECUTION_EDGES,
             TablePath.ARTIFACT_LOCATIONS,
             TablePath.CACHE_REUSE,
+            TablePath.LOGICAL_COMMITS,
         }
         for table_path in TablePath:
             schema = get_schema(table_path)
@@ -255,6 +259,30 @@ class TestCreateEmptyDataframe:
             df = create_empty_dataframe(table_path)
             assert df.shape[0] == 0  # Empty
             assert len(df.columns) > 0  # Has columns
+
+
+def test_physical_ownership_is_central_and_domain_schemas_remain_ownerless():
+    """D5 metadata exists only at the physical persistence boundary."""
+    for table in (
+        TablePath.ARTIFACT_INDEX,
+        TablePath.ARTIFACT_LOCATIONS,
+        TablePath.EXECUTIONS,
+        TablePath.EXECUTION_EDGES,
+        TablePath.ARTIFACT_EDGES,
+        TablePath.STEPS,
+    ):
+        assert "logical_commit_id" not in get_schema(table)
+        assert get_physical_schema(table)["logical_commit_id"] == pl.String
+    assert list(get_physical_schema(TablePath.CACHE_REUSE)) == [
+        "current_step_run_id",
+        "cached_execution_run_id",
+    ]
+    for type_def in ArtifactTypeDef.get_all().values():
+        assert "logical_commit_id" not in type_def.polars_schema()
+        assert (
+            get_physical_schema_for_path(type_def.table_path)["logical_commit_id"]
+            == pl.String
+        )
 
 
 class TestDataFrameCreation:

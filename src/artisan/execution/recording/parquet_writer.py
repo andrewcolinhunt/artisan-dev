@@ -194,7 +194,9 @@ def _stage_artifact_index(
     ]
     if rows:
         with fs.open(f"{staging_path}/index.parquet", "wb") as f:
-            pl.DataFrame(rows).write_parquet(f, compression="zstd")
+            pl.DataFrame(
+                rows, schema=get_schema(TablePath.ARTIFACT_INDEX)
+            ).write_parquet(f, compression="zstd")
 
 
 def _stage_artifact_locations(
@@ -261,7 +263,9 @@ def _stage_execution_edges(
     if execution_edges.is_empty():
         return
     with fs.open(f"{staging_path}/execution_edges.parquet", "wb") as f:
-        execution_edges.write_parquet(f, compression="zstd")
+        execution_edges.cast(get_schema(TablePath.EXECUTION_EDGES)).write_parquet(
+            f, compression="zstd"
+        )
 
 
 def _write_execution_record(
@@ -311,14 +315,6 @@ def _write_execution_record(
         "compute_backend": compute_backend,
         "metadata": json.dumps(result_metadata or {}, default=artisan_json_default),
     }
-    df = pl.DataFrame([row]).cast(
-        {
-            "error": pl.String,
-            "error_envelope": pl.String,
-            "tool_output": pl.String,
-            "worker_log": pl.String,
-            "step_run_id": pl.String,
-        }
-    )
+    df = pl.DataFrame([row], schema=get_schema(TablePath.EXECUTIONS))
     with fs.open(f"{staging_path}/executions.parquet", "wb") as f:
         df.write_parquet(f, compression="zstd")

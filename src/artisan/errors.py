@@ -172,6 +172,8 @@ class ErrorCode:
     STORE_NOT_FOUND = "store_not_found"
     ARTIFACT_INTEGRITY_FAILED = "artifact_integrity_failed"
     PERSISTENCE_INTEGRITY_FAILED = "persistence_integrity_failed"
+    STORE_INTEGRITY_FAILED = "store_integrity_failed"
+    COMMIT_FAILED = "commit_failed"
     INCOMPATIBLE_STORE = "incompatible_store"
 
     # io — worker-side input resolution / output delivery (tool-endpoint wire)
@@ -185,27 +187,44 @@ class ErrorCode:
     PASSTHROUGH_VALIDATION_FAILED = "passthrough_validation_failed"
 
 
-class CommitError(Exception):
-    """Raised when one or more table commits fail in ``commit_all_tables``.
+class CommitError(ArtisanError):
+    """Raised at the first failed table in one immutable commit plan."""
 
-    Delta Lake has no multi-table transaction, so a partial failure can
-    leave earlier tables committed and the store inconsistent. The
-    committer preserves staging (skips cleanup) on failure so the commit
-    can be retried; ``DeltaCommitter.recover_staged`` re-commits the
-    preserved Parquet idempotently via anti-join deduplication.
+    def __init__(
+        self,
+        logical_commit_id: str,
+        table: str,
+        plan_key: str,
+        verified_tables: list[str],
+        staging_objects: list[str],
+        message: str,
+    ) -> None:
+        """Create a structured, repair-oriented commit failure."""
+        self.logical_commit_id = logical_commit_id
+        self.table = table
+        self.plan_key = plan_key
+        self.verified_tables = tuple(verified_tables)
+        self.staging_objects = tuple(staging_objects)
+        super().__init__(
+            code=ErrorCode.COMMIT_FAILED,
+            message=message,
+            error_type="io",
+            hint=f"Run `artisan store repair` for {logical_commit_id}",
+            recovery_hint="REPORT_TO_USER",
+        )
 
-    Attributes:
-        failed_tables: Names of the tables whose commit raised.
-    """
 
-    def __init__(self, failed_tables: list[str]) -> None:
-        """Build the error from the list of failed table names.
+class StoreIntegrityError(ArtisanError):
+    """Raised when plan, control, staged, or persisted evidence conflicts."""
 
-        Args:
-            failed_tables: Names of the tables whose commit raised.
-        """
-        self.failed_tables = failed_tables
-        super().__init__(f"Failed to commit tables: {', '.join(failed_tables)}")
+    def __init__(self, message: str) -> None:
+        """Create a fail-closed store integrity error."""
+        super().__init__(
+            code=ErrorCode.STORE_INTEGRITY_FAILED,
+            message=message,
+            error_type="io",
+            recovery_hint="REPORT_TO_USER",
+        )
 
 
 class ArtifactIntegrityError(ArtisanError):

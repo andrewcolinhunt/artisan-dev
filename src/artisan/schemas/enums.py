@@ -78,6 +78,7 @@ class TablePath(str, Enum):
     # Orchestration tables
     EXECUTIONS = "orchestration/executions"
     CACHE_REUSE = "orchestration/cache_reuse"
+    LOGICAL_COMMITS = "orchestration/logical_commits"
     STEPS = "orchestration/steps"
 
     @property
