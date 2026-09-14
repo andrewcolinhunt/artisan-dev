@@ -35,11 +35,11 @@ you'll find a link to the right place.
 ### Artifacts
 
 An **artifact** is a content-addressed data node. The framework computes a
-unique ID from the artifact's content (`xxh3_128` hash), so identical content
-always produces the same ID. This enables automatic deduplication and
-deterministic caching. Artifacts follow a draft/finalize pattern: drafts are
-mutable while being assembled, and once finalized the content hash makes any
-tampering detectable.
+unique ID from a typed envelope containing canonical payload and semantic
+identity metadata. Identical envelopes produce the same ID, while equal bytes
+in different types remain distinct. Artifacts follow a draft/finalize pattern:
+drafts are mutable while being assembled, and finalization snapshots durable
+state so tampering is detectable.
 
 Artisan provides six built-in artifact types:
 

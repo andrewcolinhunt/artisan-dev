@@ -18,6 +18,7 @@ full, for a hypothetical `DataRecordArtifact` that stores CSV sample data.
 
 from __future__ import annotations
 
+import io
 import os
 from typing import Any, ClassVar
 
@@ -33,7 +34,7 @@ from artisan.utils.filename import strip_extensions
 class DataRecordArtifact(Artifact):
     """Data record artifact for CSV sample data."""
 
-    POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
+    POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
         "artifact_id": pl.String,
         "origin_step_number": pl.Int32,
         "content": pl.Binary,
@@ -42,7 +43,6 @@ class DataRecordArtifact(Artifact):
         "size_bytes": pl.Int64,
         "record_count": pl.Int64,
         "metadata": pl.String,
-        "external_path": pl.String,
     }
 
     artifact_type: str = Field(default="data_record", frozen=True)
@@ -51,6 +51,14 @@ class DataRecordArtifact(Artifact):
     extension: str | None = Field(default=None)
     size_bytes: int | None = Field(default=None, ge=0)
     record_count: int | None = Field(default=None, ge=0)
+
+    def _validate_identity_descriptors(self) -> None:
+        if self.content is None:
+            return
+        if self.size_bytes != len(self.content):
+            raise ValueError("size_bytes does not match content")
+        if self.record_count != pl.read_csv(io.BytesIO(self.content)).height:
+            raise ValueError("record_count does not match content")
 
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         if self.content is None:
@@ -80,7 +88,11 @@ class DataRecordArtifact(Artifact):
             original_name=strip_extensions(original_name),
             extension=get_compound_extension(original_name),
             size_bytes=len(content),
-            record_count=record_count,
+            record_count=(
+                record_count
+                if record_count is not None
+                else pl.read_csv(io.BytesIO(content)).height
+            ),
             metadata=metadata or {},
         )
 
@@ -107,6 +119,7 @@ these members:
 | `artifact_type` | field | String discriminator with `frozen=True` |
 | `draft()` | classmethod | Create a mutable artifact with `artifact_id=None` |
 | `_materialize_content()` | method | Write content to disk, return the path string |
+| `_validate_identity_descriptors()` | method | Validate durable fields derived from canonical content, when present |
 
 The base `Artifact` class provides `finalize()`, `materialize_to()`,
 `to_row()`, `from_row()`, and several fields your model inherits
@@ -124,7 +137,7 @@ The `Artifact` base class defines these fields that every artifact type shares:
 | `artifact_type` | `str` | Type discriminator. Must be overridden with a default on each subclass. |
 | `origin_step_number` | `int \| None` | Pipeline step that produced this artifact. |
 | `metadata` | `dict[str, Any]` | Generic JSON-serializable metadata dict. |
-| `external_path` | `str \| None` | Path to external content on disk. |
+| `external_path` | `str \| None` | Optional source path for embedded drafts; protected after finalization and not stored. |
 | `materialized_path` | `str \| None` | Runtime-only path (excluded from serialization). |
 
 The base class also sets `model_config = ConfigDict(extra="forbid")`, which
@@ -158,14 +171,14 @@ POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
     "size_bytes": pl.Int64,
     "record_count": pl.Int64,
     "metadata": pl.String,
-    "external_path": pl.String,
 }
 ```
 
 Every column written by `to_row()` must appear here. Column order determines
-Parquet column order. All artifact types share the first two columns
-(`artifact_id`, `origin_step_number`) and typically end with `metadata` and
-`external_path`.
+Parquet column order. All artifact types share `artifact_id` and
+`origin_step_number` and typically store `metadata`. Runtime fields such as
+`materialized_path` and source paths for embedded artifacts do not belong in
+the content table.
 
 ### Implement draft
 
@@ -196,16 +209,23 @@ You do not need to implement `finalize()`. The base `Artifact.finalize()`
 method:
 
 - Returns `self` if `artifact_id` is already set (idempotent)
-- Calls `_finalize_content()` to get the bytes to hash
-- Raises `ValueError` if `_finalize_content()` returns `None`
-- Passes those bytes to `compute_artifact_id` (xxh3_128, returns a 32-character hex string)
-- Sets `artifact_id` on the instance
+- Validates content-derived descriptor fields
+- Calls `_identity_payload()` to get the type-owned canonical bytes
+- Hashes a length-framed envelope containing the concrete artifact type,
+  canonical payload, and common semantic identity metadata (`original_name`,
+  `extension` when declared, and `metadata`)
+- Sets the 32-character `artifact_id` and snapshots protected state
 
-The default `_finalize_content()` returns `getattr(self, "content", None)`. If
-your artifact has a `content: bytes | None` field, finalization works out of
-the box. For metadata-only types without a `content` field, override
-`_finalize_content()` instead -- see
+The default `_identity_payload()` returns `getattr(self, "content", None)`. If
+your artifact has a `content: bytes | None` field, identity works out of the
+box. For descriptor-based types without a `content` field, override
+`_identity_payload()` instead -- see
 [Metadata-only types](#metadata-only-types-no-embedded-content).
+
+After finalization, all durable fields are protected. Direct assignment fails,
+and `to_row()`, verification, and materialization also detect mutation inside
+nested dictionaries or lists. Only `materialized_path` and a locator explicitly
+declared by an externally backed type remain mutable.
 
 ### Serialization is automatic
 
@@ -286,8 +306,12 @@ class DataRecordTypeDef(ArtifactTypeDef):
 When Python loads this class, `__init_subclass__` fires and:
 
 - Validates that `key`, `table_path`, and `model` are set
-- Validates that the model has `POLARS_SCHEMA`, `to_row`, and `from_row`
-- Rejects duplicate keys (raises `ValueError` if another type def already uses the same key)
+- Requires the model to subclass `Artifact` and its concrete default
+  `artifact_type` to equal `key`
+- Rejects `ArtifactTypes.ANY`, duplicate keys, duplicate table paths, and
+  framework-reserved table paths
+- For external types, validates one real relation-backed locator plus explicit
+  verification and materialization hooks
 - Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.DATA_RECORD` works at runtime)
 - Registers the type def in `ArtifactTypeDef._registry`
 
@@ -330,6 +354,7 @@ import os
 
 import pytest
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.data_record import DataRecordArtifact
 
@@ -367,6 +392,18 @@ def test_finalize_is_idempotent():
     first_id = artifact.artifact_id
     artifact.finalize()
     assert artifact.artifact_id == first_id
+
+
+def test_finalized_nested_metadata_is_protected():
+    artifact = DataRecordArtifact.draft(
+        content=SAMPLE_CSV,
+        original_name="test.csv",
+        step_number=1,
+        metadata={"source": {"version": 1}},
+    ).finalize()
+    artifact.metadata["source"]["version"] = 2
+    with pytest.raises(ArtifactIntegrityError):
+        artifact.to_row()
 
 
 def test_materialize_writes_file(tmp_path):
@@ -454,23 +491,27 @@ definition so the mixin's methods are resolved first.
 ### Metadata-only types (no embedded content)
 
 Some artifact types reference external data rather than storing content inline.
-`FileRefArtifact` is the built-in example. These types have no `content` field,
-so the default `_finalize_content()` (which calls `getattr(self, "content",
-None)`) returns `None`, causing `finalize()` to raise `ValueError`. Override
-`_finalize_content()` to hash a metadata record instead:
+`FileRefArtifact` is the built-in example. External identity must describe the
+verified bytes without including their location:
 
 ```python
-def _finalize_content(self) -> bytes | None:
-    if self.content_hash is None:
+EXTERNALLY_BACKED: ClassVar[bool] = True
+LOCATOR_FIELDS: ClassVar[frozenset[str]] = frozenset({"path"})
+
+def _identity_payload(self) -> bytes | None:
+    if self.content_hash is None or self.size_bytes is None:
         return None
-    return json.dumps(
-        {"content_hash": self.content_hash, "path": self.path, "size_bytes": self.size_bytes},
-        sort_keys=True,
-    ).encode("utf-8")
+    return canonical_json_bytes(
+        {"content_hash": self.content_hash, "size_bytes": self.size_bytes}
+    )
 ```
 
-The base class `finalize()` calls your `_finalize_content()` and hashes the
-result. You do not override `finalize()` itself.
+The declared locator must be a model field, must stay out of `POLARS_SCHEMA`,
+and must not appear in `_identity_payload()`. Locations are stored separately in
+`artifacts/locations`, so the same verified bytes retain one ID after relocation
+or consolidation. An external type must also implement
+`verify_external_content()` and `_materialize_content()` using bounded,
+digest-and-size-checked reads. You do not override `finalize()` itself.
 
 ### Domain-layer types
 
@@ -499,11 +540,11 @@ Both work identically. Pick whichever keeps your import graph cleaner.
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| `TypeError` at import time | Model missing `POLARS_SCHEMA`, `to_row`, or `from_row` | Add the missing member to the model class |
+| `TypeError` at import time | Model is not an `Artifact`, or an external type lacks a valid locator, verifier, or materializer | Implement the required artifact contract |
 | `ValueError: Duplicate artifact type key` | Two `ArtifactTypeDef` subclasses share the same `key` | Use a unique key string |
 | `KeyError` when looking up the type | Type def class was never imported | Ensure the module is imported (add to `__init__.py`) |
 | Data loss in round-trip | `to_row()` and `from_row()` are out of sync | Test with `from_row(artifact.to_row())` and compare all fields |
-| Non-deterministic artifact IDs | JSON encoding without `sort_keys=True` | Always use `json.dumps(..., sort_keys=True)` for hash inputs |
+| Non-deterministic artifact IDs | Type payload encoding is not canonical | Use `canonical_json_bytes()` for structured identity payloads |
 | `POLARS_SCHEMA` mismatch | Schema columns don't match `to_row()` keys | Keep schema and `to_row()` in sync -- same keys, same order |
 | `ValidationError: extra fields not permitted` | Field name typo in `from_row()` or `draft()` | The base class uses `ConfigDict(extra="forbid")` -- check field names match the model |
 | `ValueError` on `artifact_type` | Used `ArtifactTypes.ANY` as a default | `ANY` is a spec-only sentinel; use a concrete type string |

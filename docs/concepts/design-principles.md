@@ -53,9 +53,9 @@ configuration complete the preimage.
 
 - **Automatic deduplication.** The same typed semantic identity is stored once,
   regardless of how many pipeline steps produce it.
-- **Deterministic caching.** Cache keys are derived from content hashes of
-  inputs plus operation parameters. No manual invalidation. Different inputs
-  produce different keys automatically.
+- **Deterministic caching.** Cache keys are derived from ordered typed input
+  occurrences plus operation parameters and effective configuration. No manual
+  invalidation. Different invocation semantics produce different keys.
 - **Immutability after finalization.** Durable fields and nested semantic values
   are protected and checked against a saved identity snapshot. Runtime
   locations remain movable.
