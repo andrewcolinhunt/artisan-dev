@@ -133,7 +133,7 @@ execution_edges = pl.read_delta(str(delta_root / "provenance/execution_edges"))
 You can also use the `TablePath` enum to avoid hardcoding path strings:
 
 ```python
-from artisan.schemas.enums import TablePath
+from artisan.schemas import TablePath
 
 steps = pl.read_delta(str(delta_root / TablePath.STEPS))
 ```
@@ -155,7 +155,7 @@ file_refs = pl.read_delta(str(delta_root / "artifacts/file_refs"))
 To look up the table path for a given type programmatically:
 
 ```python
-from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas import ArtifactTypeDef
 
 path = ArtifactTypeDef.get_table_path("data")  # "artifacts/data"
 ```

@@ -23,8 +23,7 @@ from typing import ClassVar
 
 from artisan.composites import CompositeDefinition, CompositeContext
 from artisan.operations.examples import DataTransformer, MetricCalculator
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.schemas import InputSpec, OutputSpec
 
 
 class TransformAndScore(CompositeDefinition):

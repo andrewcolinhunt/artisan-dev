@@ -215,7 +215,9 @@ example loads artifact content from the store and keeps only those whose
 ```python
 from enum import StrEnum, auto
 
-from artisan.schemas.artifact.types import ArtifactTypes
+from pydantic import BaseModel, Field
+
+from artisan.schemas import ArtifactTypes
 
 
 class NameFilter(OperationDefinition):
@@ -235,7 +237,10 @@ class NameFilter(OperationDefinition):
         ),
     }
 
-    contains: str = ""
+    class Params(BaseModel):
+        contains: str = Field(default="", description="Substring to match.")
+
+    params: Params = Params()
 
     def execute_curator(
         self,
@@ -250,7 +255,7 @@ class NameFilter(OperationDefinition):
         artifacts = artifact_store.get_artifacts_by_type(ids, ArtifactTypes.DATA)
         passed = [
             aid for aid, art in artifacts.items()
-            if art.original_name and self.contains in art.original_name
+            if art.original_name and self.params.contains in art.original_name
         ]
 
         return PassthroughResult(
@@ -306,8 +311,7 @@ handles the iteration pattern — subclass it and implement `convert_file()`:
 
 ```python
 from artisan.operations.curator import IngestFiles
-from artisan.schemas.artifact import DataArtifact
-from artisan.schemas.artifact.file_ref import FileRefArtifact
+from artisan.schemas import DataArtifact, FileRefArtifact
 
 
 class IngestCSV(IngestFiles):
@@ -556,7 +560,7 @@ Confirm your operation works end-to-end in a minimal pipeline:
 ```python
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
-from artisan.schemas import StepStatus
+from artisan.orchestration import StepStatus
 
 pipeline = PipelineManager.create(
     name="test", delta_root="test/delta", staging_root="test/staging",

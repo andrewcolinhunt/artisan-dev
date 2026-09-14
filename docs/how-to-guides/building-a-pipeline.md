@@ -321,9 +321,8 @@ subclassing `CompositeDefinition` and implementing `compose()`:
 from enum import StrEnum
 from typing import ClassVar
 
-from artisan.composites import CompositeDefinition, CompositeContext
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.composites import CompositeContext, CompositeDefinition
+from artisan.schemas import InputSpec, OutputSpec
 
 
 class TransformAndScore(CompositeDefinition):
@@ -461,7 +460,7 @@ print(runs)  # polars DataFrame with run IDs, step counts, and timestamps
 Run your pipeline with a small dataset to confirm wiring and output:
 
 ```python
-from artisan.schemas import StepStatus
+from artisan.orchestration import StepStatus
 
 pipeline = PipelineManager.create(
     name="test",

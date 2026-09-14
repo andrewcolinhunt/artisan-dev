@@ -32,14 +32,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from artisan.operations.curator import Filter, Merge
+from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-
-# Import operations used in this pipeline
-from artisan.operations.examples.data_generator import DataGenerator
-from artisan.operations.examples.data_transformer import DataTransformer
-from artisan.operations.examples.metric_calculator import MetricCalculator
-from artisan.operations.curator.filter import Filter
-from artisan.operations.curator.merge import Merge
 
 
 def main() -> None:

@@ -342,8 +342,8 @@ to make that decision.
   Cooperative cancellation, signal handling, and cancelled step metadata
 - [Resume and Caching tutorial](../tutorials/03-caching/01-resume-and-caching.ipynb) --
   How caching interacts with failures during re-runs
-- [Glossary](../reference/glossary.md) -- Field-level definitions of StepResult,
-  ExecutionRecord, and other result types
+- [Glossary](../reference/glossary.md) -- Field-level definitions of step
+  results, execution records, and other persisted results
 - [Execution Flow](execution-flow.md) -- Dispatch, execute, commit lifecycle
   where error boundaries live
 - [Design Principles](design-principles.md) -- Foundational design decisions

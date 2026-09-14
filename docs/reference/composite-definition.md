@@ -77,8 +77,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.composites import CompositeDefinition, CompositeContext
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.schemas import InputSpec, OutputSpec
 
 
 class MyComposite(CompositeDefinition):

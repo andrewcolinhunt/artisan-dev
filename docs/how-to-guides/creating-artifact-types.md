@@ -13,7 +13,7 @@ Two classes are all you need: a model and a type definition. Here they are in
 full, for a hypothetical `DataRecordArtifact` that stores CSV sample data.
 
 ```python
-# src/artisan/schemas/artifact/data_record.py
+# src/my_project/artifacts/data_record.py
 """Data record artifact schema."""
 
 from __future__ import annotations
@@ -25,10 +25,8 @@ from typing import Any, ClassVar
 import polars as pl
 from pydantic import Field
 
-from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.common import get_compound_extension
-from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.utils.filename import strip_extensions
+from artisan.schemas import Artifact, ArtifactTypeDef, get_compound_extension
+from artisan.utils import strip_extensions
 
 
 class DataRecordArtifact(Artifact):
@@ -325,8 +323,8 @@ import time.
 Add the new model to the package `__init__.py`:
 
 ```python
-# src/artisan/schemas/artifact/__init__.py
-from artisan.schemas.artifact.data_record import DataRecordArtifact
+# src/my_project/artifacts/__init__.py
+from my_project.artifacts.data_record import DataRecordArtifact
 
 __all__ = [
     # ... existing exports
@@ -335,12 +333,8 @@ __all__ = [
 ```
 
 The `ArtifactTypeDef` subclass must be importable for registration to happen.
-If the type def lives in the same file as the model (the recommended pattern
-for domain-layer types), importing the model is sufficient. If it lives in
-`registry.py`, that module is already imported by the package init.
-
-For domain-layer types (outside `artisan`), update your domain package's
-`__init__.py` instead.
+Keeping the type definition in the same file as the model means importing the
+model from your domain package is sufficient.
 
 ---
 
@@ -349,14 +343,11 @@ For domain-layer types (outside `artisan`), update your domain package's
 Cover these scenarios:
 
 ```python
-# tests/artisan/schemas/test_data_record.py
+# tests/my_project/artifacts/test_data_record.py
 import os
 
-import pytest
-
-from artisan.errors import ArtifactIntegrityError
-from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.schemas.artifact.data_record import DataRecordArtifact
+from artisan.schemas import ArtifactTypeDef
+from my_project.artifacts import DataRecordArtifact
 
 
 SAMPLE_CSV = b"id,value\n1,hello\n2,world\n"
@@ -392,18 +383,6 @@ def test_finalize_is_idempotent():
     first_id = artifact.artifact_id
     artifact.finalize()
     assert artifact.artifact_id == first_id
-
-
-def test_finalized_nested_metadata_is_protected():
-    artifact = DataRecordArtifact.draft(
-        content=SAMPLE_CSV,
-        original_name="test.csv",
-        step_number=1,
-        metadata={"source": {"version": 1}},
-    ).finalize()
-    artifact.metadata["source"]["version"] = 2
-    with pytest.raises(ArtifactIntegrityError):
-        artifact.to_row()
 
 
 def test_materialize_writes_file(tmp_path):
@@ -462,11 +441,11 @@ metadata={"record_count": 42}
 
 If your artifact stores JSON-encoded content (like `MetricArtifact` and
 `ExecutionConfigArtifact` do), use the `JsonContentMixin` from
-`artisan.schemas.artifact.common`. It provides a cached `values` property that
+`artisan.schemas`. It provides a cached `values` property that
 parses and returns the JSON content as a dict:
 
 ```python
-from artisan.schemas.artifact.common import JsonContentMixin
+from artisan.schemas import JsonContentMixin
 
 class MyJsonArtifact(JsonContentMixin, Artifact):
     """Artifact storing JSON-encoded data."""
@@ -556,8 +535,7 @@ Both work identically. Pick whichever keeps your import graph cleaner.
 Confirm your type is registered:
 
 ```python
-from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas import ArtifactTypeDef, ArtifactTypes
 
 type_def = ArtifactTypeDef.get("data_record")
 assert type_def.model is DataRecordArtifact

@@ -34,7 +34,7 @@ Both align with the [W3C PROV](https://www.w3.org/TR/prov-overview/) standard:
 
 | Framework concept | W3C PROV equivalent |
 |-------------------|---------------------|
-| `ExecutionRecord` | Activity |
+| Executions row | Activity |
 | `Artifact` | Entity |
 | `ArtifactProvenanceEdge` | wasDerivedFrom |
 | `ExecutionEdge` (input) | used |
@@ -55,7 +55,7 @@ record alone.
 ```
 Execution provenance              Artifact provenance
 
-ExecutionRecord                   A ──→ D
+Executions row                    A ──→ D
   consumed: [A, B, C]            B ──→ E
   produced: [D, E, F]            C ──→ F
 
@@ -374,7 +374,7 @@ between steps. This view answers "what is the pipeline shape?" and comes from
 the steps table alone -- no artifact-level provenance needed.
 
 **Micro graphs** show individual artifacts and executions. Every artifact and
-execution record appears as its own node, with both execution edges
+every row in the executions table appears as its own node, with both execution edges
 (artifact-to-execution links) and lineage edges (artifact-to-artifact
 derivations) overlaid. This view answers "what happened to this specific
 artifact?" and uses all three provenance tables.

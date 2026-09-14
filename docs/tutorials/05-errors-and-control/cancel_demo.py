@@ -29,8 +29,7 @@ window affects which steps succeed vs cancel.
 from __future__ import annotations
 
 from artisan.operations.examples import Wait
-from artisan.orchestration import PipelineManager
-from artisan.schemas import StepStatus
+from artisan.orchestration import PipelineManager, StepStatus
 from artisan.utils import tutorial_setup
 
 
