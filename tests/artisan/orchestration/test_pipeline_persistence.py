@@ -86,13 +86,15 @@ def _mock_execute_step(**kwargs):
     from artisan.orchestration.engine.step_executor import build_step_result
     from artisan.schemas.enums import FailurePolicy
 
-    return build_step_result(
+    result = build_step_result(
         operation=kwargs["operation"],
         step_number=kwargs["step_number"],
         succeeded_count=5,
         failed_count=0,
         failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
+        step_run_id=kwargs["step_run_id"],
     )
+    return kwargs["persist_result"](result, ())
 
 
 def _mock_prepared_inputs(inputs, *_args, **_kwargs) -> PreparedInputs:
@@ -153,16 +155,14 @@ class TestPersistence:
         p2 = PipelineManager.create(
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
-        cached_execution = "b" * 32
         p2._step_tracker.check_cache = MagicMock(
             return_value=_WholeStepCacheHit(
                 result=first_result,
                 source_step_run_id=first_result.step_run_id,
-                execution_run_ids=(cached_execution,),
+                execution_run_ids=(),
             )
         )
-        with patch.object(p2, "_commit_whole_step_reuse") as commit_reuse:
-            result = p2.run(IngestMockOp, inputs=None)
+        result = p2.run(IngestMockOp, inputs=None)
 
         # execute_step NOT called again
         assert mock_exec.call_count == 1
@@ -171,12 +171,6 @@ class TestPersistence:
         assert result.disposition == StepDisposition.CACHE_HIT
         assert result.step_run_id != first_result.step_run_id
         assert len(result.step_run_id) == 32
-        commit_reuse.assert_called_once_with(
-            result.step_run_id,
-            (cached_execution,),
-            step_number=0,
-            operation_name=IngestMockOp.name,
-        )
 
         rows = pl.read_delta(delta / "orchestration" / "steps").filter(
             pl.col("pipeline_run_id") == p2.config.pipeline_run_id

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import polars as pl
 import pytest
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
+from artisan.errors import IncompatibleStoreError
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.run_status import (
     RunStatus,
@@ -19,7 +19,9 @@ from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
-from artisan.storage.core.table_schemas import EXECUTIONS_SCHEMA
+from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.commit_plan import build_commit_plan
+from artisan.storage.io.staging import StagingManager
 
 
 def _seed_steps(
@@ -33,10 +35,8 @@ def _seed_steps(
     status, ``(number, name, status, succeeded, failed)`` — counts default
     to ``1`` succeeded / ``0`` failed.
     """
-    publish_test_store(str(root), LocalFileSystem())
-    executions_path = root / TablePath.EXECUTIONS.value
-    if not executions_path.exists():
-        pl.DataFrame(schema=EXECUTIONS_SCHEMA).write_delta(str(executions_path))
+    fs = LocalFileSystem()
+    publish_test_store(str(root), fs)
     tracker = StepTracker(str(root), run_id)
     for spec in steps:
         number, name, status = spec[:3]
@@ -66,27 +66,60 @@ def _seed_steps(
             StepStatus.RUNNING,
             step_spec_id=step_spec_id,
         )
-        tracker.transition(
+        result = StepResult(
+            step_name=name,
+            step_number=number,
+            status=terminal,
+            disposition=(
+                StepDisposition.EXECUTED
+                if terminal in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+                else None
+            ),
+            error="test failure" if terminal == StepStatus.FAILED else None,
+            total_count=succeeded + failed,
+            succeeded_count=succeeded,
+            failed_count=failed,
+            step_run_id=step_run_id,
+        )
+        if terminal not in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+            tracker.transition(
+                step_run_id,
+                StepStatus.RUNNING,
+                terminal,
+                step_spec_id=step_spec_id,
+                result=result,
+            )
+            continue
+        candidate = tracker.prepare_terminal_candidate(
             step_run_id,
             StepStatus.RUNNING,
             terminal,
             step_spec_id=step_spec_id,
-            result=StepResult(
-                step_name=name,
-                step_number=number,
-                status=terminal,
-                disposition=(
-                    StepDisposition.EXECUTED
-                    if terminal in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
-                    else None
-                ),
-                error="test failure" if terminal == StepStatus.FAILED else None,
-                total_count=succeeded + failed,
-                succeeded_count=succeeded,
-                failed_count=failed,
-                step_run_id=step_run_id,
-            ),
+            result=result,
         )
+        staging = StagingManager(str(root / "staging"), fs)
+        staging.stage_orchestrator_dataframe(
+            candidate,
+            TablePath.STEPS.value,
+            commit_kind="step_result",
+            step_run_id=step_run_id,
+            step_number=number,
+            operation_name=name,
+        )
+        plan = build_commit_plan(
+            delta_root=str(root),
+            staging_root=str(root / "staging"),
+            fs=fs,
+            commit_kind="step_result",
+            step_run_id=step_run_id,
+            step_number=number,
+            operation_name=name,
+        )
+        DeltaCommitter(
+            str(root),
+            staging,
+            fs=fs,
+        ).commit_logical(plan)
 
 
 class TestRunStatus:
@@ -148,9 +181,9 @@ class TestRunStatus:
         assert status.last_status is None
         assert status.step_count == 0
 
-    def test_missing_steps_table_raises(self, tmp_path) -> None:
-        with pytest.raises(FileNotFoundError):
-            run_status(str(tmp_path), "run-x")
+    def test_missing_store_manifest_raises(self, tmp_path) -> None:
+        with pytest.raises(IncompatibleStoreError, match="missing manifest"):
+            run_status(str(tmp_path / "missing"), "run-x")
 
 
 class TestResolveStepNumber:
@@ -167,4 +200,5 @@ class TestResolveStepNumber:
         assert resolve_step_number(str(tmp_path), "run-x", "nope") is None
 
     def test_empty_steps_table_returns_none(self, tmp_path) -> None:
+        publish_test_store(str(tmp_path), LocalFileSystem())
         assert resolve_step_number(str(tmp_path), "run-x", "generate") is None

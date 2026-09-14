@@ -190,17 +190,13 @@ def _parse_stored_local_runner(options: dict[str, Any]) -> int | None:
 
 def _load_stored_default_runner(
     steps: list[StepState],
-    requested_name: str | None = None,
-) -> _StoredDefaultRunner | None:
+) -> _StoredDefaultRunner:
     """Read a pipeline's default runner from persisted step options.
 
     Args:
         steps: Completed states for one pipeline run.
-        requested_name: Explicit runner name supplied for resume, when any.
-
     Returns:
-        Stored runner metadata. Legacy records require the caller to state the
-        historical default because they persist only each step's effective runner.
+        Stored runner metadata.
 
     Raises:
         ValueError: If stored runner metadata is invalid.
@@ -231,13 +227,8 @@ def _load_stored_default_runner(
             local_max_workers = current_local_max
 
     if stored_name is None:
-        if requested_name is None:
-            msg = (
-                "Legacy step records do not persist the historical pipeline "
-                "default; pass an explicit default_step_runner to resume safely"
-            )
-            raise ValueError(msg)
-        stored_name = requested_name
+        msg = "Persisted step records do not identify default_step_runner"
+        raise ValueError(msg)
     return _StoredDefaultRunner(stored_name, local_max_workers)
 
 
@@ -818,12 +809,12 @@ def _resolve_runtime_default_runner(
 
 
 def _restore_persisted_local_runner(
-    stored_runner: _StoredDefaultRunner | None,
+    stored_runner: _StoredDefaultRunner,
     runtime_runner: RunnerBase | None,
     run_id: str,
 ) -> RunnerBase | None:
     """Reconstruct or validate the narrowly persisted LocalRunner config."""
-    if stored_runner is None or stored_runner.local_default_max_workers is None:
+    if stored_runner.local_default_max_workers is None:
         return runtime_runner
 
     expected = stored_runner.local_default_max_workers
@@ -1543,8 +1534,7 @@ class PipelineManager:
                 tempfile.gettempdir() (respects $TMPDIR).
             default_step_runner: Runtime default runner. Built-in names can be
                 reconstructed from persisted state; external providers must be
-                supplied as matching instances. For legacy records without a
-                stored default, an omitted value falls back to local.
+                supplied as matching instances.
             files_root: Root path for Artisan-managed external files. If None,
                 derives a sibling path from a local delta_root.
             failure_policy: Default failure handling for subsequent steps.
@@ -1585,11 +1575,8 @@ class PipelineManager:
         else:
             runtime_runner = None
             requested_runner_name = default_step_runner
-        stored_runner = _load_stored_default_runner(
-            current_steps,
-            requested_name=requested_runner_name,
-        )
-        stored_runner_name = stored_runner.name if stored_runner is not None else None
+        stored_runner = _load_stored_default_runner(current_steps)
+        stored_runner_name = stored_runner.name
         config_kwargs: dict[str, Any] = {
             "name": name or _extract_name_from_run_id(run_id),
             "pipeline_run_id": run_id,
@@ -1604,8 +1591,7 @@ class PipelineManager:
             "storage": storage,
         }
         if (
-            stored_runner_name is not None
-            and requested_runner_name is not None
+            requested_runner_name is not None
             and requested_runner_name != stored_runner_name
         ):
             msg = (
@@ -1619,9 +1605,7 @@ class PipelineManager:
             runtime_runner,
             run_id,
         )
-        resumed_runner_name = stored_runner_name or requested_runner_name
-        if resumed_runner_name is not None:
-            config_kwargs["default_step_runner"] = resumed_runner_name
+        config_kwargs["default_step_runner"] = stored_runner_name
         if working_root is not None:
             config_kwargs["working_root"] = working_root
         config = PipelineConfig(**config_kwargs)
