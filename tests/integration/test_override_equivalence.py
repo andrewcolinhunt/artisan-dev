@@ -16,8 +16,9 @@ where the two paths drift.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import polars as pl
 import pytest
@@ -38,6 +39,21 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 pytestmark = pytest.mark.integration
 
 
+class _OverrideDefaultsGenerator(DataGenerator):
+    """Generator with defaults that differ from target-model schema defaults."""
+
+    name: ClassVar[str] = "override_defaults_generator"
+    runner_resources: RunnerResources = RunnerResources(
+        cpus=8,
+        memory_gb=32,
+        time_limit="00:30:00",
+    )
+    compute_resources: ComputeResources = ComputeResources(
+        gpu="A100",
+        memory_gb=32,
+    )
+
+
 def _read_steps_table(delta_root: str) -> pl.DataFrame:
     """Read the orchestration/steps Delta table for the run."""
     table_path = Path(delta_root) / "orchestration" / "steps"
@@ -52,6 +68,25 @@ def _completed_step(delta_root: str, name: str) -> dict[str, Any]:
     )
     assert len(matches) >= 1, f"no completed step named {name!r} in delta"
     return matches.sort("started_at", descending=True).row(0, named=True)
+
+
+def _completed_step_for_run(delta_root: str, pipeline_run_id: str) -> dict[str, Any]:
+    """Return the completed step row for one single-step pipeline run."""
+    matches = _read_steps_table(delta_root).filter(
+        (pl.col("pipeline_run_id") == pipeline_run_id)
+        & (pl.col("status") == "completed")
+    )
+    assert len(matches) == 1
+    return matches.row(0, named=True)
+
+
+def _execution_spec_ids(delta_root: str) -> list[str]:
+    """Return execution spec IDs recorded for the override regression op."""
+    table_path = Path(delta_root) / "orchestration" / "executions"
+    frame = pl.read_delta(str(table_path)).filter(
+        pl.col("operation_name") == _OverrideDefaultsGenerator.name
+    )
+    return frame.get_column("execution_spec_id").to_list()
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +183,82 @@ def test_dict_and_model_forms_succeed_end_to_end(
     )
     summary = pipeline.finalize()
     assert summary["overall_success"] is True
+
+
+PRESENCE_PATCH_CASES = [
+    pytest.param(
+        "runner_resources",
+        {"cpus": 1},
+        RunnerResources(cpus=1),
+        "resources",
+        {"cpus": 1},
+        id="explicit-schema-default",
+    ),
+    pytest.param(
+        "compute_resources",
+        {"gpu": None},
+        ComputeResources(gpu=None),
+        "compute_resources",
+        {"gpu": None},
+        id="explicit-none",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("kwarg", "mapping_patch", "typed_patch", "record_key", "expected_patch"),
+    PRESENCE_PATCH_CASES,
+)
+def test_presence_based_forms_match_execution_persistence_and_cache(
+    tmp_path: Path,
+    kwarg: str,
+    mapping_patch: Any,
+    typed_patch: Any,
+    record_key: str,
+    expected_patch: dict[str, Any],
+) -> None:
+    """Equivalent patches share both cache identities and a real cache hit."""
+    delta_root = str(tmp_path / "delta")
+
+    def _run(
+        label: str, patch_value: Any, *, skip_cache: bool
+    ) -> tuple[str, dict[str, Any]]:
+        pipeline = PipelineManager.create(
+            name=f"presence_{label}",
+            delta_root=delta_root,
+            staging_root=str(tmp_path / f"staging_{label}"),
+            working_root=str(tmp_path / f"working_{label}"),
+        )
+        result = pipeline.run(
+            _OverrideDefaultsGenerator,
+            params={"count": 1, "seed": 42},
+            step_runner=Runner.LOCAL,
+            skip_cache=skip_cache,
+            **{kwarg: patch_value},
+        )
+        assert result.success
+        row = _completed_step_for_run(delta_root, pipeline.config.pipeline_run_id)
+        pipeline.finalize()
+        return pipeline._step_spec_ids[0], row
+
+    mapping_step_id, mapping_row = _run("mapping", mapping_patch, skip_cache=False)
+    first_execution_ids = _execution_spec_ids(delta_root)
+    assert len(first_execution_ids) == 1
+
+    typed_step_id, typed_row = _run("typed", typed_patch, skip_cache=True)
+    executed_ids = _execution_spec_ids(delta_root)
+    assert len(executed_ids) == 2
+    assert len(set(executed_ids)) == 1
+
+    cached_step_id, cached_row = _run("cached", typed_patch, skip_cache=False)
+    assert _execution_spec_ids(delta_root) == executed_ids
+
+    mapping_options = json.loads(mapping_row["compute_options_json"])
+    typed_options = json.loads(typed_row["compute_options_json"])
+    cached_options = json.loads(cached_row["compute_options_json"])
+    assert mapping_options == typed_options == cached_options
+    assert mapping_options[record_key] == expected_patch
+    assert mapping_step_id == typed_step_id == cached_step_id
 
 
 # ---------------------------------------------------------------------------
