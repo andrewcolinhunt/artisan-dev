@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import patch
 
 import polars as pl
@@ -157,6 +158,8 @@ def test_current_reader_exposes_every_authoritative_status(
                 step_number=0,
                 status=status,
                 disposition=StepDisposition.EXECUTED,
+                output_roles=frozenset({"data"}),
+                output_types={"data": "data"},
                 step_run_id=step_run_id,
             )
         elif status == StepStatus.PARTIAL:
@@ -168,6 +171,8 @@ def test_current_reader_exposes_every_authoritative_status(
                 total_count=2,
                 succeeded_count=1,
                 failed_count=1,
+                output_roles=frozenset({"data"}),
+                output_types={"data": "data"},
                 step_run_id=step_run_id,
             )
         else:
@@ -200,6 +205,24 @@ def test_run_rollup_uses_authoritative_status_and_active_end(tmp_path) -> None:
     assert row["last_status"] == "pending"
     assert row["step_count"] == 1
     assert row["ended_at"] is None
+
+
+def test_run_rollup_started_at_uses_first_pending_snapshot(tmp_path) -> None:
+    tracker = StepTracker(str(tmp_path), "run")
+    tracker.create_attempt(_record("a" * 32))
+    pending_at = tracker.current_state("a" * 32).timestamp
+    tracker.transition("a" * 32, StepStatus.PENDING, StepStatus.RUNNING)
+    rows = pl.read_delta(str(tmp_path / "orchestration/steps")).with_columns(
+        pl.when(pl.col("status") == "running")
+        .then(pl.lit(pending_at - timedelta(days=1)))
+        .otherwise(pl.col("timestamp"))
+        .alias("timestamp")
+    )
+    rows.write_delta(str(tmp_path / "orchestration/steps"), mode="overwrite")
+
+    row = tracker.list_runs().row(0, named=True)
+
+    assert row["started_at"] == pending_at
 
 
 def test_legacy_completed_status_is_rejected(tmp_path) -> None:

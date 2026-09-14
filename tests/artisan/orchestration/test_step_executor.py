@@ -496,7 +496,6 @@ class TestCreatorStepPairing:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         # step_runner flow receives units_path; verify captured units
@@ -542,7 +541,6 @@ class TestCreatorStepPairing:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         # step_runner flow receives units_path; verify captured units
@@ -602,7 +600,6 @@ class TestCreatorStepPairing:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         dispatched_units = mock_handle._captured_units
@@ -665,7 +662,6 @@ class TestCuratorStepPairing:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         # _run_curator_in_subprocess should receive a unit with group_ids set
@@ -705,7 +701,6 @@ class TestCuratorStepPairing:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         # _run_curator_in_subprocess should receive a unit with group_ids=None
@@ -750,7 +745,6 @@ class TestCuratorStepPairing:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         unit = mock_curator_flow.call_args[0][0]
@@ -860,7 +854,6 @@ class TestStepTimingIntegration:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert "timings" in result.metadata
@@ -870,7 +863,7 @@ class TestStepTimingIntegration:
         assert "execute" in timings
         assert "verify_staging" in timings
         assert "commit" in timings
-        assert "compact" in timings
+        assert "compact" not in timings
         assert "total" in timings
         # All values should be non-negative floats
         for key, value in timings.items():
@@ -914,7 +907,6 @@ class TestStepTimingIntegration:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert "timings" in result.metadata
@@ -924,7 +916,7 @@ class TestStepTimingIntegration:
         assert "execute" in timings
         assert "verify_staging" in timings
         assert "commit" in timings
-        assert "compact" in timings
+        assert "compact" not in timings
         assert "total" in timings
         for key, value in timings.items():
             assert isinstance(value, float), f"{key} should be float"
@@ -971,7 +963,6 @@ class TestEmptyInputHandling:
             step_number=2,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         mock_backend.create_lifecycle_router.assert_not_called()
@@ -1004,7 +995,6 @@ class TestEmptyInputHandling:
             step_number=2,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         mock_curator_flow.assert_not_called()
@@ -1048,7 +1038,6 @@ class TestEmptyInputHandling:
             step_number=0,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         mock_handle.run.assert_called_once()
@@ -1111,7 +1100,6 @@ class TestDispatchFailureHandling:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.succeeded_count == 0
@@ -1151,7 +1139,6 @@ class TestDispatchFailureHandling:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.succeeded_count == 0
@@ -1195,7 +1182,6 @@ class TestDispatchFailureHandling:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.FAIL_FAST,
-            compact=False,
         )
 
         assert result.status == StepStatus.FAILED
@@ -1232,7 +1218,6 @@ class TestDispatchFailureHandling:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.succeeded_count == 0
@@ -1298,7 +1283,6 @@ class TestCreatorCancellationCleanup:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
             cancel_event=cancel_event,
             step_run_id="cancelled-step",
         )
@@ -1351,7 +1335,6 @@ class TestCreatorCancellationCleanup:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
             step_run_id="current-step",
         )
 
@@ -1400,7 +1383,6 @@ class TestCommitFailureHandling:
                 step_number=1,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
             )
 
 
@@ -1446,7 +1428,6 @@ class TestStagingTimeoutHandling:
                 step_number=1,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
             )
 
 
@@ -1546,7 +1527,6 @@ class TestFilterStepLogging:
                 step_number=11,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
             )
 
         assert result.succeeded_count == 2
@@ -1609,7 +1589,6 @@ class TestFilterStepLogging:
                 step_number=5,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
             )
 
         assert result.succeeded_count == 0
@@ -1660,7 +1639,7 @@ class TestExecutionCacheReuseCapture:
                 return_value=True,
             ) as stage,
             patch(
-                "artisan.orchestration.engine.step_executor._commit_and_compact",
+                "artisan.orchestration.engine.step_executor._commit_staged",
                 return_value=None,
             ) as commit,
             patch(
@@ -1673,7 +1652,6 @@ class TestExecutionCacheReuseCapture:
                 step_number=4,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
                 step_run_id=current,
             )
 
@@ -1718,7 +1696,7 @@ class TestExecutionCacheReuseCapture:
                 return_value=True,
             ) as stage,
             patch(
-                "artisan.orchestration.engine.step_executor._commit_and_compact",
+                "artisan.orchestration.engine.step_executor._commit_staged",
                 return_value=None,
             ) as commit,
         ):
@@ -1729,7 +1707,6 @@ class TestExecutionCacheReuseCapture:
                 step_number=4,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
                 step_run_id=current,
             )
 
@@ -1787,7 +1764,7 @@ class TestExecutionCacheReuseCapture:
                 return_value=True,
             ) as stage,
             patch(
-                "artisan.orchestration.engine.step_executor._commit_and_compact",
+                "artisan.orchestration.engine.step_executor._commit_staged",
                 return_value=None,
             ),
         ):
@@ -1798,7 +1775,6 @@ class TestExecutionCacheReuseCapture:
                 step_number=4,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
                 step_run_id=current,
             )
 
@@ -1839,7 +1815,7 @@ class TestExecutionCacheReuseCapture:
                 "artisan.orchestration.engine.step_executor._stage_cache_reuse"
             ) as stage,
             patch(
-                "artisan.orchestration.engine.step_executor._commit_and_compact"
+                "artisan.orchestration.engine.step_executor._commit_staged"
             ) as commit,
         ):
             result = _execute_creator_step(
@@ -1849,7 +1825,6 @@ class TestExecutionCacheReuseCapture:
                 step_number=4,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
                 cancel_event=cancelled,
                 step_run_id=current,
             )
@@ -1890,7 +1865,7 @@ class TestExecutionCacheReuseCapture:
                 return_value=True,
             ),
             patch(
-                "artisan.orchestration.engine.step_executor._commit_and_compact",
+                "artisan.orchestration.engine.step_executor._commit_staged",
                 side_effect=CommitError(["cache_reuse"]),
             ),
             pytest.raises(CommitError),
@@ -1902,7 +1877,6 @@ class TestExecutionCacheReuseCapture:
                 step_number=4,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
                 step_run_id=current,
             )
 
@@ -1941,7 +1915,6 @@ class TestCuratorExecutionCacheIdentity:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         mock_cache.assert_called_once()
@@ -2155,7 +2128,6 @@ class TestCuratorSubprocessIsolation:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.failed_count == 2
@@ -2225,7 +2197,6 @@ class TestCuratorSubprocessIsolation:
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.failed_count == 1
@@ -2410,7 +2381,7 @@ class TestFailureRecordSynthesis:
 
         from artisan.execution.models.execution_unit import ExecutionUnit
         from artisan.orchestration.engine.step_executor import (
-            _commit_and_compact,
+            _commit_staged,
             _create_runtime_environment,
             _synthesize_missing_failure_records,
         )
@@ -2442,14 +2413,13 @@ class TestFailureRecordSynthesis:
         )
         assert patched[0].execution_run_ids == ["killed-" + "a" * 24]
 
-        _commit_and_compact(
+        _commit_staged(
             config,
             runtime_env,
             0,
             op.name,
             {},
             has_work=True,
-            compact=False,
         )
 
         failures = inspect_failures(config.delta_root)

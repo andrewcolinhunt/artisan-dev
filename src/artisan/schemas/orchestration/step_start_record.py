@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 
 class StepStartRecord(BaseModel):
-    """Metadata for a step's initial 'running' row in the steps table.
+    """Metadata for a step's initial pending snapshot in the steps table.
 
     Attributes:
         step_run_id: Unique ID for this step execution attempt.

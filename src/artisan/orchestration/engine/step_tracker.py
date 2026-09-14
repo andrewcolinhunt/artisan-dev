@@ -284,9 +284,10 @@ class StepTracker:
                 [state for state in states if state.pipeline_run_id == run_id]
             )
             latest = max(latest_positions, key=lambda state: state.timestamp)
-            started_at = rows.filter(pl.col("pipeline_run_id") == run_id)[
-                "timestamp"
-            ].min()
+            started_at = rows.filter(
+                (pl.col("pipeline_run_id") == run_id)
+                & (pl.col("status") == StepStatus.PENDING.value)
+            )["timestamp"].min()
             active = any(
                 state.status in {StepStatus.PENDING, StepStatus.RUNNING}
                 for state in latest_positions
@@ -429,6 +430,24 @@ class StepTracker:
                 msg = f"Step attempt {first['step_run_id']} changed owner metadata"
                 raise PersistenceIntegrityError(msg)
             try:
+                current_status = StepStatus(current["status"])
+                if current_status in {
+                    StepStatus.PENDING,
+                    StepStatus.RUNNING,
+                    StepStatus.SUCCEEDED,
+                    StepStatus.PARTIAL,
+                } and (
+                    json.loads(current["output_roles_json"])
+                    != json.loads(first["output_roles_json"])
+                    or json.loads(current["output_types_json"])
+                    != json.loads(first["output_types_json"])
+                ):
+                    msg = f"Step attempt {first['step_run_id']} changed output contract"
+                    raise PersistenceIntegrityError(msg)
+            except (TypeError, json.JSONDecodeError) as exc:
+                msg = f"Step attempt {first['step_run_id']} has invalid output metadata"
+                raise PersistenceIntegrityError(msg) from exc
+            try:
                 old_status = StepStatus(previous["status"])
                 new_status = StepStatus(current["status"])
                 old_cancellation = _parse_cancellation(previous["cancellation_status"])
@@ -559,10 +578,10 @@ class StepTracker:
 
     @staticmethod
     def _validate_nonterminal_row(row: dict[str, Any]) -> None:
-        """Validate that a running snapshot carries no terminal facts."""
+        """Validate that a nonterminal snapshot carries no terminal facts."""
         for field in ("total_count", "succeeded_count", "failed_count", "disposition"):
             if row[field] is not None:
-                msg = f"running snapshot cannot carry {field}"
+                msg = f"nonterminal snapshot cannot carry {field}"
                 raise PersistenceIntegrityError(msg)
 
     @staticmethod
