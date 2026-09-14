@@ -148,19 +148,19 @@ class TestFileRefArtifactFinalize:
         assert finalized.artifact_id is not None
         assert len(finalized.artifact_id) == 32  # 32-char hex
 
-    def test_finalize_succeeds_when_artifact_id_present(self):
-        """FileRefArtifact.finalize() succeeds when artifact_id is set."""
-        artifact = FileRefArtifact(
-            artifact_id="e" * 32,
-            origin_step_number=0,
+    def test_finalize_succeeds_when_valid_artifact_id_present(self):
+        """FileRefArtifact.finalize() validates a matching stored ID."""
+        artifact = FileRefArtifact.draft(
             content_hash="k" * 32,
             path="/data/input.dat",
             size_bytes=1024,
-        )
+            step_number=0,
+        ).finalize()
+        restored = FileRefArtifact.model_validate(artifact.model_dump())
 
-        finalized = artifact.finalize()
-        assert finalized is artifact
-        assert finalized.artifact_id == "e" * 32
+        finalized = restored.finalize()
+        assert finalized is restored
+        assert finalized.artifact_id == artifact.artifact_id
 
     def test_draft_creates_with_none_artifact_id(self):
         """FileRefArtifact.draft() creates with artifact_id=None."""
@@ -205,8 +205,8 @@ class TestFileRefArtifactFinalize:
 
         assert draft1.artifact_id == draft2.artifact_id
 
-    def test_different_path_produces_different_artifact_id(self):
-        """Different path produces different artifact_id (path is part of identity)."""
+    def test_different_path_preserves_artifact_id(self):
+        """Locations are excluded from artifact identity."""
         draft1 = FileRefArtifact.draft(
             path="/data/input.dat",
             content_hash="k" * 32,
@@ -220,7 +220,7 @@ class TestFileRefArtifactFinalize:
             step_number=0,
         ).finalize()
 
-        assert draft1.artifact_id != draft2.artifact_id
+        assert draft1.artifact_id == draft2.artifact_id
 
 
 class TestMetricArtifactMaterializeFormat:

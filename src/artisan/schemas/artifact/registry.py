@@ -18,6 +18,7 @@ from pathlib import PurePosixPath
 from typing import Any, ClassVar, cast
 
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.enums import TablePath
 
 
 class ArtifactTypeDef:
@@ -48,6 +49,10 @@ class ArtifactTypeDef:
 
         key = cls.key
 
+        if key == ArtifactTypes.ANY:
+            msg = f"{ArtifactTypes.ANY!r} is reserved for artifact specifications"
+            raise ValueError(msg)
+
         # Validate required attributes
         if "table_path" not in cls.__dict__:
             msg = f"{cls.__name__} must set 'table_path' class variable"
@@ -56,12 +61,45 @@ class ArtifactTypeDef:
             msg = f"{cls.__name__} must set 'model' class variable"
             raise TypeError(msg)
 
-        # Validate model has required serialization interface
-        model = cls.model
-        for attr in ("POLARS_SCHEMA", "to_row", "from_row"):
-            if not hasattr(model, attr):
-                msg = f"{cls.__name__}.model ({model.__name__}) must have '{attr}'"
+        # Validate the model contract before mutating either registry.
+        from artisan.schemas.artifact.base import Artifact
+
+        model: object = cls.model
+        if not isinstance(model, type) or not issubclass(model, Artifact):
+            msg = f"{cls.__name__}.model must subclass Artifact"
+            raise TypeError(msg)
+        type_field = model.model_fields.get("artifact_type")
+        if type_field is None or type_field.default != key:
+            msg = (
+                f"{cls.__name__}.key {key!r} must match "
+                f"{model.__name__}.artifact_type default"
+            )
+            raise ValueError(msg)
+        if model.EXTERNALLY_BACKED:
+            if len(model.LOCATOR_FIELDS) != 1:
+                msg = (
+                    f"Externally backed {model.__name__} must declare exactly one "
+                    "locator field"
+                )
                 raise TypeError(msg)
+            if model.verify_external_content is Artifact.verify_external_content:
+                msg = (
+                    f"Externally backed {model.__name__} must implement "
+                    "verify_external_content()"
+                )
+                raise TypeError(msg)
+
+        reserved_paths = {member.value for member in TablePath}
+        if cls.table_path in reserved_paths:
+            msg = f"Artifact table path {cls.table_path!r} is framework-reserved"
+            raise ValueError(msg)
+        for existing in ArtifactTypeDef._registry.values():
+            if existing is not cls and existing.table_path == cls.table_path:
+                msg = (
+                    f"Duplicate artifact table path {cls.table_path!r}: "
+                    f"{cls.__name__} conflicts with {existing.__name__}"
+                )
+                raise ValueError(msg)
 
         # Reject duplicate keys
         if key in ArtifactTypeDef._registry:

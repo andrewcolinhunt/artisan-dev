@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from typing import Any, ClassVar
 
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -15,9 +16,12 @@ from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import (
+    CacheInputIdentity,
     compute_artifact_id,
+    compute_content_digest,
     compute_execution_spec_id,
     compute_step_spec_id,
+    compute_stream_digest,
     effective_config_payload,
 )
 
@@ -27,15 +31,90 @@ class TestComputeArtifactId:
 
     def test_deterministic(self) -> None:
         data = b"same input"
-        assert compute_artifact_id(data) == compute_artifact_id(data)
+        assert compute_artifact_id("data", data, {}) == compute_artifact_id(
+            "data", data, {}
+        )
 
     def test_different_content_different_hash(self) -> None:
-        assert compute_artifact_id(b"a") != compute_artifact_id(b"b")
+        assert compute_artifact_id("data", b"a", {}) != compute_artifact_id(
+            "data", b"b", {}
+        )
 
     def test_returns_32_char_hex(self) -> None:
-        result = compute_artifact_id(b"anything")
+        result = compute_artifact_id("data", b"anything", {})
         assert len(result) == 32
         int(result, 16)  # validates hex
+
+    def test_type_domain_separates_identical_content(self) -> None:
+        assert compute_artifact_id("data", b"same", {}) != compute_artifact_id(
+            "metric", b"same", {}
+        )
+
+    def test_length_framing_separates_component_boundaries(self) -> None:
+        assert compute_artifact_id("ab", b"c", {}) != compute_artifact_id(
+            "a", b"bc", {}
+        )
+
+
+class TestContentDigests:
+    def test_content_and_stream_digest_match(self) -> None:
+        content = b"a" * (1024 * 1024 + 17)
+        assert compute_stream_digest(BytesIO(content)) == (
+            compute_content_digest(content),
+            len(content),
+        )
+
+
+def _cache_input(
+    role: str,
+    artifact_id: str,
+    *,
+    position: int = 0,
+    artifact_type: str = "data",
+    group_id: str | None = None,
+) -> CacheInputIdentity:
+    return CacheInputIdentity(
+        role=role,
+        group_id=group_id,
+        position=position,
+        artifact_type=artifact_type,
+        artifact_id=artifact_id,
+    )
+
+
+class TestCacheIdentityStructure:
+    def test_step_and_execution_domains_are_distinct(self) -> None:
+        inputs = {"data": [_cache_input("data", "a" * 32)]}
+        assert compute_step_spec_id("op", 0, {}, inputs) != compute_execution_spec_id(
+            "op", inputs, {}
+        )
+
+    def test_role_mapping_order_is_irrelevant(self) -> None:
+        first = {
+            "data": [_cache_input("data", "a" * 32)],
+            "config": [_cache_input("config", "b" * 32, artifact_type="config")],
+        }
+        second = {"config": first["config"], "data": first["data"]}
+        assert compute_execution_spec_id("op", first) == compute_execution_spec_id(
+            "op", second
+        )
+
+    def test_item_order_and_multiplicity_affect_identity(self) -> None:
+        a = _cache_input("data", "a" * 32)
+        b = _cache_input("data", "b" * 32, position=1)
+        reversed_items = [
+            _cache_input("data", "b" * 32),
+            _cache_input("data", "a" * 32, position=1),
+        ]
+        assert compute_execution_spec_id("op", {"data": [a, b]}) != (
+            compute_execution_spec_id("op", {"data": reversed_items})
+        )
+        assert compute_execution_spec_id("op", {"data": [a]}) != (
+            compute_execution_spec_id(
+                "op",
+                {"data": [a, _cache_input("data", "a" * 32, position=1)]},
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

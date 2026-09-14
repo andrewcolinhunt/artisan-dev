@@ -3,35 +3,34 @@
 from __future__ import annotations
 
 import contextlib
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import polars as pl
 import pytest
-from pydantic import BaseModel
+from pydantic import Field
 
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
 
 # --- Mock model for testing ---
 
 
-class _MockModel(BaseModel):
-    """Minimal model satisfying the ArtifactTypeDef interface."""
+def _model_for(key: str) -> type[Artifact]:
+    """Build a minimal inline Artifact model for a registry key."""
 
-    POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
-        "artifact_id": pl.String,
-        "value": pl.Int32,
-    }
+    class _TestArtifact(Artifact):
+        POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
+            "artifact_id": pl.String,
+            "value": pl.Int32,
+        }
+        artifact_type: str = Field(default=key, frozen=True)
+        value: int = 0
 
-    artifact_id: str | None = None
-    value: int = 0
+        def _identity_payload(self) -> bytes:
+            return str(self.value).encode()
 
-    def to_row(self) -> dict[str, Any]:
-        return {"artifact_id": self.artifact_id, "value": self.value}
-
-    @classmethod
-    def from_row(cls, row: dict[str, Any]) -> _MockModel:
-        return cls(**row)
+    return _TestArtifact
 
 
 class _BadModel:
@@ -65,10 +64,12 @@ class TestRegistration:
     """Auto-registration via __init_subclass__."""
 
     def test_register_concrete_type(self) -> None:
+        test_model = _model_for("_test_register")
+
         class TestTypeDef(ArtifactTypeDef):
             key = "_test_register"
             table_path = "artifacts/_test"
-            model = _MockModel
+            model = test_model
 
         assert ArtifactTypeDef.get("_test_register") is TestTypeDef
 
@@ -79,24 +80,26 @@ class TestRegistration:
         assert "_abstract" not in ArtifactTypeDef._registry
 
     def test_duplicate_key_raises(self) -> None:
+        test_model = _model_for("_test_dup")
+
         class FirstDef(ArtifactTypeDef):
             key = "_test_dup"
             table_path = "artifacts/_dup1"
-            model = _MockModel
+            model = test_model
 
         with pytest.raises(ValueError, match="Duplicate artifact type key"):
 
             class SecondDef(ArtifactTypeDef):
                 key = "_test_dup"
                 table_path = "artifacts/_dup2"
-                model = _MockModel
+                model = test_model
 
     def test_missing_table_path_raises(self) -> None:
         with pytest.raises(TypeError, match="must set 'table_path'"):
 
             class BadDef(ArtifactTypeDef):
                 key = "_test_no_table"
-                model = _MockModel
+                model = _model_for("_test_no_table")
 
     def test_missing_model_raises(self) -> None:
         with pytest.raises(TypeError, match="must set 'model'"):
@@ -106,7 +109,7 @@ class TestRegistration:
                 table_path = "artifacts/_test"
 
     def test_bad_model_raises(self) -> None:
-        with pytest.raises(TypeError, match="must have 'POLARS_SCHEMA'"):
+        with pytest.raises(TypeError, match="must subclass Artifact"):
 
             class BadDef(ArtifactTypeDef):
                 key = "_test_bad_model"
@@ -114,10 +117,12 @@ class TestRegistration:
                 model = _BadModel
 
     def test_registers_in_artifact_types(self) -> None:
+        test_model = _model_for("_test_facade")
+
         class TestTypeDef(ArtifactTypeDef):
             key = "_test_facade"
             table_path = "artifacts/_facade"
-            model = _MockModel
+            model = test_model
 
         assert ArtifactTypes.is_registered("_test_facade")
 
@@ -134,46 +139,56 @@ class TestLookup:
         assert isinstance(result, dict)
 
     def test_get_model(self) -> None:
+        test_model = _model_for("_test_model_lookup")
+
         class TestTypeDef(ArtifactTypeDef):
             key = "_test_model_lookup"
             table_path = "artifacts/_model"
-            model = _MockModel
+            model = test_model
 
-        assert ArtifactTypeDef.get_model("_test_model_lookup") is _MockModel
+        assert ArtifactTypeDef.get_model("_test_model_lookup") is test_model
 
     def test_get_table_path(self) -> None:
+        test_model = _model_for("_test_path_lookup")
+
         class TestTypeDef(ArtifactTypeDef):
             key = "_test_path_lookup"
             table_path = "artifacts/_path"
-            model = _MockModel
+            model = test_model
 
         assert ArtifactTypeDef.get_table_path("_test_path_lookup") == "artifacts/_path"
 
     def test_get_schema(self) -> None:
+        test_model = _model_for("_test_schema_lookup")
+
         class TestTypeDef(ArtifactTypeDef):
             key = "_test_schema_lookup"
             table_path = "artifacts/_schema"
-            model = _MockModel
+            model = test_model
 
         schema = ArtifactTypeDef.get_schema("_test_schema_lookup")
-        assert schema == _MockModel.POLARS_SCHEMA
+        assert schema == test_model.POLARS_SCHEMA
 
 
 class TestDerivedProperties:
     """parquet_filename and polars_schema derived from type def."""
 
     def test_parquet_filename(self) -> None:
+        test_model = _model_for("_test_parquet")
+
         class TestTypeDef(ArtifactTypeDef):
             key = "_test_parquet"
             table_path = "artifacts/test_things"
-            model = _MockModel
+            model = test_model
 
         assert TestTypeDef.parquet_filename() == "test_things.parquet"
 
     def test_polars_schema(self) -> None:
+        test_model = _model_for("_test_polars")
+
         class TestTypeDef(ArtifactTypeDef):
             key = "_test_polars"
             table_path = "artifacts/_polars"
-            model = _MockModel
+            model = test_model
 
-        assert TestTypeDef.polars_schema() == _MockModel.POLARS_SCHEMA
+        assert TestTypeDef.polars_schema() == test_model.POLARS_SCHEMA

@@ -7,15 +7,46 @@ execution spec deduplication, and step-level cache keys.
 from __future__ import annotations
 
 import json
-from typing import Any
+from dataclasses import asdict, dataclass
+from typing import Any, BinaryIO
 
 import xxhash
 
 from artisan.utils.json import artisan_json_default
 
+STREAM_CHUNK_BYTES = 1024 * 1024
 
-def compute_artifact_id(content: bytes) -> str:
-    """Compute xxh3_128 hash for content-addressed artifact ID.
+
+@dataclass(frozen=True, slots=True)
+class CacheInputIdentity:
+    """One ordered, typed input occurrence in a cache preimage."""
+
+    role: str
+    group_id: str | None
+    position: int
+    artifact_type: str
+    artifact_id: str
+
+
+class _CanonicalEncoder(json.JSONEncoder):
+    """JSON encoder that handles sets, Paths, and Enums for deterministic output."""
+
+    def default(self, o: Any) -> Any:
+        return artisan_json_default(o)
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    """Encode a value as deterministic compact UTF-8 JSON."""
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        cls=_CanonicalEncoder,
+    ).encode("utf-8")
+
+
+def compute_content_digest(content: bytes) -> str:
+    """Compute the xxh3_128 digest of raw bytes.
 
     Args:
         content: Raw bytes to hash.
@@ -24,6 +55,49 @@ def compute_artifact_id(content: bytes) -> str:
         32-character hexadecimal hash string.
     """
     return xxhash.xxh3_128(content).hexdigest()
+
+
+def compute_stream_digest(stream: BinaryIO) -> tuple[str, int]:
+    """Hash a binary stream using bounded reads.
+
+    Args:
+        stream: Binary stream positioned at the first byte to hash.
+
+    Returns:
+        Tuple of the 32-character digest and total byte count.
+    """
+    hasher = xxhash.xxh3_128()
+    size_bytes = 0
+    while chunk := stream.read(STREAM_CHUNK_BYTES):
+        hasher.update(chunk)
+        size_bytes += len(chunk)
+    return hasher.hexdigest(), size_bytes
+
+
+def compute_artifact_id(
+    artifact_type: str,
+    canonical_content: bytes,
+    identity_metadata: dict[str, object],
+) -> str:
+    """Compute a versioned, type-domain artifact ID.
+
+    Args:
+        artifact_type: Registered concrete artifact type key.
+        canonical_content: Type-owned canonical identity bytes.
+        identity_metadata: Framework-owned semantic metadata.
+
+    Returns:
+        32-character lowercase hexadecimal artifact identifier.
+    """
+    preimage = bytearray(b"artifact-id-v1")
+    for component in (
+        artifact_type.encode("utf-8"),
+        canonical_content,
+        canonical_json_bytes(identity_metadata),
+    ):
+        preimage.extend(len(component).to_bytes(8, "big"))
+        preimage.extend(component)
+    return compute_content_digest(bytes(preimage))
 
 
 def digest_utf8(s: str) -> str:
@@ -86,11 +160,11 @@ def effective_config_payload(operation: Any) -> dict[str, Any]:
 
 def compute_execution_spec_id(
     operation_name: str,
-    inputs: dict[str, list[str]],
+    inputs: dict[str, list[CacheInputIdentity]],
     params: dict[str, Any] | None = None,
     config_overrides: dict[str, Any] | None = None,
 ) -> str:
-    """Compute deterministic execution_spec_id with canonicalization.
+    """Compute a v2 execution cache ID from concrete ordered inputs.
 
     The spec_id uniquely identifies an execution based on:
     - operation_name: The operation's name attribute
@@ -98,16 +172,10 @@ def compute_execution_spec_id(
     - params: Merged parameters (defaults + overrides)
     - config_overrides: Runtime config overrides (environment, tool, etc.)
 
-    Inputs are canonicalized as a role-sorted list of sorted IDs.
-    Multiplicity within a role is preserved (``[A, A]`` differs from
-    ``[A]``) and role assignment matters (``{primary:[A], secondary:[B]}``
-    differs from ``{primary:[B], secondary:[A]}``). Role-key ordering of
-    the input dict is irrelevant — roles are sorted before hashing.
-
     Args:
         operation_name: The operation's name attribute.
-        inputs: Dict mapping role to list of artifact IDs (the batch).
-            Multiplicity within each role list is preserved.
+        inputs: Concrete cache identities keyed by role. Role mapping order is
+            ignored; item order and multiplicity within each role are retained.
         params: Merged parameters dict (defaults + runtime overrides).
             Will be JSON-canonicalized for deterministic hashing.
         config_overrides: Optional config overrides that affect execution
@@ -116,87 +184,60 @@ def compute_execution_spec_id(
     Returns:
         32-character xxh3_128 hex string.
     """
-    if inputs:
-        parts = [
-            f"{role}=[{','.join(sorted(inputs[role]))}]"
-            for role in sorted(inputs.keys())
-        ]
-        inputs_str = "|".join(parts)
-    else:
-        inputs_str = ""
-
-    params_json = _canonicalize_dict(params)
-    config_json = _canonicalize_dict(config_overrides)
-
-    hash_input = f"{operation_name}|{inputs_str}|{params_json}|{config_json}"
-
-    return digest_utf8(hash_input)
+    payload = {
+        "domain": "execution-spec-v2",
+        "operation": operation_name,
+        "params": params or {},
+        "config": config_overrides or {},
+        "inputs": _serialize_cache_inputs(inputs),
+    }
+    return compute_content_digest(canonical_json_bytes(payload))
 
 
 def compute_step_spec_id(
     operation_name: str,
     step_number: int,
     params: dict[str, Any] | None,
-    input_spec: dict[str, tuple[str, str]],
+    inputs: dict[str, list[CacheInputIdentity]],
     config_overrides: dict[str, Any] | None = None,
 ) -> str:
-    """Compute deterministic step_spec_id for step-level caching.
-
-    Mirrors compute_execution_spec_id() but operates on step-level
-    references (upstream spec_ids) instead of resolved artifact IDs.
-    Includes step_number to prevent cross-position cache hits.
+    """Compute a v2 step cache ID from concrete ordered inputs.
 
     Args:
         operation_name: The operation's name attribute.
         step_number: Position in the pipeline (0-based).
         params: Merged parameters dict.
-        input_spec: Maps each input role to a (upstream_step_spec_id,
-            upstream_role) tuple.
+        inputs: Full prepared concrete cache identities keyed by role.
         config_overrides: Optional config overrides that affect execution
             behavior (merged environment + tool overrides).
 
     Returns:
         32-character xxh3_128 hex string.
     """
-    input_str = _serialize_input_spec(input_spec)
-
-    params_json = _canonicalize_dict(params)
-    config_json = _canonicalize_dict(config_overrides)
-
-    hash_input = (
-        f"{operation_name}|{step_number}|{input_str}|{params_json}|{config_json}"
-    )
-    return digest_utf8(hash_input)
-
-
-def _serialize_input_spec(input_spec: dict[str, tuple[str, str]]) -> str:
-    """Serialize an input_spec dict to a deterministic string for hashing."""
-    parts = []
-    for role in sorted(input_spec.keys()):
-        upstream_spec_id, upstream_role = input_spec[role]
-        parts.append(f"{role}:{upstream_spec_id}:{upstream_role}")
-    return ",".join(parts)
+    payload = {
+        "domain": "step-spec-v2",
+        "operation": operation_name,
+        "step_number": step_number,
+        "params": params or {},
+        "config": config_overrides or {},
+        "inputs": _serialize_cache_inputs(inputs),
+    }
+    return compute_content_digest(canonical_json_bytes(payload))
 
 
-class _CanonicalEncoder(json.JSONEncoder):
-    """JSON encoder that handles sets, Paths, and Enums for deterministic output."""
-
-    def default(self, o: Any) -> Any:
-        return artisan_json_default(o)
-
-
-def _canonicalize_dict(input_dict: dict[str, Any] | None) -> str:
-    """Canonicalize a dict to a deterministic JSON string.
-
-    Args:
-        input_dict: Dict to canonicalize, or None.
-
-    Returns:
-        JSON string with sorted keys and minimal whitespace.
-        Returns empty string for None or empty dict.
-    """
-    if not input_dict:
-        return ""
-    return json.dumps(
-        input_dict, sort_keys=True, separators=(",", ":"), cls=_CanonicalEncoder
-    )
+def _serialize_cache_inputs(
+    inputs: dict[str, list[CacheInputIdentity]],
+) -> list[dict[str, object]]:
+    """Serialize role-keyed inputs without erasing occurrence order."""
+    serialized: list[dict[str, object]] = []
+    for role in sorted(inputs):
+        entries = inputs[role]
+        for entry in entries:
+            if entry.role != role:
+                msg = (
+                    f"Cache input role mismatch: mapping key {role!r}, "
+                    f"entry role {entry.role!r}"
+                )
+                raise ValueError(msg)
+            serialized.append(asdict(entry))
+    return serialized
