@@ -178,14 +178,11 @@ from typing import TYPE_CHECKING, ClassVar
 
 import polars as pl
 
-from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.execution.curator_result import PassthroughResult
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.operations.base import OperationDefinition
+from artisan.schemas import ArtifactTypes, InputSpec, OutputSpec, PassthroughResult
 
 if TYPE_CHECKING:
-    from artisan.storage.core.artifact_store import ArtifactStore
+    from artisan.storage import ArtifactStore
 
 
 class MyCurator(OperationDefinition):

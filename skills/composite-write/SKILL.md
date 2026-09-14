@@ -43,12 +43,10 @@ from enum import StrEnum
 from typing import ClassVar
 
 from artisan.composites import CompositeContext, CompositeDefinition
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.schemas import InputSpec, OutputSpec
 
 # Import operations used in compose()
-from artisan.operations.examples.data_transformer import DataTransformer
-from artisan.operations.examples.metric_calculator import MetricCalculator
+from artisan.operations.examples import DataTransformer, MetricCalculator
 
 
 class TransformAndScore(CompositeDefinition):

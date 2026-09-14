@@ -97,9 +97,12 @@ operation's declaration, or pass `compute_provider` to select or patch a
 provider for one invocation:
 
 ```python
-from artisan.schemas.operation_config import ToolEndpointDataPolicy
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
-from artisan.schemas.operation_config.compute_resources import ComputeResources
+from artisan.schemas import (
+    ComputeProvider,
+    ComputeResources,
+    ModalComputeConfig,
+    ToolEndpointDataPolicy,
+)
 
 # Use MyOp's declared compute provider
 pipeline.run(operation=MyOp, inputs=...)
@@ -544,8 +547,7 @@ don't repeat the same overrides at every step:
 
 ```python
 from artisan.operations.base import OperationDefinition
-from artisan.schemas.operation_config.runner_resources import RunnerResources
-from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas import BatchStrategy, RunnerResources
 
 
 class GpuInference(OperationDefinition):
@@ -654,9 +656,7 @@ that wraps the command):
 
 ```python
 from artisan.operations.base import OperationDefinition
-from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.environment_spec import ApptainerEnvironmentSpec
+from artisan.schemas import ApptainerEnvironmentSpec, Environments, ToolSpec
 
 
 class ToolAOp(OperationDefinition):
@@ -806,7 +806,7 @@ unknown or unconfigured targets also raise before cache lookup.
 Control what happens when some artifacts fail within a step:
 
 ```python
-from artisan.schemas.enums import FailurePolicy
+from artisan.schemas import FailurePolicy
 
 # Pipeline-wide default
 pipeline = PipelineManager.create(..., failure_policy=FailurePolicy.CONTINUE)
@@ -832,7 +832,7 @@ Cache policy controls which previously usable terminal step qualifies as a
 cache hit on re-run (for example, when resuming a pipeline):
 
 ```python
-from artisan.schemas.enums import CachePolicy
+from artisan.schemas import CachePolicy
 
 pipeline = PipelineManager.create(..., cache_policy=CachePolicy.STEP_COMPLETED)
 ```
@@ -1005,7 +1005,7 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 Confirm your configuration works by running a small test:
 
 ```python
-from artisan.schemas import StepStatus
+from artisan.orchestration import StepStatus
 
 step = pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
 assert step.status is StepStatus.SUCCEEDED

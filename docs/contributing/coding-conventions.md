@@ -111,6 +111,7 @@ Every package's `__init__.py` must contain three things:
 2. **Re-exports** — import public symbols from internal modules
 3. **`__all__`** — explicit list of public symbols
 
+<!-- artisan-import-policy: allow-internal -->
 ```python
 """Artisan curator operations: Filter, Merge, Ingest, InteractiveFilter."""
 
@@ -223,6 +224,7 @@ for the full diagram.
 When importing across packages, prefer importing from the package's
 re-exports (`__init__.py`). Each package's `__all__` defines its public API.
 
+<!-- artisan-import-policy: allow-internal -->
 ```python
 # Cross-package imports — use re-exports
 from artisan.schemas import DataArtifact, ArtifactResult, InputSpec, OutputSpec

@@ -200,7 +200,7 @@ through the entire execution flow.
 ---
 
 (glossary-execution-record)=
-## ExecutionRecord
+## Execution record
 
 A row in the executions Delta Lake table logging a single execution attempt.
 Carries dual identity: `execution_spec_id` (deterministic cache key, computed

@@ -21,7 +21,7 @@ read credentials from the environment:
 
 ```python
 from artisan.orchestration import PipelineConfig, PipelineManager
-from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas import StorageConfig
 
 pipeline = PipelineManager(
     PipelineConfig(
