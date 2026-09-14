@@ -924,6 +924,7 @@ class TestEndpointRoutedLineageMinIO:
 
     def test_edge_and_name_preserved_under_skip(self, s3_fs, tmp_path, monkeypatch):
         import polars as pl
+        from fixtures.store_format import commit_test_tables
 
         from artisan.execution.executors.creator import run_creator_lifecycle
         from artisan.execution.models.execution_unit import ExecutionUnit
@@ -939,7 +940,7 @@ class TestEndpointRoutedLineageMinIO:
         external_path = f"{uri_prefix}/files/dataset_00001.bin"
         fs.pipe_file(f"{bucket}/files/dataset_00001.bin", b"weights")
         art = LargeFileArtifact.draft(
-            content_hash="c" * 32,
+            content_hash=compute_content_digest(b"weights"),
             size_bytes=7,
             step_number=0,
             external_path=external_path,
@@ -947,30 +948,44 @@ class TestEndpointRoutedLineageMinIO:
             extension=".bin",
         ).finalize()
 
-        base = tmp_path / "delta"
-        pl.DataFrame(
-            [art.to_row()], schema=LargeFileArtifact.POLARS_SCHEMA
-        ).write_delta(str(base / "artifacts/large_files"))
-        pl.DataFrame(
-            [
-                {
-                    "artifact_id": art.artifact_id,
-                    "artifact_type": "large_file",
-                    "origin_step_number": 0,
-                    "metadata": "{}",
-                }
-            ],
-            schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(str(base / "artifacts/index"))
-
+        base = f"{uri_prefix}/delta"
+        staging = f"{uri_prefix}/staging"
+        commit_test_tables(
+            base,
+            staging,
+            fs,
+            {
+                "artifacts/large_files": pl.DataFrame(
+                    [art.to_row()], schema=LargeFileArtifact.POLARS_SCHEMA
+                ),
+                "artifacts/index": pl.DataFrame(
+                    [
+                        {
+                            "artifact_id": art.artifact_id,
+                            "artifact_type": "large_file",
+                            "origin_step_number": 0,
+                            "metadata": "{}",
+                        }
+                    ],
+                    schema=ARTIFACT_INDEX_SCHEMA,
+                ),
+                "artifacts/locations": pl.DataFrame(
+                    [{"artifact_id": art.artifact_id, "uri": external_path}],
+                    schema={"artifact_id": pl.String, "uri": pl.String},
+                ),
+            },
+            step_run_id="1" * 32,
+            operation_name="cloud_input",
+            storage_options=storage.delta_storage_options(),
+        )
         working = tmp_path / "working"
         working.mkdir()
-        staging = tmp_path / "staging"
-        staging.mkdir()
         runtime_env = RuntimeEnvironment(
-            delta_root=str(base),
+            delta_root=base,
             working_root=str(working),
-            staging_root=str(staging),
+            staging_root=staging,
+            files_root=f"{uri_prefix}/files",
+            storage=storage,
         )
         # ambient creds so the worker fetches external_path from MinIO
         _set_ambient_creds(storage, monkeypatch)
