@@ -717,12 +717,12 @@ def _split_prepared_inputs(
 def _reassemble_results(
     per_artifact_results: list[Any],
     artifact_execute_dirs: list[str],
-) -> tuple[Any, list[str], dict[str, int]]:
+) -> tuple[Any, list[str], dict[str, list[int]]]:
     """Merge per-artifact execute results for batched postprocess.
 
     Reassembles memory_outputs and file_outputs so postprocess sees
     the same data shapes as when execute processes all artifacts at
-    once. Also returns a stem -> slot-index map so lineage capture
+    once. Also returns a stem -> ordered slot-index map so lineage capture
     can recover the per-output pair index for grouped multi-input ops
     (fixing the ``primary_id_to_idx`` clobber for repeated primaries
     under CROSS_PRODUCT + ``artifacts_per_unit > 1``).
@@ -735,18 +735,18 @@ def _reassemble_results(
 
     Returns:
         Tuple of (merged_memory_outputs, file_outputs, output_pair_map).
-        ``output_pair_map`` keys are the extension-stripped basename of
-        each emitted file (matching ``artifact.original_name`` after
-        draft, which also strips extensions) and values are the slot
-        index of the dir the file came from.
+        ``output_pair_map`` keys are extension-stripped basenames of emitted
+        files (matching ``artifact.original_name`` after draft). Values retain
+        every source slot in file-output order so duplicate basenames remain
+        occurrence-aligned.
     """
     file_outputs: list[str] = []
-    output_pair_map: dict[str, int] = {}
+    output_pair_map: dict[str, list[int]] = {}
     for slot_idx, d in enumerate(artifact_execute_dirs):
         slot_files = output_snapshot(d)
         for fpath in slot_files:
             stem = strip_extensions(os.path.basename(fpath))
-            output_pair_map[stem] = slot_idx
+            output_pair_map.setdefault(stem, []).append(slot_idx)
         file_outputs.extend(slot_files)
 
     # Filter exceptions, merge memory_outputs

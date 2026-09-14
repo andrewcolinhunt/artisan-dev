@@ -1665,7 +1665,7 @@ class TestCaptureLineageOutputPairMap:
         group_ids = [_valid_group_id(f"pair_{i}") for i in range(3)]
         # Keys are extension-stripped stems matching ``artifact.original_name``
         # after ``draft()`` (and the value emitted by ``_reassemble_results``).
-        output_pair_map = {"out_0": 0, "out_1": 1, "out_2": 2}
+        output_pair_map = {"out_0": [0], "out_1": [1], "out_2": [2]}
 
         lineage = capture_lineage_metadata(
             output_artifacts,
@@ -1699,6 +1699,44 @@ class TestCaptureLineageOutputPairMap:
             assert primary_edge.group_id == group_ids[i]
             assert secondary_edge.group_id == group_ids[i]
 
+    def test_duplicate_output_names_remain_occurrence_aligned(self):
+        """Repeated basenames retain the correct input pair and target artifact."""
+        primaries = [_make_metric_from_name(f"primary_{i}") for i in range(2)]
+        secondaries = [_make_metric_from_name(f"secondary_{i}") for i in range(2)]
+        outputs = [
+            MetricArtifact.draft(
+                content={"pair": i},
+                original_name="result.json",
+                step_number=1,
+            ).finalize()
+            for i in range(2)
+        ]
+        group_ids = [_valid_group_id(f"pair_{i}") for i in range(2)]
+        output_artifacts = {"result": outputs}
+
+        lineage = capture_lineage_metadata(
+            output_artifacts,
+            {"primary": primaries, "secondary": secondaries},
+            {
+                "result": OutputSpec(
+                    artifact_type=ArtifactTypes.METRIC,
+                    infer_lineage_from={"inputs": ["primary", "secondary"]},
+                )
+            },
+            group_by=GroupByStrategy.ZIP,
+            group_ids=group_ids,
+            output_pair_map={"result": [0, 1]},
+        )
+
+        edges = build_edges(lineage, output_artifacts)
+
+        assert [(edge.source, edge.target) for edge in edges] == [
+            (primaries[0].artifact_id, outputs[0].artifact_id),
+            (secondaries[0].artifact_id, outputs[0].artifact_id),
+            (primaries[1].artifact_id, outputs[1].artifact_id),
+            (secondaries[1].artifact_id, outputs[1].artifact_id),
+        ]
+
     def test_missing_basename_falls_back_to_legacy_path(self):
         """Drafts not in ``output_pair_map`` (e.g. memory-only outputs) fall
         back to stem-match + ``primary_id_to_idx`` — the legacy clobber
@@ -1731,7 +1769,7 @@ class TestCaptureLineageOutputPairMap:
             output_specs,
             group_by=GroupByStrategy.LINEAGE,
             group_ids=group_ids,
-            output_pair_map={"some_other_basename.json": 0},
+            output_pair_map={"some_other_basename.json": [0]},
         )
 
         assert len(lineage["result"]) == 1

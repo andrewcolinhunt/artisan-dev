@@ -78,7 +78,7 @@ class Artifact(BaseModel):
     def __setattr__(self, name: str, value: Any) -> None:
         """Protect durable model fields after finalization."""
         artifact_id = getattr(self, "artifact_id", None)
-        mutable_fields = {"external_path", "materialized_path", *self.LOCATOR_FIELDS}
+        mutable_fields = {"materialized_path", *self.LOCATOR_FIELDS}
         if (
             artifact_id is not None
             and name in type(self).model_fields
@@ -238,7 +238,7 @@ class Artifact(BaseModel):
 
     def _protected_state(self) -> dict[str, Any]:
         """Return durable fields whose nested values must not drift."""
-        excluded = {"external_path", "materialized_path", *self.LOCATOR_FIELDS}
+        excluded = {"materialized_path", *self.LOCATOR_FIELDS}
         return {
             name: getattr(self, name)
             for name in type(self).model_fields

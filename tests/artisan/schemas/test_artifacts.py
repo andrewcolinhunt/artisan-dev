@@ -8,6 +8,7 @@ import os
 import pytest
 from pydantic import ValidationError
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -454,6 +455,18 @@ class TestExecutionConfigArtifactMaterialize:
         with open(path) as f:
             content = json.loads(f.read())
         assert content["contig"] == "40-150"
+
+    def test_materialize_rejects_nested_metadata_drift(self, tmp_path):
+        artifact = ExecutionConfigArtifact.draft(
+            content={"key": "value"},
+            original_name="config.json",
+            step_number=1,
+            metadata={"nested": {"version": 1}},
+        ).finalize()
+        artifact.metadata["nested"]["version"] = 2
+
+        with pytest.raises(ArtifactIntegrityError, match="was mutated"):
+            artifact.materialize_to(str(tmp_path))
 
     def test_materialize_raises_when_not_hydrated(self, tmp_path):
         """materialize_to() raises when content is None."""

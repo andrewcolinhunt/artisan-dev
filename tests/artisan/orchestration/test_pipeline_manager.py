@@ -21,6 +21,7 @@ import pytest
 from fsspec.implementations.local import LocalFileSystem
 from pydantic import BaseModel
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import (
     PipelineManager,
@@ -2360,8 +2361,8 @@ class TestPromoteFilePathsCloudUri:
             with contextlib.suppress(FileNotFoundError):
                 mem_fs.rm(path, recursive=True)
 
-    def test_invalid_uri_surfaces_in_warning_not_crash(self, tmp_path, caplog):
-        """A bogus cloud URI is reported as Inaccessible, not a kickoff crash."""
+    def test_invalid_uri_fails_closed(self, tmp_path):
+        """An inaccessible cloud URI aborts raw-input preparation."""
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
         )
@@ -2377,15 +2378,13 @@ class TestPromoteFilePathsCloudUri:
 
         # gcs:// without gcsfs installed → ImportError surfaces as
         # Inaccessible, not a crash. (gcsfs is in optional deps.)
-        result, count, verified = _promote_file_paths_to_store(
-            ["gcs://nope/notfound.csv"],
-            config,
-            step_number=1,
-            operation_name="ingest",
-        )
-        assert result is None
-        assert count == 0
-        assert verified == set()
+        with pytest.raises(ArtifactIntegrityError, match="Inaccessible"):
+            _promote_file_paths_to_store(
+                ["gcs://nope/notfound.csv"],
+                config,
+                step_number=1,
+                operation_name="ingest",
+            )
 
 
 # =============================================================================

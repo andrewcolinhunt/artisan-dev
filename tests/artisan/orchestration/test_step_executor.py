@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -155,8 +156,8 @@ class TestCreatorRejectsFilePaths:
 class TestFilePathPromotion:
     """Tests for _promote_file_paths_to_store in pipeline_manager."""
 
-    def test_all_invalid_files_returns_none(self, tmp_path):
-        """All invalid file paths should return None."""
+    def test_missing_file_fails_closed(self, tmp_path):
+        """A missing raw input aborts before promotion."""
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
         )
@@ -172,15 +173,11 @@ class TestFilePathPromotion:
         (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
 
         non_existent = str(tmp_path / "does_not_exist.csv")
-        result, count, _verified = _promote_file_paths_to_store(
-            [non_existent], config, 1, "mock_ingest"
-        )
+        with pytest.raises(ArtifactIntegrityError, match="Not found"):
+            _promote_file_paths_to_store([non_existent], config, 1, "mock_ingest")
 
-        assert result is None
-        assert count == 0
-
-    def test_directory_path_filtered_out(self, tmp_path):
-        """Directory paths should be filtered out."""
+    def test_directory_path_fails_closed(self, tmp_path):
+        """A raw directory input is rejected rather than skipped."""
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
         )
@@ -198,12 +195,8 @@ class TestFilePathPromotion:
         test_dir = tmp_path / "test_directory"
         test_dir.mkdir()
 
-        result, count, _verified = _promote_file_paths_to_store(
-            [str(test_dir)], config, 1, "mock_ingest"
-        )
-
-        assert result is None
-        assert count == 0
+        with pytest.raises(ArtifactIntegrityError, match="Not a file"):
+            _promote_file_paths_to_store([str(test_dir)], config, 1, "mock_ingest")
 
     def test_valid_files_promoted(self, tmp_path):
         """Valid file paths should be promoted to artifact IDs."""
@@ -1460,8 +1453,8 @@ class TestStagingTimeoutHandling:
 class TestFileValidationBatch:
     """Tests for batch file validation in _promote_file_paths_to_store."""
 
-    def test_mixed_valid_invalid_files_processes_valid_only(self, tmp_path):
-        """Valid files should be promoted even when some are invalid."""
+    def test_mixed_valid_invalid_files_fail_without_partial_promotion(self, tmp_path):
+        """One invalid raw input rejects the full ordered input occurrence list."""
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
         )
@@ -1481,17 +1474,15 @@ class TestFileValidationBatch:
         valid_file.write_bytes(b"ATOM content")
         non_existent = str(tmp_path / "missing.csv")
 
-        result, count, _verified = _promote_file_paths_to_store(
-            [str(valid_file), non_existent],
-            config,
-            1,
-            "mock_ingest",
-        )
+        with pytest.raises(ArtifactIntegrityError, match="missing.csv"):
+            _promote_file_paths_to_store(
+                [str(valid_file), non_existent],
+                config,
+                1,
+                "mock_ingest",
+            )
 
-        # Should promote the valid file, skip the invalid one
-        assert result is not None
-        assert "file" in result
-        assert count == 1
+        assert not (tmp_path / "delta" / "artifacts" / "file_refs").exists()
 
 
 # =============================================================================

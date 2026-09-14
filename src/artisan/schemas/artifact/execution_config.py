@@ -147,6 +147,7 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
                 None, or referenced artifacts are missing from
                 ``resolved_paths``.
         """
+        self._assert_identity_intact()
         if format is not None:
             msg = f"ExecutionConfigArtifact does not support format conversion (got {format!r})"
             raise ValueError(msg)

@@ -10,7 +10,9 @@ import pytest
 from fixtures.execution_records import executions_df
 from fsspec.implementations.local import LocalFileSystem
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.storage.core.artifact_store import ArtifactStore
@@ -18,8 +20,10 @@ from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
+    ARTIFACT_LOCATIONS_SCHEMA,
     STEPS_SCHEMA,
 )
+from artisan.utils.hashing import compute_content_digest
 
 METRICS_SCHEMA = MetricArtifact.POLARS_SCHEMA
 CONFIGS_SCHEMA = ExecutionConfigArtifact.POLARS_SCHEMA
@@ -54,6 +58,45 @@ def _index_rows(
         }
         for artifact in artifacts
     ]
+
+
+def _write_file_ref(
+    root,
+    content: bytes,
+    locations: list[str],
+) -> FileRefArtifact:
+    """Write one external artifact and its optional location rows."""
+    artifact = FileRefArtifact.draft(
+        path=locations[0] if locations else "",
+        content_hash=compute_content_digest(content),
+        size_bytes=len(content),
+        step_number=1,
+        original_name="payload",
+        extension=".bin",
+    ).finalize()
+    pl.DataFrame([artifact.to_row()], schema=FileRefArtifact.POLARS_SCHEMA).write_delta(
+        str(root / "artifacts/file_refs")
+    )
+    pl.DataFrame(
+        [
+            {
+                "artifact_id": artifact.artifact_id,
+                "artifact_type": artifact.artifact_type,
+                "origin_step_number": artifact.origin_step_number,
+                "metadata": "{}",
+            }
+        ],
+        schema=ARTIFACT_INDEX_SCHEMA,
+    ).write_delta(str(root / "artifacts/index"))
+    if locations:
+        pl.DataFrame(
+            [
+                {"artifact_id": artifact.artifact_id, "uri": location}
+                for location in locations
+            ],
+            schema=ARTIFACT_LOCATIONS_SCHEMA,
+        ).write_delta(str(root / "artifacts/locations"))
+    return artifact
 
 
 class TestArtifactStorePrepare:
@@ -98,6 +141,56 @@ class TestArtifactStoreFilesRoot:
         store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.base_path == str(tmp_path)
         assert store.files_root is None
+
+
+class TestExternalLocationSelection:
+    """External hydration selects and verifies the shared location relation."""
+
+    def test_missing_candidate_falls_back_to_next_location(self, tmp_path):
+        content = b"verified"
+        missing = str(tmp_path / "a-missing.bin")
+        valid = tmp_path / "z-valid.bin"
+        valid.write_bytes(content)
+        artifact = _write_file_ref(tmp_path, content, [missing, str(valid)])
+
+        loaded = ArtifactStore(str(tmp_path)).get_artifact(artifact.artifact_id)
+
+        assert loaded is not None
+        assert loaded.path == str(valid)
+
+    def test_readable_wrong_candidate_fails_immediately(self, tmp_path):
+        expected = b"verified"
+        wrong = tmp_path / "a-wrong.bin"
+        wrong.write_bytes(b"changed")
+        valid = tmp_path / "z-valid.bin"
+        valid.write_bytes(expected)
+        artifact = _write_file_ref(tmp_path, expected, [str(wrong), str(valid)])
+
+        with pytest.raises(ArtifactIntegrityError, match="failed integrity"):
+            ArtifactStore(str(tmp_path)).get_artifact(artifact.artifact_id)
+
+    def test_managed_location_precedes_unmanaged_location(self, tmp_path):
+        content = b"verified"
+        unmanaged = tmp_path / "a-unmanaged.bin"
+        unmanaged.write_bytes(content)
+        files_root = tmp_path / "managed"
+        files_root.mkdir()
+        managed = files_root / "z-managed.bin"
+        managed.write_bytes(content)
+        artifact = _write_file_ref(tmp_path, content, [str(unmanaged), str(managed)])
+
+        loaded = ArtifactStore(str(tmp_path), files_root=str(files_root)).get_artifact(
+            artifact.artifact_id
+        )
+
+        assert loaded is not None
+        assert loaded.path == str(managed)
+
+    def test_missing_location_relation_fails_with_integrity_error(self, tmp_path):
+        artifact = _write_file_ref(tmp_path, b"verified", [])
+
+        with pytest.raises(ArtifactIntegrityError, match="no readable verified"):
+            ArtifactStore(str(tmp_path)).get_artifact(artifact.artifact_id)
 
 
 class TestArtifactStoreFsDefault:

@@ -75,6 +75,10 @@ class ArtifactTypeDef:
                 f"{model.__name__}.artifact_type default"
             )
             raise ValueError(msg)
+        schema = getattr(model, "POLARS_SCHEMA", None)
+        if not isinstance(schema, dict):
+            msg = f"{model.__name__} must declare POLARS_SCHEMA"
+            raise TypeError(msg)
         if model.EXTERNALLY_BACKED:
             if len(model.LOCATOR_FIELDS) != 1:
                 msg = (
@@ -82,10 +86,29 @@ class ArtifactTypeDef:
                     "locator field"
                 )
                 raise TypeError(msg)
+            locator = next(iter(model.LOCATOR_FIELDS))
+            if locator not in model.model_fields:
+                msg = (
+                    f"Externally backed {model.__name__} declares unknown "
+                    f"locator field {locator!r}"
+                )
+                raise TypeError(msg)
+            if locator in schema:
+                msg = (
+                    f"Externally backed {model.__name__} locator field "
+                    f"{locator!r} must not be stored in its content table"
+                )
+                raise TypeError(msg)
             if model.verify_external_content is Artifact.verify_external_content:
                 msg = (
                     f"Externally backed {model.__name__} must implement "
                     "verify_external_content()"
+                )
+                raise TypeError(msg)
+            if model._materialize_content is Artifact._materialize_content:
+                msg = (
+                    f"Externally backed {model.__name__} must implement "
+                    "_materialize_content()"
                 )
                 raise TypeError(msg)
 

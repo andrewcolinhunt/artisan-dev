@@ -255,12 +255,15 @@ class ArtifactStore:
             return
         assert artifact.artifact_id is not None
         locations_path = self._table_path(TablePath.ARTIFACT_LOCATIONS)
-        rows = (
-            pl.scan_delta(locations_path, storage_options=self._storage_options)
-            .filter(pl.col("artifact_id") == artifact.artifact_id)
-            .select("uri")
-            .collect()
-        )
+        if self._fs.exists(locations_path):
+            rows = (
+                pl.scan_delta(locations_path, storage_options=self._storage_options)
+                .filter(pl.col("artifact_id") == artifact.artifact_id)
+                .select("uri")
+                .collect()
+            )
+        else:
+            rows = pl.DataFrame(schema={"uri": pl.String})
         locations = sorted(
             set(rows["uri"].to_list()),
             key=lambda uri: (not self._is_managed_location(uri), uri),
