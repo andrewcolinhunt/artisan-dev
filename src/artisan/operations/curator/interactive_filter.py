@@ -722,6 +722,7 @@ class InteractiveFilter:
         staging_manager.stage_orchestrator_dataframe(
             candidate,
             TablePath.STEPS.value,
+            commit_kind="step_result",
             step_run_id=step_run_id,
             step_number=step_number,
             operation_name=type(operation).name,

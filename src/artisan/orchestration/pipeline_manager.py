@@ -400,16 +400,19 @@ def _promote_file_paths_to_store(
     staging_manager.stage_orchestrator_dataframe(
         file_ref_df,
         "artifacts/file_refs",
+        commit_kind="input_registration",
         **staging_kwargs,
     )
     staging_manager.stage_orchestrator_dataframe(
         index_df,
         TablePath.ARTIFACT_INDEX.value,
+        commit_kind="input_registration",
         **staging_kwargs,
     )
     staging_manager.stage_orchestrator_dataframe(
         location_df,
         TablePath.ARTIFACT_LOCATIONS.value,
+        commit_kind="input_registration",
         **staging_kwargs,
     )
     plan = build_commit_plan(
@@ -2436,6 +2439,7 @@ class PipelineManager:
         staging.stage_orchestrator_dataframe(
             candidate,
             TablePath.STEPS.value,
+            commit_kind="step_result",
             step_run_id=step_run_id,
             step_number=finalized.step_number,
             operation_name=operation_name,

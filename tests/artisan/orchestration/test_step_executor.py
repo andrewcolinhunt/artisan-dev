@@ -17,9 +17,10 @@ from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import polars as pl
 import pytest
 
-from artisan.errors import ArtifactIntegrityError, CommitError
+from artisan.errors import ArtifactIntegrityError, PersistenceIntegrityError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -179,7 +180,9 @@ class TestFilePathPromotion:
 
         non_existent = str(tmp_path / "does_not_exist.csv")
         with pytest.raises(ArtifactIntegrityError, match="Not found"):
-            _promote_file_paths_to_store([non_existent], config, 1, "mock_ingest")
+            _promote_file_paths_to_store(
+                [non_existent], config, 1, "mock_ingest", "a" * 32
+            )
 
     def test_directory_path_fails_closed(self, tmp_path):
         """A raw directory input is rejected rather than skipped."""
@@ -201,7 +204,9 @@ class TestFilePathPromotion:
         test_dir.mkdir()
 
         with pytest.raises(ArtifactIntegrityError, match="Not a file"):
-            _promote_file_paths_to_store([str(test_dir)], config, 1, "mock_ingest")
+            _promote_file_paths_to_store(
+                [str(test_dir)], config, 1, "mock_ingest", "a" * 32
+            )
 
     def test_valid_files_promoted(self, tmp_path):
         """Valid file paths should be promoted to artifact IDs."""
@@ -223,7 +228,7 @@ class TestFilePathPromotion:
         test_file.write_bytes(b"ATOM content")
 
         result, count, _verified = _promote_file_paths_to_store(
-            [str(test_file)], config, 0, "mock_ingest"
+            [str(test_file)], config, 0, "mock_ingest", "a" * 32
         )
 
         assert result is not None
@@ -1196,7 +1201,6 @@ class TestDispatchFailureHandling:
         """A plain RuntimeError from dispatch becomes a failed result."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-        from artisan.visualization.inspect import inspect_failures
 
         config = PipelineConfig(
             name="test",
@@ -1227,14 +1231,15 @@ class TestDispatchFailureHandling:
         assert "RuntimeError" in result.error
         assert "dispatch machinery exploded" in result.error
 
-        failures = inspect_failures(config.delta_root)
+        staged = list((tmp_path / "staging").rglob("executions.parquet"))
+        assert len(staged) == 2
+        failures = pl.concat([pl.read_parquet(path) for path in staged])
         assert failures.height == 2
-        assert set(failures["operation"]) == {MockNoGroupByCreatorOp.name}
+        assert set(failures["operation_name"]) == {MockNoGroupByCreatorOp.name}
         assert all(
             "dispatch machinery exploded" in error for error in failures["error"]
         )
-        for failure_log in failures["log"]:
-            assert (tmp_path / "logs" / "failures" / failure_log).exists()
+        assert len(list((tmp_path / "logs" / "failures").rglob("*.log"))) == 2
 
 
 class TestCreatorCancellationCleanup:
@@ -1290,7 +1295,6 @@ class TestCreatorCancellationCleanup:
         assert result.status == StepStatus.CANCELLED
         assert result.cancellation_status == CancellationStatus.CONFIRMED
         assert not list((tmp_path / "staging").rglob("*.parquet"))
-        assert not (tmp_path / "delta" / "orchestration" / "executions").exists()
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_cleanup_removes_only_current_cancel_sentinel(
@@ -1388,6 +1392,92 @@ class TestCommitFailureHandling:
             )
 
 
+class TestLogicalPersistenceBoundary:
+    """Worker seals and curator callbacks are mandatory persistence inputs."""
+
+    @pytest.mark.parametrize(
+        "execution_run_ids",
+        [[], ["a" * 32, "a" * 32]],
+    )
+    def test_invalid_worker_seals_fail_before_orchestrator_staging(
+        self,
+        tmp_path,
+        execution_run_ids,
+    ):
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        runner, _handle = _make_mock_backend(
+            flow_return_value=[
+                UnitResult(
+                    success=True,
+                    error=None,
+                    item_count=1,
+                    execution_run_ids=execution_run_ids,
+                )
+            ]
+        )
+        persist = MagicMock()
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=None,
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse"
+            ) as stage,
+            pytest.raises(PersistenceIntegrityError, match="staging identities"),
+        ):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=runner,
+                step_number=1,
+                config=config,
+                step_run_id="b" * 32,
+                persist_result=persist,
+            )
+
+        stage.assert_not_called()
+        persist.assert_not_called()
+
+    def test_execute_step_forwards_curator_persistence_callback(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import execute_step
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        persist = MagicMock()
+        expected = MagicMock()
+
+        with patch(
+            "artisan.orchestration.engine.step_executor._execute_curator_step",
+            return_value=expected,
+        ) as curator:
+            result = execute_step(
+                MockNoGroupByCuratorOp(),
+                _prepared({"data": [_ID_S1]}),
+                StepOverrides.from_user(),
+                MagicMock(),
+                config=config,
+                persist_result=persist,
+            )
+
+        assert result is expected
+        assert curator.call_args.kwargs["persist_result"] is persist
+
+
 class TestStagingTimeoutHandling:
     """Tests for F15: staging verification timeout resilience."""
 
@@ -1463,9 +1553,10 @@ class TestFileValidationBatch:
                 config,
                 1,
                 "mock_ingest",
+                "a" * 32,
             )
 
-        assert not (tmp_path / "delta" / "artifacts" / "file_refs").exists()
+        assert not list((tmp_path / "staging").rglob("*.parquet"))
 
 
 # =============================================================================
@@ -1641,13 +1732,10 @@ class TestExecutionCacheReuseCapture:
                 return_value=True,
             ) as stage,
             patch(
-                "artisan.orchestration.engine.step_executor._commit_staged",
-                return_value=None,
-            ) as commit,
-            patch(
                 "artisan.orchestration.engine.step_executor._run_curator_in_subprocess"
             ) as execute,
         ):
+            persist = MagicMock(side_effect=lambda result, _ids: result)
             result = _execute_curator_step(
                 operation=MockNoGroupByCuratorOp(),
                 inputs=_prepared({"data": [_ID_S1]}),
@@ -1655,6 +1743,7 @@ class TestExecutionCacheReuseCapture:
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
                 step_run_id=current,
+                persist_result=persist,
             )
 
         validate.assert_called_once_with(config, current, {cached})
@@ -1665,7 +1754,7 @@ class TestExecutionCacheReuseCapture:
             step_number=4,
             operation_name=MockNoGroupByCuratorOp.name,
         )
-        assert commit.call_args.kwargs["has_work"] is True
+        assert persist.call_args.args[1] == ()
         execute.assert_not_called()
         assert result.step_run_id == current
 
@@ -1697,11 +1786,8 @@ class TestExecutionCacheReuseCapture:
                 "artisan.orchestration.engine.step_executor._stage_cache_reuse",
                 return_value=True,
             ) as stage,
-            patch(
-                "artisan.orchestration.engine.step_executor._commit_staged",
-                return_value=None,
-            ) as commit,
         ):
+            persist = MagicMock(side_effect=lambda result, _ids: result)
             result = _execute_creator_step(
                 operation=MockNoGroupByCreatorOp(),
                 inputs=_prepared({"data": [_ID_S1]}),
@@ -1710,6 +1796,7 @@ class TestExecutionCacheReuseCapture:
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
                 step_run_id=current,
+                persist_result=persist,
             )
 
         validate.assert_called_once_with(config, current, {cached})
@@ -1720,7 +1807,7 @@ class TestExecutionCacheReuseCapture:
             step_number=4,
             operation_name=MockNoGroupByCreatorOp.name,
         )
-        assert commit.call_args.kwargs["has_work"] is True
+        assert persist.call_args.args[1] == ()
         runner.create_lifecycle_router.assert_not_called()
         assert result.succeeded_count == 1
 
@@ -1765,11 +1852,8 @@ class TestExecutionCacheReuseCapture:
                 "artisan.orchestration.engine.step_executor._stage_cache_reuse",
                 return_value=True,
             ) as stage,
-            patch(
-                "artisan.orchestration.engine.step_executor._commit_staged",
-                return_value=None,
-            ),
         ):
+            persist = MagicMock(side_effect=lambda result, _ids: result)
             result = _execute_creator_step(
                 operation=operation,
                 inputs=_prepared({"data": [_ID_S1, _ID_S2]}),
@@ -1778,11 +1862,13 @@ class TestExecutionCacheReuseCapture:
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
                 step_run_id=current,
+                persist_result=persist,
             )
 
         validate.assert_called_once_with(config, current, {cached})
         assert stage.call_args.args[2] == [cached]
         assert len(handle._captured_units) == 1
+        assert persist.call_args.args[1] == ("c" * 32,)
         assert result.succeeded_count == 2
 
     def test_cancelled_cache_selection_is_never_staged(self, tmp_path):
@@ -1816,10 +1902,8 @@ class TestExecutionCacheReuseCapture:
             patch(
                 "artisan.orchestration.engine.step_executor._stage_cache_reuse"
             ) as stage,
-            patch(
-                "artisan.orchestration.engine.step_executor._commit_staged"
-            ) as commit,
         ):
+            persist = MagicMock(side_effect=lambda result, _ids: result)
             result = _execute_creator_step(
                 operation=MockNoGroupByCreatorOp(),
                 inputs=_prepared({"data": [_ID_S1]}),
@@ -1829,11 +1913,12 @@ class TestExecutionCacheReuseCapture:
                 failure_policy=FailurePolicy.CONTINUE,
                 cancel_event=cancelled,
                 step_run_id=current,
+                persist_result=persist,
             )
 
         validate.assert_called_once_with(config, current, {cached})
         stage.assert_not_called()
-        commit.assert_not_called()
+        persist.assert_not_called()
         assert result.status == StepStatus.CANCELLED
         assert result.cancellation_status == CancellationStatus.CONFIRMED
         assert result.step_run_id == current
@@ -1866,11 +1951,7 @@ class TestExecutionCacheReuseCapture:
                 "artisan.orchestration.engine.step_executor._stage_cache_reuse",
                 return_value=True,
             ),
-            patch(
-                "artisan.orchestration.engine.step_executor._commit_staged",
-                side_effect=CommitError(["cache_reuse"]),
-            ),
-            pytest.raises(CommitError),
+            pytest.raises(OSError, match="commit unavailable"),
         ):
             _execute_creator_step(
                 operation=MockNoGroupByCreatorOp(),
@@ -1880,6 +1961,7 @@ class TestExecutionCacheReuseCapture:
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
                 step_run_id=current,
+                persist_result=MagicMock(side_effect=OSError("commit unavailable")),
             )
 
 
@@ -2371,23 +2453,23 @@ class TestFailureRecordSynthesis:
             working_root=str(tmp_path / "working"),
         )
 
-    def test_backfills_empty_run_id_and_commit_makes_it_readable(self, tmp_path):
-        """A failed UnitResult with no run id is synthesized, committed, and read.
+    def test_backfills_empty_run_id_with_a_readable_worker_seal(self, tmp_path):
+        """A failed UnitResult with no run id receives a sealed staging record.
 
         Covers the pre-try / unimportable-op path (Mechanism B) that cannot be
         built importably: a worker returns success=False with empty
-        execution_run_ids, the orchestrator synthesizes the record, the commit
-        path lands the success=False parquet, and inspect_failures reads it.
+        execution_run_ids, the orchestrator synthesizes the record, and the
+        logical committer can use its execution ID as exact staging evidence.
         """
         from datetime import UTC, datetime
 
         from artisan.execution.models.execution_unit import ExecutionUnit
         from artisan.orchestration.engine.step_executor import (
-            _commit_staged,
             _create_runtime_environment,
+            _require_recorded_execution_ids,
             _synthesize_missing_failure_records,
         )
-        from artisan.visualization.inspect import inspect_failures
+        from artisan.utils.path import shard_uri
 
         config = self._config(tmp_path)
         op = MockNoGroupByCreatorOp()
@@ -2414,24 +2496,19 @@ class TestFailureRecordSynthesis:
             step_run_id=None,
         )
         assert patched[0].execution_run_ids == ["killed-" + "a" * 24]
+        assert _require_recorded_execution_ids(patched) == ["killed-" + "a" * 24]
 
-        _commit_staged(
-            config,
-            runtime_env,
-            0,
-            op.name,
-            {},
-            has_work=True,
+        shard = shard_uri(
+            config.staging_root,
+            patched[0].execution_run_ids[0],
+            step_number=0,
+            operation_name=op.name,
         )
-
-        failures = inspect_failures(config.delta_root)
-        rows = [r for r in failures.to_dicts() if r["operation"] == op.name]
+        rows = pl.read_parquet(f"{shard}/executions.parquet").to_dicts()
         assert len(rows) == 1
-        assert rows[0]["step"] == 0
-        assert rows[0]["code"] is None
+        assert rows[0]["origin_step_number"] == 0
+        assert rows[0]["success"] is False
         assert "pre-try boom" in rows[0]["error"]
-        log_path = tmp_path / "logs" / "failures" / rows[0]["log"]
-        assert log_path.exists()
 
     def test_skips_units_that_already_recorded(self, tmp_path):
         """A failed result that already carries a run id is left untouched."""

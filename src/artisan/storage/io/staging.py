@@ -241,6 +241,7 @@ class StagingManager:
         step_dir = step_dir_name(step_number, operation_name)
         orchestrator_dir = (
             f"{self.staging_dir}/{step_dir}/_orchestrator/{current_step_run_id}"
+            "/step_result"
         )
         self._fs.makedirs(orchestrator_dir, exist_ok=True)
         parquet_uri = f"{orchestrator_dir}/cache_reuse.parquet"
@@ -259,11 +260,15 @@ class StagingManager:
         df: pl.DataFrame,
         table_path: str,
         *,
+        commit_kind: str,
         step_run_id: str,
         step_number: int,
         operation_name: str,
     ) -> str | None:
-        """Stage one ownerless orchestrator table inside the exact attempt dir."""
+        """Stage one ownerless table inside the exact logical-commit directory."""
+        if commit_kind not in {"step_result", "input_registration"}:
+            msg = f"Unknown logical commit kind {commit_kind!r}"
+            raise ValueError(msg)
         if df.is_empty():
             return None
         if "logical_commit_id" in df.columns:
@@ -271,7 +276,7 @@ class StagingManager:
             raise ValueError(msg)
         orchestrator_dir = (
             f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
-            f"/_orchestrator/{step_run_id}"
+            f"/_orchestrator/{step_run_id}/{commit_kind}"
         )
         self._fs.makedirs(orchestrator_dir, exist_ok=True)
         table_name = table_path.rsplit("/", 1)[-1]

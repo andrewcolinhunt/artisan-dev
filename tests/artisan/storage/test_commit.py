@@ -10,8 +10,12 @@ from fixtures.execution_records import executions_df
 from fixtures.store_format import publish_test_store
 
 from artisan.errors import CommitError, StoreIntegrityError
+from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
+from artisan.schemas.orchestration.step_result import StepResult
+from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.committed_scan import read_committed, read_logical_commits
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
@@ -81,15 +85,22 @@ def _stage_registration(
         {"artifact_id": [ARTIFACT_ID], "uri": ["file:///input.json"]},
         schema=ARTIFACT_LOCATIONS_SCHEMA,
     )
-    staging.stage_orchestrator_dataframe(metric, "artifacts/metrics", **kwargs)
+    staging.stage_orchestrator_dataframe(
+        metric,
+        "artifacts/metrics",
+        commit_kind="input_registration",
+        **kwargs,
+    )
     staging.stage_orchestrator_dataframe(
         index,
         TablePath.ARTIFACT_INDEX.value,
+        commit_kind="input_registration",
         **kwargs,
     )
     staging.stage_orchestrator_dataframe(
         locations,
         TablePath.ARTIFACT_LOCATIONS.value,
+        commit_kind="input_registration",
         **kwargs,
     )
     return build_commit_plan(
@@ -216,6 +227,7 @@ def _stage_step_result(committer: DeltaCommitter) -> CommitPlan:
     staging.stage_orchestrator_dataframe(
         pl.DataFrame([terminal], schema=STEPS_SCHEMA),
         TablePath.STEPS.value,
+        commit_kind="step_result",
         step_run_id=STEP_ID,
         step_number=0,
         operation_name="full",
@@ -278,7 +290,9 @@ def test_crash_after_each_append_boundary_converges_exactly(
             storage_options=options,
         )
         assert rows.height == table.row_count
-    assert not fs.exists(f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}")
+    assert not fs.exists(
+        f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}/input_registration"
+    )
 
 
 @pytest.mark.parametrize(
@@ -357,7 +371,9 @@ def test_planned_rows_are_invisible_after_first_table_failure(
         fs=fs,
         storage_options=options,
     ).is_empty()
-    assert fs.exists(f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}")
+    assert fs.exists(
+        f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}/input_registration"
+    )
 
 
 def test_changed_staging_fails_before_planned_marker(commit_env):
@@ -378,6 +394,60 @@ def test_changed_staging_fails_before_planned_marker(commit_env):
         fs=fs,
         storage_options=options,
     ).is_empty()
+
+
+def test_terminal_attempt_rejects_retry_before_any_commit_append(
+    commit_env,
+    monkeypatch,
+):
+    committer, fs, options, delta_root, staging_root = commit_env
+    tracker = StepTracker(delta_root, "run", storage_options=options, fs=fs)
+    tracker.create_attempt(
+        StepStartRecord(
+            step_run_id=STEP_ID,
+            step_spec_id="1" * 32,
+            step_number=0,
+            step_name="full",
+            operation_class="tests.Full",
+            params_json="{}",
+            input_refs_json="[]",
+            compute_backend="local",
+            compute_options_json="{}",
+            output_roles_json='["metric"]',
+            output_types_json='{"metric":"metric"}',
+        )
+    )
+    tracker.transition(STEP_ID, StepStatus.PENDING, StepStatus.RUNNING)
+    failure = StepResult(
+        step_name="full",
+        step_number=0,
+        step_run_id=STEP_ID,
+        status=StepStatus.FAILED,
+        error="prior persistence failure",
+    )
+    tracker.transition(
+        STEP_ID,
+        StepStatus.RUNNING,
+        StepStatus.FAILED,
+        result=failure,
+        error=failure.error,
+    )
+    plan = _stage_step_result(committer)
+    monkeypatch.setattr(
+        committer,
+        "_append",
+        lambda *_args: pytest.fail("terminal guard allowed a commit append"),
+    )
+
+    with pytest.raises(StoreIntegrityError, match="already failed"):
+        committer.commit_logical(plan)
+
+    assert read_logical_commits(
+        delta_root,
+        fs=fs,
+        storage_options=options,
+    ).is_empty()
+    assert fs.exists(f"{staging_root}/0_full")
 
 
 def test_control_write_failure_writes_no_data_and_preserves_staging(
@@ -412,7 +482,9 @@ def test_control_write_failure_writes_no_data_and_preserves_staging(
         .collect()
         .is_empty()
     )
-    assert fs.exists(f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}")
+    assert fs.exists(
+        f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}/input_registration"
+    )
 
 
 def test_completion_marker_failure_keeps_all_effects_invisible(
@@ -442,7 +514,9 @@ def test_completion_marker_failure_keeps_all_effects_invisible(
         fs=fs,
         storage_options=options,
     ).is_empty()
-    assert fs.exists(f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}")
+    assert fs.exists(
+        f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}/input_registration"
+    )
 
 
 def test_cleanup_failure_does_not_revoke_completed_visibility(
@@ -474,7 +548,9 @@ def test_cleanup_failure_does_not_revoke_completed_visibility(
         ).height
         == 1
     )
-    assert fs.exists(f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}")
+    assert fs.exists(
+        f"{staging_root}/0_ingest/_orchestrator/{STEP_ID}/input_registration"
+    )
 
 
 def test_exact_complete_global_artifact_satisfies_later_plan(commit_env):

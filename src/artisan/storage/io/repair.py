@@ -264,6 +264,14 @@ def _classify_controlled(
             detail="Control, plan, and all planned effects agree",
         )
     try:
+        committer._reject_terminal_attempt(plan)
+    except StoreIntegrityError as exc:
+        return RepairItem(
+            evidence_id=plan.logical_commit_id,
+            classification="conflict",
+            detail=str(exc),
+        )
+    try:
         frames = verify_plan_files(
             plan,
             committer.staging_manager.staging_dir,
@@ -356,9 +364,10 @@ def _abandon(
             raise StoreIntegrityError(msg)
         _reconcile_abandonment(committer, plans[logical_commit_id], reason)
         return
-    if item.classification != "replayable":
+    if control["state"] != "planned":
         msg = f"Cannot abandon {item.classification} commit {logical_commit_id}"
         raise StoreIntegrityError(msg)
+    _preflight_abandonment(committer, plans[logical_commit_id])
     escaped_reason = reason.replace("'", "''")
     table = DeltaTable(
         uri_join(committer.delta_base_path, TablePath.LOGICAL_COMMITS),
@@ -383,6 +392,35 @@ def _abandon(
         msg = f"Abandonment was not durable for {logical_commit_id}"
         raise StoreIntegrityError(msg)
     _reconcile_abandonment(committer, plans[logical_commit_id], reason)
+
+
+def _preflight_abandonment(
+    committer: DeltaCommitter,
+    plan: CommitPlan,
+) -> None:
+    """Prove D4 reconciliation is possible before changing control state."""
+    if plan.commit_kind != "step_result":
+        return
+    tracker = StepTracker(
+        committer.delta_base_path,
+        storage_options=committer._storage_options,
+        fs=committer._fs,
+    )
+    current = tracker.current_state(plan.step_run_id)
+    if current.status in {
+        StepStatus.SUCCEEDED,
+        StepStatus.PARTIAL,
+        StepStatus.FAILED,
+        StepStatus.CANCELLED,
+        StepStatus.SKIPPED,
+    }:
+        return
+    if current.status != StepStatus.RUNNING:
+        msg = (
+            f"Cannot abandon {plan.logical_commit_id}: step attempt has not "
+            "reached running"
+        )
+        raise StoreIntegrityError(msg)
 
 
 def _reconcile_abandonment(

@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import posixpath
 import uuid
+from contextlib import suppress
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 import polars as pl
 from fsspec import AbstractFileSystem
+from fsspec.implementations.local import LocalFileSystem
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from artisan.errors import StoreIntegrityError
@@ -35,6 +38,26 @@ class PlannedFile(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    @model_validator(mode="after")
+    def _validate_evidence(self) -> PlannedFile:
+        normalized = posixpath.normpath(self.relative_path)
+        if (
+            not self.relative_path
+            or posixpath.isabs(self.relative_path)
+            or normalized != self.relative_path
+            or normalized == ".."
+            or normalized.startswith("../")
+        ):
+            msg = f"Invalid relative staged path {self.relative_path!r}"
+            raise ValueError(msg)
+        if self.size_bytes <= 0 or self.row_count < 0:
+            msg = f"Invalid staged evidence sizes for {self.relative_path!r}"
+            raise ValueError(msg)
+        if not _is_content_digest(self.digest):
+            msg = f"Invalid staged digest for {self.relative_path!r}"
+            raise ValueError(msg)
+        return self
+
 
 class PlannedTable(BaseModel):
     """One table effect and the evidence needed to prove exact retry."""
@@ -47,6 +70,35 @@ class PlannedTable(BaseModel):
     files: tuple[PlannedFile, ...]
 
     model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="after")
+    def _validate_effect(self) -> PlannedTable:
+        if self.table_path not in set(_staging_table_paths().values()):
+            msg = f"Unknown planned table {self.table_path!r}"
+            raise ValueError(msg)
+        if self.natural_key != get_natural_key(self.table_path):
+            msg = f"Invalid natural key for planned table {self.table_path!r}"
+            raise ValueError(msg)
+        if not self.files or len({file.relative_path for file in self.files}) != len(
+            self.files
+        ):
+            msg = f"Invalid staged file set for planned table {self.table_path!r}"
+            raise ValueError(msg)
+        if self.row_count != sum(file.row_count for file in self.files):
+            msg = f"Invalid row count for planned table {self.table_path!r}"
+            raise ValueError(msg)
+        if self.row_count != len(self.row_keys) or len(set(self.row_keys)) != len(
+            self.row_keys
+        ):
+            msg = f"Invalid row keys for planned table {self.table_path!r}"
+            raise ValueError(msg)
+        if any(len(key) != len(self.natural_key) for key in self.row_keys):
+            msg = f"Malformed row key for planned table {self.table_path!r}"
+            raise ValueError(msg)
+        if not _is_content_digest(self.table_plan_key):
+            msg = f"Invalid table plan key for {self.table_path!r}"
+            raise ValueError(msg)
+        return self
 
 
 class CommitPlan(BaseModel):
@@ -64,6 +116,39 @@ class CommitPlan(BaseModel):
 
     @model_validator(mode="after")
     def _verify_digest(self) -> CommitPlan:
+        expected_id = f"{self.commit_kind}:{self.step_run_id}"
+        if self.logical_commit_id != expected_id:
+            msg = f"Commit plan ID does not match its owner: {self.logical_commit_id}"
+            raise ValueError(msg)
+        if self.step_number < 0 or not self.operation_name:
+            msg = f"Commit plan {self.logical_commit_id} has invalid step metadata"
+            raise ValueError(msg)
+        table_paths = [table.table_path for table in self.tables]
+        if len(table_paths) != len(set(table_paths)):
+            msg = f"Commit plan {self.logical_commit_id} repeats a table"
+            raise ValueError(msg)
+        file_paths = [
+            file.relative_path for table in self.tables for file in table.files
+        ]
+        if len(file_paths) != len(set(file_paths)):
+            msg = f"Commit plan {self.logical_commit_id} repeats a staged file"
+            raise ValueError(msg)
+        order = [
+            table
+            for table, _ in _ordered_table_files({path: [] for path in table_paths})
+        ]
+        if table_paths != order:
+            msg = f"Commit plan {self.logical_commit_id} has invalid table order"
+            raise ValueError(msg)
+        terminal = self.table(TablePath.STEPS.value)
+        if self.commit_kind == "step_result" and (
+            terminal is None or terminal.row_count != 1
+        ):
+            msg = f"Step-result commit {self.logical_commit_id} requires one terminal snapshot"
+            raise ValueError(msg)
+        if self.commit_kind == "input_registration" and terminal is not None:
+            msg = f"Input registration {self.logical_commit_id} cannot contain a step snapshot"
+            raise ValueError(msg)
         if self.plan_digest != _plan_digest(self.model_dump(exclude={"plan_digest"})):
             msg = f"Commit plan {self.logical_commit_id} has an invalid digest"
             raise ValueError(msg)
@@ -136,7 +221,7 @@ def publish_commit_plan(
     fs: AbstractFileSystem,
     plan: CommitPlan,
 ) -> CommitPlan:
-    """Publish a plan through a temporary object, then verify the final bytes."""
+    """Publish exact plan bytes once, then verify the durable object."""
     final_path = commit_plan_path(delta_root, plan.step_run_id, plan.commit_kind)
     if fs.exists(final_path):
         existing = read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
@@ -147,20 +232,61 @@ def publish_commit_plan(
 
     parent = posixpath.dirname(final_path)
     fs.makedirs(parent, exist_ok=True)
-    temporary = f"{final_path}.tmp-{uuid.uuid4().hex}"
     encoded = canonical_json_bytes(plan.model_dump(mode="json"))
     try:
-        with fs.open(temporary, "wb") as stream:
-            stream.write(encoded)
-        fs.mv(temporary, final_path)
-    finally:
-        if fs.exists(temporary):
-            fs.rm(temporary)
+        if isinstance(fs, LocalFileSystem):
+            _publish_local_plan(fs, final_path, encoded)
+        else:
+            # S3's exclusive create maps to a conditional single-object PUT.
+            # Other remote backends must provide the same create-if-absent
+            # contract or fail closed instead of overwriting immutable evidence.
+            with fs.open(final_path, "xb") as stream:
+                stream.write(encoded)
+    except Exception as exc:
+        if fs.exists(final_path):
+            existing = read_commit_plan(
+                delta_root,
+                fs,
+                plan.step_run_id,
+                plan.commit_kind,
+            )
+            if existing == plan:
+                return existing
+            msg = f"Conflicting immutable plan for {plan.logical_commit_id}"
+            raise StoreIntegrityError(msg) from exc
+        msg = f"Could not publish immutable plan for {plan.logical_commit_id}"
+        raise StoreIntegrityError(msg) from exc
     published = read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
     if published != plan:
         msg = f"Published plan changed for {plan.logical_commit_id}"
         raise StoreIntegrityError(msg)
     return published
+
+
+def _publish_local_plan(
+    fs: LocalFileSystem,
+    final_path: str,
+    encoded: bytes,
+) -> None:
+    """Fsync plan bytes, then atomically link them without replacing a peer."""
+    local_final = str(fs._strip_protocol(final_path))
+    parent = os.path.dirname(local_final)
+    temporary = f"{local_final}.tmp-{uuid.uuid4().hex}"
+    try:
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, local_final)
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
 
 
 def read_commit_plan(
@@ -174,7 +300,11 @@ def read_commit_plan(
     try:
         with fs.open(path, "rb") as stream:
             raw = json.load(stream)
-        return CommitPlan.model_validate(raw)
+        plan = CommitPlan.model_validate(raw)
+        if plan.step_run_id != step_run_id or plan.commit_kind != commit_kind:
+            msg = f"Commit plan path does not match {commit_kind}:{step_run_id}"
+            raise StoreIntegrityError(msg)
+        return plan
     except StoreIntegrityError:
         raise
     except Exception as exc:
@@ -271,6 +401,7 @@ def _inspect_staging(
         step_dir_name(step_number, operation_name),
         "_orchestrator",
         step_run_id,
+        commit_kind,
     )
     if fs.exists(orchestrator):
         directories.append((orchestrator, None))
@@ -302,6 +433,7 @@ def _inspect_staging(
                 table_path,
                 step_run_id,
                 step_number,
+                operation_name,
                 execution_id,
                 commit_kind,
             )
@@ -384,6 +516,7 @@ def _validate_ownership(
     table_path: str,
     step_run_id: str,
     step_number: int,
+    operation_name: str,
     execution_run_id: str | None,
     commit_kind: CommitKind,
 ) -> None:
@@ -393,6 +526,10 @@ def _validate_ownership(
             values = set(frame["execution_run_id"].to_list())
             if values != {execution_run_id}:
                 msg = f"Execution seal ownership mismatch for {execution_run_id}"
+                raise StoreIntegrityError(msg)
+            operations = set(frame["operation_name"].to_list())
+            if operations != {operation_name}:
+                msg = f"Execution seal operation mismatch for {execution_run_id}"
                 raise StoreIntegrityError(msg)
         if "execution_run_id" in frame.columns:
             values = set(frame["execution_run_id"].to_list())
@@ -514,6 +651,16 @@ def _schema_signature(frame: pl.DataFrame) -> tuple[tuple[str, str], ...]:
 
 def _plan_digest(payload: dict[str, Any]) -> str:
     return compute_content_digest(canonical_json_bytes(payload))
+
+
+def _is_content_digest(value: str) -> bool:
+    if len(value) != 32:
+        return False
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _relative_path(root: str, path: str, fs: AbstractFileSystem) -> str:
