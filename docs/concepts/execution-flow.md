@@ -48,11 +48,15 @@ to run at all.
 When a step receives an `OutputReference` (the lazy pointer returned by
 `step.output("role")` on a `StepResult` or `StepFuture`), the orchestrator
 resolves it to concrete artifact IDs by querying execution edges in Delta Lake.
-The result is a sorted, deduplicated list of artifact IDs per role.
+Upstream outputs are sorted and deduplicated because they represent a set.
+Explicit caller-provided lists retain their order and duplicates because those
+may control ZIP pairing or batching.
 
-**Why sort?** Determinism. Cache keys derive from artifact IDs, so the same set
-of inputs must always produce the same key regardless of the order workers
-completed in the prior step.
+Resolution is only the first part of input preparation. The orchestrator also
+loads each ID's concrete type, rejects missing or contradictory index entries,
+hydrates enough content to validate stored identities, verifies external bytes,
+and applies the operation's grouping strategy. Both cache levels and worker
+dispatch consume this same prepared snapshot.
 
 **Empty input handling.** When every input role resolves to zero artifact IDs,
 the step is skipped entirely. The orchestrator records a "skipped" result
@@ -84,46 +88,49 @@ other role, retaining only complete matches.
 The framework checks two caches before any computation runs. Each level exists
 because it skips different amounts of work.
 
-**Step-level cache** checks first. The `step_spec_id` hashes the operation
-name, step number, upstream step spec IDs and roles (from `OutputReference`
-pointers), parameters, and config overrides (environment, tool). A hit here skips the
-entire step -- no input resolution, no batching, no worker dispatch. The
-orchestrator returns a previously recorded `StepResult` from the steps Delta
-table.
+**Step-level cache** hashes the operation name, step number, the complete
+prepared input snapshot, parameters, and effective execution configuration. A
+hit skips batching and worker dispatch. The orchestrator returns a previously
+recorded `StepResult` from the steps Delta table.
 
 **Execution-level cache** checks per batch. The `execution_spec_id` hashes the
-operation name, sorted input artifact IDs across all roles, parameters, and
-config overrides. A hit skips that batch while other batches in the same step
-may still execute.
+same kind of concrete input occurrences, sliced to that batch, plus the
+operation, parameters, and effective configuration. A hit skips that batch
+while other batches in the same step may still execute.
+
+Each input occurrence includes its role, group ID, role-local position,
+artifact type, and artifact ID. Mapping insertion order does not matter, but
+item order, pairing, role assignment, type, and multiplicity do.
 
 ```
 prev = pipeline.run(operation=PrevOp, ...)
 pipeline.run(operation=MyOp, inputs={"data": prev.output("data")})
     │
     ▼
-step_spec_id = hash(op_name | step_number | upstream_spec_ids_and_roles | params | config)
+resolve -> type-check -> verify -> group
+    |
+    v
+step_spec_id = hash(op_name | step_number | concrete_typed_occurrences | params | config)
     │
-    ├── HIT:  return cached StepResult (skip everything)
+    ├── HIT:  return cached StepResult
     │
-    └── MISS: resolve inputs → pair → batch → per-batch:
+    └── MISS: batch → per-batch:
                   │
-                  execution_spec_id = hash(op_name | sorted_artifact_ids | params | config)
+                  execution_spec_id = hash(op_name | batch_typed_occurrences | params | config)
                       │
                       ├── HIT:  skip this batch
                       └── MISS: dispatch to worker
 ```
 
-**Why two levels?** Step-level caching is fast (one Delta table scan, no input
-resolution) but coarse -- it only hits when the exact same step runs in the
-exact same pipeline position with the exact same upstream results. Execution-level
-caching is finer-grained -- it catches reuse even when the pipeline structure
-changes, as long as the specific inputs and parameters match. Neither can
-replace the other.
+**Why two levels?** Step-level caching is coarse and can skip the whole step
+after preparation. Execution-level caching is finer-grained: it catches reuse
+when only some batches match. Both share one input truth, so they cannot disagree
+because one hashed symbolic references while the other hashed concrete data.
 
-**Why both keys are deterministic:** Artifact IDs are content hashes. Same
-content, same ID, same cache key. No false hits (any input change invalidates),
-no false misses (identical computation always matches). No manual invalidation
-needed.
+**Why both keys are deterministic:** Artifact IDs identify typed semantic
+content, and the occurrence sequence captures invocation semantics. The same
+prepared invocation produces the same keys without depending on worker
+completion order or storage URI.
 
 ### Batching and dispatch
 
@@ -177,9 +184,10 @@ materialized artifacts. Operations can request format conversion at this stage
 (e.g., materializing with a different file extension) via the `materialize_as`
 field on `InputSpec`.
 
-**Finalize** (after postprocess). The framework computes content-addressed IDs
-for all draft artifacts (`artifact_id = xxh3_128(content)`). After this point,
-artifacts have their permanent identity.
+**Finalize** (after postprocess). The framework computes a versioned ID from
+each draft's registered type, canonical content, and semantic metadata. It then
+protects durable fields and saves an identity snapshot for later integrity
+checks.
 
 After finalization, the sandbox is cleaned up unless `preserve_working` is set
 in the pipeline configuration.

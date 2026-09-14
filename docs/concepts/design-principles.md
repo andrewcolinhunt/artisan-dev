@@ -35,33 +35,34 @@ unlikely. Each principle below targets one or more of these failure modes.
 
 ## Content is identity
 
-Every artifact is identified by the hash of its content
-(`artifact_id = xxh3_128(content)`), producing a 32-character hexadecimal
-string. The ID *is* the data. There is no separate registry mapping names to
-values, no auto-incrementing counter, no UUID that could accidentally refer to
-different content on two machines.
+Every artifact is identified by a versioned hash of its registered type,
+type-owned canonical content, and framework-owned semantic metadata. The
+32-character hexadecimal ID names an exact meaning, not a storage row or a
+filesystem location. A source URI can change without changing identity; a name
+or semantic metadata change produces a new identity even when the raw bytes are
+the same.
 
 Content addressing extends beyond artifact storage. Execution cache keys use
-the same hashing approach: `compute_execution_spec_id` hashes the operation
-name, deduplicated and sorted input artifact IDs, canonicalized parameters, and
-config overrides into a single deterministic key. Step-level cache keys (`compute_step_spec_id`)
-work the same way but reference upstream step spec IDs instead of resolved
-artifact IDs, enabling cache lookups before individual artifacts are known.
+the same discipline through a separate cache identity version. Both step and
+execution keys use concrete typed input occurrences. Each occurrence retains
+its role, group, role-local position, type, and artifact ID; duplicates and
+pairing order are never erased. Parameters and effective execution
+configuration complete the preimage.
 
 **What this buys you:**
 
-- **Automatic deduplication.** Same content, same ID — stored once regardless
-  of how many pipeline steps produce it.
+- **Automatic deduplication.** The same typed semantic identity is stored once,
+  regardless of how many pipeline steps produce it.
 - **Deterministic caching.** Cache keys are derived from content hashes of
   inputs plus operation parameters. No manual invalidation. Different inputs
   produce different keys automatically.
-- **Immutability by construction.** Changing an artifact's content changes its
-  ID, which means the original artifact still exists. You cannot silently
-  overwrite prior results.
+- **Immutability after finalization.** Durable fields and nested semantic values
+  are protected and checked against a saved identity snapshot. Runtime
+  locations remain movable.
 
 Artifacts follow a draft/finalize lifecycle: drafts have `artifact_id=None`
-and are mutable; calling `finalize()` hashes the content, sets the ID, and
-makes the artifact semantically immutable. This two-phase design lets operations
+and are mutable; calling `finalize()` computes the typed identity, sets the ID,
+and protects durable semantics. This two-phase design lets operations
 build outputs incrementally without computing hashes until the content is
 complete.
 

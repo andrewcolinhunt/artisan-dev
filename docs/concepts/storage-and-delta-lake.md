@@ -13,6 +13,22 @@ layer extensible without framework modifications.
 
 ---
 
+## The store format is explicit
+
+Every supported Delta root contains `_artisan/store.json` with the exact format
+contract:
+
+```json
+{"store_format":2,"artifact_identity":1,"cache_identity":2}
+```
+
+Writers publish this manifest only after initializing an empty root. Readers
+validate it before opening framework state. A missing, malformed, older, newer,
+or partially matching manifest fails closed. This clean release boundary avoids
+silently reading rows under the wrong identity or cache semantics.
+
+---
+
 ## The problem storage solves
 
 Computational pipelines on HPC clusters face a specific set of storage
@@ -81,8 +97,11 @@ distinct purpose:
 
 ```
 delta_root/
+├── _artisan/
+│   └── store.json          Exact store and identity format contract
 ├── artifacts/              Content and metadata for every artifact
 │   ├── index/              Type and origin lookup (artifact_id → type)
+│   ├── locations/          Verified artifact identity → URI mappings
 │   ├── metrics/            Metric values (built-in)
 │   ├── configs/            Execution configuration snapshots (built-in)
 │   ├── data/               Generic tabular data (built-in)
@@ -124,6 +143,7 @@ Not all tables are partitioned. The choice depends on access patterns:
 |-------|-------------------------------------|--------|
 | Artifact content tables | Yes | Queries are step-scoped |
 | `artifacts/index` | No | Small table, cross-step lookups |
+| `artifacts/locations` | No | One artifact can have several verified URIs |
 | `provenance/artifact_edges` | No | Graph traversal crosses steps |
 | `provenance/execution_edges` | No | Joined with executions by run ID |
 | `orchestration/executions` | Yes | Queries are step-scoped |
@@ -139,6 +159,12 @@ which type-specific table contains the actual data.
 The index is small (one row per artifact, no content bytes) and must support
 fast lookups across all steps. It also powers bulk queries like loading type
 maps and step maps for provenance graph rendering.
+
+External locations form a separate global relation keyed by `(artifact_id,
+uri)`. Content tables keep digest and size descriptors but do not own paths.
+This separation lets verified external bytes move or gain a replica without
+changing the artifact ID, and prevents first-writer location loss during
+deduplication.
 
 ### The provenance store
 
@@ -429,6 +455,8 @@ For hands-on examples of querying pipeline results, see the
 | Sharded staging directories | Prevents single-directory performance degradation |
 | Sentinel file pattern | Enables reliable completion detection over NFS |
 | Registry-driven tables | Domain layers extend storage without framework changes |
+| Exact store manifest | Prevents cross-version identity and cache misreads |
+| Separate artifact locations | Keeps external availability independent of identity |
 | Ordered table commits | Maintains referential integrity without multi-table transactions |
 | Partition by step number | Enables fast predicate pushdown for step-scoped queries |
 | Separate provenance store | Keeps graph queries independent of artifact content |
