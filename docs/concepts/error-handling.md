@@ -290,11 +290,11 @@ For the full composites model, see
 ## Crash recovery
 
 If the orchestrator process crashes mid-pipeline (power failure, `kill -9`),
-staged Parquet files from completed workers may be left on disk without having
-been committed to Delta Lake. On the next pipeline initialization, the
-framework detects these orphaned staging files and commits them. This is
-controlled by the `recover_staging` option (enabled by default) and ensures
-that work completed before the crash is not lost.
+an immutable logical commit may remain planned with only some physical effects.
+Normal startup does not guess how to recover it. Run `artisan store repair`
+with the Delta and staging roots to report the evidence, then use `--apply` to
+replay a validated plan or `--abandon ID --reason ...` to explicitly abandon
+one unrecoverable plan.
 
 ---
 

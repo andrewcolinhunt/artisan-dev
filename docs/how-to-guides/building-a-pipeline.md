@@ -64,7 +64,6 @@ pipeline = PipelineManager.create(
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Default step runner. Core accepts `"local"`; optional providers are passed as runner instances |
 | `preserve_staging` | `bool` | `False` | Keep staging files after commit (debugging) |
 | `preserve_working` | `bool` | `False` | Keep worker sandboxes after execution (debugging) |
-| `recover_staging` | `bool` | `True` | Commit leftover staging files from prior crashed runs at init |
 
 Both `delta_root` and `staging_root` are created automatically if they do not
 exist. Cluster runner providers can map the default `working_root` to
