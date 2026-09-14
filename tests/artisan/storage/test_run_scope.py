@@ -23,15 +23,19 @@ from artisan.storage.io.commit import DeltaCommitter
 from artisan.storage.io.staging import StagingManager
 
 
-def _step(step_id: str, run_id: str, number: int) -> dict[str, object]:
-    """Build one completed step event row."""
-    return {
+def _step_rows(step_id: str, run_id: str, number: int) -> list[dict[str, object]]:
+    """Build a complete pending/running/succeeded attempt history."""
+    base = {
         "step_run_id": step_id,
-        "step_spec_id": "f" * 32,
+        "step_spec_id": None,
         "pipeline_run_id": run_id,
         "step_number": number,
         "step_name": f"step-{number}",
-        "status": "completed",
+        "status": "pending",
+        "state_sequence": 0,
+        "disposition": None,
+        "cancellation_status": None,
+        "logical_commit_id": None,
         "operation_class": "example.Operation",
         "params_json": "{}",
         "input_refs_json": "{}",
@@ -39,16 +43,27 @@ def _step(step_id: str, run_id: str, number: int) -> dict[str, object]:
         "compute_options_json": "{}",
         "output_roles_json": "[]",
         "output_types_json": "{}",
+        "total_count": None,
+        "succeeded_count": None,
+        "failed_count": None,
+        "timestamp": datetime.now(UTC),
+        "duration_seconds": None,
+        "error": None,
+        "metadata": None,
+    }
+    running = {**base, "status": "running", "state_sequence": 1}
+    succeeded = {
+        **running,
+        "step_spec_id": "f" * 32,
+        "status": "succeeded",
+        "state_sequence": 2,
+        "disposition": "executed",
         "total_count": 1,
         "succeeded_count": 1,
         "failed_count": 0,
-        "timestamp": datetime.now(UTC),
         "duration_seconds": 1.0,
-        "error": None,
-        "dispatch_error": None,
-        "commit_error": None,
-        "metadata": "{}",
     }
+    return [base, running, succeeded]
 
 
 def _execution(execution_id: str, step_id: str | None) -> dict[str, object]:
@@ -100,7 +115,7 @@ def test_membership_unions_direct_and_cached_executions(store) -> None:
     current = "a" * 32
     direct = "b" * 32
     cached = "c" * 32
-    _append(root, TablePath.STEPS, [_step(current, "run-a", 2)], STEPS_SCHEMA)
+    _append(root, TablePath.STEPS, _step_rows(current, "run-a", 2), STEPS_SCHEMA)
     _append(
         root,
         TablePath.EXECUTIONS,
@@ -136,7 +151,10 @@ def test_membership_projects_one_execution_into_multiple_current_steps(store) ->
     _append(
         root,
         TablePath.STEPS,
-        [_step(step_a, "run-a", 0), _step(step_b, "run-a", 1)],
+        [
+            *_step_rows(step_a, "run-a", 0),
+            *_step_rows(step_b, "run-a", 1),
+        ],
         STEPS_SCHEMA,
     )
     _append(
@@ -166,8 +184,8 @@ def test_reuse_projects_across_runs_without_rewriting_execution_owner(store) -> 
         root,
         TablePath.STEPS,
         [
-            _step(source_step, "source-run", 0),
-            _step(current_step, "current-run", 4),
+            *_step_rows(source_step, "source-run", 0),
+            *_step_rows(current_step, "current-run", 4),
         ],
         STEPS_SCHEMA,
     )
@@ -219,7 +237,7 @@ def test_membership_unknown_run_is_empty_and_typed(store) -> None:
 def test_membership_fails_closed_on_dangling_cached_execution(store) -> None:
     root, fs = store
     current = "a" * 32
-    _append(root, TablePath.STEPS, [_step(current, "run-a", 0)], STEPS_SCHEMA)
+    _append(root, TablePath.STEPS, _step_rows(current, "run-a", 0), STEPS_SCHEMA)
     _append(
         root,
         TablePath.CACHE_REUSE,
@@ -240,7 +258,7 @@ def test_membership_collapses_duplicate_pairs(store) -> None:
     root, fs = store
     current = "a" * 32
     cached = "b" * 32
-    _append(root, TablePath.STEPS, [_step(current, "run-a", 0)], STEPS_SCHEMA)
+    _append(root, TablePath.STEPS, _step_rows(current, "run-a", 0), STEPS_SCHEMA)
     _append(
         root,
         TablePath.EXECUTIONS,
@@ -280,8 +298,8 @@ def test_cache_validation_enforces_store_gate_for_empty_input(tmp_path) -> None:
 def test_membership_rejects_conflicting_step_name(store) -> None:
     root, fs = store
     step_id = "a" * 32
-    first = _step(step_id, "run-a", 0)
-    second = {**first, "step_name": "different-name"}
+    first, second, *_ = _step_rows(step_id, "run-a", 0)
+    second = {**second, "step_name": "different-name"}
     _append(root, TablePath.STEPS, [first, second], STEPS_SCHEMA)
 
     with pytest.raises(PersistenceIntegrityError, match="conflicting owners"):

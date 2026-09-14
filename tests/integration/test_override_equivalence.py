@@ -35,6 +35,7 @@ from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 pytestmark = pytest.mark.integration
 
@@ -60,21 +61,21 @@ def _read_steps_table(delta_root: str) -> pl.DataFrame:
     return pl.read_delta(str(table_path))
 
 
-def _completed_step(delta_root: str, name: str) -> dict[str, Any]:
+def _succeeded_step(delta_root: str, name: str) -> dict[str, Any]:
     """Return the most recent COMPLETED row for a given step name as a dict."""
     df = _read_steps_table(delta_root)
     matches = df.filter(
-        (pl.col("step_name") == name) & (pl.col("status") == "completed")
+        (pl.col("step_name") == name) & (pl.col("status") == "succeeded")
     )
-    assert len(matches) >= 1, f"no completed step named {name!r} in delta"
+    assert len(matches) >= 1, f"no succeeded step named {name!r} in delta"
     return matches.sort("started_at", descending=True).row(0, named=True)
 
 
-def _completed_step_for_run(delta_root: str, pipeline_run_id: str) -> dict[str, Any]:
-    """Return the completed step row for one single-step pipeline run."""
+def _succeeded_step_for_run(delta_root: str, pipeline_run_id: str) -> dict[str, Any]:
+    """Return the succeeded step row for one single-step pipeline run."""
     matches = _read_steps_table(delta_root).filter(
         (pl.col("pipeline_run_id") == pipeline_run_id)
-        & (pl.col("status") == "completed")
+        & (pl.col("status") == "succeeded")
     )
     assert len(matches) == 1
     return matches.row(0, named=True)
@@ -236,8 +237,8 @@ def test_presence_based_forms_match_execution_persistence_and_cache(
             skip_cache=skip_cache,
             **{kwarg: patch_value},
         )
-        assert result.success
-        row = _completed_step_for_run(delta_root, pipeline.config.pipeline_run_id)
+        assert result.status is StepStatus.SUCCEEDED
+        row = _succeeded_step_for_run(delta_root, pipeline.config.pipeline_run_id)
         pipeline.finalize()
         return pipeline._step_spec_ids[0], row
 

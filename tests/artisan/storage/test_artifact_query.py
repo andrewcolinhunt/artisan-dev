@@ -42,34 +42,49 @@ def _seed_index(root: Path, entries: list[tuple[str, str, int]]) -> None:
 
 
 def _seed_run_outputs(root: Path, run_id: str, entries: list[tuple[int, str]]) -> None:
-    """Write completed attempts, their executions, and exact output edges."""
-    rows = [
-        {
-            "step_run_id": digest_utf8(f"{run_id}:{n}:step"),
-            "step_spec_id": f"spec-{n}",
+    """Write terminal attempts, their executions, and exact output edges."""
+    rows = []
+    for n, _ in entries:
+        step_run_id = digest_utf8(f"{run_id}:{n}:step")
+        base = {
+            "step_run_id": step_run_id,
+            "step_spec_id": None,
             "pipeline_run_id": run_id,
             "step_number": n,
             "step_name": f"step{n}",
-            "status": "completed",
+            "status": "pending",
+            "state_sequence": 0,
+            "disposition": None,
+            "cancellation_status": None,
+            "logical_commit_id": None,
             "operation_class": "DataGenerator",
             "params_json": "{}",
             "input_refs_json": "{}",
             "compute_backend": "local",
             "compute_options_json": "{}",
             "output_roles_json": "[]",
-            "output_types_json": "[]",
+            "output_types_json": "{}",
+            "total_count": None,
+            "succeeded_count": None,
+            "failed_count": None,
+            "timestamp": datetime(2026, 7, 1, tzinfo=UTC),
+            "duration_seconds": None,
+            "error": None,
+            "metadata": None,
+        }
+        running = {**base, "status": "running", "state_sequence": 1}
+        succeeded = {
+            **running,
+            "step_spec_id": digest_utf8(f"{run_id}:{n}:spec"),
+            "status": "succeeded",
+            "state_sequence": 2,
+            "disposition": "executed",
             "total_count": 1,
             "succeeded_count": 1,
             "failed_count": 0,
-            "timestamp": datetime(2026, 7, 1, tzinfo=UTC),
             "duration_seconds": 1.0,
-            "error": None,
-            "dispatch_error": None,
-            "commit_error": None,
-            "metadata": "{}",
         }
-        for n, _ in entries
-    ]
+        rows.extend([base, running, succeeded])
     pl.DataFrame(rows, schema=STEPS_SCHEMA).write_delta(
         str(root / TablePath.STEPS), mode="append"
     )

@@ -25,31 +25,59 @@ from artisan.visualization.inspect import RunDiagnosis, diagnose_run
 A, B = "a" * 32, "b" * 32
 
 
-def _step_row(run_id: str, number: int, name: str, status: str, minute: int) -> dict:
-    return {
+def _step_rows(
+    run_id: str, number: int, name: str, status: str, minute: int
+) -> list[dict]:
+    timestamp = datetime(2026, 7, 1, tzinfo=UTC) + timedelta(minutes=minute)
+    pending = {
         "step_run_id": f"{run_id}-step-{number}",
-        "step_spec_id": f"spec-{number}",
+        "step_spec_id": None,
         "pipeline_run_id": run_id,
         "step_number": number,
         "step_name": name,
-        "status": status,
+        "status": "pending",
+        "state_sequence": 0,
+        "disposition": None,
+        "cancellation_status": None,
+        "logical_commit_id": None,
         "operation_class": "DataGenerator",
         "params_json": "{}",
         "input_refs_json": "{}",
         "compute_backend": "local",
         "compute_options_json": "{}",
         "output_roles_json": "[]",
-        "output_types_json": "[]",
-        "total_count": 1,
-        "succeeded_count": 1,
-        "failed_count": 1 if status == "failed" else 0,
-        "timestamp": datetime(2026, 7, 1, tzinfo=UTC) + timedelta(minutes=minute),
-        "duration_seconds": 1.0,
+        "output_types_json": "{}",
+        "total_count": None,
+        "succeeded_count": None,
+        "failed_count": None,
+        "timestamp": timestamp - timedelta(microseconds=2),
+        "duration_seconds": None,
         "error": None,
-        "dispatch_error": None,
-        "commit_error": None,
+        "metadata": None,
+    }
+    running = {
+        **pending,
+        "status": "running",
+        "state_sequence": 1,
+        "timestamp": timestamp - timedelta(microseconds=1),
+    }
+    if status == "running":
+        return [pending, running]
+    terminal = {
+        **running,
+        "step_spec_id": f"spec-{number}",
+        "status": status,
+        "state_sequence": 2,
+        "disposition": "executed" if status == "succeeded" else None,
+        "total_count": 1,
+        "succeeded_count": 1 if status == "succeeded" else 0,
+        "failed_count": 0 if status == "succeeded" else 1,
+        "timestamp": timestamp,
+        "duration_seconds": 1.0,
+        "error": "step failed" if status == "failed" else None,
         "metadata": "{}",
     }
+    return [pending, running, terminal]
 
 
 @pytest.fixture
@@ -57,9 +85,9 @@ def failed_store(tmp_path: Path) -> Path:
     """Seed run-1 (a failed transform) plus an older failed run-0."""
     publish_test_store(str(tmp_path), LocalFileSystem())
     steps = [
-        _step_row("run-0", 1, "generate", "failed", 0),
-        _step_row("run-1", 1, "generate", "completed", 10),
-        _step_row("run-1", 2, "transform", "failed", 20),
+        *_step_rows("run-0", 1, "generate", "failed", 0),
+        *_step_rows("run-1", 1, "generate", "succeeded", 10),
+        *_step_rows("run-1", 2, "transform", "failed", 20),
     ]
     pl.DataFrame(steps, schema=STEPS_SCHEMA).write_delta(
         str(tmp_path / TablePath.STEPS)
@@ -165,7 +193,7 @@ class TestDiagnoseRun:
         pl.DataFrame(schema=EXECUTIONS_SCHEMA).write_delta(
             str(tmp_path / TablePath.EXECUTIONS)
         )
-        steps = [_step_row("run-1", 1, "generate", "running", 0)]
+        steps = _step_rows("run-1", 1, "generate", "running", 0)
         pl.DataFrame(steps, schema=STEPS_SCHEMA).write_delta(
             str(tmp_path / TablePath.STEPS)
         )

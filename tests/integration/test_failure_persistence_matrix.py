@@ -30,6 +30,7 @@ from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.visualization.inspect import inspect_failures
 
 from .conftest import (
@@ -110,7 +111,7 @@ def test_creator_continue_records_failure(
     """CONTINUE creator failure: one readable row + log, correct envelope."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.CONTINUE)
     step = pipeline.run(op, step_runner=Runner.LOCAL)
-    assert step.success is False
+    assert step.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
@@ -127,7 +128,7 @@ def test_creator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> 
     """FAIL_FAST full failure lands a readable row (was stranded in staging)."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.FAIL_FAST)
     step = pipeline.run(failure_ops.FailExecute, step_runner=Runner.LOCAL)
-    assert step.success is False
+    assert step.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
@@ -163,7 +164,10 @@ def test_creator_partial_keeps_sibling_success(
         params={"fail_on_index": 0},
         step_runner=Runner.LOCAL,
     )
-    assert step1.success is False
+    expected = (
+        StepStatus.PARTIAL if policy is FailurePolicy.CONTINUE else StepStatus.FAILED
+    )
+    assert step1.status is expected
     pipeline.finalize()
 
     # Exactly one failure row for the transformer step, with a log.
@@ -203,7 +207,7 @@ def test_curator_continue_records_failure(
     step1 = pipeline.run(
         op, inputs={"passthrough": gen.output("datasets")}, step_runner=Runner.LOCAL
     )
-    assert step1.success is False
+    assert step1.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
@@ -222,7 +226,7 @@ def test_curator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> 
         inputs={"passthrough": gen.output("datasets")},
         step_runner=Runner.LOCAL,
     )
-    assert step1.success is False
+    assert step1.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
@@ -273,7 +277,7 @@ def test_creator_worker_crash_synthesizes_record(
     """A creator that os._exit's the worker still lands a synthesized row + log."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.CONTINUE)
     step = pipeline.run(failure_ops.WorkerCrash, step_runner=Runner.LOCAL)
-    assert step.success is False
+    assert step.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
@@ -297,7 +301,7 @@ def test_curator_worker_crash_synthesizes_record(
         inputs={"passthrough": gen.output("datasets")},
         step_runner=Runner.LOCAL,
     )
-    assert step1.success is False
+    assert step1.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(

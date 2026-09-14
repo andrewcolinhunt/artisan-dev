@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -10,13 +9,17 @@ import pytest
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
+from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.run_status import (
     RunStatus,
     resolve_step_number,
     run_status,
 )
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.table_schemas import EXECUTIONS_SCHEMA, STEPS_SCHEMA
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
+from artisan.schemas.orchestration.step_result import StepResult
+from artisan.schemas.orchestration.step_start_record import StepStartRecord
+from artisan.storage.core.table_schemas import EXECUTIONS_SCHEMA
 
 
 def _seed_steps(
@@ -24,7 +27,7 @@ def _seed_steps(
     run_id: str,
     steps: list[tuple],
 ) -> None:
-    """Write running+terminal step rows from step specs.
+    """Write full pending-to-terminal histories from step specs.
 
     Each spec is ``(number, name, status)`` or, to exercise the count-aware
     status, ``(number, name, status, succeeded, failed)`` — counts default
@@ -34,40 +37,56 @@ def _seed_steps(
     executions_path = root / TablePath.EXECUTIONS.value
     if not executions_path.exists():
         pl.DataFrame(schema=EXECUTIONS_SCHEMA).write_delta(str(executions_path))
-    rows = []
-    t0 = datetime(2026, 7, 1, tzinfo=UTC)
-    for i, spec in enumerate(steps):
+    tracker = StepTracker(str(root), run_id)
+    for spec in steps:
         number, name, status = spec[:3]
-        succeeded = spec[3] if len(spec) > 3 else 1
-        failed = spec[4] if len(spec) > 4 else 0
-        for j, row_status in enumerate(["running", status]):
-            rows.append(
-                {
-                    "step_run_id": f"{run_id}-step-{number}",
-                    "step_spec_id": f"spec-{number}",
-                    "pipeline_run_id": run_id,
-                    "step_number": number,
-                    "step_name": name,
-                    "status": row_status,
-                    "operation_class": "DataGenerator",
-                    "params_json": "{}",
-                    "input_refs_json": "{}",
-                    "compute_backend": "local",
-                    "compute_options_json": "{}",
-                    "output_roles_json": "[]",
-                    "output_types_json": "[]",
-                    "total_count": succeeded + failed,
-                    "succeeded_count": succeeded,
-                    "failed_count": failed,
-                    "timestamp": t0 + timedelta(minutes=10 * i + j),
-                    "duration_seconds": 1.5,
-                    "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
-                    "metadata": "{}",
-                }
+        terminal = StepStatus(status)
+        succeeded = spec[3] if len(spec) > 3 else int(terminal == StepStatus.SUCCEEDED)
+        failed = spec[4] if len(spec) > 4 else int(terminal == StepStatus.FAILED)
+        step_run_id = f"{run_id}-step-{number}"
+        step_spec_id = f"spec-{number}"
+        tracker.create_attempt(
+            StepStartRecord(
+                step_run_id=step_run_id,
+                step_spec_id=step_spec_id,
+                step_number=number,
+                step_name=name,
+                operation_class="DataGenerator",
+                params_json="{}",
+                input_refs_json="{}",
+                compute_backend="local",
+                compute_options_json="{}",
+                output_roles_json="[]",
+                output_types_json="{}",
             )
-    pl.DataFrame(rows, schema=STEPS_SCHEMA).write_delta(str(root / TablePath.STEPS))
+        )
+        tracker.transition(
+            step_run_id,
+            StepStatus.PENDING,
+            StepStatus.RUNNING,
+            step_spec_id=step_spec_id,
+        )
+        tracker.transition(
+            step_run_id,
+            StepStatus.RUNNING,
+            terminal,
+            step_spec_id=step_spec_id,
+            result=StepResult(
+                step_name=name,
+                step_number=number,
+                status=terminal,
+                disposition=(
+                    StepDisposition.EXECUTED
+                    if terminal in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+                    else None
+                ),
+                error="test failure" if terminal == StepStatus.FAILED else None,
+                total_count=succeeded + failed,
+                succeeded_count=succeeded,
+                failed_count=failed,
+                step_run_id=step_run_id,
+            ),
+        )
 
 
 class TestRunStatus:
@@ -75,63 +94,61 @@ class TestRunStatus:
         _seed_steps(
             tmp_path,
             "run-x",
-            [(1, "generate", "completed"), (2, "transform", "completed")],
+            [(1, "generate", "succeeded"), (2, "transform", "succeeded")],
         )
         status = run_status(str(tmp_path), "run-x")
         assert isinstance(status, RunStatus)
         assert status.pipeline_run_id == "run-x"
         assert status.step_count == 2
-        assert status.last_status == "completed"
+        assert status.last_status == StepStatus.SUCCEEDED
         assert status.started_at is not None
         assert [s.name for s in status.steps] == ["generate", "transform"]
-        assert all(s.status == "ok" for s in status.steps)
+        assert all(s.status == StepStatus.SUCCEEDED for s in status.steps)
 
     def test_failed_step_surfaces(self, tmp_path) -> None:
         _seed_steps(
             tmp_path,
             "run-f",
-            [(1, "generate", "completed"), (2, "boom", "failed")],
+            [(1, "generate", "succeeded"), (2, "boom", "failed")],
         )
         status = run_status(str(tmp_path), "run-f")
         by_name = {s.name: s.status for s in status.steps}
-        assert by_name["boom"] == "failed"
+        assert by_name["boom"] == StepStatus.FAILED
 
-    def test_completed_all_units_failed_surfaces_failed(self, tmp_path) -> None:
-        """A CONTINUE step that completed with every unit failed reads failed.
-
-        The step persists status='completed'; 0 succeeded / 1 failed makes it
-        'failed' at the step grain and in the run rollup.
-        """
+    def test_failed_state_surfaces_without_reader_reclassification(
+        self, tmp_path
+    ) -> None:
+        """Readers expose the authoritative failed state directly."""
         _seed_steps(
             tmp_path,
             "run-c",
-            [(1, "generate", "completed"), (2, "transform", "completed", 0, 1)],
+            [(1, "generate", "succeeded"), (2, "transform", "failed", 0, 1)],
         )
         status = run_status(str(tmp_path), "run-c")
         by_name = {s.name: s.status for s in status.steps}
-        assert by_name["transform"] == "failed"
-        assert by_name["generate"] == "ok"
-        assert status.last_status == "failed"
+        assert by_name["transform"] == StepStatus.FAILED
+        assert by_name["generate"] == StepStatus.SUCCEEDED
+        assert status.last_status == StepStatus.FAILED
 
-    def test_completed_partial_surfaces_partial(self, tmp_path) -> None:
-        """A completed step with a mix of succeeded and failed units is partial."""
+    def test_partial_state_surfaces_directly(self, tmp_path) -> None:
+        """A mixed-count terminal step exposes partial without derivation."""
         _seed_steps(
             tmp_path,
             "run-p",
-            [(1, "transform", "completed", 2, 1)],
+            [(1, "transform", "partial", 2, 1)],
         )
         status = run_status(str(tmp_path), "run-p")
-        assert status.steps[0].status == "partial"
-        assert status.last_status == "partial"
+        assert status.steps[0].status == StepStatus.PARTIAL
+        assert status.last_status == StepStatus.PARTIAL
 
     def test_unknown_run_is_empty(self, tmp_path) -> None:
-        _seed_steps(tmp_path, "run-x", [(1, "generate", "completed")])
+        _seed_steps(tmp_path, "run-x", [(1, "generate", "succeeded")])
         status = run_status(str(tmp_path), "nope")
         assert status.steps == []
         assert status.last_status is None
         assert status.step_count == 0
 
-    def test_missing_table_raises(self, tmp_path) -> None:
+    def test_missing_steps_table_raises(self, tmp_path) -> None:
         with pytest.raises(FileNotFoundError):
             run_status(str(tmp_path), "run-x")
 
@@ -141,14 +158,13 @@ class TestResolveStepNumber:
         _seed_steps(
             tmp_path,
             "run-x",
-            [(1, "generate", "completed"), (2, "transform", "completed")],
+            [(1, "generate", "succeeded"), (2, "transform", "succeeded")],
         )
         assert resolve_step_number(str(tmp_path), "run-x", "transform") == 2
 
     def test_unknown_step_returns_none(self, tmp_path) -> None:
-        _seed_steps(tmp_path, "run-x", [(1, "generate", "completed")])
+        _seed_steps(tmp_path, "run-x", [(1, "generate", "succeeded")])
         assert resolve_step_number(str(tmp_path), "run-x", "nope") is None
 
-    def test_missing_table_raises(self, tmp_path) -> None:
-        with pytest.raises(FileNotFoundError):
-            resolve_step_number(str(tmp_path), "run-x", "generate")
+    def test_empty_steps_table_returns_none(self, tmp_path) -> None:
+        assert resolve_step_number(str(tmp_path), "run-x", "generate") is None

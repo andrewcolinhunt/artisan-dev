@@ -439,10 +439,14 @@ class TestMaxStepFiltering:
     ) -> None:
         store = build_cache_isolation_store(tmp_path)
         steps = pl.read_delta(str(store.root / "orchestration/steps"))
-        current_step_id = steps.filter(
-            (pl.col("pipeline_run_id") == store.current_run)
-            & (pl.col("step_number") == 0)
-        )["step_run_id"].item()
+        current_step_id = (
+            steps.filter(
+                (pl.col("pipeline_run_id") == store.current_run)
+                & (pl.col("step_number") == 0)
+            )["step_run_id"]
+            .unique()
+            .item()
+        )
         pl.DataFrame(
             [
                 {

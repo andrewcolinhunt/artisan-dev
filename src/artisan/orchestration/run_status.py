@@ -1,9 +1,8 @@
-"""Composite run status — per-step terminal state plus the run rollup.
+"""Composite run status — per-step current state plus the run rollup.
 
-Composes ``inspect_pipeline`` (per-step terminal status from the steps
-table) with ``run_history.list_runs`` (the run rollup). "Running" is never
-persisted, so only terminal statuses surface — the honest read a polling,
-read-only server can serve. The core reader and MCP
+Composes ``inspect_pipeline`` (per-step current status from the steps
+table) with ``run_history.list_runs`` (the run rollup). Pending and running
+attempts remain visible to polling readers. The core reader and MCP
 ``artisan_get_run_status`` tool share these shapes as one contract.
 """
 
@@ -14,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.storage.core.store_format import assert_store_format
 
 if TYPE_CHECKING:
@@ -22,33 +22,31 @@ if TYPE_CHECKING:
     from artisan.schemas.execution.storage_config import StorageConfig
 
 
-class StepStatus(BaseModel):
-    """Terminal state of one pipeline step.
+class RunStepStatus(BaseModel):
+    """Current state of one logical pipeline step.
 
-    Fields mirror ``inspect_pipeline`` columns. ``status`` is one of
-    ``ok`` / ``partial`` / ``failed`` / ``skipped`` / ``cancelled``;
+    Fields mirror ``inspect_pipeline`` columns. ``status`` is the shared
+    lifecycle enum;
     ``produced`` and ``duration`` are the human-readable summaries that
     reader emits.
 
     Attributes:
         step_number: The step's number within the run.
         name: The step name.
-        status: Terminal status (ok/partial/failed/skipped/cancelled).
-            ``partial`` means some units failed under CONTINUE while others
-            succeeded; ``failed`` means every unit failed.
+        status: Authoritative lifecycle status.
         produced: Human summary of what the step produced.
         duration: Human-readable duration (e.g. ``"1.2s"``).
     """
 
     step_number: int
     name: str
-    status: str
+    status: StepStatus
     produced: str
     duration: str
 
 
 class RunStatus(BaseModel):
-    """Run rollup plus its per-step terminal statuses.
+    """Run rollup plus each step's current lifecycle status.
 
     Attributes:
         pipeline_run_id: The run this status describes.
@@ -57,15 +55,15 @@ class RunStatus(BaseModel):
         step_count: Distinct steps recorded for the run.
         started_at: ISO timestamp of the first step event, or None.
         ended_at: ISO timestamp of the last step event, or None.
-        steps: Per-step terminal statuses, ordered by step number.
+        steps: Per-step current statuses, ordered by step number.
     """
 
     pipeline_run_id: str
-    last_status: str | None
+    last_status: StepStatus | None
     step_count: int
     started_at: str | None
     ended_at: str | None
-    steps: list[StepStatus]
+    steps: list[RunStepStatus]
 
 
 def run_status(
@@ -74,7 +72,7 @@ def run_status(
     *,
     storage: StorageConfig | None = None,
 ) -> RunStatus:
-    """Assemble the terminal status of one pipeline run.
+    """Assemble the current status of one pipeline run.
 
     Args:
         delta_root: Root path for Delta Lake tables.
@@ -108,7 +106,7 @@ def run_status(
         fs=storage.filesystem(),
     )
     steps = [
-        StepStatus(
+        RunStepStatus(
             step_number=row["step"],
             name=row["operation"],
             status=row["status"],
@@ -164,32 +162,21 @@ def resolve_step_number(
     Raises:
         FileNotFoundError: If the steps table does not exist.
     """
-    import polars as pl
-
-    from artisan.schemas.enums import TablePath
+    from artisan.orchestration.engine.step_tracker import StepTracker
     from artisan.storage.core.store_format import assert_store_format
-    from artisan.utils.path import uri_join
 
     if fs is None:
         from fsspec.implementations.local import LocalFileSystem
 
         fs = LocalFileSystem()
     assert_store_format(delta_root, fs, storage_options)
-    steps_path = uri_join(delta_root, TablePath.STEPS)
-    if not fs.exists(steps_path):
-        msg = f"Steps table not found at {steps_path}"
-        raise FileNotFoundError(msg)
-
-    matches = (
-        pl.scan_delta(steps_path, storage_options=storage_options)
-        .filter(pl.col("pipeline_run_id") == pipeline_run_id)
-        .filter(pl.col("step_name") == step_name)
-        .select("step_number")
-        .collect()
-    )
-    if matches.is_empty():
-        return None
-    return int(matches["step_number"][0])
+    states = StepTracker(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+    ).load_current_states(pipeline_run_id)
+    match = next((state for state in states if state.step_name == step_name), None)
+    return match.step_number if match is not None else None
 
 
 def _iso(value: date | datetime | None) -> str | None:

@@ -122,7 +122,7 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
 
     Layout: ``<tmp>/delta`` is the Delta root; failure logs live at
     ``<tmp>/logs/failures`` (runs_dir = parent of delta_root). One run
-    ``run-1`` with a completed ``generate`` step (two data artifacts) and a
+    ``run-1`` with a succeeded ``generate`` step (two data artifacts) and a
     failed ``transform`` step (one metric + a failed execution with an
     error envelope and a written failure log).
     """
@@ -132,7 +132,7 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
     _seed_steps(
         delta_root,
         run_id,
-        [(1, "generate", "completed"), (2, "transform", "failed")],
+        [(1, "generate", "succeeded"), (2, "transform", "failed")],
     )
     _seed_index(
         delta_root,
@@ -172,33 +172,54 @@ def _seed_steps(root: Path, run_id: str, steps: list[tuple[int, str, str]]) -> N
     rows = []
     t0 = datetime(2026, 7, 1, tzinfo=UTC)
     for i, (number, name, status) in enumerate(steps):
-        for j, row_status in enumerate(["running", status]):
-            rows.append(
-                {
-                    "step_run_id": digest_utf8(f"{run_id}:step:{number}"),
-                    "step_spec_id": f"spec-{number}",
-                    "pipeline_run_id": run_id,
-                    "step_number": number,
-                    "step_name": name,
-                    "status": row_status,
-                    "operation_class": "DataGenerator",
-                    "params_json": "{}",
-                    "input_refs_json": "{}",
-                    "compute_backend": "local",
-                    "compute_options_json": "{}",
-                    "output_roles_json": "[]",
-                    "output_types_json": "[]",
-                    "total_count": 1,
-                    "succeeded_count": 1,
-                    "failed_count": 1 if status == "failed" else 0,
-                    "timestamp": t0 + timedelta(minutes=10 * i + j),
-                    "duration_seconds": 1.5,
-                    "error": "transform blew up" if status == "failed" else None,
-                    "dispatch_error": None,
-                    "commit_error": None,
-                    "metadata": "{}",
-                }
-            )
+        timestamp = t0 + timedelta(minutes=10 * i)
+        pending = {
+            "step_run_id": digest_utf8(f"{run_id}:step:{number}"),
+            "step_spec_id": None,
+            "pipeline_run_id": run_id,
+            "step_number": number,
+            "step_name": name,
+            "status": "pending",
+            "state_sequence": 0,
+            "disposition": None,
+            "cancellation_status": None,
+            "logical_commit_id": None,
+            "operation_class": "DataGenerator",
+            "params_json": "{}",
+            "input_refs_json": "{}",
+            "compute_backend": "local",
+            "compute_options_json": "{}",
+            "output_roles_json": "[]",
+            "output_types_json": "{}",
+            "total_count": None,
+            "succeeded_count": None,
+            "failed_count": None,
+            "timestamp": timestamp,
+            "duration_seconds": None,
+            "error": None,
+            "metadata": None,
+        }
+        running = {
+            **pending,
+            "status": "running",
+            "state_sequence": 1,
+            "timestamp": timestamp + timedelta(seconds=1),
+        }
+        terminal = {
+            **running,
+            "step_spec_id": digest_utf8(f"{run_id}:spec:{number}"),
+            "status": status,
+            "state_sequence": 2,
+            "disposition": "executed" if status == "succeeded" else None,
+            "total_count": 1,
+            "succeeded_count": 1 if status == "succeeded" else 0,
+            "failed_count": 0 if status == "succeeded" else 1,
+            "timestamp": timestamp + timedelta(seconds=2),
+            "duration_seconds": 1.5,
+            "error": "transform blew up" if status == "failed" else None,
+            "metadata": "{}",
+        }
+        rows.extend([pending, running, terminal])
     pl.DataFrame(rows, schema=STEPS_SCHEMA).write_delta(str(root / TablePath.STEPS))
 
 

@@ -36,13 +36,6 @@ from artisan.utils.path import uri_join
 # Public API
 # ======================================================================
 
-# Step-status vocabulary for a "completed" step, derived from per-unit
-# counts. Shared by inspect_pipeline (step grain) and the run rollup
-# (run_history.list_runs) so both read a step's health the same way.
-STATUS_OK = "ok"
-STATUS_PARTIAL = "partial"
-STATUS_FAILED = "failed"
-
 
 def _validated_fs(
     delta_root: str,
@@ -56,29 +49,6 @@ def _validated_fs(
         fs = LocalFileSystem()
     assert_store_format(delta_root, fs, storage_options)
     return fs
-
-
-def _completed_status(succeeded_count: int, failed_count: int) -> str:
-    """Resolve a completed step's status from its per-unit counts.
-
-    A step row persists ``status="completed"`` once it finishes, even when
-    units failed under ``FailurePolicy.CONTINUE``. The real outcome lives in
-    the counts: no successes with failures present is a full failure, a mix
-    is partial, and anything else is clean.
-
-    Args:
-        succeeded_count: Units that succeeded in the step.
-        failed_count: Units that failed in the step.
-
-    Returns:
-        ``"failed"`` (all units failed), ``"partial"`` (some failed), or
-        ``"ok"`` (none failed).
-    """
-    if succeeded_count == 0 and failed_count > 0:
-        return STATUS_FAILED
-    if failed_count > 0:
-        return STATUS_PARTIAL
-    return STATUS_OK
 
 
 def inspect_pipeline(
@@ -98,9 +68,8 @@ def inspect_pipeline(
 
     Returns:
         DataFrame with columns: step, operation, status, produced, duration.
-        ``status`` is ok / partial / failed / skipped / cancelled — a step
-        that completed with some units failing under CONTINUE is ``partial``
-        (or ``failed`` if every unit failed), not ``ok``.
+        ``status`` uses the authoritative lifecycle vocabulary, including
+        pending and running attempts.
 
     Raises:
         FileNotFoundError: If steps table doesn't exist.
@@ -111,26 +80,15 @@ def inspect_pipeline(
         msg = f"Steps table not found at {steps_path}"
         raise FileNotFoundError(msg)
 
-    # Load completed, skipped, cancelled, and failed steps
-    scanner = pl.scan_delta(steps_path, storage_options=storage_options).filter(
-        pl.col("status").is_in(["completed", "skipped", "cancelled", "failed"])
-    )
-    if pipeline_run_id is not None:
-        scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
+    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
-    steps_df = scanner.select(
-        "pipeline_run_id",
-        "step_number",
-        "step_name",
-        "operation_class",
-        "status",
-        "succeeded_count",
-        "failed_count",
-        "duration_seconds",
-        "timestamp",
-    ).collect()
-
-    if steps_df.is_empty():
+    states = StepTracker(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+    ).load_current_states(pipeline_run_id)
+    if not states:
         return pl.DataFrame(
             schema={
                 "step": pl.Int32,
@@ -141,19 +99,7 @@ def inspect_pipeline(
             }
         )
 
-    # Resolve the latest terminal run from lifecycle time, never from a
-    # step-number ordering that repeats independently in every run.
-    run_id = pipeline_run_id or steps_df.sort("timestamp", descending=True).item(
-        0, "pipeline_run_id"
-    )
-    steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
-
-    # Keep the newest terminal attempt at each logical step number.
-    steps_df = (
-        steps_df.sort("timestamp", descending=True)
-        .unique(subset=["step_number"], keep="first")
-        .sort("step_number")
-    )
+    run_id = states[0].pipeline_run_id
 
     index_counts: dict[int, dict[str, int]] = {}
     from artisan.storage.core.run_scope import load_accepted_outputs
@@ -174,53 +120,26 @@ def inspect_pipeline(
 
     # Build result rows
     rows: list[dict[str, Any]] = []
-    for row in steps_df.iter_rows(named=True):
-        step_num = row["step_number"]
-
-        if row["status"] == "skipped":
+    usable = {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+    for state in states:
+        step_num = state.step_number
+        if state.status not in usable:
             rows.append(
                 {
                     "step": step_num,
-                    "operation": row["step_name"],
-                    "status": "skipped",
+                    "operation": state.step_name,
+                    "status": state.status.value,
                     "produced": "-",
                     "duration": "-",
                 }
             )
             continue
 
-        if row["status"] == "cancelled":
-            rows.append(
-                {
-                    "step": step_num,
-                    "operation": row["step_name"],
-                    "status": "cancelled",
-                    "produced": "-",
-                    "duration": "-",
-                }
-            )
-            continue
-
-        if row["status"] == "failed":
-            rows.append(
-                {
-                    "step": step_num,
-                    "operation": row["step_name"],
-                    "status": "failed",
-                    "produced": "-",
-                    "duration": "-",
-                }
-            )
-            continue
-
-        op_class = row["operation_class"] or ""
-        is_filter = "Filter" in op_class or "filter" in (row["step_name"] or "")
+        op_class = state.operation_class or ""
+        is_filter = "Filter" in op_class or "filter" in state.step_name
 
         if is_filter:
-            # A filter's "failed_count" is artifacts filtered out, not errors —
-            # a filter that ran is always "ok" regardless of how many passed.
-            produced = f"{row['succeeded_count'] or 0} passed"
-            status = "ok"
+            produced = f"{state.succeeded_count or 0} passed"
         else:
             counts = index_counts.get(step_num, {})
             if counts:
@@ -228,20 +147,14 @@ def inspect_pipeline(
                 produced = ", ".join(parts)
             else:
                 produced = "-"
-            # The step row is "completed" even when units failed under
-            # CONTINUE; the per-unit counts carry the real outcome.
-            status = _completed_status(
-                row["succeeded_count"] or 0, row["failed_count"] or 0
-            )
-
-        duration_s = row["duration_seconds"]
+        duration_s = state.duration_seconds
         duration = f"{duration_s:.1f}s" if duration_s is not None else "-"
 
         rows.append(
             {
                 "step": step_num,
-                "operation": row["step_name"],
-                "status": status,
+                "operation": state.step_name,
+                "status": state.status.value,
                 "produced": produced,
                 "duration": duration,
             }
@@ -282,7 +195,7 @@ def inspect_failures(
 
     Complements ``inspect_pipeline`` (the step overview): this surfaces the
     failed *executions* within any step, including partial failures inside
-    a step that completed.
+    a terminal step attempt.
 
     Args:
         delta_root: Path to Delta Lake root.

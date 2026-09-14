@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import graphviz
@@ -28,7 +29,11 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
         "step_run_id": "run_0",
         "step_spec_id": "spec_0",
         "pipeline_run_id": "pipe_0",
-        "status": "completed",
+        "status": "succeeded",
+        "state_sequence": 2,
+        "disposition": "executed",
+        "cancellation_status": None,
+        "logical_commit_id": None,
         "operation_class": "test.Op",
         "params_json": "{}",
         "input_refs_json": "null",
@@ -39,14 +44,40 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
         "total_count": 1,
         "succeeded_count": 1,
         "failed_count": 0,
-        "timestamp": None,
+        "timestamp": datetime(2026, 1, 1, tzinfo=UTC),
         "duration_seconds": 0.1,
         "error": None,
-        "dispatch_error": None,
-        "commit_error": None,
         "metadata": "{}",
     }
-    full_rows = [{**defaults, **r} for r in rows]
+    full_rows = []
+    for index, row in enumerate(rows):
+        terminal = {
+            **defaults,
+            "timestamp": defaults["timestamp"] + timedelta(seconds=index),
+            **row,
+        }
+        if "step_run_id" not in row:
+            terminal["step_run_id"] = (
+                f"{terminal['pipeline_run_id']}:{terminal['step_number']}"
+            )
+        if "step_spec_id" not in row:
+            terminal["step_spec_id"] = (
+                f"{terminal['pipeline_run_id']}:spec:{terminal['step_number']}"
+            )
+        pending = {
+            **terminal,
+            "step_spec_id": None,
+            "status": "pending",
+            "state_sequence": 0,
+            "disposition": None,
+            "total_count": None,
+            "succeeded_count": None,
+            "failed_count": None,
+            "duration_seconds": None,
+            "metadata": None,
+        }
+        running = {**pending, "status": "running", "state_sequence": 1}
+        full_rows.extend([pending, running, terminal])
     df = pl.DataFrame(full_rows, schema=STEPS_SCHEMA)
     df.write_delta(str(delta_root / "orchestration/steps"), mode="overwrite")
 

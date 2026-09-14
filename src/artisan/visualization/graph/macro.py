@@ -33,14 +33,14 @@ from artisan.visualization.graph._styles import (
 # =============================================================================
 
 
-def _load_completed_steps(
+def _load_usable_steps(
     delta_root: str,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
     *,
     pipeline_run_id: str | None = None,
 ) -> pl.DataFrame:
-    """Return completed steps, optionally scoped to one pipeline run."""
+    """Return current succeeded/partial steps for one pipeline run."""
     if fs is None:
         from fsspec.implementations.local import LocalFileSystem
 
@@ -58,27 +58,38 @@ def _load_completed_steps(
             }
         )
 
-    scanner = pl.scan_delta(table_path, storage_options=storage_options).filter(
-        pl.col("status") == "completed"
+    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.schemas.orchestration.step_lifecycle import StepStatus
+
+    states = StepTracker(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+    ).load_current_states(pipeline_run_id)
+    rows = [
+        {
+            "step_number": state.step_number,
+            "step_name": state.step_name,
+            "output_roles_json": json.dumps(sorted(state.output_roles)),
+            "output_types_json": json.dumps(state.output_types),
+            "input_refs_json": state.input_refs_json,
+        }
+        for state in states
+        if state.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+    ]
+    return (
+        pl.DataFrame(rows)
+        if rows
+        else pl.DataFrame(
+            schema={
+                "step_number": pl.Int32,
+                "step_name": pl.String,
+                "output_roles_json": pl.String,
+                "output_types_json": pl.String,
+                "input_refs_json": pl.String,
+            }
+        )
     )
-    if pipeline_run_id is not None:
-        scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
-
-    df = scanner.select(
-        [
-            "step_number",
-            "step_name",
-            "output_roles_json",
-            "output_types_json",
-            "input_refs_json",
-        ]
-    ).collect()
-
-    # Deduplicate by step_number (keep last row per step)
-    if not df.is_empty():
-        df = df.unique(subset=["step_number"], keep="last").sort("step_number")
-
-    return df
 
 
 # =============================================================================
@@ -135,7 +146,7 @@ def build_macro_graph(
 
     Creates a bipartite graph with:
 
-    - **Execution nodes** — one per completed step, labelled ``(N) step_name``.
+    - **Execution nodes** — one per usable step, labelled ``(N) step_name``.
     - **Data nodes** — one per (step, output_role), coloured by artifact type.
     - **Edges** — output_ref connections from ``input_refs_json``.
 
@@ -149,7 +160,7 @@ def build_macro_graph(
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    steps_df = _load_completed_steps(
+    steps_df = _load_usable_steps(
         delta_root,
         storage_options=storage_options,
         fs=fs,

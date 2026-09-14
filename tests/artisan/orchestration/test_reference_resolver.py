@@ -20,13 +20,16 @@ from fsspec.implementations.local import LocalFileSystem
 from artisan.orchestration.engine.inputs import (
     resolve_output_reference,
 )
+from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
+from artisan.schemas.orchestration.step_result import StepResult
+from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.table_schemas import (
     ARTIFACT_INDEX_SCHEMA,
     CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
-    STEPS_SCHEMA,
 )
 from artisan.storage.io.commit import DeltaCommitter
 from artisan.storage.io.staging import StagingManager
@@ -355,32 +358,46 @@ class TestResolveOutputReferenceNewSchema:
         cached = "c" * 32
         failed = "d" * 32
         now = datetime.now(UTC)
-        step = {
-            "step_run_id": current,
-            "step_spec_id": "e" * 32,
-            "pipeline_run_id": "current-run",
-            "step_number": 7,
-            "step_name": "current",
-            "status": "completed",
-            "operation_class": "example.Operation",
-            "params_json": "{}",
-            "input_refs_json": "{}",
-            "compute_backend": "local",
-            "compute_options_json": "{}",
-            "output_roles_json": '["data"]',
-            "output_types_json": '{"data":"data"}',
-            "total_count": 3,
-            "succeeded_count": 2,
-            "failed_count": 1,
-            "timestamp": now,
-            "duration_seconds": 1.0,
-            "error": None,
-            "dispatch_error": None,
-            "commit_error": None,
-            "metadata": "{}",
-        }
-        pl.DataFrame([step], schema=STEPS_SCHEMA).write_delta(
-            str(tmp_path / "orchestration/steps"), mode="append"
+        tracker = StepTracker(str(tmp_path), "current-run")
+        tracker.create_attempt(
+            StepStartRecord(
+                step_run_id=current,
+                step_spec_id="e" * 32,
+                step_number=7,
+                step_name="current",
+                operation_class="example.Operation",
+                params_json="{}",
+                input_refs_json="{}",
+                compute_backend="local",
+                compute_options_json="{}",
+                output_roles_json='["data"]',
+                output_types_json='{"data":"data"}',
+            )
+        )
+        tracker.transition(
+            current,
+            StepStatus.PENDING,
+            StepStatus.RUNNING,
+            step_spec_id="e" * 32,
+        )
+        tracker.transition(
+            current,
+            StepStatus.RUNNING,
+            StepStatus.PARTIAL,
+            step_spec_id="e" * 32,
+            result=StepResult(
+                step_run_id=current,
+                step_name="current",
+                step_number=7,
+                status=StepStatus.PARTIAL,
+                disposition=StepDisposition.EXECUTED,
+                total_count=3,
+                succeeded_count=2,
+                failed_count=1,
+                output_roles=frozenset({"data"}),
+                output_types={"data": "data"},
+                duration_seconds=1.0,
+            ),
         )
         records = _create_executions_df(
             execution_run_id=[direct, cached, failed],

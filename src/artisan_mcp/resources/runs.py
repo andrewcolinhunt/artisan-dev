@@ -30,7 +30,7 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.resource("artisan://runs/{pipeline_run_id}", mime_type="application/json")
     async def run_detail(pipeline_run_id: str, ctx: Context) -> dict[str, Any]:
-        """One run's ``RunStatus`` — rollup plus per-step terminal statuses."""
+        """One run's ``RunStatus`` — rollup plus per-step current statuses."""
         config = ctx.lifespan_context["config"]
 
         def payload() -> dict[str, Any]:
