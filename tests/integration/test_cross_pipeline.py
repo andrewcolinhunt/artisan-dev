@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 
+import polars as pl
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -84,10 +85,22 @@ def test_ingest_pipeline_step_basic(
     # 3 imported artifacts
     assert count_artifacts_by_step(env_b["delta_root"], 0) == 3
 
-    # Same artifact IDs (content-addressed, same content)
+    # Imported roots preserve bytes but receive distinct semantic identities
+    # because their metadata records the source step.
     a_ids = set(get_execution_outputs(env_a["delta_root"], 1, "dataset"))
     b_ids = set(get_execution_outputs(env_b["delta_root"], 0, "data"))
-    assert a_ids == b_ids
+    assert a_ids.isdisjoint(b_ids)
+    source_rows = read_table(env_a["delta_root"], "artifacts/data")
+    imported_rows = read_table(env_b["delta_root"], "artifacts/data")
+    source_content = set(
+        source_rows.filter(pl.col("artifact_id").is_in(a_ids))["content"].to_list()
+    )
+    imported = imported_rows.filter(pl.col("artifact_id").is_in(b_ids))
+    assert set(imported["content"].to_list()) == source_content
+    assert all(
+        json.loads(metadata)["imported_from_step"] == 1
+        for metadata in imported["metadata"]
+    )
 
 
 def test_ingest_pipeline_step_type_filter(

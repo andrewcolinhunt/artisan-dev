@@ -349,23 +349,29 @@ class TestPipelineConfig:
 class TestPipelineManager:
     """Tests for PipelineManager class."""
 
+    @pytest.fixture(autouse=True)
+    def _storage_roots(self, tmp_path):
+        """Use an isolated writable store for PipelineManager construction."""
+        self.delta_root = str(tmp_path / "delta")
+        self.staging_root = str(tmp_path / "staging")
+
     def test_create_factory(self):
         """Test PipelineManager.create() factory method."""
         pipeline = PipelineManager.create(
             name="test_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         assert pipeline.config.name == "test_pipeline"
-        assert pipeline.config.delta_root == "/data/delta"
+        assert pipeline.config.delta_root == self.delta_root
         assert pipeline.current_step == 0
 
     def test_create_with_string_paths(self):
         """Test that create() accepts string paths."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         assert isinstance(pipeline.config.delta_root, str)
         assert isinstance(pipeline.config.staging_root, str)
@@ -375,8 +381,8 @@ class TestPipelineManager:
         runner = _ExternalRunner()
         pipeline = PipelineManager.create(
             name="custom",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
             working_root="/tmp/work",
             failure_policy="fail_fast",
             default_step_runner=runner,
@@ -402,8 +408,8 @@ class TestPipelineManager:
         )
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             PipelineManager.resume(
-                delta_root="/data/delta",
-                staging_root="/data/staging",
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
                 prefect_server=False,  # type: ignore[call-arg]
             )
 
@@ -417,14 +423,14 @@ class TestPipelineManager:
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             PipelineManager.create(
                 name="test",
-                delta_root="/data/delta",
-                staging_root="/data/staging",
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
                 default_compute_provider="modal",  # type: ignore[call-arg]
             )
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             PipelineManager.resume(
-                delta_root="/data/delta",
-                staging_root="/data/staging",
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
                 default_compute_provider="modal",  # type: ignore[call-arg]
             )
 
@@ -432,8 +438,8 @@ class TestPipelineManager:
         """Core cannot reconstruct an external runner from persisted text."""
         config = PipelineConfig(
             name="external",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
             default_step_runner="external_test",
         )
 
@@ -444,8 +450,8 @@ class TestPipelineManager:
         """Core reconstructs its built-in local runner from persisted text."""
         config = PipelineConfig(
             name="local",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
             recover_staging=False,
         )
 
@@ -457,8 +463,8 @@ class TestPipelineManager:
         """Test finalize() with no steps."""
         pipeline = PipelineManager.create(
             name="empty",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         summary = pipeline.finalize()
         assert summary["pipeline_name"] == "empty"
@@ -470,8 +476,8 @@ class TestPipelineManager:
         """Test that current_step increments (without full execution)."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         # Note: This test verifies the counter increment mechanism
         # Full step execution requires additional infrastructure
@@ -484,8 +490,8 @@ class TestPipelineManager:
         """Test __repr__ returns unambiguous representation."""
         pipeline = PipelineManager.create(
             name="test_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         repr_str = repr(pipeline)
         assert "PipelineManager(" in repr_str
@@ -497,8 +503,8 @@ class TestPipelineManager:
         """Test __repr__ shows step count."""
         pipeline = PipelineManager.create(
             name="test_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         # Add mock step results
         pipeline._step_results.append(
@@ -514,8 +520,8 @@ class TestPipelineManager:
         """Test __str__ with no steps executed."""
         pipeline = PipelineManager.create(
             name="my_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         str_output = str(pipeline)
         assert "Pipeline 'my_pipeline'" in str_output
@@ -525,8 +531,8 @@ class TestPipelineManager:
         """Test __str__ when all steps succeeded."""
         pipeline = PipelineManager.create(
             name="my_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -542,8 +548,8 @@ class TestPipelineManager:
         """Test __str__ when some steps failed."""
         pipeline = PipelineManager.create(
             name="my_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -559,8 +565,8 @@ class TestPipelineManager:
         """Test __len__ with no steps."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         assert len(pipeline) == 0
 
@@ -568,8 +574,8 @@ class TestPipelineManager:
         """Test __len__ with steps."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -586,8 +592,8 @@ class TestPipelineManager:
         """Test __iter__ iterates over step results."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         step0 = StepResult(step_name="Ingest", step_number=0, success=True)
         step1 = StepResult(step_name="Score", step_number=1, success=True)
@@ -604,8 +610,8 @@ class TestPipelineManager:
         """Test __iter__ works in for loop."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -623,8 +629,8 @@ class TestPipelineManager:
         """Test __getitem__ with single index."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -647,8 +653,8 @@ class TestPipelineManager:
         """Test __getitem__ with slice."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -670,8 +676,8 @@ class TestPipelineManager:
         """Test __getitem__ raises IndexError for invalid index."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -684,8 +690,8 @@ class TestPipelineManager:
         """Test __bool__ returns False for empty pipeline."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         assert not pipeline
         assert bool(pipeline) is False
@@ -694,8 +700,8 @@ class TestPipelineManager:
         """Test __bool__ returns True when all steps succeeded."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -710,8 +716,8 @@ class TestPipelineManager:
         """Test __bool__ returns False when any step failed."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -726,8 +732,8 @@ class TestPipelineManager:
         """Test __contains__ returns True for existing step name."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)
@@ -743,8 +749,8 @@ class TestPipelineManager:
         """Test __contains__ returns False for missing step name."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         pipeline._step_results.append(
             StepResult(step_name="Ingest", step_number=0, success=True)

@@ -11,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.orchestration.engine.step_executor import (
     _cancelled_result,
     execute_step,
@@ -32,6 +33,26 @@ from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.hashing import CacheInputIdentity
+
+
+def _prepared(inputs: dict[str, list[str]]) -> PreparedInputs:
+    """Build a typed prepared-input snapshot for executor unit tests."""
+    artifact_types = {
+        artifact_id: ArtifactTypes.FILE_REF
+        for artifact_ids in inputs.values()
+        for artifact_id in artifact_ids
+    }
+    cache_inputs = {
+        role: [
+            CacheInputIdentity(
+                role, None, position, artifact_types[artifact_id], artifact_id
+            )
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in inputs.items()
+    }
+    return PreparedInputs(inputs, artifact_types, None, cache_inputs)
 
 
 class TestExecuteStepPassesCancelEvent:
@@ -52,13 +73,15 @@ class TestExecuteStepPassesCancelEvent:
         mock_op = MagicMock()
         mock_op.name = "test"
         mock_creator.return_value = MagicMock()
+        config = MagicMock(failure_policy=FailurePolicy.CONTINUE, skip_cache=False)
 
         event = threading.Event()
         execute_step(
             operation=mock_op,
-            inputs=None,
+            inputs=_prepared({}),
             ov=StepOverrides(),
             step_runner=MagicMock(),
+            config=config,
             cancel_event=event,
         )
 
@@ -81,13 +104,15 @@ class TestExecuteStepPassesCancelEvent:
         mock_op = MagicMock()
         mock_op.name = "test"
         mock_curator.return_value = MagicMock()
+        config = MagicMock(failure_policy=FailurePolicy.CONTINUE, skip_cache=False)
 
         event = threading.Event()
         execute_step(
             operation=mock_op,
-            inputs=None,
+            inputs=_prepared({}),
             ov=StepOverrides(),
             step_runner=MagicMock(),
+            config=config,
             cancel_event=event,
         )
 
@@ -99,15 +124,12 @@ class TestExecuteStepPassesCancelEvent:
 class TestCreatorCancelChecks:
     """_execute_creator_step returns cancelled result when event is set."""
 
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     @patch("artisan.orchestration.engine.step_executor.get_batch_config")
     @patch(
         "artisan.orchestration.engine.step_executor.generate_execution_unit_batches",
         return_value=[],
     )
-    def test_cancel_before_execute_phase(
-        self, mock_batches, mock_batch_config, mock_resolve
-    ):
+    def test_cancel_before_execute_phase(self, mock_batches, mock_batch_config):
         """Cancel event set before PHASE 2 should return cancelled result."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
 
@@ -115,7 +137,6 @@ class TestCreatorCancelChecks:
         mock_op.name = "test_op"
         mock_op.outputs = {}
         mock_op.group_by = None
-        mock_resolve.return_value = {"data": ["id1"]}
 
         event = threading.Event()
         event.set()  # Pre-set = cancelled
@@ -126,7 +147,7 @@ class TestCreatorCancelChecks:
 
         result = _execute_creator_step(
             operation=mock_op,
-            inputs={"data": ["id1"]},
+            inputs=_prepared({"data": ["id1"]}),
             step_runner=MagicMock(),
             step_number=1,
             config=config,
@@ -135,8 +156,7 @@ class TestCreatorCancelChecks:
 
         assert result.metadata.get("cancelled") is True
 
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_cancel_before_execute_phase_curator(self, mock_resolve):
+    def test_cancel_before_execute_phase_curator(self):
         """Cancel event set before execute should return cancelled result for curator."""
         from artisan.orchestration.engine.step_executor import _execute_curator_step
 
@@ -144,7 +164,7 @@ class TestCreatorCancelChecks:
         mock_op.name = "filter"
         mock_op.outputs = {}
         mock_op.group_by = None
-        mock_resolve.return_value = {"data": ["id1"]}
+        mock_op.params = None
 
         event = threading.Event()
         event.set()
@@ -154,11 +174,11 @@ class TestCreatorCancelChecks:
 
         result = _execute_curator_step(
             operation=mock_op,
-            inputs={"data": ["id1"]},
+            inputs=_prepared({"data": ["id1"]}),
             step_number=1,
             config=config,
             cancel_event=event,
-            step_spec_id="test-spec-id",
+            skip_cache=True,
         )
 
         assert result.metadata.get("cancelled") is True
@@ -302,10 +322,8 @@ class TestComputeRoutingSelection:
     """
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_modal_tool_op_uses_runner_dispatch(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -326,7 +344,6 @@ class TestComputeRoutingSelection:
             ),
         )
 
-        mock_resolve.return_value = {"data": [_ID]}
         mock_cache.return_value = None
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -339,7 +356,7 @@ class TestComputeRoutingSelection:
 
         _execute_creator_step(
             operation=op,
-            inputs={"data": [_ID]},
+            inputs=_prepared({"data": [_ID]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,
@@ -352,10 +369,8 @@ class TestComputeRoutingSelection:
 
     @patch("artisan.orchestration.engine.step_executor.persist_worker_logs")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_local_compute_uses_backend_dispatch(
         self,
-        mock_resolve,
         mock_cache,
         mock_persist_worker_logs,
         tmp_path,
@@ -373,7 +388,6 @@ class TestComputeRoutingSelection:
 
         op = _SimpleCreatorOp()  # default: compute_provider.active="local"
 
-        mock_resolve.return_value = {"data": [_ID]}
         mock_cache.return_value = None
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -386,7 +400,7 @@ class TestComputeRoutingSelection:
 
         _execute_creator_step(
             operation=op,
-            inputs={"data": [_ID]},
+            inputs=_prepared({"data": [_ID]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,

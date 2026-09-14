@@ -163,8 +163,10 @@ class TestPersistence:
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_mock_execute_step,
     )
-    def test_upstream_change_invalidates(self, mock_exec, tmp_path):
-        """Changed upstream params cause downstream re-execution."""
+    def test_upstream_change_without_output_change_reuses_downstream(
+        self, mock_exec, tmp_path
+    ):
+        """Changed upstream params do not invalidate identical concrete inputs."""
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
@@ -182,8 +184,9 @@ class TestPersistence:
         )
         step0b = p2.run(IngestMockOp, inputs=None, params={"seed": 99})
         p2.run(MockOp, inputs={"data": step0b.output("file")})
-        # Step 0 should re-execute (different params), step 1 also (upstream changed)
-        assert mock_exec.call_count == 4
+        # Step 0 re-executes, but the mocked run still exposes the same empty
+        # concrete output snapshot, so the content-addressed downstream key is stable.
+        assert mock_exec.call_count == 3
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",

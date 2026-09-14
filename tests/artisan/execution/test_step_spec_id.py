@@ -13,7 +13,34 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.hashing import compute_step_spec_id
+from artisan.utils.hashing import (
+    CacheInputIdentity,
+)
+from artisan.utils.hashing import (
+    compute_step_spec_id as _compute_step_spec_id,
+)
+
+
+def compute_step_spec_id(
+    *,
+    operation_name: str,
+    step_number: int,
+    params: dict[str, Any] | None,
+    inputs: dict[str, tuple[str, str]],
+    config_overrides: dict[str, Any] | None = None,
+) -> str:
+    """Call the production step hash with concrete typed test identities."""
+    typed = {
+        role: [CacheInputIdentity(role, None, 0, artifact_type, artifact_id)]
+        for role, (artifact_id, artifact_type) in inputs.items()
+    }
+    return _compute_step_spec_id(
+        operation_name,
+        step_number,
+        params,
+        typed,
+        config_overrides,
+    )
 
 
 class TestComputeStepSpecId:
@@ -25,13 +52,13 @@ class TestComputeStepSpecId:
             operation_name="ToolC",
             step_number=1,
             params={"model": "v2"},
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
         )
         spec2 = compute_step_spec_id(
             operation_name="ToolC",
             step_number=1,
             params={"model": "v2"},
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
         )
         assert spec1 == spec2
         assert len(spec1) == 32
@@ -42,13 +69,13 @@ class TestComputeStepSpecId:
             operation_name="ToolB",
             step_number=2,
             params=None,
-            input_spec={"data": ("upstream_v1", "data")},
+            inputs={"data": ("upstream_v1", "data")},
         )
         spec2 = compute_step_spec_id(
             operation_name="ToolB",
             step_number=2,
             params=None,
-            input_spec={"data": ("upstream_v2", "data")},
+            inputs={"data": ("upstream_v2", "data")},
         )
         assert spec1 != spec2
 
@@ -58,13 +85,13 @@ class TestComputeStepSpecId:
             operation_name="ToolC",
             step_number=1,
             params={"model": "v1"},
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
         )
         spec2 = compute_step_spec_id(
             operation_name="ToolC",
             step_number=1,
             params={"model": "v2"},
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
         )
         assert spec1 != spec2
 
@@ -74,13 +101,13 @@ class TestComputeStepSpecId:
             operation_name="Score",
             step_number=2,
             params=None,
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
         )
         spec2 = compute_step_spec_id(
             operation_name="Score",
             step_number=2,
             params=None,
-            input_spec={"data": ("abc123", "scored")},
+            inputs={"scored": ("abc123", "data")},
         )
         assert spec1 != spec2
 
@@ -90,13 +117,13 @@ class TestComputeStepSpecId:
             operation_name="Score",
             step_number=1,
             params=None,
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
         )
         spec2 = compute_step_spec_id(
             operation_name="Score",
             step_number=3,
             params=None,
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
         )
         assert spec1 != spec2
 
@@ -106,7 +133,7 @@ class TestComputeStepSpecId:
             operation_name="Generate",
             step_number=0,
             params={"count": 10},
-            input_spec={},
+            inputs={},
         )
         assert len(spec) == 32
 
@@ -116,13 +143,13 @@ class TestComputeStepSpecId:
             operation_name="Op",
             step_number=0,
             params=None,
-            input_spec={},
+            inputs={},
         )
         spec_empty = compute_step_spec_id(
             operation_name="Op",
             step_number=0,
             params={},
-            input_spec={},
+            inputs={},
         )
         assert spec_none == spec_empty
 
@@ -132,14 +159,14 @@ class TestComputeStepSpecId:
             operation_name="Op",
             step_number=0,
             params=None,
-            input_spec={},
+            inputs={},
             config_overrides=None,
         )
         spec_empty = compute_step_spec_id(
             operation_name="Op",
             step_number=0,
             params=None,
-            input_spec={},
+            inputs={},
             config_overrides={},
         )
         assert spec_none == spec_empty
@@ -150,14 +177,14 @@ class TestComputeStepSpecId:
             operation_name="ToolC",
             step_number=1,
             params=None,
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
             config_overrides=None,
         )
         spec2 = compute_step_spec_id(
             operation_name="ToolC",
             step_number=1,
             params=None,
-            input_spec={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "data")},
             config_overrides={"image": "/path/to/image.sif"},
         )
         assert spec1 != spec2
@@ -168,7 +195,7 @@ class TestComputeStepSpecId:
             "operation_name": "ToolC",
             "step_number": 1,
             "params": None,
-            "input_spec": {"data": ("abc123", "data")},
+            "inputs": {"data": ("abc123", "data")},
             "config_overrides": {"image": "/path/to/image.sif", "gpu": True},
         }
         assert compute_step_spec_id(**kwargs) == compute_step_spec_id(**kwargs)
@@ -181,14 +208,14 @@ class TestComputeStepSpecId:
             operation_name="ToolC",
             step_number=1,
             params=None,
-            input_spec={},
+            inputs={},
             config_overrides={"image": Path("/opt/containers/tool_c.sif")},
         )
         spec2 = compute_step_spec_id(
             operation_name="ToolC",
             step_number=1,
             params=None,
-            input_spec={},
+            inputs={},
             config_overrides={"image": Path("/opt/containers/tool_c.sif")},
         )
         assert spec1 == spec2
@@ -286,13 +313,13 @@ class TestStepSpecIdWithDefaults:
             operation_name="test_op",
             step_number=0,
             params=full_params_v1,
-            input_spec={},
+            inputs={},
         )
         spec2 = compute_step_spec_id(
             operation_name="test_op",
             step_number=0,
             params=full_params_v2,
-            input_spec={},
+            inputs={},
         )
         assert spec1 != spec2
 
@@ -308,13 +335,13 @@ class TestStepSpecIdWithDefaults:
             operation_name="test_op",
             step_number=0,
             params=full_params1,
-            input_spec={},
+            inputs={},
         )
         spec2 = compute_step_spec_id(
             operation_name="test_op",
             step_number=0,
             params=full_params2,
-            input_spec={},
+            inputs={},
         )
         assert spec1 == spec2
 
@@ -334,12 +361,12 @@ class TestStepSpecIdWithDefaults:
             operation_name="test_op",
             step_number=0,
             params=params_no,
-            input_spec={},
+            inputs={},
         )
         spec_with = compute_step_spec_id(
             operation_name="test_op",
             step_number=0,
             params=params_with,
-            input_spec={},
+            inputs={},
         )
         assert spec_no == spec_with

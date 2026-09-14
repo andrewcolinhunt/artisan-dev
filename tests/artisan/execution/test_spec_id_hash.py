@@ -2,10 +2,37 @@
 
 from __future__ import annotations
 
+from artisan.utils.hashing import CacheInputIdentity
 from artisan.utils.hashing import (
-    _canonicalize_dict,
-    compute_execution_spec_id,
+    compute_execution_spec_id as _compute_execution_spec_id,
 )
+
+
+def _typed_inputs(inputs: dict[str, list[str]]) -> dict[str, list[CacheInputIdentity]]:
+    """Add the concrete type, role, group, and position cache dimensions."""
+    return {
+        role: [
+            CacheInputIdentity(role, None, position, "metric", artifact_id)
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in inputs.items()
+    }
+
+
+def compute_execution_spec_id(
+    *,
+    operation_name: str,
+    inputs: dict[str, list[str]],
+    params=None,
+    config_overrides=None,
+) -> str:
+    """Call the production cache hash with typed test identities."""
+    return _compute_execution_spec_id(
+        operation_name,
+        _typed_inputs(inputs),
+        params,
+        config_overrides,
+    )
 
 
 class TestComputeExecutionSpecId:
@@ -26,8 +53,8 @@ class TestComputeExecutionSpecId:
         assert spec1 == spec2
         assert len(spec1) == 32  # xxh3_128 hex length
 
-    def test_artifact_ids_sorted(self):
-        """Artifact IDs are sorted before hashing (order in list doesn't matter)."""
+    def test_artifact_order_is_preserved(self):
+        """Occurrence order within a role remains part of the cache identity."""
         spec1 = compute_execution_spec_id(
             operation_name="relax",
             inputs={"data": ["bbb" + "0" * 29, "aaa" + "0" * 29]},  # Unsorted
@@ -36,7 +63,7 @@ class TestComputeExecutionSpecId:
             operation_name="relax",
             inputs={"data": ["aaa" + "0" * 29, "bbb" + "0" * 29]},  # Sorted
         )
-        assert spec1 == spec2
+        assert spec1 != spec2
 
     def test_multi_role_inputs_role_order_irrelevant(self):
         """Role-key ordering of the inputs dict doesn't affect the hash.
@@ -208,61 +235,3 @@ class TestComputeExecutionSpecId:
             config_overrides={"image": Path("/opt/containers/relax.sif")},
         )
         assert len(spec) == 32
-
-
-class TestCanonicalizeDict:
-    """Tests for _canonicalize_dict()."""
-
-    def test_none_returns_empty(self):
-        assert _canonicalize_dict(None) == ""
-
-    def test_empty_dict_returns_empty(self):
-        assert _canonicalize_dict({}) == ""
-
-    def test_sorted_keys(self):
-        result = _canonicalize_dict({"b": 1, "a": 2})
-        assert result == '{"a":2,"b":1}'
-
-    def test_nested_dict_sorted(self):
-        result = _canonicalize_dict({"outer": {"b": 1, "a": 2}})
-        assert result == '{"outer":{"a":2,"b":1}}'
-
-    def test_no_whitespace(self):
-        result = _canonicalize_dict({"key": "value"})
-        assert " " not in result
-
-    def test_set_values_serialized_as_sorted_list(self):
-        """Sets should be serialized as sorted lists for determinism."""
-        result = _canonicalize_dict({"names": {"cherry", "apple", "banana"}})
-        assert result == '{"names":["apple","banana","cherry"]}'
-
-    def test_set_values_deterministic(self):
-        """Same set produces same hash regardless of iteration order."""
-        r1 = _canonicalize_dict({"s": {"b", "a", "c"}})
-        r2 = _canonicalize_dict({"s": {"c", "a", "b"}})
-        assert r1 == r2
-
-    def test_path_values_serialized_as_strings(self):
-        """Path objects should be serialized as strings."""
-        from pathlib import Path
-
-        result = _canonicalize_dict({"image": Path("/opt/containers/tool_c.sif")})
-        assert result == '{"image":"/opt/containers/tool_c.sif"}'
-
-    def test_nested_path_in_list(self):
-        """Path objects nested in lists should be serialized as strings."""
-        from pathlib import Path
-
-        result = _canonicalize_dict({"binds": [[Path("/src"), Path("/dst")]]})
-        assert '"/src"' in result
-        assert '"/dst"' in result
-
-    def test_nested_3tuple_bind_in_list(self):
-        """3-tuple binds (host, container, mode) hash deterministically."""
-        payload = {"binds": [["/host/weights", "/weights", "ro"]]}
-        r1 = _canonicalize_dict(payload)
-        r2 = _canonicalize_dict(payload)
-        assert r1 == r2
-        assert '"ro"' in r1
-        assert '"/host/weights"' in r1
-        assert '"/weights"' in r1
