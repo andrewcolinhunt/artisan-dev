@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import pytest
 from fastmcp import Client
-from fixtures.store_format import publish_test_store
+from fixtures.logical_commit_store import commit_test_step
+from fixtures.store_format import commit_test_tables
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.utils.hashing import digest_utf8
@@ -128,14 +129,11 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
     """
     delta_root = tmp_path / "delta"
     run_id = "run-1"
-    publish_test_store(str(delta_root), LocalFileSystem())
-    _seed_steps(
-        delta_root,
+    step_frame = _steps_frame(
         run_id,
         [(1, "generate", "succeeded"), (2, "transform", "failed")],
     )
-    _seed_index(
-        delta_root,
+    index_frame = _index_frame(
         [("a" * 32, "data", 1), ("b" * 32, "data", 1), ("c" * 32, "metric", 2)],
     )
     exec_id = "exec-2"
@@ -147,7 +145,43 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
         "field": None,
         "suggestions": [],
     }
-    _seed_executions(delta_root, run_id, exec_id, envelope)
+    execution_frame, execution_edges = _execution_frames(run_id, exec_id, envelope)
+    from artisan.schemas.enums import TablePath
+
+    fs = LocalFileSystem()
+    staging_root = str(tmp_path / "staging")
+    for step_number in (1, 2):
+        tables = {
+            TablePath.EXECUTIONS.value: execution_frame.filter(
+                pl.col("origin_step_number") == step_number
+            ),
+        }
+        if step_number == 1:
+            tables[TablePath.ARTIFACT_INDEX.value] = index_frame.filter(
+                pl.col("origin_step_number") == step_number
+            )
+            tables[TablePath.EXECUTION_EDGES.value] = execution_edges
+        commit_test_step(
+            delta_root,
+            staging_root,
+            step_frame.filter(pl.col("step_number") == step_number)
+            .sort("state_sequence")
+            .to_dicts(),
+            tables,
+        )
+    commit_test_tables(
+        str(delta_root),
+        staging_root,
+        fs,
+        {
+            TablePath.ARTIFACT_INDEX.value: index_frame.filter(
+                pl.col("origin_step_number") == 2
+            )
+        },
+        step_run_id="seed-unscoped-metric",
+        step_number=2,
+        operation_name="seed_unscoped_metric",
+    )
 
     log_dir = tmp_path / "logs" / "failures" / "step_2_transform"
     log_dir.mkdir(parents=True)
@@ -165,8 +199,8 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
     )
 
 
-def _seed_steps(root: Path, run_id: str, steps: list[tuple[int, str, str]]) -> None:
-    from artisan.schemas.enums import TablePath
+def _steps_frame(run_id: str, steps: list[tuple[int, str, str]]) -> pl.DataFrame:
+    """Build authoritative lifecycle rows for the seeded run."""
     from artisan.storage.core.table_schemas import STEPS_SCHEMA
 
     rows = []
@@ -183,7 +217,6 @@ def _seed_steps(root: Path, run_id: str, steps: list[tuple[int, str, str]]) -> N
             "state_sequence": 0,
             "disposition": None,
             "cancellation_status": None,
-            "logical_commit_id": None,
             "operation_class": "DataGenerator",
             "params_json": "{}",
             "input_refs_json": "{}",
@@ -220,14 +253,14 @@ def _seed_steps(root: Path, run_id: str, steps: list[tuple[int, str, str]]) -> N
             "metadata": "{}",
         }
         rows.extend([pending, running, terminal])
-    pl.DataFrame(rows, schema=STEPS_SCHEMA).write_delta(str(root / TablePath.STEPS))
+    return pl.DataFrame(rows, schema=STEPS_SCHEMA)
 
 
-def _seed_index(root: Path, entries: list[tuple[str, str, int]]) -> None:
-    from artisan.schemas.enums import TablePath
+def _index_frame(entries: list[tuple[str, str, int]]) -> pl.DataFrame:
+    """Build the artifact index rows for the seeded run."""
     from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
-    df = pl.DataFrame(
+    return pl.DataFrame(
         {
             "artifact_id": [e[0] for e in entries],
             "artifact_type": [e[1] for e in entries],
@@ -236,11 +269,12 @@ def _seed_index(root: Path, entries: list[tuple[str, str, int]]) -> None:
         },
         schema=ARTIFACT_INDEX_SCHEMA,
     )
-    df.write_delta(str(root / TablePath.ARTIFACT_INDEX))
 
 
-def _seed_executions(root: Path, run_id: str, exec_id: str, envelope: dict) -> None:
-    from artisan.schemas.enums import TablePath
+def _execution_frames(
+    run_id: str, exec_id: str, envelope: dict
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Build execution rows and accepted output edges for the seeded run."""
     from artisan.storage.core.table_schemas import (
         EXECUTION_EDGES_SCHEMA,
         EXECUTIONS_SCHEMA,
@@ -273,10 +307,8 @@ def _seed_executions(root: Path, run_id: str, exec_id: str, envelope: dict) -> N
             metadata="{}",
         )
         rows.append(row)
-    pl.DataFrame(rows, schema=EXECUTIONS_SCHEMA).write_delta(
-        str(root / TablePath.EXECUTIONS)
-    )
-    pl.DataFrame(
+    executions = pl.DataFrame(rows, schema=EXECUTIONS_SCHEMA)
+    edges = pl.DataFrame(
         [
             {
                 "execution_run_id": digest_utf8("run-1:generate"),
@@ -287,4 +319,5 @@ def _seed_executions(root: Path, run_id: str, exec_id: str, envelope: dict) -> N
             for artifact_id in ("a" * 32, "b" * 32)
         ],
         schema=EXECUTION_EDGES_SCHEMA,
-    ).write_delta(str(root / TablePath.EXECUTION_EDGES))
+    )
+    return executions, edges

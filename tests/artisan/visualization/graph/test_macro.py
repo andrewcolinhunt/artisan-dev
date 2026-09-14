@@ -8,12 +8,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import graphviz
-import polars as pl
 import pytest
+from fixtures.logical_commit_store import commit_test_step
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
-from artisan.storage.core.table_schemas import STEPS_SCHEMA
 from artisan.visualization.graph import build_macro_graph, render_macro_graph
 from artisan.visualization.graph.macro import _parse_input_refs
 
@@ -33,7 +32,6 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
         "state_sequence": 2,
         "disposition": "executed",
         "cancellation_status": None,
-        "logical_commit_id": None,
         "operation_class": "test.Op",
         "params_json": "{}",
         "input_refs_json": "null",
@@ -49,7 +47,7 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
         "error": None,
         "metadata": "{}",
     }
-    full_rows = []
+    terminals = []
     for index, row in enumerate(rows):
         terminal = {
             **defaults,
@@ -64,22 +62,14 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
             terminal["step_spec_id"] = (
                 f"{terminal['pipeline_run_id']}:spec:{terminal['step_number']}"
             )
-        pending = {
-            **terminal,
-            "step_spec_id": None,
-            "status": "pending",
-            "state_sequence": 0,
-            "disposition": None,
-            "total_count": None,
-            "succeeded_count": None,
-            "failed_count": None,
-            "duration_seconds": None,
-            "metadata": None,
-        }
-        running = {**pending, "status": "running", "state_sequence": 1}
-        full_rows.extend([pending, running, terminal])
-    df = pl.DataFrame(full_rows, schema=STEPS_SCHEMA)
-    df.write_delta(str(delta_root / "orchestration/steps"), mode="overwrite")
+        terminals.append(terminal)
+    for terminal in terminals:
+        commit_test_step(
+            delta_root,
+            delta_root.parent / "staging",
+            [terminal],
+            {},
+        )
 
 
 # =============================================================================

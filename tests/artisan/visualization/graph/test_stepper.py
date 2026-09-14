@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 from fixtures.execution_records import executions_df
-from fixtures.store_format import publish_test_store
+from fixtures.store_format import commit_test_tables, publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.storage.core.table_schemas import (
@@ -29,13 +29,12 @@ def delta_root_with_steps(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setenv("IPYTHONDIR", str(tmp_path / "ipython"))
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
-    publish_test_store(str(delta_root), LocalFileSystem())
 
     # Create executions with 3 steps
     exec_data = {
         "execution_run_id": ["exec_0", "exec_1", "exec_2"],
         "execution_spec_id": ["spec_0", "spec_1", "spec_2"],
-        "step_run_id": [None, None, None],
+        "step_run_id": ["seed-stepper-0", "seed-stepper-1", "seed-stepper-2"],
         "origin_step_number": [0, 1, 2],
         "operation_name": ["ingest", "creator", "calculate"],
         "params": ["{}", "{}", "{}"],
@@ -51,7 +50,6 @@ def delta_root_with_steps(tmp_path: Path, monkeypatch) -> Path:
         "metadata": ["{}", "{}", "{}"],
     }
     exec_df = executions_df(**exec_data)
-    exec_df.write_delta(str(delta_root / "orchestration/executions"), mode="overwrite")
 
     # Create artifact_index
     artifact_data = {
@@ -61,7 +59,23 @@ def delta_root_with_steps(tmp_path: Path, monkeypatch) -> Path:
         "metadata": ["{}", "{}", "{}"],
     }
     artifact_df = pl.DataFrame(artifact_data, schema=ARTIFACT_INDEX_SCHEMA)
-    artifact_df.write_delta(str(delta_root / "artifacts/index"), mode="overwrite")
+    for step_number in range(3):
+        commit_test_tables(
+            str(delta_root),
+            str(tmp_path / "staging"),
+            LocalFileSystem(),
+            {
+                "orchestration/executions": exec_df.filter(
+                    pl.col("origin_step_number") == step_number
+                ),
+                "artifacts/index": artifact_df.filter(
+                    pl.col("origin_step_number") == step_number
+                ),
+            },
+            step_run_id=f"seed-stepper-{step_number}",
+            step_number=step_number,
+            operation_name=f"seed_stepper_{step_number}",
+        )
 
     return delta_root
 
