@@ -21,6 +21,7 @@ from artisan.schemas.artifact.external import validate_persistable_uri
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
 from artisan.utils.json import artisan_json_default
 from artisan.utils.path import shard_uri
@@ -79,6 +80,7 @@ class StagingResult:
     staging_path: str | None = None
     execution_run_id: str | None = None
     artifact_ids: list[str] = field(default_factory=list)
+    cancellation_acknowledgement: CancellationAcknowledgement | None = None
 
 
 def _stage_artifacts(

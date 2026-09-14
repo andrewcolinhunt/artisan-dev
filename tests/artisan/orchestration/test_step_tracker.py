@@ -1,390 +1,212 @@
-"""Tests for StepTracker delta table operations."""
+"""Cache, resume, and rollup tests for StepTracker."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
 import polars as pl
+import pytest
 
+from artisan.errors import PersistenceIntegrityError
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.enums import CachePolicy
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 
 
-def _make_start_record(
-    step_number: int = 0,
-    step_name: str = "Ingest",
-    step_run_id: str = "a" * 32,
-    step_spec_id: str = "spec_001",
-) -> StepStartRecord:
-    """Create a StepStartRecord for testing."""
+def _record(run_id: str, step: int = 0, spec: str | None = None) -> StepStartRecord:
     return StepStartRecord(
-        step_run_id=step_run_id,
-        step_spec_id=step_spec_id,
-        step_number=step_number,
-        step_name=step_name,
-        operation_class="artisan.operations.curator.filter.Filter",
+        step_run_id=run_id,
+        step_spec_id=spec,
+        step_number=step,
+        step_name=f"op-{step}",
+        operation_class="tests.Op",
         params_json="{}",
-        input_refs_json="null",
+        input_refs_json="{}",
         compute_backend="local",
         compute_options_json="{}",
-        output_roles_json='["file"]',
-        output_types_json='{"file": "file_ref"}',
+        output_roles_json='["data"]',
+        output_types_json='{"data":"data"}',
     )
 
 
-def _make_step_result(
-    step_number: int = 0,
-    step_name: str = "Ingest",
-    succeeded_count: int = 5,
-    failed_count: int = 0,
+def _terminal(
+    status: StepStatus,
+    succeeded: int,
+    failed: int,
+    step_run_id: str,
 ) -> StepResult:
-    """Create a StepResult for testing."""
     return StepResult(
-        step_name=step_name,
-        step_number=step_number,
-        success=failed_count == 0,
-        total_count=succeeded_count + failed_count,
-        succeeded_count=succeeded_count,
-        failed_count=failed_count,
-        output_roles=frozenset(["file"]),
-        output_types={"file": "file_ref"},
-        duration_seconds=1.5,
+        step_name="op-0",
+        step_number=0,
+        status=status,
+        disposition=StepDisposition.EXECUTED,
+        total_count=succeeded + failed,
+        succeeded_count=succeeded,
+        failed_count=failed,
+        output_roles=frozenset({"data"}),
+        output_types={"data": "data"},
+        step_run_id=step_run_id,
     )
 
 
-class TestCheckCache:
-    """Tests for StepTracker.check_cache()."""
-
-    def test_check_cache_empty(self, tmp_path):
-        """No table returns None."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        assert tracker.check_cache("nonexistent", CachePolicy.ALL_SUCCEEDED) is None
-
-    def test_check_cache_no_completed(self, tmp_path):
-        """Running/failed rows return None."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        record = _make_start_record(step_spec_id="spec_a")
-        tracker.record_step_start(record)
-        # Only a 'running' row exists
-        assert tracker.check_cache("spec_a", CachePolicy.ALL_SUCCEEDED) is None
-
-    @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
-    def test_check_cache_hit(self, mock_membership, tmp_path):
-        """Completed row returns correct StepResult."""
-        mock_membership.return_value = pl.DataFrame({"execution_run_id": ["b" * 32]})
-        tracker = StepTracker(str(tmp_path), "run_1")
-        record = _make_start_record(step_spec_id="spec_b")
-        result = _make_step_result()
-        tracker.record_step_start(record)
-        tracker.record_step_completed(record, result)
-
-        cached = tracker.check_cache("spec_b", CachePolicy.ALL_SUCCEEDED)
-        assert cached is not None
-        assert cached.result.step_name == "Ingest"
-        assert cached.result.step_number == 0
-        assert cached.result.succeeded_count == 5
-        assert cached.result.failed_count == 0
-        assert cached.result.success is True
-        assert cached.result.output_roles == frozenset(["file"])
-        assert cached.result.output_types == {"file": "file_ref"}
-        assert cached.source_step_run_id == "a" * 32
-        assert cached.execution_run_ids == ("b" * 32,)
-
-    @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
-    def test_check_cache_most_recent(self, mock_membership, tmp_path):
-        """Multiple completed rows for same spec_id returns latest."""
-        mock_membership.return_value = pl.DataFrame({"execution_run_id": ["b" * 32]})
-        tracker = StepTracker(str(tmp_path), "run_1")
-        record = _make_start_record(step_spec_id="spec_c")
-
-        # First completion with 3 succeeded
-        result1 = _make_step_result(succeeded_count=3)
-        tracker.record_step_start(record)
-        tracker.record_step_completed(record, result1)
-
-        # Second completion with 10 succeeded (more recent)
-        result2 = _make_step_result(succeeded_count=10)
-        tracker.record_step_completed(record, result2)
-
-        cached = tracker.check_cache("spec_c", CachePolicy.ALL_SUCCEEDED)
-        assert cached is not None
-        assert cached.result.succeeded_count == 10
+def _write_terminal(
+    tracker: StepTracker,
+    run_id: str,
+    status: StepStatus,
+    *,
+    spec: str = "b" * 32,
+) -> None:
+    tracker.create_attempt(_record(run_id))
+    tracker.transition(run_id, StepStatus.PENDING, StepStatus.RUNNING)
+    counts = (2, 1) if status is StepStatus.PARTIAL else (3, 0)
+    tracker.transition(
+        run_id,
+        StepStatus.RUNNING,
+        status,
+        step_spec_id=spec,
+        result=_terminal(status, *counts, run_id),
+    )
 
 
-class TestRecordOperations:
-    """Tests for StepTracker.record_*() methods."""
-
-    def test_record_start_creates_table(self, tmp_path):
-        """First write creates delta table."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        assert not (tmp_path / "orchestration/steps").exists()
-
-        record = _make_start_record()
-        tracker.record_step_start(record)
-        assert (tmp_path / "orchestration/steps").exists()
-
-    def test_record_start_appends(self, tmp_path):
-        """Second write appends to existing table."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        record1 = _make_start_record(step_number=0, step_run_id="run_a")
-        record2 = _make_start_record(step_number=1, step_run_id="run_b")
-        tracker.record_step_start(record1)
-        tracker.record_step_start(record2)
-
-        import polars as pl
-
-        df = pl.read_delta(str(tmp_path / "orchestration/steps"))
-        assert len(df) == 2
-
-    def test_record_completed(self, tmp_path):
-        """Completed row has correct status, counts, duration."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        record = _make_start_record()
-        result = _make_step_result(succeeded_count=8, failed_count=2)
-        tracker.record_step_start(record)
-        tracker.record_step_completed(record, result)
-
-        import polars as pl
-
-        df = pl.read_delta(str(tmp_path / "orchestration/steps"))
-        completed = df.filter(pl.col("status") == "completed")
-        assert len(completed) == 1
-        row = completed.row(0, named=True)
-        assert row["total_count"] == 10
-        assert row["succeeded_count"] == 8
-        assert row["failed_count"] == 2
-        assert row["duration_seconds"] == 1.5
-
-    def test_record_failed(self, tmp_path):
-        """Failed row has correct status and error message."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        record = _make_start_record()
-        tracker.record_step_start(record)
-        tracker.record_step_failed(record, "Something went wrong")
-
-        import polars as pl
-
-        df = pl.read_delta(str(tmp_path / "orchestration/steps"))
-        failed = df.filter(pl.col("status") == "failed")
-        assert len(failed) == 1
-        row = failed.row(0, named=True)
-        assert row["error"] == "Something went wrong"
+@patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
+def test_cache_policy_uses_explicit_status(mock_membership, tmp_path) -> None:
+    mock_membership.return_value = pl.DataFrame({"execution_run_id": ["c" * 32]})
+    tracker = StepTracker(str(tmp_path), "run")
+    _write_terminal(tracker, "a" * 32, StepStatus.PARTIAL)
+    assert tracker.check_cache("b" * 32, CachePolicy.ALL_SUCCEEDED) is None
+    hit = tracker.check_cache("b" * 32, CachePolicy.STEP_COMPLETED)
+    assert hit is not None
+    assert hit.result.status is StepStatus.PARTIAL
 
 
-class TestLoadCompletedSteps:
-    """Tests for StepTracker.load_completed_steps()."""
+def test_resume_restores_explicit_statuses(tmp_path) -> None:
+    tracker = StepTracker(str(tmp_path), "run")
+    _write_terminal(tracker, "a" * 32, StepStatus.SUCCEEDED)
+    states = tracker.load_resumable_steps("run")
+    assert [state.status for state in states] == [StepStatus.SUCCEEDED]
 
-    def test_load_completed_ordered(self, tmp_path):
-        """Returns steps in step_number order."""
-        tracker = StepTracker(str(tmp_path), "run_1")
 
-        # Write steps out of order
-        for step_num in [2, 0, 1]:
-            record = _make_start_record(
-                step_number=step_num,
-                step_name=f"Step{step_num}",
-                step_run_id=f"run_{step_num}",
-                step_spec_id=f"spec_{step_num}",
-            )
-            result = _make_step_result(
-                step_number=step_num, step_name=f"Step{step_num}"
-            )
-            tracker.record_step_start(record)
-            tracker.record_step_completed(record, result)
+@pytest.mark.parametrize("status", [StepStatus.PENDING, StepStatus.RUNNING])
+def test_resume_refuses_nonterminal_attempt(tmp_path, status: StepStatus) -> None:
+    tracker = StepTracker(str(tmp_path), "run")
+    tracker.create_attempt(_record("a" * 32))
+    if status == StepStatus.RUNNING:
+        tracker.transition("a" * 32, StepStatus.PENDING, StepStatus.RUNNING)
+    with pytest.raises(PersistenceIntegrityError, match="unresolved"):
+        tracker.load_resumable_steps("run")
 
-        steps = tracker.load_completed_steps("run_1")
-        assert len(steps) == 3
-        assert [s.step_number for s in steps] == [0, 1, 2]
 
-    def test_load_completed_most_recent_run(self, tmp_path):
-        """None run_id returns latest run."""
-        # Run 1
-        tracker1 = StepTracker(str(tmp_path), "run_old")
-        record1 = _make_start_record(step_run_id="old_r", step_spec_id="old_s")
-        result1 = _make_step_result()
-        tracker1.record_step_start(record1)
-        tracker1.record_step_completed(record1, result1)
-
-        # Run 2 (more recent)
-        tracker2 = StepTracker(str(tmp_path), "run_new")
-        record2 = _make_start_record(
-            step_run_id="new_r", step_spec_id="new_s", step_name="ToolC"
+@pytest.mark.parametrize("status", list(StepStatus))
+def test_current_reader_exposes_every_authoritative_status(
+    tmp_path,
+    status: StepStatus,
+) -> None:
+    """Current-state reads preserve each lifecycle value without derivation."""
+    tracker = StepTracker(str(tmp_path), "run")
+    step_run_id = "a" * 32
+    tracker.create_attempt(_record(step_run_id))
+    if status == StepStatus.RUNNING:
+        tracker.transition(step_run_id, StepStatus.PENDING, StepStatus.RUNNING)
+    elif status == StepStatus.SKIPPED:
+        tracker.transition(
+            step_run_id,
+            StepStatus.PENDING,
+            status,
+            result=StepResult(
+                step_name="op-0",
+                step_number=0,
+                status=status,
+                step_run_id=step_run_id,
+            ),
         )
-        result2 = _make_step_result(step_name="ToolC")
-        tracker2.record_step_start(record2)
-        tracker2.record_step_completed(record2, result2)
-
-        # Load without specifying run_id
-        tracker = StepTracker(str(tmp_path))
-        steps = tracker.load_completed_steps()
-        assert len(steps) == 1
-        assert steps[0].step_name == "ToolC"
-        assert steps[0].pipeline_run_id == "run_new"
-
-    def test_load_completed_empty(self, tmp_path):
-        """No rows returns empty list."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        assert tracker.load_completed_steps() == []
-
-
-class TestSkippedStatus:
-    """Tests for skipped step handling."""
-
-    def test_check_cache_skipped_not_cached(self, tmp_path):
-        """Skipped rows are excluded from cache lookups."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        record = _make_start_record(step_spec_id="spec_skip")
-        result = _make_step_result(succeeded_count=0)
-        tracker.record_step_start(record)
-        tracker.record_step_skipped(record, result)
-
-        # check_cache filters status=="completed", so skipped should return None
-        assert tracker.check_cache("spec_skip", CachePolicy.ALL_SUCCEEDED) is None
-
-    def test_load_completed_includes_skipped(self, tmp_path):
-        """load_completed_steps() returns both completed and skipped steps."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-
-        # Step 0: completed
-        record0 = _make_start_record(
-            step_number=0,
-            step_name="Step0",
-            step_run_id="run_0",
-            step_spec_id="spec_0",
+    elif status == StepStatus.CANCELLED:
+        tracker.record_cancellation(
+            step_run_id,
+            StepStatus.PENDING,
+            CancellationAcknowledgement(CancellationStatus.REQUESTED),
         )
-        result0 = _make_step_result(step_number=0, step_name="Step0")
-        tracker.record_step_start(record0)
-        tracker.record_step_completed(record0, result0)
-
-        # Step 1: skipped
-        record1 = _make_start_record(
-            step_number=1,
-            step_name="Step1",
-            step_run_id="run_1s",
-            step_spec_id="spec_1",
+        tracker.record_cancellation(
+            step_run_id,
+            StepStatus.PENDING,
+            CancellationAcknowledgement(CancellationStatus.CONFIRMED),
         )
-        result1 = _make_step_result(
-            step_number=1,
-            step_name="Step1",
-            succeeded_count=0,
+        tracker.transition(
+            step_run_id,
+            StepStatus.PENDING,
+            status,
+            result=StepResult(
+                step_name="op-0",
+                step_number=0,
+                status=status,
+                cancellation_status=CancellationStatus.CONFIRMED,
+                step_run_id=step_run_id,
+            ),
         )
-        tracker.record_step_start(record1)
-        tracker.record_step_skipped(record1, result1)
-
-        steps = tracker.load_completed_steps("run_1")
-        assert len(steps) == 2
-        assert steps[0].step_name == "Step0"
-        assert steps[0].status == "completed"
-        assert steps[1].step_name == "Step1"
-        assert steps[1].status == "skipped"
-
-
-class TestListRuns:
-    """Tests for StepTracker.list_runs()."""
-
-    def test_list_runs(self, tmp_path):
-        """Summary DataFrame with correct columns."""
-        # Write two runs
-        for run_id in ["run_a", "run_b"]:
-            tracker = StepTracker(str(tmp_path), run_id)
-            record = _make_start_record(
-                step_run_id=f"{run_id}_r", step_spec_id=f"{run_id}_s"
-            )
-            result = _make_step_result()
-            tracker.record_step_start(record)
-            tracker.record_step_completed(record, result)
-
-        tracker = StepTracker(str(tmp_path))
-        runs = tracker.list_runs()
-        assert len(runs) == 2
-        assert "pipeline_run_id" in runs.columns
-        assert "step_count" in runs.columns
-        assert "last_status" in runs.columns
-        assert "started_at" in runs.columns
-        assert "ended_at" in runs.columns
-
-    def test_list_runs_empty(self, tmp_path):
-        """No table returns empty DataFrame."""
-        tracker = StepTracker(str(tmp_path))
-        runs = tracker.list_runs()
-        assert len(runs) == 0
-        assert "pipeline_run_id" in runs.columns
-
-
-class TestCacheCorrectness:
-    """Tests for cache correctness — infrastructure errors and failure policies."""
-
-    def _write_completed_step(
-        self,
-        tracker: StepTracker,
-        spec_id: str = "spec_001",
-        succeeded: int = 5,
-        failed: int = 0,
-        metadata: dict | None = None,
-    ) -> None:
-        """Helper: write a start + completed row with given counts/metadata."""
-        record = _make_start_record(step_spec_id=spec_id)
-        result = _make_step_result(succeeded_count=succeeded, failed_count=failed)
-        if metadata is not None:
+    elif status != StepStatus.PENDING:
+        tracker.transition(step_run_id, StepStatus.PENDING, StepStatus.RUNNING)
+        if status == StepStatus.SUCCEEDED:
             result = StepResult(
-                step_name=result.step_name,
-                step_number=result.step_number,
-                success=result.success,
-                total_count=result.total_count,
-                succeeded_count=result.succeeded_count,
-                failed_count=result.failed_count,
-                output_roles=result.output_roles,
-                output_types=result.output_types,
-                duration_seconds=result.duration_seconds,
-                metadata=metadata,
+                step_name="op-0",
+                step_number=0,
+                status=status,
+                disposition=StepDisposition.EXECUTED,
+                step_run_id=step_run_id,
             )
-        tracker.record_step_start(record)
-        tracker.record_step_completed(record, result)
-
-    def test_cache_miss_when_dispatch_error(self, tmp_path):
-        """Both policies reject steps with dispatch errors."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        self._write_completed_step(
-            tracker,
-            metadata={"dispatch_error": "ConnectionError: timeout"},
+        elif status == StepStatus.PARTIAL:
+            result = StepResult(
+                step_name="op-0",
+                step_number=0,
+                status=status,
+                disposition=StepDisposition.EXECUTED,
+                total_count=2,
+                succeeded_count=1,
+                failed_count=1,
+                step_run_id=step_run_id,
+            )
+        else:
+            result = StepResult(
+                step_name="op-0",
+                step_number=0,
+                status=status,
+                error="test failure",
+                total_count=1,
+                failed_count=1,
+                step_run_id=step_run_id,
+            )
+        tracker.transition(
+            step_run_id,
+            StepStatus.RUNNING,
+            status,
+            step_spec_id="b" * 32,
+            result=result,
         )
-        assert tracker.check_cache("spec_001", CachePolicy.ALL_SUCCEEDED) is None
-        assert tracker.check_cache("spec_001", CachePolicy.STEP_COMPLETED) is None
 
-    def test_cache_miss_when_commit_error(self, tmp_path):
-        """Both policies reject steps with commit errors."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        self._write_completed_step(
-            tracker,
-            metadata={"commit_error": "DeltaError: conflict"},
-        )
-        assert tracker.check_cache("spec_001", CachePolicy.ALL_SUCCEEDED) is None
-        assert tracker.check_cache("spec_001", CachePolicy.STEP_COMPLETED) is None
+    states = tracker.load_current_states("run")
+    assert len(states) == 1
+    assert states[0].status == status
 
-    def test_cache_miss_when_failures_all_succeeded(self, tmp_path):
-        """ALL_SUCCEEDED rejects steps with execution failures."""
-        tracker = StepTracker(str(tmp_path), "run_1")
-        self._write_completed_step(tracker, succeeded=3, failed=2)
-        assert tracker.check_cache("spec_001", CachePolicy.ALL_SUCCEEDED) is None
 
-    @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
-    def test_cache_hit_when_failures_step_completed(self, mock_membership, tmp_path):
-        """STEP_COMPLETED accepts steps with execution failures."""
-        mock_membership.return_value = pl.DataFrame({"execution_run_id": ["b" * 32]})
-        tracker = StepTracker(str(tmp_path), "run_1")
-        self._write_completed_step(tracker, succeeded=3, failed=2)
-        cached = tracker.check_cache("spec_001", CachePolicy.STEP_COMPLETED)
-        assert cached is not None
-        assert cached.result.succeeded_count == 3
-        assert cached.result.failed_count == 2
+def test_run_rollup_uses_authoritative_status_and_active_end(tmp_path) -> None:
+    tracker = StepTracker(str(tmp_path), "run")
+    tracker.create_attempt(_record("a" * 32))
+    row = tracker.list_runs().row(0, named=True)
+    assert row["last_status"] == "pending"
+    assert row["step_count"] == 1
+    assert row["ended_at"] is None
 
-    @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
-    def test_cache_hit_clean_step(self, mock_membership, tmp_path):
-        """Both policies accept clean steps (no errors, no failures)."""
-        mock_membership.return_value = pl.DataFrame({"execution_run_id": ["b" * 32]})
-        tracker = StepTracker(str(tmp_path), "run_1")
-        self._write_completed_step(tracker, succeeded=5, failed=0)
-        assert tracker.check_cache("spec_001", CachePolicy.ALL_SUCCEEDED) is not None
-        assert tracker.check_cache("spec_001", CachePolicy.STEP_COMPLETED) is not None
+
+def test_legacy_completed_status_is_rejected(tmp_path) -> None:
+    tracker = StepTracker(str(tmp_path), "run")
+    tracker.create_attempt(_record("a" * 32))
+    rows = pl.read_delta(str(tmp_path / "orchestration/steps"))
+    rows = rows.with_columns(pl.lit("completed").alias("status"))
+    rows.write_delta(str(tmp_path / "orchestration/steps"), mode="overwrite")
+    with pytest.raises(PersistenceIntegrityError, match="legacy status"):
+        tracker.load_current_states("run")

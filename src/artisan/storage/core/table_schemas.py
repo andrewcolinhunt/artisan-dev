@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import polars as pl
+from polars.datatypes import DataType, DataTypeClass
 
 from artisan.schemas.enums import TablePath
 
@@ -124,18 +125,22 @@ CACHE_REUSE_SCHEMA = {
 # steps table
 # =============================================================================
 # Append-only event log of step state transitions.
-# Each step produces two rows: one at start (status=running)
-# and one at end (status=completed or failed).
+# Snapshots are ordered by state_sequence. The unique latest authoritative
+# snapshot is the lifecycle source of truth for one step attempt.
 # Not partitioned (small table, few rows per step per run).
 # Written directly by StepTracker, not through staging path.
 
-STEPS_SCHEMA = {
+STEPS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "step_run_id": pl.String,
     "step_spec_id": pl.String,
     "pipeline_run_id": pl.String,
     "step_number": pl.Int32,
     "step_name": pl.String,
     "status": pl.String,
+    "state_sequence": pl.UInt32,
+    "disposition": pl.String,
+    "cancellation_status": pl.String,
+    "logical_commit_id": pl.String,
     "operation_class": pl.String,
     "params_json": pl.String,
     "input_refs_json": pl.String,
@@ -149,8 +154,6 @@ STEPS_SCHEMA = {
     "timestamp": pl.Datetime("us", "UTC"),
     "duration_seconds": pl.Float64,
     "error": pl.String,
-    "dispatch_error": pl.String,
-    "commit_error": pl.String,
     "metadata": pl.String,
 }
 

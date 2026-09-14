@@ -10,6 +10,7 @@ import pytest
 from artisan.composites.base.results import CompositeResult, CompositeStepHandle
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -95,7 +96,8 @@ class TestCompositeResultWait:
             StepResult(
                 step_name="x",
                 step_number=0,
-                success=True,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
                 total_count=0,
                 succeeded_count=0,
                 failed_count=0,
@@ -107,6 +109,7 @@ class TestCompositeResultWait:
             output_roles=frozenset({"out"}),
             output_types={"out": None},
             future=future,
+            status_reader=lambda: StepStatus.SUCCEEDED,
         )
 
     def _make_pending_future(self) -> StepFuture:
@@ -117,6 +120,7 @@ class TestCompositeResultWait:
             output_roles=frozenset({"out"}),
             output_types={"out": None},
             future=future,
+            status_reader=lambda: StepStatus.PENDING,
         )
 
     def test_wait_drains_done_futures(self):
