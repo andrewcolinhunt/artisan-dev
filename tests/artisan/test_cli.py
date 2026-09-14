@@ -17,6 +17,7 @@ from fsspec.implementations.local import LocalFileSystem
 from pydantic import BaseModel, Field
 
 from artisan.cli import _CONTAINER_VIEW_FIELDS, main
+from artisan.execution.tool_endpoint._optional import MODAL_EXTRA_MESSAGE
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.operation_config.compute import ARTISAN_WORKER_IMAGE
@@ -111,6 +112,33 @@ class TestModalDeploy:
         assert rc == 1
         mock_build_app.assert_not_called()
         assert "no_such_op_anywhere" in capsys.readouterr().err
+
+    @patch("artisan.registry.discovery.discover")
+    @patch("artisan.execution.tool_endpoint.deploy.build_app")
+    def test_missing_modal_extra_is_one_controlled_error(
+        self, mock_build_app, mock_discover, capsys
+    ) -> None:
+        mock_build_app.side_effect = ImportError(MODAL_EXTRA_MESSAGE)
+
+        rc = main(["modal", "deploy", "wait_tool"])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == MODAL_EXTRA_MESSAGE + "\n"
+
+    @patch("artisan.registry.discovery.discover")
+    @patch("artisan.execution.tool_endpoint.deploy.build_app")
+    def test_unrelated_deploy_import_error_propagates(
+        self, mock_build_app, mock_discover
+    ) -> None:
+        unexpected = ImportError("deployment package is broken")
+        mock_build_app.side_effect = unexpected
+
+        with pytest.raises(ImportError) as exc_info:
+            main(["modal", "deploy", "wait_tool"])
+
+        assert exc_info.value is unexpected
 
     def test_missing_subcommand_exits(self):
         with pytest.raises(SystemExit):

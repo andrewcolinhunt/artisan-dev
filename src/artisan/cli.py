@@ -419,12 +419,19 @@ def _store_repair(args: argparse.Namespace) -> int:
 
 def _modal_deploy(args: argparse.Namespace) -> int:
     """Resolve the op, build its app, and deploy it as a persistent Modal app."""
+    from artisan.execution.tool_endpoint._optional import MODAL_EXTRA_MESSAGE
     from artisan.execution.tool_endpoint.deploy import build_app
 
     op_cls = _resolve_op_cls(args.operation)
     if op_cls is None:
         return 1
-    app = build_app(op_cls, overlay=args.overlay)
+    try:
+        app = build_app(op_cls, overlay=args.overlay)
+    except ImportError as exc:
+        if str(exc) != MODAL_EXTRA_MESSAGE:
+            raise
+        sys.stderr.write(MODAL_EXTRA_MESSAGE + "\n")
+        return 1
     app.deploy()
     sys.stdout.write(f"Deployed artisan-tool-{op_cls.name}\n")
     return 0
