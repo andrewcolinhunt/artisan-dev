@@ -10,11 +10,11 @@ from __future__ import annotations
 import json
 
 import polars as pl
+from fixtures.store_format import publish_test_store
 
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.artifact_store import ArtifactStore
-from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
 
 
@@ -249,7 +249,7 @@ class TestStoreDfMethodsBackendParametrized:
         delta_root = f"{root}/delta"
         metrics_path = f"{delta_root}/artifacts/metrics"
         storage_options = storage.delta_storage_options()
-        publish_store_manifest(delta_root, fs)
+        publish_test_store(delta_root, fs, storage_options)
 
         artifact = MetricArtifact.draft({"score": 0.95}, "score.json", 1)
         artifact.finalize()

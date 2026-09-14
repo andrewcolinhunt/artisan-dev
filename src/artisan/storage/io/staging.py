@@ -21,17 +21,20 @@ from __future__ import annotations
 
 import logging
 import posixpath
+import re
 import uuid
 from types import TracebackType
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.storage.core.table_schemas import CACHE_REUSE_SCHEMA
 from artisan.utils.path import step_dir_name
 
 logger = logging.getLogger(__name__)
 
 _RESERVED_STAGING_DIRS = frozenset({"_dispatch"})
+_HEX_ID = re.compile(r"[0-9a-f]{32}")
 
 
 class StagingArea:
@@ -201,6 +204,59 @@ class StagingManager:
             and posixpath.basename(e.rstrip("/")) not in _RESERVED_STAGING_DIRS
         ]
 
+    def stage_cache_reuse(
+        self,
+        current_step_run_id: str,
+        cached_execution_run_ids: set[str] | list[str],
+        *,
+        step_number: int,
+        operation_name: str,
+    ) -> str | None:
+        """Stage sorted, deduplicated cache-reuse pairs for one step attempt.
+
+        Args:
+            current_step_run_id: Current run-owned logical step identifier.
+            cached_execution_run_ids: Existing execution identifiers accepted
+                from cache.
+            step_number: Current logical step number.
+            operation_name: Current operation name used in the staging path.
+
+        Returns:
+            Staged Parquet URI, or None when no execution IDs were supplied.
+
+        Raises:
+            ValueError: If either identifier is not lowercase 32-character hex.
+        """
+        execution_ids = sorted(set(cached_execution_run_ids))
+        if not execution_ids:
+            return None
+        _require_hex_id(current_step_run_id, "current_step_run_id")
+        for execution_id in execution_ids:
+            _require_hex_id(execution_id, "cached_execution_run_id")
+
+        df = pl.DataFrame(
+            {
+                "current_step_run_id": [current_step_run_id] * len(execution_ids),
+                "cached_execution_run_id": execution_ids,
+            },
+            schema=CACHE_REUSE_SCHEMA,
+        )
+        step_dir = step_dir_name(step_number, operation_name)
+        orchestrator_dir = (
+            f"{self.staging_dir}/{step_dir}/_orchestrator/{current_step_run_id}"
+        )
+        self._fs.makedirs(orchestrator_dir, exist_ok=True)
+        parquet_uri = f"{orchestrator_dir}/cache_reuse.parquet"
+        if self._fs.exists(parquet_uri):
+            with self._fs.open(parquet_uri, "rb") as stream:
+                existing = pl.read_parquet(stream)
+            df = pl.concat([existing, df], rechunk=True).unique(
+                subset=list(CACHE_REUSE_SCHEMA), maintain_order=True
+            )
+        with self._fs.open(parquet_uri, "wb") as stream:
+            df.write_parquet(stream, compression="zstd")
+        return parquet_uri
+
     def get_staged_files_for_table(
         self,
         table_name: str,
@@ -316,3 +372,10 @@ class StagingManager:
         """Remove every batch directory under the staging root."""
         for batch_id in self.list_batch_ids():
             self.cleanup_batch(batch_id)
+
+
+def _require_hex_id(value: str, field: str) -> None:
+    """Require the occurrence-ID representation shared by reuse relations."""
+    if _HEX_ID.fullmatch(value) is None:
+        msg = f"{field} must be a 32-character lowercase hexadecimal ID"
+        raise ValueError(msg)

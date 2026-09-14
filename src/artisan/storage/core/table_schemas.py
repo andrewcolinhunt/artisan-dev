@@ -1,7 +1,7 @@
 """Polars schemas for framework Delta Lake tables.
 
-Define column schemas for the five framework tables: executions,
-execution_edges, artifact_edges, artifact_index, and steps.  Artifact
+Define column schemas for Artisan's framework tables: executions,
+execution_edges, artifact_edges, artifact_index, cache reuse, and steps. Artifact
 content table schemas are owned by their respective models via
 ``ArtifactTypeDef``.
 
@@ -110,6 +110,17 @@ ARTIFACT_LOCATIONS_SCHEMA = {
 }
 
 # =============================================================================
+# cache_reuse table
+# =============================================================================
+# Minimal relation between a current logical step and an execution accepted
+# from cache. Every other fact is derived from steps, executions, and edges.
+
+CACHE_REUSE_SCHEMA = {
+    "current_step_run_id": pl.String,
+    "cached_execution_run_id": pl.String,
+}
+
+# =============================================================================
 # steps table
 # =============================================================================
 # Append-only event log of step state transitions.
@@ -158,6 +169,7 @@ FRAMEWORK_SCHEMAS: dict[TablePath, dict[str, Any]] = {
     TablePath.ARTIFACT_EDGES: ARTIFACT_EDGES_SCHEMA,
     TablePath.ARTIFACT_INDEX: ARTIFACT_INDEX_SCHEMA,
     TablePath.ARTIFACT_LOCATIONS: ARTIFACT_LOCATIONS_SCHEMA,
+    TablePath.CACHE_REUSE: CACHE_REUSE_SCHEMA,
     TablePath.STEPS: STEPS_SCHEMA,
 }
 
@@ -169,6 +181,7 @@ NON_PARTITIONED_TABLES: frozenset[TablePath] = frozenset(
         TablePath.ARTIFACT_LOCATIONS,
         TablePath.ARTIFACT_EDGES,
         TablePath.EXECUTION_EDGES,
+        TablePath.CACHE_REUSE,
         TablePath.STEPS,
     }
 )

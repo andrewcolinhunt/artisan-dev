@@ -10,10 +10,10 @@ yields None on boot failure).
 from __future__ import annotations
 
 import pytest
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.storage.core.store_format import publish_store_manifest
 
 
 @pytest.fixture(
@@ -42,6 +42,6 @@ def backend_fs(request, tmp_path):
         result = LocalFileSystem(), StorageConfig(), str(tmp_path)
     else:
         result = request.getfixturevalue("s3_fs")
-    fs, _storage, root = result
-    publish_store_manifest(root, fs)
+    fs, storage, root = result
+    publish_test_store(root, fs, storage.delta_storage_options())
     return result
