@@ -24,6 +24,7 @@ from artisan.schemas.operation_config.compute import (
     ComputeProvider,
     ModalComputeConfig,
 )
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -34,7 +35,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 
 class TestExecuteStepPassesCancelEvent:
-    """execute_step should forward cancel_event to creator/curator paths."""
+    """execute_step uses and forwards the already-prepared operation."""
 
     @patch(
         "artisan.orchestration.engine.step_executor.effective_config_payload",
@@ -45,18 +46,16 @@ class TestExecuteStepPassesCancelEvent:
         "artisan.orchestration.engine.step_executor.is_curator_operation",
         return_value=False,
     )
-    @patch("artisan.orchestration.engine.step_executor.instantiate_operation")
     def test_passes_cancel_event_to_creator(
-        self, mock_instantiate, mock_is_curator, mock_creator, mock_config_payload
+        self, mock_is_curator, mock_creator, mock_config_payload
     ):
         mock_op = MagicMock()
         mock_op.name = "test"
-        mock_instantiate.return_value = mock_op
         mock_creator.return_value = MagicMock()
 
         event = threading.Event()
         execute_step(
-            operation_class=MagicMock(),
+            operation=mock_op,
             inputs=None,
             ov=StepOverrides(),
             step_runner=MagicMock(),
@@ -65,6 +64,7 @@ class TestExecuteStepPassesCancelEvent:
 
         _, kwargs = mock_creator.call_args
         assert kwargs["cancel_event"] is event
+        assert kwargs["operation"] is mock_op
 
     @patch(
         "artisan.orchestration.engine.step_executor.effective_config_payload",
@@ -75,18 +75,16 @@ class TestExecuteStepPassesCancelEvent:
         "artisan.orchestration.engine.step_executor.is_curator_operation",
         return_value=True,
     )
-    @patch("artisan.orchestration.engine.step_executor.instantiate_operation")
     def test_passes_cancel_event_to_curator(
-        self, mock_instantiate, mock_is_curator, mock_curator, mock_config_payload
+        self, mock_is_curator, mock_curator, mock_config_payload
     ):
         mock_op = MagicMock()
         mock_op.name = "test"
-        mock_instantiate.return_value = mock_op
         mock_curator.return_value = MagicMock()
 
         event = threading.Event()
         execute_step(
-            operation_class=MagicMock(),
+            operation=mock_op,
             inputs=None,
             ov=StepOverrides(),
             step_runner=MagicMock(),
@@ -95,6 +93,7 @@ class TestExecuteStepPassesCancelEvent:
 
         _, kwargs = mock_curator.call_args
         assert kwargs["cancel_event"] is event
+        assert kwargs["operation"] is mock_op
 
 
 class TestCreatorCancelChecks:
@@ -236,6 +235,46 @@ class _SimpleToolOp(OperationDefinition):
 
     def execute_command(self, inputs):
         return [*self.tool.parts(), "-c", "true"]
+
+
+class _ConfiguredToolOp(_SimpleToolOp):
+    """Tool op with non-schema defaults for recursive patch tests."""
+
+    runner_resources: RunnerResources = RunnerResources(
+        cpus=8,
+        memory_gb=32,
+        extra={"scheduler": {"queue": "cpu", "account": "research"}},
+    )
+    batch_strategy: BatchStrategy = BatchStrategy(
+        artifacts_per_unit=4,
+        max_workers=8,
+    )
+    environments: Environments = Environments(
+        active="docker",
+        docker=DockerEnvironmentSpec(
+            image="old:v1",
+            gpu=True,
+            binds=[("/host", "/container")],
+            env={"KEEP": "yes", "CHANGE": "old"},
+        ),
+    )
+    tool: ToolSpec = ToolSpec(
+        executable="bash",
+        interpreter="env",
+        subcommand="old",
+    )
+    compute_provider: ComputeProvider = ComputeProvider(
+        active="modal",
+        modal=ModalComputeConfig(
+            retries=5,
+            secrets=["old"],
+            env={"KEEP": "yes", "CHANGE": "old"},
+        ),
+    )
+    compute_resources: ComputeResources = ComputeResources(
+        gpu="A100",
+        memory_gb=32,
+    )
 
 
 def _make_mock_backend(flow_return_value=None):
@@ -402,12 +441,32 @@ class TestInstantiateOperationComputeOverrides:
         assert result.compute_provider.modal.min_containers == 4
 
     def test_instantiate_operation_compute_string_override(self):
-        """String compute_provider override selects the active provider."""
+        """String selector uses the configured target on the operation."""
+
+        class _ConfiguredModalOp(_SimpleToolOp):
+            compute_provider: ComputeProvider = ComputeProvider(
+                modal=ModalComputeConfig()
+            )
+
         op = instantiate_operation(
-            _SimpleCreatorOp,
+            _ConfiguredModalOp,
             StepOverrides.from_user(compute_provider="modal"),
         )
         assert op.compute_provider.active == "modal"
+
+    def test_unknown_string_selector_is_validated(self):
+        with pytest.raises(ValidationError, match="Unknown compute provider"):
+            instantiate_operation(
+                _SimpleCreatorOp,
+                StepOverrides.from_user(compute_provider="slurm"),
+            )
+
+    def test_unconfigured_string_selector_is_rejected(self):
+        with pytest.raises(ValueError, match="not configured"):
+            instantiate_operation(
+                _SimpleCreatorOp,
+                StepOverrides.from_user(compute_provider="modal"),
+            )
 
     def test_instantiate_operation_compute_dict_passes_isinstance_check(self):
         """Reproduces the bug: compute_provider.current() must return a ModalComputeConfig."""
@@ -450,6 +509,111 @@ class TestInstantiateOperationEnvironmentOverrides:
         )
         assert result.environments.docker.image == "new:v2"
         assert result.environments.docker.gpu is True
+
+    def test_instantiate_operation_environment_string_override(self):
+        class _DockerOp(_SimpleCreatorOp):
+            environments: Environments = Environments(
+                docker=DockerEnvironmentSpec(image="image:v1")
+            )
+
+        result = instantiate_operation(
+            _DockerOp,
+            StepOverrides.from_user(environment="docker"),
+        )
+
+        assert result.environments.active == "docker"
+        assert result.environments.current().image == "image:v1"
+
+    def test_unconfigured_environment_selector_is_rejected(self):
+        with pytest.raises(ValueError, match="not configured"):
+            instantiate_operation(
+                _SimpleCreatorOp,
+                StepOverrides.from_user(environment={"active": "docker"}),
+            )
+
+
+class TestInstantiateOperationRecursivePatches:
+    """Every target model follows the same recursive replacement rule."""
+
+    def test_recursive_updates_preserve_untouched_siblings(self) -> None:
+        operation = instantiate_operation(
+            _ConfiguredToolOp,
+            StepOverrides.from_user(
+                runner_resources={
+                    "cpus": 2,
+                    "extra": {"scheduler": {"queue": "gpu"}},
+                },
+                batch_strategy={"max_workers": 3},
+                environment={"docker": {"env": {"CHANGE": "new"}}},
+                tool={"subcommand": "new"},
+                compute_provider={"modal": {"env": {"CHANGE": "new"}}},
+                compute_resources={"memory_gb": 64},
+            ),
+        )
+
+        assert operation.runner_resources.cpus == 2
+        assert operation.runner_resources.memory_gb == 32
+        assert operation.runner_resources.extra == {
+            "scheduler": {"queue": "gpu", "account": "research"}
+        }
+        assert operation.batch_strategy.artifacts_per_unit == 4
+        assert operation.batch_strategy.max_workers == 3
+        assert operation.environments.docker.env == {
+            "KEEP": "yes",
+            "CHANGE": "new",
+        }
+        assert operation.environments.docker.image == "old:v1"
+        assert operation.tool == ToolSpec(
+            executable="bash", interpreter="env", subcommand="new"
+        )
+        assert operation.compute_provider.modal.env == {
+            "KEEP": "yes",
+            "CHANGE": "new",
+        }
+        assert operation.compute_provider.modal.retries == 5
+        assert operation.compute_resources == ComputeResources(gpu="A100", memory_gb=64)
+
+    def test_nested_empty_mappings_replace_inherited_mappings(self) -> None:
+        operation = instantiate_operation(
+            _ConfiguredToolOp,
+            StepOverrides.from_user(
+                runner_resources={"extra": {}},
+                environment={"docker": {"env": {}}},
+                compute_provider={"modal": {"env": {}}},
+            ),
+        )
+
+        assert operation.runner_resources.extra == {}
+        assert operation.environments.docker.env == {}
+        assert operation.compute_provider.modal.env == {}
+
+    def test_scalars_lists_and_none_replace_inherited_values(self) -> None:
+        operation = instantiate_operation(
+            _ConfiguredToolOp,
+            StepOverrides.from_user(
+                batch_strategy={"max_workers": None},
+                environment={"docker": {"binds": [], "gpu": False}},
+                tool={"subcommand": None},
+                compute_provider={"modal": {"secrets": []}},
+                compute_resources={"gpu": None},
+            ),
+        )
+
+        assert operation.batch_strategy.max_workers is None
+        assert operation.environments.docker.binds == []
+        assert operation.environments.docker.gpu is False
+        assert operation.tool.subcommand is None
+        assert operation.compute_provider.modal.secrets == []
+        assert operation.compute_resources.gpu is None
+        assert operation.compute_resources.memory_gb == 32
+
+    def test_empty_root_tool_patch_is_noop_without_declared_tool(self) -> None:
+        operation = instantiate_operation(
+            _SimpleCreatorOp,
+            StepOverrides.from_user(tool={}),
+        )
+
+        assert operation.tool is None
 
 
 class TestInstantiateOperationValidatedMappingOverrides:

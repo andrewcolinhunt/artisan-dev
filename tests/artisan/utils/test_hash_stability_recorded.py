@@ -19,6 +19,7 @@ golden-value safety net.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from artisan.operations.examples.data_transformer import DataTransformer
 from artisan.orchestration.engine.step_executor import instantiate_operation
@@ -163,17 +164,6 @@ RECORDED_MERGE_HASHES = [
         {
             "environment": None,
             "tool": None,
-            "compute_provider": "slurm",
-            "compute_resources": None,
-        },
-        "e8ffc89a4c6e3dcbd453a2289636aa4d",
-        "1b0b8d8cc28344004835459d4c2cc0cf",
-        id="compute_provider_slurm",
-    ),
-    pytest.param(
-        {
-            "environment": None,
-            "tool": None,
             "compute_provider": None,
             "compute_resources": None,
         },
@@ -201,6 +191,19 @@ def _effective_payload(merge_kwargs: dict) -> dict:
         _PINNED_OP, StepOverrides.from_user(**merge_kwargs)
     )
     return effective_config_payload(instance)
+
+
+def test_invalid_selector_fails_before_hashing() -> None:
+    """Invalid selectors are no longer accepted as recorded cache inputs."""
+    with pytest.raises(ValidationError, match="Unknown compute provider"):
+        _effective_payload(
+            {
+                "environment": None,
+                "tool": None,
+                "compute_provider": "slurm",
+                "compute_resources": None,
+            }
+        )
 
 
 @pytest.mark.parametrize(
