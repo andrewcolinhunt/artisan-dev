@@ -7,36 +7,41 @@ subsystem (provenance, caching, storage, execution) is built on top of them.
 
 Understanding how artifacts work and why they are content-addressed explains
 three properties you get for free: redundant computation is skipped
-automatically, provenance edges never go stale, and the same result is never
-stored twice.
+automatically, provenance edges never go stale, and the same artifact identity
+is never stored twice.
 
 ---
 
 ## Content addressing: one idea, three consequences
 
-An artifact's identity is the hash of its content. Specifically,
-`artifact_id = xxh3_128(content)` -- a 128-bit hash represented as a 32-character
-hex string. There is no separate "name" or "version" field. The content *is* the
-identity.
+An artifact's identity is a versioned hash of three things: its registered type,
+its type-owned canonical content, and common semantic metadata such as its name,
+extension, and `metadata` mapping. The result remains a 32-character hexadecimal
+string. Type separation prevents the same bytes in two artifact types from
+colliding, while semantic metadata keeps lineage-visible distinctions intact.
+
+Runtime state does not enter identity. The producing step number, source URI,
+managed storage URI, and materialized path may change without changing what the
+artifact means.
 
 This single decision produces three consequences that underpin the rest of the
 framework:
 
-**Deduplication.** If two operations produce identical output, only one copy is
-stored. The commit logic performs an anti-join on incoming artifact IDs against
+**Deduplication.** If two operations produce the same typed semantic artifact,
+only one copy is stored. The commit logic performs an anti-join on incoming IDs against
 the existing Delta Lake table and silently drops duplicates. No configuration
 needed -- it is a structural guarantee.
 
-**Deterministic caching.** Cache keys are computed from the operation name,
-input artifact IDs, parameters, and any config overrides. Since artifact IDs are
-content hashes, identical computation always produces the same cache key. No
-manual cache invalidation, no cache drift, no stale entries.
+**Deterministic caching.** Cache keys are computed from the operation, concrete
+typed input occurrences, parameters, and effective configuration. Roles, group
+identity, position, and duplicates remain visible to the key, so two different
+invocations cannot collapse into the same cache entry merely because they use
+the same set of IDs.
 
-**Immutable provenance.** The artifact ID *is* the content. Modifying the content
-would change the hash, producing a different artifact. This means provenance
-edges are permanent: "A produced B" means "this exact content A was used to
-produce this exact content B." Edges cannot go stale because the things they
-point to cannot change.
+**Immutable provenance.** Finalization protects content, names, metadata, and
+durable descriptors against assignment and nested mutation. This means
+provenance edges remain permanent: "A produced B" refers to exact, validated
+artifact identities rather than mutable records.
 
 ---
 
@@ -77,16 +82,15 @@ encoding JSON, computing derived fields). The draft phase gives operations
 freedom to build artifacts incrementally. Once `finalize()` is called, the
 content hash is computed and the artifact has its permanent identity.
 
-Finalization is idempotent -- calling it again on a finalized artifact is a
-no-op. The framework finalizes all draft artifacts in bulk after an operation's
-postprocess phase completes.
+Finalization is idempotent when the artifact is unchanged. Calling it again also
+checks the saved identity snapshot, so nested mutation cannot pass silently. The
+framework finalizes all draft artifacts in bulk after an operation's postprocess
+phase completes.
 
-**Why not freeze the model?** Artifact objects are Pydantic models, but they are
-intentionally *not* frozen (the model uses `extra="forbid"` without `frozen=True`).
-Drafts need mutation (setting content, metadata, original name). After
-finalization, immutability is semantic rather than enforced -- the content hash
-guarantees that any mutation would produce a different identity, making
-accidental mutation detectable.
+**Why not freeze the whole model?** Drafts need mutation while an operation
+builds them, and runtime locations may change after content is moved. Artisan
+therefore protects durable fields only after finalization. Location and
+materialization fields remain mutable; identity-bearing state does not.
 
 ---
 
@@ -120,18 +124,17 @@ artifacts by ID without knowing their type in advance.
 
 All artifact types inherit a common set of fields from the base artifact model:
 
-- **artifact_id** -- the content hash (None for drafts, 32-char hex when finalized)
+- **artifact_id** -- the typed semantic hash (None for drafts, 32-char hex when finalized)
 - **artifact_type** -- a string discriminator identifying the type
 - **origin_step_number** -- the pipeline step that produced this artifact
 - **metadata** -- a JSON-serializable dict for extensibility
 - **external_path** -- an optional path to external content on disk
 
-Content tables store `artifact_id`, `origin_step_number`, `metadata`, and
-`external_path`, plus the type-specific fields (like `content`, `columns`,
-`row_count`, `content_hash`) added by each concrete type. `artifact_type` is a
-model discriminator rather than a content-table column -- it is implied by which
-table a row lives in, and recorded explicitly in the artifact index alongside
-`artifact_id`, `origin_step_number`, and `metadata`.
+Content tables store `artifact_id`, `origin_step_number`, `metadata`, and the
+type-specific fields added by each concrete type. `artifact_type` is implied by
+the table and recorded explicitly in the artifact index. External locators are
+stored separately in `artifacts/locations`, where one artifact may have more
+than one verified URI.
 
 ### Config artifacts and cross-references
 
@@ -146,22 +149,18 @@ that need to exist on disk. The framework handles the resolution transparently:
 non-config artifacts are materialized first (so their paths are known), then
 config artifacts resolve their `$artifact` references against those paths.
 
-### File refs and the two-step hash
+### External artifacts and verified locations
 
-File ref artifacts hash differently from other types. Instead of hashing the
-file content directly, they hash a JSON record containing the content hash,
-the original path, and the file size. This means two identical files at
-different paths produce different artifact IDs.
+File ref and large-file artifacts identify bytes by their content digest and
+size, not by a path. Appendable artifacts add the record ID to the digest and
+size because one container holds many records. Moving verified bytes to another
+URI therefore preserves identity.
 
-The rationale: file refs are *pointers*, and their identity should include
-where they point. If you ingest the same file from two different locations, those
-are two distinct provenance events, even though the underlying bytes are
-identical.
-
-Large file and appendable artifacts hash the same way. Both keep their bytes at
-`external_path` and derive their ID from a JSON record of the content hash and
-path (plus `record_id` for appendable records), so the same content stored at a
-different location is a distinct artifact.
+Artisan verifies external bytes before it trusts or materializes them. Reads use
+bounded streaming and compare both digest and size. The location table may hold
+several URIs for one artifact, allowing a relocated or replicated copy to remain
+usable without rewriting the artifact row. A missing, malformed, or mismatched
+location fails closed rather than returning unverified bytes.
 
 ---
 
@@ -217,16 +216,15 @@ Content addressing makes caching deterministic. The framework computes cache
 keys at two levels:
 
 **Execution-level cache keys** are computed from the operation name, input
-artifact IDs (sorted within each role, with the roles themselves sorted;
-multiplicity within a role and role assignment are preserved), merged parameters,
-and any config overrides. Same data + same computation = same cache key, so
-identical work is never repeated regardless of when or where it runs.
+occurrences for one batch, merged parameters, and effective configuration. Each
+occurrence includes its role, group, role-local position, concrete artifact
+type, and artifact ID. Role mapping order is irrelevant; occurrence order and
+multiplicity are preserved.
 
-**Step-level cache keys** operate on step references rather than resolved
-artifact IDs. They incorporate the operation name, step number (position in
-the pipeline), parameters, upstream step spec IDs, and config overrides. This
-enables the framework to determine that a step can be skipped before resolving
-its inputs, which avoids unnecessary upstream computation.
+**Step-level cache keys** use the full prepared concrete input snapshot rather
+than symbolic step references. They add the step number to distinguish pipeline
+position. Preparing once means both cache levels agree on type validation,
+external-byte verification, grouping, ordering, and duplicates.
 
 Both levels share the same guarantee: no false hits (any input change
 invalidates the key), no false misses (identical computation always matches),
