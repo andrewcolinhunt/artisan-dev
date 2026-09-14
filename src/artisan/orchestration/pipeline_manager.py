@@ -1169,7 +1169,6 @@ class PipelineManager:
         failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
         cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
         default_step_runner: str | RunnerBase = "local",
-        default_compute_provider: str = "local",
         preserve_staging: bool = False,
         preserve_working: bool = False,
         recover_staging: bool = True,
@@ -1190,7 +1189,6 @@ class PipelineManager:
             default_step_runner: Default step runner for step execution. Accepts a
                 ``RunnerBase`` instance or a built-in string name (currently
                 ``"local"``). External providers are passed as instances.
-            default_compute_provider: Default compute provider for step execution.
             preserve_staging: Debug flag to preserve staging files after commit.
             preserve_working: Debug flag to preserve sandbox after execution.
             recover_staging: Commit leftover staging files from prior crashed
@@ -1212,7 +1210,6 @@ class PipelineManager:
             failure_policy=failure_policy,
             cache_policy=cache_policy,
             default_step_runner=resolved.name,
-            default_compute_provider=default_compute_provider,
             preserve_staging=preserve_staging,
             preserve_working=preserve_working,
             recover_staging=recover_staging,
@@ -1236,7 +1233,6 @@ class PipelineManager:
         files_root: str | None = None,
         failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
         cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
-        default_compute_provider: str = "local",
         preserve_staging: bool = False,
         preserve_working: bool = False,
         recover_staging: bool = True,
@@ -1260,8 +1256,6 @@ class PipelineManager:
                 derives a sibling path from a local delta_root.
             failure_policy: Default failure handling for subsequent steps.
             cache_policy: Controls when completed steps qualify as cache hits.
-            default_compute_provider: Default compute provider for subsequent
-                step execution.
             preserve_staging: Preserve staging files after commit.
             preserve_working: Preserve worker sandboxes after execution.
             recover_staging: Commit leftover staging from interrupted runs.
@@ -1310,7 +1304,6 @@ class PipelineManager:
             "files_root": files_root,
             "failure_policy": failure_policy,
             "cache_policy": cache_policy,
-            "default_compute_provider": default_compute_provider,
             "preserve_staging": preserve_staging,
             "preserve_working": preserve_working,
             "recover_staging": recover_staging,
