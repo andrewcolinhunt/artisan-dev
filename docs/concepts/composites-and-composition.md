@@ -150,8 +150,10 @@ composite-level default.
 | Precedence | Loses to a per-op value for the same knob | Wins for the knob it sets |
 | Granularity | Whole knob (no deep merge) | Whole knob |
 
-This mirrors the pipeline-default-then-step-override precedence you
-already use for ordinary steps.
+This mirrors the default-then-explicit-override shape used by ordinary steps.
+The source of an ordinary step's default depends on the knob: for example,
+`step_runner` falls back to the pipeline default, while `compute_provider`
+falls back to the operation declaration.
 
 ---
 
@@ -233,7 +235,7 @@ pipeline DAG.
 |----------|-----------|
 | Separate class hierarchy (`CompositeDefinition` not `OperationDefinition`) | Composites wire; operations compute. Mixing them would blur the lifecycle contract |
 | One execution model (macro-expansion into real steps) | "Step" is the unit of identity for caching, provenance, cancellation, and validation. A composite names real steps rather than being a second kind of step, so those subsystems need no parallel path |
-| Composite-level overrides are step defaults | Every override demonstrably takes effect on the child steps; per-op values win per knob, matching pipeline-default-then-step-override precedence |
+| Composite-level overrides are step defaults | Every override demonstrably takes effect on the child steps; per-op values win per knob, matching the ordinary default-then-explicit-override shape |
 | Placement lives in the runner layer | Co-locating steps in one allocation is a placement concern that benefits all steps, not just composite-wrapped ones; keeping it out of the composite avoids a second execution model |
 | `CompositeContext` as the API surface | Provides a uniform wiring interface for `compose()` |
 | Frozen `CompositeRef` | Prevents accidental mutation of wiring state between `ctx.run()` calls |
