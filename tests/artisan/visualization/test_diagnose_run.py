@@ -8,11 +8,15 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
+from artisan.errors import IncompatibleStoreError
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
+    EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
     STEPS_SCHEMA,
 )
@@ -51,6 +55,7 @@ def _step_row(run_id: str, number: int, name: str, status: str, minute: int) -> 
 @pytest.fixture
 def failed_store(tmp_path: Path) -> Path:
     """Seed run-1 (a failed transform) plus an older failed run-0."""
+    publish_test_store(str(tmp_path), LocalFileSystem())
     steps = [
         _step_row("run-0", 1, "generate", "failed", 0),
         _step_row("run-1", 1, "generate", "completed", 10),
@@ -90,6 +95,16 @@ def failed_store(tmp_path: Path) -> Path:
     pl.DataFrame([exec_row], schema=EXECUTIONS_SCHEMA).write_delta(
         str(tmp_path / TablePath.EXECUTIONS)
     )
+
+    pl.DataFrame(
+        {
+            "execution_run_id": ["exec-2"],
+            "direction": ["output"],
+            "role": ["data"],
+            "artifact_id": [B],
+        },
+        schema=EXECUTION_EDGES_SCHEMA,
+    ).write_delta(str(tmp_path / TablePath.EXECUTION_EDGES))
 
     pl.DataFrame(
         {
@@ -140,12 +155,16 @@ class TestDiagnoseRun:
         assert {"source_artifact_id": A, "target_artifact_id": B} in diag.upstream_edges
 
     def test_missing_executions_raises(self, tmp_path) -> None:
-        """A bogus root (no executions, no steps) raises for store_not_found."""
-        with pytest.raises(FileNotFoundError):
+        """A root without a format-2 contract fails before inspection."""
+        with pytest.raises(IncompatibleStoreError):
             diagnose_run(str(tmp_path), "run-1")
 
     def test_steps_but_no_executions_degrades(self, tmp_path) -> None:
         """A real store with no executions recorded yields an empty diagnosis."""
+        publish_test_store(str(tmp_path), LocalFileSystem())
+        pl.DataFrame(schema=EXECUTIONS_SCHEMA).write_delta(
+            str(tmp_path / TablePath.EXECUTIONS)
+        )
         steps = [_step_row("run-1", 1, "generate", "running", 0)]
         pl.DataFrame(steps, schema=STEPS_SCHEMA).write_delta(
             str(tmp_path / TablePath.STEPS)

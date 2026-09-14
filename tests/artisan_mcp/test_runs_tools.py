@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
+
 
 class TestListRuns:
     def test_lists_seeded_run(self, make_app, invoke, seeded_run) -> None:
@@ -12,6 +15,7 @@ class TestListRuns:
         assert page["has_more"] is False
 
     def test_empty_root_yields_empty_page(self, make_app, invoke, tmp_path) -> None:
+        publish_test_store(str(tmp_path), LocalFileSystem())
         page = invoke(make_app(delta_root=tmp_path), "artisan_list_runs")
         assert page["items"] == []
 

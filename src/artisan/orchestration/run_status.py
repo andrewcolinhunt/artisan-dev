@@ -96,7 +96,11 @@ def run_status(
     from artisan.visualization.inspect import inspect_pipeline
 
     storage = storage or StorageConfig()
-    assert_store_format(delta_root, storage.filesystem())
+    assert_store_format(
+        delta_root,
+        storage.filesystem(),
+        storage.delta_storage_options(),
+    )
     steps_df = inspect_pipeline(
         delta_root,
         pipeline_run_id=pipeline_run_id,
@@ -170,7 +174,7 @@ def resolve_step_number(
         from fsspec.implementations.local import LocalFileSystem
 
         fs = LocalFileSystem()
-    assert_store_format(delta_root, fs)
+    assert_store_format(delta_root, fs, storage_options)
     steps_path = uri_join(delta_root, TablePath.STEPS)
     if not fs.exists(steps_path):
         msg = f"Steps table not found at {steps_path}"

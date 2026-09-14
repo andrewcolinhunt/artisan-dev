@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
 import pytest
+from fixtures.cache_isolation_store import build_cache_isolation_store
 from fixtures.execution_records import executions_df
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtisanError, ErrorCode
+from artisan.schemas.enums import TablePath
+from artisan.storage.core.table_schemas import (
+    CACHE_REUSE_SCHEMA,
+    EXECUTION_EDGES_SCHEMA,
+    EXECUTIONS_SCHEMA,
+)
 from artisan.utils.dicts import flatten_dict as _flatten_dict
 from artisan.visualization.inspect import (
     _build_details,
@@ -84,21 +94,79 @@ METRICS_SCHEMA = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _format_root(tmp_path: Path) -> None:
+    publish_test_store(str(tmp_path / "delta"), LocalFileSystem())
+
+
 def _write_delta(
     delta_root: Path, rel_path: str, rows: list[dict], schema: dict
 ) -> None:
     table_path = delta_root / rel_path
     table_path.parent.mkdir(parents=True, exist_ok=True)
     df = pl.DataFrame(rows, schema=schema)
-    df.write_delta(str(table_path))
+    df.write_delta(str(table_path), mode="overwrite")
 
 
 def _write_steps(delta_root: Path, rows: list[dict]) -> None:
     _write_delta(delta_root, "orchestration/steps", rows, STEPS_SCHEMA)
+    executions = [
+        {
+            "execution_run_id": f"exec-{row['step_run_id']}",
+            "execution_spec_id": f"execution-spec-{row['step_number']}",
+            "step_run_id": row["step_run_id"],
+            "origin_step_number": row["step_number"],
+            "operation_name": row["step_name"],
+            "params": "{}",
+            "user_overrides": "{}",
+            "timestamp_start": datetime(2026, 1, 1, tzinfo=UTC),
+            "timestamp_end": datetime(2026, 1, 1, tzinfo=UTC),
+            "source_worker": 0,
+            "compute_backend": "local",
+            "success": row["status"] == "completed",
+            "error": row.get("error"),
+            "error_envelope": None,
+            "tool_output": None,
+            "worker_log": None,
+            "metadata": "{}",
+        }
+        for row in rows
+    ]
+    _write_delta(
+        delta_root,
+        TablePath.EXECUTIONS,
+        executions,
+        EXECUTIONS_SCHEMA,
+    )
+    _write_delta(delta_root, TablePath.CACHE_REUSE, [], CACHE_REUSE_SCHEMA)
+    if not (delta_root / TablePath.EXECUTION_EDGES).exists():
+        _write_delta(
+            delta_root,
+            TablePath.EXECUTION_EDGES,
+            [],
+            EXECUTION_EDGES_SCHEMA,
+        )
+    if not (delta_root / TablePath.ARTIFACT_INDEX).exists():
+        _write_delta(delta_root, TablePath.ARTIFACT_INDEX, [], INDEX_SCHEMA)
 
 
 def _write_index(delta_root: Path, rows: list[dict]) -> None:
     _write_delta(delta_root, "artifacts/index", rows, INDEX_SCHEMA)
+    edges = [
+        {
+            "execution_run_id": f"exec-sr{row['origin_step_number']}",
+            "direction": "output",
+            "role": "output",
+            "artifact_id": row["artifact_id"],
+        }
+        for row in rows
+    ]
+    _write_delta(
+        delta_root,
+        TablePath.EXECUTION_EDGES,
+        edges,
+        EXECUTION_EDGES_SCHEMA,
+    )
 
 
 def _write_data(delta_root: Path, rows: list[dict]) -> None:
@@ -112,7 +180,7 @@ def _write_metrics(delta_root: Path, rows: list[dict]) -> None:
 def _write_executions(delta_root: Path, df: pl.DataFrame) -> None:
     table_path = delta_root / "orchestration/executions"
     table_path.parent.mkdir(parents=True, exist_ok=True)
-    df.write_delta(str(table_path))
+    df.write_delta(str(table_path), mode="overwrite")
 
 
 def _envelope_json(**overrides) -> str:
@@ -990,3 +1058,36 @@ def test_inspect_pipeline_forwards_storage_options(tmp_path: Path) -> None:
         mock_scan.assert_called()
         _, kwargs = mock_scan.call_args_list[0]
         assert kwargs.get("storage_options") == opts
+
+
+def test_run_scoped_inspection_projects_cached_outputs_without_cross_run_leaks(
+    tmp_path: Path,
+) -> None:
+    store = build_cache_isolation_store(tmp_path)
+
+    pipeline = inspect_pipeline(
+        store.root,
+        pipeline_run_id=store.current_run,
+    )
+    cached_step = inspect_step(
+        store.root,
+        5,
+        pipeline_run_id=store.current_run,
+    )
+    metrics = inspect_metrics(
+        store.root,
+        5,
+        pipeline_run_id=store.current_run,
+    )
+    data = inspect_data(
+        store.root,
+        name="shared",
+        step_number=0,
+        pipeline_run_id=store.current_run,
+    )
+
+    assert pipeline["step"].to_list() == [0, 5]
+    assert pipeline["produced"].to_list() == ["1 data", "1 metric"]
+    assert cached_step["name"].to_list() == ["source_metric"]
+    assert metrics.select("step", "score").row(0) == (5, 0.9)
+    assert data["value"].to_list() == [1]

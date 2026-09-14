@@ -136,12 +136,38 @@ class InteractiveFilter:
             msg = f"Artifact index not found at {index_path}"
             raise ValueError(msg)
 
-        # Load primary artifact IDs
-        all_index = (
-            pl.scan_delta(index_path, storage_options=self._storage_options)
-            .select(["artifact_id", "artifact_type", "origin_step_number"])
-            .collect()
-        )
+        self._pipeline_run_id = pipeline_run_id or self._detect_pipeline_run_id()
+        execution_ids: set[str] | None = None
+        if self._pipeline_run_id is not None:
+            from artisan.storage.core.run_scope import (
+                load_accepted_outputs,
+                load_execution_membership,
+            )
+
+            outputs = load_accepted_outputs(
+                self._delta_root,
+                fs=self._fs,
+                storage_options=self._storage_options,
+                pipeline_run_id=self._pipeline_run_id,
+            )
+            all_index = outputs.select(
+                "artifact_id",
+                "artifact_type",
+                pl.col("current_step_number").alias("origin_step_number"),
+            ).unique()
+            membership = load_execution_membership(
+                self._delta_root,
+                fs=self._fs,
+                storage_options=self._storage_options,
+                pipeline_run_id=self._pipeline_run_id,
+            )
+            execution_ids = set(membership["execution_run_id"].to_list())
+        else:
+            all_index = (
+                pl.scan_delta(index_path, storage_options=self._storage_options)
+                .select(["artifact_id", "artifact_type", "origin_step_number"])
+                .collect()
+            )
 
         if artifact_type is not None:
             primary_mask = all_index["artifact_type"] == artifact_type
@@ -162,12 +188,6 @@ class InteractiveFilter:
         primary_ids = set(primary_df["artifact_id"].to_list())
         self._primary_artifact_ids = primary_ids
 
-        # Detect pipeline_run_id
-        if pipeline_run_id:
-            self._pipeline_run_id = pipeline_run_id
-        else:
-            self._pipeline_run_id = self._detect_pipeline_run_id()
-
         # ── Metric discovery via forward provenance walk ──
         # Use ALL artifact IDs for step range (not just primaries) so metrics
         # at higher steps are included in the edge scan.
@@ -180,7 +200,10 @@ class InteractiveFilter:
 
         step_min, step_max = step_range
         edges = self._store.provenance.load_edges_df(
-            step_min, step_max, include_target_type=True
+            step_min,
+            step_max,
+            include_target_type=True,
+            execution_ids=execution_ids,
         )
 
         if edges.is_empty():
@@ -551,7 +574,7 @@ class InteractiveFilter:
         sorted_input_ids = ",".join(sorted(self._primary_artifact_ids))
 
         step_spec_id = digest_utf8(f"{step_name}|{criteria_json}|{sorted_input_ids}")
-        step_run_id = digest_utf8(f"{step_spec_id}|{timestamp_str}")
+        step_run_id = uuid.uuid4().hex
         execution_spec_id = digest_utf8(f"filter|{sorted_input_ids}|{criteria_json}")
         execution_run_id = digest_utf8(f"{execution_spec_id}|{timestamp_str}")
 

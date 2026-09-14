@@ -9,6 +9,8 @@ from pathlib import Path
 import graphviz
 import polars as pl
 import pytest
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.storage.core.table_schemas import STEPS_SCHEMA
 from artisan.visualization.graph import build_macro_graph, render_macro_graph
@@ -21,6 +23,7 @@ from artisan.visualization.graph.macro import _parse_input_refs
 
 def _write_steps(delta_root: Path, rows: list[dict]) -> None:
     """Write steps rows to a Delta table under *delta_root*."""
+    publish_test_store(str(delta_root), LocalFileSystem())
     defaults = {
         "step_run_id": "run_0",
         "step_spec_id": "spec_0",
@@ -58,6 +61,7 @@ def empty_delta_root(tmp_path: Path) -> Path:
     """Empty Delta Lake root directory (no tables)."""
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
+    publish_test_store(str(delta_root), LocalFileSystem())
     return delta_root
 
 

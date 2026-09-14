@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import polars as pl
 import pytest
 from fixtures.execution_records import executions_df
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtifactIntegrityError
@@ -16,7 +17,6 @@ from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.storage.core.artifact_store import ArtifactStore
-from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
@@ -32,7 +32,7 @@ CONFIGS_SCHEMA = ExecutionConfigArtifact.POLARS_SCHEMA
 @pytest.fixture(autouse=True)
 def _format_local_tmp_root(tmp_path) -> None:
     """Give direct local test stores the exact format-2 manifest."""
-    publish_store_manifest(str(tmp_path), LocalFileSystem())
+    publish_test_store(str(tmp_path), LocalFileSystem())
 
 
 def _metric(values: dict, name: str, step: int = 1) -> MetricArtifact:
@@ -1204,7 +1204,11 @@ class TestArtifactStoreBackendParametrized:
         fs, storage, root = backend_fs
         delta_root = f"{root}/delta"
         staging_root = f"{root}/staging"
-        publish_store_manifest(delta_root, fs)
+        publish_test_store(
+            delta_root,
+            fs,
+            storage.delta_storage_options(),
+        )
 
         sm = StagingManager(staging_root, fs)
         committer = DeltaCommitter(

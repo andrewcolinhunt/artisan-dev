@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import pytest
 from fastmcp import Client
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
+from artisan.utils.hashing import digest_utf8
 from artisan_mcp import build_mcp_app
 from artisan_mcp.config import ArtisanMCPConfig
 
@@ -125,6 +128,7 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
     """
     delta_root = tmp_path / "delta"
     run_id = "run-1"
+    publish_test_store(str(delta_root), LocalFileSystem())
     _seed_steps(
         delta_root,
         run_id,
@@ -171,7 +175,7 @@ def _seed_steps(root: Path, run_id: str, steps: list[tuple[int, str, str]]) -> N
         for j, row_status in enumerate(["running", status]):
             rows.append(
                 {
-                    "step_run_id": f"{run_id}-step-{number}",
+                    "step_run_id": digest_utf8(f"{run_id}:step:{number}"),
                     "step_spec_id": f"spec-{number}",
                     "pipeline_run_id": run_id,
                     "step_number": number,
@@ -216,27 +220,50 @@ def _seed_index(root: Path, entries: list[tuple[str, str, int]]) -> None:
 
 def _seed_executions(root: Path, run_id: str, exec_id: str, envelope: dict) -> None:
     from artisan.schemas.enums import TablePath
-    from artisan.storage.core.table_schemas import EXECUTIONS_SCHEMA
-
-    row = dict.fromkeys(EXECUTIONS_SCHEMA)
-    row.update(
-        execution_run_id=exec_id,
-        execution_spec_id="espec",
-        step_run_id=f"{run_id}-step-2",
-        origin_step_number=2,
-        operation_name="transform",
-        params="{}",
-        user_overrides="{}",
-        timestamp_start=datetime(2026, 7, 1, tzinfo=UTC),
-        source_worker=0,
-        compute_backend="local",
-        success=False,
-        error="transform blew up",
-        error_envelope=json.dumps(envelope),
-        tool_output="",
-        worker_log="",
-        metadata="{}",
+    from artisan.storage.core.table_schemas import (
+        EXECUTION_EDGES_SCHEMA,
+        EXECUTIONS_SCHEMA,
     )
-    pl.DataFrame([row], schema=EXECUTIONS_SCHEMA).write_delta(
+
+    now = datetime(2026, 7, 1, tzinfo=UTC)
+    rows = []
+    for execution_id, number, name, success in (
+        (digest_utf8("run-1:generate"), 1, "generate", True),
+        (exec_id, 2, "transform", False),
+    ):
+        row = dict.fromkeys(EXECUTIONS_SCHEMA)
+        row.update(
+            execution_run_id=execution_id,
+            execution_spec_id=digest_utf8(f"{execution_id}:spec"),
+            step_run_id=digest_utf8(f"{run_id}:step:{number}"),
+            origin_step_number=number,
+            operation_name=name,
+            params="{}",
+            user_overrides="{}",
+            timestamp_start=now,
+            timestamp_end=now,
+            source_worker=0,
+            compute_backend="local",
+            success=success,
+            error=None if success else "transform blew up",
+            error_envelope=None if success else json.dumps(envelope),
+            tool_output="",
+            worker_log="",
+            metadata="{}",
+        )
+        rows.append(row)
+    pl.DataFrame(rows, schema=EXECUTIONS_SCHEMA).write_delta(
         str(root / TablePath.EXECUTIONS)
     )
+    pl.DataFrame(
+        [
+            {
+                "execution_run_id": digest_utf8("run-1:generate"),
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_id,
+            }
+            for artifact_id in ("a" * 32, "b" * 32)
+        ],
+        schema=EXECUTION_EDGES_SCHEMA,
+    ).write_delta(str(root / TablePath.EXECUTION_EDGES))
