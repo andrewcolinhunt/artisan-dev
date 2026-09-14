@@ -48,6 +48,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from artisan.schemas.operation_config import ToolEndpointDataPolicy
+
 pytestmark = pytest.mark.modal
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +60,16 @@ _ENV_FILES = (
 
 R2_SECRET_NAME = "r2-artisan"
 POLL_DEADLINE_S = 900  # first call pulls the worker image — minutes, not seconds
+
+
+def _output_policy(r2: dict[str, str]) -> ToolEndpointDataPolicy:
+    """Return the policy shared by the deployed worker and SDK client."""
+    return ToolEndpointDataPolicy(
+        output_allowlist=(
+            f"s3://{r2['bucket']}/integration",
+            r2["endpoint"],
+        ),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -120,6 +132,7 @@ def endpoint_url(r2: dict[str, str]) -> str:
         update={
             "secrets": [R2_SECRET_NAME],
             "image": os.environ.get("ARTISAN_TEST_WORKER_IMAGE", original.modal.image),
+            "data_policy": _output_policy(r2),
         }
     )
     field.default = ComputeProvider(modal=deploy_cfg)
@@ -154,6 +167,7 @@ def test_prefix_mode_via_artisan_client(
             modal=ModalComputeConfig(
                 output_store=f"s3://{r2['bucket']}/{run_prefix}",
                 poll_interval=2.0,
+                data_policy=_output_policy(r2),
             ),
         ),
     )
@@ -210,7 +224,10 @@ def test_capability_mode_external_consumer(
 
     try:
         with httpx.Client(
-            base_url=endpoint_url, headers=proxy_headers, timeout=120.0
+            base_url=endpoint_url,
+            headers=proxy_headers,
+            timeout=120.0,
+            follow_redirects=False,
         ) as client:
             response = client.post(
                 "/submit",
