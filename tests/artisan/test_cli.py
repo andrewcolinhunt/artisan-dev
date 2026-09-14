@@ -11,6 +11,7 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fixtures.logical_commit_store import commit_test_step
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 from pydantic import BaseModel, Field
@@ -321,14 +322,9 @@ def _seed_steps(root: Path, run_ids: list[str]) -> None:
     """Write a format-2 pending/running/succeeded lifecycle per run."""
     from datetime import UTC, datetime, timedelta
 
-    import polars as pl
-
-    from artisan.schemas.enums import TablePath
-    from artisan.storage.core.table_schemas import STEPS_SCHEMA
-
-    rows = []
     t0 = datetime(2026, 7, 1, tzinfo=UTC)
     for i, run_id in enumerate(run_ids):
+        rows = []
         for sequence, status in enumerate(["pending", "running", "succeeded"]):
             terminal = status == "succeeded"
             rows.append(
@@ -359,9 +355,7 @@ def _seed_steps(root: Path, run_ids: list[str]) -> None:
                     "metadata": None,
                 }
             )
-    publish_test_store(str(root), LocalFileSystem())
-    df = pl.DataFrame(rows, schema=STEPS_SCHEMA)
-    df.write_delta(str(root / TablePath.STEPS))
+        commit_test_step(root, root.parent / "staging", rows, {})
 
 
 class TestOpList:
@@ -464,15 +458,12 @@ class TestRuns:
 class TestFailures:
     """artisan failures."""
 
-    def test_empty_root_emits_store_not_found(self, tmp_path, capsys):
+    def test_empty_store_returns_empty_report(self, tmp_path, capsys):
         publish_test_store(str(tmp_path), LocalFileSystem())
         rc = main(["failures", "--delta-root", str(tmp_path), "--json"])
 
-        assert rc == 1
-        envelope = json.loads(capsys.readouterr().out)
-        assert envelope["code"] == "store_not_found"
-        assert envelope["recovery_hint"] == "CHECK_INPUT"
-        assert envelope["cause"]["type"] == "FileNotFoundError"
+        assert rc == 0
+        assert json.loads(capsys.readouterr().out) == {"items": []}
 
 
 class TestProvenance:

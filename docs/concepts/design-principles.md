@@ -214,18 +214,14 @@ orchestrator-worker split.
 
 Workers never write to Delta Lake directly. Instead, each worker writes
 results to an isolated staging directory, and the orchestrator commits them
-after all workers complete. Each Delta table is committed independently in a
-fixed order — content tables first, then the artifact index, then artifact
-edges, then execution edges, then executions — to minimize referential
-integrity issues on partial failure. No optimistic concurrency, no write
-conflicts.
+after all workers complete. The orchestrator seals one immutable commit plan,
+writes its tables in a fixed order, and publishes the completion marker last.
+Readers expose plan-owned rows only after that marker exists.
 
-Content-addressed deduplication runs at commit time: before appending rows,
-the committer filters out any `artifact_id` values that already exist in the
-target table. This makes commits idempotent — if a crash interrupts a commit
-and the orchestrator retries, duplicate rows are silently dropped. The
-`recover_staged` method exploits this property to commit leftover staging files
-from a prior crashed run.
+Content-addressed artifacts may reuse an existing identical row. Every other
+retry must match the immutable plan and its exact natural keys. A crash leaves
+the plan and partial physical effects available to `artisan store repair`;
+unplanned staging is never guessed into a commit.
 
 **Why this principle exists:** Pipelines run thousands of concurrent workers.
 If each worker wrote directly to shared tables, write conflicts would be

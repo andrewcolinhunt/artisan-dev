@@ -372,15 +372,15 @@ column the dedup check requires.
 
 ## Crash recovery
 
-If the orchestrator crashes after workers have staged their files but before
-commit completes, the staged Parquet files remain on disk. The `recover_staged`
-method detects leftover staging files by probing for `executions.parquet` files,
-then runs the standard commit path over them.
+If the orchestrator crashes during persistence, the immutable commit plan,
+control row, staged files, and any partial table effects remain as evidence.
+Rows owned by that plan stay invisible until its completion marker is written.
 
-Because commit uses content-addressed deduplication, recovery is idempotent. If
-some tables were already committed before the crash, those rows are skipped
-during recovery. The result is always the same as if the original commit had
-succeeded.
+Inspect the store explicitly with `artisan store repair --delta-root ...
+--staging-root ...`. Report mode never mutates the roots. `--apply` replays only
+validated plans through the normal idempotent commit path; explicit
+`--abandon ID --reason ...` records a one-way operator decision without
+deleting evidence.
 
 ---
 

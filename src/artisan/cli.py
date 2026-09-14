@@ -17,6 +17,8 @@ The repo's console entry point (``[project.scripts]``). Subcommands:
 - ``artisan runs`` / ``artisan failures`` / ``artisan provenance`` —
   read persisted run history, failure envelopes, and provenance edges
   from a Delta root (``--delta-root`` or ``ARTISAN_DELTA_ROOT``).
+- ``artisan store repair`` — report or deliberately repair incomplete
+  logical commits.
 
 Heavy artisan imports are deferred into the command functions so
 ``--help`` and argument errors stay fast. Under ``--json``, handled
@@ -182,6 +184,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--depth", type=int, default=3, help="Maximum hops from the artifact"
     )
     provenance.set_defaults(func=_provenance)
+
+    store_parser = sub.add_parser("store", help="Persisted store commands")
+    store_sub = store_parser.add_subparsers(dest="store_command", required=True)
+    repair = store_sub.add_parser(
+        "repair", help="Report or deliberately repair logical commits"
+    )
+    _add_store_args(repair)
+    repair.add_argument("--staging-root", required=True, help="Worker staging root")
+    repair.add_argument(
+        "--storage-config",
+        type=Path,
+        help="JSON file containing a StorageConfig object",
+    )
+    repair.add_argument(
+        "--apply", action="store_true", help="Replay validated incomplete commits"
+    )
+    repair.add_argument(
+        "--abandon", metavar="LOGICAL_COMMIT_ID", help="Abandon one planned commit"
+    )
+    repair.add_argument("--reason", help="Required explanation for --abandon")
+    repair.set_defaults(func=_store_repair)
 
     return parser
 
@@ -350,6 +373,48 @@ def _provenance(args: argparse.Namespace) -> int:
         )
 
     return _emit(args, payload)
+
+
+def _store_repair(args: argparse.Namespace) -> int:
+    """Report, replay, or explicitly abandon immutable commit evidence."""
+    if args.apply and args.abandon is not None:
+        sys.stderr.write("--apply and --abandon are separate actions\n")
+        return 2
+    if args.abandon is not None and not args.reason:
+        sys.stderr.write("--abandon requires --reason\n")
+        return 2
+    if args.abandon is None and args.reason is not None:
+        sys.stderr.write("--reason requires --abandon\n")
+        return 2
+
+    result: dict[str, Any] = {}
+
+    def payload() -> Any:
+        from artisan.schemas.execution.storage_config import StorageConfig
+        from artisan.storage.io.repair import repair_store
+
+        storage = (
+            StorageConfig.model_validate_json(args.storage_config.read_text())
+            if args.storage_config is not None
+            else StorageConfig()
+        )
+        report = repair_store(
+            delta_root=_require_delta_root(args),
+            staging_root=args.staging_root,
+            fs=storage.filesystem(),
+            storage_options=storage.delta_storage_options(),
+            apply=args.apply,
+            abandon=args.abandon,
+            reason=args.reason,
+        )
+        result["report"] = report
+        return report
+
+    exit_code = _emit(args, payload)
+    report = result.get("report")
+    if exit_code == 0 and report is not None and report.unresolved:
+        return 1
+    return exit_code
 
 
 def _modal_deploy(args: argparse.Namespace) -> int:

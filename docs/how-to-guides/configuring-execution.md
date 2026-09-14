@@ -866,13 +866,15 @@ staging or commit issues.
 
 ### Recovering from crashes
 
-By default, `PipelineManager.create` commits leftover staging files from prior
-crashed runs at pipeline initialization (`recover_staging=True`). To disable
-this:
+Pipeline startup never guesses ownership for leftover staging. First inspect
+the immutable evidence without mutation:
 
-```python
-pipeline = PipelineManager.create(..., recover_staging=False)
+```bash
+artisan store repair --delta-root runs/delta --staging-root runs/staging
 ```
+
+Replay validated incomplete plans with `--apply`. If a plan cannot be restored,
+abandon that one logical commit explicitly with `--abandon ID --reason ...`.
 
 ### Naming steps
 
