@@ -841,6 +841,7 @@ For a full integration test, run in a pipeline (defaults to local backend):
 
 ```python
 from artisan.orchestration import PipelineManager
+from artisan.schemas import StepStatus
 
 pipeline = PipelineManager.create(
     name="test",
@@ -852,7 +853,7 @@ pipeline.run(operation=DataGenerator, name="source", params={"count": 3})
 step = pipeline.run(
     operation=ScaleData, inputs={"dataset": output("source", "datasets")}
 )
-assert step.success
+assert step.status is StepStatus.SUCCEEDED
 assert step.succeeded_count > 0
 ```
 

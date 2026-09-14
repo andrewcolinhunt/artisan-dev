@@ -76,11 +76,20 @@ configured via [BatchStrategy](#glossary-execution-config) on the operation.
 (glossary-cache-policy)=
 ## CachePolicy
 
-Controls when a completed step qualifies as a cache hit on subsequent pipeline
-runs. `ALL_SUCCEEDED` (default) requires zero execution failures.
-`STEP_COMPLETED` accepts any completed step, regardless of individual failures.
-Infrastructure errors (dispatch or commit failures) always block caching under
-both policies.
+Controls which usable terminal step qualifies as a cache hit on subsequent
+pipeline runs. `ALL_SUCCEEDED` (default) accepts only `succeeded` attempts.
+`STEP_COMPLETED` accepts `succeeded` and `partial` attempts. Failed, cancelled,
+and skipped attempts never qualify.
+
+---
+
+(glossary-cancellation-status)=
+## CancellationStatus
+
+The acknowledgement state of a cancellation request: `requested`, then exactly
+one of `confirmed`, `rejected`, or `unknown`. A step becomes `cancelled` only
+after confirmation. Rejected work may finish naturally; an unknown outcome
+fails closed as a failed step.
 
 ---
 
@@ -430,23 +439,43 @@ has a sequential step number, an operation, resolved inputs, and produces a
 
 ---
 
+(glossary-step-disposition)=
+## StepDisposition
+
+How a usable `StepResult` was obtained: `executed` or `cache_hit`. Only
+`succeeded` and `partial` results carry a disposition.
+
+---
+
 (glossary-step-future)=
 ## StepFuture
 
 A non-blocking handle returned by `pipeline.submit()`. Wraps a concurrent
-future and provides `output()` for wiring to downstream steps without waiting
-for completion, plus `result()` for blocking retrieval and a `status` property
-(`"running"`, `"completed"`, or `"failed"`).
+future and provides `output()` for wiring to downstream steps without waiting,
+plus `result()` for blocking retrieval and a `status` property containing the
+latest durably persisted [StepStatus](#glossary-step-status).
 
 ---
 
 (glossary-step-result)=
 ## StepResult
 
-The object returned by `pipeline.run()`. Contains metadata about the step
-execution: success status, artifact counts, duration, and output
-[roles](#glossary-role). Call `step_result.output("role")` to create an
-[OutputReference](#glossary-output-reference) for wiring into downstream steps.
+The terminal object returned by `pipeline.run()`. Its `status` is authoritative;
+it also contains a disposition for usable output, item counts, duration, one
+diagnostic `error`, optional cancellation acknowledgement, and output
+[roles](#glossary-role). Output roles are exposed only for `succeeded` and
+`partial` results. Call `step_result.output("role")` to create an
+[OutputReference](#glossary-output-reference) for downstream wiring.
+
+---
+
+(glossary-step-status)=
+## StepStatus
+
+The authoritative state of one step attempt: `pending`, `running`, `succeeded`,
+`partial`, `failed`, `cancelled`, or `skipped`. An attempt starts `pending`, may
+become `running`, and ends in exactly one terminal state. Terminal states never
+transition again.
 
 ---
 

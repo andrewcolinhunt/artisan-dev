@@ -339,17 +339,32 @@ This happens on a best-effort basis -- missing logs never block the commit.
 
 ## Step tracking
 
-The orchestrator records each step's lifecycle in the steps Delta table. A
-"running" row is written before dispatch. After completion, it is updated to
-"completed", "skipped", "cancelled", or "failed" with timing and count metadata.
+The orchestrator records each step attempt as immutable snapshots in the steps
+Delta table. Once API-shape validation accepts a submission, a fresh
+`step_run_id` is assigned and `pending` is written before hashing or other
+operational work. Execution writes `running`; the attempt then reaches exactly
+one terminal status: `succeeded`, `partial`, `failed`, `cancelled`, or `skipped`.
+Terminal snapshots never transition again.
+
+The valid lifecycle edges are:
+
+```text
+pending -> running -> succeeded | partial | failed | cancelled
+       \-> skipped
+       \-> cancelled
+```
+
 This table serves three purposes:
 
 - **Step-level caching** -- the `check_cache` query scans this table for a
-  completed step matching the same `step_spec_id`.
-- **Resume** -- `load_completed_steps` returns all completed or skipped steps
-  from a prior run so the pipeline can skip them on restart.
+  `succeeded` attempt matching the same `step_spec_id`, or a `partial` attempt
+  when `CachePolicy.STEP_COMPLETED` is selected.
+- **Resume** -- `load_resumable_steps` restores `succeeded`, `partial`, and
+  `skipped` steps. It refuses a run with an unresolved `pending` or `running`
+  attempt rather than guessing an outcome.
 - **Observability** -- the table records `pipeline_run_id`, operation class,
-  parameters, step runner, and timing for every step ever executed.
+  parameters, step runner, lifecycle sequence, and timing for every accepted
+  attempt.
 
 ---
 
@@ -361,11 +376,12 @@ early as possible.
 
 | Where | What happens | What's preserved |
 |-------|-------------|-----------------|
-| Validation (before dispatch) | Raised immediately in `submit()` | Nothing dispatched, no step recorded |
+| API-shape validation | Raised immediately in `submit()` | Nothing dispatched, no attempt accepted |
+| Operational preparation after acceptance | Attempt becomes `failed` | Fresh attempt ID + error |
 | Execute phase (worker) | Caught, failure staged | Input edges + failure record in staging |
 | Postprocess/lineage (worker) | Caught, failure staged | Same as execute failure |
-| Dispatch infrastructure | Caught in step executor | Error recorded in step metadata |
-| Commit (orchestrator) | Per-table error logging | Successfully committed tables preserved |
+| Dispatch infrastructure | Caught in step executor | Failed step + single `error` diagnostic |
+| Commit (orchestrator) | Attempt becomes `failed` | Error plus any physical records already written |
 | Subprocess OOM (curator) | Broken pool detected | Synthetic failure record staged with diagnostics |
 
 **Double-fault protection.** If staging a failure record itself fails, the error
@@ -379,11 +395,11 @@ traceback, and (when available) tool output. These live in
 
 The `failure_policy` controls what happens when some batches fail within a step:
 
-- **`continue`** (default): The step succeeds if any batches succeeded. Failed
-  batches are recorded but do not block downstream steps from consuming the
-  successful results.
-- **`fail_fast`**: Any batch failure immediately stops the step and raises an
-  error.
+- **`continue`** (default): A known mixture becomes `partial`. Failed batches
+  are recorded, and downstream steps can consume the successful results. If
+  every batch fails, the step becomes `failed`.
+- **`fail_fast`**: Any observed batch failure makes the step `failed` and its
+  outputs unavailable. Work that already finished remains recorded for audit.
 
 **Why default to continue?** In large pipeline runs (thousands of artifacts),
 occasional failures are expected -- a single malformed input should not discard
@@ -395,9 +411,10 @@ diagnosis.
 ## Cancellation
 
 The framework supports cooperative cancellation through `pipeline.cancel()` or
-signal handling (SIGINT/SIGTERM). Cancellation is checked between step phases
--- a step that is mid-execution completes its current phase before stopping,
-so no partial writes occur.
+signal handling (SIGINT/SIGTERM). Cancellation evidence progresses separately
+from lifecycle state: `requested` must become `confirmed`, `rejected`, or
+`unknown`. Only confirmed evidence can produce `status="cancelled"`. Rejected
+work finishes naturally; an unknown outcome fails closed as `failed`.
 
 ### Cancel checkpoints
 
@@ -405,10 +422,10 @@ The cancel event is checked at multiple gates:
 
 | Checkpoint | Effect |
 |-----------|--------|
-| Before step dispatch | Step skipped with `skip_reason="cancelled"` |
-| After waiting for predecessors | Step skipped before any work begins |
-| Between execute and commit phases | Step returns a cancelled result |
-| Inside curator subprocess polling | Curator stops waiting for results |
+| Before step dispatch | Pending attempt records requested → confirmed → cancelled |
+| After waiting for predecessors | Queued attempt records requested → confirmed → cancelled |
+| During provider work | Provider acknowledgement determines cancelled, failed, or natural completion |
+| Inside curator subprocess polling | Local process exit supplies confirmation before cancelled |
 
 ### Signal escalation
 
@@ -436,7 +453,8 @@ its submitted job IDs rather than issuing a broad name-based scheduler query.
 
 Cancelled steps are recorded with `status="cancelled"` in the steps Delta
 table. They are excluded from cache lookups, so re-running the same pipeline
-re-executes cancelled steps while completed steps load from cache.
+re-executes them. `succeeded` steps load from cache; `partial` steps also qualify
+when `CachePolicy.STEP_COMPLETED` is selected.
 
 ---
 

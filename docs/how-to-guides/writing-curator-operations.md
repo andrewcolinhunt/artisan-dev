@@ -556,6 +556,7 @@ Confirm your operation works end-to-end in a minimal pipeline:
 ```python
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
+from artisan.schemas import StepStatus
 
 pipeline = PipelineManager.create(
     name="test", delta_root="test/delta", staging_root="test/staging",
@@ -568,7 +569,7 @@ step = pipeline.run(
     name="merge",
     inputs=[output("gen_a", "datasets"), output("gen_b", "datasets")],
 )
-assert step.success
+assert step.status is StepStatus.SUCCEEDED
 ```
 
 ---

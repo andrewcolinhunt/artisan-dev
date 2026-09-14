@@ -37,7 +37,7 @@ Compute providers belong to operation configuration and explicit step
 overrides, not `PipelineConfig`.
 
 **Policies.** How the pipeline reacts to a failed step (`failure_policy`) and
-when a completed step counts as a cache hit (`cache_policy`).
+which usable terminal step counts as a cache hit (`cache_policy`).
 
 **Recovery and debugging.** Flags to recover leftover staging files from a
 crashed run, bypass the cache, or keep staging directories and worker sandboxes
