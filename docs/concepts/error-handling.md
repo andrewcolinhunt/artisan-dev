@@ -60,11 +60,11 @@ boundary. An exception never crosses two boundaries.
   ├─────────────────────────────────────────────────────────────────┤
   │  Layer 3: Step executor                                         │
   │  Catches: dispatch crashes, commit failures                     │
-  │  Returns: StepResult(failed_count=N)                            │
+  │  Returns: StepResult(status=..., failed_count=N)                │
   ├─────────────────────────────────────────────────────────────────┤
   │  Layer 4: Pipeline manager                                      │
-  │  Catches: step executor exceptions, submit-time validation      │
-  │  Returns: StepResult (always -- the pipeline never crashes)     │
+  │  Catches: errors after an attempt has been accepted             │
+  │  Returns: a durably terminal failed StepResult                  │
   └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,9 +101,9 @@ raises an exception to the moment you see the result:
    │   succeeded=9, failed=1
    │   Commits staged data (successes AND failure records) to Delta Lake
        │
-5. StepResult(success=False, succeeded_count=9, failed_count=1)
+5. StepResult(status="partial", succeeded_count=9, failed_count=1)
        │
-6. You see: "Step completed with 1 failure out of 10"
+6. You see: "Step partial with 1 failure out of 10"
    You query: executions table → find error message → know exactly what failed
 ```
 
@@ -139,9 +139,10 @@ successes and failures and to collect run IDs for the commit.
 ### StepResult (step aggregate)
 
 The final, immutable record for a step. It counts successes and failures across
-all workers and reports the step's overall status and duration. Infrastructure
-problems -- a dispatch or commit that itself crashed -- are recorded in its
-metadata rather than as item failures.
+all workers and reports the step's authoritative status and duration.
+Infrastructure problems -- a dispatch or commit that itself crashed -- make the
+step `failed` and appear in its single `error` field rather than as item
+failures.
 
 ---
 
@@ -159,10 +160,10 @@ Failed executions are persisted with the same schema as successes. The
 - Timestamps, source worker ID
 - Input artifact IDs (via the `execution_edges` table, joined on `execution_run_id`)
 
-At the step level, the `steps` table records `status="failed"` with the error
-string, or `status="completed"` with `failed_count` and `succeeded_count`
-for partial failures. Infrastructure-level problems are captured separately
-in `dispatch_error` and `commit_error` columns.
+At the step level, the `steps` table records `status="partial"` with both
+`failed_count` and `succeeded_count` for an accepted mixture, or
+`status="failed"` with the diagnostic in `error`. There are no parallel
+lifecycle booleans or phase-specific error columns.
 
 ### Failure logs
 
@@ -194,15 +195,15 @@ The framework distinguishes two failure policies. You choose which one applies.
 | `continue` (default) | Collect all results, count successes and failures, keep going | Most pipelines -- partial results are valuable |
 | `fail_fast` | Abort on the first failure | When partial results are meaningless, or failures indicate a systemic problem |
 
-With `continue`, a step that processes 1,000 items with 3 failures completes
-normally. The 997 successes are committed. Downstream steps receive whatever
-succeeded. You inspect the `StepResult` and the executions table to diagnose
-the 3 failures.
+With `continue`, a step that processes 1,000 items with 3 failures becomes
+`partial`. The 997 successes are committed and remain available to downstream
+steps. If every item fails, the step becomes `failed` and exposes no output
+references. You inspect the `StepResult` and the executions table to diagnose
+the failures.
 
-With `fail_fast`, the first failure raises a `RuntimeError` that propagates
-through the dispatch and step layers. The pipeline manager catches it and
-returns a failed `StepResult`. Work already completed by other workers is
-still committed -- only remaining work is aborted.
+With `fail_fast`, any observed item failure makes the step `failed`, so its
+outputs are unavailable to downstream steps. The failed execution and any
+sibling work that already finished are persisted for audit.
 
 The policy can be set at two levels:
 
@@ -219,15 +220,13 @@ as a cache hit on re-run:
 
 | Cache policy | Behavior |
 |--------------|----------|
-| `all_succeeded` (default) | Cache hit only when the step had zero execution failures |
-| `step_completed` | Cache hit for any completed step, regardless of failure count |
+| `all_succeeded` (default) | Cache hit only for a `succeeded` attempt |
+| `step_completed` | Cache hit for a `succeeded` or `partial` attempt |
 
-Both policies block caching when infrastructure errors occurred (dispatch
-or commit failures). The distinction matters when you re-run a pipeline
-after fixing a bug: with `all_succeeded`, the step re-executes so the
-previously-failed items get another chance. With `step_completed`, the
-step is skipped because it already ran to completion, even though some
-items failed.
+Failed, cancelled, and skipped attempts never qualify. The distinction matters
+when you re-run a pipeline after fixing a bug: with `all_succeeded`, a partial
+step re-executes so failed items get another chance. With `step_completed`, its
+accepted successful subset is reused with `disposition="cache_hit"`.
 
 ---
 
@@ -312,9 +311,9 @@ architecture:
 | Severity | Meaning | How it manifests |
 |----------|---------|------------------|
 | Item failure | One input could not be processed | `StagingResult(success=False)` |
-| Step partial failure | Some items in a step failed | `StepResult(failed_count=N, succeeded_count=M)` |
-| Step total failure | All items in a step failed | `StepResult(succeeded_count=0)` |
-| Infrastructure failure | Dispatch or commit itself crashed | `StepResult` with error in `metadata` |
+| Step partial failure | Some items in a step failed | `StepResult(status="partial", failed_count=N, succeeded_count=M)` |
+| Step total failure | All items in a step failed | `StepResult(status="failed", error=...)` |
+| Infrastructure failure | Dispatch or commit itself crashed | `StepResult(status="failed", error=...)` |
 
 You decide what severity warrants action. The framework gives you the data
 to make that decision.

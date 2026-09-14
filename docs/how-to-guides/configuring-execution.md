@@ -777,8 +777,8 @@ Failures are always recorded for diagnosis.
 
 ## Set cache policy
 
-Cache policy controls when a previously completed step qualifies as a cache
-hit on re-run (e.g., when resuming a pipeline):
+Cache policy controls which previously usable terminal step qualifies as a
+cache hit on re-run (for example, when resuming a pipeline):
 
 ```python
 from artisan.schemas.enums import CachePolicy
@@ -788,12 +788,11 @@ pipeline = PipelineManager.create(..., cache_policy=CachePolicy.STEP_COMPLETED)
 
 | Policy | Behavior |
 |--------|----------|
-| `CachePolicy.ALL_SUCCEEDED` (default) | Cache hit only when the step had zero execution failures |
-| `CachePolicy.STEP_COMPLETED` | Cache hit for any completed step, regardless of execution failure count |
+| `CachePolicy.ALL_SUCCEEDED` (default) | Cache hit only for a `succeeded` attempt |
+| `CachePolicy.STEP_COMPLETED` | Cache hit for a `succeeded` or `partial` attempt |
 
-Both policies block caching when infrastructure errors (dispatch or commit
-failures) occurred. The difference is whether partial-failure steps count as
-hits.
+Failed, cancelled, and skipped attempts never qualify under either policy. The
+difference is whether a `partial` attempt counts as a hit.
 
 Use `STEP_COMPLETED` when you want to skip re-running a step that mostly
 succeeded, even if a few artifacts failed.
@@ -953,8 +952,10 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 Confirm your configuration works by running a small test:
 
 ```python
+from artisan.schemas import StepStatus
+
 step = pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
-assert step.success
+assert step.status is StepStatus.SUCCEEDED
 print(f"Processed {step.succeeded_count} artifacts")
 ```
 

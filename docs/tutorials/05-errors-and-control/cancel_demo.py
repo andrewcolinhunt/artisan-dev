@@ -11,25 +11,26 @@ What happens:
     - The pipeline submits 10 Wait steps, each sleeping for 30 seconds
     - Press Ctrl+C at any point during execution
     - The signal handler fires and sets the cancel event
-    - The current step finishes its active phase, then stops
-    - All remaining steps are skipped immediately
+    - Affected attempts record requested and confirmed cancellation
+    - All remaining steps become cancelled without executing
     - finalize() returns a clean summary
 
 Signal escalation:
-    - First Ctrl+C: graceful cancellation (drain current step, skip rest)
+    - First Ctrl+C: graceful cancellation (drain current phase, cancel rest)
     - Second Ctrl+C: restore default signal handlers
     - Third Ctrl+C: force kill (KeyboardInterrupt)
 
 If the graceful shutdown feels slow, spam Ctrl+C to force exit.
 
 Try pressing Ctrl+C at different points to see how the cancellation
-window affects which steps complete vs skip.
+window affects which steps succeed vs cancel.
 """
 
 from __future__ import annotations
 
 from artisan.operations.examples import Wait
 from artisan.orchestration import PipelineManager
+from artisan.schemas import StepStatus
 from artisan.utils import tutorial_setup
 
 
@@ -62,15 +63,13 @@ def main() -> None:
     print(f"\n--- Pipeline finished: {result['total_steps']} steps ---\n")
 
     for step_result in pipeline:
-        skipped = step_result.metadata.get("skipped", False)
-        cancelled = step_result.metadata.get("cancelled", False)
-
-        if cancelled:
-            tag = "CANCELLED (mid-execution)"
-        elif skipped and step_result.metadata.get("skip_reason") == "cancelled":
-            tag = "SKIPPED (cancel propagated)"
+        if step_result.status is StepStatus.CANCELLED:
+            tag = f"CANCELLED ({step_result.cancellation_status.value})"
         else:
-            tag = f"{step_result.succeeded_count}/{step_result.total_count} succeeded"
+            tag = (
+                f"{step_result.status.value}: "
+                f"{step_result.succeeded_count}/{step_result.total_count} succeeded"
+            )
 
         print(f"  Step {step_result.step_number} ({step_result.step_name}): {tag}")
 
