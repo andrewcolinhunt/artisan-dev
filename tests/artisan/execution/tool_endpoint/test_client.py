@@ -14,6 +14,7 @@ import pytest
 from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.tool_endpoint import client as client_mod
 from artisan.execution.tool_endpoint.client import (
+    EndpointCancellationError,
     call_endpoint,
     cancel_scope,
 )
@@ -24,6 +25,7 @@ from artisan.schemas.operation_config.compute import (
     ComputeProvider,
     ModalComputeConfig,
 )
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 from artisan.schemas.specs.input_models import ExecuteInput
 
 _URL = "https://tool.example"
@@ -414,20 +416,104 @@ class TestCallEndpointFailures:
 
 
 class TestCancellation:
-    def test_cancel_event_posts_cancel_and_raises(self, mock_http, tmp_path):
+    def test_confirmed_cancel_posts_named_call_and_raises(self, mock_http, tmp_path):
         client = _client_of(mock_http)
-        client.post.return_value = _response({"call_id": "fc-1"})
+        client.post.side_effect = [
+            _response({"call_id": "fc-1"}),
+            _response({"call_id": "fc-1", "status": "confirmed"}),
+        ]
         event = threading.Event()
         event.set()
 
-        with cancel_scope(event), pytest.raises(RuntimeError, match="cancelled"):
+        with cancel_scope(event), pytest.raises(EndpointCancellationError) as exc:
             call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc.value.acknowledgement.status == CancellationStatus.CONFIRMED
 
         cancel_calls = [
             c for c in client.post.call_args_list if c.args and c.args[0] == "/cancel"
         ]
         assert len(cancel_calls) == 1
         assert cancel_calls[0].kwargs["params"] == {"call_id": "fc-1"}
+
+    @pytest.mark.parametrize(
+        ("body", "message"),
+        [
+            ({"call_id": "wrong", "status": "confirmed"}, "expected 'fc-1'"),
+            ({"call_id": "fc-1"}, "Could not validate"),
+        ],
+    )
+    def test_invalid_cancel_response_is_unknown(
+        self, mock_http, tmp_path, body, message
+    ):
+        client = _client_of(mock_http)
+        client.post.side_effect = [
+            _response({"call_id": "fc-1"}),
+            _response(body),
+        ]
+        event = threading.Event()
+        event.set()
+
+        with cancel_scope(event), pytest.raises(EndpointCancellationError) as exc:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc.value.acknowledgement.status == CancellationStatus.UNKNOWN
+        assert message in str(exc.value)
+
+    def test_requested_is_polled_until_confirmed(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.side_effect = [
+            _response({"call_id": "fc-1"}),
+            _response({"call_id": "fc-1", "status": "requested"}),
+            _response({"call_id": "fc-1", "status": "confirmed"}),
+        ]
+        event = threading.Event()
+        event.set()
+
+        with cancel_scope(event), pytest.raises(EndpointCancellationError) as exc:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc.value.acknowledgement.status == CancellationStatus.CONFIRMED
+
+    def test_unknown_cancel_response_fails_closed(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.side_effect = [
+            _response({"call_id": "fc-1"}),
+            _response({"call_id": "fc-1", "status": "unknown", "message": "lost"}),
+        ]
+        event = threading.Event()
+        event.set()
+
+        with cancel_scope(event), pytest.raises(EndpointCancellationError) as exc:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc.value.acknowledgement.status == CancellationStatus.UNKNOWN
+
+    def test_rejected_cancel_reaches_natural_result(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        client.post.side_effect = [
+            _response({"call_id": "fc-1"}),
+            _response(
+                {
+                    "call_id": "fc-1",
+                    "status": "rejected",
+                    "message": "already done",
+                }
+            ),
+        ]
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+        event = threading.Event()
+        event.set()
+
+        with cancel_scope(event):
+            acknowledgement = call_endpoint(
+                _op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path))
+            )
+
+        assert acknowledgement is not None
+        assert acknowledgement.status == CancellationStatus.REJECTED
 
 
 class TestTokenDiscovery:

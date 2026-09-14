@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.tool_endpoint.protocol import (
+    CancelResponse,
     InputRef,
     ResultResponse,
     SchemaResponse,
@@ -142,6 +143,13 @@ class TestWorkerResult:
 class TestResponses:
     def test_submit_response(self):
         assert SubmitResponse(call_id="fc-123").call_id == "fc-123"
+
+    @pytest.mark.parametrize(
+        "status", ["requested", "confirmed", "rejected", "unknown"]
+    )
+    def test_cancel_response_statuses(self, status):
+        response = CancelResponse(call_id="fc-123", status=status)
+        assert response.status.value == status
 
     def test_schema_response_defaults(self):
         response = SchemaResponse(operation="wait_tool")

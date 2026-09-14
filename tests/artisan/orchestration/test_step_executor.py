@@ -29,6 +29,11 @@ from artisan.schemas.execution.curator_result import (
     PassthroughResult,
 )
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_models import PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
@@ -769,7 +774,8 @@ class TestStepResultMetadata:
         result = StepResult(
             step_name="test",
             step_number=1,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
         )
         assert result.metadata == {}
 
@@ -781,7 +787,8 @@ class TestStepResultMetadata:
         result = StepResult(
             step_name="test",
             step_number=1,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             metadata={"timings": timings},
         )
         assert result.metadata["timings"]["total"] == 1.6
@@ -968,7 +975,7 @@ class TestEmptyInputHandling:
         )
 
         mock_backend.create_lifecycle_router.assert_not_called()
-        assert result.metadata["skipped"] is True
+        assert result.status == StepStatus.SKIPPED
         assert result.metadata["skip_reason"] == "empty_inputs"
         assert result.succeeded_count == 0
         assert result.failed_count == 0
@@ -1001,7 +1008,7 @@ class TestEmptyInputHandling:
         )
 
         mock_curator_flow.assert_not_called()
-        assert result.metadata["skipped"] is True
+        assert result.status == StepStatus.SKIPPED
         assert result.metadata["skip_reason"] == "empty_inputs"
         assert result.succeeded_count == 0
         assert result.failed_count == 0
@@ -1045,7 +1052,7 @@ class TestEmptyInputHandling:
         )
 
         mock_handle.run.assert_called_once()
-        assert result.metadata.get("skipped") is not True
+        assert result.status == StepStatus.SUCCEEDED
 
     def test_all_inputs_empty_with_partial_roles(self):
         """_all_inputs_empty returns False when some roles have artifacts."""
@@ -1109,9 +1116,10 @@ class TestDispatchFailureHandling:
 
         assert result.succeeded_count == 0
         assert result.failed_count == 1  # 1 unit dispatched
-        assert "dispatch_error" in result.metadata
-        assert "ConnectionError" in result.metadata["dispatch_error"]
-        assert "Network down" in result.metadata["dispatch_error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "ConnectionError" in result.error
+        assert "Network down" in result.error
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch(
@@ -1148,18 +1156,18 @@ class TestDispatchFailureHandling:
 
         assert result.succeeded_count == 0
         assert result.failed_count == 1
-        assert "dispatch_error" in result.metadata
-        assert "ConnectionError" in result.metadata["dispatch_error"]
-        assert "Network down" in result.metadata["dispatch_error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "ConnectionError" in result.error
+        assert "Network down" in result.error
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    def test_dispatch_fail_fast_still_raises(
+    def test_dispatch_fail_fast_returns_failed_terminal_result(
         self,
         mock_cache,
         tmp_path,
     ):
-        """fail_fast raises FailFastAbort out of the step (now after commit)."""
-        from artisan.orchestration.engine.results import FailFastAbort
+        """Fail-fast remains an explicit failed result after durable work."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1170,8 +1178,6 @@ class TestDispatchFailureHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        # A failed unit under FAIL_FAST raises via raise_if_fail_fast after
-        # the commit phase (aggregate_results no longer raises).
         mock_backend, _mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(
@@ -1182,28 +1188,26 @@ class TestDispatchFailureHandling:
 
         mock_cache.return_value = None
 
-        with pytest.raises(FailFastAbort, match="fail_fast"):
-            _execute_creator_step(
-                operation=MockNoGroupByCreatorOp(),
-                inputs=_prepared({"data": [_ID_S1]}),
-                step_runner=mock_backend,
-                step_number=1,
-                config=config,
-                failure_policy=FailurePolicy.FAIL_FAST,
-                compact=False,
-            )
+        result = _execute_creator_step(
+            operation=MockNoGroupByCreatorOp(),
+            inputs=_prepared({"data": [_ID_S1]}),
+            step_runner=mock_backend,
+            step_number=1,
+            config=config,
+            failure_policy=FailurePolicy.FAIL_FAST,
+            compact=False,
+        )
+
+        assert result.status == StepStatus.FAILED
+        assert result.error == "boom"
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    def test_dispatch_runtimeerror_recorded_as_dispatch_error(
+    def test_dispatch_runtimeerror_becomes_failed_result(
         self,
         mock_cache,
         tmp_path,
     ):
-        """A plain RuntimeError from dispatch is recorded, not propagated.
-
-        Only FailFastAbort aborts the step; an incidental RuntimeError from
-        the dispatch machinery must fall through to the dispatch-error path.
-        """
+        """A plain RuntimeError from dispatch becomes a failed result."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
         from artisan.visualization.inspect import inspect_failures
@@ -1233,9 +1237,10 @@ class TestDispatchFailureHandling:
 
         assert result.succeeded_count == 0
         assert result.failed_count == 2
-        assert "dispatch_error" in result.metadata
-        assert "RuntimeError" in result.metadata["dispatch_error"]
-        assert "dispatch machinery exploded" in result.metadata["dispatch_error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "RuntimeError" in result.error
+        assert "dispatch machinery exploded" in result.error
 
         failures = inspect_failures(config.delta_root)
         assert failures.height == 2
@@ -1298,7 +1303,8 @@ class TestCreatorCancellationCleanup:
             step_run_id="cancelled-step",
         )
 
-        assert result.metadata["cancelled"] is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
         assert not list((tmp_path / "staging").rglob("*.parquet"))
         assert not (tmp_path / "delta" / "orchestration" / "executions").exists()
 
@@ -1358,13 +1364,13 @@ class TestCommitFailureHandling:
 
     @patch("artisan.storage.io.commit.DeltaCommitter.commit_all_tables")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    def test_creator_commit_failure_returns_step_result_with_error(
+    def test_creator_commit_failure_propagates(
         self,
         mock_cache,
         mock_commit,
         tmp_path,
     ):
-        """Creator step captures commit error in metadata, doesn't raise."""
+        """Creator commit errors propagate for manager terminalization."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1386,20 +1392,16 @@ class TestCommitFailureHandling:
         mock_cache.return_value = None
         mock_commit.side_effect = OSError("Disk full")
 
-        result = _execute_creator_step(
-            operation=MockNoGroupByCreatorOp(),
-            inputs=_prepared({"data": [_ID_S1]}),
-            step_runner=mock_backend,
-            step_number=1,
-            config=config,
-            failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
-        )
-
-        assert "commit_error" in result.metadata
-        assert "Disk full" in result.metadata["commit_error"]
-        # succeeded/failed counts come from dispatch, not commit
-        assert result.succeeded_count == 1
+        with pytest.raises(OSError, match="Disk full"):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=mock_backend,
+                step_number=1,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                compact=False,
+            )
 
 
 class TestStagingTimeoutHandling:
@@ -1407,13 +1409,13 @@ class TestStagingTimeoutHandling:
 
     @patch("artisan.orchestration.engine.step_executor.await_staging_files")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    def test_staging_timeout_continues_to_commit(
+    def test_staging_timeout_propagates(
         self,
         mock_cache,
         mock_await,
         tmp_path,
     ):
-        """Staging timeout should log warning and continue, not raise."""
+        """Staging verification timeouts propagate for terminalization."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1436,18 +1438,16 @@ class TestStagingTimeoutHandling:
         mock_cache.return_value = None
         mock_await.side_effect = TimeoutError("NFS cache timeout")
 
-        result = _execute_creator_step(
-            operation=MockNoGroupByCreatorOp(),
-            inputs=_prepared({"data": [_ID_S1]}),
-            step_runner=mock_backend,
-            step_number=1,
-            config=config,
-            failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
-        )
-
-        # Should not raise, should return result
-        assert result.succeeded_count == 1
+        with pytest.raises(TimeoutError, match="NFS cache timeout"):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=mock_backend,
+                step_number=1,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                compact=False,
+            )
 
 
 class TestFileValidationBatch:
@@ -1857,7 +1857,8 @@ class TestExecutionCacheReuseCapture:
         validate.assert_called_once_with(config, current, {cached})
         stage.assert_not_called()
         commit.assert_not_called()
-        assert result.metadata["cancelled"] is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
         assert result.step_run_id == current
 
     def test_cache_relation_commit_failure_blocks_success(self, tmp_path):
@@ -1890,7 +1891,7 @@ class TestExecutionCacheReuseCapture:
             ),
             patch(
                 "artisan.orchestration.engine.step_executor._commit_and_compact",
-                return_value="OSError: disk full",
+                side_effect=CommitError(["cache_reuse"]),
             ),
             pytest.raises(CommitError),
         ):
@@ -1944,7 +1945,7 @@ class TestCuratorExecutionCacheIdentity:
         )
 
         mock_cache.assert_called_once()
-        assert result.success
+        assert result.status == StepStatus.SUCCEEDED
 
 
 # =============================================================================
@@ -2229,8 +2230,9 @@ class TestCuratorSubprocessIsolation:
 
         assert result.failed_count == 1
         assert result.succeeded_count == 0
-        assert "dispatch_error" in result.metadata
-        assert "ValueError" in result.metadata["dispatch_error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "ValueError" in result.error
 
 
 class TestCreateRuntimeEnvironmentFailureLogsRoot:

@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from artisan.errors import ArtisanErrorEnvelope
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
 
 class InputRef(BaseModel):
@@ -126,6 +127,14 @@ class SubmitResponse(BaseModel):
     """``POST /submit`` response."""
 
     call_id: str
+
+
+class CancelResponse(BaseModel):
+    """``POST /cancel`` response naming the call and observed outcome."""
+
+    call_id: str
+    status: CancellationStatus
+    message: str | None = None
 
 
 class ResultResponse(BaseModel):

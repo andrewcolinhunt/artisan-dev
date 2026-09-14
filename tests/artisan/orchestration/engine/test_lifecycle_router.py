@@ -10,6 +10,10 @@ from artisan.orchestration.engine.lifecycle_router import (
     LifecycleRouter,
 )
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
 
 
 def _result(**overrides: object) -> UnitResult:
@@ -37,8 +41,9 @@ class _StubHandle(LifecycleRouter):
         self._results = self._stub_results
         self._done.set()
 
-    def cancel(self) -> None:
+    def cancel(self) -> CancellationAcknowledgement:
         self.cancel_count += 1
+        return CancellationAcknowledgement(CancellationStatus.REJECTED)
 
 
 class _SlowStubHandle(LifecycleRouter):
@@ -52,8 +57,9 @@ class _SlowStubHandle(LifecycleRouter):
         # Don't set _done or _results — stays in DISPATCHED state
         return None
 
-    def cancel(self) -> None:
+    def cancel(self) -> CancellationAcknowledgement:
         self.cancel_count += 1
+        return CancellationAcknowledgement(CancellationStatus.REQUESTED)
 
     def complete(self, results: list[UnitResult]) -> None:
         """Externally signal completion (for test control)."""
@@ -136,10 +142,11 @@ class TestRunTemplateMethod:
 
     def test_run_retries_idempotent_cancel_until_done(self) -> None:
         class _RetryCancelHandle(_SlowStubHandle):
-            def cancel(self) -> None:
+            def cancel(self) -> CancellationAcknowledgement:
                 self.cancel_count += 1
                 if self.cancel_count == 2:
                     self.complete([_result(success=False, error="Cancelled")])
+                return CancellationAcknowledgement(CancellationStatus.REQUESTED)
 
         handle = _RetryCancelHandle()
         cancel_event = threading.Event()
@@ -157,7 +164,7 @@ class TestRunTemplateMethod:
                 self._done.set()
 
             def cancel(self):
-                pass
+                return CancellationAcknowledgement(CancellationStatus.REJECTED)
 
         handle = _ErrorHandle()
         with pytest.raises(ValueError, match="boom"):
@@ -180,7 +187,7 @@ class TestRunTemplateMethod:
                 self._start_background(_raise)
 
             def cancel(self):
-                pass
+                return CancellationAcknowledgement(CancellationStatus.REJECTED)
 
         handle = _BackgroundErrorHandle()
         handle.dispatch([object()], None)
@@ -196,7 +203,7 @@ class TestRunTemplateMethod:
                 raise OSError(msg)
 
             def cancel(self):
-                pass
+                return CancellationAcknowledgement(CancellationStatus.REJECTED)
 
         handle = _DispatchErrorHandle()
 
@@ -204,6 +211,63 @@ class TestRunTemplateMethod:
             handle.dispatch([object()], None)
 
         assert handle.is_done()
+
+    def test_requested_then_confirmed_is_published(self) -> None:
+        class _ConfirmingHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                if self.cancel_count == 1:
+                    return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+                self.complete([_result(success=False, error="cancelled")])
+                return CancellationAcknowledgement(CancellationStatus.CONFIRMED)
+
+        handle = _ConfirmingHandle()
+        event = threading.Event()
+        event.set()
+
+        handle.run([object()], None, cancel_event=event)
+
+        assert handle.cancellation_acknowledgement == CancellationAcknowledgement(
+            CancellationStatus.CONFIRMED
+        )
+
+    def test_rejected_cancellation_reaches_natural_result(self) -> None:
+        class _RejectingHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                self.complete([_result(success=True)])
+                return CancellationAcknowledgement(CancellationStatus.REJECTED)
+
+        handle = _RejectingHandle()
+        event = threading.Event()
+        event.set()
+
+        results = handle.run([object()], None, cancel_event=event)
+
+        assert results[0].success is True
+        assert handle.cancellation_acknowledgement is not None
+        assert handle.cancellation_acknowledgement.status == CancellationStatus.REJECTED
+
+    def test_unknown_cancellation_fails_closed(self) -> None:
+        class _UnknownHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                return CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    "lost provider acknowledgement",
+                )
+
+        handle = _UnknownHandle()
+        event = threading.Event()
+        event.set()
+
+        results = handle.run([object()], None, cancel_event=event)
+
+        assert results[0].success is False
+        assert results[0].cancellation_acknowledgement is not None
+        assert (
+            results[0].cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
+        )
 
 
 class TestCancelSentinel:

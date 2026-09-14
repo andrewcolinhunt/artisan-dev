@@ -218,6 +218,10 @@ def test_kwarg_reaches_execute_step(
     ``execute_step`` receives the same prepared instance used for step hashing,
     so each operation-valued override must already be applied there.
     """
+    from artisan.schemas.orchestration.step_lifecycle import (
+        StepDisposition,
+        StepStatus,
+    )
     from artisan.schemas.orchestration.step_result import StepResult
 
     # check_cache must return None so the cache-miss path is taken;
@@ -231,7 +235,8 @@ def test_kwarg_reaches_execute_step(
     mock_execute.return_value = StepResult(
         step_name=_StubOp.name,
         step_number=0,
-        success=True,
+        status=StepStatus.SUCCEEDED,
+        disposition=StepDisposition.EXECUTED,
         total_count=0,
         succeeded_count=0,
         failed_count=0,

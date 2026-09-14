@@ -45,6 +45,13 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_lifecycle import (
+    TERMINAL_STEP_STATUSES,
+    CancellationAcknowledgement,
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
@@ -708,6 +715,24 @@ class _StepEntry:
     output_types: dict[str, str | None]
 
 
+class _StepStatusReader:
+    """Thread-safe view updated only after a lifecycle snapshot is durable."""
+
+    def __init__(self, status: StepStatus) -> None:
+        self._status = status
+        self._lock = threading.Lock()
+
+    def get(self) -> StepStatus:
+        """Return the latest durable status."""
+        with self._lock:
+            return self._status
+
+    def set(self, status: StepStatus) -> None:
+        """Publish a newly durable status."""
+        with self._lock:
+            self._status = status
+
+
 # =============================================================================
 # PipelineManager
 # =============================================================================
@@ -892,7 +917,7 @@ class PipelineManager:
         self._prev_sigterm: Any = None
         self._active_futures: dict[int, StepFuture] = {}
         self._step_start_records: dict[int, StepStartRecord] = {}
-        self._cancelled_result_lock = threading.Lock()
+        self._step_status_readers: dict[int, _StepStatusReader] = {}
         self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="pipeline-step"
         )
@@ -945,7 +970,11 @@ class PipelineManager:
         if not self._step_results:
             return f"Pipeline '{self._config.name}': no steps executed"
 
-        succeeded = sum(1 for r in self._step_results if r.success)
+        succeeded = sum(
+            1
+            for result in self._step_results
+            if result.status in {StepStatus.SUCCEEDED, StepStatus.SKIPPED}
+        )
         total = len(self._step_results)
         status = (
             "all succeeded" if succeeded == total else f"{succeeded}/{total} succeeded"
@@ -953,7 +982,7 @@ class PipelineManager:
         return f"Pipeline '{self._config.name}': {total} steps, {status}"
 
     def __len__(self) -> int:
-        """Return the number of completed steps."""
+        """Return the number of terminal step results."""
         return len(self._step_results)
 
     def __iter__(self) -> Iterator[StepResult]:
@@ -972,7 +1001,10 @@ class PipelineManager:
 
     def __bool__(self) -> bool:
         """Return True if at least one step ran and all succeeded."""
-        return bool(self._step_results) and all(r.success for r in self._step_results)
+        return bool(self._step_results) and all(
+            result.status in {StepStatus.SUCCEEDED, StepStatus.SKIPPED}
+            for result in self._step_results
+        )
 
     def __contains__(self, step_name: str) -> bool:
         """Return True if a step with the given name has been recorded."""
@@ -1020,8 +1052,8 @@ class PipelineManager:
         Args:
             step_name: Human-readable step name.
             operation_outputs: The operation's outputs dict (role -> OutputSpec).
-            skip_reason: Why this step was skipped
-                (e.g. "pipeline_stopped", "cancelled").
+            skip_reason: Why this step was skipped (for example,
+                ``"pipeline_stopped"``).
             step_run_id: Fresh run-owned identity for this skipped attempt.
 
         Returns:
@@ -1034,15 +1066,21 @@ class PipelineManager:
         result = StepResult(
             step_name=step_name,
             step_number=step_number,
-            success=True,
+            status=StepStatus.SKIPPED,
             total_count=0,
             succeeded_count=0,
             failed_count=0,
-            output_roles=output_roles,
-            output_types=output_types,
-            metadata={"skipped": True, "skip_reason": skip_reason},
+            metadata={"skip_reason": skip_reason},
             step_run_id=step_run_id,
         )
+        self._step_tracker.transition(
+            step_run_id,
+            StepStatus.PENDING,
+            StepStatus.SKIPPED,
+            result=result,
+        )
+        reader = self._step_status_readers[step_number]
+        reader.set(StepStatus.SKIPPED)
         self._step_results.append(result)
         self._register_step(step_name, step_number, operation_outputs)
         self._named_steps.setdefault(step_name, []).append(result)
@@ -1057,7 +1095,164 @@ class PipelineManager:
             output_roles=output_roles,
             output_types=output_types,
             future=resolved,
+            status_reader=reader.get,
         )
+
+    def _cancel_step(
+        self,
+        step_name: str,
+        operation_outputs: dict[str, OutputSpec],
+        step_run_id: str,
+        expected: StepStatus,
+        *,
+        register: bool,
+    ) -> StepResult:
+        """Persist requested, confirmed, and cancelled for one attempt."""
+        step_number = self._step_start_records_by_id(step_run_id).step_number
+        current = self._step_tracker.current_state(step_run_id)
+        existing = self._publish_existing_terminal(
+            current,
+            operation_outputs,
+            register=register,
+        )
+        if existing is not None:
+            return existing
+        requested = CancellationAcknowledgement(CancellationStatus.REQUESTED)
+        confirmed = CancellationAcknowledgement(
+            CancellationStatus.CONFIRMED,
+            "Work stopped before an output commit",
+        )
+        current = self._step_tracker.record_cancellation(
+            step_run_id, expected, requested
+        )
+        existing = self._publish_existing_terminal(
+            current,
+            operation_outputs,
+            register=register,
+        )
+        if existing is not None:
+            return existing
+        current = self._step_tracker.record_cancellation(
+            step_run_id, expected, confirmed
+        )
+        existing = self._publish_existing_terminal(
+            current,
+            operation_outputs,
+            register=register,
+        )
+        if existing is not None:
+            return existing
+        result = StepResult(
+            step_name=step_name,
+            step_number=step_number,
+            status=StepStatus.CANCELLED,
+            cancellation_status=CancellationStatus.CONFIRMED,
+            error=confirmed.message,
+            step_run_id=step_run_id,
+        )
+        self._step_tracker.transition(
+            step_run_id,
+            expected,
+            StepStatus.CANCELLED,
+            result=result,
+        )
+        self._step_status_readers[step_number].set(StepStatus.CANCELLED)
+        if register:
+            self._register_step(step_name, step_number, operation_outputs)
+            self._current_step += 1
+        self._step_results.append(result)
+        self._named_steps.setdefault(step_name, []).append(result)
+        return result
+
+    def _publish_existing_terminal(
+        self,
+        state: StepState,
+        operation_outputs: dict[str, OutputSpec],
+        *,
+        register: bool,
+    ) -> StepResult | None:
+        """Publish a terminal state that won a cancellation race."""
+        if state.status not in TERMINAL_STEP_STATUSES:
+            return None
+        result = state.to_step_result()
+        self._step_status_readers[state.step_number].set(state.status)
+        if register:
+            self._register_step(state.step_name, state.step_number, operation_outputs)
+            self._current_step += 1
+        if not any(
+            saved.step_run_id == state.step_run_id for saved in self._step_results
+        ):
+            self._step_results.append(result)
+            self._named_steps.setdefault(result.step_name, []).append(result)
+        return result
+
+    def _step_start_records_by_id(self, step_run_id: str) -> StepStartRecord:
+        """Return the manager-owned start record for an attempt."""
+        return next(
+            record
+            for record in self._step_start_records.values()
+            if record.step_run_id == step_run_id
+        )
+
+    def _resolved_step_future(self, result: StepResult) -> StepFuture:
+        """Wrap an already-terminal result with its durable status reader."""
+        resolved: Future[StepResult] = Future()
+        resolved.set_result(result)
+        return StepFuture(
+            step_number=result.step_number,
+            step_name=result.step_name,
+            output_roles=result.output_roles,
+            output_types=result.output_types,
+            future=resolved,
+            status_reader=self._step_status_readers[result.step_number].get,
+        )
+
+    def _failed_step(
+        self,
+        operation: type[OperationDefinition],
+        step_name: str,
+        step_run_id: str,
+        error: str,
+        *,
+        register: bool,
+        step_spec_id: str | None = None,
+        cancellation_status: CancellationStatus | None = None,
+        duration_seconds: float | None = None,
+    ) -> StepResult:
+        """Fail an attempt through the authoritative tracker transition API."""
+        record = self._step_start_records_by_id(step_run_id)
+        current = self._step_tracker.current_state(step_run_id)
+        if current.status == StepStatus.PENDING:
+            self._step_tracker.transition(
+                step_run_id,
+                StepStatus.PENDING,
+                StepStatus.RUNNING,
+                step_spec_id=step_spec_id,
+            )
+            self._step_status_readers[record.step_number].set(StepStatus.RUNNING)
+        result = StepResult(
+            step_name=step_name,
+            step_number=record.step_number,
+            status=StepStatus.FAILED,
+            cancellation_status=cancellation_status,
+            error=error,
+            duration_seconds=duration_seconds,
+            step_run_id=step_run_id,
+        )
+        self._step_tracker.transition(
+            step_run_id,
+            StepStatus.RUNNING,
+            StepStatus.FAILED,
+            step_spec_id=step_spec_id,
+            result=result,
+        )
+        self._step_status_readers[record.step_number].set(StepStatus.FAILED)
+        if register:
+            self._register_step(step_name, record.step_number, operation.outputs)
+            self._current_step += 1
+        self._step_results.append(result)
+        self._named_steps.setdefault(step_name, []).append(result)
+        return result
 
     # =========================================================================
     # Cancellation
@@ -1067,9 +1262,9 @@ class PipelineManager:
         """Request cancellation of the running pipeline.
 
         Idempotent and thread-safe. Sets an event that step executors check
-        between phases, causing them to return early with
-        ``metadata={"cancelled": True}``. Executor shutdown belongs to
-        :meth:`finalize`, outside signal-handler context.
+        between phases. Each affected attempt persists a cancellation request,
+        its acknowledgement, and the resulting terminal state. Executor
+        shutdown belongs to :meth:`finalize`, outside signal-handler context.
         """
         if not self._cancel_event.is_set():
             logger.warning("Pipeline '%s': cancellation requested.", self._config.name)
@@ -1207,7 +1402,7 @@ class PipelineManager:
             files_root: Root path for Artisan-managed external files. If None,
                 defaults to a sibling "files" directory next to delta_root.
             failure_policy: Default failure handling for steps.
-            cache_policy: Controls when completed steps qualify as cache hits.
+            cache_policy: Controls which usable terminal steps qualify as cache hits.
             default_step_runner: Default step runner for step execution. Accepts a
                 ``RunnerBase`` instance or a built-in string name (currently
                 ``"local"``). External providers are passed as instances.
@@ -1277,7 +1472,7 @@ class PipelineManager:
             files_root: Root path for Artisan-managed external files. If None,
                 derives a sibling path from a local delta_root.
             failure_policy: Default failure handling for subsequent steps.
-            cache_policy: Controls when completed steps qualify as cache hits.
+            cache_policy: Controls which usable terminal steps qualify as cache hits.
             preserve_staging: Preserve staging files after commit.
             preserve_working: Preserve worker sandboxes after execution.
             recover_staging: Commit leftover staging from interrupted runs.
@@ -1296,15 +1491,17 @@ class PipelineManager:
             storage_options=storage.delta_storage_options(),
             fs=storage.filesystem(),
         )
-        completed_steps = tracker.load_completed_steps(pipeline_run_id)
+        current_steps = tracker.load_current_states(pipeline_run_id)
 
-        if not completed_steps:
-            msg = "No completed steps found"
+        if not current_steps:
+            msg = "No step attempts found"
             if pipeline_run_id:
                 msg += f" for run '{pipeline_run_id}'"
             raise ValueError(msg)
 
-        run_id = pipeline_run_id or completed_steps[0].pipeline_run_id
+        run_id = pipeline_run_id or current_steps[0].pipeline_run_id
+        resumable_steps = tracker.load_resumable_steps(run_id)
+
         runtime_runner: RunnerBase | None
         requested_runner_name: str | None
         if isinstance(default_step_runner, RunnerBase):
@@ -1314,7 +1511,7 @@ class PipelineManager:
             runtime_runner = None
             requested_runner_name = default_step_runner
         stored_runner = _load_stored_default_runner(
-            completed_steps,
+            current_steps,
             requested_name=requested_runner_name,
         )
         stored_runner_name = stored_runner.name if stored_runner is not None else None
@@ -1356,7 +1553,7 @@ class PipelineManager:
         config = PipelineConfig(**config_kwargs)
 
         instance = cls(config, default_step_runner=runtime_runner)
-        for step_state in completed_steps:
+        for step_state in resumable_steps:
             result = step_state.to_step_result()
             instance._step_results.append(result)
             instance._named_steps.setdefault(result.step_name, []).append(result)
@@ -1367,10 +1564,13 @@ class PipelineManager:
                     output_types=result.output_types,
                 )
             )
-            instance._step_spec_ids[step_state.step_number] = step_state.step_spec_id
+            if step_state.step_spec_id is not None:
+                instance._step_spec_ids[step_state.step_number] = (
+                    step_state.step_spec_id
+                )
             if step_state.step_run_id:
                 instance._step_run_ids[step_state.step_number] = step_state.step_run_id
-        instance._current_step = max(s.step_number for s in completed_steps) + 1
+        instance._current_step = max(s.step_number for s in current_steps) + 1
 
         return instance
 
@@ -1559,6 +1759,20 @@ class PipelineManager:
         attempt_started_at = time.perf_counter()
         self._step_run_ids[step_number] = step_run_id
 
+        start_record = self._build_step_start_record(
+            operation,
+            inputs,
+            ov,
+            step_name=step_name,
+            step_number=step_number,
+            step_spec_id=None,
+            step_run_id=step_run_id,
+            resolved_runner=self._step_runner_name(operation, ov),
+        )
+        self._step_start_records[step_number] = start_record
+        self._step_tracker.create_attempt(start_record)
+        self._step_status_readers[step_number] = _StepStatusReader(StepStatus.PENDING)
+
         # 4. Early exit: skip if pipeline is stopped (earlier step had empty
         #    inputs) or cancelled. Also blocks until predecessor steps finish,
         #    then re-checks cancellation.
@@ -1571,79 +1785,98 @@ class PipelineManager:
         if early is not None:
             return early
 
-        # 5. Prepare the operation once. The same object continues through
-        #    cache checks, routing, and execution.
-        prepared_operation = instantiate_operation(operation, ov)
-        input_refs = inputs
-        already_verified: set[str] = set()
+        try:
+            # Prepare once. Input resolution remains pending long enough to
+            # distinguish a known false precondition from started work.
+            prepared_operation = instantiate_operation(operation, ov)
+            input_refs = inputs
+            already_verified: set[str] = set()
+            if _is_file_path_input(inputs):
+                promoted_inputs, already_verified = self._handle_file_path_inputs(
+                    cast(list[str], inputs),
+                    prepared_operation,
+                    operation,
+                    step_number,
+                    step_name,
+                    ov.failure_policy,
+                    step_run_id,
+                )
+                inputs = cast(
+                    dict[str, OutputReference | list[str]],
+                    promoted_inputs,
+                )
 
-        # 5. File path promotion: if the user passed raw file paths (list of
-        #    strings), validate them and commit FileRefArtifacts to Delta Lake
-        #    before either cache can inspect the concrete input snapshot.
-        #    Only curator operations accept raw paths; creators must receive
-        #    artifact references from a prior ingest step.
-        if _is_file_path_input(inputs):
-            file_result = self._handle_file_path_inputs(
-                cast(list[str], inputs),
-                prepared_operation,
-                operation,
-                step_number,
-                step_name,
-                ov.failure_policy,
-                step_run_id,
+            prepared_inputs = prepare_inputs(
+                inputs,  # type: ignore[arg-type]
+                self._config.delta_root,
+                self._config.storage.filesystem(),
+                group_by=prepared_operation.group_by,
+                step_run_ids=self._step_run_ids,
+                storage_options=self._config.storage.delta_storage_options(),
+                files_root=self._config.files_root,
+                already_verified=already_verified,
             )
-            if isinstance(file_result, StepFuture):
-                return file_result
-            inputs, already_verified = file_result  # type: ignore[assignment]
+            if prepared_inputs.inputs and all(
+                not artifact_ids for artifact_ids in prepared_inputs.inputs.values()
+            ):
+                self._stopped = True
+                return self._skip_step(
+                    step_name,
+                    operation.outputs,
+                    "empty_inputs",
+                    step_run_id,
+                )
 
-        # 7. Resolve, type, verify, group, and hash the exact input snapshot
-        #    that execution will consume.
-        prepared_inputs = prepare_inputs(
-            inputs,  # type: ignore[arg-type]
-            self._config.delta_root,
-            self._config.storage.filesystem(),
-            group_by=prepared_operation.group_by,
-            step_run_ids=self._step_run_ids,
-            storage_options=self._config.storage.delta_storage_options(),
-            files_root=self._config.files_root,
-            already_verified=already_verified,
-        )
-        step_spec_id = self._prepare_step_spec(
-            prepared_operation,
-            step_number,
-            prepared_inputs,
-        )
-
-        # 8. Whole-step cache decisions use the prepared concrete snapshot.
-        if not (ov.skip_cache or self._config.skip_cache):
-            cached = self._try_cached_step(
-                operation,
-                input_refs,
-                ov,
+            step_spec_id = self._prepare_step_spec(
+                prepared_operation,
+                step_number,
+                prepared_inputs,
+            )
+            self._step_tracker.transition(
+                step_run_id,
+                StepStatus.PENDING,
+                StepStatus.RUNNING,
                 step_spec_id=step_spec_id,
-                step_number=step_number,
+            )
+            self._step_status_readers[step_number].set(StepStatus.RUNNING)
+
+            if not (ov.skip_cache or self._config.skip_cache):
+                cached = self._try_cached_step(
+                    operation,
+                    input_refs,
+                    ov,
+                    step_spec_id=step_spec_id,
+                    step_number=step_number,
+                    step_name=step_name,
+                    prepared_operation=prepared_operation,
+                    step_run_id=step_run_id,
+                    attempt_started_at=attempt_started_at,
+                )
+                if cached is not None:
+                    return cached
+
+            return self._dispatch_step(
+                operation=operation,
+                inputs=prepared_inputs,
+                input_refs=input_refs,
+                ov=ov,
                 step_name=step_name,
+                step_number=step_number,
+                step_spec_id=step_spec_id,
                 prepared_operation=prepared_operation,
                 step_run_id=step_run_id,
-                attempt_started_at=attempt_started_at,
             )
-            if cached is not None:
-                return cached
-
-        # 9. Dispatch: register the step, resolve its runner,
-        #    record the step start in Delta, and submit the _run() closure to
-        #    the thread pool executor for background execution.
-        return self._dispatch_step(
-            operation=operation,
-            inputs=prepared_inputs,
-            input_refs=input_refs,
-            ov=ov,
-            step_name=step_name,
-            step_number=step_number,
-            step_spec_id=step_spec_id,
-            prepared_operation=prepared_operation,
-            step_run_id=step_run_id,
-        )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            result = self._failed_step(
+                operation,
+                step_name,
+                step_run_id,
+                error,
+                register=True,
+                step_spec_id=locals().get("step_spec_id"),
+            )
+            return self._resolved_step_future(result)
 
     # =========================================================================
     # submit() helpers
@@ -1782,21 +2015,31 @@ class PipelineManager:
 
         if self._cancel_event.is_set():
             logger.info(
-                "Step %d (%s): pipeline cancelled — skipping.",
+                "Step %d (%s): pipeline cancellation confirmed before work.",
                 self._current_step,
                 step_name,
             )
-            return self._skip_step(
-                step_name, operation_outputs, "cancelled", step_run_id
+            result = self._cancel_step(
+                step_name,
+                operation_outputs,
+                step_run_id,
+                StepStatus.PENDING,
+                register=True,
             )
+            return self._resolved_step_future(result)
 
         self._wait_for_predecessors(inputs)
 
         # Re-check cancel — may have been set while blocked on predecessors
         if self._cancel_event.is_set():
-            return self._skip_step(
-                step_name, operation_outputs, "cancelled", step_run_id
+            result = self._cancel_step(
+                step_name,
+                operation_outputs,
+                step_run_id,
+                StepStatus.PENDING,
+                register=True,
             )
+            return self._resolved_step_future(result)
 
         return None
 
@@ -1840,7 +2083,7 @@ class PipelineManager:
 
     def _resolve_step_runner(
         self,
-        prepared_operation: OperationDefinition,
+        prepared_operation: type[OperationDefinition] | OperationDefinition,
         ov: StepOverrides,
     ) -> RunnerBase:
         """Resolve the effective runner for one step."""
@@ -1849,6 +2092,20 @@ class PipelineManager:
         if ov.step_runner is not None:
             return resolve_runner(ov.step_runner)
         return self._default_step_runner
+
+    def _step_runner_name(
+        self,
+        operation: type[OperationDefinition],
+        ov: StepOverrides,
+    ) -> str:
+        """Return the auditable runner name without doing provider work."""
+        if is_curator_operation(operation):
+            return Runner.LOCAL.name
+        if isinstance(ov.step_runner, RunnerBase):
+            return ov.step_runner.name
+        if isinstance(ov.step_runner, str):
+            return ov.step_runner
+        return self._default_step_runner.name
 
     def _default_runner_metadata(self) -> dict[str, Any]:
         """Build the durable, core-owned default-runner metadata."""
@@ -1871,9 +2128,9 @@ class PipelineManager:
         *,
         step_name: str,
         step_number: int,
-        step_spec_id: str,
+        step_spec_id: str | None,
         step_run_id: str,
-        resolved_runner: RunnerBase,
+        resolved_runner: RunnerBase | str,
     ) -> StepStartRecord:
         """Build common persisted metadata for executed and cached steps."""
         # Keep the internal resources/execution keys stable across their public
@@ -1898,7 +2155,11 @@ class PipelineManager:
             operation_class=_qualified_name(operation),
             params_json=json.dumps(ov.params or {}, default=_set_default),
             input_refs_json=_serialize_input_refs(inputs),
-            compute_backend=resolved_runner.name,
+            compute_backend=(
+                resolved_runner.name
+                if isinstance(resolved_runner, RunnerBase)
+                else resolved_runner
+            ),
             compute_options_json=json.dumps(compute_options_data, default=_set_default),
             output_roles_json=json.dumps(sorted(operation.outputs.keys())),
             output_types_json=json.dumps(self._build_output_types(operation.outputs)),
@@ -1919,9 +2180,9 @@ class PipelineManager:
     ) -> StepFuture | None:
         """Return a resolved StepFuture if step is cached, None otherwise.
 
-        A committed hit writes one current-run completed row. Cancellation at
-        the final persistence boundary records the current attempt as cancelled
-        without writing a reuse relation.
+        A committed hit terminalizes the current attempt as a cache hit.
+        Cancellation at the final persistence boundary records the current
+        attempt as cancelled without writing a reuse relation.
         """
         cached = self._step_tracker.check_cache(
             step_spec_id,
@@ -1945,22 +2206,16 @@ class PipelineManager:
                 "step_name": step_name,
                 "step_number": step_number,
                 "step_run_id": step_run_id,
+                "disposition": StepDisposition.CACHE_HIT,
+                "cancellation_status": None,
+                "error": (
+                    cached.result.error
+                    if cached.result.status == StepStatus.PARTIAL
+                    else None
+                ),
                 "metadata": current_metadata,
             }
         )
-        resolved_runner = self._resolve_step_runner(prepared_operation, ov)
-        start_record = self._build_step_start_record(
-            operation,
-            inputs,
-            ov,
-            step_name=step_name,
-            step_number=step_number,
-            step_spec_id=step_spec_id,
-            step_run_id=step_run_id,
-            resolved_runner=resolved_runner,
-        )
-        self._step_start_records[step_number] = start_record
-        self._step_tracker.record_step_start(start_record)
         reuse_committed = self._commit_whole_step_reuse(
             step_run_id,
             cached.execution_run_ids,
@@ -1970,22 +2225,23 @@ class PipelineManager:
         duration_seconds = time.perf_counter() - attempt_started_at
         if reuse_committed:
             result = result.model_copy(update={"duration_seconds": duration_seconds})
-            self._step_tracker.record_step_completed(start_record, result)
-        else:
-            result = StepResult(
-                step_name=step_name,
-                step_number=step_number,
-                success=True,
-                total_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                duration_seconds=duration_seconds,
-                output_roles=frozenset(operation.outputs),
-                output_types=self._build_output_types(operation.outputs),
-                metadata={"cancelled": True},
-                step_run_id=step_run_id,
+            self._step_tracker.transition(
+                step_run_id,
+                StepStatus.RUNNING,
+                result.status,
+                step_spec_id=step_spec_id,
+                result=result,
             )
-            self._step_tracker.record_step_cancelled(start_record)
+            self._step_status_readers[step_number].set(result.status)
+        else:
+            result = self._cancel_step(
+                step_name,
+                operation.outputs,
+                step_run_id,
+                StepStatus.RUNNING,
+                register=True,
+            )
+            return self._resolved_step_future(result)
 
         self._step_spec_ids[step_number] = step_spec_id
         self._step_run_ids[step_number] = step_run_id
@@ -1994,15 +2250,7 @@ class PipelineManager:
         self._named_steps.setdefault(result.step_name, []).append(result)
         self._current_step += 1
 
-        resolved: Future[StepResult] = Future()
-        resolved.set_result(result)
-        return StepFuture(
-            step_number=step_number,
-            step_name=result.step_name,
-            output_roles=result.output_roles,
-            output_types=result.output_types,
-            future=resolved,
-        )
+        return self._resolved_step_future(result)
 
     def _commit_whole_step_reuse(
         self,
@@ -2061,7 +2309,7 @@ class PipelineManager:
         step_name: str,
         failure_policy: FailurePolicy | None,
         step_run_id: str,
-    ) -> tuple[dict[str, list[str]], set[str]] | StepFuture:
+    ) -> tuple[dict[str, list[str]], set[str]]:
         """Promote raw file paths to FileRefArtifacts in the store.
 
         When the user passes ``["path/a.nc", "path/b.nc"]`` as inputs,
@@ -2096,34 +2344,10 @@ class PipelineManager:
             step_number,
             operation.name,
         )
-        if promoted is not None:
-            return promoted, verified
-
-        from artisan.orchestration.engine.step_executor import build_step_result
-
-        _fp = failure_policy or self._config.failure_policy
-        failed_result = build_step_result(
-            operation=prepared_operation,
-            step_number=step_number,
-            succeeded_count=0,
-            failed_count=len(inputs),
-            failure_policy=_fp,
-            metadata={"error": "All input files are invalid"},
-            step_run_id=step_run_id,
-        )
-        self._step_results.append(failed_result)
-        self._register_step(step_name, step_number, operation.outputs)
-        self._named_steps.setdefault(failed_result.step_name, []).append(failed_result)
-        self._current_step += 1
-        resolved_fail: Future[StepResult] = Future()
-        resolved_fail.set_result(failed_result)
-        return StepFuture(
-            step_number=step_number,
-            step_name=failed_result.step_name,
-            output_roles=frozenset(operation.outputs.keys()),
-            output_types={r: s.artifact_type for r, s in operation.outputs.items()},
-            future=resolved_fail,
-        )
+        if promoted is None:
+            msg = "File promotion returned no resolved inputs"
+            raise RuntimeError(msg)
+        return promoted, verified
 
     def _dispatch_step(
         self,
@@ -2138,29 +2362,8 @@ class PipelineManager:
         prepared_operation: OperationDefinition,
         step_run_id: str,
     ) -> StepFuture:
-        """Register step, resolve step_runner, and submit execution to thread pool.
-
-        This is the final phase of submit(). It performs three things
-        synchronously on the calling thread, then hands off to the
-        single-threaded executor:
-
-        1. **Bookkeeping** — registers the step in the step registry,
-           advances the step counter, installs signal handlers (first
-           dispatch only), and generates a unique step_run_id.
-        2. **Step runner resolution** — curator operations are forced to
-           LOCAL; otherwise per-step override > pipeline default.
-        3. **Delta recording** — writes a StepStartRecord to the steps
-           delta table for audit/resume.
-
-        The ``_run()`` closure is then submitted to the ThreadPoolExecutor
-        (max_workers=1, so steps execute sequentially). The closure calls
-        ``execute_step()`` which handles batching, worker dispatch, and
-        Delta commits. Results are recorded back via ``_step_results``
-        and ``_named_steps`` for finalize() to collect.
-
-        Returns:
-            StepFuture tracking the background execution.
-        """
+        """Register and submit an already-running lifecycle attempt."""
+        resolved_runner = self._resolve_step_runner(prepared_operation, ov)
         if self._current_step == 0:
             self._install_signal_handlers()
         self._register_step(step_name, step_number, operation.outputs)
@@ -2170,38 +2373,15 @@ class PipelineManager:
 
         output_types_map = self._build_output_types(operation.outputs)
 
-        resolved_runner = self._resolve_step_runner(prepared_operation, ov)
-        start_record = self._build_step_start_record(
-            operation,
-            input_refs,
-            ov,
-            step_name=step_name,
-            step_number=step_number,
-            step_spec_id=step_spec_id,
-            step_run_id=step_run_id,
-            resolved_runner=resolved_runner,
-        )
-        self._step_start_records[step_number] = start_record
-        self._step_tracker.record_step_start(start_record)
-
         def _run() -> StepResult:
-            # Last-chance cancel check: the step may have been queued in
-            # the executor while a cancel signal arrived.
             if self._cancel_event.is_set():
-                cancelled_result = StepResult(
-                    step_name=step_name,
-                    step_number=step_number,
-                    success=True,
-                    total_count=0,
-                    succeeded_count=0,
-                    failed_count=0,
-                    output_roles=frozenset(output_types_map.keys()),
-                    output_types=output_types_map,
-                    metadata={"cancelled": True},
-                    step_run_id=step_run_id,
+                return self._cancel_step(
+                    step_name,
+                    operation.outputs,
+                    step_run_id,
+                    StepStatus.RUNNING,
+                    register=False,
                 )
-                self._record_cancelled_result(start_record, cancelled_result)
-                return cancelled_result
 
             logger.info(
                 "Step %d (%s) starting... [step_runner=%s]",
@@ -2233,40 +2413,52 @@ class PipelineManager:
                     }
                 )
 
-                # execute_step may detect cancellation mid-batch and
-                # return a result with metadata={"cancelled": True}
-                # rather than raising — record and bail.
-                if result.metadata.get("cancelled"):
+                if result.status == StepStatus.CANCELLED:
                     logger.info(
                         "Step %d (%s): cancelled.",
                         step_number,
                         step_name,
                     )
-                    self._record_cancelled_result(start_record, result)
-                    return result
+                    return self._cancel_step(
+                        step_name,
+                        operation.outputs,
+                        step_run_id,
+                        StepStatus.RUNNING,
+                        register=False,
+                    )
 
-                # Empty inputs at dispatch time: the step is "skipped"
-                # and _stopped is set so all subsequent steps short-circuit
-                # via _check_early_exit.
-                if result.metadata.get("skipped"):
-                    self._step_tracker.record_step_skipped(start_record, result)
-                    self._stopped = True
-                    logger.info(
-                        "Step %d (%s): all input roles are empty"
-                        " — skipping. Pipeline stopped.",
-                        step_number,
-                        step_name,
+                if result.cancellation_status is not None:
+                    self._step_tracker.record_cancellation(
+                        step_run_id,
+                        StepStatus.RUNNING,
+                        CancellationAcknowledgement(CancellationStatus.REQUESTED),
                     )
-                else:
-                    self._step_tracker.record_step_completed(start_record, result)
-                    logger.info(
-                        "Step %d (%s) completed in %.1fs [%d/%d succeeded]",
-                        step_number,
-                        step_name,
-                        elapsed,
-                        result.succeeded_count,
-                        result.total_count,
+                    self._step_tracker.record_cancellation(
+                        step_run_id,
+                        StepStatus.RUNNING,
+                        CancellationAcknowledgement(
+                            result.cancellation_status,
+                            result.error,
+                        ),
                     )
+
+                self._step_tracker.transition(
+                    step_run_id,
+                    StepStatus.RUNNING,
+                    result.status,
+                    step_spec_id=step_spec_id,
+                    result=result,
+                )
+                self._step_status_readers[step_number].set(result.status)
+                logger.info(
+                    "Step %d (%s) %s in %.1fs [%d/%d succeeded]",
+                    step_number,
+                    step_name,
+                    result.status.value,
+                    elapsed,
+                    result.succeeded_count,
+                    result.total_count,
+                )
                 self._step_results.append(result)
                 self._named_steps.setdefault(result.step_name, []).append(result)
                 return result
@@ -2274,8 +2466,6 @@ class PipelineManager:
             except Exception as e:
                 elapsed = time.perf_counter() - start
                 error_msg = f"{type(e).__name__}: {e}"
-                self._step_tracker.record_step_failed(start_record, error_msg)
-
                 logger.error(
                     "Step %d (%s) failed after %.1fs: %s",
                     step_number,
@@ -2283,22 +2473,15 @@ class PipelineManager:
                     elapsed,
                     error_msg,
                 )
-                failed_result = StepResult(
-                    step_name=step_name,
-                    step_number=step_number,
-                    success=False,
-                    total_count=0,
-                    succeeded_count=0,
-                    failed_count=0,
+                return self._failed_step(
+                    operation,
+                    step_name,
+                    step_run_id,
+                    error_msg,
+                    register=False,
+                    step_spec_id=step_spec_id,
                     duration_seconds=elapsed,
-                    metadata={"error": error_msg},
-                    step_run_id=step_run_id,
                 )
-                self._step_results.append(failed_result)
-                self._named_steps.setdefault(failed_result.step_name, []).append(
-                    failed_result
-                )
-                return failed_result
 
         ctx = contextvars.copy_context()
         assert self._executor is not None, "executor must be live during submit"
@@ -2310,42 +2493,25 @@ class PipelineManager:
             output_roles=frozenset(output_types_map.keys()),
             output_types=output_types_map,
             future=cf_future,
+            status_reader=self._step_status_readers[step_number].get,
         )
         self._active_futures[step_number] = future
         return future
-
-    def _record_cancelled_result(
-        self,
-        start_record: StepStartRecord,
-        result: StepResult,
-    ) -> None:
-        """Persist and append one cancellation result for a started step."""
-        with self._cancelled_result_lock:
-            if any(r.step_number == result.step_number for r in self._step_results):
-                return
-            self._step_tracker.record_step_cancelled(start_record)
-            self._step_results.append(result)
-            self._named_steps.setdefault(result.step_name, []).append(result)
 
     def _settle_cancelled_futures(self) -> None:
         """Record steps whose closure was cancelled before it could execute."""
         for step_number, future in self._active_futures.items():
             start_record = self._step_start_records.get(step_number)
-            if start_record is None or future.status != "cancelled":
+            if start_record is None or not future.cancelled_before_start:
                 continue
-            result = StepResult(
-                step_name=future.step_name,
-                step_number=step_number,
-                success=True,
-                total_count=0,
-                succeeded_count=0,
-                failed_count=0,
-                output_roles=future.output_roles,
-                output_types=future.output_types,
-                metadata={"cancelled": True},
-                step_run_id=self._step_run_ids.get(step_number),
+            current = self._step_tracker.current_state(start_record.step_run_id)
+            self._cancel_step(
+                future.step_name,
+                {},
+                start_record.step_run_id,
+                current.status,
+                register=False,
             )
-            self._record_cancelled_result(start_record, result)
 
     def submit_composite(
         self,
@@ -2544,7 +2710,7 @@ class PipelineManager:
     # =========================================================================
 
     def _wait_for_predecessors(self, inputs: Any) -> None:
-        """Block until all upstream step futures have completed.
+        """Block until all upstream step futures are done.
 
         Polls with a timeout so that cancellation is detected promptly
         instead of blocking indefinitely on ``future.result()``.
@@ -2626,7 +2792,10 @@ class PipelineManager:
         self._step_results.sort(key=lambda r: r.step_number)
 
         total_elapsed = time.time() - self._start_time
-        all_ok = all(r.success for r in self._step_results)
+        all_ok = bool(self._step_results) and all(
+            result.status in {StepStatus.SUCCEEDED, StepStatus.SKIPPED}
+            for result in self._step_results
+        )
         status = "all succeeded" if all_ok else "some steps failed"
         logger.info(
             "Pipeline '%s' complete: %d steps, %s",
@@ -2653,7 +2822,7 @@ class PipelineManager:
                 {
                     "step_number": r.step_number,
                     "name": r.step_name,
-                    "success": r.success,
+                    "status": r.status.value,
                     "total": r.total_count,
                     "succeeded": r.succeeded_count,
                     "failed": r.failed_count,
@@ -2661,7 +2830,7 @@ class PipelineManager:
                 }
                 for r in self._step_results
             ],
-            "overall_success": all(r.success for r in self._step_results),
+            "overall_success": all_ok,
         }
         self._finalized = True
         return self._summary

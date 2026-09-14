@@ -16,6 +16,7 @@ from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.input_spec import InputSpec
@@ -113,15 +114,29 @@ def _write_legacy_completed_step(
     result = StepResult(
         step_name="Ingest",
         step_number=step_number,
-        success=True,
+        status=StepStatus.SUCCEEDED,
+        disposition=StepDisposition.EXECUTED,
         total_count=1,
         succeeded_count=1,
         failed_count=0,
         output_roles=frozenset({"file"}),
         output_types={"file": ArtifactTypes.DATA},
+        step_run_id=record.step_run_id,
     )
-    tracker.record_step_start(record)
-    tracker.record_step_completed(record, result)
+    tracker.create_attempt(record)
+    tracker.transition(
+        record.step_run_id,
+        StepStatus.PENDING,
+        StepStatus.RUNNING,
+        step_spec_id=record.step_spec_id,
+    )
+    tracker.transition(
+        record.step_run_id,
+        StepStatus.RUNNING,
+        StepStatus.SUCCEEDED,
+        step_spec_id=record.step_spec_id,
+        result=result,
+    )
     return pipeline_run_id
 
 
@@ -178,7 +193,8 @@ class TestResume:
         assert p2.current_step == 2
         assert len(p2._step_results) == 2
         assert 0 in p2._step_spec_ids
-        assert 1 in p2._step_spec_ids
+        assert 1 not in p2._step_spec_ids
+        assert p2._step_results[1].status == StepStatus.SKIPPED
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
@@ -238,7 +254,7 @@ class TestResume:
 
     def test_resume_no_runs_raises(self, tmp_path):
         """ValueError on empty table."""
-        with pytest.raises(ValueError, match="No completed steps found"):
+        with pytest.raises(ValueError, match="No step attempts found"):
             PipelineManager.resume(
                 delta_root=str(tmp_path / "delta"),
                 staging_root=str(tmp_path / "staging"),
@@ -283,7 +299,7 @@ class TestResume:
         )
 
         rows = pl.read_delta(delta / "orchestration" / "steps").filter(
-            pl.col("status") == "completed"
+            pl.col("status") == StepStatus.SUCCEEDED.value
         )
         assert set(rows["compute_backend"]) == {"local"}
         decoded_options = [
@@ -340,13 +356,13 @@ class TestResume:
         )
         pipeline.run(IngestMockOp, inputs=None)
 
-        completed = pl.read_delta(delta / "orchestration" / "steps").filter(
-            pl.col("status") == "completed"
+        succeeded = pl.read_delta(delta / "orchestration" / "steps").filter(
+            pl.col("status") == StepStatus.SUCCEEDED.value
         )
-        options = json.loads(completed.item(0, "compute_options_json"))
+        options = json.loads(succeeded.item(0, "compute_options_json"))
         assert options["pipeline_default_step_runner"] == "local"
         assert options["pipeline_default_local_runner"] == {"default_max_workers": 9}
-        assert completed.item(0, "compute_backend") == "local"
+        assert succeeded.item(0, "compute_backend") == "local"
 
         resumed = PipelineManager.resume(
             delta_root=str(delta),

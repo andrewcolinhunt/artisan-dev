@@ -20,9 +20,15 @@ from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
 
 __all__ = [
     "BatchStrategy",
+    "CancellationAcknowledgement",
+    "CancellationStatus",
     "ExecutionUnit",
     "LifecycleRouter",
     "OrchestratorTraits",
