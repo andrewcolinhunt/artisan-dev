@@ -90,6 +90,7 @@ def build_app(
     op_description = spec.description
     params_schema = spec.params_schema
     input_roles = spec.input_roles
+    data_policy = spec.data_policy
     max_inline_bytes = MAX_INLINE_BYTES
 
     @app.function(**worker_kwargs)
@@ -100,9 +101,17 @@ def build_app(
             resolve_op,
             run_tool_request,
         )
+        from artisan.schemas.operation_config.endpoint_policy import (
+            ToolEndpointDataPolicy,
+        )
 
         resolved = resolve_op(op_module, op_qualname)
-        return run_tool_request(resolved, ToolRequest(**request)).model_dump()
+        policy = ToolEndpointDataPolicy.model_validate(data_policy)
+        return run_tool_request(
+            resolved,
+            ToolRequest(**request),
+            data_policy=policy,
+        ).model_dump()
 
     # webhook labels allow only [a-z0-9-]; op names may carry underscores
     label = f"artisan-tool-{op_name}".replace("_", "-")
@@ -158,7 +167,14 @@ def build_app(
                     or not isinstance(contract, dict)
                     or set(contract) != {"content_digest", "size_bytes"}
                     or not isinstance(contract["content_digest"], str)
+                    or len(contract["content_digest"]) != 32
+                    or any(
+                        char not in "0123456789abcdef"
+                        for char in contract["content_digest"]
+                    )
                     or not isinstance(contract["size_bytes"], int)
+                    or isinstance(contract["size_bytes"], bool)
+                    or contract["size_bytes"] < 0
                 ):
                     msg = "input_integrity values must contain digest and byte count"
                     raise ValueError(msg)

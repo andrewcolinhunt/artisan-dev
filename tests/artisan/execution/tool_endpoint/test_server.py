@@ -38,10 +38,12 @@ from artisan.schemas.operation_config.compute import (
     ComputeProvider,
     ModalComputeConfig,
 )
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import PostprocessInput, PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.hashing import compute_content_digest
 
 # The worker streams tool output (stream_output=True); the filters swallow
 # a pre-existing pipe-cleanup quirk in _run_with_streaming (Popen.stdout
@@ -250,6 +252,15 @@ def _set_ambient_creds(storage, monkeypatch) -> None:
     s3fs_mod.S3FileSystem.clear_instance_cache()
 
 
+def _policy(
+    *, inputs: tuple[str, ...] = (), outputs: tuple[str, ...] = ()
+) -> ToolEndpointDataPolicy:
+    return ToolEndpointDataPolicy(
+        input_allowlist=inputs,
+        output_allowlist=outputs,
+    )
+
+
 class TestRunToolRequest:
     def test_success_returns_manifest_and_tar(self):
         result = run_tool_request(
@@ -308,6 +319,69 @@ class TestRunToolRequest:
         assert error.recovery_hint == "CHECK_INPUT"
         assert error.operation_name == "wait_tool"
 
+    @pytest.mark.parametrize(
+        ("tool_request", "code"),
+        [
+            (
+                ToolRequest(
+                    inputs=[
+                        InputRef(
+                            name="dataset",
+                            uri=(
+                                "https://user:password@private.example/input"
+                                "?signature=fake-secret"
+                            ),
+                            content_digest="a" * 32,
+                            size_bytes=1,
+                        )
+                    ]
+                ),
+                "input_resolution_failed",
+            ),
+            (
+                ToolRequest(
+                    output_store=(
+                        "https://user:password@private.example/output"
+                        "?signature=fake-secret"
+                    )
+                ),
+                "output_delivery_failed",
+            ),
+        ],
+    )
+    def test_denied_uri_fails_before_construction_workspace_or_effects(
+        self, tool_request, code
+    ):
+        construct = patch.object(server_mod, "instantiate_op")
+        workspace = patch.object(server_mod.tempfile, "mkdtemp")
+        unpack = patch.object(server_mod.InlineTransport, "unpack_inputs")
+        execute = patch.object(server_mod, "invoke_op_work")
+        with (
+            construct as construct_mock,
+            workspace as workspace_mock,
+            unpack as unpack_mock,
+            execute as execute_mock,
+        ):
+            result = run_tool_request(WaitTool, tool_request)
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == code
+        assert error.recovery_hint == "CHECK_INPUT"
+        for secret in ("user", "password", "signature", "fake-secret"):
+            assert secret not in error.message
+        construct_mock.assert_not_called()
+        workspace_mock.assert_not_called()
+        unpack_mock.assert_not_called()
+        execute_mock.assert_not_called()
+
+    def test_empty_policy_allows_inline_request(self):
+        result = run_tool_request(
+            CatTool,
+            ToolRequest(inputs=[InputRef(name="source", data=b"inline")]),
+        )
+        assert result.manifest.error is None
+
     def test_bad_input_ref_returns_envelope(self):
         # a ref carrying neither uri nor data raises ValueError in
         # unpack_inputs when an internal caller bypasses InputRef validation
@@ -342,7 +416,7 @@ class TestRunToolRequest:
         assert error.recovery_hint == "CHECK_INPUT"
 
     def test_missing_input_filesystem_dependency_returns_envelope(self, monkeypatch):
-        def boom(self, refs, dest, fs=None):
+        def boom(self, refs, dest, policy=None):
             msg = "Install s3fs to access S3"
             raise ImportError(msg)
 
@@ -359,6 +433,7 @@ class TestRunToolRequest:
                     )
                 ]
             ),
+            data_policy=_policy(inputs=("s3://bucket",)),
         )
 
         error = result.manifest.error
@@ -370,7 +445,7 @@ class TestRunToolRequest:
     def test_input_fetch_failure_returns_envelope(self, monkeypatch):
         # an unreachable input URI surfaces as OSError from ref_fs.get; the
         # (ValueError, OSError) guard maps it to the same CHECK_INPUT envelope
-        def boom(self, refs, dest, fs=None):
+        def boom(self, refs, dest, policy=None):
             msg = "s3://bucket/missing.pdb"
             raise FileNotFoundError(msg)
 
@@ -389,6 +464,7 @@ class TestRunToolRequest:
                     )
                 ]
             ),
+            data_policy=_policy(inputs=("s3://bucket",)),
         )
         error = result.manifest.error
         assert error is not None
@@ -414,7 +490,7 @@ class TestRunToolRequest:
         # none an OSError). They must land on INPUT_RESOLUTION_FAILED,
         # NOT escape as a worker crash → OP_EXECUTE_FAILED. This test fails
         # under the draft's (ValueError, OSError, RuntimeError) tuple.
-        def boom(self, refs, dest, fs=None):
+        def boom(self, refs, dest, policy=None):
             raise exc
 
         monkeypatch.setattr(
@@ -432,6 +508,7 @@ class TestRunToolRequest:
                     )
                 ]
             ),
+            data_policy=_policy(inputs=("s3://bucket",)),
         )
         assert result.output_tar is None
         error = result.manifest.error
@@ -534,17 +611,29 @@ class TestRunToolRequestStoredOutputs:
         inputs=[InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")],
         output_store="s3://bucket/prefix",
     )
+    _POLICY = _policy(outputs=("s3://bucket/prefix",))
 
     def test_output_store_uploads_and_omits_tar(self, monkeypatch):
         stored = StoredOutputs(uri="s3://bucket/p/wait_tool/x.tar.gz")
         calls: dict = {}
 
-        def fake_upload(src: str, names: list, store: str, op_name: str):
+        def fake_upload(
+            src: str,
+            names: list,
+            store: str,
+            op_name: str,
+            policy=None,
+        ):
             calls.update(names=names, store=store, op_name=op_name)
+            assert policy == self._POLICY
             return stored
 
         monkeypatch.setattr(server_mod, "upload_outputs", fake_upload)
-        result = run_tool_request(WaitTool, self._REQUEST)
+        result = run_tool_request(
+            WaitTool,
+            self._REQUEST,
+            data_policy=self._POLICY,
+        )
         assert result.manifest.error is None
         assert result.manifest.stored == stored
         assert result.output_tar is None
@@ -562,28 +651,40 @@ class TestRunToolRequestStoredOutputs:
         monkeypatch.setattr(
             server_mod,
             "upload_outputs",
-            lambda *args: StoredOutputs(uri="s3://b/x.tar.gz"),
+            lambda *args, **kwargs: StoredOutputs(uri="s3://b/x.tar.gz"),
         )
-        result = run_tool_request(WaitTool, self._REQUEST)
+        result = run_tool_request(
+            WaitTool,
+            self._REQUEST,
+            data_policy=self._POLICY,
+        )
         assert result.manifest.error is None
         assert result.output_tar is None
 
     def test_tool_failure_uploads_nothing(self, monkeypatch):
-        def explode(*args):
+        def explode(*args, **kwargs):
             pytest.fail("upload_outputs must not run on tool failure")
 
         monkeypatch.setattr(server_mod, "upload_outputs", explode)
-        result = run_tool_request(FailTool, ToolRequest(output_store="s3://b/p"))
+        result = run_tool_request(
+            FailTool,
+            ToolRequest(output_store="s3://b/p"),
+            data_policy=_policy(outputs=("s3://b/p",)),
+        )
         assert result.manifest.error is not None
         assert result.manifest.stored is None
         assert result.output_tar is None
 
     def test_no_outputs_falls_back_to_empty_inline_tar(self, monkeypatch):
-        def explode(*args):
+        def explode(*args, **kwargs):
             pytest.fail("upload_outputs must not run with no outputs")
 
         monkeypatch.setattr(server_mod, "upload_outputs", explode)
-        result = run_tool_request(NoopTool, ToolRequest(output_store="s3://b/p"))
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(output_store="s3://b/p"),
+            data_policy=_policy(outputs=("s3://b/p",)),
+        )
         assert result.manifest.error is None
         assert result.manifest.output_names == []
         assert result.manifest.stored is None
@@ -611,11 +712,11 @@ class TestRunToolRequestStoredOutputs:
         # the tool ran; only delivery to the store failed — the envelope
         # surfaces the outputs it produced and asks the agent to retry
         # delivery (RETRY_LATER), not re-run the (possibly GPU) compute
-        def failing_upload(*args):
+        def failing_upload(*args, **kwargs):
             raise exc
 
         monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
-        result = run_tool_request(WaitTool, self._REQUEST)
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
         error = result.manifest.error
         assert error is not None
         assert error.code == "output_delivery_failed"
@@ -627,12 +728,12 @@ class TestRunToolRequestStoredOutputs:
         assert result.output_tar is None
 
     def test_invalid_delivery_returns_check_input_envelope(self, monkeypatch):
-        def failing_upload(*args):
+        def failing_upload(*args, **kwargs):
             msg = "Archive expands beyond budget"
             raise ValueError(msg)
 
         monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
-        result = run_tool_request(WaitTool, self._REQUEST)
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
 
         error = result.manifest.error
         assert error is not None
@@ -641,12 +742,12 @@ class TestRunToolRequestStoredOutputs:
         assert result.manifest.output_names == ["in_waited.csv"]
 
     def test_missing_output_filesystem_dependency_returns_envelope(self, monkeypatch):
-        def failing_upload(*args):
+        def failing_upload(*args, **kwargs):
             msg = "Install s3fs to access S3"
             raise ImportError(msg)
 
         monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
-        result = run_tool_request(WaitTool, self._REQUEST)
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
 
         error = result.manifest.error
         assert error is not None
@@ -657,12 +758,12 @@ class TestRunToolRequestStoredOutputs:
     def test_non_signing_store_returns_misconfigured(self, monkeypatch):
         # a store that cannot presign fails 100% of requests — a deployment
         # misconfiguration to report, not a transient to retry
-        def cannot_presign(*args):
+        def cannot_presign(*args, **kwargs):
             msg = "filesystem cannot sign"
             raise NotImplementedError(msg)
 
         monkeypatch.setattr(server_mod, "upload_outputs", cannot_presign)
-        result = run_tool_request(WaitTool, self._REQUEST)
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
         error = result.manifest.error
         assert error is not None
         assert error.code == "tool_endpoint_misconfigured"
@@ -675,12 +776,12 @@ class TestRunToolRequestStoredOutputs:
     def test_delivery_failure_removes_job_dir(self, monkeypatch):
         created = _capture_tempdirs(monkeypatch)
 
-        def failing_upload(*args):
+        def failing_upload(*args, **kwargs):
             msg = "disk full"
             raise OSError(msg)
 
         monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
-        result = run_tool_request(WaitTool, self._REQUEST)
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
         assert result.manifest.error is not None
         assert created  # the job dir was allocated
         assert all(not os.path.exists(p) for p in created)
@@ -761,9 +862,12 @@ class TestRunToolRequestUriInputMinIO:
                         name="dataset",
                         filename="dataset_00001.csv",
                         uri=f"{uri_prefix}/inputs/dataset_00001.csv",
+                        content_digest=compute_content_digest(b"x" * 50_000),
+                        size_bytes=50_000,
                     )
                 ],
             ),
+            data_policy=_policy(inputs=(f"{uri_prefix}/inputs",)),
         )
 
         assert result.manifest.error is None
@@ -791,9 +895,16 @@ class _WorkerLoopbackRouter:
         results: list[Any] = []
         for execute_input in execute_inputs:
             files = _file_inputs(operation.name, execute_input.inputs)
-            refs = InlineTransport().pack_inputs(files)
+            contracts = {
+                uri: (value["content_digest"], value["size_bytes"])
+                for uri, value in execute_input.metadata["external_integrity"].items()
+            }
+            refs = InlineTransport().pack_inputs(files, contracts)
+            policy = operation.compute_provider.modal.data_policy
             result = run_tool_request(
-                self._op_cls, ToolRequest(params=params, inputs=refs)
+                self._op_cls,
+                ToolRequest(params=params, inputs=refs),
+                data_policy=policy,
             )
             if result.manifest.error is not None:
                 results.append(RuntimeError(result.manifest.error.message))
@@ -864,8 +975,16 @@ class TestEndpointRoutedLineageMinIO:
         # ambient creds so the worker fetches external_path from MinIO
         _set_ambient_creds(storage, monkeypatch)
 
+        operation = _CloudInputTool(
+            compute_provider=ComputeProvider(
+                active="modal",
+                modal=ModalComputeConfig(
+                    data_policy=_policy(inputs=(f"{uri_prefix}/files",))
+                ),
+            )
+        )
         unit = ExecutionUnit(
-            operation=_CloudInputTool(),
+            operation=operation,
             inputs={"source": [art.artifact_id]},
             execution_spec_id="spec_lg" + "0" * 26,
             step_number=1,

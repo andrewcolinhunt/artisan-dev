@@ -33,6 +33,7 @@ from artisan.execution.tool_endpoint.protocol import (
 )
 from artisan.execution.tool_endpoint.transport import (
     MAX_ARCHIVE_MEMBERS,
+    EndpointTransportError,
     InlineTransport,
     upload_outputs,
 )
@@ -41,6 +42,7 @@ from artisan.execution.transport.log_constants import (
     TOOL_OUTPUT_FILENAME,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.utils.external_tools import ExternalToolError
@@ -89,7 +91,9 @@ def resolve_op(module: str, qualname: str) -> type[OperationDefinition]:
 
 
 def run_tool_request(
-    op_cls: type[OperationDefinition], request: ToolRequest
+    op_cls: type[OperationDefinition],
+    request: ToolRequest,
+    data_policy: ToolEndpointDataPolicy | None = None,
 ) -> WorkerResult:
     """Build the command from the op + request params and run the tool.
 
@@ -111,10 +115,17 @@ def run_tool_request(
     Args:
         op_cls: The deployed operation class.
         request: Validated params + input refs.
+        data_policy: Deployment-owned URI permissions. Omission denies every
+            remote input and output URI.
 
     Returns:
         WorkerResult with the control manifest and, on success, the tar.
     """
+    policy = data_policy or ToolEndpointDataPolicy()
+    denied = _preflight_request(op_cls.name, request, policy)
+    if denied is not None:
+        return denied
+
     try:
         op = instantiate_op(op_cls, request.params)
     except ValidationError as exc:
@@ -157,7 +168,11 @@ def run_tool_request(
 
         transport = InlineTransport()
         try:
-            inputs = transport.unpack_inputs(request.inputs, inputs_dir)
+            inputs = transport.unpack_inputs(
+                request.inputs,
+                inputs_dir,
+                policy=policy,
+            )
         except ArtifactIntegrityError as exc:
             return _error_result(
                 op_cls.name,
@@ -173,6 +188,14 @@ def run_tool_request(
                 f"input filesystem dependency is unavailable: {exc}",
                 "config",
                 "REPORT_TO_USER",
+            )
+        except EndpointTransportError as exc:
+            return _error_result(
+                op_cls.name,
+                ErrorCode.INPUT_RESOLUTION_FAILED,
+                str(exc),
+                "io",
+                "CHECK_INPUT",
             )
         except _INPUT_RESOLUTION_ERRORS as exc:
             # malformed ref; a URI that would not resolve (missing object,
@@ -218,7 +241,11 @@ def run_tool_request(
             stored = None
             if request.output_store and names:
                 stored = upload_outputs(
-                    outputs_dir, names, request.output_store, op_cls.name
+                    outputs_dir,
+                    names,
+                    request.output_store,
+                    op_cls.name,
+                    policy=policy,
                 )
             output_tar = (
                 None
@@ -242,6 +269,16 @@ def run_tool_request(
                 f"tool output transport rejected the result: {exc}",
                 "io",
                 "CHECK_INPUT",
+                output_names=names,
+                log_tail=_log_tail(log_path),
+            )
+        except EndpointTransportError as exc:
+            return _error_result(
+                op_cls.name,
+                ErrorCode.OUTPUT_DELIVERY_FAILED,
+                str(exc),
+                "io",
+                "RETRY_LATER",
                 output_names=names,
                 log_tail=_log_tail(log_path),
             )
@@ -269,6 +306,47 @@ def run_tool_request(
         # evaluated before finally runs; ignore_errors keeps cleanup from
         # masking the real exception or altering the returned manifest.
         shutil.rmtree(job_root, ignore_errors=True)
+
+
+def _preflight_request(
+    op_name: str,
+    request: ToolRequest,
+    policy: ToolEndpointDataPolicy,
+) -> WorkerResult | None:
+    """Authorize every caller URI before construction or workspace effects."""
+    for ref in request.inputs:
+        if ref.uri is None:
+            continue
+        if ref.content_digest is None or ref.size_bytes is None:
+            return _error_result(
+                op_name,
+                ErrorCode.INPUT_RESOLUTION_FAILED,
+                f"input {ref.name!r} lacks its complete-file integrity contract",
+                "validation",
+                "CHECK_INPUT",
+            )
+        try:
+            policy.authorize_input(ref.uri)
+        except ValueError as exc:
+            return _error_result(
+                op_name,
+                ErrorCode.INPUT_RESOLUTION_FAILED,
+                str(exc),
+                "validation",
+                "CHECK_INPUT",
+            )
+    if request.output_store is not None:
+        try:
+            policy.authorize_output(request.output_store)
+        except ValueError as exc:
+            return _error_result(
+                op_name,
+                ErrorCode.OUTPUT_DELIVERY_FAILED,
+                str(exc),
+                "validation",
+                "CHECK_INPUT",
+            )
+    return None
 
 
 def instantiate_op(

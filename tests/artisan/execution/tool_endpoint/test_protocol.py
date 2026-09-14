@@ -73,6 +73,24 @@ class TestToolRequest:
         request = ToolRequest(output_store="s3://bucket/prefix")
         assert ToolRequest(**request.model_dump()) == request
 
+    def test_deployment_policy_is_not_a_wire_field(self):
+        assert set(ToolRequest.model_fields) == {"params", "inputs", "output_store"}
+        schema = ToolRequest.model_json_schema()
+        assert "data_policy" not in schema["properties"]
+        assert "input_allowlist" not in schema["properties"]
+        assert "output_allowlist" not in schema["properties"]
+
+    def test_deployment_policy_cannot_be_submitted_as_extra_data(self):
+        with pytest.raises(ValidationError, match="Extra inputs"):
+            ToolRequest.model_validate(
+                {
+                    "data_policy": {
+                        "input_allowlist": ["s3://attacker"],
+                        "output_allowlist": ["s3://attacker"],
+                    }
+                }
+            )
+
 
 class TestToolManifest:
     def test_defaults(self):

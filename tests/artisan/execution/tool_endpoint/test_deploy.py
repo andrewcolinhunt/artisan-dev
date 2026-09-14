@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import jsonschema
 import modal
@@ -19,6 +21,7 @@ from artisan.execution.tool_endpoint.protocol import CancelResponse, SchemaRespo
 from artisan.execution.tool_endpoint.spec import endpoint_spec
 from artisan.operations.examples import DataGenerator, WaitTool
 from artisan.registry.schemas import params_schema_for
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
 _PARAMS = json.dumps({"contigs": "10-20"})
@@ -101,6 +104,211 @@ class TestBuildApp:
         with pytest.raises(ValueError, match="not a command op"):
             build_app(DataGenerator)
         mock_modal.App.assert_not_called()
+
+
+class TestBakedPolicyBoundary:
+    def test_worker_reconstructs_only_baked_policy(
+        self, mock_modal: MagicMock, monkeypatch
+    ):
+        spec = endpoint_spec(GpuTool).model_copy(
+            update={
+                "data_policy": {
+                    "input_allowlist": ["s3://trusted/inputs"],
+                    "output_allowlist": ["https://uploads.example"],
+                }
+            }
+        )
+        monkeypatch.setattr(deploy_mod, "endpoint_spec", lambda _op: spec)
+        build_app(GpuTool)
+        worker_fn = mock_modal.concurrent.return_value.call_args.args[0]
+        worker_result = MagicMock()
+        worker_result.model_dump.return_value = {"manifest": {}}
+
+        with (
+            patch(
+                "artisan.execution.tool_endpoint.server.resolve_op",
+                return_value=GpuTool,
+            ),
+            patch(
+                "artisan.execution.tool_endpoint.server.run_tool_request",
+                return_value=worker_result,
+            ) as run,
+        ):
+            result = worker_fn(
+                {
+                    "params": {"contigs": "10-20"},
+                    "inputs": [],
+                    "output_store": None,
+                }
+            )
+
+        request = run.call_args.args[1]
+        baked = run.call_args.kwargs["data_policy"]
+        assert result == {"manifest": {}}
+        assert not hasattr(request, "data_policy")
+        assert baked == ToolEndpointDataPolicy(
+            input_allowlist=("s3://trusted/inputs",),
+            output_allowlist=("https://uploads.example",),
+        )
+
+    def test_worker_rejects_caller_submitted_policy(
+        self, mock_modal: MagicMock, monkeypatch
+    ):
+        spec = endpoint_spec(GpuTool).model_copy(
+            update={
+                "data_policy": {
+                    "input_allowlist": ["s3://trusted/inputs"],
+                    "output_allowlist": [],
+                }
+            }
+        )
+        monkeypatch.setattr(deploy_mod, "endpoint_spec", lambda _op: spec)
+        build_app(GpuTool)
+        worker_fn = mock_modal.concurrent.return_value.call_args.args[0]
+
+        with (
+            patch("artisan.execution.tool_endpoint.server.run_tool_request") as run,
+            pytest.raises(Exception, match="Extra inputs"),
+        ):
+            worker_fn(
+                {
+                    "params": {"contigs": "10-20"},
+                    "inputs": [],
+                    "output_store": None,
+                    "data_policy": {
+                        "input_allowlist": ["s3://attacker"],
+                        "output_allowlist": ["s3://attacker"],
+                    },
+                }
+            )
+
+        run.assert_not_called()
+
+    def test_submit_route_has_no_policy_field(self, mock_modal: MagicMock):
+        build_app(GpuTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        web = endpoint_fn()
+        submit = next(route.endpoint for route in web.routes if route.path == "/submit")
+
+        assert "data_policy" not in inspect.signature(submit).parameters
+        assert "input_allowlist" not in inspect.signature(submit).parameters
+        assert "output_allowlist" not in inspect.signature(submit).parameters
+
+    @pytest.mark.parametrize("size", [-1, True, "1"])
+    def test_submit_direct_route_rejects_invalid_integrity_size(
+        self, mock_modal: MagicMock, size
+    ):
+        build_app(GpuTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        web = endpoint_fn()
+        submit = next(route.endpoint for route in web.routes if route.path == "/submit")
+        integrity = json.dumps(
+            {
+                "reference": {
+                    "content_digest": "a" * 32,
+                    "size_bytes": size,
+                }
+            }
+        )
+
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                submit(
+                    params=_PARAMS,
+                    input_uris='{"reference": "s3://bucket/input"}',
+                    input_filenames="{}",
+                    input_integrity=integrity,
+                    output_store="",
+                    files=[],
+                )
+            )
+
+        assert getattr(exc_info.value, "status_code", None) == 422
+
+    def test_submit_direct_route_forwards_landed_integrity_shape(
+        self, mock_modal: MagicMock
+    ):
+        build_app(GpuTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        web = endpoint_fn()
+        submit = next(route.endpoint for route in web.routes if route.path == "/submit")
+        worker = mock_modal.App.return_value.function.return_value.return_value
+        worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
+
+        response = asyncio.run(
+            submit(
+                params=_PARAMS,
+                input_uris='{"reference": "s3://bucket/input"}',
+                input_filenames='{"reference": "source.bin"}',
+                input_integrity=json.dumps(
+                    {
+                        "reference": {
+                            "content_digest": "a" * 32,
+                            "size_bytes": 1,
+                        }
+                    }
+                ),
+                output_store="",
+                files=[],
+            )
+        )
+
+        assert response == {"call_id": "fc-1"}
+        assert worker.spawn.aio.call_args.args[0]["inputs"] == [
+            {
+                "name": "reference",
+                "filename": "source.bin",
+                "uri": "s3://bucket/input",
+                "data": None,
+                "content_digest": "a" * 32,
+                "size_bytes": 1,
+            }
+        ]
+
+    @pytest.mark.parametrize(
+        ("input_uris", "input_integrity"),
+        [
+            ('{"reference": "s3://bucket/input"}', "{}"),
+            (
+                "{}",
+                '{"reference": {"content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size_bytes": 1}}',
+            ),
+            (
+                '{"reference": "s3://bucket/input"}',
+                '{"reference": {"content_digest": "short", "size_bytes": 1}}',
+            ),
+            (
+                '{"reference": "s3://bucket/input"}',
+                '{"reference": {"content_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}',
+            ),
+        ],
+    )
+    def test_submit_direct_route_rejects_missing_or_malformed_integrity_map(
+        self,
+        mock_modal: MagicMock,
+        input_uris: str,
+        input_integrity: str,
+    ):
+        build_app(GpuTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        web = endpoint_fn()
+        submit = next(route.endpoint for route in web.routes if route.path == "/submit")
+        worker = mock_modal.App.return_value.function.return_value.return_value
+
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                submit(
+                    params=_PARAMS,
+                    input_uris=input_uris,
+                    input_filenames="{}",
+                    input_integrity=input_integrity,
+                    output_store="",
+                    files=[],
+                )
+            )
+
+        assert getattr(exc_info.value, "status_code", None) == 422
+        worker.spawn.aio.assert_not_called()
 
 
 class TestEndpointRoutes:

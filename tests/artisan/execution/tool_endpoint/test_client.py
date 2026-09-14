@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
 
 from artisan.errors import ArtisanError, ErrorCode
@@ -25,6 +24,7 @@ from artisan.schemas.operation_config.compute import (
     ComputeProvider,
     ModalComputeConfig,
 )
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 from artisan.schemas.specs.input_models import ExecuteInput
 
@@ -39,6 +39,12 @@ def _op(**modal_kwargs: Any) -> WaitTool:
         compute_provider=ComputeProvider(
             active="modal", modal=ModalComputeConfig(**modal_kwargs)
         ),
+    )
+
+
+def _stored_policy() -> ToolEndpointDataPolicy:
+    return ToolEndpointDataPolicy(
+        output_allowlist=("s3://bucket/prefix", "https://signed.example"),
     )
 
 
@@ -101,6 +107,7 @@ class TestCallEndpointHappyPath:
         assert json.loads(submit_kwargs["data"]["params"])["seconds"] == 1
         mock_http.Client.assert_called_once()
         assert mock_http.Client.call_args.kwargs["base_url"] == _URL
+        assert mock_http.Client.call_args.kwargs["follow_redirects"] is False
 
     def test_input_files_packed_inline(self, mock_http, tmp_path):
         client = _client_of(mock_http)
@@ -112,7 +119,7 @@ class TestCallEndpointHappyPath:
         source.write_bytes(b"ATOM")
 
         call_endpoint(
-            _op(),
+            _op(data_policy=ToolEndpointDataPolicy(input_allowlist=("s3://bucket",))),
             ExecuteInput(
                 inputs={"pdb": str(source), "ref": "s3://bucket/key"},
                 execute_dir=str(tmp_path),
@@ -179,7 +186,7 @@ class TestStoredOutputs:
             {"status": "done", "manifest": ToolManifest().model_dump()}
         )
         call_endpoint(
-            _op(output_store="s3://bucket/prefix"),
+            _op(output_store="s3://bucket/prefix", data_policy=_stored_policy()),
             ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
         )
         data = client.post.call_args_list[0].kwargs["data"]
@@ -194,32 +201,33 @@ class TestStoredOutputs:
         call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
         assert "output_store" not in client.post.call_args_list[0].kwargs["data"]
 
-    def test_stored_manifest_fetched_via_bare_presigned_get(self, mock_http, tmp_path):
+    def test_stored_manifest_fetched_via_bare_presigned_get(
+        self, mock_http, tmp_path, monkeypatch
+    ):
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})
         client.get.return_value = _response(
             {"status": "done", "manifest": self._MANIFEST.model_dump()}
         )
         payload = _tar_payload(tmp_path)
-        streamed = _response()
-        streamed.iter_bytes.return_value = [payload[:7], payload[7:]]
-        mock_http.stream.return_value.__enter__.return_value = streamed
+        download = MagicMock()
+
+        def fetch(_transport, uri, dest, policy):
+            download(uri, policy)
+            InlineTransport().unpack_output_stream([payload[:7], payload[7:]], dest)
+
+        monkeypatch.setattr(InlineTransport, "download_outputs", fetch)
         execute_dir = tmp_path / "execute"
         execute_dir.mkdir()
 
         call_endpoint(
-            _op(output_store="s3://bucket/prefix"),
+            _op(output_store="s3://bucket/prefix", data_policy=_stored_policy()),
             ExecuteInput(inputs={}, execute_dir=str(execute_dir)),
         )
 
-        # bare streaming GET on the module, not the proxy-authenticated
-        # client: positional URL, timeout only — no headers ride along
-        assert mock_http.stream.call_args.args == (
-            "GET",
-            "https://signed.example/get?sig=x",
+        download.assert_called_once_with(
+            "https://signed.example/get?sig=x", _stored_policy()
         )
-        assert "headers" not in mock_http.stream.call_args.kwargs
-        streamed.iter_bytes.assert_called_once_with(chunk_size=1024 * 1024)
         assert (execute_dir / "out.txt").read_text() == "hi\n"
         # /download is never hit — every client.get was a /result poll
         assert all(call.args[0] == "/result" for call in client.get.call_args_list)
@@ -236,23 +244,61 @@ class TestStoredOutputs:
         )
         with pytest.raises(ArtisanError, match="no presigned URL"):
             call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
-        mock_http.stream.assert_not_called()
+        assert not hasattr(mock_http, "stream") or not mock_http.stream.called
 
-    def test_streaming_download_http_error_is_structured(self, mock_http, tmp_path):
+    def test_stored_presigned_origin_is_authorized_before_download(
+        self, mock_http, tmp_path, monkeypatch
+    ):
+        uri = "https://attacker.example/get?signature=fake-secret"
+        manifest = ToolManifest(
+            stored=StoredOutputs(
+                uri="s3://bucket/prefix/wait_tool/archive.tar.gz",
+                presigned_url=uri,
+            )
+        )
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": manifest.model_dump()}
+        )
+        download = MagicMock()
+        monkeypatch.setattr(InlineTransport, "download_outputs", download)
+
+        with pytest.raises(ArtisanError) as exc_info:
+            call_endpoint(
+                _op(
+                    data_policy=ToolEndpointDataPolicy(
+                        output_allowlist=("s3://bucket/prefix",)
+                    )
+                ),
+                ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
+            )
+
+        download.assert_not_called()
+        assert exc_info.value.code == ErrorCode.TOOL_ENDPOINT_MISCONFIGURED
+        for secret in ("signature", "fake-secret"):
+            assert secret not in str(exc_info.value)
+
+    def test_streaming_download_http_error_is_structured(
+        self, mock_http, tmp_path, monkeypatch
+    ):
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})
         client.get.return_value = _response(
             {"status": "done", "manifest": self._MANIFEST.model_dump()}
         )
-        streamed = httpx.Response(
-            403,
-            request=httpx.Request("GET", "https://signed.example/get?sig=x"),
-            stream=httpx.ByteStream(b"denied"),
-        )
-        mock_http.stream.return_value.__enter__.return_value = streamed
+
+        def fail_download(*_args, **_kwargs):
+            msg = "output download request was rejected (403)"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(InlineTransport, "download_outputs", fail_download)
 
         with pytest.raises(ArtisanError, match="403") as exc_info:
-            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+            call_endpoint(
+                _op(data_policy=_stored_policy()),
+                ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
+            )
 
         assert exc_info.value.code == "op_execute_failed"
 
@@ -381,7 +427,7 @@ class TestCallEndpointFailures:
         assert "ran fine" in log_path.read_text()
         # the error short-circuits before the output_names download branch —
         # output_names on an error manifest is purely informational
-        mock_http.stream.assert_not_called()  # no presigned GET
+        assert not hasattr(mock_http, "stream") or not mock_http.stream.called
         assert all(call.args[0] == "/result" for call in client.get.call_args_list)
 
     def test_expired_result_raises(self, mock_http, tmp_path):
@@ -413,6 +459,82 @@ class TestCallEndpointFailures:
         )
         with pytest.raises(ArtisanError, match="no compute_provider.modal"):
             call_endpoint(op, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+    @pytest.mark.parametrize("stage", ["submit", "result", "cancel", "download"])
+    def test_every_control_redirect_is_a_visible_failure(
+        self, stage, mock_http, tmp_path
+    ):
+        client = _client_of(mock_http)
+        redirect = _response(status=307)
+        if stage == "submit":
+            client.post.return_value = redirect
+        elif stage == "result":
+            client.post.return_value = _response({"call_id": "fc-1"})
+            client.get.return_value = redirect
+        elif stage == "cancel":
+            client.post.side_effect = [_response({"call_id": "fc-1"}), redirect]
+        else:
+            client.post.return_value = _response({"call_id": "fc-1"})
+            manifest = ToolManifest(output_names=["out.txt"])
+            client.get.side_effect = [
+                _response({"status": "done", "manifest": manifest.model_dump()}),
+                redirect,
+            ]
+        event = threading.Event()
+        if stage == "cancel":
+            event.set()
+
+        with cancel_scope(event), pytest.raises(ArtisanError) as exc_info:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        assert exc_info.value.code == ErrorCode.TOOL_ENDPOINT_MISCONFIGURED
+        assert "redirect refused (307)" in str(exc_info.value)
+
+    def test_off_policy_input_fails_before_submit_and_redacts_capability(
+        self, mock_http, tmp_path
+    ):
+        uri = "https://user:secret@private.example/data?signature=fake-token"
+
+        with pytest.raises(ArtisanError) as exc_info:
+            call_endpoint(
+                _op(
+                    data_policy=ToolEndpointDataPolicy(
+                        input_allowlist=("https://allowed.example",)
+                    )
+                ),
+                ExecuteInput(
+                    inputs={"dataset": uri},
+                    execute_dir=str(tmp_path),
+                    metadata={
+                        "external_integrity": {
+                            uri: {
+                                "content_digest": "a" * 32,
+                                "size_bytes": 1,
+                            }
+                        }
+                    },
+                ),
+            )
+
+        _client_of(mock_http).post.assert_not_called()
+        assert exc_info.value.code == ErrorCode.TOOL_ENDPOINT_MISCONFIGURED
+        for secret in ("user", "secret", "signature", "fake-token"):
+            assert secret not in str(exc_info.value)
+
+    def test_invented_uri_without_d1_descriptor_fails_before_submit(
+        self, mock_http, tmp_path
+    ):
+        with pytest.raises(ArtisanError, match="lacks its verified digest and size"):
+            call_endpoint(
+                _op(
+                    data_policy=ToolEndpointDataPolicy(input_allowlist=("s3://bucket",))
+                ),
+                ExecuteInput(
+                    inputs={"dataset": "s3://bucket/invented"},
+                    execute_dir=str(tmp_path),
+                ),
+            )
+        _client_of(mock_http).post.assert_not_called()
 
 
 class TestCancellation:
@@ -527,7 +649,7 @@ class TestTokenDiscovery:
         monkeypatch.delenv("MODAL_PROXY_TOKEN_ID", raising=False)
         monkeypatch.delenv("MODAL_PROXY_TOKEN_SECRET", raising=False)
 
-        assert _auth_headers(None) == {
+        assert _auth_headers("MODAL_PROXY", "wait_tool") == {
             "Modal-Key": "wk-file",
             "Modal-Secret": "ws-file",
         }
@@ -538,7 +660,8 @@ class TestTokenDiscovery:
         """endpoint_url unset + no tokens anywhere → fail before any request."""
         monkeypatch.setattr(client_mod, "env_or_dotenv", lambda _name: None)
 
-        with pytest.raises(ArtisanError, match="no proxy-auth tokens") as exc_info:
+        monkeypatch.setattr(client_mod, "_resolve_url", lambda _name: _URL)
+        with pytest.raises(ArtisanError, match="missing or incomplete") as exc_info:
             call_endpoint(
                 _op(endpoint_url=None),
                 ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
@@ -552,7 +675,8 @@ class TestTokenDiscovery:
         self, mock_http, monkeypatch, tmp_path
     ):
         """endpoint_url set → missing proxy tokens are not an error."""
-        monkeypatch.setattr(client_mod, "env_or_dotenv", lambda _name: None)
+        lookup = MagicMock(return_value=None)
+        monkeypatch.setattr(client_mod, "env_or_dotenv", lookup)
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})
         client.get.return_value = _response(
@@ -562,6 +686,7 @@ class TestTokenDiscovery:
         call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
 
         assert mock_http.Client.call_args.kwargs["headers"] == {}
+        lookup.assert_not_called()
         client.post.assert_called_once()
 
     def test_401_raises_actionable_config_error(self, mock_http, tmp_path, monkeypatch):
@@ -577,6 +702,32 @@ class TestTokenDiscovery:
         assert exc_info.value.error_type == "config"
         assert "Proxy Auth Tokens" in (exc_info.value.envelope.hint or "")
 
+    @pytest.mark.parametrize(
+        ("token_id", "token_secret"),
+        [("wk-id", None), (None, "ws-secret"), ("", "ws-secret")],
+    )
+    def test_explicit_custom_auth_requires_complete_nonempty_pair(
+        self, token_id, token_secret, mock_http, monkeypatch, tmp_path
+    ):
+        values = {
+            "CUSTOM_TOKEN_ID": token_id,
+            "CUSTOM_TOKEN_SECRET": token_secret,
+        }
+        lookup = MagicMock(side_effect=values.get)
+        monkeypatch.setattr(client_mod, "env_or_dotenv", lookup)
+
+        with pytest.raises(ArtisanError, match="missing or incomplete"):
+            call_endpoint(
+                _op(auth_secret="CUSTOM"),
+                ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
+            )
+
+        assert [item.args[0] for item in lookup.call_args_list] == [
+            "CUSTOM_TOKEN_ID",
+            "CUSTOM_TOKEN_SECRET",
+        ]
+        mock_http.Client.assert_not_called()
+
 
 class TestAuthAndUrl:
     def test_default_proxy_auth_headers_from_env(
@@ -590,7 +741,11 @@ class TestAuthAndUrl:
             {"status": "done", "manifest": ToolManifest().model_dump()}
         )
 
-        call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+        monkeypatch.setattr(client_mod, "_resolve_url", lambda _name: _URL)
+        call_endpoint(
+            _op(endpoint_url=None),
+            ExecuteInput(inputs={}, execute_dir=str(tmp_path)),
+        )
 
         headers = mock_http.Client.call_args.kwargs["headers"]
         assert headers == {"Modal-Key": "wk-id", "Modal-Secret": "ws-secret"}
@@ -611,6 +766,36 @@ class TestAuthAndUrl:
 
         headers = mock_http.Client.call_args.kwargs["headers"]
         assert headers["Modal-Key"] == "id2"
+
+    def test_custom_endpoint_never_discovers_default_modal_pair(
+        self, mock_http, tmp_path, monkeypatch
+    ):
+        lookup = MagicMock(side_effect=AssertionError("credential lookup forbidden"))
+        monkeypatch.setattr(client_mod, "env_or_dotenv", lookup)
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+
+        call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        lookup.assert_not_called()
+        assert mock_http.Client.call_args.kwargs["headers"] == {}
+
+    def test_model_copy_cannot_attach_auth_to_cleartext_endpoint(
+        self, mock_http, tmp_path
+    ):
+        cfg = ModalComputeConfig(endpoint_url="https://tool.example").model_copy(
+            update={"endpoint_url": "http://tool.example", "auth_secret": "CUSTOM"}
+        )
+        op = _op()
+        op.compute_provider = op.compute_provider.model_copy(update={"modal": cfg})
+
+        with pytest.raises(ArtisanError, match="must use HTTPS"):
+            call_endpoint(op, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        mock_http.Client.assert_not_called()
 
     @patch("modal.Function.from_name")
     def test_url_resolved_from_modal_when_unset(
