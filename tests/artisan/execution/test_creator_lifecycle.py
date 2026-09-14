@@ -14,6 +14,8 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
+from fixtures.logical_commit_store import commit_test_inputs
+from pydantic import BaseModel, Field
 
 from artisan.execution.executors.creator import (
     LifecycleResult,
@@ -36,25 +38,29 @@ from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 
 def _setup_delta(base_path: Path, artifacts: list[MetricArtifact]) -> None:
-    """Write Delta Lake tables for test input artifacts."""
-    metrics_path = base_path / "artifacts/metrics"
-    pl.DataFrame(
-        [artifact.to_row() for artifact in artifacts],
-        schema=MetricArtifact.POLARS_SCHEMA,
-    ).write_delta(str(metrics_path))
-    index_path = base_path / "artifacts/index"
-    pl.DataFrame(
-        [
-            {
-                "artifact_id": artifact.artifact_id,
-                "artifact_type": artifact.artifact_type,
-                "origin_step_number": artifact.origin_step_number,
-                "metadata": json.dumps(artifact.metadata),
-            }
-            for artifact in artifacts
-        ],
-        schema=ARTIFACT_INDEX_SCHEMA,
-    ).write_delta(str(index_path))
+    """Commit test input artifacts through the logical-commit boundary."""
+    commit_test_inputs(
+        base_path,
+        base_path.parent / "fixture-staging",
+        {
+            "artifacts/metrics": pl.DataFrame(
+                [artifact.to_row() for artifact in artifacts],
+                schema=MetricArtifact.POLARS_SCHEMA,
+            ),
+            "artifacts/index": pl.DataFrame(
+                [
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "artifact_type": artifact.artifact_type,
+                        "origin_step_number": artifact.origin_step_number,
+                        "metadata": json.dumps(artifact.metadata),
+                    }
+                    for artifact in artifacts
+                ],
+                schema=ARTIFACT_INDEX_SCHEMA,
+            ),
+        },
+    )
 
 
 class _SuffixOp(OperationDefinition):
@@ -82,7 +88,10 @@ class _SuffixOp(OperationDefinition):
         ),
     }
 
-    suffix: str = "_scored"
+    class Params(BaseModel):
+        suffix: str = Field(default="_scored", description="Output file suffix.")
+
+    params: Params = Params()
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
@@ -97,7 +106,7 @@ class _SuffixOp(OperationDefinition):
                 content = json.loads(fh.read())
             content["scored"] = True
             stem = os.path.splitext(os.path.basename(path))[0]
-            out = os.path.join(inputs.execute_dir, f"{stem}{self.suffix}.json")
+            out = os.path.join(inputs.execute_dir, f"{stem}{self.params.suffix}.json")
             with open(out, "w") as fh:
                 fh.write(json.dumps(content))
         return {}
@@ -149,7 +158,7 @@ class TestCreatorLifecycleNameDerivation:
             staging_root=str(staging),
         )
         unit = ExecutionUnit(
-            operation=_SuffixOp(suffix="_scored"),
+            operation=_SuffixOp(params=_SuffixOp.Params(suffix="_scored")),
             inputs={"source": [input_id]},
             execution_spec_id="spec01" + "0" * 26,
             step_number=1,
@@ -196,7 +205,7 @@ class TestCreatorLifecycleNameDerivation:
             staging_root=str(staging),
         )
         unit = ExecutionUnit(
-            operation=_SuffixOp(suffix="_processed"),
+            operation=_SuffixOp(params=_SuffixOp.Params(suffix="_processed")),
             inputs={"source": [id_a, id_b]},
             execution_spec_id="spec02" + "0" * 26,
             step_number=1,

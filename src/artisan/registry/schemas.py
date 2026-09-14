@@ -31,12 +31,17 @@ def params_schema_for(op_cls: type[OperationDefinition]) -> dict[str, Any]:
     Returns:
         JSON Schema dict. For parameter-less ops (no ``params`` field
         declared, or annotation is not a ``BaseModel``), returns the empty
-        ``Params`` shape: ``{"type": "object", "title": "Params",
-        "properties": {}}``.
+        closed empty-object shape: ``{"type": "object", "title": "Params",
+        "properties": {}, "additionalProperties": false}``.
     """
     params_cls = _params_class(op_cls)
     if params_cls is None:
-        return {"type": "object", "title": "Params", "properties": {}}
+        return {
+            "type": "object",
+            "title": "Params",
+            "properties": {},
+            "additionalProperties": False,
+        }
     base = params_cls.model_json_schema()
     descriptions = _extract_arg_descriptions(params_cls)
     for prop_name, schema in base.get("properties", {}).items():

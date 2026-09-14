@@ -17,6 +17,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
+from pydantic import ValidationError
 
 from artisan.execution.tool_endpoint import server as server_mod
 from artisan.execution.tool_endpoint import transport as transport_mod
@@ -26,6 +27,7 @@ from artisan.execution.tool_endpoint.protocol import (
     ToolRequest,
 )
 from artisan.execution.tool_endpoint.server import (
+    instantiate_op,
     resolve_op,
     run_tool_request,
 )
@@ -236,6 +238,31 @@ def _capture_tempdirs(monkeypatch) -> list[str]:
 
     monkeypatch.setattr(tempfile, "mkdtemp", spy)
     return created
+
+
+class TestInstantiateOp:
+    def test_defaulted_nested_params_accept_empty_mapping(self) -> None:
+        operation = instantiate_op(WaitTool, {})
+
+        assert operation.params == WaitTool.Params()
+
+    def test_user_values_use_nested_params(self) -> None:
+        operation = instantiate_op(WaitTool, {"seconds": 4})
+
+        assert operation.params == WaitTool.Params(seconds=4)
+
+    def test_required_nested_params_reject_empty_mapping(self) -> None:
+        from fixtures.endpoint_ops import GpuTool
+
+        with pytest.raises(ValidationError):
+            instantiate_op(GpuTool, {})
+
+    def test_parameterless_operation_accepts_empty_mapping(self) -> None:
+        assert isinstance(instantiate_op(NoopTool, {}), NoopTool)
+
+    def test_parameterless_operation_rejects_nonempty_mapping(self) -> None:
+        with pytest.raises(ValidationError):
+            instantiate_op(NoopTool, {"unexpected": 1})
 
 
 def _set_ambient_creds(storage, monkeypatch) -> None:

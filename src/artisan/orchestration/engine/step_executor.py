@@ -32,6 +32,7 @@ from artisan.execution.executors.curator import (
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import record_execution_failure
+from artisan.operations.base._param_docs import _params_class
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
@@ -131,15 +132,14 @@ def instantiate_operation(
     group_by = ov.group_by
 
     init_kwargs: dict[str, Any] = {}
-
-    if params:
-        if "params" in operation_class.model_fields:
-            # New-style: wrap user params into the params sub-model
-            params_cls = operation_class.model_fields["params"].annotation
-            init_kwargs["params"] = params_cls(**params)  # type: ignore[misc]  # pydantic field annotation is non-None at runtime
+    params_cls = _params_class(operation_class)
+    if params is not None:
+        if params_cls is None:
+            if params:
+                msg = f"Operation {operation_class.name!r} declares no Params"
+                raise ValueError(msg)
         else:
-            # Flat fields
-            init_kwargs.update(params)
+            init_kwargs["params"] = params_cls.model_validate(params)
 
     instance = operation_class(**init_kwargs)
 

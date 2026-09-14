@@ -14,6 +14,7 @@ from typing import Any, ClassVar
 
 import polars as pl
 from fsspec.implementations.local import LocalFileSystem
+from pydantic import BaseModel, Field
 
 from artisan.execution.recording.recorder import (
     build_execution_edges,
@@ -57,8 +58,11 @@ class MockCreatorOp(OperationDefinition):
         ),
     }
 
-    tolerance: float = 0.1
-    max_steps: int = 100
+    class Params(BaseModel):
+        tolerance: float = Field(default=0.1, description="Allowed tolerance.")
+        max_steps: int = Field(default=100, description="Maximum step count.")
+
+    params: Params = Params()
 
     def preprocess(self, inputs: Any) -> dict[str, Any]:
         return {}

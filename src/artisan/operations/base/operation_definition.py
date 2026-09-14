@@ -472,6 +472,7 @@ class OperationDefinition(BaseModel):
             return
 
         cls._validate_registry_metadata()
+        cls._validate_parameter_shape()
 
         # Exactly one execute slot must be implemented
         has_execute_function = (
@@ -666,9 +667,8 @@ class OperationDefinition(BaseModel):
         The flag wraps a Python body in a framework-generated command, so
         the class must (1) live in an importable module, (2) implement
         ``execute_function`` and nothing else in the command slot, (3)
-        declare no ``ToolSpec``, and (4) keep all per-run config in the
-        nested ``Params`` model — the only payload that crosses the
-        process and wire boundaries.
+        declare no ``ToolSpec``. General subclass validation separately
+        enforces the one nested ``Params`` contract for every operation.
 
         Raises:
             TypeError: On any violation, naming the rule.
@@ -701,22 +701,74 @@ class OperationDefinition(BaseModel):
                 "the framework needs no ToolSpec for its own argv"
             )
             raise TypeError(msg)
-        extra = set(cls.model_fields) - set(OperationDefinition.model_fields)
-        if not extra <= {"params"}:
+
+    @classmethod
+    def _validate_parameter_shape(cls) -> None:
+        """Require the single nested ``Params`` operation contract.
+
+        Concrete operations either declare no per-run parameter fields, or
+        declare the pair ``class Params(BaseModel)`` and ``params: Params``.
+        The pair may be inherited unchanged, but subclasses cannot redefine
+        only one half because that would split construction from schema and
+        hashing resolution.
+
+        Raises:
+            TypeError: If the operation declares a flat field or malformed
+                ``Params`` pair.
+        """
+        extra_fields = set(cls.model_fields) - set(OperationDefinition.model_fields)
+        flat_fields = extra_fields - {"params"}
+        if flat_fields:
             msg = (
-                f"{cls.__name__} sets execute_as_tool=True but declares model "
-                f"fields {sorted(extra - {'params'})} — only the nested Params "
-                "model crosses the process boundary; move per-run config into "
-                "the nested Params model"
+                f"{cls.__name__} declares top-level model fields "
+                f"{sorted(flat_fields)}; move per-run configuration into the "
+                "nested Params model and `params` field"
             )
             raise TypeError(msg)
-        if "params" in cls.model_fields and cls.model_fields[
-            "params"
-        ].annotation is not getattr(cls, "Params", None):
+
+        annotations = cls.__dict__.get("__annotations__", {})
+        defines_field = "params" in annotations
+        defines_model = "Params" in cls.__dict__
+        inherited_pair = any(
+            "params" in base.model_fields and hasattr(base, "Params")
+            for base in cls.__mro__[1:]
+            if issubclass(base, OperationDefinition)
+        )
+        if inherited_pair and defines_field != defines_model:
+            member = "params field" if defines_field else "Params class"
             msg = (
-                f"{cls.__name__} sets execute_as_tool=True but its `params` "
-                "field is not typed as the nested Params class — the worker "
-                "and runner rebuild the op via its nested Params model"
+                f"{cls.__name__} redefines only its inherited {member}; redefine "
+                "both the nested Params class and `params` field, or inherit both"
+            )
+            raise TypeError(msg)
+
+        field = cls.model_fields.get("params")
+        params_cls = getattr(cls, "Params", None)
+        if field is None and params_cls is None:
+            return
+        if field is None:
+            msg = f"{cls.__name__} declares Params but no `params` model field"
+            raise TypeError(msg)
+        if params_cls is None:
+            msg = f"{cls.__name__} declares a `params` field but no nested Params class"
+            raise TypeError(msg)
+        if not isinstance(params_cls, type) or not issubclass(params_cls, BaseModel):
+            msg = f"{cls.__name__}.Params must subclass pydantic.BaseModel"
+            raise TypeError(msg)
+        if field.annotation is not params_cls:
+            msg = (
+                f"{cls.__name__}.params must be annotated as its exact nested "
+                "Params class"
+            )
+            raise TypeError(msg)
+        if field.is_required():
+            return
+        default = field.default
+        if type(default) is not params_cls:
+            msg = (
+                f"{cls.__name__}.params default must be an instance of its exact "
+                "nested Params class, not "
+                f"{type(default).__name__}"
             )
             raise TypeError(msg)
 

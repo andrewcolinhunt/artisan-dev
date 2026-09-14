@@ -62,6 +62,7 @@ from artisan.utils.hashing import (
     compute_step_spec_id,
     compute_stream_digest,
     effective_config_payload,
+    serialize_params,
 )
 from artisan.utils.json import artisan_json_default as _set_default
 from artisan.utils.path import uri_join, uri_parent
@@ -2150,17 +2151,7 @@ class PipelineManager:
         Returns:
             Deterministic step spec ID for the prepared operation.
         """
-        if "params" in type(operation).model_fields:
-            full_params = operation.params.model_dump(mode="json")  # type: ignore[attr-defined]
-        else:
-            # Flat-field operations: exclude base OperationDefinition
-            # fields (resources, execution, etc.) — only user params.
-            base_fields = set(OperationDefinition.model_fields)
-            full_params = {
-                k: v
-                for k, v in operation.model_dump(mode="json").items()
-                if k not in base_fields
-            }
+        full_params = serialize_params(operation)
 
         config_overrides = effective_config_payload(operation)
 

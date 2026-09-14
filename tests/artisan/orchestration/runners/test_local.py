@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import cloudpickle
 import pytest
+from pydantic import BaseModel, Field
 
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -372,7 +373,11 @@ class TestLocalLifecycleRouter:
             name: ClassVar[str] = "notebook_operation"
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {}
-            marker: str
+
+            class Params(BaseModel):
+                marker: str = Field(description="Execution marker.")
+
+            params: Params
 
             def execute_function(self, inputs, output_dir):
                 raise NotImplementedError
@@ -387,14 +392,16 @@ class TestLocalLifecycleRouter:
                     success=True,
                     error=None,
                     item_count=1,
-                    execution_run_ids=[unit.operation.marker],
+                    execution_run_ids=[unit.operation.params.marker],
                 )
                 for unit in batch
             ]
 
         units = [
             ExecutionUnit.model_construct(
-                operation=NotebookOperation(marker=marker),
+                operation=NotebookOperation(
+                    params=NotebookOperation.Params(marker=marker)
+                ),
                 inputs={},
                 execution_spec_id=f"spec-{marker}",
                 step_number=0,

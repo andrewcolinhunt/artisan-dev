@@ -40,12 +40,15 @@ class SimpleOperation(OperationDefinition):
         ),
     }
 
-    count: int = Field(default=1, ge=1)
-    label: str = Field(default="default")
-    verbose: bool = Field(default=False)
+    class Params(BaseModel):
+        count: int = Field(default=1, ge=1, description="Result count.")
+        label: str = Field(default="default", description="Result label.")
+        verbose: bool = Field(default=False, description="Enable verbose output.")
+
+    params: Params = Params()
 
     def execute_function(self, inputs: dict[str, Any], output_dir):
-        return ArtifactResult(success=True, metadata={"count": self.count})
+        return ArtifactResult(success=True, metadata={"count": self.params.count})
 
 
 class PositionalOperation(OperationDefinition):
@@ -64,9 +67,12 @@ class PositionalOperation(OperationDefinition):
         ),
     }
 
-    input_file: str = Field(...)
-    output_file: str = Field(...)
-    verbose: bool = Field(default=False)
+    class Params(BaseModel):
+        input_file: str = Field(description="Input file path.")
+        output_file: str = Field(description="Output file path.")
+        verbose: bool = Field(default=False, description="Enable verbose output.")
+
+    params: Params
 
     def execute_function(self, inputs: dict[str, Any], output_dir):
         return ArtifactResult(success=True)
@@ -89,10 +95,18 @@ class ShellTool(OperationDefinition):
     }
 
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
-    message: str = Field(default="hello")
+
+    class Params(BaseModel):
+        message: str = Field(default="hello", description="Message to write.")
+
+    params: Params = Params()
 
     def execute_command(self, inputs: dict[str, Any]) -> list[str]:
-        return [*self.tool.parts(), "-c", f'echo "{self.message}" > marker.txt']
+        return [
+            *self.tool.parts(),
+            "-c",
+            f'echo "{self.params.message}" > marker.txt',
+        ]
 
 
 class FlagOp(OperationDefinition):
@@ -194,22 +208,24 @@ class TestOperationDefinitionValidation:
         """Should create instance with default values."""
         op = SimpleOperation()
 
-        assert op.count == 1
-        assert op.label == "default"
-        assert op.verbose is False
+        assert op.params.count == 1
+        assert op.params.label == "default"
+        assert op.params.verbose is False
 
     def test_should_accept_overrides(self):
         """Should accept override values."""
-        op = SimpleOperation(count=5, label="custom", verbose=True)
+        op = SimpleOperation(
+            params=SimpleOperation.Params(count=5, label="custom", verbose=True)
+        )
 
-        assert op.count == 5
-        assert op.label == "custom"
-        assert op.verbose is True
+        assert op.params.count == 5
+        assert op.params.label == "custom"
+        assert op.params.verbose is True
 
     def test_should_validate_constraints(self):
         """Should validate Pydantic constraints."""
         with pytest.raises(ValidationError) as exc_info:
-            SimpleOperation(count=0)  # Must be >= 1
+            SimpleOperation(params=SimpleOperation.Params(count=0))
 
         assert "greater than or equal to 1" in str(exc_info.value)
 
@@ -227,10 +243,143 @@ class TestOperationDefinitionValidation:
 
     def test_should_accept_required_params(self):
         """Should accept required parameters."""
-        op = PositionalOperation(input_file="in.txt", output_file="out.txt")
+        op = PositionalOperation(
+            params=PositionalOperation.Params(
+                input_file="in.txt", output_file="out.txt"
+            )
+        )
 
-        assert op.input_file == "in.txt"
-        assert op.output_file == "out.txt"
+        assert op.params.input_file == "in.txt"
+        assert op.params.output_file == "out.txt"
+
+    def test_parameterless_operation_is_valid(self) -> None:
+        class Parameterless(OperationDefinition):
+            name: ClassVar[str] = "parameterless_shape_test"
+            inputs: ClassVar[dict[str, InputSpec]] = {}
+            outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+            def execute_function(self, inputs):
+                return None
+
+        assert "params" not in Parameterless.model_fields
+
+    def test_inherited_params_pair_is_valid(self) -> None:
+        class InheritedParams(SimpleOperation):
+            name: ClassVar[str] = "inherited_params_shape_test"
+
+        op = InheritedParams(params=InheritedParams.Params(count=2, label="inherited"))
+
+        assert op.params.count == 2
+        assert op.params.label == "inherited"
+
+    def test_flat_parameter_field_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="top-level model fields.*rate"):
+
+            class FlatParams(OperationDefinition):
+                name: ClassVar[str] = "flat_params_shape_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+                rate: float = 1.0
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_orphan_params_class_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="declares Params but no `params`"):
+
+            class OrphanParamsModel(OperationDefinition):
+                name: ClassVar[str] = "orphan_params_model_shape_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                class Params(BaseModel):
+                    pass
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_orphan_params_field_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="no nested Params class"):
+
+            class OrphanParamsField(OperationDefinition):
+                name: ClassVar[str] = "orphan_params_field_shape_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+                params: BaseModel
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_mismatched_params_annotation_is_rejected(self) -> None:
+        class OtherParams(BaseModel):
+            pass
+
+        with pytest.raises(TypeError, match="exact nested Params class"):
+
+            class MismatchedAnnotation(OperationDefinition):
+                name: ClassVar[str] = "mismatched_params_annotation_shape_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                class Params(BaseModel):
+                    pass
+
+                params: OtherParams = OtherParams()
+
+                def execute_function(self, inputs):
+                    return None
+
+    @pytest.mark.parametrize("default", [{}, None])
+    def test_invalid_params_default_is_rejected(self, default: object) -> None:
+        with pytest.raises(TypeError, match="default must be an instance"):
+
+            class InvalidDefault(OperationDefinition):
+                name: ClassVar[str] = f"invalid_params_default_{type(default).__name__}"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                class Params(BaseModel):
+                    pass
+
+                params: Params = default  # type: ignore[assignment]
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_mismatched_params_default_is_rejected(self) -> None:
+        class OtherParams(BaseModel):
+            pass
+
+        with pytest.raises(TypeError, match="default must be an instance"):
+
+            class MismatchedDefault(OperationDefinition):
+                name: ClassVar[str] = "mismatched_params_default_shape_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                class Params(BaseModel):
+                    pass
+
+                params: Params = OtherParams()  # type: ignore[assignment]
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_partial_inherited_params_class_redefinition_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="redefines only.*Params class"):
+
+            class RedefinedParamsOnly(SimpleOperation):
+                name: ClassVar[str] = "redefined_params_only_shape_test"
+
+                class Params(BaseModel):
+                    count: int = Field(default=2, description="Result count.")
+
+    def test_partial_inherited_params_field_redefinition_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="redefines only.*params field"):
+
+            class RedefinedFieldOnly(SimpleOperation):
+                name: ClassVar[str] = "redefined_field_only_shape_test"
+                params: SimpleOperation.Params = SimpleOperation.Params(count=2)
 
 
 class TestRegistryMetadataValidation:
@@ -324,7 +473,7 @@ class TestOperationDefinitionExecute:
 
     def test_should_execute_successfully(self, tmp_path):
         """Should execute and return ArtifactResult."""
-        op = SimpleOperation(count=5)
+        op = SimpleOperation(params=SimpleOperation.Params(count=5))
         result = op.execute_function(inputs={}, output_dir=tmp_path)
 
         assert result.success is True
@@ -332,10 +481,10 @@ class TestOperationDefinitionExecute:
 
     def test_should_access_params_via_self(self, tmp_path):
         """Should be able to access params via self in execute."""
-        op = SimpleOperation(count=10, label="test")
+        op = SimpleOperation(params=SimpleOperation.Params(count=10, label="test"))
         result = op.execute_function(inputs={}, output_dir=tmp_path)
 
-        # The implementation accesses self.count
+        # The implementation accesses self.params.count.
         assert result.metadata["count"] == 10
 
 
@@ -344,24 +493,26 @@ class TestOperationDefinitionModelDump:
 
     def test_should_convert_to_dict(self):
         """Should convert to dict via model_dump."""
-        op = SimpleOperation(count=5, verbose=True)
+        op = SimpleOperation(params=SimpleOperation.Params(count=5, verbose=True))
         kwargs = op.model_dump()
 
-        assert kwargs["count"] == 5
-        assert kwargs["label"] == "default"
-        assert kwargs["verbose"] is True
+        assert kwargs["params"] == {
+            "count": 5,
+            "label": "default",
+            "verbose": True,
+        }
         # Base class sub-model fields are also present
         assert "runner_resources" in kwargs
         assert "batch_strategy" in kwargs
 
     def test_should_roundtrip_via_model_dump(self):
         """Should be able to reconstruct operation from model_dump."""
-        op = SimpleOperation(count=3)
+        op = SimpleOperation(params=SimpleOperation.Params(count=3))
         kwargs = op.model_dump()
 
         reconstructed = SimpleOperation(**kwargs)
-        assert reconstructed.count == 3
-        assert reconstructed.label == "default"
+        assert reconstructed.params.count == 3
+        assert reconstructed.params.label == "default"
 
 
 class TestOperationDefinitionMetadata:
@@ -663,7 +814,7 @@ class TestToolOps:
 
     def test_execute_function_stub_raises_for_command_op(self):
         """Slots are empty override points — command ops don't inherit a body."""
-        op = ShellTool(message="hi")
+        op = ShellTool(params=ShellTool.Params(message="hi"))
         with pytest.raises(NotImplementedError, match="execute_function"):
             op.execute_function(ExecuteInput(execute_dir="/tmp"))
 
@@ -836,6 +987,7 @@ class TestIntrospectionPayloads:
             "type": "object",
             "title": "Params",
             "properties": {},
+            "additionalProperties": False,
         }
 
 
@@ -969,7 +1121,15 @@ class TestExecuteAsTool:
         assert json.loads(op.params_json()) == {"suffix": "embedded"}
 
     def test_params_json_without_params_model(self):
-        assert ShellTool().params_json() == "{}"
+        class Parameterless(OperationDefinition):
+            name: ClassVar[str] = "parameterless_params_json_test"
+            inputs: ClassVar[dict[str, InputSpec]] = {}
+            outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+            def execute_function(self, inputs):
+                return None
+
+        assert Parameterless().params_json() == "{}"
 
     def test_shim_argv_carries_target_params_and_inputs(self):
         """The base execute_command returns the generic op-run argv."""
