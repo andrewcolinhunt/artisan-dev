@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, ClassVar
+from collections.abc import Iterator
+from typing import Any, BinaryIO, ClassVar
 
 import polars as pl
 from pydantic import Field
@@ -19,7 +20,11 @@ from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external import open_external, sanitized_uri
 from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
+from artisan.utils.hashing import (
+    STREAM_CHUNK_BYTES,
+    canonical_json_bytes,
+    compute_content_digest,
+)
 
 MAX_APPENDABLE_RECORD_BYTES = 64 * 1024 * 1024
 
@@ -140,15 +145,7 @@ class AppendableArtifact(Artifact):
             raise ValueError(msg)
         matches: list[tuple[bytes, dict[str, Any]]] = []
         with open_external(self.external_path, fs) as source:
-            while line := source.readline(MAX_APPENDABLE_RECORD_BYTES + 2):
-                record_bytes = line[:-1] if line.endswith(b"\n") else line
-                if record_bytes.endswith(b"\r"):
-                    record_bytes = record_bytes[:-1]
-                if len(record_bytes) > MAX_APPENDABLE_RECORD_BYTES:
-                    msg = (
-                        f"Appendable record exceeds {MAX_APPENDABLE_RECORD_BYTES} bytes"
-                    )
-                    raise ArtifactIntegrityError(msg)
+            for record_bytes in _bounded_records(source):
                 try:
                     record = json.loads(record_bytes)
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -225,3 +222,31 @@ class AppendableTypeDef(ArtifactTypeDef):
     key = "appendable"
     table_path = "artifacts/appendables"
     model = AppendableArtifact
+
+
+def _bounded_records(source: BinaryIO) -> Iterator[bytes]:
+    """Yield JSONL records without relying on backend-specific readline APIs."""
+    pending = bytearray()
+    while chunk := source.read(STREAM_CHUNK_BYTES):
+        pending.extend(chunk)
+        while (boundary := pending.find(b"\n")) >= 0:
+            yield _validate_record_bytes(bytes(pending[:boundary]))
+            del pending[: boundary + 1]
+        if len(pending) > MAX_APPENDABLE_RECORD_BYTES + 1:
+            _raise_oversized_record()
+    if pending:
+        yield _validate_record_bytes(bytes(pending))
+
+
+def _validate_record_bytes(record: bytes) -> bytes:
+    """Remove an optional carriage return and enforce the record size limit."""
+    if record.endswith(b"\r"):
+        record = record[:-1]
+    if len(record) > MAX_APPENDABLE_RECORD_BYTES:
+        _raise_oversized_record()
+    return record
+
+
+def _raise_oversized_record() -> None:
+    msg = f"Appendable record exceeds {MAX_APPENDABLE_RECORD_BYTES} bytes"
+    raise ArtifactIntegrityError(msg)

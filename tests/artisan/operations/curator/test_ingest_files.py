@@ -16,6 +16,7 @@ from unittest.mock import Mock
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator.ingest_files import IngestFiles
 from artisan.schemas.artifact.base import Artifact
@@ -64,8 +65,10 @@ class ConcreteIngest(IngestFiles):
         ),
     }
 
-    def convert_file(self, file_ref: FileRefArtifact, step_number: int) -> Artifact:
-        content = file_ref.read_content()
+    def convert_file(
+        self, file_ref: FileRefArtifact, step_number: int, *, fs=None
+    ) -> Artifact:
+        content = file_ref.read_content(fs=fs)
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"
         return DataArtifact.draft(
             content=content,
@@ -78,6 +81,7 @@ class ConcreteIngest(IngestFiles):
 def _mock_store_with_refs(file_refs: list[FileRefArtifact]) -> Mock:
     """Create a mock ArtifactStore that returns file refs from get_artifacts_by_type."""
     store = Mock()
+    store.filesystem = LocalFileSystem()
     store.get_artifacts_by_type.return_value = {fr.artifact_id: fr for fr in file_refs}
     return store
 

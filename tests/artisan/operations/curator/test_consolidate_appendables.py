@@ -82,6 +82,7 @@ def _mock_store_with_appendables(
     store = MagicMock()
     store.files_root = files_root
     store._fs = fs
+    store.filesystem = fs
     store.get_artifacts_by_type.return_value = artifacts
     return store
 
@@ -263,6 +264,7 @@ class TestConsolidateAppendablesBackendParametrized:
         store = MagicMock()
         store.files_root = files_root
         store._fs = fs
+        store.filesystem = fs
         store.get_artifacts_by_type.return_value = artifacts
 
         op = ConsolidateAppendables()
