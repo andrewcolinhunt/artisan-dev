@@ -44,10 +44,6 @@ class PipelineConfig(BaseModel):
             "the corresponding runtime instance when resuming."
         ),
     )
-    default_compute_provider: str = Field(
-        default="local",
-        description="Default compute_provider routing for step execution.",
-    )
     preserve_staging: bool = Field(
         default=False,
         description="Debug flag to preserve staging files after commit.",
