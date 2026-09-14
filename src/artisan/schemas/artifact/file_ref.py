@@ -6,7 +6,6 @@ without embedding the file bytes in Delta Lake storage.
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, ClassVar
 
@@ -14,8 +13,13 @@ import polars as pl
 from pydantic import Field, PrivateAttr
 
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external import (
+    copy_verified_file,
+    read_verified_file,
+    verify_complete_file,
+)
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.execution.fs import resolve_fs
+from artisan.utils.hashing import canonical_json_bytes
 
 
 class FileRefArtifact(Artifact):
@@ -31,13 +35,14 @@ class FileRefArtifact(Artifact):
         "artifact_id": pl.String,
         "origin_step_number": pl.Int32,
         "content_hash": pl.String,
-        "path": pl.String,
         "size_bytes": pl.Int64,
         "original_name": pl.String,
         "extension": pl.String,
         "metadata": pl.String,
-        "external_path": pl.String,
     }
+
+    EXTERNALLY_BACKED: ClassVar[bool] = True
+    LOCATOR_FIELDS: ClassVar[frozenset[str]] = frozenset({"path"})
 
     artifact_type: str = Field(
         default=ArtifactTypes.FILE_REF,
@@ -89,15 +94,32 @@ class FileRefArtifact(Artifact):
         """
         if self._cached_content is None:
             if self.path is None:
-                msg = "Cannot read content: artifact not hydrated"
+                msg = "Cannot read content: artifact has no location"
                 raise ValueError(msg)
-            if fs is None:
-                fs, path = resolve_fs(self.path, storage=None)
-            else:
-                path = self.path
-            with fs.open(path, "rb") as f:
-                self._cached_content = f.read()
+            self._cached_content = read_verified_file(
+                artifact_id=self.artifact_id,
+                artifact_type=self.artifact_type,
+                uri=self.path,
+                expected_digest=self.content_hash,
+                expected_size=self.size_bytes,
+                fs=fs,
+            )
         return self._cached_content
+
+    def verify_external_content(self, *, fs: Any = None) -> None:
+        """Stream the referenced file and verify its digest and size."""
+        self._assert_identity_intact()
+        if self.path is None:
+            msg = "Cannot verify FileRefArtifact without a location"
+            raise ValueError(msg)
+        verify_complete_file(
+            artifact_id=self.artifact_id,
+            artifact_type=self.artifact_type,
+            uri=self.path,
+            expected_digest=self.content_hash,
+            expected_size=self.size_bytes,
+            fs=fs,
+        )
 
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Copy the referenced file into the given directory.
@@ -115,9 +137,17 @@ class FileRefArtifact(Artifact):
         if self.path is None:
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
+        self._assert_identity_intact()
         dest = os.path.join(directory, os.path.basename(self.path))
-        with open(dest, "wb") as f:
-            f.write(self.read_content(fs=fs))
+        copy_verified_file(
+            artifact_id=self.artifact_id,
+            artifact_type=self.artifact_type,
+            uri=self.path,
+            destination=dest,
+            expected_digest=self.content_hash,
+            expected_size=self.size_bytes,
+            fs=fs,
+        )
         self.materialized_path = dest
         return dest
 
@@ -157,19 +187,13 @@ class FileRefArtifact(Artifact):
             extension=extension,
         )
 
-    def _finalize_content(self) -> bytes | None:
-        """Return reference metadata bytes for hashing.
-
-        Hashes ``content_hash``, ``path``, and ``size_bytes`` to
-        produce a deterministic artifact ID.
-        """
-        if self.content_hash is None:
+    def _identity_payload(self) -> bytes | None:
+        """Return the location-independent byte descriptor."""
+        if self.content_hash is None or self.size_bytes is None:
             return None
-        return json.dumps(
+        return canonical_json_bytes(
             {
                 "content_hash": self.content_hash,
-                "path": self.path,
                 "size_bytes": self.size_bytes,
-            },
-            sort_keys=True,
-        ).encode("utf-8")
+            }
+        )

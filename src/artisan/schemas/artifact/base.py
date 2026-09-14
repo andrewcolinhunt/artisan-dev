@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from enum import Enum
+from pathlib import Path
 from typing import Any, ClassVar, Self
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.common import metadata_from_json, metadata_to_json
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import canonical_json_bytes, compute_artifact_id
 
 
 class Artifact(BaseModel):
@@ -35,6 +38,8 @@ class Artifact(BaseModel):
     # Column set for Delta/Parquet storage — the single source of truth that
     # to_row/from_row iterate. Concrete subclasses assign it.
     POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]]
+    EXTERNALLY_BACKED: ClassVar[bool] = False
+    LOCATOR_FIELDS: ClassVar[frozenset[str]] = frozenset()
 
     artifact_id: str | None = Field(
         default=None,
@@ -66,6 +71,23 @@ class Artifact(BaseModel):
         exclude=True,
         description="Temporary path where content was written for execution.",
     )
+
+    _identity_payload_snapshot: bytes | None = PrivateAttr(default=None)
+    _protected_fields_snapshot: bytes | None = PrivateAttr(default=None)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Protect durable model fields after finalization."""
+        artifact_id = getattr(self, "artifact_id", None)
+        mutable_fields = {"external_path", "materialized_path", *self.LOCATOR_FIELDS}
+        if (
+            artifact_id is not None
+            and name in type(self).model_fields
+            and name not in mutable_fields
+            and getattr(self, name, None) != value
+        ):
+            msg = f"Cannot modify finalized artifact field {name!r}"
+            raise TypeError(msg)
+        super().__setattr__(name, value)
 
     @field_validator("artifact_id")
     @classmethod
@@ -127,6 +149,7 @@ class Artifact(BaseModel):
         Raises:
             ValueError: If format conversion is requested.
         """
+        self._assert_identity_intact()
         if format is not None:
             msg = (
                 f"{type(self).__name__} does not support "
@@ -151,30 +174,122 @@ class Artifact(BaseModel):
         raise NotImplementedError(msg)
 
     def finalize(self) -> Artifact:
-        """Compute artifact_id from ``_finalize_content()`` and mark as finalized.
+        """Compute the type-domain ID and protect durable semantics.
 
         Returns:
             Self with artifact_id set. No-op if already finalized.
 
         Raises:
-            ValueError: If ``_finalize_content()`` returns None.
+            ValueError: If the artifact is not hydrated.
         """
         if self.artifact_id is not None:
+            if (
+                self._identity_payload_snapshot is None
+                and self._identity_payload() is not None
+            ):
+                self._validate_stored_identity()
+            else:
+                self._assert_identity_intact()
             return self
-        hashable = self._finalize_content()
-        if hashable is None:
+        self._validate_identity_descriptors()
+        payload = self._identity_payload()
+        if payload is None:
             msg = "Cannot finalize: artifact not hydrated"
             raise ValueError(msg)
-        self.artifact_id = compute_artifact_id(hashable)
+        from artisan.schemas.artifact.registry import ArtifactTypeDef
+
+        type_def = ArtifactTypeDef.get(self.artifact_type)
+        if not isinstance(self, type_def.model):
+            msg = (
+                f"artifact_type {self.artifact_type!r} is registered for "
+                f"{type_def.model.__name__}, not {type(self).__name__}"
+            )
+            raise TypeError(msg)
+        self.artifact_id = compute_artifact_id(
+            self.artifact_type,
+            payload,
+            self._identity_metadata(),
+        )
+        self._establish_identity_snapshot()
         return self
 
-    def _finalize_content(self) -> bytes | None:
+    def _identity_payload(self) -> bytes | None:
         """Return the bytes to hash for ``artifact_id``.
 
         Default: returns ``self.content`` if present. Subclasses without
         a ``content`` field (e.g. FileRefArtifact) should override.
         """
         return getattr(self, "content", None)
+
+    def _identity_metadata(self) -> dict[str, object]:
+        """Return framework-owned semantic identity metadata."""
+        identity: dict[str, object] = {"metadata": self.metadata}
+        for field_name in ("original_name", "extension"):
+            if field_name in type(self).model_fields:
+                identity[field_name] = getattr(self, field_name)
+        return identity
+
+    def _validate_identity_descriptors(self) -> None:
+        """Validate fields derived from canonical content before hashing."""
+
+    def verify_external_content(self, *, fs: Any = None) -> None:
+        """Verify externally stored bytes; embedded artifacts are a no-op."""
+        self._assert_identity_intact()
+
+    def _protected_state(self) -> dict[str, Any]:
+        """Return durable fields whose nested values must not drift."""
+        excluded = {"external_path", "materialized_path", *self.LOCATOR_FIELDS}
+        return {
+            name: getattr(self, name)
+            for name in type(self).model_fields
+            if name not in excluded
+        }
+
+    def _protected_state_bytes(self) -> bytes:
+        """Serialize durable model state deterministically for comparison."""
+        return canonical_json_bytes(_snapshot_json_value(self._protected_state()))
+
+    def _establish_identity_snapshot(self) -> None:
+        """Capture canonical content and durable semantic state."""
+        payload = self._identity_payload()
+        if payload is None:
+            msg = "Cannot snapshot an unhydrated artifact"
+            raise ValueError(msg)
+        self._identity_payload_snapshot = bytes(payload)
+        self._protected_fields_snapshot = self._protected_state_bytes()
+
+    def _assert_identity_intact(self) -> None:
+        """Fail if nested durable state drifted after finalization."""
+        if self.artifact_id is None or self._identity_payload_snapshot is None:
+            return
+        if (
+            self._identity_payload() != self._identity_payload_snapshot
+            or self._protected_state_bytes() != self._protected_fields_snapshot
+        ):
+            msg = (
+                f"Finalized {self.artifact_type} artifact "
+                f"{self.artifact_id} was mutated"
+            )
+            raise ArtifactIntegrityError(msg)
+
+    def _validate_stored_identity(self) -> None:
+        """Recompute a hydrated row's ID and establish its snapshot."""
+        payload = self._identity_payload()
+        if payload is None or self.artifact_id is None:
+            msg = "Cannot validate an unhydrated artifact row"
+            raise ArtifactIntegrityError(msg)
+        expected = compute_artifact_id(
+            self.artifact_type,
+            payload,
+            self._identity_metadata(),
+        )
+        if expected != self.artifact_id:
+            msg = (
+                f"Stored {self.artifact_type} artifact ID {self.artifact_id} "
+                f"does not match payload ({expected})"
+            )
+            raise ArtifactIntegrityError(msg)
+        self._establish_identity_snapshot()
 
     def to_row(self) -> dict[str, Any]:
         """Serialize to a flat dict keyed by ``POLARS_SCHEMA`` columns.
@@ -184,6 +299,13 @@ class Artifact(BaseModel):
         JSON-encoded ``metadata`` and any subclass-specific columns.
         ``POLARS_SCHEMA`` is the single source of truth for the column set.
         """
+        if self._identity_payload() is None:
+            msg = "Cannot serialize an ID-only artifact as a hydrated row"
+            raise ArtifactIntegrityError(msg)
+        if self.artifact_id is not None and self._identity_payload_snapshot is None:
+            self._validate_stored_identity()
+        else:
+            self._assert_identity_intact()
         encoders = self._row_encoders()
         return {
             column: encoders[column]() if column in encoders else getattr(self, column)
@@ -201,7 +323,7 @@ class Artifact(BaseModel):
             row: Dict with keys matching ``POLARS_SCHEMA`` columns.
         """
         decoders = cls._row_decoders()
-        return cls.model_validate(
+        artifact = cls.model_validate(
             {
                 column: decoders[column](row.get(column))
                 if column in decoders
@@ -209,6 +331,8 @@ class Artifact(BaseModel):
                 for column in cls.POLARS_SCHEMA
             }
         )
+        artifact._validate_stored_identity()
+        return artifact
 
     def _row_encoders(self) -> dict[str, Callable[[], Any]]:
         """``to_row`` encoders for columns whose stored form differs from the
@@ -220,3 +344,20 @@ class Artifact(BaseModel):
     def _row_decoders(cls) -> dict[str, Callable[[Any], Any]]:
         """``from_row`` decoders, the inverse of ``_row_encoders``."""
         return {"metadata": metadata_from_json}
+
+
+def _snapshot_json_value(value: Any) -> Any:
+    """Convert model state to a deterministic JSON-safe representation."""
+    if isinstance(value, bytes):
+        return {"$bytes": value.hex()}
+    if isinstance(value, dict):
+        return {str(key): _snapshot_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_snapshot_json_value(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_snapshot_json_value(item) for item in value)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    return value

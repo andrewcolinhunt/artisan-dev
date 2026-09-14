@@ -36,7 +36,6 @@ class MetricArtifact(JsonContentMixin, Artifact):
         "original_name": pl.String,
         "extension": pl.String,
         "metadata": pl.String,
-        "external_path": pl.String,
     }
 
     artifact_type: str = Field(

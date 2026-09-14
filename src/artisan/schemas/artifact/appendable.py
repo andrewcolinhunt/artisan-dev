@@ -15,9 +15,13 @@ from typing import Any, ClassVar
 import polars as pl
 from pydantic import Field
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external import open_external, sanitized_uri
 from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.schemas.execution.fs import resolve_fs
+from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
+
+MAX_APPENDABLE_RECORD_BYTES = 64 * 1024 * 1024
 
 
 class AppendableArtifact(Artifact):
@@ -37,8 +41,10 @@ class AppendableArtifact(Artifact):
         "original_name": pl.String,
         "extension": pl.String,
         "metadata": pl.String,
-        "external_path": pl.String,
     }
+
+    EXTERNALLY_BACKED: ClassVar[bool] = True
+    LOCATOR_FIELDS: ClassVar[frozenset[str]] = frozenset({"external_path"})
 
     artifact_type: str = Field(default="appendable", frozen=True)
     record_id: str | None = Field(
@@ -65,22 +71,26 @@ class AppendableArtifact(Artifact):
 
     _default_hydrate: ClassVar[bool] = False
 
-    def _finalize_content(self) -> bytes | None:
-        """Hash metadata including external_path for content-addressed ID.
-
-        The same record at different paths (per-worker vs consolidated)
-        produces distinct artifact_ids.
-        """
-        if self.content_hash is None:
+    def _identity_payload(self) -> bytes | None:
+        """Return the container-independent record descriptor."""
+        if (
+            self.record_id is None
+            or self.content_hash is None
+            or self.size_bytes is None
+        ):
             return None
-        return json.dumps(
+        return canonical_json_bytes(
             {
                 "content_hash": self.content_hash,
                 "record_id": self.record_id,
-                "external_path": self.external_path,
-            },
-            sort_keys=True,
-        ).encode("utf-8")
+                "size_bytes": self.size_bytes,
+            }
+        )
+
+    def verify_external_content(self, *, fs: Any = None) -> None:
+        """Validate the unique matching JSONL record with bounded reads."""
+        self._assert_identity_intact()
+        self._read_verified_record(fs=fs)
 
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Extract this record from the JSONL file and write as JSON.
@@ -98,7 +108,8 @@ class AppendableArtifact(Artifact):
         if self.external_path is None:
             msg = "Cannot materialize: external_path not set"
             raise ValueError(msg)
-        record = self._read_record(fs=fs)
+        self._assert_identity_intact()
+        record = self._read_verified_record(fs=fs)
         filename = f"{self.artifact_id}.json"
         path = os.path.join(directory, filename)
         with open(path, "w") as f:
@@ -120,20 +131,55 @@ class AppendableArtifact(Artifact):
         Raises:
             ValueError: If external_path is not set or record_id is not found.
         """
+        return self._read_verified_record(fs=fs)
+
+    def _read_verified_record(self, *, fs: Any = None) -> dict[str, Any]:
+        """Scan the container and return one verified matching record."""
         if self.external_path is None:
-            msg = "Cannot read record: external_path not set"
+            msg = "Cannot read AppendableArtifact without a location"
             raise ValueError(msg)
-        if fs is None:
-            fs, source_path = resolve_fs(self.external_path, storage=None)
-        else:
-            source_path = self.external_path
-        with fs.open(source_path, "r") as f:
-            for line in f:
-                record: dict[str, Any] = json.loads(line)
+        matches: list[tuple[bytes, dict[str, Any]]] = []
+        with open_external(self.external_path, fs) as source:
+            while line := source.readline(MAX_APPENDABLE_RECORD_BYTES + 2):
+                record_bytes = line[:-1] if line.endswith(b"\n") else line
+                if record_bytes.endswith(b"\r"):
+                    record_bytes = record_bytes[:-1]
+                if len(record_bytes) > MAX_APPENDABLE_RECORD_BYTES:
+                    msg = (
+                        f"Appendable record exceeds {MAX_APPENDABLE_RECORD_BYTES} bytes"
+                    )
+                    raise ArtifactIntegrityError(msg)
+                try:
+                    record = json.loads(record_bytes)
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    msg = (
+                        f"Malformed appendable JSON at "
+                        f"{sanitized_uri(self.external_path)!r}"
+                    )
+                    raise ArtifactIntegrityError(msg) from exc
+                if not isinstance(record, dict):
+                    msg = "Appendable JSONL records must be objects"
+                    raise ArtifactIntegrityError(msg)
                 if record.get("record_id") == self.record_id:
-                    return record
-        msg = f"Record {self.record_id} not found in {self.external_path}"
-        raise ValueError(msg)
+                    matches.append((record_bytes, record))
+
+        if len(matches) != 1:
+            msg = (
+                f"Appendable record {self.record_id!r} occurs {len(matches)} times "
+                f"in {sanitized_uri(self.external_path)!r}"
+            )
+            raise ArtifactIntegrityError(msg)
+        content, record = matches[0]
+        actual = (compute_content_digest(content), len(content))
+        expected = (self.content_hash, self.size_bytes)
+        if actual != expected:
+            msg = (
+                f"Appendable artifact {self.artifact_id} failed integrity at "
+                f"{sanitized_uri(self.external_path)!r}: expected {expected!r}, "
+                f"got {actual!r}"
+            )
+            raise ArtifactIntegrityError(msg)
+        return record
 
     @classmethod
     def draft(

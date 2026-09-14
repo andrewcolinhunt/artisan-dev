@@ -18,6 +18,7 @@ from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
+from artisan.utils.hashing import compute_content_digest
 
 
 def _csv_bytes(text: str) -> bytes:
@@ -53,14 +54,12 @@ class TestDataArtifactMaterialization:
 
     def test_materialize_default_csv_extension(self, tmp_path: Path):
         """When extension is None, defaults to .csv."""
-        artifact = DataArtifact(
-            artifact_type="data",
+        artifact = DataArtifact.draft(
             content=b"a\n1\n",
             original_name="test",
-            origin_step_number=0,
-            size_bytes=4,
-            extension=None,
+            step_number=0,
         )
+        artifact.extension = None
         artifact.finalize()
 
         path = artifact.materialize_to(str(tmp_path))
@@ -192,7 +191,7 @@ class TestFileRefArtifactExcluded:
 
         artifact = FileRefArtifact.draft(
             path=str(source_file),
-            content_hash="a" * 32,
+            content_hash=compute_content_digest(b"content"),
             size_bytes=7,
             step_number=0,
         )

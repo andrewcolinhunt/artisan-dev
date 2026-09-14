@@ -1,4 +1,4 @@
-"""Tests for external_path field on Artifact base and all concrete types."""
+"""Tests for runtime-only artifact source locations."""
 
 from __future__ import annotations
 
@@ -43,10 +43,10 @@ class TestExternalPathDraft:
         assert artifact.external_path == "/nfs/metrics/accuracy.json"
 
 
-class TestExternalPathRoundtrip:
-    """external_path survives to_row()/from_row() serialization."""
+class TestExternalPathSerialization:
+    """Source locations stay out of format-2 content rows."""
 
-    def test_file_ref_roundtrip(self) -> None:
+    def test_file_ref_locators_are_not_serialized(self) -> None:
         original = FileRefArtifact.draft(
             path="/data/test.dat",
             content_hash="a" * 32,
@@ -57,9 +57,12 @@ class TestExternalPathRoundtrip:
         original.finalize()
         row = original.to_row()
         restored = FileRefArtifact.from_row(row)
-        assert restored.external_path == "/nfs/data/test.dat"
+        assert "path" not in row
+        assert "external_path" not in row
+        assert restored.path is None
+        assert restored.external_path is None
 
-    def test_metric_roundtrip(self) -> None:
+    def test_metric_source_path_is_not_serialized(self) -> None:
         original = MetricArtifact.draft(
             content={"accuracy": 1.5}, original_name="accuracy.json", step_number=0
         )
@@ -67,9 +70,10 @@ class TestExternalPathRoundtrip:
         original.finalize()
         row = original.to_row()
         restored = MetricArtifact.from_row(row)
-        assert restored.external_path == "/nfs/metrics/accuracy.json"
+        assert "external_path" not in row
+        assert restored.external_path is None
 
-    def test_config_roundtrip(self) -> None:
+    def test_config_source_path_is_not_serialized(self) -> None:
         original = ExecutionConfigArtifact.draft(
             content={"key": "val"}, original_name="config.json", step_number=0
         )
@@ -77,7 +81,8 @@ class TestExternalPathRoundtrip:
         original.finalize()
         row = original.to_row()
         restored = ExecutionConfigArtifact.from_row(row)
-        assert restored.external_path == "/nfs/configs/config.json"
+        assert "external_path" not in row
+        assert restored.external_path is None
 
 
 class TestExternalPathDoesNotAffectArtifactId:
@@ -105,28 +110,38 @@ class TestExternalPathDoesNotAffectArtifactId:
 
 
 class TestExternalPathInPolarsSchema:
-    """external_path appears in POLARS_SCHEMA for all artifact types."""
+    """Content schemas exclude runtime source locations."""
 
     def test_file_ref_schema(self) -> None:
-        assert "external_path" in FileRefArtifact.POLARS_SCHEMA
+        assert "path" not in FileRefArtifact.POLARS_SCHEMA
+        assert "external_path" not in FileRefArtifact.POLARS_SCHEMA
 
     def test_metric_schema(self) -> None:
-        assert "external_path" in MetricArtifact.POLARS_SCHEMA
+        assert "external_path" not in MetricArtifact.POLARS_SCHEMA
 
     def test_config_schema(self) -> None:
-        assert "external_path" in ExecutionConfigArtifact.POLARS_SCHEMA
+        assert "external_path" not in ExecutionConfigArtifact.POLARS_SCHEMA
 
     def test_schema_keys_match_row_keys_file_ref(self) -> None:
-        artifact = FileRefArtifact(artifact_id="a" * 32, origin_step_number=0)
+        artifact = FileRefArtifact.draft(
+            path="/data/test.dat",
+            content_hash="a" * 32,
+            size_bytes=100,
+            step_number=0,
+        ).finalize()
         row = artifact.to_row()
         assert set(row.keys()) == set(FileRefArtifact.POLARS_SCHEMA.keys())
 
     def test_schema_keys_match_row_keys_metric(self) -> None:
-        artifact = MetricArtifact(artifact_id="a" * 32, origin_step_number=0)
+        artifact = MetricArtifact.draft(
+            content={"accuracy": 1.5}, original_name="accuracy.json", step_number=0
+        ).finalize()
         row = artifact.to_row()
         assert set(row.keys()) == set(MetricArtifact.POLARS_SCHEMA.keys())
 
     def test_schema_keys_match_row_keys_config(self) -> None:
-        artifact = ExecutionConfigArtifact(artifact_id="a" * 32, origin_step_number=0)
+        artifact = ExecutionConfigArtifact.draft(
+            content={"key": "val"}, original_name="config.json", step_number=0
+        ).finalize()
         row = artifact.to_row()
         assert set(row.keys()) == set(ExecutionConfigArtifact.POLARS_SCHEMA.keys())

@@ -170,6 +170,8 @@ class ErrorCode:
     # config/io — machine-readable store APIs
     DELTA_ROOT_UNSET = "delta_root_unset"
     STORE_NOT_FOUND = "store_not_found"
+    ARTIFACT_INTEGRITY_FAILED = "artifact_integrity_failed"
+    INCOMPATIBLE_STORE = "incompatible_store"
 
     # io — worker-side input resolution / output delivery (tool-endpoint wire)
     INPUT_RESOLUTION_FAILED = "input_resolution_failed"
@@ -203,6 +205,32 @@ class CommitError(Exception):
         """
         self.failed_tables = failed_tables
         super().__init__(f"Failed to commit tables: {', '.join(failed_tables)}")
+
+
+class ArtifactIntegrityError(ArtisanError):
+    """Raised when persisted or externally backed artifact bytes drift."""
+
+    def __init__(self, message: str) -> None:
+        """Create a fail-closed artifact integrity error."""
+        super().__init__(
+            code=ErrorCode.ARTIFACT_INTEGRITY_FAILED,
+            message=message,
+            error_type="io",
+            recovery_hint="CHECK_INPUT",
+        )
+
+
+class IncompatibleStoreError(ArtisanError):
+    """Raised when a Delta root is not the required Artisan store format."""
+
+    def __init__(self, message: str) -> None:
+        """Create a store-format compatibility error."""
+        super().__init__(
+            code=ErrorCode.INCOMPATIBLE_STORE,
+            message=message,
+            error_type="config",
+            recovery_hint="CHECK_INPUT",
+        )
 
 
 def _default_doc_uri(code: str) -> str:

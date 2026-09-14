@@ -8,17 +8,16 @@ embedding matrices, simulation outputs, HDF5 datasets.
 
 from __future__ import annotations
 
-import json
 import os
-import shutil
 from typing import Any, ClassVar
 
 import polars as pl
 from pydantic import Field
 
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external import copy_verified_file, verify_complete_file
 from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.schemas.execution.fs import resolve_fs
+from artisan.utils.hashing import canonical_json_bytes
 
 
 class LargeFileArtifact(Artifact):
@@ -37,8 +36,10 @@ class LargeFileArtifact(Artifact):
         "original_name": pl.String,
         "extension": pl.String,
         "metadata": pl.String,
-        "external_path": pl.String,
     }
+
+    EXTERNALLY_BACKED: ClassVar[bool] = True
+    LOCATOR_FIELDS: ClassVar[frozenset[str]] = frozenset({"external_path"})
 
     artifact_type: str = Field(default="large_file", frozen=True)
     content_hash: str | None = Field(
@@ -61,20 +62,31 @@ class LargeFileArtifact(Artifact):
 
     _default_hydrate: ClassVar[bool] = False
 
-    def _finalize_content(self) -> bytes | None:
-        """Hash metadata including external_path for content-addressed ID.
-
-        The same file at different locations produces distinct artifact IDs.
-        """
-        if self.content_hash is None:
+    def _identity_payload(self) -> bytes | None:
+        """Return the location-independent byte descriptor."""
+        if self.content_hash is None or self.size_bytes is None:
             return None
-        return json.dumps(
+        return canonical_json_bytes(
             {
                 "content_hash": self.content_hash,
-                "external_path": self.external_path,
-            },
-            sort_keys=True,
-        ).encode("utf-8")
+                "size_bytes": self.size_bytes,
+            }
+        )
+
+    def verify_external_content(self, *, fs: Any = None) -> None:
+        """Stream the external file and verify its digest and size."""
+        self._assert_identity_intact()
+        if self.external_path is None:
+            msg = "Cannot verify LargeFileArtifact without a location"
+            raise ValueError(msg)
+        verify_complete_file(
+            artifact_id=self.artifact_id,
+            artifact_type=self.artifact_type,
+            uri=self.external_path,
+            expected_digest=self.content_hash,
+            expected_size=self.size_bytes,
+            fs=fs,
+        )
 
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Copy the file from external_path to the target directory.
@@ -99,19 +111,18 @@ class LargeFileArtifact(Artifact):
         if self.external_path is None:
             msg = "Cannot materialize: external_path not set"
             raise ValueError(msg)
+        self._assert_identity_intact()
         filename = f"{self.artifact_id}{self.extension or ''}"
         dest = os.path.join(directory, filename)
-        if fs is not None:
-            fs.get(self.external_path, dest)
-        else:
-            from fsspec.implementations.local import LocalFileSystem
-
-            resolved_fs, source_path = resolve_fs(self.external_path, storage=None)
-            if isinstance(resolved_fs, LocalFileSystem):
-                # Preserve metadata (mtime, mode) for local-to-local.
-                shutil.copy2(source_path, dest)
-            else:
-                resolved_fs.get(source_path, dest)
+        copy_verified_file(
+            artifact_id=self.artifact_id,
+            artifact_type=self.artifact_type,
+            uri=self.external_path,
+            destination=dest,
+            expected_digest=self.content_hash,
+            expected_size=self.size_bytes,
+            fs=fs,
+        )
         self.materialized_path = dest
         return dest
 
