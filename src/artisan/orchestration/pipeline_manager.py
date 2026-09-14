@@ -1556,6 +1556,7 @@ class PipelineManager:
         #    API-shape validation above is the only phase allowed to precede it.
         step_number = self._current_step
         step_run_id = _generate_step_run_id()
+        attempt_started_at = time.perf_counter()
         self._step_run_ids[step_number] = step_run_id
 
         # 4. Early exit: skip if pipeline is stopped (earlier step had empty
@@ -1624,6 +1625,7 @@ class PipelineManager:
                 step_name=step_name,
                 prepared_operation=prepared_operation,
                 step_run_id=step_run_id,
+                attempt_started_at=attempt_started_at,
             )
             if cached is not None:
                 return cached
@@ -1913,11 +1915,13 @@ class PipelineManager:
         step_name: str,
         prepared_operation: OperationDefinition,
         step_run_id: str,
+        attempt_started_at: float,
     ) -> StepFuture | None:
         """Return a resolved StepFuture if step is cached, None otherwise.
 
-        A hit writes one current-run completed row, then records the result in
-        memory and advances the step counter without executing the operation.
+        A committed hit writes one current-run completed row. Cancellation at
+        the final persistence boundary records the current attempt as cancelled
+        without writing a reuse relation.
         """
         cached = self._step_tracker.check_cache(
             step_spec_id,
@@ -1931,11 +1935,17 @@ class PipelineManager:
             step_number,
             step_name,
         )
+        current_metadata = {
+            key: value
+            for key, value in cached.result.metadata.items()
+            if key != "timings"
+        }
         result = cached.result.model_copy(
             update={
                 "step_name": step_name,
                 "step_number": step_number,
                 "step_run_id": step_run_id,
+                "metadata": current_metadata,
             }
         )
         resolved_runner = self._resolve_step_runner(prepared_operation, ov)
@@ -1951,13 +1961,31 @@ class PipelineManager:
         )
         self._step_start_records[step_number] = start_record
         self._step_tracker.record_step_start(start_record)
-        self._commit_whole_step_reuse(
+        reuse_committed = self._commit_whole_step_reuse(
             step_run_id,
             cached.execution_run_ids,
             step_number=step_number,
             operation_name=prepared_operation.name,
         )
-        self._step_tracker.record_step_completed(start_record, result)
+        duration_seconds = time.perf_counter() - attempt_started_at
+        if reuse_committed:
+            result = result.model_copy(update={"duration_seconds": duration_seconds})
+            self._step_tracker.record_step_completed(start_record, result)
+        else:
+            result = StepResult(
+                step_name=step_name,
+                step_number=step_number,
+                success=True,
+                total_count=0,
+                succeeded_count=0,
+                failed_count=0,
+                duration_seconds=duration_seconds,
+                output_roles=frozenset(operation.outputs),
+                output_types=self._build_output_types(operation.outputs),
+                metadata={"cancelled": True},
+                step_run_id=step_run_id,
+            )
+            self._step_tracker.record_step_cancelled(start_record)
 
         self._step_spec_ids[step_number] = step_spec_id
         self._step_run_ids[step_number] = step_run_id
@@ -1983,8 +2011,12 @@ class PipelineManager:
         *,
         step_number: int,
         operation_name: str,
-    ) -> None:
-        """Validate, stage, and commit a whole-step cache relation."""
+    ) -> bool:
+        """Validate, stage, and commit a whole-step cache relation.
+
+        Returns:
+            True after commit, or False if cancellation wins before staging.
+        """
         from artisan.storage.core.run_scope import validate_cached_executions
         from artisan.storage.io.commit import DeltaCommitter
         from artisan.storage.io.staging import StagingManager
@@ -1999,6 +2031,8 @@ class PipelineManager:
             storage_options=options,
             files_root=self._config.files_root,
         )
+        if self._cancel_event.is_set():
+            return False
         staging = StagingManager(self._config.staging_root, fs)
         staging.stage_cache_reuse(
             current_step_run_id,
@@ -2016,6 +2050,7 @@ class PipelineManager:
             step_number=step_number,
             operation_name=operation_name,
         )
+        return True
 
     def _handle_file_path_inputs(
         self,

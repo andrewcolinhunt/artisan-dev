@@ -2058,15 +2058,25 @@ class TestWholeStepCacheReuse:
                 step_name="source",
                 step_number=8,
                 success=True,
+                duration_seconds=99.0,
                 output_roles=frozenset({"output"}),
                 output_types={"output": ArtifactTypes.DATA},
+                metadata={"timings": {"total": 99.0}, "diagnostic": "kept"},
                 step_run_id=source,
             ),
             source_step_run_id=source,
             execution_run_ids=(cached_execution,),
         )
 
-        with patch.object(pipeline, "_commit_whole_step_reuse") as commit_reuse:
+        with (
+            patch.object(
+                pipeline, "_commit_whole_step_reuse", return_value=True
+            ) as commit_reuse,
+            patch(
+                "artisan.orchestration.pipeline_manager.time.perf_counter",
+                return_value=14.0,
+            ),
+        ):
             future = pipeline._try_cached_step(
                 _MockOp,
                 {"data": [_INPUT_ID]},
@@ -2076,12 +2086,15 @@ class TestWholeStepCacheReuse:
                 step_name="current",
                 prepared_operation=_MockOp(),
                 step_run_id=current,
+                attempt_started_at=10.0,
             )
 
         assert future is not None
         result = future.result()
         assert result.step_run_id == current
         assert result.step_run_id != source
+        assert result.duration_seconds == 4.0
+        assert result.metadata == {"diagnostic": "kept"}
         assert pipeline._step_run_ids[0] == current
         commit_reuse.assert_called_once_with(
             current,
@@ -2127,11 +2140,75 @@ class TestWholeStepCacheReuse:
                 step_name="current",
                 prepared_operation=_MockOp(),
                 step_run_id="b" * 32,
+                attempt_started_at=0.0,
             )
 
         tracker.record_step_start.assert_called_once()
         tracker.record_step_completed.assert_not_called()
         assert pipeline._step_results == []
+
+    def test_final_cancellation_prevents_relation_staging(self, tmp_path):
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._cancel_event.set()
+
+        with (
+            patch(
+                "artisan.storage.core.run_scope.validate_cached_executions",
+                return_value=["c" * 32],
+            ) as validate,
+            patch("artisan.storage.io.staging.StagingManager") as staging,
+            patch("artisan.storage.io.commit.DeltaCommitter") as committer,
+        ):
+            committed = pipeline._commit_whole_step_reuse(
+                "b" * 32,
+                ("c" * 32,),
+                step_number=0,
+                operation_name="mock_op",
+            )
+
+        assert committed is False
+        validate.assert_called_once()
+        staging.assert_not_called()
+        committer.assert_not_called()
+
+    def test_final_cancellation_records_current_attempt_as_cancelled(self, tmp_path):
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
+        pipeline = _make_pipeline(tmp_path)
+        tracker = MagicMock()
+        pipeline._step_tracker = tracker
+        tracker.check_cache.return_value = _WholeStepCacheHit(
+            result=StepResult(
+                step_name="source",
+                step_number=8,
+                success=True,
+                output_roles=frozenset({"output"}),
+                output_types={"output": ArtifactTypes.DATA},
+                step_run_id="a" * 32,
+            ),
+            source_step_run_id="a" * 32,
+            execution_run_ids=("c" * 32,),
+        )
+
+        with patch.object(pipeline, "_commit_whole_step_reuse", return_value=False):
+            future = pipeline._try_cached_step(
+                _MockOp,
+                {"data": [_INPUT_ID]},
+                StepOverrides.from_user(),
+                step_spec_id="spec",
+                step_number=0,
+                step_name="current",
+                prepared_operation=_MockOp(),
+                step_run_id="b" * 32,
+                attempt_started_at=0.0,
+            )
+
+        assert future is not None
+        result = future.result()
+        assert result.step_run_id == "b" * 32
+        assert result.metadata == {"cancelled": True}
+        tracker.record_step_cancelled.assert_called_once()
+        tracker.record_step_completed.assert_not_called()
 
 
 # =============================================================================

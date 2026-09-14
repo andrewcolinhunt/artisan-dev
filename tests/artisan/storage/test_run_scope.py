@@ -8,9 +8,12 @@ import polars as pl
 import pytest
 from fsspec.implementations.local import LocalFileSystem
 
-from artisan.errors import PersistenceIntegrityError
+from artisan.errors import IncompatibleStoreError, PersistenceIntegrityError
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.run_scope import load_execution_membership
+from artisan.storage.core.run_scope import (
+    load_execution_membership,
+    validate_cached_executions,
+)
 from artisan.storage.core.table_schemas import (
     CACHE_REUSE_SCHEMA,
     EXECUTIONS_SCHEMA,
@@ -253,3 +256,33 @@ def test_membership_collapses_duplicate_pairs(store) -> None:
     result = load_execution_membership(root, fs=fs, pipeline_run_id="run-a")
 
     assert result.height == 1
+
+
+def test_membership_enforces_store_gate_at_entry(tmp_path) -> None:
+    fs = LocalFileSystem()
+
+    with pytest.raises(IncompatibleStoreError, match="missing manifest"):
+        load_execution_membership(str(tmp_path / "not-a-store"), fs=fs)
+
+
+def test_cache_validation_enforces_store_gate_for_empty_input(tmp_path) -> None:
+    fs = LocalFileSystem()
+
+    with pytest.raises(IncompatibleStoreError, match="missing manifest"):
+        validate_cached_executions(
+            str(tmp_path / "not-a-store"),
+            "a" * 32,
+            set(),
+            fs=fs,
+        )
+
+
+def test_membership_rejects_conflicting_step_name(store) -> None:
+    root, fs = store
+    step_id = "a" * 32
+    first = _step(step_id, "run-a", 0)
+    second = {**first, "step_name": "different-name"}
+    _append(root, TablePath.STEPS, [first, second], STEPS_SCHEMA)
+
+    with pytest.raises(PersistenceIntegrityError, match="conflicting owners"):
+        load_execution_membership(root, fs=fs, pipeline_run_id="run-a")
