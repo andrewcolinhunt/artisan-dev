@@ -1091,3 +1091,103 @@ def test_run_scoped_inspection_projects_cached_outputs_without_cross_run_leaks(
     assert cached_step["name"].to_list() == ["source_metric"]
     assert metrics.select("step", "score").row(0) == (5, 0.9)
     assert data["value"].to_list() == [1]
+
+
+def test_inspect_pipeline_defaults_to_latest_run_by_lifecycle_time(
+    tmp_path: Path,
+) -> None:
+    store = build_cache_isolation_store(tmp_path)
+
+    pipeline = inspect_pipeline(store.root)
+
+    assert pipeline["operation"].to_list() == ["other_data", "other_metric"]
+
+
+def test_inspect_pipeline_counts_distinct_artifacts_across_roles(
+    tmp_path: Path,
+) -> None:
+    store = build_cache_isolation_store(tmp_path)
+    pl.DataFrame(
+        [
+            {
+                "execution_run_id": store.current_data_execution,
+                "direction": "output",
+                "role": "alternate",
+                "artifact_id": store.data_id,
+            }
+        ],
+        schema=EXECUTION_EDGES_SCHEMA,
+    ).write_delta(str(store.root / TablePath.EXECUTION_EDGES), mode="append")
+
+    pipeline = inspect_pipeline(store.root, pipeline_run_id=store.current_run)
+
+    assert pipeline.filter(pl.col("step") == 0)["produced"].item() == "1 data"
+
+
+def test_inspect_metrics_preserves_reuse_at_multiple_current_steps(
+    tmp_path: Path,
+) -> None:
+    store = build_cache_isolation_store(tmp_path)
+    steps_path = store.root / TablePath.STEPS
+    steps = pl.read_delta(str(steps_path))
+    repeated = steps.filter(
+        pl.col("step_run_id") == store.current_cache_step_id
+    ).to_dicts()[0]
+    repeated_step_id = "e" * 32
+    repeated.update(
+        step_run_id=repeated_step_id,
+        step_number=6,
+        step_name="current_metric_cached_again",
+    )
+    pl.DataFrame([repeated], schema=steps.schema).write_delta(
+        str(steps_path), mode="append"
+    )
+    pl.DataFrame(
+        [
+            {
+                "current_step_run_id": repeated_step_id,
+                "cached_execution_run_id": store.source_metric_execution,
+            }
+        ],
+        schema=CACHE_REUSE_SCHEMA,
+    ).write_delta(str(store.root / TablePath.CACHE_REUSE), mode="append")
+
+    metrics = inspect_metrics(store.root, pipeline_run_id=store.current_run)
+
+    assert metrics.select("step", "score").rows() == [(5, 0.9), (6, 0.9)]
+
+
+def test_inspect_failures_uses_current_step_and_source_log_path(tmp_path: Path) -> None:
+    store = build_cache_isolation_store(tmp_path)
+    executions_path = store.root / TablePath.EXECUTIONS
+    executions = pl.read_delta(str(executions_path))
+    failure = executions.filter(
+        pl.col("execution_run_id") == store.source_metric_execution
+    ).to_dicts()[0]
+    failure_id = "f" * 32
+    failure.update(
+        execution_run_id=failure_id,
+        operation_name="source_failure",
+        success=False,
+        error="boom",
+    )
+    pl.DataFrame([failure], schema=executions.schema).write_delta(
+        str(executions_path), mode="append"
+    )
+    pl.DataFrame(
+        [
+            {
+                "current_step_run_id": store.current_cache_step_id,
+                "cached_execution_run_id": failure_id,
+            }
+        ],
+        schema=CACHE_REUSE_SCHEMA,
+    ).write_delta(str(store.root / TablePath.CACHE_REUSE), mode="append")
+
+    failures = inspect_failures(store.root, pipeline_run_id=store.current_run)
+
+    assert failures.select("step", "operation", "log").row(0) == (
+        5,
+        "source_failure",
+        f"step_1_source_failure/{failure_id}.log",
+    )

@@ -10,6 +10,7 @@ from fsspec import AbstractFileSystem
 
 from artisan.errors import ArtifactIntegrityError, PersistenceIntegrityError
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 
 _HEX_ID = re.compile(r"[0-9a-f]{32}")
@@ -24,6 +25,7 @@ _MEMBERSHIP_SCHEMA: dict[str, Any] = {
     "cache_hit": pl.Boolean,
     "success": pl.Boolean,
     "operation_name": pl.String,
+    "execution_step_number": pl.Int32,
     "error": pl.String,
     "error_envelope": pl.String,
     "metadata": pl.String,
@@ -64,6 +66,7 @@ def load_execution_membership(
             malformed, dangling, duplicated, or contradictory.
     """
     options = storage_options or {}
+    assert_store_format(delta_root, fs, options)
     _require_tables(
         delta_root,
         fs,
@@ -87,6 +90,7 @@ def load_execution_membership(
         "step_run_id",
         "success",
         "operation_name",
+        "execution_step_number",
         "error",
         "error_envelope",
         "metadata",
@@ -196,6 +200,8 @@ def validate_cached_executions(
 
     Returns the sorted, deduplicated execution IDs ready for staging.
     """
+    options = storage_options or {}
+    assert_store_format(delta_root, fs, options)
     _require_hex(current_step_run_id, "current_step_run_id")
     execution_ids = sorted(set(cached_execution_run_ids))
     for execution_id in execution_ids:
@@ -203,7 +209,6 @@ def validate_cached_executions(
     if not execution_ids:
         return []
 
-    options = storage_options or {}
     _require_tables(
         delta_root,
         fs,
@@ -265,6 +270,7 @@ def _read_steps(delta_root: str, options: dict[str, str]) -> pl.DataFrame:
             "step_run_id",
             "pipeline_run_id",
             "step_number",
+            "step_name",
             "status",
             "timestamp",
         )
@@ -283,6 +289,7 @@ def _read_executions(delta_root: str, options: dict[str, str]) -> pl.DataFrame:
             "step_run_id",
             "success",
             "operation_name",
+            pl.col("origin_step_number").alias("execution_step_number"),
             "error",
             "error_envelope",
             "metadata",
@@ -338,8 +345,13 @@ def _validate_relations(
             .agg(
                 pl.col("pipeline_run_id").n_unique().alias("runs"),
                 pl.col("step_number").n_unique().alias("steps"),
+                pl.col("step_name").n_unique().alias("step_names"),
             )
-            .filter((pl.col("runs") != 1) | (pl.col("steps") != 1))
+            .filter(
+                (pl.col("runs") != 1)
+                | (pl.col("steps") != 1)
+                | (pl.col("step_names") != 1)
+            )
         )
         if not conflicting.is_empty():
             ids = conflicting["step_run_id"].to_list()

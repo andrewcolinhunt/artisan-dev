@@ -118,20 +118,17 @@ def inspect_pipeline(
     if pipeline_run_id is not None:
         scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
 
-    steps_df = (
-        scanner.select(
-            "pipeline_run_id",
-            "step_number",
-            "step_name",
-            "operation_class",
-            "status",
-            "succeeded_count",
-            "failed_count",
-            "duration_seconds",
-        )
-        .sort("step_number")
-        .collect()
-    )
+    steps_df = scanner.select(
+        "pipeline_run_id",
+        "step_number",
+        "step_name",
+        "operation_class",
+        "status",
+        "succeeded_count",
+        "failed_count",
+        "duration_seconds",
+        "timestamp",
+    ).collect()
 
     if steps_df.is_empty():
         return pl.DataFrame(
@@ -144,13 +141,19 @@ def inspect_pipeline(
             }
         )
 
-    # Resolve pipeline_run_id from first row if not provided
-    run_id = pipeline_run_id or steps_df["pipeline_run_id"][0]
-    if pipeline_run_id is None:
-        steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
+    # Resolve the latest terminal run from lifecycle time, never from a
+    # step-number ordering that repeats independently in every run.
+    run_id = pipeline_run_id or steps_df.sort("timestamp", descending=True).item(
+        0, "pipeline_run_id"
+    )
+    steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
 
-    # Deduplicate by step_number (keep last)
-    steps_df = steps_df.unique(subset=["step_number"], keep="last").sort("step_number")
+    # Keep the newest terminal attempt at each logical step number.
+    steps_df = (
+        steps_df.sort("timestamp", descending=True)
+        .unique(subset=["step_number"], keep="first")
+        .sort("step_number")
+    )
 
     index_counts: dict[int, dict[str, int]] = {}
     from artisan.storage.core.run_scope import load_accepted_outputs
@@ -161,7 +164,10 @@ def inspect_pipeline(
         storage_options=storage_options,
         pipeline_run_id=run_id,
     )
-    for output in outputs.iter_rows(named=True):
+    distinct_outputs = outputs.select(
+        "current_step_number", "artifact_id", "artifact_type"
+    ).unique()
+    for output in distinct_outputs.iter_rows(named=True):
         counts = index_counts.setdefault(output["current_step_number"], {})
         artifact_type = output["artifact_type"]
         counts[artifact_type] = counts.get(artifact_type, 0) + 1
@@ -325,6 +331,7 @@ def inspect_failures(
         failures = failures.select(
             "execution_run_id",
             pl.col("current_step_number").alias("origin_step_number"),
+            "execution_step_number",
             "operation_name",
             "error",
             "error_envelope",
@@ -336,6 +343,7 @@ def inspect_failures(
             .select(
                 "execution_run_id",
                 "origin_step_number",
+                pl.col("origin_step_number").alias("execution_step_number"),
                 "operation_name",
                 "error",
                 "error_envelope",
@@ -355,6 +363,7 @@ def inspect_failures(
             field = env.get("field")
             suggestions = env.get("suggestions")
         step = row["origin_step_number"]
+        execution_step = row["execution_step_number"]
         operation = row["operation_name"]
         rows.append(
             {
@@ -366,7 +375,9 @@ def inspect_failures(
                 "field": field,
                 "suggestions": suggestions,
                 "error": row["error"],
-                "log": f"step_{step}_{operation}/{row['execution_run_id']}.log",
+                "log": (
+                    f"step_{execution_step}_{operation}/{row['execution_run_id']}.log"
+                ),
             }
         )
 
@@ -668,7 +679,7 @@ def inspect_metrics(
         raise FileNotFoundError(msg)
 
     scanner = pl.scan_delta(table_path, storage_options=storage_options)
-    current_steps: dict[str, int] = {}
+    current_steps: pl.DataFrame | None = None
     if pipeline_run_id is not None:
         from artisan.storage.core.run_scope import load_accepted_outputs
 
@@ -678,18 +689,23 @@ def inspect_metrics(
             storage_options=storage_options,
             pipeline_run_id=pipeline_run_id,
         )
-        current_steps = {
-            row["artifact_id"]: row["current_step_number"]
-            for row in outputs.filter(pl.col("artifact_type") == "metric").iter_rows(
-                named=True
+        current_steps = outputs.filter(pl.col("artifact_type") == "metric").select(
+            "artifact_id", "current_step_number"
+        )
+        if step_number is not None:
+            current_steps = current_steps.filter(
+                pl.col("current_step_number") == step_number
             )
-            if step_number is None or row["current_step_number"] == step_number
-        }
-        scanner = scanner.filter(pl.col("artifact_id").is_in(list(current_steps)))
+        current_steps = current_steps.unique()
+        scanner = scanner.filter(
+            pl.col("artifact_id").is_in(current_steps["artifact_id"].to_list())
+        )
     elif step_number is not None:
         scanner = scanner.filter(pl.col("origin_step_number") == step_number)
 
     df = scanner.collect()
+    if current_steps is not None:
+        df = current_steps.join(df, on="artifact_id", how="inner")
 
     if df.is_empty():
         return pl.DataFrame(schema={"name": pl.String, "step": pl.Int32})
@@ -700,13 +716,17 @@ def inspect_metrics(
 
     for row in df.iter_rows(named=True):
         name = row.get("original_name") or row["artifact_id"][:16]
+        current_step = row.get("current_step_number")
+        display_step = (
+            current_step if current_step is not None else row["origin_step_number"]
+        )
         # Strip _metrics suffix for readability
         if name.endswith("_metrics"):
             name = name[: -len("_metrics")]
 
         content = row.get("content")
         if content is None:
-            parsed_rows.append({"name": name, "step": row["origin_step_number"]})
+            parsed_rows.append({"name": name, "step": display_step})
             continue
 
         values = json.loads(
@@ -714,7 +734,6 @@ def inspect_metrics(
         )
         flat = flatten_dict(values)
 
-        display_step = current_steps.get(row["artifact_id"], row["origin_step_number"])
         entry: dict[str, Any] = {"name": name, "step": display_step}
         for k, v in flat.items():
             all_keys[k] = None

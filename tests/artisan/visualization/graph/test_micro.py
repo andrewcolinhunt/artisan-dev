@@ -18,6 +18,7 @@ from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
+    CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
 )
 from artisan.visualization.graph import (
@@ -432,6 +433,36 @@ class TestMaxStepFiltering:
         # Step 1+ executions should not be included
         assert "data_parser" not in source
         assert "metric_calc" not in source
+
+    def test_run_scoped_max_step_uses_current_cached_participation(
+        self, tmp_path: Path
+    ) -> None:
+        store = build_cache_isolation_store(tmp_path)
+        steps = pl.read_delta(str(store.root / "orchestration/steps"))
+        current_step_id = steps.filter(
+            (pl.col("pipeline_run_id") == store.current_run)
+            & (pl.col("step_number") == 0)
+        )["step_run_id"].item()
+        pl.DataFrame(
+            [
+                {
+                    "current_step_run_id": current_step_id,
+                    "cached_execution_run_id": store.source_metric_execution,
+                }
+            ],
+            schema=CACHE_REUSE_SCHEMA,
+        ).write_delta(str(store.root / "orchestration/cache_reuse"), mode="append")
+
+        source = build_micro_graph(
+            store.root,
+            max_step=0,
+            pipeline_run_id=store.current_run,
+        ).source
+
+        participation = f"exec_{current_step_id}_{store.source_metric_execution}"
+        assert "(0) source_metric" in source
+        assert participation in source
+        assert f"art_{store.metric_id}" in source
 
 
 class TestGetMaxStepNumber:

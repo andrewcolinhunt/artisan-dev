@@ -106,6 +106,7 @@ class PipelineTimings:
                 "step_name",
                 "duration_seconds",
                 "metadata",
+                "timestamp",
             )
             .collect()
         )
@@ -114,12 +115,17 @@ class PipelineTimings:
             msg = "No completed steps found"
             raise ValueError(msg)
 
-        # Resolve pipeline_run_id from first row if not provided
-        run_id = pipeline_run_id or steps_df["pipeline_run_id"][0]
-
-        # Filter to only this pipeline run
-        if pipeline_run_id is None:
-            steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
+        # Step numbers restart in every run, so lifecycle time selects the
+        # latest completed run and the latest accepted attempt within it.
+        run_id = pipeline_run_id or steps_df.sort("timestamp", descending=True).item(
+            0, "pipeline_run_id"
+        )
+        steps_df = (
+            steps_df.filter(pl.col("pipeline_run_id") == run_id)
+            .sort("timestamp", descending=True)
+            .unique(subset=["step_number"], keep="first")
+            .sort("step_number")
+        )
 
         from artisan.storage.core.run_scope import load_execution_membership
 

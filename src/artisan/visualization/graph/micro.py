@@ -309,17 +309,25 @@ def build_micro_graph(
         # Filter executions to steps <= max_step
         executions = executions.filter(pl.col("origin_step_number") <= max_step)
 
-        # Filter artifacts to steps <= max_step
-        artifact_index = artifact_index.filter(pl.col("origin_step_number") <= max_step)
-
-        # Get the set of included execution and artifact IDs for edge filtering
+        # A run-scoped graph uses current participation for the step boundary;
+        # cached artifacts retain their global origin, which may be any number.
         included_exec_ids = set(executions["execution_run_id"].to_list())
+        exec_edges = exec_edges.filter(
+            pl.col("execution_run_id").is_in(included_exec_ids)
+        )
+        if pipeline_run_id is None:
+            artifact_index = artifact_index.filter(
+                pl.col("origin_step_number") <= max_step
+            )
+        else:
+            artifact_index = artifact_index.filter(
+                pl.col("artifact_id").is_in(exec_edges["artifact_id"].to_list())
+            )
         included_artifact_ids = set(artifact_index["artifact_id"].to_list())
 
         # Filter execution provenance to only edges where both endpoints are included
         exec_edges = exec_edges.filter(
-            pl.col("execution_run_id").is_in(included_exec_ids)
-            & pl.col("artifact_id").is_in(included_artifact_ids)
+            pl.col("artifact_id").is_in(included_artifact_ids)
         )
 
         # Filter artifact provenance to only edges where both endpoints are included

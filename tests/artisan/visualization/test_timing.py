@@ -327,3 +327,10 @@ class TestPipelineTimingsFromDelta:
         }
         assert store.source_metric_execution not in all_execution_ids
         assert store.other_data_execution not in all_execution_ids
+
+    def test_latest_run_uses_lifecycle_time_not_step_number(self, tmp_path):
+        store = build_cache_isolation_store(tmp_path)
+
+        timings = PipelineTimings.from_delta(store.root)
+
+        assert timings.data["pipeline_run_id"] == store.other_run
