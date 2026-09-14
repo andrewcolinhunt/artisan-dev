@@ -11,10 +11,13 @@ Tests cover:
 
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
 
 import polars as pl
 import pytest
+from fixtures.store_format import commit_test_tables, publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
 from artisan.schemas.artifact.data import DataArtifact
@@ -35,23 +38,72 @@ def setup_source_store(
     index_entries: list[dict] | None = None,
 ):
     """Helper to create a Delta Lake store with test data."""
+    tables: dict[str, pl.DataFrame] = {}
+    artifact_ids: dict[str, str] = {}
     if data_rows:
-        path = base_path / "artifacts/data"
-        pl.DataFrame(data_rows, schema=DataArtifact.POLARS_SCHEMA).write_delta(
-            str(path)
+        normalized_data = []
+        for row in data_rows:
+            artifact = DataArtifact.draft(
+                content=row["content"],
+                original_name=f"{row['original_name']}{row['extension'] or ''}",
+                step_number=row["origin_step_number"],
+                metadata=json.loads(row["metadata"]),
+            ).finalize()
+            artifact_ids[row["artifact_id"]] = artifact.artifact_id
+            normalized_data.append(artifact.to_row())
+        tables["artifacts/data"] = pl.DataFrame(
+            normalized_data, schema=DataArtifact.POLARS_SCHEMA
         )
 
     if metrics:
-        path = base_path / "artifacts/metrics"
-        pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA).write_delta(
-            str(path)
+        normalized_metrics = []
+        for row in metrics:
+            artifact = MetricArtifact.draft(
+                content=json.loads(row["content"]),
+                original_name=f"{row['original_name']}.json",
+                step_number=row["origin_step_number"],
+                metadata=json.loads(row["metadata"]),
+            ).finalize()
+            artifact_ids[row["artifact_id"]] = artifact.artifact_id
+            normalized_metrics.append(artifact.to_row())
+        tables["artifacts/metrics"] = pl.DataFrame(
+            normalized_metrics, schema=MetricArtifact.POLARS_SCHEMA
         )
 
     if index_entries:
-        path = base_path / "artifacts/index"
-        pl.DataFrame(
-            index_entries, schema=get_schema(TablePath.ARTIFACT_INDEX)
-        ).write_delta(str(path))
+        normalized_index = [
+            {**entry, "artifact_id": artifact_ids[entry["artifact_id"]]}
+            for entry in index_entries
+        ]
+        tables[TablePath.ARTIFACT_INDEX.value] = pl.DataFrame(
+            normalized_index, schema=get_schema(TablePath.ARTIFACT_INDEX)
+        )
+
+    fs = LocalFileSystem()
+    if not tables:
+        publish_test_store(str(base_path), fs)
+        return
+    step_numbers = sorted(
+        {
+            int(step_number)
+            for frame in tables.values()
+            for step_number in frame["origin_step_number"].unique().to_list()
+        }
+    )
+    for step_number in step_numbers:
+        step_tables = {
+            table_path: frame.filter(pl.col("origin_step_number") == step_number)
+            for table_path, frame in tables.items()
+        }
+        commit_test_tables(
+            str(base_path),
+            str(base_path.parent / f"{base_path.name}-staging"),
+            fs,
+            step_tables,
+            step_run_id=f"{step_number:032x}",
+            step_number=step_number,
+            operation_name="seed_source_store",
+        )
 
 
 def make_data_row(artifact_id: str, step_number: int, content: bytes = b"test") -> dict:
@@ -72,8 +124,6 @@ def make_data_row(artifact_id: str, step_number: int, content: bytes = b"test") 
 
 def make_metric_data(artifact_id: str, step_number: int, value: float = 1.0) -> dict:
     """Create a metric artifact data dict."""
-    import json
-
     content = json.dumps({"test_metric": value}, sort_keys=True).encode("utf-8")
     return {
         "artifact_id": artifact_id,
@@ -154,8 +204,8 @@ class TestIngestPipelineStepBasic:
         assert result.success
         assert len(result.artifacts["data"]) == 2
 
-    def test_should_preserve_content_and_compute_same_artifact_id(self, tmp_path):
-        """Importing same content produces same artifact_id (content-addressed)."""
+    def test_should_preserve_content_and_create_import_identity(self, tmp_path):
+        """Import metadata gives copied content a distinct semantic identity."""
         source_root = tmp_path / "source_delta"
         content = b"deterministic content"
 
@@ -182,8 +232,8 @@ class TestIngestPipelineStepBasic:
         )
 
         imported = result.artifacts["data"][0]
-        # Same content → same artifact_id
-        assert imported.artifact_id == original.artifact_id
+        assert imported.content == original.content
+        assert imported.artifact_id != original.artifact_id
         assert imported.origin_step_number == 10
 
 
