@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
-from fixtures.store_format import publish_test_store
+from fixtures.store_format import commit_test_tables
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.compute.local import LocalExecuteRouter
@@ -43,9 +43,6 @@ from artisan.schemas.specs.input_models import (
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
-from artisan.storage.io.commit import DeltaCommitter
-from artisan.storage.io.commit_plan import build_commit_plan
-from artisan.storage.io.staging import StagingManager
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,32 +51,19 @@ from artisan.storage.io.staging import StagingManager
 
 def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> None:
     fs = LocalFileSystem()
-    publish_test_store(str(base_path), fs)
     staging_root = base_path.parent / "seed-staging"
-    staging = StagingManager(str(staging_root), fs)
-    commit = {
-        "commit_kind": "input_registration",
-        "step_run_id": "0" * 32,
-        "step_number": 0,
-        "operation_name": "seed",
-    }
-    staging.stage_orchestrator_dataframe(
-        pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA),
-        "artifacts/metrics",
-        **commit,
-    )
-    staging.stage_orchestrator_dataframe(
-        pl.DataFrame(index, schema=ARTIFACT_INDEX_SCHEMA),
-        "artifacts/index",
-        **commit,
-    )
-    plan = build_commit_plan(
+    commit_test_tables(
         delta_root=str(base_path),
         staging_root=str(staging_root),
         fs=fs,
-        **commit,
+        tables={
+            "artifacts/metrics": pl.DataFrame(
+                metrics, schema=MetricArtifact.POLARS_SCHEMA
+            ),
+            "artifacts/index": pl.DataFrame(index, schema=ARTIFACT_INDEX_SCHEMA),
+        },
+        step_run_id="0" * 32,
     )
-    DeltaCommitter(str(base_path), staging, fs=fs).commit_logical(plan)
 
 
 class _SimpleOp(OperationDefinition):
