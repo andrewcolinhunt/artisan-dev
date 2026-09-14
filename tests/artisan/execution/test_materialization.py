@@ -8,8 +8,10 @@ from unittest.mock import ANY, MagicMock, patch
 import pytest
 
 from artisan.execution.inputs.materialization import _is_remote, materialize_inputs
+from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.specs.input_spec import InputSpec
@@ -184,6 +186,55 @@ class TestEndpointRoutedSkip:
         assert list(output_dir.iterdir()) == []  # nothing downloaded
         # no local file entered the filesystem-passthrough match map
         assert art.artifact_id not in materialized_ids
+
+    def test_remote_file_ref_skipped_when_endpoint_routed(self, tmp_path: Path):
+        art = FileRefArtifact.draft(
+            path="s3://bucket/inputs/source.bin",
+            content_hash="a" * 32,
+            size_bytes=4,
+            step_number=0,
+            original_name="source",
+            extension=".bin",
+        ).finalize()
+
+        with patch.object(FileRefArtifact, "verify_external_content") as verify:
+            _, materialized_ids = materialize_inputs(
+                {"source": [art]},
+                {"source": InputSpec(artifact_type="file_ref")},
+                str(tmp_path),
+                MagicMock(),
+                endpoint_routed=True,
+            )
+
+        verify.assert_called_once_with(fs=ANY)
+        assert art.materialized_path == "s3://bucket/inputs/source.bin"
+        assert art.artifact_id not in materialized_ids
+
+    def test_appendable_record_materializes_when_endpoint_routed(self, tmp_path: Path):
+        art = AppendableArtifact.draft(
+            record_id="record-1",
+            content_hash="a" * 32,
+            size_bytes=4,
+            step_number=0,
+            external_path="s3://bucket/shared/records.jsonl",
+        ).finalize()
+        materialized = str(tmp_path / "record.json")
+
+        with patch.object(
+            AppendableArtifact,
+            "materialize_to",
+            return_value=materialized,
+        ) as write:
+            _, materialized_ids = materialize_inputs(
+                {"record": [art]},
+                {"record": InputSpec(artifact_type="appendable")},
+                str(tmp_path),
+                MagicMock(),
+                endpoint_routed=True,
+            )
+
+        write.assert_called_once_with(str(tmp_path), format=None, fs=ANY)
+        assert art.artifact_id in materialized_ids
 
     def test_cloud_input_downloads_by_default(self, tmp_path: Path):
         # endpoint_routed defaults False — the cloud input materializes

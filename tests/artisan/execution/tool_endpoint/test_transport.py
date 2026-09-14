@@ -10,13 +10,20 @@ import tempfile
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
 
 from artisan.execution.tool_endpoint import transport as transport_mod
 from artisan.execution.tool_endpoint.protocol import InputRef
-from artisan.execution.tool_endpoint.transport import InlineTransport, upload_outputs
+from artisan.execution.tool_endpoint.transport import (
+    EndpointTransportError,
+    InlineTransport,
+    upload_outputs,
+)
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.utils.hashing import compute_content_digest
 
 
@@ -55,6 +62,20 @@ def _make_outputs(tmp_path: Path) -> str:
     (src / "out.txt").write_text("payload")
     (src / "nested" / "deep.txt").write_text("deep")
     return str(src)
+
+
+def _policy(
+    *, inputs: tuple[str, ...] = (), outputs: tuple[str, ...] = ()
+) -> ToolEndpointDataPolicy:
+    return ToolEndpointDataPolicy(
+        input_allowlist=inputs,
+        output_allowlist=outputs,
+    )
+
+
+def _origin(uri: str) -> str:
+    parts = urlsplit(uri)
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 def _capture_tempdirs(monkeypatch) -> list[str]:
@@ -136,9 +157,10 @@ class TestUnpackInputs:
         assert Path(paths["pdb"]).read_bytes() == b"ATOM"
         assert Path(paths["pdb"]).parent == dest / "pdb"
 
-    def test_uri_ref_fetched_via_fs(self, tmp_path: Path):
+    def test_uri_ref_fetched_via_fs(self, tmp_path: Path, monkeypatch):
         fs = _FakeFs()
         content = b"remote-bytes"
+        monkeypatch.setattr(transport_mod, "_resolve_s3", lambda uri: (fs, uri))
         paths = InlineTransport().unpack_inputs(
             [
                 InputRef(
@@ -149,13 +171,14 @@ class TestUnpackInputs:
                 )
             ],
             str(tmp_path),
-            fs=fs,
+            policy=_policy(inputs=("s3://bucket",)),
         )
         assert fs.calls == [("s3://bucket/key.pdb", "open")]
         assert Path(paths["pdb"]).read_bytes() == b"remote-bytes"
 
-    def test_changed_uri_bytes_are_rejected(self, tmp_path: Path):
+    def test_changed_uri_bytes_are_rejected(self, tmp_path: Path, monkeypatch):
         fs = _FakeFs()
+        monkeypatch.setattr(transport_mod, "_resolve_s3", lambda uri: (fs, uri))
         ref = InputRef(
             name="pdb",
             uri="s3://bucket/key.pdb",
@@ -164,7 +187,11 @@ class TestUnpackInputs:
         )
 
         with pytest.raises(Exception, match="failed integrity"):
-            InlineTransport().unpack_inputs([ref], str(tmp_path), fs=fs)
+            InlineTransport().unpack_inputs(
+                [ref],
+                str(tmp_path),
+                policy=_policy(inputs=("s3://bucket",)),
+            )
 
         assert not (tmp_path / "pdb" / "key.pdb").exists()
 
@@ -223,6 +250,50 @@ class TestUnpackInputs:
             InlineTransport().unpack_inputs(
                 [InputRef.model_construct(name="x")], str(tmp_path)
             )
+
+    @pytest.mark.parametrize("uri", ["file:///tmp/x", "memory://bucket/x"])
+    def test_remote_scheme_denied_before_destination_or_resolver(
+        self, uri, tmp_path, monkeypatch
+    ):
+        resolver = MagicMock()
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolver)
+        dest = tmp_path / "inputs"
+        ref = InputRef(
+            name="x",
+            uri=uri,
+            content_digest="a" * 32,
+            size_bytes=1,
+        )
+
+        with pytest.raises(ValueError, match="input URI is invalid") as exc_info:
+            InlineTransport().unpack_inputs([ref], str(dest))
+
+        assert not dest.exists()
+        resolver.assert_not_called()
+        assert "input URI is invalid" in str(exc_info.value)
+
+    def test_off_policy_s3_denied_before_destination_or_resolver(
+        self, tmp_path, monkeypatch
+    ):
+        resolver = MagicMock()
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolver)
+        dest = tmp_path / "inputs"
+        ref = InputRef(
+            name="x",
+            uri="s3://bucket/private/x",
+            content_digest="a" * 32,
+            size_bytes=1,
+        )
+
+        with pytest.raises(ValueError, match="not allowed"):
+            InlineTransport().unpack_inputs(
+                [ref],
+                str(dest),
+                policy=_policy(inputs=("s3://bucket/public",)),
+            )
+
+        assert not dest.exists()
+        resolver.assert_not_called()
 
 
 class TestOutputs:
@@ -372,7 +443,7 @@ class TestUploadOutputsPrefixMode:
     def fake_fs(self, monkeypatch) -> _FakeFs:
         fake = _FakeFs()
         monkeypatch.setattr(
-            transport_mod, "_resolve_fs", lambda uri, fs, **options: (fake, uri)
+            transport_mod, "_resolve_s3", lambda uri, **options: (fake, uri)
         )
         return fake
 
@@ -380,12 +451,18 @@ class TestUploadOutputsPrefixMode:
         fake = _FakeFs()
         captured: dict = {}
 
-        def resolve(uri, fs, **options):
+        def resolve(uri, **options):
             captured.update(options)
             return fake, uri
 
-        monkeypatch.setattr(transport_mod, "_resolve_fs", resolve)
-        upload_outputs(_make_outputs(tmp_path), ["out.txt"], "s3://b/p", "op")
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolve)
+        upload_outputs(
+            _make_outputs(tmp_path),
+            ["out.txt"],
+            "s3://b/p",
+            "op",
+            policy=_policy(outputs=("s3://b/p", "https://signed.example")),
+        )
         # without the opt-in, presigned URLs come out legacy SigV2 —
         # MinIO accepts them, R2 and modern AWS buckets return 401
         assert captured == {"config_kwargs": {"signature_version": "s3v4"}}
@@ -396,6 +473,7 @@ class TestUploadOutputsPrefixMode:
             ["out.txt", "nested/deep.txt"],
             "s3://bucket/prefix",
             "my_op",
+            policy=_policy(outputs=("s3://bucket/prefix", "https://signed.example")),
         )
         assert re.fullmatch(
             r"s3://bucket/prefix/my_op/[0-9a-f]{32}\.tar\.gz", stored.uri
@@ -408,7 +486,13 @@ class TestUploadOutputsPrefixMode:
         assert (dest / "nested" / "deep.txt").read_text() == "deep"
 
     def test_presigned_get_minted_with_max_expiry(self, tmp_path, fake_fs):
-        stored = upload_outputs(_make_outputs(tmp_path), ["out.txt"], "s3://b/p", "op")
+        stored = upload_outputs(
+            _make_outputs(tmp_path),
+            ["out.txt"],
+            "s3://b/p",
+            "op",
+            policy=_policy(outputs=("s3://b/p", "https://signed.example")),
+        )
         assert stored.presigned_url is not None
         assert stored.presigned_url.startswith("https://signed.example/")
         assert fake_fs.signed == [(stored.uri, transport_mod.PRESIGN_EXPIRY_SECONDS)]
@@ -422,10 +506,16 @@ class TestUploadOutputsPrefixMode:
 
         fake = _NoSignFs()
         monkeypatch.setattr(
-            transport_mod, "_resolve_fs", lambda uri, fs, **options: (fake, uri)
+            transport_mod, "_resolve_s3", lambda uri, **options: (fake, uri)
         )
-        with pytest.raises(NotImplementedError):
-            upload_outputs(_make_outputs(tmp_path), ["out.txt"], "file:///tmp/x", "op")
+        with pytest.raises(EndpointTransportError, match="output transfer failed"):
+            upload_outputs(
+                _make_outputs(tmp_path),
+                ["out.txt"],
+                "s3://bucket/x",
+                "op",
+                policy=_policy(outputs=("s3://bucket",)),
+            )
 
 
 class TestUploadOutputsCapabilityMode:
@@ -435,22 +525,24 @@ class TestUploadOutputsCapabilityMode:
         self, tmp_path, monkeypatch
     ):
         captured: dict = {}
-
-        def fake_put(url, content=None, headers=None, timeout="unset"):
-            captured.update(
-                url=url, body=content.read(), headers=headers, timeout=timeout
-            )
-            return SimpleNamespace(raise_for_status=lambda: None)
-
-        monkeypatch.setattr("httpx.put", fake_put)
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.put.side_effect = lambda url, content, headers: (
+            captured.update(url=url, body=content.read(), headers=headers)
+            or SimpleNamespace(status_code=200)
+        )
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
         stored = upload_outputs(
-            _make_outputs(tmp_path), ["out.txt", "nested/deep.txt"], self.PUT_URL, "op"
+            _make_outputs(tmp_path),
+            ["out.txt", "nested/deep.txt"],
+            self.PUT_URL,
+            "op",
+            policy=_policy(outputs=("https://bucket.s3.amazonaws.com",)),
         )
         assert captured["url"] == self.PUT_URL
         # explicit Content-Length: chunked-TE regressions pass MinIO but
         # fail real S3 (501) — this assertion is the only guard
         assert captured["headers"] == {"Content-Length": str(len(captured["body"]))}
-        assert captured["timeout"] is None
         dest = tmp_path / "extracted"
         InlineTransport().unpack_outputs(captured["body"], str(dest))
         assert (dest / "out.txt").read_text() == "payload"
@@ -459,12 +551,39 @@ class TestUploadOutputsCapabilityMode:
         assert stored.presigned_url is None
 
     def test_refused_put_raises(self, tmp_path, monkeypatch):
-        def fake_put(url, content=None, headers=None, timeout=None):
-            return httpx.Response(403, request=httpx.Request("PUT", url))
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.put.return_value = SimpleNamespace(status_code=403)
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
+        with pytest.raises(EndpointTransportError, match=r"rejected \(403\)"):
+            upload_outputs(
+                _make_outputs(tmp_path),
+                ["out.txt"],
+                self.PUT_URL,
+                "op",
+                policy=_policy(outputs=("https://bucket.s3.amazonaws.com",)),
+            )
 
-        monkeypatch.setattr("httpx.put", fake_put)
-        with pytest.raises(httpx.HTTPStatusError):
-            upload_outputs(_make_outputs(tmp_path), ["out.txt"], self.PUT_URL, "op")
+    def test_redirect_is_rejected_without_leaking_signature(
+        self, tmp_path, monkeypatch
+    ):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.put.return_value = SimpleNamespace(status_code=307)
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
+
+        with pytest.raises(EndpointTransportError) as exc_info:
+            upload_outputs(
+                _make_outputs(tmp_path),
+                ["out.txt"],
+                self.PUT_URL,
+                "op",
+                policy=_policy(outputs=("https://bucket.s3.amazonaws.com",)),
+            )
+
+        assert "redirect refused" in str(exc_info.value)
+        assert "X-Amz-Signature" not in str(exc_info.value)
+        assert "abc" not in str(exc_info.value)
 
 
 class TestUploadOutputsSpoolCleanup:
@@ -472,38 +591,275 @@ class TestUploadOutputsSpoolCleanup:
 
     def test_spool_removed_on_success(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            transport_mod, "_resolve_fs", lambda uri, fs, **options: (_FakeFs(), uri)
+            transport_mod, "_resolve_s3", lambda uri, **options: (_FakeFs(), uri)
         )
         created = _capture_tempdirs(monkeypatch)
-        upload_outputs(_make_outputs(tmp_path), ["out.txt"], "s3://b/p", "op")
+        upload_outputs(
+            _make_outputs(tmp_path),
+            ["out.txt"],
+            "s3://b/p",
+            "op",
+            policy=_policy(outputs=("s3://b/p", "https://signed.example")),
+        )
         assert created  # the call did allocate a spool dir
         assert all(not os.path.exists(p) for p in created)
 
     def test_spool_removed_on_put_failure(self, tmp_path, monkeypatch):
-        def fake_put(url, content=None, headers=None, timeout=None):
-            return httpx.Response(403, request=httpx.Request("PUT", url))
-
-        monkeypatch.setattr("httpx.put", fake_put)
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.put.return_value = SimpleNamespace(status_code=403)
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
         created = _capture_tempdirs(monkeypatch)
         put_url = "https://bucket.s3.amazonaws.com/x.tar.gz?X-Amz-Signature=abc"
-        with pytest.raises(httpx.HTTPStatusError):
-            upload_outputs(_make_outputs(tmp_path), ["out.txt"], put_url, "op")
+        with pytest.raises(EndpointTransportError):
+            upload_outputs(
+                _make_outputs(tmp_path),
+                ["out.txt"],
+                put_url,
+                "op",
+                policy=_policy(outputs=("https://bucket.s3.amazonaws.com",)),
+            )
         assert created  # the call did allocate a spool dir
         assert all(not os.path.exists(p) for p in created)
 
     def test_compressed_limit_stops_archive_before_upload(self, tmp_path, monkeypatch):
         fake = _FakeFs()
         monkeypatch.setattr(
-            transport_mod, "_resolve_fs", lambda uri, fs, **options: (fake, uri)
+            transport_mod, "_resolve_s3", lambda uri, **options: (fake, uri)
         )
         monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_BYTES", 4)
         created = _capture_tempdirs(monkeypatch)
 
         with pytest.raises(ValueError, match="compressed"):
-            upload_outputs(_make_outputs(tmp_path), ["out.txt"], "s3://b/p", "op")
+            upload_outputs(
+                _make_outputs(tmp_path),
+                ["out.txt"],
+                "s3://b/p",
+                "op",
+                policy=_policy(outputs=("s3://b/p", "https://signed.example")),
+            )
 
         assert fake.puts == []
         assert all(not os.path.exists(path) for path in created)
+
+
+class TestHttpCapabilityTransport:
+    def test_http_client_disables_redirects_and_environment(self, monkeypatch):
+        constructor = MagicMock()
+        monkeypatch.setattr(transport_mod.httpx, "Client", constructor)
+
+        transport_mod._http_client()
+
+        constructor.assert_called_once_with(
+            follow_redirects=False,
+            trust_env=False,
+            timeout=transport_mod._HTTP_TIMEOUT,
+        )
+
+    def test_input_get_is_bare_and_verified(self, tmp_path, monkeypatch):
+        body = b"verified-input"
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, content=body)
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=False,
+            trust_env=False,
+        )
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
+        uri = "https://downloads.example/object?signature=fake"
+        ref = InputRef(
+            name="dataset",
+            filename="dataset.bin",
+            uri=uri,
+            content_digest=compute_content_digest(body),
+            size_bytes=len(body),
+        )
+
+        paths = InlineTransport().unpack_inputs(
+            [ref],
+            str(tmp_path / "inputs"),
+            policy=_policy(inputs=("https://downloads.example",)),
+        )
+
+        assert Path(paths["dataset"]).read_bytes() == body
+        assert requests[0].method == "GET"
+        assert requests[0].url == uri
+        assert "Modal-Key" not in requests[0].headers
+        assert "Authorization" not in requests[0].headers
+
+    def test_stored_output_get_is_bare_and_extracts(self, tmp_path, monkeypatch):
+        payload = InlineTransport().pack_outputs(
+            _make_outputs(tmp_path), ["out.txt", "nested/deep.txt"]
+        )
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, content=payload)
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=False,
+            trust_env=False,
+        )
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
+        uri = "https://downloads.example/result?signature=fake"
+        dest = tmp_path / "restored"
+
+        InlineTransport().download_outputs(
+            uri,
+            str(dest),
+            policy=_policy(outputs=("https://downloads.example",)),
+        )
+
+        assert (dest / "out.txt").read_text() == "payload"
+        assert (dest / "nested" / "deep.txt").read_text() == "deep"
+        assert requests[0].method == "GET"
+        assert requests[0].url == uri
+        assert "Modal-Key" not in requests[0].headers
+        assert "Authorization" not in requests[0].headers
+
+    @pytest.mark.parametrize("status", [302, 403])
+    def test_input_http_failure_is_sanitized_and_leaves_no_partial_file(
+        self, status, tmp_path, monkeypatch
+    ):
+        uri = "https://downloads.example/object?signature=fake-secret"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                status,
+                headers={"Location": "https://redirect.example/token-value"},
+            )
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=False,
+            trust_env=False,
+        )
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
+        ref = InputRef(
+            name="dataset",
+            filename="dataset.bin",
+            uri=uri,
+            content_digest="a" * 32,
+            size_bytes=1,
+        )
+
+        with pytest.raises(EndpointTransportError) as exc_info:
+            InlineTransport().unpack_inputs(
+                [ref],
+                str(tmp_path / "inputs"),
+                policy=_policy(inputs=("https://downloads.example",)),
+            )
+
+        message = str(exc_info.value)
+        for secret in ("signature", "fake-secret", "redirect.example", "token-value"):
+            assert secret not in message
+        assert not (tmp_path / "inputs" / "dataset" / "dataset.bin").exists()
+
+    def test_http_integrity_mismatch_deletes_partial_file(self, tmp_path, monkeypatch):
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, content=b"changed")
+            ),
+            follow_redirects=False,
+            trust_env=False,
+        )
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
+        uri = "https://downloads.example/object?signature=fake"
+        ref = InputRef(
+            name="dataset",
+            filename="dataset.bin",
+            uri=uri,
+            content_digest=compute_content_digest(b"expected"),
+            size_bytes=len(b"expected"),
+        )
+
+        with pytest.raises(Exception, match="failed integrity") as exc_info:
+            InlineTransport().unpack_inputs(
+                [ref],
+                str(tmp_path / "inputs"),
+                policy=_policy(inputs=("https://downloads.example",)),
+            )
+
+        assert not (tmp_path / "inputs" / "dataset" / "dataset.bin").exists()
+        assert "signature" not in str(exc_info.value)
+        assert "fake" not in str(exc_info.value)
+
+    def test_stored_download_redirect_is_rejected_and_redacted(
+        self, tmp_path, monkeypatch
+    ):
+        uri = "https://downloads.example/result?signature=fake-secret"
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    307,
+                    headers={"Location": "https://redirect.example/token-value"},
+                )
+            ),
+            follow_redirects=False,
+            trust_env=False,
+        )
+        monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
+
+        with pytest.raises(EndpointTransportError) as exc_info:
+            InlineTransport().download_outputs(
+                uri,
+                str(tmp_path / "outputs"),
+                policy=_policy(outputs=("https://downloads.example",)),
+            )
+
+        message = str(exc_info.value)
+        assert "redirect refused" in message
+        for secret in ("signature", "fake-secret", "redirect.example", "token-value"):
+            assert secret not in message
+
+    def test_presigned_origin_is_rechecked_after_s3_upload(self, tmp_path, monkeypatch):
+        fake = _FakeFs()
+        monkeypatch.setattr(
+            transport_mod,
+            "_resolve_s3",
+            lambda uri, **_options: (fake, uri),
+        )
+
+        with pytest.raises(ValueError, match="not allowed") as exc_info:
+            upload_outputs(
+                _make_outputs(tmp_path),
+                ["out.txt"],
+                "s3://bucket/results",
+                "op",
+                policy=_policy(outputs=("s3://bucket/results",)),
+            )
+
+        assert fake.puts
+        assert "sig=abc" not in str(exc_info.value)
+
+    def test_off_policy_output_denied_before_spool_or_resolver(
+        self, tmp_path, monkeypatch
+    ):
+        resolver = MagicMock()
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolver)
+        created = _capture_tempdirs(monkeypatch)
+
+        with pytest.raises(ValueError, match="not allowed"):
+            upload_outputs(
+                _make_outputs(tmp_path),
+                ["out.txt"],
+                "s3://bucket/private",
+                "op",
+                policy=_policy(outputs=("s3://bucket/public",)),
+            )
+
+        assert created == []
+        resolver.assert_not_called()
+
+    def test_credentialed_resolver_rejects_non_s3_without_discovery(self):
+        with pytest.raises(ValueError, match="supports s3:// only"):
+            transport_mod._resolve_s3("file:///tmp/private")
 
 
 class TestUploadOutputsMinIO:
@@ -530,6 +886,12 @@ class TestUploadOutputsMinIO:
             ["out.txt", "nested/deep.txt"],
             f"{uri_prefix}/results",
             "my_op",
+            policy=_policy(
+                outputs=(
+                    f"{uri_prefix}/results",
+                    _origin(storage.options["client_kwargs"]["endpoint_url"]),
+                )
+            ),
         )
 
         s3fs_mod.S3FileSystem.clear_instance_cache()
@@ -558,7 +920,13 @@ class TestUploadOutputsMinIO:
             secure=False,
         ).presigned_put_object(bucket, "run42.tar.gz", expires=timedelta(minutes=10))
 
-        stored = upload_outputs(_make_outputs(tmp_path), ["out.txt"], minted, "my_op")
+        stored = upload_outputs(
+            _make_outputs(tmp_path),
+            ["out.txt"],
+            minted,
+            "my_op",
+            policy=_policy(outputs=(_origin(minted),)),
+        )
 
         assert stored.presigned_url is None
         local = tmp_path / "fetched.tar.gz"
@@ -602,9 +970,12 @@ class TestUnpackInputsMinIO:
                     name="weights",
                     filename="model.bin",
                     uri=f"{uri_prefix}/inputs/model.bin",
+                    content_digest=compute_content_digest(b"weights-bytes"),
+                    size_bytes=len(b"weights-bytes"),
                 )
             ],
             str(dest),
+            policy=_policy(inputs=(f"{uri_prefix}/inputs",)),
         )
 
         # lands under its basename with correct bytes — the URI never
@@ -634,9 +1005,12 @@ class TestUnpackInputsMinIO:
                         name="dataset",
                         filename="missing.csv",
                         uri=f"{uri_prefix}/inputs/does-not-exist.csv",
+                        content_digest="a" * 32,
+                        size_bytes=1,
                     )
                 ],
             ),
+            data_policy=_policy(inputs=(f"{uri_prefix}/inputs",)),
         )
         assert result.output_tar is None
         assert result.manifest.error is not None

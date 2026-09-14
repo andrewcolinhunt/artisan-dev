@@ -2,10 +2,9 @@
 
 ``InlineTransport`` is the inline mode — input bytes and the output tar
 ride the endpoint↔worker function-call hop, bounded at 100 MB per
-direction. ``s3://`` input refs are fetched worker-side via fsspec and
-bypass the bound; the producer is ``materialize_inputs`` under
-``endpoint_routed=True``, which hands a cloud-hosted input's
-``external_path`` straight to ``pack_inputs`` rather than downloading it.
+direction. Authorized ``s3://`` input refs are fetched with deployment
+credentials; authorized HTTP(S) refs use bare capability GETs. Both bypass
+the inline bound and are verified against their complete-file contracts.
 ``upload_outputs`` is the stored output mode: when a request names an
 ``output_store``, the worker delivers the output tarball there and only a
 ``StoredOutputs`` pointer rides the control plane. Stored archives spool to
@@ -22,10 +21,17 @@ import tempfile
 import uuid
 from collections.abc import Iterable
 from typing import Any, BinaryIO
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
+import httpx
+
+from artisan.errors import ArtifactIntegrityError
 from artisan.execution.tool_endpoint.protocol import InputRef, StoredOutputs
-from artisan.schemas.artifact.external import copy_verified_file
+from artisan.schemas.artifact.external import copy_verified_chunks, copy_verified_file
+from artisan.schemas.operation_config.endpoint_policy import (
+    ToolEndpointDataPolicy,
+    _EndpointUri,
+)
 from artisan.utils.path import uri_join
 
 MAX_INLINE_BYTES = 100 * 1024 * 1024
@@ -43,9 +49,15 @@ MAX_ARCHIVE_MEMBERS = 10_000
 PRESIGN_EXPIRY_SECONDS = 7 * 24 * 3600
 """SigV4 maximum — matches Modal's 7-day FunctionCall result retention."""
 
+_HTTP_TIMEOUT = 120.0
+
+
+class EndpointTransportError(RuntimeError):
+    """Sanitized failure at an endpoint-mediated data boundary."""
+
 
 class InlineTransport:
-    """v1 — inputs as inline bytes or ``s3://`` URIs; outputs as a tar."""
+    """v1 inputs as inline bytes or authorized URIs; outputs as a tar."""
 
     def pack_inputs(
         self,
@@ -55,7 +67,7 @@ class InlineTransport:
         """Pack local files inline; pass object-store URIs through as refs.
 
         Args:
-            files: Input name → local path or ``scheme://`` URI.
+            files: Input name → local path or remote URI.
             expected_content: URI → expected digest and byte count.
 
         Returns:
@@ -99,15 +111,18 @@ class InlineTransport:
         return refs
 
     def unpack_inputs(
-        self, refs: list[InputRef], dest: str, fs: Any = None
+        self,
+        refs: list[InputRef],
+        dest: str,
+        policy: ToolEndpointDataPolicy | None = None,
     ) -> dict[str, str]:
         """Resolve refs into files under ``dest``; return name → local path.
 
         Args:
             refs: Input refs from the request.
             dest: Directory to write input files into.
-            fs: Optional fsspec filesystem for ``uri`` refs. When None, a
-                filesystem is derived from each URI's scheme.
+            policy: Deployment-owned URI permissions. Omission denies every
+                remote ref while leaving inline refs available.
 
         Returns:
             Input name → local path.
@@ -123,6 +138,13 @@ class InlineTransport:
             )
             raise ValueError(msg)
 
+        data_policy = policy or ToolEndpointDataPolicy()
+        authorized = {
+            id(ref): data_policy.authorize_input(ref.uri)
+            for ref in refs
+            if ref.uri is not None
+        }
+
         os.makedirs(dest, exist_ok=True)
         paths: dict[str, str] = {}
         for ref in refs:
@@ -135,16 +157,11 @@ class InlineTransport:
                 filename = "input"
             local = os.path.join(role_dir, filename)
             if ref.uri is not None:
-                ref_fs, remote = _resolve_fs(ref.uri, fs)
-                copy_verified_file(
-                    artifact_id=None,
-                    artifact_type="tool input",
-                    uri=remote,
-                    destination=local,
-                    expected_digest=ref.content_digest,
-                    expected_size=ref.size_bytes,
-                    fs=ref_fs,
-                )
+                target = authorized[id(ref)]
+                if target.scheme == "s3":
+                    _copy_s3_input(ref, target, local)
+                else:
+                    _copy_http_input(ref, target, local)
             elif ref.data is not None:
                 with open(local, "wb") as f:
                     f.write(ref.data)
@@ -208,19 +225,45 @@ class InlineTransport:
         finally:
             shutil.rmtree(spool_dir, ignore_errors=True)
 
+    def download_outputs(
+        self,
+        uri: str,
+        dest: str,
+        policy: ToolEndpointDataPolicy | None = None,
+    ) -> None:
+        """Authorize, fetch, and extract a stored output capability."""
+        target = (policy or ToolEndpointDataPolicy()).authorize_output(uri)
+        if target.scheme not in {"http", "https"}:
+            msg = f"stored output capability must use HTTP: {target.safe_display}"
+            raise ValueError(msg)
+        try:
+            with (
+                _http_client() as client,
+                client.stream("GET", target.transport_target) as response,
+            ):
+                _check_http_response(response, "output download", target)
+                self.unpack_output_stream(
+                    response.iter_bytes(chunk_size=1024 * 1024), dest
+                )
+        except (ArtifactIntegrityError, EndpointTransportError, ValueError):
+            raise
+        except Exception as exc:
+            msg = f"output download failed for {target.safe_display}"
+            raise EndpointTransportError(msg) from exc
+
 
 def upload_outputs(
-    src: str, names: list[str], store: str, op_name: str
+    src: str,
+    names: list[str],
+    store: str,
+    op_name: str,
+    policy: ToolEndpointDataPolicy | None = None,
 ) -> StoredOutputs:
     """Worker-side: tar the named outputs and deliver them to ``store``.
 
-    Spools the gzipped tar to disk (stored outputs are exactly the ones too
-    large to buffer), then delivers by destination form: an ``http(s)://``
-    value is a caller-minted presigned PUT URL — the tar is PUT there
-    directly, touching no store credentials; anything else is an
-    object-store prefix — the tar is uploaded under it via the same
-    ambient-credential fs resolution input refs use, and a presigned GET
-    is minted once.
+    Spools the gzipped tar to disk, then delivers by destination form. An
+    authorized HTTP(S) value is a caller-minted PUT capability. An authorized
+    S3 prefix uses worker credentials and yields a presigned GET capability.
 
     Args:
         src: Directory holding the output files.
@@ -228,17 +271,18 @@ def upload_outputs(
         store: Caller-supplied destination — object-store root URI
             (``s3://bucket/prefix``) or presigned PUT URL.
         op_name: Deployed op name — namespaces keys under a prefix.
+        policy: Deployment-owned URI permissions. Omission denies remote
+            delivery.
 
     Returns:
         Pointer to the delivered tarball.
 
     Raises:
         ValueError: When an archive budget is exceeded.
-        NotImplementedError: When a prefix's filesystem cannot presign
-            (prefix mode requires a signing object store).
-        httpx.RequestError: When a presigned PUT cannot reach its destination.
-        httpx.HTTPStatusError: When a presigned PUT is refused.
+        EndpointTransportError: When transfer or signing fails.
     """
+    data_policy = policy or ToolEndpointDataPolicy()
+    requested = data_policy.authorize_output(store)
     # Modal reuses warm containers across requests; the spool must not
     # outlive the call or gzipped tars accumulate in the container.
     spool_dir = tempfile.mkdtemp(prefix="artisan-tool-tar-")
@@ -251,33 +295,26 @@ def upload_outputs(
             with tarfile.open(fileobj=writer, mode="w:gz") as tar:
                 for name in names:
                     tar.add(os.path.join(src, name), arcname=name, filter=budget)
-        if store.startswith(("http://", "https://")):
-            import httpx
-
-            # Explicit Content-Length, or httpx sends the file body as
-            # Transfer-Encoding: chunked — S3 answers plain chunked PUTs with
-            # 501 (MinIO tolerates them). Never in the signed set: callers
-            # mint with default (host-only) signed headers.
-            headers = {"Content-Length": str(os.path.getsize(spool))}
-            with open(spool, "rb") as f:
-                # streamed body; bounded by the worker's Modal timeout
-                response = httpx.put(store, content=f, headers=headers, timeout=None)
-            response.raise_for_status()
-            return StoredOutputs(uri=store.split("?", 1)[0])
-        uri = uri_join(store, op_name, f"{uuid.uuid4().hex}.tar.gz")
+        if requested.scheme in {"http", "https"}:
+            _put_http_file(spool, requested)
+            return StoredOutputs(uri=requested.safe_display)
+        uri = uri_join(
+            requested.transport_target, op_name, f"{uuid.uuid4().hex}.tar.gz"
+        )
+        final_target = data_policy.authorize_output(uri)
         # Force SigV4 on s3: requests sign v4 either way, but presigned URLs
         # come out legacy SigV2 without the explicit opt-in — accepted by
         # MinIO, rejected (401) by R2 and modern AWS buckets.
-        options = (
-            {"config_kwargs": {"signature_version": "s3v4"}}
-            if uri.startswith("s3://")
-            else {}
-        )
-        fs, remote = _resolve_fs(uri, None, **options)
-        fs.put(spool, remote)
-        return StoredOutputs(
-            uri=uri, presigned_url=fs.sign(remote, expiration=PRESIGN_EXPIRY_SECONDS)
-        )
+        options = {"config_kwargs": {"signature_version": "s3v4"}}
+        try:
+            fs, remote = _resolve_s3(final_target.transport_target, **options)
+            fs.put(spool, remote)
+            presigned = str(fs.sign(remote, expiration=PRESIGN_EXPIRY_SECONDS))
+        except Exception as exc:
+            msg = f"output transfer failed for {final_target.safe_display}"
+            raise EndpointTransportError(msg) from exc
+        data_policy.authorize_output(presigned)
+        return StoredOutputs(uri=final_target.transport_target, presigned_url=presigned)
     finally:
         shutil.rmtree(spool_dir, ignore_errors=True)
 
@@ -380,9 +417,8 @@ def _safe_role(name: str) -> str:
 
 def _inline_input_limit_message() -> str:
     return (
-        f"Inline inputs exceed {MAX_INLINE_BYTES >> 20} MB; pass object-store "
-        "URIs (s3://…) for large inputs — already-external artifacts re-upload "
-        "nothing"
+        f"Inline inputs exceed {MAX_INLINE_BYTES >> 20} MB; pass an authorized "
+        "S3 (s3://) or HTTP(S) URI for eligible complete-file inputs"
     )
 
 
@@ -397,14 +433,97 @@ def _compressed_limit_message() -> str:
     return f"Archive exceeds {MAX_ARCHIVE_BYTES >> 20} MB compressed"
 
 
-def _resolve_fs(uri: str, fs: Any, **storage_options: Any) -> tuple[Any, str]:
-    """Return (filesystem, path) for a URI, deriving the fs when not given.
+def _copy_s3_input(ref: InputRef, target: _EndpointUri, local: str) -> None:
+    """Fetch one authorized S3 object and verify its complete contents."""
+    try:
+        fs, remote = _resolve_s3(target.transport_target)
+        copy_verified_file(
+            artifact_id=None,
+            artifact_type="tool input",
+            uri=remote,
+            destination=local,
+            expected_digest=ref.content_digest,
+            expected_size=ref.size_bytes,
+            fs=fs,
+        )
+    except ArtifactIntegrityError:
+        raise
+    except Exception as exc:
+        msg = f"input transfer failed for {target.safe_display}"
+        raise EndpointTransportError(msg) from exc
 
-    ``storage_options`` are forwarded to the derived filesystem's
-    constructor (ignored when ``fs`` is given).
-    """
-    if fs is not None:
-        return fs, uri
+
+def _copy_http_input(ref: InputRef, target: _EndpointUri, local: str) -> None:
+    """Fetch one authorized HTTP capability and verify its complete contents."""
+    try:
+        with (
+            _http_client() as client,
+            client.stream("GET", target.transport_target) as response,
+        ):
+            _check_http_response(response, "input", target)
+            copy_verified_chunks(
+                response.iter_bytes(chunk_size=1024 * 1024),
+                artifact_id=None,
+                artifact_type="tool input",
+                uri=target.safe_display,
+                destination=local,
+                expected_digest=ref.content_digest,
+                expected_size=ref.size_bytes,
+            )
+    except (ArtifactIntegrityError, EndpointTransportError):
+        raise
+    except Exception as exc:
+        msg = f"input transfer failed for {target.safe_display}"
+        raise EndpointTransportError(msg) from exc
+
+
+def _put_http_file(spool: str, target: _EndpointUri) -> None:
+    """Deliver one archive through an authorized bare HTTP capability."""
+    headers = {"Content-Length": str(os.path.getsize(spool))}
+    try:
+        with _http_client() as client, open(spool, "rb") as payload:
+            response = client.put(
+                target.transport_target,
+                content=payload,
+                headers=headers,
+            )
+            _check_http_response(response, "output", target)
+    except EndpointTransportError:
+        raise
+    except Exception as exc:
+        msg = f"output transfer failed for {target.safe_display}"
+        raise EndpointTransportError(msg) from exc
+
+
+def _http_client() -> httpx.Client:
+    """Return a credential-free, non-redirecting HTTP capability client."""
+    return httpx.Client(
+        follow_redirects=False,
+        trust_env=False,
+        timeout=_HTTP_TIMEOUT,
+    )
+
+
+def _check_http_response(
+    response: httpx.Response, operation: str, target: _EndpointUri
+) -> None:
+    """Require a 2xx capability response without exposing its signed URI."""
+    if 300 <= response.status_code < 400:
+        msg = f"{operation} redirect refused for {target.safe_display}"
+        raise EndpointTransportError(msg)
+    if not 200 <= response.status_code < 300:
+        msg = (
+            f"{operation} request was rejected ({response.status_code}) for "
+            f"{target.safe_display}"
+        )
+        raise EndpointTransportError(msg)
+
+
+def _resolve_s3(uri: str, **storage_options: Any) -> tuple[Any, str]:
+    """Return an S3 filesystem and path for an already-authorized target."""
+    if urlsplit(uri).scheme.lower() != "s3":
+        msg = "endpoint credentialed transport supports s3:// only"
+        raise ValueError(msg)
     import fsspec
 
     derived_fs, path = fsspec.core.url_to_fs(uri, **storage_options)

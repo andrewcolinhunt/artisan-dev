@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
+from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
@@ -36,12 +37,10 @@ def materialize_inputs(
         input_specs: Role-keyed input specs controlling materialization.
         directory: Target directory for materialized files.
         artifact_store: Store for hydrating config-referenced artifacts.
-        endpoint_routed: When True, a cloud-hosted (non-config, file-backed)
-            input is shipped to the worker by reference: its download is
-            skipped and ``materialized_path`` is set to its cloud
-            ``external_path`` so the URI flows through the endpoint client's
-            existing ``pack_inputs`` passthrough. Local execution keeps the
-            default (False), materializing every input to disk as before.
+        endpoint_routed: When True, a remote ``FileRefArtifact`` or
+            ``LargeFileArtifact`` is shipped to the worker by reference.
+            Other artifact families still materialize locally. Local execution
+            keeps the default (False), materializing every input as before.
 
     Returns:
         Tuple of (artifacts dict, set of artifact_ids that were materialized).
@@ -89,13 +88,10 @@ def materialize_inputs(
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
             continue
-        # Endpoint-routed steps ship cloud-hosted inputs by reference: the
-        # worker fetches the URI with ambient creds, so the client must not
-        # download it (and must not inline it past the 100 MB cap). The op's
-        # preprocess reads materialized_path — pointing it at the URI makes
-        # the reference flow through pack_inputs' existing passthrough. No
-        # local file is written, so the artifact stays out of
-        # materialized_ids (the filesystem-passthrough match map).
+        # Only complete-file artifact families can cross by URI. Appendable
+        # records and embedded artifacts must materialize their selected bytes
+        # locally. The client and worker separately enforce policy and carry
+        # the already-verified complete-file integrity contract.
         locator = (
             getattr(artifact, next(iter(artifact.LOCATOR_FIELDS)))
             if artifact.EXTERNALLY_BACKED
@@ -103,7 +99,7 @@ def materialize_inputs(
         )
         if (
             endpoint_routed
-            and not isinstance(artifact, AppendableArtifact)
+            and isinstance(artifact, (FileRefArtifact, LargeFileArtifact))
             and _is_remote(locator)
         ):
             artifact.verify_external_content(fs=fs)

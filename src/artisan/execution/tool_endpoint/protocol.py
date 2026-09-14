@@ -14,23 +14,23 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from artisan.errors import ArtisanErrorEnvelope
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
 
 class InputRef(BaseModel):
-    """A tool input file: inline bytes or an object-store URI.
+    """A tool input file: inline bytes or an authorized remote URI.
 
     ``name`` is the input role; ``filename`` preserves the original file
     name across the wire — the worker materializes the file under it, so
     ``execute_command`` and lineage stem-matching see the same basename as a
     local run. Clients send inline bytes as multipart parts keyed by
     ``name``; the endpoint repacks them into ``data`` for the worker hop.
-    ``uri`` refs (e.g. ``s3://bucket/key``) are fetched worker-side via
-    fsspec and bypass the inline bound — already-external artifacts
-    re-upload nothing.
+    Authorized ``s3://`` refs use deployment credentials; authorized
+    HTTP(S) refs are fetched as bare capabilities. Every URI carries the
+    complete-file digest and size that the worker verifies before execution.
     """
 
     name: str
@@ -62,6 +62,8 @@ class InputRef(BaseModel):
 
 class ToolRequest(BaseModel):
     """Internal worker payload: validated params + input refs."""
+
+    model_config = ConfigDict(extra="forbid")
 
     params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[InputRef] = Field(default_factory=list)

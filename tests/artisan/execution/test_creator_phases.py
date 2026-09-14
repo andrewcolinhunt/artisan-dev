@@ -43,6 +43,9 @@ from artisan.schemas.specs.input_models import (
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
+from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.commit_plan import build_commit_plan
+from artisan.storage.io.staging import StagingManager
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,13 +53,33 @@ from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 
 def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> None:
-    publish_test_store(str(base_path), LocalFileSystem())
-    metrics_path = base_path / "artifacts/metrics"
-    pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA).write_delta(
-        str(metrics_path)
+    fs = LocalFileSystem()
+    publish_test_store(str(base_path), fs)
+    staging_root = base_path.parent / "seed-staging"
+    staging = StagingManager(str(staging_root), fs)
+    commit = {
+        "commit_kind": "input_registration",
+        "step_run_id": "0" * 32,
+        "step_number": 0,
+        "operation_name": "seed",
+    }
+    staging.stage_orchestrator_dataframe(
+        pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA),
+        "artifacts/metrics",
+        **commit,
     )
-    index_path = base_path / "artifacts/index"
-    pl.DataFrame(index, schema=ARTIFACT_INDEX_SCHEMA).write_delta(str(index_path))
+    staging.stage_orchestrator_dataframe(
+        pl.DataFrame(index, schema=ARTIFACT_INDEX_SCHEMA),
+        "artifacts/index",
+        **commit,
+    )
+    plan = build_commit_plan(
+        delta_root=str(base_path),
+        staging_root=str(staging_root),
+        fs=fs,
+        **commit,
+    )
+    DeltaCommitter(str(base_path), staging, fs=fs).commit_logical(plan)
 
 
 class _SimpleOp(OperationDefinition):

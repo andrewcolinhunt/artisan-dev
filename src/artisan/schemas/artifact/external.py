@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, BinaryIO, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -97,6 +98,33 @@ def copy_verified_file(
         raise
 
 
+def copy_verified_chunks(
+    chunks: Iterable[bytes],
+    *,
+    artifact_id: str | None,
+    artifact_type: str,
+    uri: str,
+    destination: str,
+    expected_digest: str | None,
+    expected_size: int | None,
+) -> None:
+    """Copy streamed chunks while verifying the complete byte contract."""
+    try:
+        with open(destination, "wb") as target:
+            _consume_verified_chunks(
+                chunks,
+                artifact_id=artifact_id,
+                artifact_type=artifact_type,
+                uri=uri,
+                expected_digest=expected_digest,
+                expected_size=expected_size,
+                target=target,
+            )
+    except Exception:
+        Path(destination).unlink(missing_ok=True)
+        raise
+
+
 def read_verified_file(
     *,
     artifact_id: str | None,
@@ -133,12 +161,37 @@ def _consume_verified(
     chunks: list[bytes] | None = None,
 ) -> None:
     """Consume a stream once, optionally copying or retaining its chunks."""
+    source_chunks = iter(lambda: source.read(STREAM_CHUNK_BYTES), b"")
+    _consume_verified_chunks(
+        source_chunks,
+        artifact_id=artifact_id,
+        artifact_type=artifact_type,
+        uri=uri,
+        expected_digest=expected_digest,
+        expected_size=expected_size,
+        target=target,
+        chunks=chunks,
+    )
+
+
+def _consume_verified_chunks(
+    source_chunks: Iterable[bytes],
+    *,
+    artifact_id: str | None,
+    artifact_type: str,
+    uri: str,
+    expected_digest: str | None,
+    expected_size: int | None,
+    target: BinaryIO | None = None,
+    chunks: list[bytes] | None = None,
+) -> None:
+    """Verify one bounded-pass byte stream and optionally copy its chunks."""
     if expected_digest is None or expected_size is None:
         msg = f"{artifact_type} artifact {artifact_id} lacks digest or size"
         raise ArtifactIntegrityError(msg)
     hasher = xxhash.xxh3_128()
     size_bytes = 0
-    while chunk := source.read(STREAM_CHUNK_BYTES):
+    for chunk in source_chunks:
         hasher.update(chunk)
         size_bytes += len(chunk)
         if target is not None:
