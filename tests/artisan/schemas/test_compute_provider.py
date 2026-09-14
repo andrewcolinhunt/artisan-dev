@@ -162,6 +162,43 @@ class TestModalComputeConfig:
         config = ModalComputeConfig(endpoint_url="HTTPS://EXAMPLE.COM.:443/")
         assert config.endpoint_url == "https://example.com"
 
+    def test_validation_errors_hide_endpoint_credentials(self):
+        secret = "fake-password"
+        username = "alice-private"
+
+        with pytest.raises(ValueError) as exc_info:
+            ModalComputeConfig(
+                endpoint_url=(
+                    f"https://{username}:{secret}@example.com?signature=token"
+                )
+            )
+
+        message = str(exc_info.value)
+        for value in (username, secret, "signature", "token"):
+            assert value not in message
+
+    def test_operation_validation_hides_nested_endpoint_credentials(self):
+        from artisan.operations.examples import WaitTool
+
+        secret = "fake-password"
+        username = "alice-private"
+        with pytest.raises(ValueError) as exc_info:
+            WaitTool(
+                params={"seconds": 1},
+                compute_provider={
+                    "active": "modal",
+                    "modal": {
+                        "endpoint_url": (
+                            f"https://{username}:{secret}@example.com?signature=token"
+                        )
+                    },
+                },
+            )
+
+        message = str(exc_info.value)
+        for value in (username, secret, "signature", "token"):
+            assert value not in message
+
     def test_authenticated_custom_endpoint_requires_https(self):
         with pytest.raises(ValueError, match="must use HTTPS"):
             ModalComputeConfig(
@@ -206,6 +243,23 @@ class TestModalComputeConfig:
     def test_unknown_nested_field_rejected(self):
         with pytest.raises(ValueError, match="min_container"):
             ModalComputeConfig(min_container=2)
+
+    def test_provider_hides_nested_endpoint_secrets_in_validation_errors(self):
+        username = "alice-private"
+        password = "fake-password"
+
+        with pytest.raises(ValueError) as exc_info:
+            ComputeProvider(
+                modal={
+                    "endpoint_url": (
+                        f"https://{username}:{password}@example.com?signature=token"
+                    )
+                }
+            )
+
+        message = str(exc_info.value)
+        for value in (username, password, "signature", "token"):
+            assert value not in message
 
     def test_custom_fields(self):
         config = ModalComputeConfig(

@@ -71,6 +71,20 @@ class TestEndpointSpec:
         with pytest.raises(ValueError, match="outside the endpoint data policy"):
             endpoint_spec(WaitTool)
 
+    def test_revalidates_copied_class_default_policy(self, monkeypatch):
+        modal = WaitTool.model_fields["compute_provider"].default.modal.model_copy(
+            update={"data_policy": {"input_allowlist": ["file:///tmp"]}}
+        )
+        provider = WaitTool.model_fields["compute_provider"].default.model_copy(
+            update={"modal": modal}
+        )
+        monkeypatch.setattr(
+            WaitTool.model_fields["compute_provider"], "default", provider
+        )
+
+        with pytest.raises(ValueError, match="class-default.*invalid"):
+            endpoint_spec(WaitTool)
+
     def test_bakes_params_json_schema(self):
         """Boundary validation uses the baked schema — no artisan on the endpoint."""
         spec = endpoint_spec(WaitTool)

@@ -121,32 +121,45 @@ def run_tool_request(
     Returns:
         WorkerResult with the control manifest and, on success, the tar.
     """
-    policy = data_policy or ToolEndpointDataPolicy()
+    try:
+        policy = ToolEndpointDataPolicy.model_validate(
+            data_policy.model_dump(mode="python", warnings=False)
+            if data_policy is not None
+            else {}
+        )
+    except (TypeError, ValueError):
+        return _error_result(
+            op_cls.name,
+            ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            "endpoint deployment data policy is invalid",
+            "config",
+            "REPORT_TO_USER",
+        )
     denied = _preflight_request(op_cls.name, request, policy)
     if denied is not None:
         return denied
 
     try:
         op = instantiate_op(op_cls, request.params)
-    except ValidationError as exc:
+    except ValidationError:
         # bad params the /submit JSON-schema gate could not express (no-Params
         # ops, custom validators); the agent can fix its own call. Runs before
         # the job dir exists, so no cleanup is owed here.
         return _error_result(
             op_cls.name,
             ErrorCode.PARAM_TYPE_MISMATCH,
-            str(exc),
+            "tool parameters failed validation",
             "validation",
             "CHECK_INPUT",
         )
 
     try:
         job_root = tempfile.mkdtemp(prefix=f"artisan-tool-{op_cls.name}-")
-    except OSError as exc:
+    except OSError:
         return _error_result(
             op_cls.name,
             ErrorCode.OP_EXECUTE_FAILED,
-            f"could not create tool workspace: {exc}",
+            "could not create tool workspace",
             "io",
             "RETRY_LATER",
         )
@@ -157,11 +170,11 @@ def run_tool_request(
         outputs_dir = os.path.join(job_root, "outputs")
         try:
             os.makedirs(outputs_dir)
-        except OSError as exc:
+        except OSError:
             return _error_result(
                 op_cls.name,
                 ErrorCode.OP_EXECUTE_FAILED,
-                f"could not create tool output directory: {exc}",
+                "could not create tool output directory",
                 "io",
                 "RETRY_LATER",
             )
@@ -181,11 +194,11 @@ def run_tool_request(
                 "io",
                 "CHECK_INPUT",
             )
-        except ImportError as exc:
+        except ImportError:
             return _error_result(
                 op_cls.name,
                 ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-                f"input filesystem dependency is unavailable: {exc}",
+                "input filesystem dependency is unavailable",
                 "config",
                 "REPORT_TO_USER",
             )
@@ -197,7 +210,7 @@ def run_tool_request(
                 "io",
                 "CHECK_INPUT",
             )
-        except _INPUT_RESOLUTION_ERRORS as exc:
+        except _INPUT_RESOLUTION_ERRORS:
             # malformed ref; a URI that would not resolve (missing object,
             # denied read — s3fs maps these to FileNotFoundError/
             # PermissionError); or a botocore root s3fs returns untranslated
@@ -208,7 +221,7 @@ def run_tool_request(
             return _error_result(
                 op_cls.name,
                 ErrorCode.INPUT_RESOLUTION_FAILED,
-                f"could not resolve tool input: {exc}",
+                "could not resolve tool input",
                 "io",
                 "CHECK_INPUT",
             )
@@ -252,21 +265,21 @@ def run_tool_request(
                 if stored is not None
                 else transport.pack_outputs(outputs_dir, names)
             )
-        except (ImportError, NotImplementedError) as exc:
+        except (ImportError, NotImplementedError):
             return _error_result(
                 op_cls.name,
                 ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-                f"tool output transport is unavailable: {exc}",
+                "tool output transport is unavailable",
                 "config",
                 "REPORT_TO_USER",
                 output_names=names,
                 log_tail=_log_tail(log_path),
             )
-        except ValueError as exc:
+        except ValueError:
             return _error_result(
                 op_cls.name,
                 ErrorCode.OUTPUT_DELIVERY_FAILED,
-                f"tool output transport rejected the result: {exc}",
+                "tool output transport rejected the result",
                 "io",
                 "CHECK_INPUT",
                 output_names=names,
@@ -282,13 +295,13 @@ def run_tool_request(
                 output_names=names,
                 log_tail=_log_tail(log_path),
             )
-        except _OUTPUT_BOUNDARY_ERRORS as exc:
+        except _OUTPUT_BOUNDARY_ERRORS:
             # Compute completed; preserve its output names and log while making
             # the delivery failure explicit to the caller.
             return _error_result(
                 op_cls.name,
                 ErrorCode.OUTPUT_DELIVERY_FAILED,
-                f"tool output transport failed: {exc}",
+                "tool output transport failed",
                 "io",
                 "RETRY_LATER",
                 output_names=names,
@@ -321,7 +334,7 @@ def _preflight_request(
             return _error_result(
                 op_name,
                 ErrorCode.INPUT_RESOLUTION_FAILED,
-                f"input {ref.name!r} lacks its complete-file integrity contract",
+                "remote input lacks its complete-file integrity contract",
                 "validation",
                 "CHECK_INPUT",
             )

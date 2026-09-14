@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.execution.tool_endpoint import transport as transport_mod
 from artisan.execution.tool_endpoint.protocol import InputRef
 from artisan.execution.tool_endpoint.transport import (
@@ -23,6 +24,7 @@ from artisan.execution.tool_endpoint.transport import (
     InlineTransport,
     upload_outputs,
 )
+from artisan.schemas.artifact.external import copy_verified_chunks
 from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.utils.hashing import compute_content_digest
 
@@ -73,6 +75,13 @@ def _policy(
     )
 
 
+def _fake_s3_resolver(fs):
+    def resolve(target, **_options):
+        return fs, transport_mod._s3_remote_path(target)
+
+    return resolve
+
+
 def _origin(uri: str) -> str:
     parts = urlsplit(uri)
     return f"{parts.scheme}://{parts.netloc}"
@@ -114,6 +123,25 @@ class TestPackInputs:
                 size_bytes=4,
             )
         ]
+
+    def test_http_capability_query_never_enters_input_filename(self):
+        uri = "https://downloads.example/input.csv?X-Amz-Signature=fake-secret"
+        refs = InlineTransport().pack_inputs(
+            {"dataset": uri},
+            {uri: ("a" * 32, 4)},
+        )
+
+        assert refs[0].filename == "input.csv"
+        assert "fake-secret" not in (refs[0].filename or "")
+
+    def test_remote_filename_without_a_path_uses_safe_fallback(self):
+        uri = "https://alice:fake-secret@downloads.example?signature=token"
+        refs = InlineTransport().pack_inputs(
+            {"dataset": uri},
+            {uri: ("a" * 32, 4)},
+        )
+
+        assert refs[0].filename == "input"
 
     def test_over_limit_raises(self, tmp_path: Path, monkeypatch):
         monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 4)
@@ -160,7 +188,7 @@ class TestUnpackInputs:
     def test_uri_ref_fetched_via_fs(self, tmp_path: Path, monkeypatch):
         fs = _FakeFs()
         content = b"remote-bytes"
-        monkeypatch.setattr(transport_mod, "_resolve_s3", lambda uri: (fs, uri))
+        monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(fs))
         paths = InlineTransport().unpack_inputs(
             [
                 InputRef(
@@ -173,12 +201,12 @@ class TestUnpackInputs:
             str(tmp_path),
             policy=_policy(inputs=("s3://bucket",)),
         )
-        assert fs.calls == [("s3://bucket/key.pdb", "open")]
+        assert fs.calls == [("bucket/key.pdb", "open")]
         assert Path(paths["pdb"]).read_bytes() == b"remote-bytes"
 
     def test_changed_uri_bytes_are_rejected(self, tmp_path: Path, monkeypatch):
         fs = _FakeFs()
-        monkeypatch.setattr(transport_mod, "_resolve_s3", lambda uri: (fs, uri))
+        monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(fs))
         ref = InputRef(
             name="pdb",
             uri="s3://bucket/key.pdb",
@@ -194,6 +222,93 @@ class TestUnpackInputs:
             )
 
         assert not (tmp_path / "pdb" / "key.pdb").exists()
+
+    def test_s3_integrity_error_uses_bounded_safe_display(
+        self, tmp_path: Path, monkeypatch
+    ):
+        fs = _FakeFs()
+        monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(fs))
+        uri = f"s3://bucket/{'a' * 1_000}.bin"
+        ref = InputRef(
+            name="data",
+            filename="data.bin",
+            uri=uri,
+            content_digest=compute_content_digest(b"expected"),
+            size_bytes=len(b"expected"),
+        )
+
+        with pytest.raises(Exception, match="failed integrity") as exc_info:
+            InlineTransport().unpack_inputs(
+                [ref],
+                str(tmp_path / "inputs"),
+                policy=_policy(inputs=("s3://bucket",)),
+            )
+
+        assert len(str(exc_info.value)) < 400
+        assert not (tmp_path / "inputs" / "data" / "data.bin").exists()
+
+    @pytest.mark.parametrize(
+        ("uri", "remote"),
+        [
+            ("s3://bucket/a%20b/item.bin", "bucket/a b/item.bin"),
+            ("s3://bucket/a%23b/item.bin", "bucket/a#b/item.bin"),
+            ("s3://bucket/caf%C3%A9/item.bin", "bucket/café/item.bin"),
+            ("s3://bucket/a%2520b/item.bin", "bucket/a%20b/item.bin"),
+            ("s3://bucket/percent%25key/item.bin", "bucket/percent%key/item.bin"),
+        ],
+    )
+    def test_s3_sink_opens_exactly_authorized_decoded_segments(
+        self, uri, remote, tmp_path, monkeypatch
+    ):
+        import fsspec
+
+        fs = _FakeFs()
+        resolved_roots: list[str] = []
+
+        def resolve(root, **_options):
+            resolved_roots.append(root)
+            return fs, "ignored"
+
+        monkeypatch.setattr(fsspec.core, "url_to_fs", resolve)
+        body = b"remote-bytes"
+        ref = InputRef(
+            name="data",
+            filename="item.bin",
+            uri=uri,
+            content_digest=compute_content_digest(body),
+            size_bytes=len(body),
+        )
+
+        InlineTransport().unpack_inputs(
+            [ref],
+            str(tmp_path / "inputs"),
+            policy=_policy(inputs=("s3://bucket",)),
+        )
+
+        assert resolved_roots == ["s3://bucket"]
+        assert fs.calls == [(remote, "open")]
+
+    def test_encoded_question_mark_is_rejected_before_s3_resolution(
+        self, tmp_path, monkeypatch
+    ):
+        resolver = MagicMock()
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolver)
+        ref = InputRef(
+            name="data",
+            filename="item.bin",
+            uri="s3://bucket/a%3Fb/item.bin",
+            content_digest=compute_content_digest(b"remote-bytes"),
+            size_bytes=len(b"remote-bytes"),
+        )
+
+        with pytest.raises(ValueError, match="input URI is invalid"):
+            InlineTransport().unpack_inputs(
+                [ref],
+                str(tmp_path / "inputs"),
+                policy=_policy(inputs=("s3://bucket",)),
+            )
+
+        resolver.assert_not_called()
 
     def test_original_filename_preserved_on_disk(self, tmp_path: Path):
         """Lineage stem-matching needs the worker-side basename to match local."""
@@ -244,6 +359,19 @@ class TestUnpackInputs:
                 str(dest),
             )
         assert not dest.exists()
+
+    def test_direct_inline_unpack_enforces_aggregate_bound(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 3)
+
+        with pytest.raises(ValueError, match="Inline inputs exceed"):
+            InlineTransport().unpack_inputs(
+                [InputRef(name="value", data=b"four")],
+                str(tmp_path / "inputs"),
+            )
+
+        assert not (tmp_path / "inputs").exists()
 
     def test_empty_ref_raises(self, tmp_path: Path):
         with pytest.raises(ValueError, match="neither uri nor data"):
@@ -442,18 +570,16 @@ class TestUploadOutputsPrefixMode:
     @pytest.fixture
     def fake_fs(self, monkeypatch) -> _FakeFs:
         fake = _FakeFs()
-        monkeypatch.setattr(
-            transport_mod, "_resolve_s3", lambda uri, **options: (fake, uri)
-        )
+        monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(fake))
         return fake
 
     def test_s3_filesystem_derived_with_sigv4(self, tmp_path, monkeypatch):
         fake = _FakeFs()
         captured: dict = {}
 
-        def resolve(uri, **options):
+        def resolve(target, **options):
             captured.update(options)
-            return fake, uri
+            return fake, transport_mod._s3_remote_path(target)
 
         monkeypatch.setattr(transport_mod, "_resolve_s3", resolve)
         upload_outputs(
@@ -478,7 +604,7 @@ class TestUploadOutputsPrefixMode:
         assert re.fullmatch(
             r"s3://bucket/prefix/my_op/[0-9a-f]{32}\.tar\.gz", stored.uri
         )
-        assert fake_fs.puts[0][1] == stored.uri
+        assert f"s3://{fake_fs.puts[0][1]}" == stored.uri
         # the gzipped tar extracts via the existing client-side unpack
         dest = tmp_path / "extracted"
         InlineTransport().unpack_outputs(fake_fs.put_bytes, str(dest))
@@ -495,7 +621,12 @@ class TestUploadOutputsPrefixMode:
         )
         assert stored.presigned_url is not None
         assert stored.presigned_url.startswith("https://signed.example/")
-        assert fake_fs.signed == [(stored.uri, transport_mod.PRESIGN_EXPIRY_SECONDS)]
+        assert fake_fs.signed == [
+            (
+                stored.uri.removeprefix("s3://"),
+                transport_mod.PRESIGN_EXPIRY_SECONDS,
+            )
+        ]
         assert transport_mod.PRESIGN_EXPIRY_SECONDS == 7 * 24 * 3600
 
     def test_non_signing_fs_propagates(self, tmp_path, monkeypatch):
@@ -505,9 +636,7 @@ class TestUploadOutputsPrefixMode:
                 raise NotImplementedError(msg)
 
         fake = _NoSignFs()
-        monkeypatch.setattr(
-            transport_mod, "_resolve_s3", lambda uri, **options: (fake, uri)
-        )
+        monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(fake))
         with pytest.raises(EndpointTransportError, match="output transfer failed"):
             upload_outputs(
                 _make_outputs(tmp_path),
@@ -590,9 +719,7 @@ class TestUploadOutputsSpoolCleanup:
     """The gzipped-tar spool dir must not outlive the call (warm containers)."""
 
     def test_spool_removed_on_success(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            transport_mod, "_resolve_s3", lambda uri, **options: (_FakeFs(), uri)
-        )
+        monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(_FakeFs()))
         created = _capture_tempdirs(monkeypatch)
         upload_outputs(
             _make_outputs(tmp_path),
@@ -624,9 +751,7 @@ class TestUploadOutputsSpoolCleanup:
 
     def test_compressed_limit_stops_archive_before_upload(self, tmp_path, monkeypatch):
         fake = _FakeFs()
-        monkeypatch.setattr(
-            transport_mod, "_resolve_s3", lambda uri, **options: (fake, uri)
-        )
+        monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(fake))
         monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_BYTES", 4)
         created = _capture_tempdirs(monkeypatch)
 
@@ -790,6 +915,30 @@ class TestHttpCapabilityTransport:
         assert "signature" not in str(exc_info.value)
         assert "fake" not in str(exc_info.value)
 
+    def test_stream_stops_at_declared_size_and_deletes_partial_file(self, tmp_path):
+        destination = tmp_path / "partial.bin"
+        consumed: list[str] = []
+
+        def chunks():
+            consumed.append("oversized")
+            yield b"ab"
+            consumed.append("past-bound")
+            pytest.fail("stream must stop after crossing its declared size")
+
+        with pytest.raises(ArtifactIntegrityError, match="more than 1 bytes"):
+            copy_verified_chunks(
+                chunks(),
+                artifact_id=None,
+                artifact_type="tool input",
+                uri="https://downloads.example/input",
+                destination=str(destination),
+                expected_digest=compute_content_digest(b"a"),
+                expected_size=1,
+            )
+
+        assert consumed == ["oversized"]
+        assert not destination.exists()
+
     def test_stored_download_redirect_is_rejected_and_redacted(
         self, tmp_path, monkeypatch
     ):
@@ -818,15 +967,17 @@ class TestHttpCapabilityTransport:
         for secret in ("signature", "fake-secret", "redirect.example", "token-value"):
             assert secret not in message
 
-    def test_presigned_origin_is_rechecked_after_s3_upload(self, tmp_path, monkeypatch):
+    def test_presigned_origin_is_rechecked_before_s3_upload(
+        self, tmp_path, monkeypatch
+    ):
         fake = _FakeFs()
         monkeypatch.setattr(
             transport_mod,
             "_resolve_s3",
-            lambda uri, **_options: (fake, uri),
+            _fake_s3_resolver(fake),
         )
 
-        with pytest.raises(ValueError, match="not allowed") as exc_info:
+        with pytest.raises(EndpointTransportError) as exc_info:
             upload_outputs(
                 _make_outputs(tmp_path),
                 ["out.txt"],
@@ -835,7 +986,7 @@ class TestHttpCapabilityTransport:
                 policy=_policy(outputs=("s3://bucket/results",)),
             )
 
-        assert fake.puts
+        assert fake.puts == []
         assert "sig=abc" not in str(exc_info.value)
 
     def test_off_policy_output_denied_before_spool_or_resolver(
@@ -982,6 +1133,40 @@ class TestUnpackInputsMinIO:
         # touched the inline cap
         assert Path(paths["weights"]).name == "model.bin"
         assert Path(paths["weights"]).read_bytes() == b"weights-bytes"
+
+    @pytest.mark.parametrize(
+        ("object_key", "uri_key"),
+        [
+            ("inputs/space key.bin", "inputs/space%20key.bin"),
+            ("inputs/hash#key.bin", "inputs/hash%23key.bin"),
+            ("inputs/café.bin", "inputs/caf%C3%A9.bin"),
+            ("inputs/literal%20.bin", "inputs/literal%2520.bin"),
+        ],
+    )
+    def test_encoded_s3_uri_opens_exact_authorized_object(
+        self, object_key, uri_key, s3_fs, tmp_path, monkeypatch
+    ):
+        fs, storage, uri_prefix = s3_fs
+        bucket = uri_prefix.removeprefix("s3://")
+        body = f"content:{object_key}".encode()
+        fs.pipe_file(f"{bucket}/{object_key}", body)
+        self._use_ambient_creds(storage, monkeypatch)
+
+        paths = InlineTransport().unpack_inputs(
+            [
+                InputRef(
+                    name="data",
+                    filename="input.bin",
+                    uri=f"{uri_prefix}/{uri_key}",
+                    content_digest=compute_content_digest(body),
+                    size_bytes=len(body),
+                )
+            ],
+            str(tmp_path / "inputs"),
+            policy=_policy(inputs=(f"{uri_prefix}/inputs",)),
+        )
+
+        assert Path(paths["data"]).read_bytes() == body
 
     def test_missing_key_surfaces_as_input_resolution_failed(
         self, s3_fs, tmp_path, monkeypatch

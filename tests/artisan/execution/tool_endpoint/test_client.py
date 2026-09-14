@@ -445,6 +445,19 @@ class TestCallEndpointFailures:
         with pytest.raises(ArtisanError, match="422"):
             call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
 
+    def test_http_error_never_echoes_untrusted_response_body(self, mock_http, tmp_path):
+        client = _client_of(mock_http)
+        secret = "https://user:password@example.test/x?signature=fake-token"
+        client.post.return_value = _response({"detail": secret}, status=500)
+
+        with pytest.raises(ArtisanError) as exc_info:
+            call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        message = str(exc_info.value)
+        assert "500" in message
+        for value in ("user", "password", "signature", "fake-token"):
+            assert value not in message
+
     def test_non_file_input_raises(self, mock_http, tmp_path):
         with pytest.raises(ArtisanError, match="not a\\s+file path"):
             call_endpoint(
@@ -534,6 +547,39 @@ class TestCallEndpointFailures:
                     execute_dir=str(tmp_path),
                 ),
             )
+        _client_of(mock_http).post.assert_not_called()
+
+    def test_canonical_uri_aliases_reject_conflicting_integrity(
+        self, mock_http, tmp_path
+    ):
+        upper = "S3://BUCKET/team/input.bin"
+        lower = "s3://bucket/team/input.bin"
+
+        with pytest.raises(ArtisanError, match="canonical-equivalent"):
+            call_endpoint(
+                _op(
+                    data_policy=ToolEndpointDataPolicy(
+                        input_allowlist=("s3://bucket/team",)
+                    )
+                ),
+                ExecuteInput(
+                    inputs={"left": upper, "right": lower},
+                    execute_dir=str(tmp_path),
+                    metadata={
+                        "external_integrity": {
+                            upper: {
+                                "content_digest": "a" * 32,
+                                "size_bytes": 1,
+                            },
+                            lower: {
+                                "content_digest": "b" * 32,
+                                "size_bytes": 1,
+                            },
+                        }
+                    },
+                ),
+            )
+
         _client_of(mock_http).post.assert_not_called()
 
 
@@ -704,7 +750,13 @@ class TestTokenDiscovery:
 
     @pytest.mark.parametrize(
         ("token_id", "token_secret"),
-        [("wk-id", None), (None, "ws-secret"), ("", "ws-secret")],
+        [
+            ("wk-id", None),
+            (None, "ws-secret"),
+            ("", "ws-secret"),
+            ("   ", "ws-secret"),
+            ("wk-id", "\t"),
+        ],
     )
     def test_explicit_custom_auth_requires_complete_nonempty_pair(
         self, token_id, token_secret, mock_http, monkeypatch, tmp_path
@@ -772,6 +824,8 @@ class TestAuthAndUrl:
     ):
         lookup = MagicMock(side_effect=AssertionError("credential lookup forbidden"))
         monkeypatch.setattr(client_mod, "env_or_dotenv", lookup)
+        resolver = MagicMock(side_effect=AssertionError("Modal import forbidden"))
+        monkeypatch.setattr(client_mod, "_resolve_url", resolver)
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})
         client.get.return_value = _response(
@@ -781,7 +835,41 @@ class TestAuthAndUrl:
         call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
 
         lookup.assert_not_called()
+        resolver.assert_not_called()
         assert mock_http.Client.call_args.kwargs["headers"] == {}
+
+    def test_model_copy_data_policy_is_revalidated(self, mock_http, tmp_path):
+        cfg = ModalComputeConfig(endpoint_url="https://tool.example").model_copy(
+            update={"data_policy": {"input_allowlist": ["file:///tmp"]}}
+        )
+        op = _op()
+        op.compute_provider = op.compute_provider.model_copy(update={"modal": cfg})
+
+        with pytest.raises(ArtisanError, match="configuration is invalid"):
+            call_endpoint(op, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        mock_http.Client.assert_not_called()
+
+    def test_model_copy_output_store_is_revalidated(self, mock_http, tmp_path):
+        cfg = ModalComputeConfig(endpoint_url="https://tool.example").model_copy(
+            update={
+                "output_store": "https://uploads.example/x?signature=fake-token",
+                "data_policy": ToolEndpointDataPolicy(
+                    output_allowlist=("https://uploads.example",)
+                ),
+            }
+        )
+        op = _op()
+        op.compute_provider = op.compute_provider.model_copy(update={"modal": cfg})
+
+        with pytest.raises(ArtisanError) as exc_info:
+            call_endpoint(op, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        message = str(exc_info.value)
+        assert "configuration is invalid" in message
+        assert "signature" not in message
+        assert "fake-token" not in message
+        mock_http.Client.assert_not_called()
 
     def test_model_copy_cannot_attach_auth_to_cleartext_endpoint(
         self, mock_http, tmp_path
@@ -795,6 +883,23 @@ class TestAuthAndUrl:
         with pytest.raises(ArtisanError, match="must use HTTPS"):
             call_endpoint(op, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
 
+        mock_http.Client.assert_not_called()
+
+    def test_model_copy_empty_builtin_auth_prefix_never_falls_back(
+        self, mock_http, tmp_path, monkeypatch
+    ):
+        cfg = ModalComputeConfig().model_copy(update={"auth_secret": ""})
+        op = _op()
+        op.compute_provider = op.compute_provider.model_copy(update={"modal": cfg})
+        resolver = MagicMock(side_effect=AssertionError("Modal lookup forbidden"))
+        monkeypatch.setattr(client_mod, "_resolve_url", resolver)
+        monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-must-not-send")
+        monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-must-not-send")
+
+        with pytest.raises(ArtisanError, match="nonempty variable prefix"):
+            call_endpoint(op, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        resolver.assert_not_called()
         mock_http.Client.assert_not_called()
 
     @patch("modal.Function.from_name")

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import unicodedata
 from dataclasses import dataclass
 from urllib.parse import SplitResult, quote, unquote, urlsplit, urlunsplit
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _SUPPORTED_SCHEMES = frozenset({"s3", "http", "https"})
 _HTTP_SCHEMES = frozenset({"http", "https"})
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 _BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_S3_BUCKET_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+_MAX_SAFE_URI_DISPLAY = 256
 
 
 @dataclass(frozen=True)
@@ -34,7 +38,7 @@ class ToolEndpointDataPolicy(BaseModel):
     corresponding allowlist.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     input_allowlist: tuple[str, ...] = Field(default_factory=tuple)
     output_allowlist: tuple[str, ...] = Field(default_factory=tuple)
@@ -100,9 +104,14 @@ def _parse_endpoint_uri(uri: str, *, allowlist_root: bool) -> _EndpointUri:
     if not uri:
         msg = "URI must be a nonempty string"
         raise ValueError(msg)
+    if uri[:1].isspace():
+        msg = "URI cannot contain leading whitespace"
+        raise ValueError(msg)
     if _has_control(uri) or _BAD_PERCENT_ESCAPE.search(uri):
         msg = "URI contains invalid characters"
         raise ValueError(msg)
+    has_query = "?" in uri
+    has_fragment = "#" in uri
     try:
         parts = urlsplit(uri)
         port = parts.port
@@ -116,27 +125,50 @@ def _parse_endpoint_uri(uri: str, *, allowlist_root: bool) -> _EndpointUri:
     if parts.username is not None or parts.password is not None:
         msg = "URI user information is forbidden"
         raise ValueError(msg)
-    if parts.fragment:
+    if parts.netloc.rsplit("@", 1)[-1].endswith(":"):
+        msg = "URI authority contains an empty port"
+        raise ValueError(msg)
+    if has_fragment:
         msg = "URI fragments are forbidden"
         raise ValueError(msg)
+    if has_query and not parts.query:
+        msg = "URI query delimiter cannot be empty"
+        raise ValueError(msg)
+    if _has_control(unquote(parts.path, errors="replace")) or _has_control(
+        unquote(parts.query, errors="replace")
+    ):
+        msg = "URI contains encoded control characters"
+        raise ValueError(msg)
+    raw_authority = parts.netloc.rsplit("@", 1)[-1]
+    if raw_authority.startswith("["):
+        try:
+            ipaddress.IPv6Address(parts.hostname or "")
+        except ValueError as exc:
+            msg = "URI bracketed authority must be an IPv6 literal"
+            raise ValueError(msg) from exc
     host = _normalize_host(parts.hostname)
     if scheme == "s3":
-        return _parse_s3(parts, host, port)
-    return _parse_http(parts, scheme, host, port, allowlist_root)
+        return _parse_s3(parts, host, port, has_query)
+    return _parse_http(parts, scheme, host, port, allowlist_root, has_query)
 
 
-def _parse_s3(parts: SplitResult, host: str, port: int | None) -> _EndpointUri:
+def _parse_s3(
+    parts: SplitResult,
+    host: str,
+    port: int | None,
+    has_query: bool,
+) -> _EndpointUri:
     """Parse and canonicalize an S3 URI without transport ambiguity."""
-    if port is not None or parts.query:
+    if port is not None or has_query:
         msg = "S3 roots cannot contain ports or queries"
         raise ValueError(msg)
-    if not host or "*" in host:
+    if not host or "*" in host or not _is_s3_bucket(host):
         msg = "S3 URI requires an exact bucket"
         raise ValueError(msg)
     segments = _s3_segments(parts.path)
     suffix = "/".join(quote(segment, safe="-._~") for segment in segments)
     target = f"s3://{host}" + (f"/{suffix}" if suffix else "")
-    return _EndpointUri("s3", host, segments, target, target)
+    return _EndpointUri("s3", host, segments, target, _bounded_display(target))
 
 
 def _parse_http(
@@ -145,6 +177,7 @@ def _parse_http(
     host: str,
     port: int | None,
     allowlist_root: bool,
+    has_query: bool,
 ) -> _EndpointUri:
     """Parse an exact HTTP origin while preserving capability paths."""
     if not host or "*" in host:
@@ -156,21 +189,18 @@ def _parse_http(
     normalized_port = None if port == _DEFAULT_PORTS[scheme] else port
     authority = _format_authority(host, normalized_port)
     if allowlist_root:
-        if parts.path not in {"", "/"} or parts.query:
+        if parts.path not in {"", "/"} or has_query:
             msg = "HTTP allowlist entries must be origins"
             raise ValueError(msg)
         target = f"{scheme}://{authority}"
         return _EndpointUri(scheme, authority, (), target, target)
-    target = urlunsplit(
-        (
-            scheme,
-            authority,
-            parts.path or "/",
-            parts.query,
-            "",
-        )
-    )
-    safe = urlunsplit((scheme, authority, parts.path or "/", "", ""))
+    if not parts.path:
+        msg = "HTTP capability URI requires an explicit path"
+        raise ValueError(msg)
+    target = f"{scheme}://{authority}{parts.path}"
+    if has_query:
+        target = f"{target}?{parts.query}"
+    safe = _bounded_display(urlunsplit((scheme, authority, parts.path, "", "")))
     return _EndpointUri(scheme, authority, (), target, safe)
 
 
@@ -191,6 +221,10 @@ def _s3_segments(path: str) -> tuple[str, ...]:
             value in {".", ".."}
             or "/" in value
             or "\\" in value
+            # s3fs reserves ``?versionId=`` inside its fs-native path. Reject
+            # every decoded question mark so an authorized object name can
+            # never be reinterpreted as a version selector at the sink.
+            or "?" in value
             or "*" in value
             or _has_control(value)
         ):
@@ -207,15 +241,34 @@ def _normalize_host(host: str | None) -> str:
     if "%" in host or any(char.isspace() for char in host):
         msg = "URI host contains invalid characters"
         raise ValueError(msg)
-    value = host[:-1] if host.endswith(".") else host
+    value = host
     try:
         return ipaddress.ip_address(value).compressed.lower()
     except ValueError:
         try:
-            return value.encode("idna").decode("ascii").lower()
-        except UnicodeError as exc:
+            normalized = (
+                httpx.URL(f"http://{_format_authority(value, None)}")
+                .raw_host.decode("ascii")
+                .lower()
+            )
+        except (UnicodeError, httpx.InvalidURL) as exc:
             msg = "URI host is invalid"
             raise ValueError(msg) from exc
+    if normalized.endswith("."):
+        normalized = normalized[:-1]
+    if not normalized or normalized.endswith("."):
+        msg = "URI host is invalid"
+        raise ValueError(msg)
+    return normalized
+
+
+def _is_s3_bucket(host: str) -> bool:
+    """Return whether a normalized authority has unambiguous bucket syntax."""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return all(_S3_BUCKET_LABEL.fullmatch(label) for label in host.split("."))
+    return False
 
 
 def _format_authority(host: str, port: int | None) -> str:
@@ -238,6 +291,8 @@ def _safe_uri_display(uri: object) -> str:
     if not isinstance(uri, str):
         return "<invalid URI>"
     raw = uri.split("#", 1)[0].split("?", 1)[0]
+    if _has_control(raw):
+        return "<invalid URI>"
     try:
         parts = urlsplit(raw)
         scheme = parts.scheme.lower()
@@ -247,10 +302,18 @@ def _safe_uri_display(uri: object) -> str:
         return "<invalid URI>"
     if not scheme:
         return "<invalid URI>"
-    authority = _format_authority(host, port) if host else "<invalid>"
-    return urlunsplit((scheme, authority, parts.path, "", ""))
+    normalized_port = None if port == _DEFAULT_PORTS.get(scheme) else port
+    authority = _format_authority(host, normalized_port) if host else "<invalid>"
+    return _bounded_display(urlunsplit((scheme, authority, parts.path, "", "")))
+
+
+def _bounded_display(value: str) -> str:
+    """Bound one already-sanitized URI display for returned diagnostics."""
+    if len(value) <= _MAX_SAFE_URI_DISPLAY:
+        return value
+    return f"{value[: _MAX_SAFE_URI_DISPLAY - 3]}..."
 
 
 def _has_control(value: str) -> bool:
     """Return whether a URI component contains a control character."""
-    return any(ord(char) < 32 or ord(char) == 127 for char in value)
+    return any(unicodedata.category(char) in {"Cc", "Cf"} for char in value)

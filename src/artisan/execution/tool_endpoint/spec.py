@@ -81,6 +81,13 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
             "set one with the worker image to deploy"
         )
         raise ValueError(msg)
+    try:
+        modal_cfg = ModalComputeConfig.model_validate(
+            modal_cfg.model_dump(mode="python", warnings=False)
+        )
+    except (TypeError, ValueError) as exc:
+        msg = "class-default modal endpoint configuration is invalid"
+        raise ValueError(msg) from exc
     resources = op_cls.model_fields["compute_resources"].default
     if not isinstance(resources, ComputeResources):
         resources = ComputeResources()
