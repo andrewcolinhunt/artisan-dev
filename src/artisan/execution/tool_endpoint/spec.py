@@ -45,6 +45,7 @@ class EndpointSpec(BaseModel):
     params_schema: dict[str, Any] = Field(default_factory=dict)
     description: str = ""
     input_roles: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    data_policy: dict[str, list[str]] = Field(default_factory=dict)
 
 
 def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
@@ -84,6 +85,12 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
     if not isinstance(resources, ComputeResources):
         resources = ComputeResources()
     params_schema = params_schema_for(op_cls)
+    if modal_cfg.output_store is not None:
+        try:
+            modal_cfg.data_policy.authorize_output(modal_cfg.output_store)
+        except ValueError as exc:
+            msg = "class-default output_store is outside the endpoint data policy"
+            raise ValueError(msg) from exc
     return EndpointSpec(
         op_module=op_cls.__module__,
         op_qualname=op_cls.__qualname__,
@@ -111,4 +118,5 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
             str(role): {"required": s.required, "description": s.description}
             for role, s in op_cls.inputs.items()
         },
+        data_policy=modal_cfg.data_policy.model_dump(mode="json"),
     )

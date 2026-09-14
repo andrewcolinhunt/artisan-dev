@@ -10,6 +10,7 @@ from artisan.schemas.operation_config.compute import (
     LocalComputeConfig,
     ModalComputeConfig,
 )
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 
 
 class TestCompute:
@@ -93,6 +94,7 @@ class TestModalComputeConfig:
         assert config.auth_secret is None
         assert config.poll_interval == 2.0
         assert config.output_store is None
+        assert config.data_policy == ToolEndpointDataPolicy()
 
     def test_endpoint_client_fields(self):
         config = ModalComputeConfig(
@@ -101,6 +103,9 @@ class TestModalComputeConfig:
             auth_secret="MY_PROXY_AUTH",
             poll_interval=0.5,
             output_store="s3://bucket/prefix",
+            data_policy=ToolEndpointDataPolicy(
+                output_allowlist=("s3://bucket/prefix",)
+            ),
         )
         assert config.endpoint_url == "https://my-org--tool.modal.run"
         assert config.auth_secret == "MY_PROXY_AUTH"
@@ -108,7 +113,23 @@ class TestModalComputeConfig:
         assert config.output_store == "s3://bucket/prefix"
 
     def test_output_store_round_trips(self):
-        config = ModalComputeConfig(image="img", output_store="s3://b/p")
+        config = ModalComputeConfig(
+            image="img",
+            output_store="s3://b/p",
+            data_policy=ToolEndpointDataPolicy(output_allowlist=("s3://b/p",)),
+        )
+        assert ModalComputeConfig.model_validate(config.model_dump()) == config
+
+    def test_data_policy_round_trips_as_frozen_value(self):
+        config = ModalComputeConfig(
+            data_policy={
+                "input_allowlist": ["S3://BUCKET/read/"],
+                "output_allowlist": ["HTTPS://UPLOADS.EXAMPLE:443/"],
+            }
+        )
+
+        assert config.data_policy.input_allowlist == ("s3://bucket/read",)
+        assert config.data_policy.output_allowlist == ("https://uploads.example",)
         assert ModalComputeConfig.model_validate(config.model_dump()) == config
 
     @pytest.mark.parametrize("scheme", ["http", "https"])
@@ -121,6 +142,40 @@ class TestModalComputeConfig:
     def test_poll_interval_must_be_positive(self):
         with pytest.raises(ValueError, match="poll_interval"):
             ModalComputeConfig(image="img", poll_interval=0)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "example.com",
+            "ftp://example.com",
+            "https://user:secret@example.com",
+            "https://example.com/path",
+            "https://example.com?query=x",
+            "https://example.com/#fragment",
+        ],
+    )
+    def test_custom_endpoint_requires_absolute_root_http_url(self, url):
+        with pytest.raises(ValueError, match="endpoint_url|HTTP allowlist"):
+            ModalComputeConfig(endpoint_url=url)
+
+    def test_custom_endpoint_is_normalized(self):
+        config = ModalComputeConfig(endpoint_url="HTTPS://EXAMPLE.COM.:443/")
+        assert config.endpoint_url == "https://example.com"
+
+    def test_authenticated_custom_endpoint_requires_https(self):
+        with pytest.raises(ValueError, match="must use HTTPS"):
+            ModalComputeConfig(
+                endpoint_url="http://localhost:8000", auth_secret="LOCAL_PROXY"
+            )
+
+    def test_unauthenticated_http_custom_endpoint_is_valid(self):
+        config = ModalComputeConfig(endpoint_url="http://localhost:8000")
+        assert config.endpoint_url == "http://localhost:8000"
+
+    @pytest.mark.parametrize("prefix", ["", " ", "\t"])
+    def test_explicit_auth_prefix_must_be_nonempty(self, prefix):
+        with pytest.raises(ValueError, match="nonempty"):
+            ModalComputeConfig(auth_secret=prefix)
 
     @pytest.mark.parametrize(
         ("field", "value"),
