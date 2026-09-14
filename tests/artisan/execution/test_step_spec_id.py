@@ -222,30 +222,6 @@ class TestComputeStepSpecId:
         assert len(spec1) == 32
 
 
-class _ParamsV1(BaseModel):
-    """Mock params for ``_OpV1``.
-
-    Attributes:
-        temperature: Mock temperature.
-        max_steps: Mock max steps.
-    """
-
-    temperature: float = Field(default=0.5)
-    max_steps: int = Field(default=100)
-
-
-class _ParamsV2(BaseModel):
-    """Mock params for ``_OpV2``.
-
-    Attributes:
-        temperature: Mock temperature.
-        max_steps: Mock max steps.
-    """
-
-    temperature: float = Field(default=0.8)
-    max_steps: int = Field(default=100)
-
-
 class _OpV1(OperationDefinition):
     name = "test_op"
     description = "Test operation v1"
@@ -260,7 +236,19 @@ class _OpV1(OperationDefinition):
             infer_lineage_from={"inputs": []},
         ),
     }
-    params: _ParamsV1 = _ParamsV1()
+
+    class Params(BaseModel):
+        """Mock parameters.
+
+        Attributes:
+            temperature: Mock temperature.
+            max_steps: Mock maximum step count.
+        """
+
+        temperature: float = Field(default=0.5)
+        max_steps: int = Field(default=100)
+
+    params: Params = Params()
 
     def execute_function(self, inputs: Any) -> dict[str, Any]:
         return {}
@@ -283,7 +271,19 @@ class _OpV2(OperationDefinition):
             infer_lineage_from={"inputs": []},
         ),
     }
-    params: _ParamsV2 = _ParamsV2()
+
+    class Params(BaseModel):
+        """Mock parameters with a changed default.
+
+        Attributes:
+            temperature: Mock temperature.
+            max_steps: Mock maximum step count.
+        """
+
+        temperature: float = Field(default=0.8)
+        max_steps: int = Field(default=100)
+
+    params: Params = Params()
 
     def execute_function(self, inputs: Any) -> dict[str, Any]:
         return {}
