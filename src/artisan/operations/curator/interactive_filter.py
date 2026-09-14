@@ -36,7 +36,7 @@ from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.utils.dataframes import encode_metric_value
 from artisan.utils.dicts import flatten_dict
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import digest_utf8
 from artisan.utils.path import uri_join
 
 
@@ -550,16 +550,10 @@ class InteractiveFilter:
         )
         sorted_input_ids = ",".join(sorted(self._primary_artifact_ids))
 
-        step_spec_id = compute_artifact_id(
-            f"{step_name}|{criteria_json}|{sorted_input_ids}".encode()
-        )
-        step_run_id = compute_artifact_id(f"{step_spec_id}|{timestamp_str}".encode())
-        execution_spec_id = compute_artifact_id(
-            f"filter|{sorted_input_ids}|{criteria_json}".encode()
-        )
-        execution_run_id = compute_artifact_id(
-            f"{execution_spec_id}|{timestamp_str}".encode()
-        )
+        step_spec_id = digest_utf8(f"{step_name}|{criteria_json}|{sorted_input_ids}")
+        step_run_id = digest_utf8(f"{step_spec_id}|{timestamp_str}")
+        execution_spec_id = digest_utf8(f"filter|{sorted_input_ids}|{criteria_json}")
+        execution_run_id = digest_utf8(f"{execution_spec_id}|{timestamp_str}")
 
         # Build and record step start
         start_record = StepStartRecord(

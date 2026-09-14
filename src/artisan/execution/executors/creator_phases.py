@@ -240,6 +240,7 @@ def prep_unit(
             artifact_store,
             endpoint_routed=routes_to_endpoint(operation),
         )
+        external_integrity = _external_integrity_metadata(input_artifacts)
 
     # --- preprocess phase ---
     with phase_timer("preprocess", timings):
@@ -270,6 +271,7 @@ def prep_unit(
                 inputs=monolithic_inputs,
                 execute_dir=execute_dir,
                 log_path=log_path,
+                metadata={"external_integrity": external_integrity},
                 files_dir=files_dir,
             )
         )
@@ -298,6 +300,7 @@ def prep_unit(
                     inputs=per_artifact_inputs,
                     execute_dir=artifact_exec_dir,
                     log_path=log_path,
+                    metadata={"external_integrity": external_integrity},
                     files_dir=artifact_files_dir,
                 )
             )
@@ -379,8 +382,32 @@ def post_unit(
         if not op_result.success:
             raise _PostprocessFailure(op_result.error or "Postprocess failed")
 
+        flat_input_artifacts = _extract_artifacts_from_input(prepped.input_artifacts)
+        draft_names = {
+            role: [getattr(artifact, "original_name", None) for artifact in artifacts]
+            for role, artifacts in op_result.artifacts.items()
+        }
+        derive_human_names(
+            op_result.artifacts,
+            flat_input_artifacts,
+            filesystem_match_map,
+        )
         finalized_artifacts = finalize_artifacts(op_result.artifacts)
         validate_artifacts_match_specs(finalized_artifacts, operation_class.outputs)
+        # Lineage mappings use the postprocessor's occurrence names as structural
+        # keys. Keep that view separate because human-name derivation can collapse
+        # two distinct occurrences to the same display name.
+        lineage_artifacts = {
+            role: [
+                artifact.model_copy(update={"original_name": draft_name})
+                if draft_name is not None
+                else artifact
+                for artifact, draft_name in zip(
+                    artifacts, draft_names[role], strict=True
+                )
+            ]
+            for role, artifacts in finalized_artifacts.items()
+        }
 
         # Upload local files_dir bytes to runtime_env.files_root and
         # rewrite external_path on each finalized artifact. Runs inside
@@ -400,6 +427,12 @@ def post_unit(
             operation_name=operation.name,
             sandbox_path=prepped.sandbox_path,
         )
+        for artifact_list in finalized_artifacts.values():
+            for artifact in artifact_list:
+                if artifact.EXTERNALLY_BACKED:
+                    artifact.verify_external_content(
+                        fs=runtime_env.storage.filesystem()
+                    )
 
         augment_match_map_from_artifacts(
             filesystem_match_map,
@@ -409,10 +442,9 @@ def post_unit(
 
     # --- lineage phase ---
     with phase_timer("lineage", timings):
-        flat_input_artifacts = _extract_artifacts_from_input(prepped.input_artifacts)
         if op_result.lineage is None:
             lineage = capture_lineage_metadata(
-                output_artifacts=finalized_artifacts,
+                output_artifacts=lineage_artifacts,
                 input_artifacts=flat_input_artifacts,
                 output_specs=operation_class.outputs,
                 group_by=operation.group_by,
@@ -424,17 +456,17 @@ def post_unit(
             validate_lineage_integrity(
                 op_result.lineage,
                 flat_input_artifacts,
-                finalized_artifacts,
+                lineage_artifacts,
             )
             lineage = op_result.lineage
 
         edge_pairs = build_edges(
             lineage=lineage,
-            finalized_artifacts=finalized_artifacts,
+            finalized_artifacts=lineage_artifacts,
         )
 
         validate_lineage_completeness(
-            finalized_artifacts,
+            lineage_artifacts,
             operation_class.outputs,
             lineage,
         )
@@ -453,11 +485,6 @@ def post_unit(
             prepped.execution_run_id,
             built_artifacts,
         )
-
-    # --- name derivation ---
-    derive_human_names(
-        finalized_artifacts, edge_pairs, flat_input_artifacts, filesystem_match_map
-    )
 
     # Capture the unit log before sandbox cleanup destroys it — the
     # recorder persists it to the executions table on success.
@@ -481,6 +508,27 @@ def post_unit(
 # ---------------------------------------------------------------------------
 
 
+def _external_integrity_metadata(
+    artifacts: dict[str, list[Artifact]],
+) -> dict[str, dict[str, object]]:
+    """Return digest contracts for directly transported external URIs."""
+    contracts: dict[str, dict[str, object]] = {}
+    for artifact_list in artifacts.values():
+        for artifact in artifact_list:
+            path = artifact.materialized_path
+            if not artifact.EXTERNALLY_BACKED or not path or "://" not in path:
+                continue
+            contract = {
+                "content_digest": getattr(artifact, "content_hash", None),
+                "size_bytes": getattr(artifact, "size_bytes", None),
+            }
+            previous = contracts.setdefault(path, contract)
+            if previous != contract:
+                msg = f"Conflicting integrity metadata for external input {path!r}"
+                raise ValueError(msg)
+    return contracts
+
+
 def _upload_files_to_root(
     finalized_artifacts: dict[str, list[Artifact]],
     files_dir: str | None,
@@ -492,11 +540,10 @@ def _upload_files_to_root(
 ) -> None:
     """Relocate local ``files_dir`` bytes to ``runtime_env.files_root``.
 
-    Walks every finalized artifact whose ``external_path`` points
+    Walks every finalized external artifact whose locator points
     inside the unit's local ``files_dir`` and moves (local) or
     uploads (cloud) the underlying file to its canonical sharded
-    destination under ``files_root``, then rewrites the artifact's
-    ``external_path`` in place.
+    destination under ``files_root``, then rewrites the locator in place.
 
     Multiple artifacts may share one source file (e.g.
     ``AppendableGenerator`` emits N ``AppendableArtifact`` instances
@@ -558,7 +605,10 @@ def _upload_files_to_root(
 
     for artifact_list in finalized_artifacts.values():
         for artifact in artifact_list:
-            ext_path = artifact.external_path
+            if not artifact.EXTERNALLY_BACKED:
+                continue
+            locator_field = next(iter(artifact.LOCATOR_FIELDS))
+            ext_path = getattr(artifact, locator_field)
             if ext_path is None:
                 continue
             if not _is_under_local_dir(ext_path, files_dir):
@@ -590,7 +640,7 @@ def _upload_files_to_root(
 
             destination = moved[ext_path]
             # Direct mutation: Artifact is not frozen (model_config, base.py).
-            artifact.external_path = destination
+            setattr(artifact, locator_field, destination)
             # Local: shutil.move relocated the bytes; point at the
             # new path. Cloud: sandbox still has the bytes until the
             # cleanup at the end of post_unit — keep the local ref

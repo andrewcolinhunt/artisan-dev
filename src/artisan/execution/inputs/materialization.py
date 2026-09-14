@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.specs.input_spec import InputSpec
@@ -95,8 +96,18 @@ def materialize_inputs(
         # the reference flow through pack_inputs' existing passthrough. No
         # local file is written, so the artifact stays out of
         # materialized_ids (the filesystem-passthrough match map).
-        if endpoint_routed and _is_remote(artifact.external_path):
-            artifact.materialized_path = artifact.external_path
+        locator = (
+            getattr(artifact, next(iter(artifact.LOCATOR_FIELDS)))
+            if artifact.EXTERNALLY_BACKED
+            else None
+        )
+        if (
+            endpoint_routed
+            and not isinstance(artifact, AppendableArtifact)
+            and _is_remote(locator)
+        ):
+            artifact.verify_external_content(fs=fs)
+            artifact.materialized_path = locator
             continue
         materialized = artifact.materialize_to(directory, format=fmt, fs=fs)
         if isinstance(materialized, str):

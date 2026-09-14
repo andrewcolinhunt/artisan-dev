@@ -16,7 +16,7 @@ from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 def _run(
@@ -115,7 +115,7 @@ class TestAppendableGenerator:
         jsonl_path = raw["records"][0]["output_path"]
         with open(jsonl_path) as fh:
             line = fh.read().strip()
-        expected = compute_artifact_id(line.encode())
+        expected = compute_content_digest(line.encode())
         assert raw["records"][0]["content_hash"] == expected
 
 

@@ -24,7 +24,7 @@ from artisan.schemas.operation_config.compute import ComputeProvider, ModalCompu
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 class AppendableGenerator(OperationDefinition):
@@ -118,7 +118,7 @@ class AppendableGenerator(OperationDefinition):
                     records_meta.append(
                         {
                             "record_id": record["record_id"],
-                            "content_hash": compute_artifact_id(line.encode()),
+                            "content_hash": compute_content_digest(line.encode()),
                             "size_bytes": len(line.encode()),
                             "output_path": file_path,
                         }

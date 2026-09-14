@@ -112,17 +112,9 @@ class TestEdgeCases:
         assert result == {f"{input_id}_out": input_id}
 
 
-def _make_artifact(artifact_id: str, original_name: str) -> DataArtifact:
-    """Create a finalized DataArtifact for testing."""
-    return DataArtifact(
-        artifact_type="data",
-        artifact_id=artifact_id,
-        origin_step_number=1,
-        content=b"a\n1\n",
-        original_name=original_name,
-        extension=".csv",
-        size_bytes=4,
-    )
+def _make_artifact(_artifact_id: str, original_name: str) -> DataArtifact:
+    """Create a draft output artifact for name matching."""
+    return DataArtifact.draft(b"a\n1\n", original_name, 1)
 
 
 class TestAugmentMatchMapFromArtifacts:

@@ -1299,7 +1299,7 @@ def _make_metric_from_name(name: str, step: int = 0) -> MetricArtifact:
 
 def _valid_group_id(label: str) -> str:
     """Create a deterministic, canonical-shaped group ID for a test pair."""
-    return compute_group_id([label])
+    return compute_group_id({"input": ("metric", label)})
 
 
 class TestCaptureLineageMultiRoleCoInputs:

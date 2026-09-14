@@ -25,6 +25,7 @@ from typing import Any, BinaryIO
 from urllib.parse import quote
 
 from artisan.execution.tool_endpoint.protocol import InputRef, StoredOutputs
+from artisan.schemas.artifact.external import copy_verified_file
 from artisan.utils.path import uri_join
 
 MAX_INLINE_BYTES = 100 * 1024 * 1024
@@ -46,11 +47,16 @@ PRESIGN_EXPIRY_SECONDS = 7 * 24 * 3600
 class InlineTransport:
     """v1 — inputs as inline bytes or ``s3://`` URIs; outputs as a tar."""
 
-    def pack_inputs(self, files: dict[str, str]) -> list[InputRef]:
+    def pack_inputs(
+        self,
+        files: dict[str, str],
+        expected_content: dict[str, tuple[str, int]] | None = None,
+    ) -> list[InputRef]:
         """Pack local files inline; pass object-store URIs through as refs.
 
         Args:
             files: Input name → local path or ``scheme://`` URI.
+            expected_content: URI → expected digest and byte count.
 
         Returns:
             One InputRef per input.
@@ -70,7 +76,19 @@ class InlineTransport:
         for name, source in files.items():
             filename = os.path.basename(source.rstrip("/"))
             if "://" in source:
-                refs.append(InputRef(name=name, filename=filename, uri=source))
+                expected = (expected_content or {}).get(source)
+                if expected is None:
+                    msg = f"External input {name!r} lacks expected digest and size"
+                    raise ValueError(msg)
+                refs.append(
+                    InputRef(
+                        name=name,
+                        filename=filename,
+                        uri=source,
+                        content_digest=expected[0],
+                        size_bytes=expected[1],
+                    )
+                )
                 continue
             with open(source, "rb") as f:
                 data = f.read(MAX_INLINE_BYTES - total + 1)
@@ -118,7 +136,15 @@ class InlineTransport:
             local = os.path.join(role_dir, filename)
             if ref.uri is not None:
                 ref_fs, remote = _resolve_fs(ref.uri, fs)
-                ref_fs.get(remote, local)
+                copy_verified_file(
+                    artifact_id=None,
+                    artifact_type="tool input",
+                    uri=remote,
+                    destination=local,
+                    expected_digest=ref.content_digest,
+                    expected_size=ref.size_bytes,
+                    fs=ref_fs,
+                )
             elif ref.data is not None:
                 with open(local, "wb") as f:
                     f.write(ref.data)

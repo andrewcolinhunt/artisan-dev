@@ -11,7 +11,6 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
-import xxhash
 
 from artisan.execution.executors.creator import run_creator_lifecycle
 from artisan.execution.models.execution_unit import ExecutionUnit
@@ -26,10 +25,6 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
-
-
-def _compute_artifact_id(content: bytes) -> str:
-    return xxhash.xxh3_128(content).hexdigest()
 
 
 def _setup_delta_tables(base_path: Path) -> None:
