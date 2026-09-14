@@ -705,7 +705,7 @@ class StepTracker:
         df = pl.DataFrame([row], schema=STEPS_SCHEMA).with_columns(
             pl.lit(None).cast(pl.String).alias("logical_commit_id")
         )
-        df = df.cast(get_physical_schema(TablePath.STEPS))
+        df = df.cast(pl.Schema(get_physical_schema(TablePath.STEPS)))
         mode: Literal["append", "overwrite"] = (
             "append" if self._fs.exists(self._steps_path) else "overwrite"
         )

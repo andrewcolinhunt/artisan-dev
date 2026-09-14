@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import polars as pl
@@ -19,6 +20,9 @@ from artisan.schemas.orchestration.step_lifecycle import (
 )
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
+from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.commit_plan import build_commit_plan
+from artisan.storage.io.staging import StagingManager
 
 
 def _record(run_id: str, step: int = 0, spec: str | None = None) -> StepStartRecord:
@@ -59,6 +63,7 @@ def _terminal(
 
 def _write_terminal(
     tracker: StepTracker,
+    tmp_path: Path,
     run_id: str,
     status: StepStatus,
     *,
@@ -67,20 +72,55 @@ def _write_terminal(
     tracker.create_attempt(_record(run_id))
     tracker.transition(run_id, StepStatus.PENDING, StepStatus.RUNNING)
     counts = (2, 1) if status is StepStatus.PARTIAL else (3, 0)
-    tracker.transition(
+    _commit_terminal(
+        tracker,
+        tmp_path,
+        run_id,
+        _terminal(status, *counts, run_id),
+        spec,
+    )
+
+
+def _commit_terminal(
+    tracker: StepTracker,
+    tmp_path: Path,
+    run_id: str,
+    result: StepResult,
+    spec: str = "b" * 32,
+) -> None:
+    candidate = tracker.prepare_terminal_candidate(
         run_id,
         StepStatus.RUNNING,
-        status,
+        result.status,
         step_spec_id=spec,
-        result=_terminal(status, *counts, run_id),
+        result=result,
     )
+    staging = StagingManager(str(tmp_path / "staging"), tracker._fs)
+    staging.stage_orchestrator_dataframe(
+        candidate,
+        "orchestration/steps",
+        commit_kind="step_result",
+        step_run_id=run_id,
+        step_number=0,
+        operation_name="op-0",
+    )
+    plan = build_commit_plan(
+        delta_root=str(tmp_path),
+        staging_root=staging.staging_dir,
+        fs=tracker._fs,
+        commit_kind="step_result",
+        step_run_id=run_id,
+        step_number=0,
+        operation_name="op-0",
+    )
+    DeltaCommitter(str(tmp_path), staging, fs=tracker._fs).commit_logical(plan)
 
 
 @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
 def test_cache_policy_uses_explicit_status(mock_membership, tmp_path) -> None:
     mock_membership.return_value = pl.DataFrame({"execution_run_id": ["c" * 32]})
     tracker = StepTracker(str(tmp_path), "run")
-    _write_terminal(tracker, "a" * 32, StepStatus.PARTIAL)
+    _write_terminal(tracker, tmp_path, "a" * 32, StepStatus.PARTIAL)
     assert tracker.check_cache("b" * 32, CachePolicy.ALL_SUCCEEDED) is None
     hit = tracker.check_cache("b" * 32, CachePolicy.STEP_COMPLETED)
     assert hit is not None
@@ -89,7 +129,7 @@ def test_cache_policy_uses_explicit_status(mock_membership, tmp_path) -> None:
 
 def test_resume_restores_explicit_statuses(tmp_path) -> None:
     tracker = StepTracker(str(tmp_path), "run")
-    _write_terminal(tracker, "a" * 32, StepStatus.SUCCEEDED)
+    _write_terminal(tracker, tmp_path, "a" * 32, StepStatus.SUCCEEDED)
     states = tracker.load_resumable_steps("run")
     assert [state.status for state in states] == [StepStatus.SUCCEEDED]
 
@@ -185,13 +225,16 @@ def test_current_reader_exposes_every_authoritative_status(
                 failed_count=1,
                 step_run_id=step_run_id,
             )
-        tracker.transition(
-            step_run_id,
-            StepStatus.RUNNING,
-            status,
-            step_spec_id="b" * 32,
-            result=result,
-        )
+        if status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+            _commit_terminal(tracker, tmp_path, step_run_id, result)
+        else:
+            tracker.transition(
+                step_run_id,
+                StepStatus.RUNNING,
+                status,
+                step_spec_id="b" * 32,
+                result=result,
+            )
 
     states = tracker.load_current_states("run")
     assert len(states) == 1

@@ -608,7 +608,6 @@ def execute_step(
             config.storage.filesystem(),
             group_by=operation.group_by,
             step_run_ids=step_run_ids,
-            persist_result=persist_result,
             storage_options=config.storage.delta_storage_options(),
             files_root=config.files_root,
         )
