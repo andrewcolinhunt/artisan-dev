@@ -318,6 +318,11 @@ timings.plot_steps(step_numbers=[0, 2, 4])  # Subset of steps
 timings.plot_execution_stats()  # Stacked bar chart of mean execution timings
 ```
 
+When `pipeline_run_id` is set, execution timing includes only work actually
+performed for that run. Cached outputs remain visible to provenance and result
+inspection, but the source execution's historical duration is not counted as
+time spent executing in the current run.
+
 ---
 
 ## Common patterns
