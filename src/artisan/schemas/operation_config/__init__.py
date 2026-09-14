@@ -9,6 +9,7 @@ from artisan.schemas.operation_config.compute import (
     LocalComputeConfig,
     ModalComputeConfig,
 )
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.environment_spec import (
     ApptainerEnvironmentSpec,
     DockerEnvironmentSpec,
@@ -38,6 +39,7 @@ __all__ = [
     "PixiEnvironmentSpec",
     # RunnerResources
     "RunnerResources",
+    "ToolEndpointDataPolicy",
     # ToolSpec
     "ToolSpec",
 ]
