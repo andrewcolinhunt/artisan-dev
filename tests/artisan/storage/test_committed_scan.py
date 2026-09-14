@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import polars as pl
+import pytest
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
+from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.committed_scan import read_committed
 from artisan.storage.core.table_schemas import (
@@ -36,6 +38,7 @@ def test_committed_scan_hides_planned_then_exposes_complete(tmp_path):
     staging.stage_orchestrator_dataframe(
         staged,
         TablePath.ARTIFACT_INDEX.value,
+        commit_kind="input_registration",
         step_run_id="b" * 32,
         step_number=0,
         operation_name="ingest",
@@ -89,3 +92,26 @@ def test_committed_scan_hides_planned_then_exposes_complete(tmp_path):
         fs=fs,
     )
     assert visible["artifact_id"].to_list() == ["a" * 32]
+
+    staged.with_columns(
+        pl.lit("c" * 32).alias("artifact_id"),
+        pl.lit(plan.logical_commit_id).alias("logical_commit_id"),
+    ).write_delta(
+        f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}",
+        mode="append",
+    )
+    with pytest.raises(StoreIntegrityError, match="owns unplanned"):
+        read_committed(delta_root, TablePath.ARTIFACT_INDEX, fs=fs)
+
+    pl.DataFrame(
+        {
+            "artifact_id": ["a" * 32],
+            "uri": ["file:///undeclared.json"],
+            "logical_commit_id": [plan.logical_commit_id],
+        }
+    ).write_delta(
+        f"{delta_root}/{TablePath.ARTIFACT_LOCATIONS.value}",
+        mode="append",
+    )
+    with pytest.raises(StoreIntegrityError, match="has unplanned"):
+        read_committed(delta_root, TablePath.ARTIFACT_LOCATIONS, fs=fs)

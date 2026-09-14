@@ -213,6 +213,18 @@ class CommitError(ArtisanError):
             recovery_hint="REPORT_TO_USER",
         )
 
+    def to_dict(self, include_cause: bool = True) -> dict[str, Any]:
+        """Serialize the standard envelope with exact repair context."""
+        data = super().to_dict(include_cause=include_cause)
+        data.update(
+            logical_commit_id=self.logical_commit_id,
+            table=self.table,
+            plan_key=self.plan_key,
+            verified_tables=list(self.verified_tables),
+            staging_objects=list(self.staging_objects),
+        )
+        return data
+
 
 class StoreIntegrityError(ArtisanError):
     """Raised when plan, control, staged, or persisted evidence conflicts."""

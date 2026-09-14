@@ -80,6 +80,7 @@ def _commit_terminal(tracker, tmp_path, result):
     staging.stage_orchestrator_dataframe(
         candidate,
         "orchestration/steps",
+        commit_kind="step_result",
         step_run_id="a" * 32,
         step_number=0,
         operation_name="op",

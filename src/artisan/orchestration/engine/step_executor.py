@@ -23,6 +23,7 @@ from typing import Any, Never, cast
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel
 
+from artisan.errors import PersistenceIntegrityError
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.executors.curator import (
     is_curator_operation,
@@ -409,6 +410,26 @@ def _persist_result(
     return persist(result, tuple(execution_run_ids))
 
 
+def _require_recorded_execution_ids(
+    results: list[UnitResult],
+) -> list[str]:
+    """Reject dispatched work that produced no committable worker seal identity."""
+    missing = [
+        index
+        for index, result in enumerate(results)
+        if not result.execution_run_ids
+        or any(not execution_id for execution_id in result.execution_run_ids)
+    ]
+    if missing:
+        msg = f"Dispatched execution results lack sealed staging identities: {missing}"
+        raise PersistenceIntegrityError(msg)
+    execution_ids = extract_execution_run_ids(results)
+    if len(execution_ids) != len(set(execution_ids)):
+        msg = "Dispatched execution results contain duplicate staging identities"
+        raise PersistenceIntegrityError(msg)
+    return execution_ids
+
+
 def _result_error(results: list[UnitResult], fallback: str | None = None) -> str | None:
     """Return the first unit diagnostic, then an infrastructure fallback."""
     return next(
@@ -619,6 +640,7 @@ def execute_step(
             skip_cache=skip_cache,
             step_run_id=step_run_id,
             step_run_ids=step_run_ids,
+            persist_result=persist_result,
         )
 
     # Standard creator operation execution
@@ -884,7 +906,10 @@ def _execute_curator_step(
         metadata={"timings": timings},
         step_run_id=step_run_id,
     )
-    return _persist_result(result, extract_execution_run_ids(results), persist_result)
+    execution_ids = extract_execution_run_ids(results)
+    if persist_result is not None:
+        execution_ids = _require_recorded_execution_ids(results)
+    return _persist_result(result, execution_ids, persist_result)
 
 
 def _run_curator_in_subprocess(
@@ -1383,6 +1408,8 @@ def _execute_creator_step(
 
         # --- verify_staging phase ---
         if units_to_dispatch:
+            if persist_result is not None:
+                _require_recorded_execution_ids(results)
             _verify_staging_if_needed(
                 step_runner, results, config, step_number, operation.name, timings
             )

@@ -56,6 +56,7 @@ def test_delta_commit_roundtrip_on_minio(s3_fs):
     staging_manager.stage_orchestrator_dataframe(
         df,
         TablePath.ARTIFACT_INDEX.value,
+        commit_kind="input_registration",
         step_run_id=step_run_id,
         step_number=0,
         operation_name="smoke_input_registration",

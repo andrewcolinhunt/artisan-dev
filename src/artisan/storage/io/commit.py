@@ -13,6 +13,10 @@ from fsspec import AbstractFileSystem
 from artisan.errors import CommitError, StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.schemas.orchestration.step_lifecycle import (
+    TERMINAL_STEP_STATUSES,
+    StepStatus,
+)
 from artisan.storage.core.committed_scan import read_committed, read_logical_commits
 from artisan.storage.core.store_format import (
     assert_store_format,
@@ -82,6 +86,7 @@ class DeltaCommitter:
         if control is not None and control["state"] == "abandoned":
             msg = f"Logical commit {plan.logical_commit_id} is abandoned"
             raise StoreIntegrityError(msg)
+        self._reject_terminal_attempt(plan)
 
         frames = verify_plan_files(
             plan,
@@ -153,6 +158,35 @@ class DeltaCommitter:
         )
         if persisted != plan:
             msg = f"Persisted plan disagrees for {plan.logical_commit_id}"
+            raise StoreIntegrityError(msg)
+
+    def _reject_terminal_attempt(self, plan: CommitPlan) -> None:
+        """Prevent an incomplete plan from reviving an already terminal attempt."""
+        rows = read_committed(
+            self.delta_base_path,
+            TablePath.STEPS,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        ).filter(pl.col("step_run_id") == plan.step_run_id)
+        if rows.is_empty():
+            return
+        latest = rows.sort("state_sequence").row(-1, named=True)
+        try:
+            status = StepStatus(latest["status"])
+        except (TypeError, ValueError) as exc:
+            msg = f"Step attempt {plan.step_run_id} has an invalid visible status"
+            raise StoreIntegrityError(msg) from exc
+        if status in TERMINAL_STEP_STATUSES:
+            msg = (
+                f"Refusing to commit {plan.logical_commit_id}: step attempt is "
+                f"already {status.value}"
+            )
+            raise StoreIntegrityError(msg)
+        if plan.commit_kind == "step_result" and status is not StepStatus.RUNNING:
+            msg = (
+                f"Refusing to commit {plan.logical_commit_id}: step attempt must be "
+                f"running, found {status.value}"
+            )
             raise StoreIntegrityError(msg)
 
     @staticmethod

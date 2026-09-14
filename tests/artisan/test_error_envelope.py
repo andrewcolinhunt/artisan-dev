@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from argparse import Namespace
 
 import pytest
 from pydantic import ValidationError
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 from artisan.errors import (
     ArtisanError,
     ArtisanErrorEnvelope,
+    CommitError,
     ErrorCode,
     _default_doc_uri,
     suggest,
@@ -69,6 +71,29 @@ class TestArtisanErrorEnvelope:
         )
         assert err.code == "param_type_mismatch"
         assert err.error_type == "validation"
+
+    def test_commit_error_cli_envelope_includes_repair_context(
+        self,
+        capsys,
+    ) -> None:
+        from artisan.cli import _emit_error
+
+        err = CommitError(
+            "step_result:" + "a" * 32,
+            "orchestration/executions",
+            "b" * 32,
+            ["artifacts/index"],
+            ["0_op/aa/bb/executions.parquet"],
+            "commit failed at executions",
+        )
+
+        assert _emit_error(Namespace(json=True), err) == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["logical_commit_id"] == "step_result:" + "a" * 32
+        assert payload["table"] == "orchestration/executions"
+        assert payload["plan_key"] == "b" * 32
+        assert payload["verified_tables"] == ["artifacts/index"]
+        assert payload["staging_objects"] == ["0_op/aa/bb/executions.parquet"]
 
 
 class TestErrorTypeRequired:

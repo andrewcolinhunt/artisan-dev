@@ -173,6 +173,7 @@ def _validate_complete_effects(
     storage_options: dict[str, str],
 ) -> None:
     """Prove every completed plan's effect for the requested table."""
+    complete_plans: dict[str, Any] = {}
     for control in controls.filter(pl.col("state") == "complete").iter_rows(named=True):
         plan = read_commit_plan(
             delta_root,
@@ -186,6 +187,7 @@ def _validate_complete_effects(
         ):
             msg = f"Completion evidence disagrees for {control['logical_commit_id']}"
             raise StoreIntegrityError(msg)
+        complete_plans[plan.logical_commit_id] = plan
         table = plan.table(table_path)
         if table is None:
             continue
@@ -212,6 +214,47 @@ def _validate_complete_effects(
             msg = (
                 f"Complete commit {plan.logical_commit_id} has conflicting "
                 f"{table_path} rows"
+            )
+            raise StoreIntegrityError(msg)
+    _reject_unplanned_complete_rows(physical, table_path, complete_plans)
+
+
+def _reject_unplanned_complete_rows(
+    physical: pl.DataFrame,
+    table_path: str,
+    complete_plans: dict[str, Any],
+) -> None:
+    """Reject rows a completed owner never declared in its immutable plan."""
+    for logical_commit_id, plan in complete_plans.items():
+        if table_path == TablePath.CACHE_REUSE.value:
+            owned = physical.filter(
+                pl.col("current_step_run_id")
+                == logical_commit_id.removeprefix("step_result:")
+            )
+        elif "logical_commit_id" in physical.columns:
+            owned = physical.filter(pl.col("logical_commit_id") == logical_commit_id)
+        else:
+            continue
+        if owned.is_empty():
+            continue
+        table = plan.table(table_path)
+        if table is None:
+            msg = f"Complete commit {logical_commit_id} has unplanned {table_path} rows"
+            raise StoreIntegrityError(msg)
+        key_schema = {column: physical.schema[column] for column in table.natural_key}
+        expected = pl.DataFrame(
+            [dict(zip(table.natural_key, key, strict=True)) for key in table.row_keys],
+            schema=key_schema,
+        )
+        extras = owned.join(
+            expected,
+            on=list(table.natural_key),
+            how="anti",
+            nulls_equal=True,
+        )
+        if not extras.is_empty():
+            msg = (
+                f"Complete commit {logical_commit_id} owns unplanned {table_path} rows"
             )
             raise StoreIntegrityError(msg)
 

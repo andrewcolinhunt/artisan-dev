@@ -16,7 +16,7 @@ from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepSt
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.committed_scan import read_committed, read_logical_commits
-from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
+from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA, STEPS_SCHEMA
 from artisan.storage.io.commit import DeltaCommitter
 from artisan.storage.io.commit_plan import (
     CommitPlan,
@@ -56,6 +56,7 @@ def _plan(committer: DeltaCommitter, step_run_id: str = "a" * 32) -> CommitPlan:
     committer.staging_manager.stage_orchestrator_dataframe(
         frame,
         TablePath.ARTIFACT_INDEX.value,
+        commit_kind="input_registration",
         step_run_id=step_run_id,
         step_number=0,
         operation_name="repair",
@@ -125,6 +126,7 @@ def _planned_terminal(repair_env, monkeypatch):
     committer.staging_manager.stage_orchestrator_dataframe(
         candidate,
         TablePath.STEPS.value,
+        commit_kind="step_result",
         step_run_id="c" * 32,
         step_number=1,
         operation_name="repair_step",
@@ -218,11 +220,47 @@ def test_apply_replays_only_validated_planned_evidence(
     )["artifact_id"].to_list() == ["a" * 32]
 
 
+def test_failed_attempt_cannot_be_revived_by_repair(
+    repair_env,
+    monkeypatch,
+):
+    tracker, plan = _planned_terminal(repair_env, monkeypatch)
+    failure = StepResult(
+        step_name="repair_step",
+        step_number=1,
+        step_run_id=plan.step_run_id,
+        status=StepStatus.FAILED,
+        error="logical commit failed",
+    )
+    tracker.transition(
+        plan.step_run_id,
+        StepStatus.RUNNING,
+        StepStatus.FAILED,
+        result=failure,
+        error=failure.error,
+    )
+
+    before = _repair(repair_env)
+    after = _repair(repair_env, apply=True)
+
+    assert before == after
+    assert before.items[0].classification == "conflict"
+    assert "already failed" in before.items[0].detail
+    assert tracker.current_state(plan.step_run_id).status is StepStatus.FAILED
+    assert read_logical_commits(
+        repair_env[3],
+        fs=repair_env[1],
+        storage_options=repair_env[2],
+    )["state"].to_list() == ["planned"]
+
+
 def test_apply_cleans_completed_plan_staging_exactly(repair_env):
     committer, fs, _, _, staging_root = repair_env
     plan = _plan(committer)
     committer.commit_logical(plan, preserve_staging=True)
-    directory = f"{staging_root}/0_repair/_orchestrator/{plan.step_run_id}"
+    directory = (
+        f"{staging_root}/0_repair/_orchestrator/{plan.step_run_id}/input_registration"
+    )
     assert fs.exists(directory)
 
     report = _repair(repair_env, apply=True)
@@ -363,7 +401,9 @@ def test_abandonment_is_one_way_idempotent_and_reason_exact(
         fs=fs,
         storage_options=options,
     ).is_empty()
-    assert fs.exists(f"{staging_root}/0_repair/_orchestrator/{plan.step_run_id}")
+    assert fs.exists(
+        f"{staging_root}/0_repair/_orchestrator/{plan.step_run_id}/input_registration"
+    )
     assert (
         read_logical_commits(
             delta_root,
@@ -372,6 +412,66 @@ def test_abandonment_is_one_way_idempotent_and_reason_exact(
         ).row(0, named=True)["abandon_reason"]
         == "staging can't be restored"
     )
+
+
+def test_corrupt_staging_can_be_abandoned_without_erasing_evidence(
+    repair_env,
+    monkeypatch,
+):
+    committer, fs, _, _, staging_root = repair_env
+    plan = _plan(committer)
+    _leave_planned(committer, plan, monkeypatch)
+    staged_path = f"{staging_root}/{plan.tables[0].files[0].relative_path}"
+    with fs.open(staged_path, "wb") as stream:
+        stream.write(b"corrupt parquet evidence")
+
+    before = _repair(repair_env)
+    after = _repair(
+        repair_env,
+        abandon=plan.logical_commit_id,
+        reason="staged bytes cannot be restored",
+    )
+
+    assert before.items[0].classification == "corrupt"
+    assert after.items[0].classification == "abandoned"
+    with fs.open(staged_path, "rb") as stream:
+        assert stream.read() == b"corrupt parquet evidence"
+
+
+def test_conflicting_rows_can_be_abandoned_when_plan_identity_matches(
+    repair_env,
+    monkeypatch,
+):
+    committer, _, options, delta_root, _ = repair_env
+    plan = _plan(committer)
+    _leave_planned(committer, plan, monkeypatch)
+    pl.DataFrame(
+        {
+            "artifact_id": [plan.step_run_id],
+            "artifact_type": ["data"],
+            "origin_step_number": [0],
+            "metadata": ["{}"],
+            "logical_commit_id": ["input_registration:" + "f" * 32],
+        },
+        schema={
+            **ARTIFACT_INDEX_SCHEMA,
+            "logical_commit_id": pl.String,
+        },
+    ).write_delta(
+        f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}",
+        mode="append",
+        storage_options=options,
+    )
+
+    before = _repair(repair_env)
+    after = _repair(
+        repair_env,
+        abandon=plan.logical_commit_id,
+        reason="conflicting physical row requires investigation",
+    )
+
+    assert before.items[0].classification == "conflict"
+    assert after.items[0].classification == "abandoned"
 
 
 def test_complete_commit_cannot_be_abandoned(repair_env):
@@ -414,6 +514,63 @@ def test_abandonment_records_guarded_failed_reconciliation(
         "operator chose not to replay"
     )
     assert second == first
+
+
+def test_abandonment_rejects_nonrunning_attempt_before_control_mutation(
+    repair_env,
+):
+    committer, fs, options, delta_root, _ = repair_env
+    tracker = StepTracker(delta_root, "run", storage_options=options, fs=fs)
+    step_run_id = "e" * 32
+    tracker.create_attempt(
+        StepStartRecord(
+            step_run_id=step_run_id,
+            step_spec_id="f" * 32,
+            step_number=2,
+            step_name="pending_step",
+            operation_class="tests.PendingStep",
+            params_json="{}",
+            input_refs_json="{}",
+            compute_backend="local",
+            compute_options_json="{}",
+            output_roles_json="[]",
+            output_types_json="{}",
+        )
+    )
+    candidate = tracker._state_to_row(tracker.current_state(step_run_id))
+    candidate.update(status="failed", state_sequence=1, error="candidate")
+    committer.staging_manager.stage_orchestrator_dataframe(
+        pl.DataFrame([candidate], schema=STEPS_SCHEMA),
+        TablePath.STEPS.value,
+        commit_kind="step_result",
+        step_run_id=step_run_id,
+        step_number=2,
+        operation_name="pending_step",
+    )
+    plan = build_commit_plan(
+        delta_root=delta_root,
+        staging_root=committer.staging_manager.staging_dir,
+        fs=fs,
+        commit_kind="step_result",
+        step_run_id=step_run_id,
+        step_number=2,
+        operation_name="pending_step",
+    )
+    committer._insert_planned(plan)
+
+    with pytest.raises(StoreIntegrityError, match="not reached running"):
+        _repair(
+            repair_env,
+            abandon=plan.logical_commit_id,
+            reason="must not skip the running transition",
+        )
+
+    assert tracker.current_state(step_run_id).status is StepStatus.PENDING
+    assert read_logical_commits(
+        delta_root,
+        fs=fs,
+        storage_options=options,
+    )["state"].to_list() == ["planned"]
 
 
 @pytest.mark.parametrize(
