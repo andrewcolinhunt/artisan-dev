@@ -1546,16 +1546,10 @@ class PipelineManager:
 
         step_number = self._current_step
 
-        # 4. Instantiate the operation with merged defaults + overrides to
-        #    compute a deterministic step_spec_id (content hash of operation
-        #    name, params, input provenance, and config overrides). This ID
-        #    drives the step-level cache.
-        step_spec_id, temp_instance = self._prepare_step_spec(
-            operation,
-            ov,
-            step_number,
-            inputs,
-        )
+        # 4. Prepare the operation once, then hash that exact instance. The
+        #    same object continues through cache checks, routing, and execution.
+        prepared_operation = instantiate_operation(operation, ov)
+        step_spec_id = self._prepare_step_spec(prepared_operation, step_number, inputs)
 
         # 5. Cache check: if a prior run produced identical spec_id, return
         #    the cached StepResult immediately without re-executing.
@@ -1567,7 +1561,7 @@ class PipelineManager:
                 step_spec_id=step_spec_id,
                 step_number=step_number,
                 step_name=step_name,
-                temp_instance=temp_instance,
+                prepared_operation=prepared_operation,
             )
             if cached is not None:
                 return cached
@@ -1580,7 +1574,7 @@ class PipelineManager:
         if _is_file_path_input(inputs):
             file_result = self._handle_file_path_inputs(
                 cast(list[str], inputs),
-                temp_instance,
+                prepared_operation,
                 operation,
                 step_number,
                 step_spec_id,
@@ -1601,7 +1595,7 @@ class PipelineManager:
             step_name=step_name,
             step_number=step_number,
             step_spec_id=step_spec_id,
-            temp_instance=temp_instance,
+            prepared_operation=prepared_operation,
         )
 
     # =========================================================================
@@ -1751,44 +1745,36 @@ class PipelineManager:
 
     def _prepare_step_spec(
         self,
-        operation: type[OperationDefinition],
-        ov: StepOverrides,
+        operation: OperationDefinition,
         step_number: int,
         inputs: Any,
-    ) -> tuple[str, OperationDefinition]:
-        """Instantiate operation and compute deterministic step spec ID.
+    ) -> str:
+        """Compute a deterministic step spec ID from a prepared operation.
 
         The step_spec_id is a content hash of (operation name, step number,
         merged params, upstream spec IDs, and config overrides). Two runs
         with identical inputs and configuration produce the same spec ID,
         enabling the step-level cache to skip re-execution.
 
-        The temp_instance is kept around because downstream code needs it
-        for ``is_curator_operation()`` checks and ``build_step_result()``
-        on the file-promotion failure path.
-
         Returns:
-            Tuple of (step_spec_id, temp_instance).
+            Deterministic step spec ID for the prepared operation.
         """
-        # Instantiate with merged defaults + user overrides so we can
-        # dump the *full* params (including defaults) for hashing.
-        temp_instance = instantiate_operation(operation, ov)
-        if "params" in type(temp_instance).model_fields:
-            full_params = temp_instance.params.model_dump(mode="json")  # type: ignore[attr-defined]
+        if "params" in type(operation).model_fields:
+            full_params = operation.params.model_dump(mode="json")  # type: ignore[attr-defined]
         else:
             # Flat-field operations: exclude base OperationDefinition
             # fields (resources, execution, etc.) — only user params.
             base_fields = set(OperationDefinition.model_fields)
             full_params = {
                 k: v
-                for k, v in temp_instance.model_dump(mode="json").items()
+                for k, v in operation.model_dump(mode="json").items()
                 if k not in base_fields
             }
 
-        config_overrides = effective_config_payload(temp_instance)
+        config_overrides = effective_config_payload(operation)
 
         input_spec = self._build_input_spec(inputs)
-        step_spec_id = compute_step_spec_id(
+        return compute_step_spec_id(
             operation_name=operation.name,
             step_number=step_number,
             params=full_params if full_params else None,
@@ -1796,15 +1782,13 @@ class PipelineManager:
             config_overrides=config_overrides,
         )
 
-        return step_spec_id, temp_instance
-
     def _resolve_step_runner(
         self,
-        temp_instance: OperationDefinition,
+        prepared_operation: OperationDefinition,
         ov: StepOverrides,
     ) -> RunnerBase:
         """Resolve the effective runner for one step."""
-        if is_curator_operation(temp_instance):
+        if is_curator_operation(prepared_operation):
             return Runner.LOCAL
         if ov.step_runner is not None:
             return resolve_runner(ov.step_runner)
@@ -1846,6 +1830,7 @@ class PipelineManager:
             "compute_provider": (
                 ov.compute_provider if ov.compute_provider is not None else {}
             ),
+            "compute_resources": ov.compute_resources or {},
             "group_by": (ov.group_by.value if ov.group_by is not None else None),
             **self._default_runner_metadata(),
         }
@@ -1872,7 +1857,7 @@ class PipelineManager:
         step_spec_id: str,
         step_number: int,
         step_name: str,
-        temp_instance: OperationDefinition,
+        prepared_operation: OperationDefinition,
     ) -> StepFuture | None:
         """Return a resolved StepFuture if step is cached, None otherwise.
 
@@ -1894,7 +1879,7 @@ class PipelineManager:
         result = cached.model_copy(
             update={"step_name": step_name, "step_number": step_number}
         )
-        resolved_runner = self._resolve_step_runner(temp_instance, ov)
+        resolved_runner = self._resolve_step_runner(prepared_operation, ov)
         # Cached outputs remain owned by their original execution attempt. Reusing
         # that identity keeps downstream resolution scoped to the actual rows.
         start_record = self._build_step_start_record(
@@ -1930,7 +1915,7 @@ class PipelineManager:
     def _handle_file_path_inputs(
         self,
         inputs: list[str],
-        temp_instance: OperationDefinition,
+        prepared_operation: OperationDefinition,
         operation: type[OperationDefinition],
         step_number: int,
         step_spec_id: str,
@@ -1957,7 +1942,7 @@ class PipelineManager:
         Raises:
             ValueError: If operation is not a curator operation.
         """
-        if not is_curator_operation(temp_instance):
+        if not is_curator_operation(prepared_operation):
             msg = (
                 "Raw file paths are not allowed for creator operations. "
                 "Use a curator ingest operation to bring files into the "
@@ -1978,7 +1963,7 @@ class PipelineManager:
 
         _fp = failure_policy or self._config.failure_policy
         failed_result = build_step_result(
-            operation=temp_instance,
+            operation=prepared_operation,
             step_number=step_number,
             succeeded_count=0,
             failed_count=len(inputs),
@@ -2009,7 +1994,7 @@ class PipelineManager:
         step_name: str,
         step_number: int,
         step_spec_id: str,
-        temp_instance: OperationDefinition,
+        prepared_operation: OperationDefinition,
     ) -> StepFuture:
         """Register step, resolve step_runner, and submit execution to thread pool.
 
@@ -2044,7 +2029,7 @@ class PipelineManager:
 
         output_types_map = self._build_output_types(operation.outputs)
 
-        resolved_runner = self._resolve_step_runner(temp_instance, ov)
+        resolved_runner = self._resolve_step_runner(prepared_operation, ov)
         start_record = self._build_step_start_record(
             operation,
             inputs,
@@ -2087,7 +2072,7 @@ class PipelineManager:
                 # Snapshot step_run_ids for scoped output resolution
                 upstream_step_run_ids = dict(self._step_run_ids)
                 result = execute_step(
-                    operation_class=operation,
+                    operation=prepared_operation,
                     inputs=inputs,
                     ov=ov,
                     step_runner=resolved_runner,

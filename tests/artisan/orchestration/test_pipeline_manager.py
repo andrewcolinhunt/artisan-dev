@@ -40,6 +40,7 @@ from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.output_reference import OutputReference
@@ -74,6 +75,16 @@ class _MockOp(OperationDefinition):
 
     def execute_function(self, inputs: Any, output_dir: Any) -> Any:
         return None
+
+
+class _ComputeDefaultsOp(_MockOp):
+    """Mock op whose compute defaults differ from schema defaults."""
+
+    name: ClassVar[str] = "compute_defaults_op"
+    compute_resources: ComputeResources = ComputeResources(
+        gpu="A100",
+        memory_gb=32,
+    )
 
 
 class _ExternalRunner(LocalRunner):
@@ -122,6 +133,74 @@ class TestDefaultRunnerRetention:
 
         assert pipeline.config.default_step_runner == "external_test"
         assert mock_execute.call_args.kwargs["step_runner"] is runner
+
+
+class TestPreparedOperationSnapshot:
+    """Step hashing and execution share one prepared operation instance."""
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_hashed_operation_is_passed_to_execution(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ) -> None:
+        tracker = MagicMock()
+        tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = tracker
+        mock_execute.return_value = StepResult(
+            step_name=_MockOp.name,
+            step_number=0,
+            success=True,
+        )
+        pipeline = _make_pipeline(tmp_path)
+
+        with patch.object(
+            pipeline,
+            "_prepare_step_spec",
+            wraps=pipeline._prepare_step_spec,
+        ) as mock_prepare:
+            pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
+
+        prepared = mock_prepare.call_args.args[0]
+        assert mock_execute.call_args.kwargs["operation"] is prepared
+        assert "operation_class" not in mock_execute.call_args.kwargs
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_reset_forms_share_record_and_hash_but_change_effective_identity(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ) -> None:
+        tracker = MagicMock()
+        tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = tracker
+        mock_execute.return_value = StepResult(
+            step_name=_ComputeDefaultsOp.name,
+            step_number=0,
+            success=True,
+        )
+
+        def _submit(
+            path: Path,
+            override: ComputeResources | dict[str, Any] | None = None,
+        ) -> tuple[str, dict[str, Any]]:
+            pipeline = _make_pipeline(path)
+            kwargs = {} if override is None else {"compute_resources": override}
+            pipeline.run(
+                _ComputeDefaultsOp,
+                inputs={"data": ["a" * 32]},
+                **kwargs,
+            )
+            options = json.loads(pipeline._step_start_records[0].compute_options_json)
+            pipeline.finalize()
+            return pipeline._step_spec_ids[0], options
+
+        base_id, _ = _submit(tmp_path / "base")
+        mapping_id, mapping_record = _submit(tmp_path / "mapping", {"gpu": None})
+        typed_id, typed_record = _submit(tmp_path / "typed", ComputeResources(gpu=None))
+
+        assert base_id != mapping_id
+        assert mapping_id == typed_id
+        assert mapping_record == typed_record
+        assert mapping_record["compute_resources"] == {"gpu": None}
 
 
 class TestRunReturnsFailedStepResult:
@@ -2458,7 +2537,7 @@ def _slow_execute_step(**kwargs):
 
     time.sleep(0.2)
     return build_step_result(
-        operation=kwargs["operation_class"],
+        operation=kwargs["operation"],
         step_number=kwargs["step_number"],
         succeeded_count=1,
         failed_count=0,
@@ -2550,7 +2629,6 @@ _GOLDEN_STEP_SPEC_IDS: dict[str, str] = {
     "bare": "8666ba0b064487dba1826070fee00a57",
     "environment_local": "8666ba0b064487dba1826070fee00a57",
     "environment_docker_dict": "56bf45b7aacfd45a6e16cdb205b8c420",
-    "compute_provider_modal": "dec35b7ae6fe17642e9f53ccb66fe848",
     "compute_resources_a100": "8a4149df518a7d0d97082988dd3284c7",
     "group_by_cross": "7883b18c8795f11bc4982cb19da13b60",
 }
@@ -2561,10 +2639,28 @@ _GOLDEN_OVERRIDES: dict[str, dict[str, Any]] = {
     "environment_docker_dict": {
         "environment": {"active": "docker", "docker": {"image": "img:v2"}}
     },
-    "compute_provider_modal": {"compute_provider": "modal"},
     "compute_resources_a100": {"compute_resources": {"gpu": "A100", "memory_gb": 32}},
     "group_by_cross": {"group_by": GroupByStrategy.CROSS_PRODUCT},
 }
+
+
+@patch("artisan.orchestration.pipeline_manager.compute_step_spec_id")
+@patch("artisan.orchestration.pipeline_manager.StepTracker")
+def test_unconfigured_compute_selector_fails_before_hashing(
+    mock_tracker_cls, mock_hash, tmp_path
+) -> None:
+    """Known selectors without configured targets fail before cache hashing."""
+    mock_tracker_cls.return_value = MagicMock()
+    pipeline = _make_pipeline(tmp_path)
+
+    with pytest.raises(ValueError, match="not configured"):
+        pipeline.submit(
+            _MockOp,
+            inputs={"data": ["a" * 32]},
+            compute_provider="modal",
+        )
+
+    mock_hash.assert_not_called()
 
 
 @pytest.mark.parametrize("label", sorted(_GOLDEN_STEP_SPEC_IDS))

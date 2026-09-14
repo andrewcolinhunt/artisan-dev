@@ -80,7 +80,7 @@ def _mock_execute_step(**kwargs):
     from artisan.schemas.enums import FailurePolicy
 
     return build_step_result(
-        operation=kwargs["operation_class"],
+        operation=kwargs["operation"],
         step_number=kwargs["step_number"],
         succeeded_count=5,
         failed_count=0,

@@ -10,12 +10,8 @@ integration tests do not:
    mirrored on ``run``, this fails.
 
 2. **Plumbing-through assertion.** When the user passes a sentinel
-   value to a kwarg, does that sentinel actually reach
-   ``instantiate_operation`` (the eventual override site)? Or is it
-   accepted at the boundary and silently dropped? The latter was bug
-   #3 in the verification script — ``compute_resources=`` was
-   accepted by ``submit`` but never threaded through to
-   ``instantiate_operation``.
+   value to a kwarg, does it appear on the prepared operation passed to
+   ``execute_step``? Or is it accepted at the boundary and silently dropped?
 
 These tests deliberately do not run real pipelines — they mock the
 dispatch path and assert on call args. They are unit-level guards on
@@ -147,7 +143,7 @@ def test_run_composite_kwargs_match_submit_composite() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Plumbing-through assertion: each kwarg reaches instantiate_operation
+# Plumbing-through assertion: each kwarg reaches the prepared operation
 # ---------------------------------------------------------------------------
 
 
@@ -217,11 +213,10 @@ def test_kwarg_reaches_execute_step(
     kwarg: str,
     tmp_path,
 ) -> None:
-    """Sentinel passed via submit() must arrive on the execute_step call args.
+    """Sentinel passed via submit() must affect the prepared operation.
 
-    execute_step is the boundary into step_executor — if a kwarg
-    doesn't reach here, it has been silently dropped somewhere in
-    submit() / _prepare_step_spec / _dispatch_step.
+    ``execute_step`` receives the same prepared instance used for step hashing,
+    so each operation-valued override must already be applied there.
     """
     from artisan.schemas.orchestration.step_result import StepResult
 
@@ -252,13 +247,27 @@ def test_kwarg_reaches_execute_step(
 
     assert mock_execute.called, "execute_step was never called"
     call_kwargs = mock_execute.call_args.kwargs
-    # Overrides now reach execute_step bundled in the StepOverrides carrier.
-    assert "ov" in call_kwargs, (
-        f"execute_step was called without an ov carrier. "
-        f"call_kwargs were: {sorted(call_kwargs)}"
-    )
-    actual = getattr(call_kwargs["ov"], kwarg)
-    assert actual == sentinel, (
-        f"submit({kwarg}={sentinel!r}) reached execute_step but ov.{kwarg} "
+    operation = call_kwargs["operation"]
+    instance_field = {
+        "runner_resources": "runner_resources",
+        "batch_strategy": "batch_strategy",
+        "environment": "environments",
+        "compute_provider": "compute_provider",
+        "compute_resources": "compute_resources",
+        "group_by": "group_by",
+    }[kwarg]
+    value = getattr(operation, instance_field)
+    actual = {
+        "runner_resources": lambda: value.cpus,
+        "batch_strategy": lambda: value.artifacts_per_unit,
+        "environment": lambda: value.active,
+        "compute_provider": lambda: value.active,
+        "compute_resources": lambda: value.memory_gb,
+        "group_by": lambda: value,
+    }[kwarg]()
+    expected = next(iter(sentinel.values())) if isinstance(sentinel, dict) else sentinel
+    assert actual == expected, (
+        f"submit({kwarg}={sentinel!r}) reached execute_step but the prepared "
+        f"operation value "
         f"was {actual!r}"
     )

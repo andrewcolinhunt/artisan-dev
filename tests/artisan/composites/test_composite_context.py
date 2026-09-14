@@ -157,6 +157,30 @@ class TestForwarding:
         ctx.run(DataGenerator, environment="pixi")
         assert pipeline.submit.call_args.kwargs["environment"] == "pixi"
 
+    def test_explicit_patch_wins_wholesale_over_composite_default(self):
+        pipeline = MagicMock()
+        ctx = _make_ctx(
+            pipeline,
+            step_defaults={
+                "runner_resources": {"cpus": 7, "memory_gb": 32},
+            },
+        )
+
+        ctx.run(DataGenerator, runner_resources={"cpus": 2})
+
+        assert pipeline.submit.call_args.kwargs["runner_resources"] == {"cpus": 2}
+
+    def test_explicit_empty_patch_wins_over_composite_default(self):
+        pipeline = MagicMock()
+        ctx = _make_ctx(
+            pipeline,
+            step_defaults={"runner_resources": {"cpus": 7}},
+        )
+
+        ctx.run(DataGenerator, runner_resources={})
+
+        assert pipeline.submit.call_args.kwargs["runner_resources"] == {}
+
     def test_unset_knob_with_no_default_is_none(self):
         pipeline = MagicMock()
         ctx = _make_ctx(pipeline, step_defaults={})

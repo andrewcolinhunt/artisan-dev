@@ -14,6 +14,7 @@ import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
+from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Never, cast
@@ -49,8 +50,6 @@ from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.schemas.operation_config.compute import ComputeProvider
-from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
@@ -70,49 +69,29 @@ from artisan.utils.timing import phase_timer
 logger = logging.getLogger(__name__)
 
 
-def _deep_merge_model[ModelT: BaseModel](
-    base_model: BaseModel,
-    override: dict[str, Any],
-    model_cls: type[ModelT],
-) -> ModelT:
-    """Deep-merge a dict override onto a Pydantic model.
-
-    Dumps ``base_model``, shallow-merges each nested dict from ``override``
-    (so a partial nested dict keeps its sibling fields), then re-validates
-    through ``model_cls`` — this coerces nested dicts into their proper
-    sub-models even when the base field was ``None``.
-
-    Args:
-        base_model: The operation default to merge onto.
-        override: Overrides, whose top-level dict values merge into the base.
-        model_cls: Model class to validate the merged mapping through.
-
-    Returns:
-        A new ``model_cls`` instance with the override applied.
-    """
-    base = base_model.model_dump()
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            base[key] = {**base[key], **value}
-        else:
-            base[key] = value
-    return model_cls.model_validate(base)
-
-
 def _validated_model_update[ModelT: BaseModel](
-    base_model: BaseModel,
-    override: dict[str, Any],
-    model_cls: type[ModelT],
+    base_model: ModelT,
+    patch: dict[str, Any],
 ) -> ModelT:
-    """Shallow-merge a mapping patch and validate the complete result."""
-    merged = base_model.model_dump()
-    merged.update(override)
-    return model_cls.model_validate(merged)
+    """Deep-merge a detached patch and validate the complete target model."""
+
+    def _merge(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+        merged = deepcopy(base)
+        for key, value in update.items():
+            current = merged.get(key)
+            if isinstance(current, dict) and isinstance(value, dict) and value:
+                merged[key] = _merge(current, value)
+            else:
+                merged[key] = deepcopy(value)
+        return merged
+
+    model_cls = type(base_model)
+    return model_cls.model_validate(_merge(base_model.model_dump(mode="python"), patch))
 
 
 def _raise_invalid_override(field_name: str, value: object) -> Never:
     """Reject a malformed internal override carrier with a useful error."""
-    msg = f"{field_name} override must be a mapping or typed model, got {type(value).__name__}"
+    msg = f"{field_name} override must be a mapping, got {type(value).__name__}"
     raise TypeError(msg)
 
 
@@ -124,9 +103,9 @@ def instantiate_operation(
 
     Applies ``ov``'s params and per-step config overrides (runner resources,
     batch strategy, environment, tool, compute provider, compute resources,
-    group_by) onto the class default. String overrides select the active
-    provider/environment; dicts delta-merge into the class default; typed
-    models replace it outright.
+    group_by) onto the class default. String selectors compile to ``active``
+    patches, and every model-valued patch is recursively merged into the
+    operation default and validated by the concrete target model.
 
     Args:
         operation_class: The operation class to instantiate.
@@ -157,82 +136,57 @@ def instantiate_operation(
 
     instance = operation_class(**init_kwargs)
 
-    # Apply overrides via model_copy. Each override accepts either a
-    # dict (delta-merged into the operation default) or a typed model
-    # (replaces the default outright — already validated by construction).
-    from artisan.schemas.execution.batch_strategy import BatchStrategy as _BatchStrategy
-    from artisan.schemas.operation_config.runner_resources import (
-        RunnerResources as _RunnerResources,
-    )
-
+    # ``from_user`` has normalized every model-valued input to a mapping patch.
     updates: dict[str, Any] = {}
-    if runner_resources:
-        if isinstance(runner_resources, _RunnerResources):
-            updates["runner_resources"] = runner_resources
-        elif isinstance(runner_resources, dict):
+    if runner_resources is not None:
+        if isinstance(runner_resources, dict):
             updates["runner_resources"] = _validated_model_update(
                 instance.runner_resources,
                 runner_resources,
-                _RunnerResources,
             )
         else:
             _raise_invalid_override("runner_resources", runner_resources)
-    if batch_strategy:
-        if isinstance(batch_strategy, _BatchStrategy):
-            updates["batch_strategy"] = batch_strategy
-        elif isinstance(batch_strategy, dict):
+    if batch_strategy is not None:
+        if isinstance(batch_strategy, dict):
             updates["batch_strategy"] = _validated_model_update(
                 instance.batch_strategy,
                 batch_strategy,
-                _BatchStrategy,
             )
         else:
             _raise_invalid_override("batch_strategy", batch_strategy)
-    if tool and instance.tool is not None:
-        from artisan.schemas.operation_config.tool_spec import ToolSpec
-
-        if isinstance(tool, ToolSpec):
-            updates["tool"] = tool
-        elif isinstance(tool, dict):
-            updates["tool"] = _validated_model_update(instance.tool, tool, ToolSpec)
-        else:
+    if tool is not None:
+        if not isinstance(tool, dict):
             _raise_invalid_override("tool", tool)
+        if tool:
+            if instance.tool is None:
+                msg = f"Operation '{operation_class.name}' has no tool to override"
+                raise ValueError(msg)
+            updates["tool"] = _validated_model_update(instance.tool, tool)
     if environment is not None:
-        if isinstance(environment, str):
-            updates["environments"] = instance.environments.model_copy(
-                update={"active": environment}
-            )
-        elif isinstance(environment, Environments):
-            updates["environments"] = environment
-        elif isinstance(environment, dict):
-            updates["environments"] = _deep_merge_model(
-                instance.environments, environment, Environments
-            )
-        else:
+        environment_patch = (
+            {"active": environment} if isinstance(environment, str) else environment
+        )
+        if not isinstance(environment_patch, dict):
             _raise_invalid_override("environment", environment)
+        environments = _validated_model_update(instance.environments, environment_patch)
+        environments.current()
+        updates["environments"] = environments
     if compute_provider is not None:
-        if isinstance(compute_provider, str):
-            updates["compute_provider"] = instance.compute_provider.model_copy(
-                update={"active": compute_provider}
-            )
-        elif isinstance(compute_provider, ComputeProvider):
-            updates["compute_provider"] = compute_provider
-        elif isinstance(compute_provider, dict):
-            updates["compute_provider"] = _deep_merge_model(
-                instance.compute_provider, compute_provider, ComputeProvider
-            )
-        else:
+        provider_patch = (
+            {"active": compute_provider}
+            if isinstance(compute_provider, str)
+            else compute_provider
+        )
+        if not isinstance(provider_patch, dict):
             _raise_invalid_override("compute_provider", compute_provider)
+        provider = _validated_model_update(instance.compute_provider, provider_patch)
+        provider.current()
+        updates["compute_provider"] = provider
     if compute_resources is not None:
-        from artisan.schemas.operation_config.compute_resources import ComputeResources
-
-        if isinstance(compute_resources, ComputeResources):
-            updates["compute_resources"] = compute_resources
-        elif isinstance(compute_resources, dict):
+        if isinstance(compute_resources, dict):
             updates["compute_resources"] = _validated_model_update(
                 instance.compute_resources,
                 compute_resources,
-                ComputeResources,
             )
         else:
             _raise_invalid_override("compute_resources", compute_resources)
@@ -517,7 +471,7 @@ def _create_runtime_environment(
 
 
 def execute_step(
-    operation_class: type[OperationDefinition],
+    operation: OperationDefinition,
     inputs: Any,
     ov: StepOverrides,
     step_runner: RunnerBase,
@@ -538,7 +492,7 @@ def execute_step(
     path is used that executes locally without worker dispatch.
 
     Args:
-        operation_class: OperationDefinition subclass to execute.
+        operation: Prepared operation instance to execute.
         inputs: Input specification (see PipelineManager.run() for formats).
         ov: Coerced per-step overrides (params + cache/runtime knobs).
         step_runner: Resolved lifecycle runner to use for execution.
@@ -555,7 +509,6 @@ def execute_step(
     Returns:
         StepResult with output references and execution metadata.
     """
-    operation = instantiate_operation(operation_class, ov)
     user_overrides = ov.params or {}
 
     # Cache-affecting config (environment, tool, compute_provider,
