@@ -43,6 +43,7 @@ def commit_test_tables(
     tables: dict[str, pl.DataFrame],
     *,
     step_run_id: str,
+    step_number: int = 0,
     operation_name: str = "seed",
     storage_options: dict[str, str] | None = None,
 ) -> None:
@@ -55,7 +56,7 @@ def commit_test_tables(
             table_path,
             commit_kind="input_registration",
             step_run_id=step_run_id,
-            step_number=0,
+            step_number=step_number,
             operation_name=operation_name,
         )
     plan = build_commit_plan(
@@ -64,7 +65,7 @@ def commit_test_tables(
         fs=fs,
         commit_kind="input_registration",
         step_run_id=step_run_id,
-        step_number=0,
+        step_number=step_number,
         operation_name=operation_name,
     )
     DeltaCommitter(

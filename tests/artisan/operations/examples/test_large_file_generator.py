@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.executors.creator import run_creator_lifecycle
@@ -132,14 +133,21 @@ def backend_env(request, tmp_path):
     if request.param == "local":
         files_root = tmp_path / "files_root"
         files_root.mkdir()
+        fs = LocalFileSystem()
+        storage = StorageConfig(protocol="file")
+        delta_root = str(tmp_path / "delta")
+        publish_test_store(delta_root, fs, storage.delta_storage_options())
         return (
-            LocalFileSystem(),
-            StorageConfig(protocol="file"),
+            fs,
+            storage,
+            delta_root,
             str(files_root),
             str(working),
         )
     fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
-    return fs, storage, f"{uri_prefix}/files", str(working)
+    delta_root = f"{uri_prefix}/delta"
+    publish_test_store(delta_root, fs, storage.delta_storage_options())
+    return fs, storage, delta_root, f"{uri_prefix}/files", str(working)
 
 
 class TestLargeFileGeneratorLifecycle:
@@ -154,10 +162,10 @@ class TestLargeFileGeneratorLifecycle:
     def test_external_path_resolves_on_parametrized_backend(
         self, backend_env, tmp_path: Path
     ) -> None:
-        fs, storage, files_root, working_root = backend_env
+        fs, storage, delta_root, files_root, working_root = backend_env
 
         env = RuntimeEnvironment(
-            delta_root=str(tmp_path / "delta"),
+            delta_root=delta_root,
             working_root=working_root,
             staging_root=str(tmp_path / "staging"),
             files_root=files_root,

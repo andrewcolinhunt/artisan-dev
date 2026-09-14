@@ -169,8 +169,8 @@ class TestConsolidateBasicExecution:
 
         assert len(result.artifacts["records"]) == 2
 
-    def test_new_artifact_ids(self, backend_fs) -> None:
-        """Consolidated artifacts get new IDs because external_path changed."""
+    def test_artifact_identity_survives_relocation(self, backend_fs) -> None:
+        """Relocating identical external bytes preserves artifact identity."""
         fs, _storage, root = backend_fs
         worker = f"{root}/worker.jsonl"
         _write_jsonl(fs, worker, [{"record_id": "rec_0", "values": {}}])
@@ -189,7 +189,7 @@ class TestConsolidateBasicExecution:
         # Finalize the draft to get an ID, then compare
         draft = result.artifacts["records"][0]
         draft.finalize()
-        assert draft.artifact_id != art.artifact_id
+        assert draft.artifact_id == art.artifact_id
 
 
 class TestConsolidateErrorHandling:
