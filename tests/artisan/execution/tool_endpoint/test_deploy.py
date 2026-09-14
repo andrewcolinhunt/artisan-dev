@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import subprocess
+import sys
 from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -16,6 +18,7 @@ from fastapi.testclient import TestClient
 from fixtures.endpoint_ops import GpuTool, PlainTool
 
 from artisan.execution.tool_endpoint import deploy as deploy_mod
+from artisan.execution.tool_endpoint._optional import MODAL_EXTRA_MESSAGE
 from artisan.execution.tool_endpoint.deploy import build_app
 from artisan.execution.tool_endpoint.protocol import CancelResponse, SchemaResponse
 from artisan.execution.tool_endpoint.spec import endpoint_spec
@@ -31,8 +34,65 @@ _PARAMS = json.dumps({"contigs": "10-20"})
 @pytest.fixture
 def mock_modal(monkeypatch) -> MagicMock:
     mock = MagicMock()
-    monkeypatch.setattr(deploy_mod, "modal", mock)
+    monkeypatch.setattr(deploy_mod, "import_modal", lambda: mock)
     return mock
+
+
+class TestOptionalModalDependency:
+    def test_tool_endpoint_modules_import_without_modal(self) -> None:
+        code = """
+import sys
+
+class BlockModal:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'modal' or fullname.startswith('modal.'):
+            raise AssertionError(f'Modal import attempted: {fullname}')
+        return None
+
+sys.meta_path.insert(0, BlockModal())
+import artisan.execution.tool_endpoint
+import artisan.execution.tool_endpoint.client
+import artisan.execution.tool_endpoint.deploy
+assert 'modal' not in sys.modules
+"""
+        subprocess.run([sys.executable, "-c", code], check=True)
+
+    def test_build_app_translates_missing_modal(self) -> None:
+        missing = ModuleNotFoundError("No module named 'modal'", name="modal")
+        original_import = __import__
+
+        def fail_modal_import(name, *args, **kwargs):
+            if name == "modal":
+                raise missing
+            return original_import(name, *args, **kwargs)
+
+        with (
+            patch("builtins.__import__", side_effect=fail_modal_import),
+            pytest.raises(ImportError) as exc_info,
+        ):
+            build_app(GpuTool)
+
+        assert str(exc_info.value) == MODAL_EXTRA_MESSAGE
+        assert exc_info.value.__cause__ is missing
+
+    def test_build_app_propagates_unrelated_nested_import_failure(self) -> None:
+        missing = ModuleNotFoundError(
+            "No module named 'modal_dependency'", name="modal_dependency"
+        )
+        original_import = __import__
+
+        def fail_modal_import(name, *args, **kwargs):
+            if name == "modal":
+                raise missing
+            return original_import(name, *args, **kwargs)
+
+        with (
+            patch("builtins.__import__", side_effect=fail_modal_import),
+            pytest.raises(ModuleNotFoundError) as exc_info,
+        ):
+            build_app(GpuTool)
+
+        assert exc_info.value is missing
 
 
 class TestBuildApp:

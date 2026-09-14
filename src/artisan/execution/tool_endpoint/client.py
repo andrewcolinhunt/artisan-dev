@@ -24,6 +24,7 @@ import httpx
 from pydantic import ValidationError
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+from artisan.execution.tool_endpoint._optional import import_modal
 from artisan.execution.tool_endpoint.protocol import (
     CancelResponse,
     InputRef,
@@ -295,7 +296,7 @@ def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
 
 def _resolve_url(op_name: str) -> str:
     """Web URL of the Artisan-deployed endpoint for this op."""
-    import modal
+    modal = import_modal()
 
     function = modal.Function.from_name(f"artisan-tool-{op_name}", "endpoint")
     url = function.get_web_url()

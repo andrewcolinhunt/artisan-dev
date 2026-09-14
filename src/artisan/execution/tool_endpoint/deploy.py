@@ -11,7 +11,7 @@ packages installed in the slim
 endpoint image (fastapi, jsonschema, modal). Artisan is never imported in
 the endpoint container — unpickling any artisan object there would require
 artisan's full dependency stack. Boundary validation runs against the baked
-JSON schema instead. Importing this module requires the ``modal`` SDK.
+JSON schema instead. The ``modal`` SDK loads only when ``build_app`` runs.
 
 No ``from __future__ import annotations`` here: the endpoint's route
 handlers are cloudpickled and rebuilt in-container, where FastAPI resolves
@@ -21,8 +21,7 @@ unpickled function's globals, so annotations must be real objects.
 
 from typing import Any
 
-import modal
-
+from artisan.execution.tool_endpoint._optional import import_modal
 from artisan.execution.tool_endpoint.spec import endpoint_spec
 from artisan.execution.tool_endpoint.transport import MAX_INLINE_BYTES
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -32,7 +31,7 @@ ENDPOINT_PYTHON_VERSION = "3.12"
 
 def build_app(
     op_cls: type[OperationDefinition], overlay: list[str] | None = None
-) -> modal.App:
+) -> Any:
     """Build the deployable Modal app for an operation's tool endpoint.
 
     One app per tool: a GPU **worker** (resolves the deployed op class,
@@ -53,11 +52,12 @@ def build_app(
     Returns:
         A deployable ``modal.App`` named ``artisan-tool-<name>``.
     """
+    modal = import_modal()
     spec = endpoint_spec(op_cls)
     app = modal.App(f"artisan-tool-{spec.name}")
 
     worker_image = modal.Image.from_registry(
-        spec.image, secret=_registry_secret(spec.image_registry_secret)
+        spec.image, secret=_registry_secret(modal, spec.image_registry_secret)
     ).env(spec.env)
     sources = list(dict.fromkeys([*spec.local_python_sources, *(overlay or [])]))
     if sources:
@@ -72,8 +72,8 @@ def build_app(
         "serialized": True,
         "retries": spec.retries,
         "min_containers": spec.min_containers,
-        "volumes": _volumes(spec.volumes),
-        "secrets": _secrets(spec.secrets),
+        "volumes": _volumes(modal, spec.volumes),
+        "secrets": _secrets(modal, spec.secrets),
     }
     for key in ("gpu", "cpu", "timeout", "max_containers", "scaledown_window"):
         value = getattr(spec, key)
@@ -93,8 +93,9 @@ def build_app(
     data_policy = spec.data_policy
     max_inline_bytes = MAX_INLINE_BYTES
 
-    @app.function(**worker_kwargs)
-    @modal.concurrent(max_inputs=1)  # one job per container; fan out, don't pack
+    # ``modal`` is intentionally loaded through an Any-typed lazy boundary.
+    @app.function(**worker_kwargs)  # type: ignore[misc]
+    @modal.concurrent(max_inputs=1)  # type: ignore[misc]  # one job per container
     def worker(request: dict[str, Any]) -> dict[str, Any]:
         from artisan.execution.tool_endpoint.protocol import ToolRequest
         from artisan.execution.tool_endpoint.server import (
@@ -116,8 +117,10 @@ def build_app(
     # webhook labels allow only [a-z0-9-]; op names may carry underscores
     label = f"artisan-tool-{op_name}".replace("_", "-")
 
-    @app.function(image=endpoint_image, name="endpoint", serialized=True)
-    @modal.asgi_app(label=label, requires_proxy_auth=True)
+    @app.function(  # type: ignore[misc]
+        image=endpoint_image, name="endpoint", serialized=True
+    )
+    @modal.asgi_app(label=label, requires_proxy_auth=True)  # type: ignore[misc]
     def endpoint() -> Any:
         # Runs in the slim endpoint image: imports must resolve there, and
         # responses are plain dicts shaped like the protocol models.
@@ -408,12 +411,12 @@ def build_app(
     return app
 
 
-def _registry_secret(name: str | None) -> Any:
+def _registry_secret(modal: Any, name: str | None) -> Any:
     """Modal Secret for private-registry pulls, or None."""
     return modal.Secret.from_name(name) if name else None
 
 
-def _volumes(mapping: dict[str, str]) -> dict[str, Any]:
+def _volumes(modal: Any, mapping: dict[str, str]) -> dict[str, Any]:
     """Mount path → Volume handles from the config's name mapping."""
     return {
         path: modal.Volume.from_name(name, create_if_missing=True, version=2)
@@ -421,6 +424,6 @@ def _volumes(mapping: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def _secrets(names: list[str]) -> list[Any]:
+def _secrets(modal: Any, names: list[str]) -> list[Any]:
     """Runtime-injected Modal Secrets from their names."""
     return [modal.Secret.from_name(name) for name in names]

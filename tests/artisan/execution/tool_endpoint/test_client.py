@@ -838,6 +838,24 @@ class TestAuthAndUrl:
         resolver.assert_not_called()
         assert mock_http.Client.call_args.kwargs["headers"] == {}
 
+    def test_custom_endpoint_never_imports_modal(
+        self, mock_http, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            client_mod,
+            "import_modal",
+            MagicMock(side_effect=AssertionError("Modal import forbidden")),
+        )
+        client = _client_of(mock_http)
+        client.post.return_value = _response({"call_id": "fc-1"})
+        client.get.return_value = _response(
+            {"status": "done", "manifest": ToolManifest().model_dump()}
+        )
+
+        call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+
+        client_mod.import_modal.assert_not_called()
+
     def test_model_copy_data_policy_is_revalidated(self, mock_http, tmp_path):
         cfg = ModalComputeConfig(endpoint_url="https://tool.example").model_copy(
             update={"data_policy": {"input_allowlist": ["file:///tmp"]}}
