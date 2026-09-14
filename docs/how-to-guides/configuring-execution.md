@@ -580,10 +580,13 @@ replace the inherited value:
 
 ```python
 # Preserve every existing variable except MODE.
-environment={"docker": {"env": {"MODE": "production"}}}
+environment={
+    "active": "docker",
+    "docker": {"env": {"MODE": "production"}},
+}
 
 # Clear the inherited env mapping.
-environment={"docker": {"env": {}}}
+environment={"active": "docker", "docker": {"env": {}}}
 ```
 
 An empty root patch such as `runner_resources={}` supplies no fields and is a
@@ -635,7 +638,10 @@ pipeline.run(
     operation=ToolAOp,
     inputs=...,
     tool={"executable": "run_tool_a_v2.sh"},
-    environment={"apptainer": {"image": "/tools/tool_a_v2.sif"}},
+    environment={
+        "active": "apptainer",
+        "apptainer": {"image": "/tools/tool_a_v2.sif"},
+    },
 )
 ```
 

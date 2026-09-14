@@ -40,9 +40,11 @@ from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_overrides import StepOverrides
@@ -85,6 +87,32 @@ class _ComputeDefaultsOp(_MockOp):
         gpu="A100",
         memory_gb=32,
     )
+
+
+class _RecursivePatchOp(OperationDefinition):
+    """Command op with nested configuration defaults for public patch tests."""
+
+    name: ClassVar[str] = "recursive_patch_op"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {}
+    tool: ToolSpec = ToolSpec(executable="bash")
+    environments: Environments = Environments(
+        active="docker",
+        docker=DockerEnvironmentSpec(
+            image="image:v1",
+            env={"KEEP": "yes", "CHANGE": "old"},
+        ),
+    )
+    compute_provider: ComputeProvider = ComputeProvider(
+        active="modal",
+        modal=ModalComputeConfig(
+            retries=5,
+            env={"KEEP": "yes", "CHANGE": "old"},
+        ),
+    )
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return ["bash", "-c", "true"]
 
 
 class _ExternalRunner(LocalRunner):
@@ -201,6 +229,48 @@ class TestPreparedOperationSnapshot:
         assert mapping_id == typed_id
         assert mapping_record == typed_record
         assert mapping_record["compute_resources"] == {"gpu": None}
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_recursively_merges_selected_environment_and_provider(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ) -> None:
+        tracker = MagicMock()
+        tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = tracker
+        mock_execute.return_value = StepResult(
+            step_name=_RecursivePatchOp.name,
+            step_number=0,
+            success=True,
+        )
+        pipeline = _make_pipeline(tmp_path)
+
+        future = pipeline.submit(
+            _RecursivePatchOp,
+            environment={
+                "active": "docker",
+                "docker": {"env": {"CHANGE": "new"}},
+            },
+            compute_provider={
+                "active": "modal",
+                "modal": {"env": {"CHANGE": "new"}},
+            },
+        )
+        future.result()
+
+        operation = mock_execute.call_args.kwargs["operation"]
+        assert operation.environments.active == "docker"
+        assert operation.environments.docker.image == "image:v1"
+        assert operation.environments.docker.env == {
+            "KEEP": "yes",
+            "CHANGE": "new",
+        }
+        assert operation.compute_provider.active == "modal"
+        assert operation.compute_provider.modal.retries == 5
+        assert operation.compute_provider.modal.env == {
+            "KEEP": "yes",
+            "CHANGE": "new",
+        }
 
 
 class TestRunReturnsFailedStepResult:

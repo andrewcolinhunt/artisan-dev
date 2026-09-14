@@ -54,6 +54,15 @@ class _BareOp(OperationDefinition):
         return None
 
 
+class _DockerConfiguredOp(_BareOp):
+    """Docker is configured but local remains active by default."""
+
+    name: ClassVar[str] = "hashing_docker_configured_op"
+    environments: Environments = Environments(
+        docker=DockerEnvironmentSpec(image="lab/img:v1")
+    )
+
+
 class _ImageV1Op(_BareOp):
     """Class-default docker image v1 — no per-step override needed."""
 
@@ -132,9 +141,9 @@ class TestEffectiveConfigPayload:
         assert payload["group_by"] == "cross_product"
 
     def test_per_step_override_changes_payload(self) -> None:
-        base = effective_config_payload(_BareOp())
+        base = effective_config_payload(_DockerConfiguredOp())
         instance = instantiate_operation(
-            _BareOp, StepOverrides.from_user(environment="docker")
+            _DockerConfiguredOp, StepOverrides.from_user(environment="docker")
         )
         overridden = effective_config_payload(instance)
         assert overridden != base
