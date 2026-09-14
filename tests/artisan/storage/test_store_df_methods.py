@@ -14,6 +14,7 @@ import polars as pl
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
 
 
@@ -248,20 +249,13 @@ class TestStoreDfMethodsBackendParametrized:
         delta_root = f"{root}/delta"
         metrics_path = f"{delta_root}/artifacts/metrics"
         storage_options = storage.delta_storage_options()
+        publish_store_manifest(delta_root, fs)
 
-        content = json.dumps({"score": 0.95}).encode("utf-8")
+        artifact = MetricArtifact.draft({"score": 0.95}, "score.json", 1)
+        artifact.finalize()
+        content = artifact.content
         metrics_df = pl.DataFrame(
-            [
-                {
-                    "artifact_id": "m1",
-                    "origin_step_number": 1,
-                    "content": content,
-                    "original_name": "score",
-                    "extension": ".json",
-                    "metadata": "{}",
-                    "external_path": None,
-                }
-            ],
+            [artifact.to_row()],
             schema=MetricArtifact.POLARS_SCHEMA,
         )
         metrics_df.write_delta(
@@ -269,8 +263,8 @@ class TestStoreDfMethodsBackendParametrized:
         )
 
         store = ArtifactStore(delta_root, fs=fs, storage_options=storage_options)
-        result = store.load_metrics_df(["m1"])
+        result = store.load_metrics_df([artifact.artifact_id])
 
         assert len(result) == 1
-        assert result["artifact_id"][0] == "m1"
+        assert result["artifact_id"][0] == artifact.artifact_id
         assert result["content"][0] == content

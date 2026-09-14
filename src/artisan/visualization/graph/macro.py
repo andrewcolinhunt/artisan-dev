@@ -18,6 +18,7 @@ import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
@@ -44,6 +45,7 @@ def _load_completed_steps(
         from fsspec.implementations.local import LocalFileSystem
 
         fs = LocalFileSystem()
+    assert_store_format(delta_root, fs)
     table_path = uri_join(delta_root, TablePath.STEPS)
     if not fs.exists(table_path):
         return pl.DataFrame(

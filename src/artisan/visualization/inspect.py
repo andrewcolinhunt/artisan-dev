@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.dicts import flatten_dict
 
 if TYPE_CHECKING:
@@ -41,6 +42,19 @@ from artisan.utils.path import uri_join
 STATUS_OK = "ok"
 STATUS_PARTIAL = "partial"
 STATUS_FAILED = "failed"
+
+
+def _validated_fs(
+    delta_root: str,
+    fs: AbstractFileSystem | None,
+) -> AbstractFileSystem:
+    """Resolve the filesystem and enforce the store-format gate."""
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
+    assert_store_format(delta_root, fs)
+    return fs
 
 
 def _completed_status(succeeded_count: int, failed_count: int) -> str:
@@ -90,10 +104,7 @@ def inspect_pipeline(
     Raises:
         FileNotFoundError: If steps table doesn't exist.
     """
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
+    fs = _validated_fs(delta_root, fs)
     steps_path = uri_join(delta_root, TablePath.STEPS)
     if not fs.exists(steps_path):
         msg = f"Steps table not found at {steps_path}"
@@ -290,10 +301,7 @@ def inspect_failures(
             executions table simply does not exist yet (steps table present,
             nothing has executed or failed) returns the empty frame instead.
     """
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
+    fs = _validated_fs(delta_root, fs)
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
     if not fs.exists(executions_path):
         # Distinguish a real store with nothing recorded yet from a bogus
@@ -538,10 +546,7 @@ def inspect_step(
         }
     )
 
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
+    fs = _validated_fs(delta_root, fs)
     # Get artifact IDs at this step from index
     index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
     if not fs.exists(index_path):
@@ -623,10 +628,7 @@ def inspect_metrics(
     Raises:
         FileNotFoundError: If metrics table doesn't exist.
     """
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
+    fs = _validated_fs(delta_root, fs)
     table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("metric"))
     if not fs.exists(table_path):
         msg = f"Metrics table not found at {table_path}"
@@ -708,10 +710,7 @@ def inspect_data(
         FileNotFoundError: If data table doesn't exist.
         ValueError: If no matching artifacts found or content is None.
     """
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
+    fs = _validated_fs(delta_root, fs)
     table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("data"))
     if not fs.exists(table_path):
         msg = f"Data table not found at {table_path}"

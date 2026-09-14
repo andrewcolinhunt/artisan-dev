@@ -22,6 +22,7 @@ import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 
 
@@ -83,6 +84,7 @@ class PipelineTimings:
             from fsspec.implementations.local import LocalFileSystem
 
             fs = LocalFileSystem()
+        assert_store_format(delta_root, fs)
         steps_path = uri_join(delta_root, TablePath.STEPS)
         if not fs.exists(steps_path):
             msg = f"steps table not found at {steps_path}"

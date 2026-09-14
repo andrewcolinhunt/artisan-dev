@@ -70,6 +70,7 @@ class TablePath(str, Enum):
     """
 
     ARTIFACT_INDEX = "artifacts/index"
+    ARTIFACT_LOCATIONS = "artifacts/locations"
 
     # Provenance tables
     ARTIFACT_EDGES = "provenance/artifact_edges"

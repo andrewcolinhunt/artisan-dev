@@ -7,10 +7,17 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.artifact_query import ArtifactRef, query_artifacts
+from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA, STEPS_SCHEMA
+
+
+@pytest.fixture(autouse=True)
+def _format_root(tmp_path) -> None:
+    publish_store_manifest(str(tmp_path), LocalFileSystem())
 
 
 def _seed_index(root: Path, entries: list[tuple[str, str, int]]) -> None:

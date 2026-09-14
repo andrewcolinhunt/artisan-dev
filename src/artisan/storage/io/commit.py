@@ -18,6 +18,11 @@ from fsspec import AbstractFileSystem
 from artisan.errors import CommitError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import (
+    assert_store_format,
+    prepare_store_initialization,
+    publish_store_manifest,
+)
 from artisan.storage.core.table_schemas import (
     FRAMEWORK_SCHEMAS,
     NON_PARTITIONED_TABLES,
@@ -51,6 +56,7 @@ def _get_commit_order() -> list[str]:
     artifact_paths = [td.table_path for td in ArtifactTypeDef.get_all().values()]
     framework_paths = [
         TablePath.ARTIFACT_INDEX.value,
+        TablePath.ARTIFACT_LOCATIONS.value,
         TablePath.ARTIFACT_EDGES.value,
         TablePath.EXECUTION_EDGES.value,
         TablePath.EXECUTIONS.value,
@@ -130,6 +136,7 @@ class DeltaCommitter:
             all rows were deduplicated.
         """
         table = _normalize_table(table)
+        assert_store_format(self.delta_base_path, self._fs)
         table_name = _table_name_from_path(table)
 
         # Read all staged files for this table
@@ -155,7 +162,11 @@ class DeltaCommitter:
             and "artifact_id" in staged_df.columns
             and self._has_artifact_id(table)
         ):
-            staged_df = self._deduplicate_artifacts(staged_df, table_path)
+            staged_df = self._deduplicate_artifacts(
+                staged_df,
+                table_path,
+                table=table,
+            )
             if staged_df.is_empty():
                 return 0
 
@@ -260,6 +271,7 @@ class DeltaCommitter:
             Mapping of table name to rows committed. Empty dict when
             no leftover staging files are found or recovery failed.
         """
+        assert_store_format(self.delta_base_path, self._fs)
         if not self._fs.exists(self.staging_manager.staging_dir):
             return {}
 
@@ -329,21 +341,33 @@ class DeltaCommitter:
     # Helper methods
     # -------------------------------------------------------------------------
 
-    def _deduplicate_artifacts(self, df: pl.DataFrame, table_path: str) -> pl.DataFrame:
-        """Remove rows whose artifact_id already exists in Delta."""
+    def _deduplicate_artifacts(
+        self,
+        df: pl.DataFrame,
+        table_path: str,
+        *,
+        table: str,
+    ) -> pl.DataFrame:
+        """Remove rows whose logical artifact key already exists in Delta."""
+        key = (
+            ["artifact_id", "uri"]
+            if table == TablePath.ARTIFACT_LOCATIONS.value
+            else ["artifact_id"]
+        )
+        df = df.unique(subset=key, keep="first", maintain_order=True)
         if not self._fs.exists(table_path):
             return df
 
         existing_ids = (
             pl.scan_delta(table_path, storage_options=self._storage_options)
-            .select("artifact_id")
+            .select(key)
             .collect()
         )
 
         if existing_ids.is_empty():
             return df
 
-        return df.join(existing_ids, on="artifact_id", how="anti")
+        return df.join(existing_ids, on=key, how="anti")
 
     def _write_df(
         self,
@@ -407,10 +431,11 @@ class DeltaCommitter:
             or all rows were deduplicated.
         """
         table = _normalize_table(table)
+        assert_store_format(self.delta_base_path, self._fs)
         table_path = self._table_path(table)
 
         if deduplicate and "artifact_id" in df.columns and self._has_artifact_id(table):
-            df = self._deduplicate_artifacts(df, table_path)
+            df = self._deduplicate_artifacts(df, table_path, table=table)
             if df.is_empty():
                 return 0
 
@@ -432,6 +457,11 @@ class DeltaCommitter:
         Skip tables that already exist. Useful for bootstrapping a new
         pipeline database.
         """
+        publish_manifest = prepare_store_initialization(
+            self.delta_base_path,
+            self._fs,
+        )
+
         # Initialize framework tables
         for table, schema in FRAMEWORK_SCHEMAS.items():
             table_str = _normalize_table(table)
@@ -453,6 +483,8 @@ class DeltaCommitter:
                 self._write_df(
                     empty_df, table_path, partition_by=["origin_step_number"]
                 )
+        if publish_manifest:
+            publish_store_manifest(self.delta_base_path, self._fs)
 
     def compact_table(
         self,
@@ -473,6 +505,7 @@ class DeltaCommitter:
             Dict with ``files_added`` and ``files_removed`` counts.
         """
         table = _normalize_table(table)
+        assert_store_format(self.delta_base_path, self._fs)
         table_path = self._table_path(table)
         if not self._fs.exists(table_path):
             return {"files_added": 0, "files_removed": 0}
@@ -525,6 +558,7 @@ class DeltaCommitter:
         # Framework tables
         zorder_config[TablePath.EXECUTIONS.value] = ["execution_spec_id"]
         zorder_config[TablePath.ARTIFACT_INDEX.value] = ["artifact_id"]
+        zorder_config[TablePath.ARTIFACT_LOCATIONS.value] = ["artifact_id", "uri"]
         zorder_config[TablePath.ARTIFACT_EDGES.value] = [
             "source_artifact_id",
             "target_artifact_id",
@@ -552,6 +586,7 @@ class DeltaCommitter:
             retention_hours: Keep files newer than this threshold.
                 Defaults to 168 (7 days).
         """
+        assert_store_format(self.delta_base_path, self._fs)
         table_path = self._table_path(_normalize_table(table))
         if not self._fs.exists(table_path):
             return

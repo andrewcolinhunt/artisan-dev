@@ -13,6 +13,7 @@ from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
+    ARTIFACT_LOCATIONS_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
     FRAMEWORK_SCHEMAS,
@@ -31,17 +32,15 @@ class TestArtifactSchemaDefinitions:
     """Tests for artifact model schemas (owned by models via POLARS_SCHEMA)."""
 
     def test_file_refs_has_required_columns(self):
-        """file_refs has all columns from v3 design."""
+        """file_refs stores content descriptors but no locator."""
         required = {
             "artifact_id",
             "origin_step_number",
             "content_hash",
-            "path",
             "size_bytes",
             "metadata",
             "original_name",
             "extension",
-            "external_path",
         }
         assert required == set(FILE_REFS_SCHEMA.keys())
 
@@ -50,7 +49,7 @@ class TestArtifactSchemaDefinitions:
         assert "content" not in FILE_REFS_SCHEMA
 
     def test_data_has_required_columns(self):
-        """data has all columns from v3 design."""
+        """data content rows do not persist source paths."""
         required = {
             "artifact_id",
             "origin_step_number",
@@ -61,7 +60,6 @@ class TestArtifactSchemaDefinitions:
             "columns",
             "row_count",
             "metadata",
-            "external_path",
         }
         assert required == set(DATA_SCHEMA.keys())
 
@@ -70,7 +68,7 @@ class TestArtifactSchemaDefinitions:
         assert DATA_SCHEMA["content"] == pl.Binary
 
     def test_metrics_has_required_columns(self):
-        """metrics has all columns from v3 design."""
+        """metrics content rows do not persist source paths."""
         required = {
             "artifact_id",
             "origin_step_number",
@@ -78,7 +76,6 @@ class TestArtifactSchemaDefinitions:
             "original_name",
             "extension",
             "metadata",
-            "external_path",
         }
         assert required == set(METRICS_SCHEMA.keys())
 
@@ -144,6 +141,13 @@ class TestFrameworkSchemaDefinitions:
         required = {"artifact_id", "artifact_type", "origin_step_number", "metadata"}
         assert required == set(ARTIFACT_INDEX_SCHEMA.keys())
 
+    def test_artifact_locations_has_exact_domain_columns(self):
+        assert {
+            "artifact_id": pl.String,
+            "uri": pl.String,
+        } == ARTIFACT_LOCATIONS_SCHEMA
+        assert TablePath.ARTIFACT_LOCATIONS in NON_PARTITIONED_TABLES
+
     def test_framework_schemas_have_metadata_column(self):
         """Most framework tables have a metadata column.
 
@@ -152,6 +156,7 @@ class TestFrameworkSchemaDefinitions:
         tables_without_metadata = {
             TablePath.ARTIFACT_EDGES,
             TablePath.EXECUTION_EDGES,
+            TablePath.ARTIFACT_LOCATIONS,
         }
         for table_name, schema in FRAMEWORK_SCHEMAS.items():
             if table_name in tables_without_metadata:
@@ -210,6 +215,7 @@ class TestSchemaRegistry:
         tables_without_metadata = {
             TablePath.ARTIFACT_EDGES,
             TablePath.EXECUTION_EDGES,
+            TablePath.ARTIFACT_LOCATIONS,
         }
         for table_path in TablePath:
             schema = get_schema(table_path)
@@ -256,10 +262,9 @@ class TestDataFrameCreation:
             "columns": ['["col_a","col_b"]'],
             "row_count": [1],
             "metadata": ["{}"],
-            "external_path": [None],
         }
         df = pl.DataFrame(data, schema=DATA_SCHEMA)
-        assert df.shape == (1, 10)
+        assert df.shape == (1, 9)
 
     def test_create_executions_dataframe_lightweight(self):
         """Create executions DataFrame (lightweight, no inputs/outputs)."""
