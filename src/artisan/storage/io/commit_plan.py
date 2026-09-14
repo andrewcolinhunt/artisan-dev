@@ -84,7 +84,11 @@ class PlannedTable(BaseModel):
         ):
             msg = f"Invalid staged file set for planned table {self.table_path!r}"
             raise ValueError(msg)
-        if self.row_count != sum(file.row_count for file in self.files):
+        staged_row_count = sum(file.row_count for file in self.files)
+        if self.row_count > staged_row_count or (
+            not _is_global_artifact_table(self.table_path)
+            and self.row_count != staged_row_count
+        ):
             msg = f"Invalid row count for planned table {self.table_path!r}"
             raise ValueError(msg)
         if self.row_count != len(self.row_keys) or len(set(self.row_keys)) != len(
@@ -334,8 +338,7 @@ def verify_plan_files(
                 raise StoreIntegrityError(msg)
             frames.append(frame)
         combined = pl.concat(frames, how="vertical_relaxed", rechunk=True)
-        _validate_table_rows(plan, table, combined)
-        tables[table.table_path] = combined
+        tables[table.table_path] = _validate_table_rows(plan, table, combined)
     return tables
 
 
@@ -360,7 +363,9 @@ def canonical_table_plan_key(
     frame: pl.DataFrame,
 ) -> str:
     """Hash a table's canonical ownerless planned rows."""
-    rows = _canonical_rows(frame, get_natural_key(table_path))
+    natural_key = get_natural_key(table_path)
+    effect = _planned_effect_rows(table_path, frame, natural_key)
+    rows = _canonical_rows(effect, natural_key)
     return compute_content_digest(
         canonical_json_bytes(
             {
@@ -456,8 +461,8 @@ def _build_table(
     frames = [frame for _, frame in files]
     combined = pl.concat(frames, how="vertical_relaxed", rechunk=True)
     natural_key = get_natural_key(table_path)
-    _require_unique_keys(table_path, combined, natural_key)
-    canonical_rows = _canonical_rows(combined, natural_key)
+    effect = _planned_effect_rows(table_path, combined, natural_key)
+    canonical_rows = _canonical_rows(effect, natural_key)
     row_keys = tuple(
         tuple(row[column] for column in natural_key) for row in canonical_rows
     )
@@ -465,7 +470,7 @@ def _build_table(
         table_path=table_path,
         natural_key=natural_key,
         row_keys=row_keys,
-        row_count=combined.height,
+        row_count=effect.height,
         table_plan_key=canonical_table_plan_key(
             logical_commit_id,
             table_path,
@@ -479,17 +484,18 @@ def _validate_table_rows(
     plan: CommitPlan,
     table: PlannedTable,
     frame: pl.DataFrame,
-) -> None:
-    _require_unique_keys(table.table_path, frame, table.natural_key)
-    if frame.height != table.row_count:
+) -> pl.DataFrame:
+    effect = _planned_effect_rows(table.table_path, frame, table.natural_key)
+    if effect.height != table.row_count:
         msg = f"Row count changed for {plan.logical_commit_id} table {table.table_path}"
         raise StoreIntegrityError(msg)
     if (
-        canonical_table_plan_key(plan.logical_commit_id, table.table_path, frame)
+        canonical_table_plan_key(plan.logical_commit_id, table.table_path, effect)
         != table.table_plan_key
     ):
         msg = f"Table plan key changed for {plan.logical_commit_id} table {table.table_path}"
         raise StoreIntegrityError(msg)
+    return effect
 
 
 def _validate_staged_schema(table_path: str, frame: pl.DataFrame) -> None:
@@ -611,17 +617,36 @@ def _read_parquet_bytes(
         raise StoreIntegrityError(msg) from exc
 
 
-def _require_unique_keys(
+def _planned_effect_rows(
     table_path: str,
     frame: pl.DataFrame,
     natural_key: tuple[str, ...],
-) -> None:
+) -> pl.DataFrame:
     if any(column not in frame.columns for column in natural_key):
         msg = f"Missing natural key {natural_key!r} in staged table {table_path}"
         raise StoreIntegrityError(msg)
-    if frame.height != frame.unique(subset=list(natural_key)).height:
+
+    unique = frame.unique(subset=list(natural_key), maintain_order=True)
+    if frame.height == unique.height:
+        return frame
+    if not _is_global_artifact_table(table_path):
         msg = f"Duplicate natural keys in staged table {table_path}"
         raise StoreIntegrityError(msg)
+
+    data_columns = [column for column in frame.columns if column not in natural_key]
+    conflicts = (
+        frame.group_by(list(natural_key))
+        .agg(pl.struct(data_columns).n_unique().alias("variants"))
+        .filter(pl.col("variants") != 1)
+    )
+    if not conflicts.is_empty():
+        msg = f"Conflicting natural keys in staged table {table_path}"
+        raise StoreIntegrityError(msg)
+    return unique
+
+
+def _is_global_artifact_table(table_path: str) -> bool:
+    return table_path.startswith("artifacts/")
 
 
 def _canonical_rows(
