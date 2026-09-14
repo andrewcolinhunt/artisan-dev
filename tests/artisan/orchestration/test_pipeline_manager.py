@@ -18,10 +18,11 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 from pydantic import BaseModel
 
-from artisan.errors import ArtifactIntegrityError
+from artisan.errors import ArtifactIntegrityError, CommitError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import (
     PipelineManager,
@@ -57,7 +58,7 @@ from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.storage.core.store_format import STORE_MANIFEST, publish_store_manifest
+from artisan.storage.core.store_format import STORE_MANIFEST
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 _INPUT_ARTIFACT = DataArtifact.draft(
@@ -71,7 +72,7 @@ _INPUT_ID = _INPUT_ARTIFACT.artifact_id
 
 def _seed_input_artifact(delta_root: Path) -> None:
     """Seed the concrete input consumed by pipeline-manager tests."""
-    publish_store_manifest(str(delta_root), LocalFileSystem())
+    publish_test_store(str(delta_root), LocalFileSystem())
     content_path = delta_root / ArtifactTypeDef.get_table_path(ArtifactTypes.DATA)
     index_path = delta_root / TablePath.ARTIFACT_INDEX.value
     if not content_path.exists():
@@ -1537,13 +1538,13 @@ class TestGenerateStepRunId:
     """Tests for _generate_step_run_id."""
 
     def test_returns_32_char_hex(self):
-        result = _generate_step_run_id("spec123")
+        result = _generate_step_run_id()
         assert len(result) == 32
         int(result, 16)  # valid hex
 
     def test_different_spec_ids_differ(self):
-        a = _generate_step_run_id("spec_a")
-        b = _generate_step_run_id("spec_b")
+        a = _generate_step_run_id()
+        b = _generate_step_run_id()
         assert a != b
 
 
@@ -2012,11 +2013,13 @@ class TestSkipStep:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         outputs = {"output": MagicMock(artifact_type="data")}
-        future = pipeline._skip_step("skipped", outputs, "test_reason")
+        step_run_id = "a" * 32
+        future = pipeline._skip_step("skipped", outputs, "test_reason", step_run_id)
         result = future.result()
         assert result.metadata["skipped"] is True
         assert result.metadata["skip_reason"] == "test_reason"
         assert result.step_name == "skipped"
+        assert result.step_run_id == step_run_id
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_increments_step_counter(self, mock_tracker_cls, tmp_path):
@@ -2024,7 +2027,7 @@ class TestSkipStep:
         pipeline = _make_pipeline(tmp_path)
         assert pipeline._current_step == 0
         outputs = {"output": MagicMock(artifact_type="data")}
-        pipeline._skip_step("s", outputs, "reason")
+        pipeline._skip_step("s", outputs, "reason", "a" * 32)
         assert pipeline._current_step == 1
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -2032,10 +2035,103 @@ class TestSkipStep:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         outputs = {"output": MagicMock(artifact_type="data")}
-        pipeline._skip_step("my_step", outputs, "reason")
+        pipeline._skip_step("my_step", outputs, "reason", "a" * 32)
         assert len(pipeline._step_results) == 1
         assert "my_step" in pipeline._step_registry
         assert "my_step" in pipeline._named_steps
+
+
+class TestWholeStepCacheReuse:
+    """Whole-step hits retain the new current-run attempt identity."""
+
+    def test_hit_keeps_current_id_and_captures_source_executions(self, tmp_path):
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
+        pipeline = _make_pipeline(tmp_path)
+        tracker = MagicMock()
+        pipeline._step_tracker = tracker
+        source = "a" * 32
+        current = "b" * 32
+        cached_execution = "c" * 32
+        tracker.check_cache.return_value = _WholeStepCacheHit(
+            result=StepResult(
+                step_name="source",
+                step_number=8,
+                success=True,
+                output_roles=frozenset({"output"}),
+                output_types={"output": ArtifactTypes.DATA},
+                step_run_id=source,
+            ),
+            source_step_run_id=source,
+            execution_run_ids=(cached_execution,),
+        )
+
+        with patch.object(pipeline, "_commit_whole_step_reuse") as commit_reuse:
+            future = pipeline._try_cached_step(
+                _MockOp,
+                {"data": [_INPUT_ID]},
+                StepOverrides.from_user(),
+                step_spec_id="spec",
+                step_number=0,
+                step_name="current",
+                prepared_operation=_MockOp(),
+                step_run_id=current,
+            )
+
+        assert future is not None
+        result = future.result()
+        assert result.step_run_id == current
+        assert result.step_run_id != source
+        assert pipeline._step_run_ids[0] == current
+        commit_reuse.assert_called_once_with(
+            current,
+            (cached_execution,),
+            step_number=0,
+            operation_name=_MockOp.name,
+        )
+        tracker.record_step_completed.assert_called_once()
+
+    def test_relation_commit_failure_prevents_terminal_success(self, tmp_path):
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
+        pipeline = _make_pipeline(tmp_path)
+        tracker = MagicMock()
+        pipeline._step_tracker = tracker
+        tracker.check_cache.return_value = _WholeStepCacheHit(
+            result=StepResult(
+                step_name="source",
+                step_number=8,
+                success=True,
+                output_roles=frozenset({"output"}),
+                output_types={"output": ArtifactTypes.DATA},
+                step_run_id="a" * 32,
+            ),
+            source_step_run_id="a" * 32,
+            execution_run_ids=("c" * 32,),
+        )
+
+        with (
+            patch.object(
+                pipeline,
+                "_commit_whole_step_reuse",
+                side_effect=CommitError([TablePath.CACHE_REUSE.table_name]),
+            ),
+            pytest.raises(CommitError),
+        ):
+            pipeline._try_cached_step(
+                _MockOp,
+                {"data": [_INPUT_ID]},
+                StepOverrides.from_user(),
+                step_spec_id="spec",
+                step_number=0,
+                step_name="current",
+                prepared_operation=_MockOp(),
+                step_run_id="b" * 32,
+            )
+
+        tracker.record_step_start.assert_called_once()
+        tracker.record_step_completed.assert_not_called()
+        assert pipeline._step_results == []
 
 
 # =============================================================================
@@ -2187,7 +2283,7 @@ class TestCheckEarlyExit:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         outputs = {"output": MagicMock(artifact_type="data")}
-        result = pipeline._check_early_exit("step", outputs, None)
+        result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is None
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -2196,7 +2292,7 @@ class TestCheckEarlyExit:
         pipeline = _make_pipeline(tmp_path)
         pipeline._stopped = True
         outputs = {"output": MagicMock(artifact_type="data")}
-        result = pipeline._check_early_exit("step", outputs, None)
+        result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is not None
         assert result.result().metadata["skip_reason"] == "pipeline_stopped"
 
@@ -2206,7 +2302,7 @@ class TestCheckEarlyExit:
         pipeline = _make_pipeline(tmp_path)
         pipeline._cancel_event.set()
         outputs = {"output": MagicMock(artifact_type="data")}
-        result = pipeline._check_early_exit("step", outputs, None)
+        result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is not None
         assert result.result().metadata["skip_reason"] == "cancelled"
 
@@ -2290,7 +2386,11 @@ class TestConfigureLoggingCloudGuard:
         with (
             patch("artisan.utils.logging.configure_logging") as mock_configure,
             patch.object(StorageConfig, "filesystem", return_value=fake_fs),
-            patch("artisan.orchestration.engine.step_tracker.StepTracker"),
+            patch(
+                "artisan.storage.io.commit.prepare_store_initialization",
+                return_value=False,
+            ),
+            patch("artisan.orchestration.pipeline_manager.StepTracker"),
         ):
             PipelineManager(config)
         mock_configure.assert_called_once()
@@ -2335,16 +2435,16 @@ class TestPromoteFilePathsCloudUri:
             recover_staging=False,
             storage=StorageConfig(protocol="memory"),
         )
-        publish_store_manifest(config.delta_root, mem_fs)
-        result, count, verified = _promote_file_paths_to_store(
-            [
-                "memory:///promote-cloud/data_0.csv",
-                "memory:///promote-cloud/data_1.csv",
-            ],
-            config,
-            step_number=1,
-            operation_name="ingest",
-        )
+        with patch("artisan.storage.io.commit.assert_store_format"):
+            result, count, verified = _promote_file_paths_to_store(
+                [
+                    "memory:///promote-cloud/data_0.csv",
+                    "memory:///promote-cloud/data_1.csv",
+                ],
+                config,
+                step_number=1,
+                operation_name="ingest",
+            )
         assert count == 2
         assert result is not None
         assert "file" in result

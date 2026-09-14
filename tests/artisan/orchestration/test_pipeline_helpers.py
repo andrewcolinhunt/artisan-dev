@@ -36,14 +36,14 @@ class TestGenerateStepRunId:
 
     def test_length(self):
         """32-char hex string."""
-        step_run_id = _generate_step_run_id("spec_abc123")
+        step_run_id = _generate_step_run_id()
         assert len(step_run_id) == 32
         assert re.match(r"^[0-9a-f]{32}$", step_run_id)
 
-    def test_different_specs_different_ids(self):
-        """Different spec_ids produce different run_ids."""
-        id1 = _generate_step_run_id("spec_a")
-        id2 = _generate_step_run_id("spec_b")
+    def test_consecutive_calls_produce_different_ids(self):
+        """Each attempt receives a distinct run ID."""
+        id1 = _generate_step_run_id()
+        id2 = _generate_step_run_id()
         assert id1 != id2
 
 

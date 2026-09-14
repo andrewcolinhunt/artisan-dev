@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from artisan.errors import ArtifactIntegrityError
+from artisan.errors import ArtifactIntegrityError, CommitError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -1627,6 +1627,283 @@ class TestFilterStepLogging:
 # =============================================================================
 # Tests for curator execution cache identity
 # =============================================================================
+
+
+class TestExecutionCacheReuseCapture:
+    """Cache hits become durable membership only for their current attempt."""
+
+    def test_curator_cache_hit_stages_validated_relation(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import _execute_curator_step
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=CacheHit(cached, "spec"),
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ) as validate,
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse",
+                return_value=True,
+            ) as stage,
+            patch(
+                "artisan.orchestration.engine.step_executor._commit_and_compact",
+                return_value=None,
+            ) as commit,
+            patch(
+                "artisan.orchestration.engine.step_executor._run_curator_in_subprocess"
+            ) as execute,
+        ):
+            result = _execute_curator_step(
+                operation=MockNoGroupByCuratorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                compact=False,
+                step_run_id=current,
+            )
+
+        validate.assert_called_once_with(config, current, {cached})
+        stage.assert_called_once_with(
+            config,
+            current,
+            [cached],
+            step_number=4,
+            operation_name=MockNoGroupByCuratorOp.name,
+        )
+        assert commit.call_args.kwargs["has_work"] is True
+        execute.assert_not_called()
+        assert result.step_run_id == current
+
+    def test_all_cached_creator_commits_relation_without_dispatch(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        runner, _handle = _make_mock_backend()
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=CacheHit(cached, "spec"),
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ) as validate,
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse",
+                return_value=True,
+            ) as stage,
+            patch(
+                "artisan.orchestration.engine.step_executor._commit_and_compact",
+                return_value=None,
+            ) as commit,
+        ):
+            result = _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=runner,
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                compact=False,
+                step_run_id=current,
+            )
+
+        validate.assert_called_once_with(config, current, {cached})
+        stage.assert_called_once_with(
+            config,
+            current,
+            [cached],
+            step_number=4,
+            operation_name=MockNoGroupByCreatorOp.name,
+        )
+        assert commit.call_args.kwargs["has_work"] is True
+        runner.create_lifecycle_router.assert_not_called()
+        assert result.succeeded_count == 1
+
+    def test_mixed_creator_stages_only_cache_hits(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.execution.batch_strategy import BatchStrategy
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        operation = MockNoGroupByCreatorOp().model_copy(
+            update={"batch_strategy": BatchStrategy(artifacts_per_unit=1)}
+        )
+        runner, handle = _make_mock_backend(
+            flow_return_value=[
+                UnitResult(
+                    success=True,
+                    error=None,
+                    item_count=1,
+                    execution_run_ids=["c" * 32],
+                )
+            ]
+        )
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                side_effect=[CacheHit(cached, "spec"), None],
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ) as validate,
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse",
+                return_value=True,
+            ) as stage,
+            patch(
+                "artisan.orchestration.engine.step_executor._commit_and_compact",
+                return_value=None,
+            ),
+        ):
+            result = _execute_creator_step(
+                operation=operation,
+                inputs=_prepared({"data": [_ID_S1, _ID_S2]}),
+                step_runner=runner,
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                compact=False,
+                step_run_id=current,
+            )
+
+        validate.assert_called_once_with(config, current, {cached})
+        assert stage.call_args.args[2] == [cached]
+        assert len(handle._captured_units) == 1
+        assert result.succeeded_count == 2
+
+    def test_cancelled_cache_selection_is_never_staged(self, tmp_path):
+        import threading
+
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        runner, _handle = _make_mock_backend()
+        cancelled = threading.Event()
+        cancelled.set()
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=CacheHit(cached, "spec"),
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ) as validate,
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse"
+            ) as stage,
+            patch(
+                "artisan.orchestration.engine.step_executor._commit_and_compact"
+            ) as commit,
+        ):
+            result = _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=runner,
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                compact=False,
+                cancel_event=cancelled,
+                step_run_id=current,
+            )
+
+        validate.assert_called_once_with(config, current, {cached})
+        stage.assert_not_called()
+        commit.assert_not_called()
+        assert result.metadata["cancelled"] is True
+        assert result.step_run_id == current
+
+    def test_cache_relation_commit_failure_blocks_success(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        runner, _handle = _make_mock_backend()
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=CacheHit(cached, "spec"),
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse",
+                return_value=True,
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._commit_and_compact",
+                return_value="OSError: disk full",
+            ),
+            pytest.raises(CommitError),
+        ):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=runner,
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                compact=False,
+                step_run_id=current,
+            )
 
 
 class TestCuratorExecutionCacheIdentity:

@@ -6,12 +6,12 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.storage.core.artifact_store import ArtifactStore
-from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 from artisan.utils.hashing import compute_content_digest
 
@@ -19,7 +19,7 @@ from artisan.utils.hashing import compute_content_digest
 @pytest.fixture(autouse=True)
 def _format_common_delta_root(tmp_path: Path) -> None:
     """Initialize the conventional execution-test Delta root as format 2."""
-    publish_store_manifest(str(tmp_path / "delta"), LocalFileSystem())
+    publish_test_store(str(tmp_path / "delta"), LocalFileSystem())
 
 
 def _setup_delta_tables(
@@ -38,7 +38,7 @@ def _setup_delta_tables(
         file_refs: List of file ref artifact data dicts.
         index_entries: List of artifact_index entries.
     """
-    publish_store_manifest(str(base_path), LocalFileSystem())
+    publish_test_store(str(base_path), LocalFileSystem())
     if metrics:
         metrics_path = base_path / "artifacts/metrics"
         df = pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA)

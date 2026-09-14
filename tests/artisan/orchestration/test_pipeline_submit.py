@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from enum import StrEnum, auto
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -107,6 +107,8 @@ class TestSubmit:
     )
     def test_submit_cache_hit_resolved(self, mock_exec, tmp_path):
         """done immediately on cache hit."""
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
@@ -114,14 +116,23 @@ class TestSubmit:
         p1 = PipelineManager.create(
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
-        p1.run(IngestMockOp, inputs=None)
+        source = p1.run(IngestMockOp, inputs=None)
 
         # Second run — cache hit
         p2 = PipelineManager.create(
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
-        future = p2.submit(IngestMockOp, inputs=None)
+        p2._step_tracker.check_cache = MagicMock(
+            return_value=_WholeStepCacheHit(
+                result=source,
+                source_step_run_id=source.step_run_id,
+                execution_run_ids=("c" * 32,),
+            )
+        )
+        with patch.object(p2, "_commit_whole_step_reuse"):
+            future = p2.submit(IngestMockOp, inputs=None)
         assert future.done is True
+        assert future.result().step_run_id != source.step_run_id
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",

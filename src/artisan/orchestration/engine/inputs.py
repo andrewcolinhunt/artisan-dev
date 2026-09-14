@@ -64,7 +64,27 @@ def resolve_output_reference(
     """
     from artisan.storage.core.store_format import assert_store_format
 
-    assert_store_format(delta_root, fs)
+    assert_store_format(delta_root, fs, storage_options)
+    if step_run_id is not None:
+        from artisan.storage.core.run_scope import load_accepted_outputs
+
+        outputs = load_accepted_outputs(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            step_run_id=step_run_id,
+            role=ref.role,
+        ).filter(pl.col("current_step_number") == ref.source_step)
+        if outputs.is_empty():
+            logger.warning(
+                "Step %d produced no accepted outputs for role '%s' — downstream "
+                "step will receive empty inputs.",
+                ref.source_step,
+                ref.role,
+            )
+            return []
+        return sorted(set(outputs["artifact_id"].to_list()))
+
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
     execution_edges_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
 
@@ -81,8 +101,6 @@ def resolve_output_reference(
         .filter(pl.col("origin_step_number") == ref.source_step)
         .filter(pl.col("success") == True)  # noqa: E712
     )
-    if step_run_id:
-        query = query.filter(pl.col("step_run_id") == step_run_id)
     records_result = query.select("execution_run_id").collect()
 
     if records_result.is_empty():

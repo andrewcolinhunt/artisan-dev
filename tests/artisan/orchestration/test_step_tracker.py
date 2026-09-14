@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
+import polars as pl
+
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.enums import CachePolicy
 from artisan.schemas.orchestration.step_result import StepResult
@@ -11,7 +15,7 @@ from artisan.schemas.orchestration.step_start_record import StepStartRecord
 def _make_start_record(
     step_number: int = 0,
     step_name: str = "Ingest",
-    step_run_id: str = "run_001",
+    step_run_id: str = "a" * 32,
     step_spec_id: str = "spec_001",
 ) -> StepStartRecord:
     """Create a StepStartRecord for testing."""
@@ -66,8 +70,10 @@ class TestCheckCache:
         # Only a 'running' row exists
         assert tracker.check_cache("spec_a", CachePolicy.ALL_SUCCEEDED) is None
 
-    def test_check_cache_hit(self, tmp_path):
+    @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
+    def test_check_cache_hit(self, mock_membership, tmp_path):
         """Completed row returns correct StepResult."""
+        mock_membership.return_value = pl.DataFrame({"execution_run_id": ["b" * 32]})
         tracker = StepTracker(str(tmp_path), "run_1")
         record = _make_start_record(step_spec_id="spec_b")
         result = _make_step_result()
@@ -76,16 +82,20 @@ class TestCheckCache:
 
         cached = tracker.check_cache("spec_b", CachePolicy.ALL_SUCCEEDED)
         assert cached is not None
-        assert cached.step_name == "Ingest"
-        assert cached.step_number == 0
-        assert cached.succeeded_count == 5
-        assert cached.failed_count == 0
-        assert cached.success is True
-        assert cached.output_roles == frozenset(["file"])
-        assert cached.output_types == {"file": "file_ref"}
+        assert cached.result.step_name == "Ingest"
+        assert cached.result.step_number == 0
+        assert cached.result.succeeded_count == 5
+        assert cached.result.failed_count == 0
+        assert cached.result.success is True
+        assert cached.result.output_roles == frozenset(["file"])
+        assert cached.result.output_types == {"file": "file_ref"}
+        assert cached.source_step_run_id == "a" * 32
+        assert cached.execution_run_ids == ("b" * 32,)
 
-    def test_check_cache_most_recent(self, tmp_path):
+    @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
+    def test_check_cache_most_recent(self, mock_membership, tmp_path):
         """Multiple completed rows for same spec_id returns latest."""
+        mock_membership.return_value = pl.DataFrame({"execution_run_id": ["b" * 32]})
         tracker = StepTracker(str(tmp_path), "run_1")
         record = _make_start_record(step_spec_id="spec_c")
 
@@ -100,7 +110,7 @@ class TestCheckCache:
 
         cached = tracker.check_cache("spec_c", CachePolicy.ALL_SUCCEEDED)
         assert cached is not None
-        assert cached.succeeded_count == 10
+        assert cached.result.succeeded_count == 10
 
 
 class TestRecordOperations:
@@ -359,17 +369,21 @@ class TestCacheCorrectness:
         self._write_completed_step(tracker, succeeded=3, failed=2)
         assert tracker.check_cache("spec_001", CachePolicy.ALL_SUCCEEDED) is None
 
-    def test_cache_hit_when_failures_step_completed(self, tmp_path):
+    @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
+    def test_cache_hit_when_failures_step_completed(self, mock_membership, tmp_path):
         """STEP_COMPLETED accepts steps with execution failures."""
+        mock_membership.return_value = pl.DataFrame({"execution_run_id": ["b" * 32]})
         tracker = StepTracker(str(tmp_path), "run_1")
         self._write_completed_step(tracker, succeeded=3, failed=2)
         cached = tracker.check_cache("spec_001", CachePolicy.STEP_COMPLETED)
         assert cached is not None
-        assert cached.succeeded_count == 3
-        assert cached.failed_count == 2
+        assert cached.result.succeeded_count == 3
+        assert cached.result.failed_count == 2
 
-    def test_cache_hit_clean_step(self, tmp_path):
+    @patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
+    def test_cache_hit_clean_step(self, mock_membership, tmp_path):
         """Both policies accept clean steps (no errors, no failures)."""
+        mock_membership.return_value = pl.DataFrame({"execution_run_id": ["b" * 32]})
         tracker = StepTracker(str(tmp_path), "run_1")
         self._write_completed_step(tracker, succeeded=5, failed=0)
         assert tracker.check_cache("spec_001", CachePolicy.ALL_SUCCEEDED) is not None

@@ -7,6 +7,7 @@ Handles step caching (``check_cache``), state recording
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,15 +15,26 @@ import polars as pl
 from deltalake import WriterProperties
 from fsspec import AbstractFileSystem
 
+from artisan.errors import PersistenceIntegrityError
 from artisan.schemas.enums import CachePolicy, TablePath
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.orchestration.step_state import StepState
+from artisan.storage.core.run_scope import load_execution_membership
 from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import STEPS_SCHEMA
 from artisan.utils.path import uri_join
 
 WRITER_PROPS = WriterProperties(compression="ZSTD")
+
+
+@dataclass(frozen=True, slots=True)
+class _WholeStepCacheHit:
+    """Private whole-step hit flattened to actual persisted executions."""
+
+    result: StepResult
+    source_step_run_id: str
+    execution_run_ids: tuple[str, ...]
 
 
 class StepTracker:
@@ -48,16 +60,17 @@ class StepTracker:
 
             fs = LocalFileSystem()
         self._fs = fs
+        self._delta_root = delta_root
         self._steps_path = uri_join(delta_root, TablePath.STEPS)
         self._pipeline_run_id = pipeline_run_id
         self._storage_options = storage_options
-        assert_store_format(delta_root, self._fs)
+        assert_store_format(delta_root, self._fs, self._storage_options)
 
     def check_cache(
         self,
         step_spec_id: str,
         cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
-    ) -> StepResult | None:
+    ) -> _WholeStepCacheHit | None:
         """Check for a completed step with this spec_id.
 
         Args:
@@ -65,7 +78,8 @@ class StepTracker:
             cache_policy: Controls which completed steps qualify as cache hits.
 
         Returns:
-            StepResult if a completed step exists, None otherwise.
+            A private flattened cache hit if a completed step exists, otherwise
+            None.
         """
         if not self._fs.exists(self._steps_path):
             return None
@@ -85,7 +99,28 @@ class StepTracker:
         if result.is_empty():
             return None
 
-        return _row_to_step_result(result.row(0, named=True))
+        row = result.row(0, named=True)
+        source_step_run_id = row.get("step_run_id")
+        if not isinstance(source_step_run_id, str) or not _is_hex_id(
+            source_step_run_id
+        ):
+            msg = "Whole-step cache source has no valid step_run_id"
+            raise PersistenceIntegrityError(msg)
+        membership = load_execution_membership(
+            self._delta_root,
+            fs=self._fs,
+            storage_options=self._storage_options,
+            step_run_id=source_step_run_id,
+        )
+        execution_run_ids = tuple(sorted(set(membership["execution_run_id"].to_list())))
+        if not execution_run_ids:
+            msg = f"Whole-step cache source {source_step_run_id} has no executions"
+            raise PersistenceIntegrityError(msg)
+        return _WholeStepCacheHit(
+            result=_row_to_step_result(row),
+            source_step_run_id=source_step_run_id,
+            execution_run_ids=execution_run_ids,
+        )
 
     def _base_row(self, record: StepStartRecord, status: str) -> dict[str, Any]:
         """Build the common row dict shared by all record_step_* methods."""
@@ -373,3 +408,10 @@ def _row_to_step_result(row: dict[str, Any]) -> StepResult:
         duration_seconds=row["duration_seconds"],
         step_run_id=row.get("step_run_id"),
     )
+
+
+def _is_hex_id(value: object) -> bool:
+    """Return whether value is one lowercase 32-character hex ID."""
+    if not isinstance(value, str) or len(value) != 32:
+        return False
+    return all(character in "0123456789abcdef" for character in value)

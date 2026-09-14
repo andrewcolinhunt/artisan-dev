@@ -22,6 +22,7 @@ from typing import Any, Never, cast
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel
 
+from artisan.errors import CommitError
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.executors.curator import (
     is_curator_operation,
@@ -279,6 +280,7 @@ def _cancelled_result(
     operation: type[OperationDefinition] | OperationDefinition,
     step_number: int,
     failure_policy: FailurePolicy,
+    step_run_id: str | None = None,
 ) -> StepResult:
     """Build a StepResult indicating the step was cancelled before completion."""
     return build_step_result(
@@ -288,7 +290,58 @@ def _cancelled_result(
         failed_count=0,
         failure_policy=failure_policy,
         metadata={"cancelled": True},
+        step_run_id=step_run_id,
     )
+
+
+def _validate_cache_reuse(
+    config: PipelineConfig,
+    current_step_run_id: str | None,
+    cached_execution_run_ids: set[str],
+) -> list[str]:
+    """Validate the complete execution-cache selection in one bulk pass."""
+    if not cached_execution_run_ids or current_step_run_id is None:
+        return []
+    from artisan.storage.core.run_scope import validate_cached_executions
+
+    return validate_cached_executions(
+        config.delta_root,
+        current_step_run_id,
+        cached_execution_run_ids,
+        fs=config.storage.filesystem(),
+        storage_options=config.storage.delta_storage_options(),
+        files_root=config.files_root,
+    )
+
+
+def _stage_cache_reuse(
+    config: PipelineConfig,
+    current_step_run_id: str | None,
+    cached_execution_run_ids: list[str],
+    *,
+    step_number: int,
+    operation_name: str,
+) -> bool:
+    """Stage already-validated cache-reuse rows for the current step."""
+    if current_step_run_id is None or not cached_execution_run_ids:
+        return False
+    from artisan.storage.io.staging import StagingManager
+
+    staging = StagingManager(config.staging_root, config.storage.filesystem())
+    staging.stage_cache_reuse(
+        current_step_run_id,
+        cached_execution_run_ids,
+        step_number=step_number,
+        operation_name=operation_name,
+    )
+    return True
+
+
+def _raise_reuse_commit_failure(commit_error: str | None, has_reuse: bool) -> None:
+    """Prevent terminal success when accepted cache links are not durable."""
+    if commit_error is None or not has_reuse:
+        return
+    raise CommitError([TablePath.CACHE_REUSE.table_name])
 
 
 def _all_inputs_empty(resolved_inputs: dict[str, list[str]]) -> bool:
@@ -308,6 +361,7 @@ def _skip_for_empty_inputs(
     failure_policy: FailurePolicy,
     *,
     log_label: str = "",
+    step_run_id: str | None = None,
 ) -> StepResult | None:
     """Return a skip StepResult if all input roles are empty, else None."""
     if not _all_inputs_empty(resolved_inputs):
@@ -325,6 +379,7 @@ def _skip_for_empty_inputs(
         failed_count=0,
         failure_policy=failure_policy,
         metadata={"skipped": True, "skip_reason": "empty_inputs"},
+        step_run_id=step_run_id,
     )
 
 
@@ -620,7 +675,11 @@ def _execute_curator_step(
             )
 
         skip_result = _skip_for_empty_inputs(
-            operation, paired_inputs, step_number, failure_policy
+            operation,
+            paired_inputs,
+            step_number,
+            failure_policy,
+            step_run_id=step_run_id,
         )
         if skip_result is not None:
             return skip_result
@@ -649,17 +708,52 @@ def _execute_curator_step(
                     operation.name,
                 )
                 cached_count = sum(len(ids) for ids in paired_inputs.values()) or 1
+                validated_reuse = _validate_cache_reuse(
+                    config,
+                    step_run_id,
+                    {cache_result.execution_run_id},
+                )
+                if cancel_event is not None and cancel_event.is_set():
+                    return _cancelled_result(
+                        operation,
+                        step_number,
+                        failure_policy,
+                        step_run_id=step_run_id,
+                    )
+                has_reuse = _stage_cache_reuse(
+                    config,
+                    step_run_id,
+                    validated_reuse,
+                    step_number=step_number,
+                    operation_name=operation.name,
+                )
+                runtime_env = _create_runtime_environment(config, operation)
+                commit_error = _commit_and_compact(
+                    config,
+                    runtime_env,
+                    step_number,
+                    operation.name,
+                    timings,
+                    has_work=has_reuse,
+                    compact=compact,
+                )
+                _raise_reuse_commit_failure(commit_error, has_reuse)
+                _finalize_timings(timings, total_start, step_number, "Curator")
                 return build_step_result(
                     operation=operation,
                     step_number=step_number,
                     succeeded_count=cached_count,
                     failed_count=0,
                     failure_policy=failure_policy,
+                    metadata=_build_step_metadata(timings, commit_error, None),
+                    step_run_id=step_run_id,
                 )
 
     # --- cancel check: before execute ---
     if cancel_event is not None and cancel_event.is_set():
-        return _cancelled_result(operation, step_number, failure_policy)
+        return _cancelled_result(
+            operation, step_number, failure_policy, step_run_id=step_run_id
+        )
 
     # Create single ExecutionUnit with all inputs
     unit = ExecutionUnit(
@@ -756,7 +850,9 @@ def _execute_curator_step(
             operation.name,
             step_number,
         )
-        return _cancelled_result(operation, step_number, failure_policy)
+        return _cancelled_result(
+            operation, step_number, failure_policy, step_run_id=step_run_id
+        )
 
     commit_error = _commit_and_compact(
         config,
@@ -1068,7 +1164,11 @@ def _execute_creator_step(
         group_ids = inputs.group_ids
 
         skip_result = _skip_for_empty_inputs(
-            operation, paired_inputs, step_number, failure_policy
+            operation,
+            paired_inputs,
+            step_number,
+            failure_policy,
+            step_run_id=step_run_id,
         )
         if skip_result is not None:
             return skip_result
@@ -1103,6 +1203,7 @@ def _execute_creator_step(
         units_to_dispatch: list[ExecutionUnit] = []
         cached_count = 0
         cached_units = 0
+        cached_execution_run_ids: set[str] = set()
 
         for (
             execution_unit_inputs,
@@ -1130,6 +1231,7 @@ def _execute_creator_step(
                     sum(len(ids) for ids in execution_unit_inputs.values()) or 1
                 )
                 cached_units += 1
+                cached_execution_run_ids.add(cache_result.execution_run_id)
                 continue
 
             # Cache miss - create ExecutionUnit with operation instance
@@ -1143,6 +1245,12 @@ def _execute_creator_step(
                 step_run_id=step_run_id,
             )
             units_to_dispatch.append(unit)
+
+        validated_reuse = _validate_cache_reuse(
+            config,
+            step_run_id,
+            cached_execution_run_ids,
+        )
 
     total_units = len(units_to_dispatch) + cached_units
     logger.debug(
@@ -1167,7 +1275,9 @@ def _execute_creator_step(
 
     # --- cancel check: before execute ---
     if cancel_event is not None and cancel_event.is_set():
-        return _cancelled_result(operation, step_number, failure_policy)
+        return _cancelled_result(
+            operation, step_number, failure_policy, step_run_id=step_run_id
+        )
 
     staging_fs = config.storage.filesystem()
     try:
@@ -1289,7 +1399,17 @@ def _execute_creator_step(
                 operation.name,
                 step_number,
             )
-            return _cancelled_result(operation, step_number, failure_policy)
+            return _cancelled_result(
+                operation, step_number, failure_policy, step_run_id=step_run_id
+            )
+
+        has_reuse = _stage_cache_reuse(
+            config,
+            step_run_id,
+            validated_reuse,
+            step_number=step_number,
+            operation_name=operation.name,
+        )
 
         commit_error = _commit_and_compact(
             config,
@@ -1297,9 +1417,10 @@ def _execute_creator_step(
             step_number,
             operation.name,
             timings,
-            has_work=bool(units_to_dispatch),
+            has_work=bool(units_to_dispatch) or has_reuse,
             compact=compact,
         )
+        _raise_reuse_commit_failure(commit_error, has_reuse)
     finally:
         if step_run_id is not None:
             sentinel = cancel_sentinel_path(config.staging_root, step_run_id)
