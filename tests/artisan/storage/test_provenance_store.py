@@ -4,17 +4,14 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from fixtures.logical_commit_store import commit_test_tables as _commit_tables
 
+from artisan.schemas.enums import TablePath
 from artisan.storage.core.provenance_store import ProvenanceStore
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
 )
-
-
-def _write_delta(uri: str, df: pl.DataFrame, storage_options: dict | None) -> None:
-    """Write a DataFrame as a Delta table to the given URI."""
-    df.write_delta(uri, storage_options=storage_options)
 
 
 def _make_edges(pairs: list[tuple[str, str, str]]) -> pl.DataFrame:
@@ -94,8 +91,15 @@ class TestGetAncestorIds:
                 (C, "data", 3),
             ]
         )
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
-        _write_delta(f"{root}/artifacts/index", index, opts)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         result = store.get_ancestor_ids(C)
         assert set(result) == {A, B}
@@ -104,7 +108,7 @@ class TestGetAncestorIds:
         """Root node has no ancestors."""
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_ancestor_ids(A) == []
 
@@ -127,8 +131,15 @@ class TestGetAncestorIds:
                 (D, "data", 3),
             ]
         )
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
-        _write_delta(f"{root}/artifacts/index", index, opts)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         result = store.get_ancestor_ids(D)
         assert set(result) == {A, B, C}
@@ -149,8 +160,15 @@ class TestGetAncestorIds:
                 (C, "data", 3),
             ]
         )
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
-        _write_delta(f"{root}/artifacts/index", index, opts)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         # All ancestors
         assert set(store.get_ancestor_ids(C)) == {A, B}
@@ -167,7 +185,7 @@ class TestGetAncestorIds:
         """Artifact not in any edge returns empty list."""
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_ancestor_ids(C) == []
 
@@ -189,7 +207,7 @@ class TestGetDescendantIds:
                 (B, C, "data"),
             ]
         )
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         result = store.get_descendant_ids(A)
         assert set(result) == {B, C}
@@ -198,7 +216,7 @@ class TestGetDescendantIds:
         """Leaf node has no descendants."""
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_descendant_ids(B) == []
 
@@ -212,7 +230,7 @@ class TestGetDescendantIds:
                 (B, D, "data"),
             ]
         )
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         result = store.get_descendant_ids(A)
         assert set(result) == {B, C, D}
@@ -227,7 +245,7 @@ class TestGetDescendantIds:
                 (B, D, "data"),
             ]
         )
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         # Only metric descendants
         result = store.get_descendant_ids(A, descendant_type="metric")
@@ -241,7 +259,7 @@ class TestGetDescendantIds:
         """Artifact not in any edge returns empty list."""
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_descendant_ids(C) == []
 
@@ -261,8 +279,15 @@ class TestLoadEdgesDf:
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
         index = _make_index([(A, "data", 1), (B, "data", 2)])
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
-        _write_delta(f"{root}/artifacts/index", index, opts)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         result = store.load_edges_df(0, 10)
         assert result.columns == ["source_artifact_id", "target_artifact_id"]
@@ -275,8 +300,15 @@ class TestLoadEdgesDf:
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "metric")])
         index = _make_index([(A, "data", 1), (B, "metric", 2)])
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
-        _write_delta(f"{root}/artifacts/index", index, opts)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         result = store.load_edges_df(0, 10, include_target_type=True)
         assert "target_artifact_type" in result.columns
@@ -287,8 +319,15 @@ class TestLoadEdgesDf:
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
         index = _make_index([(A, "data", 1), (B, "data", 2)])
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
-        _write_delta(f"{root}/artifacts/index", index, opts)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         result = store.load_edges_df(0, 10, include_roles=True)
         assert {"source_role", "target_role", "group_id"} <= set(result.columns)
@@ -302,8 +341,15 @@ class TestLoadEdgesDf:
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
         index = _make_index([(A, "data", 1), (B, "data", 2)])
-        _write_delta(f"{root}/provenance/artifact_edges", edges, opts)
-        _write_delta(f"{root}/artifacts/index", index, opts)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         result = store.load_edges_df(
             0, 10, include_target_type=True, include_roles=True
@@ -332,13 +378,14 @@ class TestProvenanceStoreBackendParametrized:
         edges = _make_edges([(A, B, "data"), (B, C, "data")])
         index = _make_index([(A, "data", 1), (B, "data", 2), (C, "data", 3)])
 
-        edges.write_delta(
-            f"{root}/provenance/artifact_edges",
-            storage_options=storage_options,
-        )
-        index.write_delta(
-            f"{root}/artifacts/index",
-            storage_options=storage_options,
+        _commit_tables(
+            root,
+            fs,
+            storage_options,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
         )
 
         store = ProvenanceStore(root, fs=fs, storage_options=storage_options)

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 import polars as pl
-from fixtures.store_format import publish_test_store
+from fixtures.logical_commit_store import commit_test_tables as _commit_tables
 
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
@@ -18,24 +18,38 @@ from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
 
 
-def _write_index(root: str, entries: list[dict], storage_options: dict | None) -> None:
-    path = f"{root}/{TablePath.ARTIFACT_INDEX.value}"
-    pl.DataFrame(entries, schema=get_schema(TablePath.ARTIFACT_INDEX)).write_delta(
-        path, storage_options=storage_options
+def _write_index(root, fs, entries, storage_options) -> None:
+    _commit_tables(
+        root,
+        fs,
+        storage_options,
+        {
+            TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                entries, schema=get_schema(TablePath.ARTIFACT_INDEX)
+            )
+        },
     )
 
 
-def _write_edges(root: str, edges: list[dict], storage_options: dict | None) -> None:
-    path = f"{root}/{TablePath.ARTIFACT_EDGES.value}"
-    pl.DataFrame(edges, schema=ARTIFACT_EDGES_SCHEMA).write_delta(
-        path, storage_options=storage_options
+def _write_edges(root, fs, edges, storage_options) -> None:
+    _commit_tables(
+        root,
+        fs,
+        storage_options,
+        {
+            TablePath.ARTIFACT_EDGES.value: pl.DataFrame(
+                edges, schema=ARTIFACT_EDGES_SCHEMA
+            )
+        },
     )
 
 
-def _write_metrics(root: str, rows: list[dict], storage_options: dict | None) -> None:
-    path = f"{root}/artifacts/metrics"
-    pl.DataFrame(rows, schema=MetricArtifact.POLARS_SCHEMA).write_delta(
-        path, storage_options=storage_options
+def _write_metrics(root, fs, rows, storage_options) -> None:
+    _commit_tables(
+        root,
+        fs,
+        storage_options,
+        {"artifacts/metrics": pl.DataFrame(rows, schema=MetricArtifact.POLARS_SCHEMA)},
     )
 
 
@@ -48,6 +62,7 @@ class TestLoadProvenanceEdgesDf:
         opts = storage.delta_storage_options()
         _write_index(
             root,
+            fs,
             [
                 {
                     "artifact_id": "A",
@@ -66,6 +81,7 @@ class TestLoadProvenanceEdgesDf:
         )
         _write_edges(
             root,
+            fs,
             [
                 {
                     "execution_run_id": "run1",
@@ -95,6 +111,7 @@ class TestLoadProvenanceEdgesDf:
         opts = storage.delta_storage_options()
         _write_index(
             root,
+            fs,
             [
                 {
                     "artifact_id": "A",
@@ -113,6 +130,7 @@ class TestLoadProvenanceEdgesDf:
         )
         _write_edges(
             root,
+            fs,
             [
                 {
                     "execution_run_id": "run1",
@@ -157,6 +175,7 @@ class TestLoadMetricsDf:
         content = json.dumps({"score": 0.95}).encode("utf-8")
         _write_metrics(
             root,
+            fs,
             [
                 {
                     "artifact_id": "m1",
@@ -184,6 +203,7 @@ class TestLoadMetricsDf:
         opts = storage.delta_storage_options()
         _write_metrics(
             root,
+            fs,
             [
                 {
                     "artifact_id": "m1",
@@ -247,9 +267,7 @@ class TestStoreDfMethodsBackendParametrized:
         """Write a metrics Delta table and load it back via ArtifactStore."""
         fs, storage, root = backend_fs
         delta_root = f"{root}/delta"
-        metrics_path = f"{delta_root}/artifacts/metrics"
         storage_options = storage.delta_storage_options()
-        publish_test_store(delta_root, fs, storage_options)
 
         artifact = MetricArtifact.draft({"score": 0.95}, "score.json", 1)
         artifact.finalize()
@@ -258,8 +276,11 @@ class TestStoreDfMethodsBackendParametrized:
             [artifact.to_row()],
             schema=MetricArtifact.POLARS_SCHEMA,
         )
-        metrics_df.write_delta(
-            metrics_path, mode="overwrite", storage_options=storage_options
+        _commit_tables(
+            delta_root,
+            fs,
+            storage_options,
+            {"artifacts/metrics": metrics_df},
         )
 
         store = ArtifactStore(delta_root, fs=fs, storage_options=storage_options)

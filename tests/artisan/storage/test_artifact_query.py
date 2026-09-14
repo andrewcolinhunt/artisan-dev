@@ -45,7 +45,12 @@ def _seed_index(root: Path, entries: list[tuple[str, str, int]]) -> None:
     )
 
 
-def _seed_run_outputs(root: Path, run_id: str, entries: list[tuple[int, str]]) -> None:
+def _seed_run_outputs(
+    root: Path,
+    run_id: str,
+    entries: list[tuple[int, str]],
+    cached_execution_run_ids: tuple[str, ...] = (),
+) -> None:
     """Write terminal attempts, their executions, and exact output edges."""
     for n, artifact_id in entries:
         step_run_id = digest_utf8(f"{run_id}:{n}:step")
@@ -112,18 +117,28 @@ def _seed_run_outputs(root: Path, run_id: str, entries: list[tuple[int, str]]) -
             "role": "output",
             "artifact_id": artifact_id,
         }
+        tables = {
+            TablePath.EXECUTIONS.value: pl.DataFrame(
+                [execution], schema=EXECUTIONS_SCHEMA
+            ),
+            TablePath.EXECUTION_EDGES.value: pl.DataFrame(
+                [edge], schema=EXECUTION_EDGES_SCHEMA
+            ),
+        }
+        if cached_execution_run_ids:
+            tables[TablePath.CACHE_REUSE.value] = pl.DataFrame(
+                {
+                    "current_step_run_id": [step_run_id]
+                    * len(cached_execution_run_ids),
+                    "cached_execution_run_id": cached_execution_run_ids,
+                },
+                schema=CACHE_REUSE_SCHEMA,
+            )
         commit_test_step(
             root,
             root.parent / "staging",
             [base, running, succeeded],
-            {
-                TablePath.EXECUTIONS.value: pl.DataFrame(
-                    [execution], schema=EXECUTIONS_SCHEMA
-                ),
-                TablePath.EXECUTION_EDGES.value: pl.DataFrame(
-                    [edge], schema=EXECUTION_EDGES_SCHEMA
-                ),
-            },
+            tables,
         )
 
 
@@ -157,17 +172,13 @@ class TestQueryArtifacts:
     ) -> None:
         _seed_index(tmp_path, [(A, "data", 1), (B, "data", 7), (C, "data", 7)])
         _seed_run_outputs(tmp_path, "source-run", [(1, A)])
-        _seed_run_outputs(tmp_path, "current-run", [(7, B)])
+        _seed_run_outputs(
+            tmp_path,
+            "current-run",
+            [(7, B)],
+            (digest_utf8("source-run:1:execution"),),
+        )
         _seed_run_outputs(tmp_path, "other-run", [(7, C)])
-        pl.DataFrame(
-            [
-                {
-                    "current_step_run_id": digest_utf8("current-run:7:step"),
-                    "cached_execution_run_id": digest_utf8("source-run:1:execution"),
-                }
-            ],
-            schema=CACHE_REUSE_SCHEMA,
-        ).write_delta(str(tmp_path / TablePath.CACHE_REUSE), mode="append")
 
         refs = query_artifacts(str(tmp_path), pipeline_run_id="current-run")
         cached = next(ref for ref in refs if ref.artifact_id == A)
