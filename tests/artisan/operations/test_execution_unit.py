@@ -9,7 +9,7 @@ from enum import StrEnum, auto
 from typing import Any, ClassVar
 
 import pytest
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -56,7 +56,10 @@ class MockOperation(OperationDefinition):
         ),
     }
 
-    count: int = Field(default=1)
+    class Params(BaseModel):
+        count: int = Field(default=1, description="Result count.")
+
+    params: Params = Params()
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
@@ -65,7 +68,7 @@ class MockOperation(OperationDefinition):
         }
 
     def execute_function(self, inputs: dict[str, Any], output_dir):
-        return ArtifactResult(success=True, metadata={"count": self.count})
+        return ArtifactResult(success=True, metadata={"count": self.params.count})
 
 
 class MultiInputOp(OperationDefinition):
@@ -270,13 +273,13 @@ class TestExecutionUnit:
     def test_create_with_step_number(self):
         """Test creation with all optional fields."""
         unit = ExecutionUnit(
-            operation=MockOperation(count=3),
+            operation=MockOperation(params=MockOperation.Params(count=3)),
             inputs={"files": [ARTIFACT_ID_1]},
             execution_spec_id="spec123" + "0" * 25,
             step_number=5,
         )
 
-        assert unit.operation.count == 3
+        assert unit.operation.params.count == 3
         assert unit.execution_spec_id == "spec123" + "0" * 25
         assert unit.step_number == 5
 

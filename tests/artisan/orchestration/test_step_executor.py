@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
+from pydantic import BaseModel, Field
 
 from artisan.errors import ArtifactIntegrityError, PersistenceIntegrityError
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -2093,7 +2094,11 @@ class TestCuratorSubprocessIsolation:
             name: ClassVar[str] = "notebook_curator"
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {}
-            marker: str
+
+            class Params(BaseModel):
+                marker: str = Field(description="Artifact marker.")
+
+            params: Params
 
             def execute_curator(self, inputs, step_number, artifact_store):
                 raise NotImplementedError
@@ -2107,11 +2112,13 @@ class TestCuratorSubprocessIsolation:
             return StagingResult(
                 success=True,
                 execution_run_id=f"run-{worker_id}",
-                artifact_ids=[child_unit.operation.marker],
+                artifact_ids=[child_unit.operation.params.marker],
             )
 
         unit = ExecutionUnit.model_construct(
-            operation=NotebookCurator(marker="notebook-artifact"),
+            operation=NotebookCurator(
+                params=NotebookCurator.Params(marker="notebook-artifact")
+            ),
             inputs={},
             execution_spec_id="notebook-spec",
             step_number=0,

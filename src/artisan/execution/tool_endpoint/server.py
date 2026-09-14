@@ -41,6 +41,7 @@ from artisan.execution.transport.log_constants import (
     MAX_TOOL_OUTPUT_BYTES,
     TOOL_OUTPUT_FILENAME,
 )
+from artisan.operations.base._param_docs import _params_class
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
@@ -373,17 +374,19 @@ def instantiate_op(
 
     Args:
         op_cls: The operation class to instantiate.
-        params: Field values for the op's nested ``Params`` model, or
-            top-level fields when the op declares no ``Params``.
+        params: Field values for the op's nested ``Params`` model. Must be
+            empty when the operation declares no parameters.
 
     Returns:
         The operation instance.
     """
     op_any: Any = op_cls  # subclass fields (params, …) are invisible on the base
-    params_cls = getattr(op_cls, "Params", None)
+    params_cls = _params_class(op_cls)
     if params_cls is None:
-        return op_any(**params)  # type: ignore[no-any-return]
-    return op_any(params=params_cls(**params))  # type: ignore[no-any-return]
+        if params:
+            return op_any.model_validate({"params": params})  # type: ignore[no-any-return]
+        return op_any()  # type: ignore[no-any-return]
+    return op_any(params=params_cls.model_validate(params))  # type: ignore[no-any-return]
 
 
 def _error_result(

@@ -170,12 +170,13 @@ class TestParamsSchemaSingleSource:
         )
 
     def test_parameter_less_op_serves_empty_params_shape(self):
-        # the one behavioral seam: {} becomes the permissive empty-object
-        # schema that params_schema_for returns
+        # Parameterless endpoints publish the same closed empty-object schema
+        # enforced by core construction.
         assert endpoint_spec(PlainTool).params_schema == {
             "type": "object",
             "title": "Params",
             "properties": {},
+            "additionalProperties": False,
         }
 
 

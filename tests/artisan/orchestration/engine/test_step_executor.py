@@ -8,7 +8,7 @@ from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.inputs import PreparedInputs
@@ -301,6 +301,28 @@ class _ConfiguredToolOp(_SimpleToolOp):
     )
 
 
+class _DefaultParamsOp(_SimpleCreatorOp):
+    """Operation with defaulted nested parameters."""
+
+    name: ClassVar[str] = "default_params_instantiation_test"
+
+    class Params(BaseModel):
+        count: int = Field(default=3, description="Number of items.")
+
+    params: Params = Params()
+
+
+class _RequiredParamsOp(_SimpleCreatorOp):
+    """Operation with required nested parameters."""
+
+    name: ClassVar[str] = "required_params_instantiation_test"
+
+    class Params(BaseModel):
+        count: int = Field(description="Number of items.")
+
+    params: Params
+
+
 def _make_mock_backend(flow_return_value=None):
     """Create a mock step_runner whose lifecycle router captures dispatched units."""
     mock_backend = MagicMock()
@@ -416,6 +438,40 @@ class TestComputeRoutingSelection:
         mock_persist_worker_logs.assert_called_once()
         assert "fs" in mock_persist_worker_logs.call_args.kwargs
         mock_backend.capture_logs.assert_not_called()
+
+
+class TestInstantiateOperationParams:
+    def test_default_params_apply_when_override_is_none(self) -> None:
+        operation = instantiate_operation(_DefaultParamsOp, StepOverrides(params=None))
+
+        assert operation.params == _DefaultParamsOp.Params(count=3)
+
+    def test_empty_params_mapping_uses_nested_defaults(self) -> None:
+        operation = instantiate_operation(_DefaultParamsOp, StepOverrides(params={}))
+
+        assert operation.params == _DefaultParamsOp.Params(count=3)
+
+    def test_user_params_are_nested_and_validated(self) -> None:
+        operation = instantiate_operation(
+            _DefaultParamsOp,
+            StepOverrides(params={"count": 7}),
+        )
+
+        assert operation.params == _DefaultParamsOp.Params(count=7)
+
+    @pytest.mark.parametrize("params", [None, {}])
+    def test_required_params_reject_missing_value(
+        self, params: dict[str, object] | None
+    ) -> None:
+        with pytest.raises(ValidationError):
+            instantiate_operation(_RequiredParamsOp, StepOverrides(params=params))
+
+    def test_parameterless_operation_rejects_nonempty_params(self) -> None:
+        with pytest.raises(ValueError, match="declares no Params"):
+            instantiate_operation(
+                _SimpleCreatorOp,
+                StepOverrides(params={"count": 1}),
+            )
 
 
 class TestInstantiateOperationComputeOverrides:

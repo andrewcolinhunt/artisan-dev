@@ -20,6 +20,8 @@ from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
+from fixtures.logical_commit_store import commit_test_inputs
+from pydantic import BaseModel, Field
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.compute.base import ExecuteRouter
@@ -56,18 +58,24 @@ def _setup_delta_tables(
     metrics: list[dict] | None = None,
     index_entries: list[dict] | None = None,
 ):
-    """Minimal helper to set up Delta Lake tables for testing."""
+    """Commit test input tables through the logical-commit boundary."""
     from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
+    tables: dict[str, pl.DataFrame] = {}
     if metrics:
-        metrics_path = base_path / "artifacts/metrics"
-        df = pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA)
-        df.write_delta(str(metrics_path))
+        tables["artifacts/metrics"] = pl.DataFrame(
+            metrics, schema=MetricArtifact.POLARS_SCHEMA
+        )
 
     if index_entries:
-        index_path = base_path / "artifacts/index"
-        df = pl.DataFrame(index_entries, schema=ARTIFACT_INDEX_SCHEMA)
-        df.write_delta(str(index_path))
+        tables["artifacts/index"] = pl.DataFrame(
+            index_entries, schema=ARTIFACT_INDEX_SCHEMA
+        )
+    commit_test_inputs(
+        base_path,
+        base_path.parent / "fixture-staging",
+        tables,
+    )
 
 
 # =============================================================================
@@ -98,7 +106,10 @@ class MetricCopyTestOp(OperationDefinition):
         ),
     }
 
-    suffix: str = "_copy"
+    class Params(BaseModel):
+        suffix: str = Field(default="_copy", description="Output file suffix.")
+
+    params: Params = Params()
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths from input artifacts."""
@@ -118,7 +129,9 @@ class MetricCopyTestOp(OperationDefinition):
             content = json.loads(fh.read())
         content["copied"] = True
         stem = os.path.splitext(os.path.basename(source_path))[0]
-        output_path = os.path.join(inputs.execute_dir, f"{stem}{self.suffix}.json")
+        output_path = os.path.join(
+            inputs.execute_dir, f"{stem}{self.params.suffix}.json"
+        )
         with open(output_path, "w") as fh:
             fh.write(json.dumps(content))
 
@@ -159,20 +172,23 @@ class GenerativeTestOp(OperationDefinition):
         ),
     }
 
-    count: int = 1
+    class Params(BaseModel):
+        count: int = Field(default=1, description="Number of outputs to generate.")
+
+    params: Params = Params()
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Generative operation - no inputs to preprocess."""
         return {}
 
     def execute_function(self, inputs: ExecuteInput) -> dict:
-        for i in range(self.count):
+        for i in range(self.params.count):
             content = json.dumps({"value": i})
             output_path = os.path.join(inputs.execute_dir, f"generated_{i:03d}.json")
             with open(output_path, "w") as fh:
                 fh.write(content)
 
-        return {"generated": self.count}
+        return {"generated": self.params.count}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """v4: Create draft MetricArtifacts from file_outputs."""
@@ -448,7 +464,7 @@ class TestRunExecutionFullLifecycle:
         )
 
         unit = ExecutionUnit(
-            operation=MetricCopyTestOp(suffix="_copy"),
+            operation=MetricCopyTestOp(params=MetricCopyTestOp.Params(suffix="_copy")),
             inputs={"source": [input_artifact_id]},  # Batch format: list
             execution_spec_id="spec_123" + "0" * 24,
             step_number=1,
@@ -477,7 +493,7 @@ class TestRunExecutionFullLifecycle:
         )
 
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(count=3),
+            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=3)),
             inputs={},  # Empty inputs for generative ops
             execution_spec_id="spec_gen" + "0" * 24,
             step_number=0,
@@ -508,7 +524,7 @@ class TestRunExecutionFullLifecycle:
         )
 
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(count=1),
+            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=1)),
             inputs={},
             execution_spec_id="spec_worker" + "0" * 21,
             step_number=0,
@@ -557,7 +573,7 @@ class TestToolOutputRecording:
             staging_root=str(staging_root),
         )
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(count=1),
+            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=1)),
             inputs={},
             execution_spec_id="spec_fn00" + "0" * 23,
             step_number=0,
@@ -664,7 +680,7 @@ class TestRunExecutionFailureHandling:
         )
 
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(count=1),
+            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=1)),
             inputs={},
             execution_spec_id="spec_setup_fail" + "0" * 17,
             step_number=0,
@@ -717,7 +733,7 @@ class TestEndpointDoubleHop:
             recovery_hint="REPORT_TO_USER",
         )
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(count=1),
+            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=1)),
             inputs={},
             execution_spec_id="spec_dhop" + "0" * 23,
             step_number=1,
@@ -784,7 +800,7 @@ class TestRunExecutionStagedOutput:
         )
 
         unit = ExecutionUnit(
-            operation=MetricCopyTestOp(suffix="_copy"),
+            operation=MetricCopyTestOp(params=MetricCopyTestOp.Params(suffix="_copy")),
             inputs={"source": [input_artifact_id]},  # Batch format: list
             execution_spec_id="spec_io" + "0" * 25,
             step_number=1,
@@ -821,7 +837,7 @@ class TestRunExecutionStagedOutput:
         )
 
         unit = ExecutionUnit(
-            operation=MetricCopyTestOp(suffix="_copy"),
+            operation=MetricCopyTestOp(params=MetricCopyTestOp.Params(suffix="_copy")),
             inputs={"source": [input_artifact_id]},  # Batch format: list
             execution_spec_id="spec_idx" + "0" * 24,
             step_number=1,
@@ -962,7 +978,7 @@ class TestRunCreatorLifecycle:
         )
 
         unit = ExecutionUnit(
-            operation=MetricCopyTestOp(suffix="_copy"),
+            operation=MetricCopyTestOp(params=MetricCopyTestOp.Params(suffix="_copy")),
             inputs={"source": [input_artifact_id]},
             execution_spec_id="spec_lc1" + "0" * 24,
             step_number=1,
@@ -995,7 +1011,7 @@ class TestRunCreatorLifecycle:
         )
 
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(count=3),
+            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=3)),
             inputs={},
             execution_spec_id="spec_lc2" + "0" * 24,
             step_number=0,
@@ -1075,7 +1091,7 @@ class TestSandboxPathComputation:
         )
 
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(count=1),
+            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=1)),
             inputs={},
             execution_spec_id="spec_flat" + "0" * 24,
             step_number=1,
@@ -1102,7 +1118,7 @@ class TestSandboxPathComputation:
         )
 
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(count=1),
+            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=1)),
             inputs={},
             execution_spec_id="spec_shard" + "0" * 23,
             step_number=1,
