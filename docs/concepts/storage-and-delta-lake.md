@@ -114,6 +114,7 @@ delta_root/
 │   └── execution_edges/    Input/output edges per execution
 └── orchestration/          Execution history and step state
     ├── executions/         Operation execution log
+    ├── cache_reuse/        Current step → reused execution links
     └── steps/              Step-level state transitions
 ```
 
@@ -147,6 +148,7 @@ Not all tables are partitioned. The choice depends on access patterns:
 | `provenance/artifact_edges` | No | Graph traversal crosses steps |
 | `provenance/execution_edges` | No | Joined with executions by run ID |
 | `orchestration/executions` | Yes | Queries are step-scoped |
+| `orchestration/cache_reuse` | No | Small relation joined by current step-run ID |
 | `orchestration/steps` | No | Few rows, written directly by orchestrator |
 
 ### The artifact index
@@ -420,8 +422,17 @@ repeatedly during provenance queries and result analysis.
 The `executions` table doubles as the cache store. Before dispatching work,
 the orchestrator computes a deterministic cache key from content-addressed
 artifact IDs and checks this table for a prior successful execution. A hit
-skips dispatch, staging, and commit entirely. There is no separate cache
-service, no TTL management, and no manual invalidation.
+skips worker dispatch. It does not create another execution or copy artifact
+rows. Instead, the orchestrator commits one row to `cache_reuse` linking the
+current step attempt to each existing execution whose result it accepted.
+
+That two-column relation keeps pipeline runs isolated even when they share
+step numbers or artifacts. A run-scoped reader starts from the run's own step
+IDs, unions directly owned executions with the linked cached executions, and
+then follows their execution edges to outputs. `origin_step_number` remains
+the artifact's original production location; it is not used to reconstruct
+which later runs reused the artifact. There is no cache service, TTL, or
+manual invalidation.
 
 For the full two-level caching mechanism (step-level and execution-level), see
 [Execution Flow](execution-flow.md#two-level-caching).

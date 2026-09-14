@@ -137,6 +137,12 @@ the table and recorded explicitly in the artifact index. External locators are
 stored separately in `artifacts/locations`, where one artifact may have more
 than one verified URI.
 
+`origin_step_number` is global production metadata, not current-run ownership.
+When an artifact is served from cache, run-scoped queries derive its current
+logical step from that run's step-to-execution membership. Query results can
+therefore expose both an original step and a current step without rewriting or
+duplicating the content-addressed artifact.
+
 ### Config artifacts and cross-references
 
 Config artifacts have a unique capability: they can contain `$artifact`
@@ -230,6 +236,11 @@ external-byte verification, grouping, ordering, and duplicates.
 Both levels share the same guarantee: no false hits (any input change
 invalidates the key), no false misses (identical computation always matches),
 and no manual invalidation.
+
+A hit reuses an existing execution and its output edges while the current step
+keeps its own fresh attempt ID. The small `cache_reuse` relation records that
+membership, allowing downstream resolution to union direct and cached outputs
+without inferring ownership from repeated step numbers.
 
 For the full two-level caching mechanism, see
 [Execution Flow](execution-flow.md#two-level-caching).

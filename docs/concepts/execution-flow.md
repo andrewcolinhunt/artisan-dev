@@ -91,12 +91,16 @@ because it skips different amounts of work.
 **Step-level cache** hashes the operation name, step number, the complete
 prepared input snapshot, parameters, and effective execution configuration. A
 hit skips batching and worker dispatch. The orchestrator returns a previously
-recorded `StepResult` from the steps Delta table.
+recorded outcome under a fresh step-run ID owned by the current pipeline run.
+It also links that current step to the source's actual executions; it never
+reuses the source step-run ID.
 
 **Execution-level cache** checks per batch. The `execution_spec_id` hashes the
 same kind of concrete input occurrences, sliced to that batch, plus the
 operation, parameters, and effective configuration. A hit skips that batch
-while other batches in the same step may still execute.
+while other batches in the same step may still execute. The current step
+records a link to every reused execution, so all-cached and mixed steps expose
+the same complete output set as fully executed steps.
 
 Each input occurrence includes its role, group ID, role-local position,
 artifact type, and artifact ID. Mapping insertion order does not matter, but
@@ -112,13 +116,13 @@ resolve -> type-check -> verify -> group
     v
 step_spec_id = hash(op_name | step_number | concrete_typed_occurrences | params | config)
     │
-    ├── HIT:  return cached StepResult
+    ├── HIT:  link current step to source executions; return cached outcome
     │
     └── MISS: batch → per-batch:
                   │
                   execution_spec_id = hash(op_name | batch_typed_occurrences | params | config)
                       │
-                      ├── HIT:  skip this batch
+                      ├── HIT:  link current step to cached execution
                       └── MISS: dispatch to worker
 ```
 
@@ -126,6 +130,11 @@ step_spec_id = hash(op_name | step_number | concrete_typed_occurrences | params 
 after preparation. Execution-level caching is finer-grained: it catches reuse
 when only some batches match. Both share one input truth, so they cannot disagree
 because one hashed symbolic references while the other hashed concrete data.
+
+Every submitted step has a fresh UUID-based attempt ID, regardless of whether
+it executes, is cached, is skipped, is cancelled, or fails. Step numbers remain
+the logical sequence within a pipeline run. Cache reuse changes neither: the
+current step owns its attempt ID and refers directly to existing execution IDs.
 
 **Why both keys are deterministic:** Artifact IDs identify typed semantic
 content, and the occurrence sequence captures invocation semantics. The same
