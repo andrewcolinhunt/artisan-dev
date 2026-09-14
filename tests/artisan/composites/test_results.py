@@ -30,7 +30,6 @@ class TestCompositeStepHandle:
             operation_outputs={"result": OutputSpec(artifact_type="data")},
         )
         ref = handle.output("result")
-        assert ref.source is None
         assert ref.output_reference is out_ref
         mock_future.output.assert_called_once_with("result")
 

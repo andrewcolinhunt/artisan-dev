@@ -78,7 +78,6 @@ class TestInput:
         out_ref = OutputReference(source_step=0, role="data")
         ctx = _make_ctx(MagicMock(), input_refs={"data": out_ref})
         ref = ctx.input("data")
-        assert ref.source is None
         assert ref.output_reference is out_ref
         assert ref.role == "data"
 
@@ -110,13 +109,13 @@ class TestOutput:
     def test_output_records_output_reference(self):
         out_ref = OutputReference(source_step=1, role="result")
         ctx = _make_ctx(MagicMock())
-        ref = CompositeRef(source=None, output_reference=out_ref, role="result")
+        ref = CompositeRef(output_reference=out_ref, role="result")
         ctx.output("result", ref)
         assert ctx.get_output_map()["result"] is out_ref
 
     def test_output_missing_output_reference_raises(self):
         ctx = _make_ctx(MagicMock())
-        ref = CompositeRef(source=None, output_reference=None, role="result")
+        ref = CompositeRef(output_reference=None, role="result")
         with pytest.raises(ValueError, match="has no OutputReference"):
             ctx.output("result", ref)
 
