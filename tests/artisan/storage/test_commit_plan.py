@@ -24,24 +24,29 @@ from artisan.storage.io.commit_plan import (
     commit_plan_path,
     publish_commit_plan,
     read_commit_plan,
+    verify_plan_files,
 )
 from artisan.storage.io.staging import StagingManager
 
 
-def _build_input_plan(tmp_path):
+def _build_input_plan(tmp_path, *, index: pl.DataFrame | None = None):
     fs = LocalFileSystem()
     delta_root = str(tmp_path / "delta")
     staging_root = str(tmp_path / "staging")
     publish_test_store(delta_root, fs)
     staging = StagingManager(staging_root, fs)
-    staged = pl.DataFrame(
-        {
-            "artifact_id": ["a" * 32],
-            "artifact_type": ["metric"],
-            "origin_step_number": [0],
-            "metadata": ["{}"],
-        },
-        schema=ARTIFACT_INDEX_SCHEMA,
+    staged = (
+        index
+        if index is not None
+        else pl.DataFrame(
+            {
+                "artifact_id": ["a" * 32],
+                "artifact_type": ["metric"],
+                "origin_step_number": [0],
+                "metadata": ["{}"],
+            },
+            schema=ARTIFACT_INDEX_SCHEMA,
+        )
     )
     staged_path = staging.stage_orchestrator_dataframe(
         staged,
@@ -229,6 +234,45 @@ def test_commit_plan_model_rejects_duplicate_row_keys(tmp_path):
 
     with pytest.raises(ValueError, match="Invalid row keys"):
         CommitPlan(**payload, plan_digest=_plan_digest(payload))
+
+
+def test_commit_plan_collapses_identical_global_artifact_rows(tmp_path):
+    duplicate_index = pl.DataFrame(
+        {
+            "artifact_id": ["a" * 32, "a" * 32],
+            "artifact_type": ["metric", "metric"],
+            "origin_step_number": [0, 0],
+            "metadata": ["{}", "{}"],
+        },
+        schema=ARTIFACT_INDEX_SCHEMA,
+    )
+
+    fs, _delta_root, staging_root, _path, plan = _build_input_plan(
+        tmp_path,
+        index=duplicate_index,
+    )
+
+    table = plan.table(TablePath.ARTIFACT_INDEX.value)
+    assert table is not None
+    assert table.row_count == 1
+    assert table.files[0].row_count == 2
+    verified = verify_plan_files(plan, staging_root, fs)
+    assert verified[TablePath.ARTIFACT_INDEX.value].height == 1
+
+
+def test_commit_plan_rejects_conflicting_global_artifact_rows(tmp_path):
+    conflicting_index = pl.DataFrame(
+        {
+            "artifact_id": ["a" * 32, "a" * 32],
+            "artifact_type": ["metric", "data"],
+            "origin_step_number": [0, 0],
+            "metadata": ["{}", "{}"],
+        },
+        schema=ARTIFACT_INDEX_SCHEMA,
+    )
+
+    with pytest.raises(StoreIntegrityError, match="Conflicting natural keys"):
+        _build_input_plan(tmp_path, index=conflicting_index)
 
 
 def test_local_plan_publish_is_no_replace_and_cleans_temporary_files(tmp_path):
