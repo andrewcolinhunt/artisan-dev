@@ -21,7 +21,7 @@ def capture_lineage_metadata(
     group_by: GroupByStrategy | None = None,
     group_ids: list[str] | None = None,
     filesystem_match_map: dict[str, str] | None = None,
-    output_pair_map: dict[str, int] | None = None,
+    output_pair_map: dict[str, list[int]] | None = None,
 ) -> dict[str, list[LineageMapping]]:
     """Capture lineage metadata from infer_lineage_from configuration.
 
@@ -42,9 +42,9 @@ def capture_lineage_metadata(
         filesystem_match_map: Optional dict mapping output filename stems
             to input artifact_ids. When an output stem has an entry,
             the mapped input_id is used directly instead of stem matching.
-        output_pair_map: Optional ``basename -> pair_index`` map built by
+        output_pair_map: Optional ``basename -> ordered pair indices`` map built by
             the executor when ``per_artifact_dispatch=True``. When set,
-            grouped lineage uses ``pair_index`` directly to resolve
+            grouped lineage uses the matching occurrence's ``pair_index`` to resolve
             primary and co-input edges, bypassing the
             ``primary_id_to_idx`` lookup that would otherwise collapse
             repeated-primary CROSS_PRODUCT batches. Drafts without an
@@ -65,6 +65,7 @@ def capture_lineage_metadata(
         _validate_grouped_inputs(input_artifacts, group_ids)
 
     result: dict[str, list[LineageMapping]] = {}
+    output_name_occurrences: dict[str, int] = {}
 
     for role, artifacts in output_artifacts.items():
         spec = output_specs.get(role)
@@ -130,6 +131,8 @@ def capture_lineage_metadata(
             original_name = getattr(artifact, "original_name", None)
             if original_name is None:
                 continue
+            occurrence = output_name_occurrences.get(original_name, 0)
+            output_name_occurrences[original_name] = occurrence + 1
 
             # Direct pair-index path: when a per-output pair index is
             # available (grouped + filesystem-output +
@@ -142,9 +145,9 @@ def capture_lineage_metadata(
             if (
                 group_by is not None
                 and output_pair_map is not None
-                and original_name in output_pair_map
+                and occurrence < len(output_pair_map.get(original_name, []))
             ):
-                pair_idx = output_pair_map[original_name]
+                pair_idx = output_pair_map[original_name][occurrence]
 
             if pair_idx is not None and pair_idx < len(primary_artifacts):
                 primary_artifact = primary_artifacts[pair_idx]

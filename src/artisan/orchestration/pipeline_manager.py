@@ -259,7 +259,11 @@ def _promote_file_paths_to_store(
     from fsspec import AbstractFileSystem
     from fsspec.implementations.local import LocalFileSystem
 
-    from artisan.schemas.artifact.external import validate_persistable_uri
+    from artisan.errors import ArtifactIntegrityError
+    from artisan.schemas.artifact.external import (
+        sanitized_uri,
+        validate_persistable_uri,
+    )
     from artisan.schemas.artifact.file_ref import FileRefArtifact
     from artisan.schemas.enums import TablePath
     from artisan.schemas.execution.fs import resolve_fs
@@ -278,36 +282,37 @@ def _promote_file_paths_to_store(
         try:
             fs, stripped = resolve_fs(path_str, config.storage)
             if not fs.exists(stripped):
-                invalid_paths.append(f"Not found: {path_str}")
+                invalid_paths.append(f"Not found: {sanitized_uri(path_str)}")
                 continue
             if not fs.isfile(stripped):
-                invalid_paths.append(f"Not a file: {path_str}")
+                invalid_paths.append(f"Not a file: {sanitized_uri(path_str)}")
                 continue
         except Exception as exc:
-            # Invalid URI, missing fsspec driver (e.g. gcs:// without
-            # gcsfs installed), or auth/network failure on fs.exists.
-            # User-provided paths must never crash pipeline kickoff —
-            # they surface alongside not-found paths in the warning below.
-            invalid_paths.append(f"Inaccessible: {path_str} ({exc})")
+            invalid_paths.append(
+                f"Inaccessible: {sanitized_uri(path_str)} ({type(exc).__name__})"
+            )
             continue
         valid_paths.append((path_str, fs, stripped))
 
     if invalid_paths:
-        logger.warning(
-            "Skipping %d invalid input files for step %d: %s",
-            len(invalid_paths),
-            step_number,
-            "; ".join(invalid_paths),
+        msg = (
+            f"Raw input verification failed for step {step_number} "
+            f"({operation_name}): {'; '.join(invalid_paths)}"
         )
-
-    if not valid_paths:
-        return None, 0, set()
+        raise ArtifactIntegrityError(msg)
 
     # Create FileRefArtifacts and finalize
     file_ref_artifacts: list[FileRefArtifact] = []
     for original, fs, stripped in valid_paths:
-        with fs.open(stripped, "rb") as f:
-            content_hash, size_bytes = compute_stream_digest(f)
+        try:
+            with fs.open(stripped, "rb") as f:
+                content_hash, size_bytes = compute_stream_digest(f)
+        except Exception as exc:
+            msg = (
+                "Raw input verification failed while reading "
+                f"{sanitized_uri(original)} ({type(exc).__name__})"
+            )
+            raise ArtifactIntegrityError(msg) from exc
         # basename/splitext are pure string ops — work on URIs.
         basename = os.path.basename(original)
         _name_part, ext_part = os.path.splitext(basename)
@@ -318,7 +323,11 @@ def _promote_file_paths_to_store(
         stored_path = (
             os.path.abspath(original) if isinstance(fs, LocalFileSystem) else original
         )
-        validate_persistable_uri(stored_path)
+        try:
+            validate_persistable_uri(stored_path)
+        except ValueError as exc:
+            msg = f"Raw input location is not persistable: {sanitized_uri(stored_path)}"
+            raise ArtifactIntegrityError(msg) from exc
         artifact = cast(
             FileRefArtifact,
             FileRefArtifact.draft(

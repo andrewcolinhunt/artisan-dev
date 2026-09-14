@@ -290,7 +290,20 @@ class TestReassembleResults:
         (d1 / "out_1.bin").write_text("b")
 
         _, _, pair_map = _reassemble_results([None, None], [str(d0), str(d1)])
-        assert pair_map == {"out_0": 0, "out_1": 1}
+        assert pair_map == {"out_0": [0], "out_1": [1]}
+
+    def test_output_pair_map_retains_duplicate_basename_occurrences(self, tmp_path):
+        """Equal basenames emitted by different slots retain both pair indices."""
+        directories = []
+        for slot in range(2):
+            directory = tmp_path / f"artifact_{slot}"
+            directory.mkdir()
+            (directory / "result.bin").write_text(str(slot))
+            directories.append(str(directory))
+
+        _, _, pair_map = _reassemble_results([None, None], directories)
+
+        assert pair_map == {"result": [0, 1]}
 
 
 # ---------------------------------------------------------------------------

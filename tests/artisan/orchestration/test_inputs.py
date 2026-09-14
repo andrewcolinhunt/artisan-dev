@@ -6,12 +6,20 @@ from datetime import UTC, datetime
 from unittest.mock import patch
 
 import polars as pl
+import pytest
 from fixtures.execution_records import executions_df
 from fsspec.implementations.local import LocalFileSystem
 
+from artisan.errors import IncompatibleStoreError
 from artisan.orchestration.engine.inputs import resolve_output_reference
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.storage.core.store_format import publish_store_manifest
+
+
+@pytest.fixture(autouse=True)
+def _supported_store(tmp_path):
+    publish_store_manifest(str(tmp_path), LocalFileSystem())
 
 
 def _create_executions_df(**overrides) -> pl.DataFrame:
@@ -46,6 +54,19 @@ class TestResolveOutputReferenceEmptyUpstream:
         ref = OutputReference(source_step=0, role="data")
         result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
+
+    def test_unsupported_store_fails_before_scan(self, tmp_path):
+        """The manifest gate runs before any Delta table lookup."""
+        (tmp_path / "_artisan" / "store.json").unlink()
+        ref = OutputReference(source_step=0, role="data")
+
+        with (
+            patch("artisan.orchestration.engine.inputs.pl.scan_delta") as scan,
+            pytest.raises(IncompatibleStoreError, match="missing manifest"),
+        ):
+            resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
+
+        scan.assert_not_called()
 
     def test_missing_execution_edges_table_returns_empty(self, tmp_path):
         """When execution_edges table is missing, return []."""

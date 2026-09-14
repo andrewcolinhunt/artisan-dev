@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -85,28 +87,33 @@ class TestExternalPathSerialization:
         assert restored.external_path is None
 
 
-class TestExternalPathDoesNotAffectArtifactId:
-    """external_path must NOT affect artifact_id (content-addressed identity)."""
+class TestEmbeddedExternalPathProtection:
+    """Embedded source paths are non-identity semantics frozen at finalization."""
 
-    def test_metric_same_content_different_path_same_id(self) -> None:
+    def test_metric_paths_set_before_finalization_do_not_affect_id(self) -> None:
         a = MetricArtifact.draft(
             content={"value": 1.0},
             original_name="test.json",
             step_number=0,
-        ).finalize()
+        )
         a.external_path = "/path/a/test.json"
         b = MetricArtifact.draft(
             content={"value": 1.0},
             original_name="test.json",
             step_number=0,
-        ).finalize()
+        )
         b.external_path = "/path/b/test.json"
-        c = MetricArtifact.draft(
+        assert a.finalize().artifact_id == b.finalize().artifact_id
+
+    def test_metric_source_path_is_frozen_after_finalization(self) -> None:
+        artifact = MetricArtifact.draft(
             content={"value": 1.0},
             original_name="test.json",
             step_number=0,
         ).finalize()
-        assert a.artifact_id == b.artifact_id == c.artifact_id
+
+        with pytest.raises(TypeError, match="external_path"):
+            artifact.external_path = "/path/a/test.json"
 
 
 class TestExternalPathInPolarsSchema:

@@ -62,6 +62,9 @@ def resolve_output_reference(
         >>> ids = resolve_output_reference(ref, "/data/delta", fs)
         >>> # Returns: ["abc123...", "def456...", "ghi789..."] (sorted)
     """
+    from artisan.storage.core.store_format import assert_store_format
+
+    assert_store_format(delta_root, fs)
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
     execution_edges_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
 

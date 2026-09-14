@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import polars as pl
+import pytest
 from fixtures.execution_records import executions_df
 from fsspec.implementations.local import LocalFileSystem
 
@@ -19,9 +20,15 @@ from artisan.orchestration.engine.inputs import (
     resolve_output_reference,
 )
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import (
     EXECUTION_EDGES_SCHEMA,
 )
+
+
+@pytest.fixture(autouse=True)
+def _supported_store(tmp_path):
+    publish_store_manifest(str(tmp_path), LocalFileSystem())
 
 
 def _create_executions_df(**overrides) -> pl.DataFrame:
