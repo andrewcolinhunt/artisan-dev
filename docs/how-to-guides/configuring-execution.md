@@ -91,14 +91,17 @@ The default process pool size is 4.
 ## Configure compute routing
 
 Compute routing controls where the execute phase runs, independently of
-the step runner. Set it per step or as a pipeline-wide default:
+the step runner. Every operation has a class-level `ComputeProvider`; the base
+operation defaults to local compute. Omit the step keyword to use the
+operation's declaration, or pass `compute_provider` to select or patch a
+provider for one invocation:
 
 ```python
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 
-# Pipeline-wide default
-pipeline = PipelineManager.create(..., default_compute_provider="local")
+# Use MyOp's declared compute provider
+pipeline.run(operation=MyOp, inputs=...)
 
 # Step-level override (string shorthand)
 pipeline.run(operation=MyOp, inputs=..., compute_provider="modal")
@@ -114,8 +117,13 @@ pipeline.run(
 
 | Compute target | How it runs | When to use |
 |----------------|-------------|-------------|
-| `"local"` (default) | Direct call inside the worker | Development, testing, CPU-only ops |
+| `"local"` (`OperationDefinition` default) | Direct call inside the worker | Development, testing, CPU-only ops |
 | `"modal"` | Call the tool's deployed Modal endpoint | GPU work, cloud burst, isolated environments |
+
+For a composite invocation, `run_composite(..., compute_provider=...)` and
+`submit_composite(...)` provide an explicit default for child steps. A
+`CompositeContext.run(..., compute_provider=...)` value wins for that child.
+When neither is supplied, the child operation keeps its class declaration.
 
 The modal provider runs **command ops** only — operations declaring a
 `ToolSpec` + `execute_command()` instead of `execute_function()` — and requires the
@@ -515,13 +523,22 @@ pipeline.run(operation=GpuInference, inputs=..., runner_resources={"memory_gb": 
 # gpus, time_limit, extra keep their operation defaults
 ```
 
-### Override precedence
+### Override sources and precedence
 
-```
-Pipeline defaults (PipelineManager.create)
-    └── Operation defaults (class fields)
-            └── Step overrides (pipeline.run kwargs)   ← wins
-```
+An explicit `pipeline.run()` or `pipeline.submit()` value wins, but the value
+it overrides depends on the setting:
+
+| Setting | Default source | Explicit override |
+|---------|----------------|-------------------|
+| `step_runner` | `PipelineManager.create(default_step_runner=...)` | Step `step_runner` |
+| `failure_policy` | `PipelineManager.create(failure_policy=...)` | Step `failure_policy` |
+| `compute_provider` | Operation class | Step `compute_provider` |
+| `runner_resources`, `batch_strategy`, `environment`, `tool`, `compute_resources` | Operation class | Matching step keyword |
+| `group_by` | Operation class | Step `group_by` |
+
+Pipeline defaults do not provide an intermediate compute-routing layer. The
+effective provider is the operation declaration patched by the explicit step
+value, when present.
 
 ### Patch configuration without replacing defaults
 

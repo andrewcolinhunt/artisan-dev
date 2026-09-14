@@ -62,7 +62,6 @@ pipeline = PipelineManager.create(
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | How to handle step failures (`CONTINUE` or `FAIL_FAST`) |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When completed steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Default step runner. Core accepts `"local"`; optional providers are passed as runner instances |
-| `default_compute_provider` | `str` | `"local"` | Default compute provider for execute-phase routing (`"local"` or `"modal"`) |
 | `preserve_staging` | `bool` | `False` | Keep staging files after commit (debugging) |
 | `preserve_working` | `bool` | `False` | Keep worker sandboxes after execution (debugging) |
 | `recover_staging` | `bool` | `True` | Commit leftover staging files from prior crashed runs at init |

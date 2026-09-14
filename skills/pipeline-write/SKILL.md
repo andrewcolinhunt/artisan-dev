@@ -405,7 +405,6 @@ summary = pipeline.finalize()
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | Default for all steps |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When to cache step results |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Built-in local runner or external provider instance |
-| `default_compute_provider` | `str` | `"local"` | Default execute-phase compute target |
 | `preserve_staging` | `bool` | `False` | Keep staging dirs after commit |
 | `preserve_working` | `bool` | `False` | Keep working dirs after execution |
 | `recover_staging` | `bool` | `True` | Recover incomplete staging on resume |
