@@ -48,8 +48,7 @@ def capture_lineage_metadata(
             primary and co-input edges, bypassing the
             ``primary_id_to_idx`` lookup that would otherwise collapse
             repeated-primary CROSS_PRODUCT batches. Drafts without an
-            entry (e.g. memory-only outputs) fall back to the legacy
-            stem-match path.
+            entry (e.g. memory-only outputs) use the stem-match fallback.
 
     Returns:
         Dict mapping output role to list of LineageMapping entries.
@@ -185,7 +184,7 @@ def capture_lineage_metadata(
                     )
                 continue
 
-            # Legacy path: stem-match the output to an input candidate,
+            # Fallback path: stem-match the output to an input candidate,
             # then look up the pair index via ``primary_id_to_idx``.
             # Used for ungrouped ops, the curator path (no
             # output_pair_map), and memory-only outputs that have no
@@ -207,21 +206,21 @@ def capture_lineage_metadata(
             matched_id, matched_src_role = matched
 
             matched_idx = primary_id_to_idx.get(matched_id)
-            legacy_group_id: str | None = None
+            fallback_group_id: str | None = None
             if (
                 group_by is not None
                 and matched_idx is not None
                 and group_ids is not None
                 and matched_idx < len(group_ids)
             ):
-                legacy_group_id = group_ids[matched_idx]
+                fallback_group_id = group_ids[matched_idx]
 
             role_mappings.append(
                 LineageMapping(
                     draft_original_name=original_name,
                     source_artifact_id=matched_id,
                     source_role=matched_src_role,
-                    group_id=legacy_group_id,
+                    group_id=fallback_group_id,
                 )
             )
 
@@ -237,7 +236,7 @@ def capture_lineage_metadata(
                                     draft_original_name=original_name,
                                     source_artifact_id=co_artifact.artifact_id,
                                     source_role=co_role,
-                                    group_id=legacy_group_id,
+                                    group_id=fallback_group_id,
                                 )
                             )
 
