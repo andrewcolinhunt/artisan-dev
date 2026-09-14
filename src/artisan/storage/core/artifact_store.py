@@ -18,6 +18,7 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external import sanitized_uri, validate_persistable_uri
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.committed_scan import scan_committed
 from artisan.storage.core.provenance_store import ProvenanceStore
 from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import get_schema
@@ -127,7 +128,12 @@ class ArtifactStore:
             return None
 
         result = (
-            pl.scan_delta(table_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id") == artifact_id)
             .limit(1)
             .collect()
@@ -168,7 +174,12 @@ class ArtifactStore:
             return {}
 
         result = (
-            pl.scan_delta(table_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .collect()
         )
@@ -210,7 +221,12 @@ class ArtifactStore:
             return None
 
         result = (
-            pl.scan_delta(index_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id") == artifact_id)
             .select("artifact_type")
             .collect()
@@ -231,9 +247,13 @@ class ArtifactStore:
         """Bulk-load and validate unique type assignments for artifact IDs."""
         if not artifact_ids:
             return {}
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
         result = (
-            pl.scan_delta(index_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(["artifact_id", "artifact_type"])
             .collect()
@@ -257,7 +277,12 @@ class ArtifactStore:
         locations_path = self._table_path(TablePath.ARTIFACT_LOCATIONS)
         if self._fs.exists(locations_path):
             rows = (
-                pl.scan_delta(locations_path, storage_options=self._storage_options)
+                scan_committed(
+                    self.base_path,
+                    TablePath.ARTIFACT_LOCATIONS,
+                    fs=self._fs,
+                    storage_options=self._storage_options,
+                )
                 .filter(pl.col("artifact_id") == artifact.artifact_id)
                 .select("uri")
                 .collect()
@@ -363,7 +388,12 @@ class ArtifactStore:
             return empty
 
         result = (
-            pl.scan_delta(table_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(["artifact_id", "content"])
             .collect()
@@ -417,7 +447,12 @@ class ArtifactStore:
                 continue
 
             df = (
-                pl.scan_delta(table_path, storage_options=self._storage_options)
+                scan_committed(
+                    self.base_path,
+                    ArtifactTypeDef.get_table_path(artifact_type),
+                    fs=self._fs,
+                    storage_options=self._storage_options,
+                )
                 .filter(pl.col("artifact_id").is_in(ids))
                 .select(["artifact_id", "original_name"])
                 .collect()

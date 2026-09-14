@@ -7,6 +7,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fixtures.logical_commit_store import commit_test_inputs, commit_test_step
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
@@ -17,7 +18,6 @@ from artisan.storage.core.table_schemas import (
     CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
-    STEPS_SCHEMA,
 )
 from artisan.utils.hashing import digest_utf8
 
@@ -38,13 +38,16 @@ def _seed_index(root: Path, entries: list[tuple[str, str, int]]) -> None:
         },
         schema=ARTIFACT_INDEX_SCHEMA,
     )
-    df.write_delta(str(root / TablePath.ARTIFACT_INDEX))
+    commit_test_inputs(
+        root,
+        root.parent / "staging",
+        {TablePath.ARTIFACT_INDEX.value: df},
+    )
 
 
 def _seed_run_outputs(root: Path, run_id: str, entries: list[tuple[int, str]]) -> None:
     """Write terminal attempts, their executions, and exact output edges."""
-    rows = []
-    for n, _ in entries:
+    for n, artifact_id in entries:
         step_run_id = digest_utf8(f"{run_id}:{n}:step")
         base = {
             "step_run_id": step_run_id,
@@ -84,12 +87,7 @@ def _seed_run_outputs(root: Path, run_id: str, entries: list[tuple[int, str]]) -
             "failed_count": 0,
             "duration_seconds": 1.0,
         }
-        rows.extend([base, running, succeeded])
-    pl.DataFrame(rows, schema=STEPS_SCHEMA).write_delta(
-        str(root / TablePath.STEPS), mode="append"
-    )
-    execution_rows = [
-        {
+        execution = {
             "execution_run_id": digest_utf8(f"{run_id}:{n}:execution"),
             "execution_spec_id": f"execution-spec-{n}",
             "step_run_id": digest_utf8(f"{run_id}:{n}:step"),
@@ -108,23 +106,25 @@ def _seed_run_outputs(root: Path, run_id: str, entries: list[tuple[int, str]]) -
             "worker_log": None,
             "metadata": "{}",
         }
-        for n, _ in entries
-    ]
-    pl.DataFrame(execution_rows, schema=EXECUTIONS_SCHEMA).write_delta(
-        str(root / TablePath.EXECUTIONS), mode="append"
-    )
-    edge_rows = [
-        {
+        edge = {
             "execution_run_id": digest_utf8(f"{run_id}:{n}:execution"),
             "direction": "output",
             "role": "output",
             "artifact_id": artifact_id,
         }
-        for n, artifact_id in entries
-    ]
-    pl.DataFrame(edge_rows, schema=EXECUTION_EDGES_SCHEMA).write_delta(
-        str(root / TablePath.EXECUTION_EDGES), mode="append"
-    )
+        commit_test_step(
+            root,
+            root.parent / "staging",
+            [base, running, succeeded],
+            {
+                TablePath.EXECUTIONS.value: pl.DataFrame(
+                    [execution], schema=EXECUTIONS_SCHEMA
+                ),
+                TablePath.EXECUTION_EDGES.value: pl.DataFrame(
+                    [edge], schema=EXECUTION_EDGES_SCHEMA
+                ),
+            },
+        )
 
 
 A, B, C = "a" * 32, "b" * 32, "c" * 32
@@ -184,6 +184,5 @@ class TestQueryArtifacts:
         # No content / payload field exists on the ref.
         assert "content" not in ref.model_dump()
 
-    def test_missing_index_raises(self, tmp_path) -> None:
-        with pytest.raises(FileNotFoundError):
-            query_artifacts(str(tmp_path))
+    def test_empty_initialized_index_returns_empty(self, tmp_path) -> None:
+        assert query_artifacts(str(tmp_path)) == []

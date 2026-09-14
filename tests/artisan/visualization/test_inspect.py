@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 from fixtures.cache_isolation_store import build_cache_isolation_store
 from fixtures.execution_records import executions_df
+from fixtures.logical_commit_store import commit_test_inputs, commit_test_step
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
@@ -20,7 +21,6 @@ from artisan.storage.core.table_schemas import (
     CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
-    STEPS_SCHEMA,
 )
 from artisan.utils.dicts import flatten_dict as _flatten_dict
 from artisan.visualization.inspect import (
@@ -53,7 +53,6 @@ DATA_SCHEMA = {
     "columns": pl.String,
     "row_count": pl.Int32,
     "metadata": pl.String,
-    "external_path": pl.String,
 }
 
 METRICS_SCHEMA = {
@@ -63,7 +62,6 @@ METRICS_SCHEMA = {
     "original_name": pl.String,
     "extension": pl.String,
     "metadata": pl.String,
-    "external_path": pl.String,
 }
 
 
@@ -75,17 +73,20 @@ def _format_root(tmp_path: Path) -> None:
 def _write_delta(
     delta_root: Path, rel_path: str, rows: list[dict], schema: dict
 ) -> None:
-    table_path = delta_root / rel_path
-    table_path.parent.mkdir(parents=True, exist_ok=True)
     df = pl.DataFrame(rows, schema=schema)
-    df.write_delta(str(table_path), mode="overwrite")
+    if df.is_empty():
+        return
+    table_path = rel_path.value if isinstance(rel_path, TablePath) else rel_path
+    commit_test_inputs(
+        delta_root,
+        delta_root.parent / "staging",
+        {table_path: df},
+    )
 
 
 def _write_steps(delta_root: Path, rows: list[dict]) -> None:
-    snapshots = [snapshot for row in rows for snapshot in _step_history(row)]
-    _write_delta(delta_root, "orchestration/steps", snapshots, STEPS_SCHEMA)
-    executions = [
-        {
+    for row in rows:
+        execution = {
             "execution_run_id": f"exec-{row['step_run_id']}",
             "execution_spec_id": f"execution-spec-{row['step_number']}",
             "step_run_id": row["step_run_id"],
@@ -104,25 +105,17 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
             "worker_log": None,
             "metadata": "{}",
         }
-        for row in rows
-        if row["status"] not in {"pending", "skipped", "cancelled"}
-    ]
-    _write_delta(
-        delta_root,
-        TablePath.EXECUTIONS,
-        executions,
-        EXECUTIONS_SCHEMA,
-    )
-    _write_delta(delta_root, TablePath.CACHE_REUSE, [], CACHE_REUSE_SCHEMA)
-    if not (delta_root / TablePath.EXECUTION_EDGES).exists():
-        _write_delta(
+        tables = {}
+        if row["status"] not in {"pending", "skipped", "cancelled"}:
+            tables[TablePath.EXECUTIONS.value] = pl.DataFrame(
+                [execution], schema=EXECUTIONS_SCHEMA
+            )
+        commit_test_step(
             delta_root,
-            TablePath.EXECUTION_EDGES,
-            [],
-            EXECUTION_EDGES_SCHEMA,
+            delta_root.parent / "staging",
+            [row],
+            tables,
         )
-    if not (delta_root / TablePath.ARTIFACT_INDEX).exists():
-        _write_delta(delta_root, TablePath.ARTIFACT_INDEX, [], INDEX_SCHEMA)
 
 
 def _write_index(delta_root: Path, rows: list[dict]) -> None:
@@ -153,9 +146,28 @@ def _write_metrics(delta_root: Path, rows: list[dict]) -> None:
 
 
 def _write_executions(delta_root: Path, df: pl.DataFrame) -> None:
-    table_path = delta_root / "orchestration/executions"
-    table_path.parent.mkdir(parents=True, exist_ok=True)
-    df.write_delta(str(table_path), mode="overwrite")
+    rows = df.to_dicts()
+    for index, row in enumerate(rows):
+        step_run_id = (
+            row["step_run_id"] or f"fixture-step-{index}-{row['execution_run_id']}"
+        )
+        step_number = int(row["origin_step_number"])
+        row["step_run_id"] = step_run_id
+        terminal = _step_row(
+            step_number=step_number,
+            step_name=str(row["operation_name"]),
+            pipeline_run_id="other-run" if step_run_id == "sr_other" else "run1",
+            succeeded_count=1 if row["success"] else 0,
+            total_count=1,
+        )
+        terminal["step_run_id"] = step_run_id
+        terminal["error"] = row["error"]
+        commit_test_step(
+            delta_root,
+            delta_root.parent / "staging",
+            [terminal],
+            {TablePath.EXECUTIONS.value: pl.DataFrame([row], schema=EXECUTIONS_SCHEMA)},
+        )
 
 
 def _envelope_json(**overrides) -> str:
@@ -439,10 +451,9 @@ def test_inspect_pipeline_cancelled_steps(tmp_path: Path) -> None:
     assert result["duration"][1] == "-"
 
 
-def test_inspect_pipeline_no_steps_raises(tmp_path: Path) -> None:
+def test_inspect_pipeline_empty_store_is_empty(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
-    with pytest.raises(FileNotFoundError):
-        inspect_pipeline(delta_root)
+    assert inspect_pipeline(delta_root).is_empty()
 
 
 def test_inspect_pipeline_failed_steps(tmp_path: Path) -> None:
@@ -650,8 +661,6 @@ def test_inspect_failures_empty_when_no_failures(tmp_path: Path) -> None:
 def test_inspect_failures_pipeline_run_id_filter(tmp_path: Path) -> None:
     """pipeline_run_id filters via the steps join on step_run_id."""
     delta_root = tmp_path / "delta"
-    # step 1 belongs to run1 (step_run_id 'sr1' per _step_row).
-    _write_steps(delta_root, [_step_row(step_number=1, step_name="transform")])
     _write_executions(
         delta_root,
         executions_df(
@@ -670,11 +679,10 @@ def test_inspect_failures_pipeline_run_id_filter(tmp_path: Path) -> None:
     assert result["execution_run_id"][0] == "in_run"
 
 
-def test_inspect_failures_no_table_raises(tmp_path: Path) -> None:
-    """A bogus root (no executions, no steps) raises for the store_not_found path."""
+def test_inspect_failures_empty_store_is_empty(tmp_path: Path) -> None:
+    """An initialized store without executions returns the empty schema."""
     delta_root = tmp_path / "delta"
-    with pytest.raises(FileNotFoundError):
-        inspect_failures(delta_root)
+    assert inspect_failures(delta_root).is_empty()
 
 
 def test_inspect_failures_steps_but_no_executions_returns_empty(tmp_path: Path) -> None:
@@ -921,10 +929,9 @@ def test_inspect_metrics_filter_step(tmp_path: Path) -> None:
     assert result["name"][0] == "d0"
 
 
-def test_inspect_metrics_no_table_raises(tmp_path: Path) -> None:
+def test_inspect_metrics_empty_store_is_empty(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
-    with pytest.raises(FileNotFoundError):
-        inspect_metrics(delta_root)
+    assert inspect_metrics(delta_root).is_empty()
 
 
 # ======================================================================
@@ -1151,17 +1158,23 @@ def test_inspect_pipeline_counts_distinct_artifacts_across_roles(
     tmp_path: Path,
 ) -> None:
     store = build_cache_isolation_store(tmp_path)
-    pl.DataFrame(
-        [
-            {
-                "execution_run_id": store.current_data_execution,
-                "direction": "output",
-                "role": "alternate",
-                "artifact_id": store.data_id,
-            }
-        ],
-        schema=EXECUTION_EDGES_SCHEMA,
-    ).write_delta(str(store.root / TablePath.EXECUTION_EDGES), mode="append")
+    commit_test_inputs(
+        store.root,
+        tmp_path / "extra-staging",
+        {
+            TablePath.EXECUTION_EDGES.value: pl.DataFrame(
+                [
+                    {
+                        "execution_run_id": store.current_data_execution,
+                        "direction": "output",
+                        "role": "alternate",
+                        "artifact_id": store.data_id,
+                    }
+                ],
+                schema=EXECUTION_EDGES_SCHEMA,
+            )
+        },
+    )
 
     pipeline = inspect_pipeline(store.root, pipeline_run_id=store.current_run)
 
@@ -1172,30 +1185,32 @@ def test_inspect_metrics_preserves_reuse_at_multiple_current_steps(
     tmp_path: Path,
 ) -> None:
     store = build_cache_isolation_store(tmp_path)
-    steps_path = store.root / TablePath.STEPS
-    steps = pl.read_delta(str(steps_path))
-    repeated = steps.filter(
-        pl.col("step_run_id") == store.current_cache_step_id
-    ).to_dicts()
     repeated_step_id = "e" * 32
-    for snapshot in repeated:
-        snapshot.update(
-            step_run_id=repeated_step_id,
-            step_number=6,
-            step_name="current_metric_cached_again",
-        )
-    pl.DataFrame(repeated, schema=steps.schema).write_delta(
-        str(steps_path), mode="append"
+    repeated = _step_row(
+        step_number=6,
+        step_name="current_metric_cached_again",
+        pipeline_run_id=store.current_run,
+        succeeded_count=1,
+        total_count=1,
     )
-    pl.DataFrame(
-        [
-            {
-                "current_step_run_id": repeated_step_id,
-                "cached_execution_run_id": store.source_metric_execution,
-            }
-        ],
-        schema=CACHE_REUSE_SCHEMA,
-    ).write_delta(str(store.root / TablePath.CACHE_REUSE), mode="append")
+    repeated["step_run_id"] = repeated_step_id
+    repeated["disposition"] = "cache_hit"
+    commit_test_step(
+        store.root,
+        tmp_path / "repeated-staging",
+        [repeated],
+        {
+            TablePath.CACHE_REUSE.value: pl.DataFrame(
+                [
+                    {
+                        "current_step_run_id": repeated_step_id,
+                        "cached_execution_run_id": store.source_metric_execution,
+                    }
+                ],
+                schema=CACHE_REUSE_SCHEMA,
+            )
+        },
+    )
 
     metrics = inspect_metrics(store.root, pipeline_run_id=store.current_run)
 
@@ -1204,35 +1219,72 @@ def test_inspect_metrics_preserves_reuse_at_multiple_current_steps(
 
 def test_inspect_failures_uses_current_step_and_source_log_path(tmp_path: Path) -> None:
     store = build_cache_isolation_store(tmp_path)
-    executions_path = store.root / TablePath.EXECUTIONS
-    executions = pl.read_delta(str(executions_path))
-    failure = executions.filter(
-        pl.col("execution_run_id") == store.source_metric_execution
-    ).to_dicts()[0]
     failure_id = "f" * 32
-    failure.update(
-        execution_run_id=failure_id,
-        operation_name="source_failure",
-        success=False,
-        error="boom",
+    failed_step_id = "d" * 32
+    failed_step = _step_row(
+        step_number=1,
+        step_name="source_failure",
+        pipeline_run_id=store.source_run,
+        succeeded_count=0,
+        total_count=1,
     )
-    pl.DataFrame([failure], schema=executions.schema).write_delta(
-        str(executions_path), mode="append"
+    failed_step["step_run_id"] = failed_step_id
+    failure = {
+        "execution_run_id": failure_id,
+        "execution_spec_id": "failure-spec",
+        "step_run_id": failed_step_id,
+        "origin_step_number": 1,
+        "operation_name": "source_failure",
+        "params": "{}",
+        "user_overrides": "{}",
+        "timestamp_start": datetime(2026, 1, 1, tzinfo=UTC),
+        "timestamp_end": datetime(2026, 1, 1, tzinfo=UTC),
+        "source_worker": 0,
+        "compute_backend": "local",
+        "success": False,
+        "error": "boom",
+        "error_envelope": None,
+        "tool_output": None,
+        "worker_log": None,
+        "metadata": "{}",
+    }
+    commit_test_step(
+        store.root,
+        tmp_path / "failure-staging",
+        [failed_step],
+        {TablePath.EXECUTIONS.value: pl.DataFrame([failure], schema=EXECUTIONS_SCHEMA)},
     )
-    pl.DataFrame(
-        [
-            {
-                "current_step_run_id": store.current_cache_step_id,
-                "cached_execution_run_id": failure_id,
-            }
-        ],
-        schema=CACHE_REUSE_SCHEMA,
-    ).write_delta(str(store.root / TablePath.CACHE_REUSE), mode="append")
+    current_step_id = "e" * 32
+    current_step = _step_row(
+        step_number=6,
+        step_name="current_failure_cached",
+        pipeline_run_id=store.current_run,
+        succeeded_count=1,
+        total_count=1,
+    )
+    current_step["step_run_id"] = current_step_id
+    current_step["disposition"] = "cache_hit"
+    commit_test_step(
+        store.root,
+        tmp_path / "failure-reuse-staging",
+        [current_step],
+        {
+            TablePath.CACHE_REUSE.value: pl.DataFrame(
+                [
+                    {
+                        "current_step_run_id": current_step_id,
+                        "cached_execution_run_id": failure_id,
+                    }
+                ],
+                schema=CACHE_REUSE_SCHEMA,
+            )
+        },
+    )
 
     failures = inspect_failures(store.root, pipeline_run_id=store.current_run)
 
     assert failures.select("step", "operation", "log").row(0) == (
-        5,
+        6,
         "source_failure",
         f"step_1_source_failure/{failure_id}.log",
     )

@@ -75,6 +75,7 @@ def query_artifacts(
 
     from artisan.schemas.enums import TablePath
     from artisan.schemas.execution.storage_config import StorageConfig
+    from artisan.storage.core.committed_scan import read_committed, scan_committed
     from artisan.utils.path import uri_join
 
     storage = storage or StorageConfig()
@@ -98,7 +99,12 @@ def query_artifacts(
         ).select("artifact_id", "current_step_number")
         if artifact_type is not None:
             membership = membership.join(
-                pl.scan_delta(index_path, storage_options=opts)
+                scan_committed(
+                    delta_root,
+                    TablePath.ARTIFACT_INDEX,
+                    fs=fs,
+                    storage_options=opts,
+                )
                 .filter(pl.col("artifact_type") == artifact_type)
                 .select("artifact_id")
                 .collect(),
@@ -110,14 +116,24 @@ def query_artifacts(
                 subset=["current_step_number", "artifact_id"], maintain_order=True
             )
             .join(
-                pl.scan_delta(index_path, storage_options=opts).collect(),
+                read_committed(
+                    delta_root,
+                    TablePath.ARTIFACT_INDEX,
+                    fs=fs,
+                    storage_options=opts,
+                ),
                 on="artifact_id",
                 how="inner",
             )
             .sort("current_step_number", "artifact_id")
         )
     else:
-        scanner = pl.scan_delta(index_path, storage_options=opts)
+        scanner = scan_committed(
+            delta_root,
+            TablePath.ARTIFACT_INDEX,
+            fs=fs,
+            storage_options=opts,
+        )
         if artifact_type is not None:
             scanner = scanner.filter(pl.col("artifact_type") == artifact_type)
         rows = scanner.sort("origin_step_number", "artifact_id").collect()

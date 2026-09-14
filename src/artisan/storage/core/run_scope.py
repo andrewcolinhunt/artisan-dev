@@ -10,6 +10,7 @@ from fsspec import AbstractFileSystem
 
 from artisan.errors import ArtifactIntegrityError, PersistenceIntegrityError
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.committed_scan import read_committed
 from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 
@@ -72,9 +73,9 @@ def load_execution_membership(
         fs,
         (TablePath.STEPS, TablePath.EXECUTIONS, TablePath.CACHE_REUSE),
     )
-    steps = _read_steps(delta_root, options)
-    executions = _read_executions(delta_root, options)
-    reuse = _read_cache_reuse(delta_root, options)
+    steps = _read_steps(delta_root, fs, options)
+    executions = _read_executions(delta_root, fs, options)
+    reuse = _read_cache_reuse(delta_root, fs, options)
     _validate_relations(steps, executions, reuse)
 
     attempts = _current_attempts(delta_root, fs, options)
@@ -153,13 +154,14 @@ def load_accepted_outputs(
         (TablePath.EXECUTION_EDGES, TablePath.ARTIFACT_INDEX),
     )
     edges = (
-        pl.scan_delta(
-            uri_join(delta_root, TablePath.EXECUTION_EDGES),
+        read_committed(
+            delta_root,
+            TablePath.EXECUTION_EDGES,
+            fs=fs,
             storage_options=options,
         )
         .filter(pl.col("direction") == "output")
         .select("execution_run_id", "role", "artifact_id")
-        .collect()
     )
     if role is not None:
         edges = edges.filter(pl.col("role") == role)
@@ -167,14 +169,12 @@ def load_accepted_outputs(
     if outputs.is_empty():
         return pl.DataFrame(schema=_OUTPUT_SCHEMA)
 
-    index = (
-        pl.scan_delta(
-            uri_join(delta_root, TablePath.ARTIFACT_INDEX),
-            storage_options=options,
-        )
-        .select("artifact_id", "artifact_type", "origin_step_number")
-        .collect()
-    )
+    index = read_committed(
+        delta_root,
+        TablePath.ARTIFACT_INDEX,
+        fs=fs,
+        storage_options=options,
+    ).select("artifact_id", "artifact_type", "origin_step_number")
     _validate_output_index(outputs.select("artifact_id"), index)
     return (
         outputs.join(index, on="artifact_id", how="inner")
@@ -214,7 +214,7 @@ def validate_cached_executions(
         fs,
         (TablePath.EXECUTIONS, TablePath.EXECUTION_EDGES, TablePath.ARTIFACT_INDEX),
     )
-    executions = _read_executions(delta_root, options).filter(
+    executions = _read_executions(delta_root, fs, options).filter(
         pl.col("execution_run_id").is_in(execution_ids)
     )
     counts = executions.group_by("execution_run_id").len()
@@ -229,8 +229,10 @@ def validate_cached_executions(
         raise PersistenceIntegrityError(msg)
 
     edges = (
-        pl.scan_delta(
-            uri_join(delta_root, TablePath.EXECUTION_EDGES),
+        read_committed(
+            delta_root,
+            TablePath.EXECUTION_EDGES,
+            fs=fs,
             storage_options=options,
         )
         .filter(
@@ -238,18 +240,15 @@ def validate_cached_executions(
             & (pl.col("direction") == "output")
         )
         .select("artifact_id")
-        .collect()
     )
     if edges.is_empty():
         return execution_ids
-    index = (
-        pl.scan_delta(
-            uri_join(delta_root, TablePath.ARTIFACT_INDEX),
-            storage_options=options,
-        )
-        .select("artifact_id", "artifact_type")
-        .collect()
-    )
+    index = read_committed(
+        delta_root,
+        TablePath.ARTIFACT_INDEX,
+        fs=fs,
+        storage_options=options,
+    ).select("artifact_id", "artifact_type")
     _validate_output_index(edges, index)
     _validate_output_content(
         delta_root,
@@ -262,50 +261,64 @@ def validate_cached_executions(
     return execution_ids
 
 
-def _read_steps(delta_root: str, options: dict[str, str]) -> pl.DataFrame:
+def _read_steps(
+    delta_root: str,
+    fs: AbstractFileSystem,
+    options: dict[str, str],
+) -> pl.DataFrame:
     """Read the ownership and lifecycle columns used by membership."""
-    return (
-        pl.scan_delta(uri_join(delta_root, TablePath.STEPS), storage_options=options)
-        .select(
-            "step_run_id",
-            "pipeline_run_id",
-            "step_number",
-            "step_name",
-            "status",
-            "timestamp",
-        )
-        .collect()
+    return read_committed(
+        delta_root,
+        TablePath.STEPS,
+        fs=fs,
+        storage_options=options,
+    ).select(
+        "step_run_id",
+        "pipeline_run_id",
+        "step_number",
+        "step_name",
+        "status",
+        "timestamp",
     )
 
 
-def _read_executions(delta_root: str, options: dict[str, str]) -> pl.DataFrame:
+def _read_executions(
+    delta_root: str,
+    fs: AbstractFileSystem,
+    options: dict[str, str],
+) -> pl.DataFrame:
     """Read execution identity and inspection fields once."""
-    return (
-        pl.scan_delta(
-            uri_join(delta_root, TablePath.EXECUTIONS), storage_options=options
-        )
-        .select(
-            "execution_run_id",
-            "step_run_id",
-            "success",
-            "operation_name",
-            pl.col("origin_step_number").alias("execution_step_number"),
-            "error",
-            "error_envelope",
-            "metadata",
-        )
-        .collect()
+    return read_committed(
+        delta_root,
+        TablePath.EXECUTIONS,
+        fs=fs,
+        storage_options=options,
+    ).select(
+        "execution_run_id",
+        "step_run_id",
+        "success",
+        "operation_name",
+        pl.col("origin_step_number").alias("execution_step_number"),
+        "error",
+        "error_envelope",
+        "metadata",
     )
 
 
-def _read_cache_reuse(delta_root: str, options: dict[str, str]) -> pl.DataFrame:
+def _read_cache_reuse(
+    delta_root: str,
+    fs: AbstractFileSystem,
+    options: dict[str, str],
+) -> pl.DataFrame:
     """Read and pair-deduplicate the exact physical reuse relation."""
     return (
-        pl.scan_delta(
-            uri_join(delta_root, TablePath.CACHE_REUSE), storage_options=options
+        read_committed(
+            delta_root,
+            TablePath.CACHE_REUSE,
+            fs=fs,
+            storage_options=options,
         )
         .select("current_step_run_id", "cached_execution_run_id")
-        .collect()
         .unique(maintain_order=True)
     )
 

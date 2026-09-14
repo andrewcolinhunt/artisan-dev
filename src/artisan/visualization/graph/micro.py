@@ -20,6 +20,7 @@ from fsspec import AbstractFileSystem
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.committed_scan import scan_committed
 from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
@@ -52,7 +53,12 @@ def _scan_or_empty(
     if not fs.exists(table_path):
         return pl.DataFrame(schema=empty_schema)
     return (
-        pl.scan_delta(table_path, storage_options=storage_options)
+        scan_committed(
+            delta_root,
+            table,
+            fs=fs,
+            storage_options=storage_options,
+        )
         .select(columns)
         .collect()
     )
@@ -124,7 +130,12 @@ def _load_artifact_labels(
 
         if "original_name" in schema:
             df = (
-                pl.scan_delta(table_path, storage_options=storage_options)
+                scan_committed(
+                    delta_root,
+                    typedef.table_path,
+                    fs=fs,
+                    storage_options=storage_options,
+                )
                 .select(["artifact_id", "original_name"])
                 .collect()
             )
@@ -136,7 +147,12 @@ def _load_artifact_labels(
                     )[0]
         elif "path" in schema:
             df = (
-                pl.scan_delta(table_path, storage_options=storage_options)
+                scan_committed(
+                    delta_root,
+                    typedef.table_path,
+                    fs=fs,
+                    storage_options=storage_options,
+                )
                 .select(["artifact_id", "path"])
                 .collect()
             )

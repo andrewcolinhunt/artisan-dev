@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
-from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -19,11 +18,9 @@ from artisan.storage.core.table_schemas import (
     CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
-    STEPS_SCHEMA,
 )
-from artisan.storage.io.commit import DeltaCommitter
-from artisan.storage.io.staging import StagingManager
 from artisan.utils.hashing import digest_utf8
+from fixtures.logical_commit_store import commit_test_step
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +44,7 @@ class CacheIsolationStore:
 def build_cache_isolation_store(tmp_path: Path) -> CacheIsolationStore:
     """Create direct/reused membership with same-number cross-run noise."""
     root = tmp_path / "cache-isolation-delta"
-    fs = LocalFileSystem()
-    DeltaCommitter(
-        str(root),
-        StagingManager(str(tmp_path / "cache-isolation-staging"), fs),
-        fs=fs,
-    ).initialize_tables()
+    staging_root = tmp_path / "cache-isolation-staging"
 
     source_run = "source-run"
     current_run = "current-run"
@@ -79,128 +71,101 @@ def build_cache_isolation_store(tmp_path: Path) -> CacheIsolationStore:
     other_metric = MetricArtifact.draft(
         {"score": 0.1}, "other_metric.json", 5
     ).finalize()
-    artifacts = [data, metric, other_data, other_metric]
-    for artifact_type, typed in (
-        ("data", [data, other_data]),
-        ("metric", [metric, other_metric]),
-    ):
-        schema = type(typed[0]).POLARS_SCHEMA
-        relative = "artifacts/data" if artifact_type == "data" else "artifacts/metrics"
-        pl.DataFrame(
-            [artifact.to_row() for artifact in typed], schema=schema
-        ).write_delta(
-            str(root / relative),
-            mode="append",
-        )
-    pl.DataFrame(
-        [
-            {
-                "artifact_id": artifact.artifact_id,
-                "artifact_type": artifact.artifact_type,
-                "origin_step_number": artifact.origin_step_number,
-                "metadata": json.dumps(artifact.metadata),
-            }
-            for artifact in artifacts
-        ],
-        schema=ARTIFACT_INDEX_SCHEMA,
-    ).write_delta(str(root / TablePath.ARTIFACT_INDEX), mode="append")
-
     base = datetime(2026, 9, 1, tzinfo=UTC)
-    step_rows = [
-        row
-        for index, (run_id, number, name) in enumerate(
-            [
-                (source_run, 0, "source_data"),
-                (source_run, 1, "source_metric"),
-                (current_run, 0, "current_data"),
-                (current_run, 5, "current_metric_cached"),
-                (other_run, 0, "other_data"),
-                (other_run, 5, "other_metric"),
-            ]
-        )
-        for row in _step_rows(
+    step_specs = [
+        (source_run, 0, "source_data", execution_ids["source_data"], data, None),
+        (source_run, 1, "source_metric", execution_ids["source_metric"], metric, data),
+        (current_run, 0, "current_data", execution_ids["current_data"], None, data),
+        (current_run, 5, "current_metric_cached", None, None, None),
+        (other_run, 0, "other_data", execution_ids["other_data"], other_data, None),
+        (
+            other_run,
+            5,
+            "other_metric",
+            execution_ids["other_metric"],
+            other_metric,
+            other_data,
+        ),
+    ]
+    for index, (run_id, number, name, execution_id, produced, source) in enumerate(
+        step_specs
+    ):
+        rows = _step_rows(
             step_ids[(run_id, number)],
             run_id,
             number,
             name,
             base + timedelta(seconds=index),
         )
-    ]
-    pl.DataFrame(step_rows, schema=STEPS_SCHEMA).write_delta(
-        str(root / TablePath.STEPS), mode="append"
-    )
-    execution_rows = [
-        _execution(
-            execution_ids["source_data"],
-            step_ids[(source_run, 0)],
-            0,
-            "source_data",
-            10.0,
-        ),
-        _execution(
-            execution_ids["source_metric"],
-            step_ids[(source_run, 1)],
-            1,
-            "source_metric",
-            99.0,
-        ),
-        _execution(
-            execution_ids["current_data"],
-            step_ids[(current_run, 0)],
-            0,
-            "current_data",
-            2.0,
-        ),
-        _execution(
-            execution_ids["other_data"], step_ids[(other_run, 0)], 0, "other_data", 88.0
-        ),
-        _execution(
-            execution_ids["other_metric"],
-            step_ids[(other_run, 5)],
-            5,
-            "other_metric",
-            77.0,
-        ),
-    ]
-    pl.DataFrame(execution_rows, schema=EXECUTIONS_SCHEMA).write_delta(
-        str(root / TablePath.EXECUTIONS), mode="append"
-    )
-    edges = [
-        _edge(execution_ids["source_data"], "output", "data", data.artifact_id),
-        _edge(execution_ids["source_metric"], "input", "data", data.artifact_id),
-        _edge(execution_ids["source_metric"], "output", "metric", metric.artifact_id),
-        _edge(execution_ids["current_data"], "output", "data", data.artifact_id),
-        _edge(execution_ids["other_data"], "output", "data", other_data.artifact_id),
-        _edge(execution_ids["other_metric"], "input", "data", other_data.artifact_id),
-        _edge(
-            execution_ids["other_metric"], "output", "metric", other_metric.artifact_id
-        ),
-    ]
-    pl.DataFrame(edges, schema=EXECUTION_EDGES_SCHEMA).write_delta(
-        str(root / TablePath.EXECUTION_EDGES), mode="append"
-    )
-    artifact_edges = [
-        _artifact_edge(
-            execution_ids["source_metric"], data.artifact_id, metric.artifact_id
-        ),
-        _artifact_edge(
-            execution_ids["other_metric"],
-            other_data.artifact_id,
-            other_metric.artifact_id,
-        ),
-    ]
-    pl.DataFrame(artifact_edges, schema=ARTIFACT_EDGES_SCHEMA).write_delta(
-        str(root / TablePath.ARTIFACT_EDGES), mode="append"
-    )
-    pl.DataFrame(
-        [
-            {
-                "current_step_run_id": step_ids[(current_run, 5)],
-                "cached_execution_run_id": execution_ids["source_metric"],
-            }
-        ],
-        schema=CACHE_REUSE_SCHEMA,
-    ).write_delta(str(root / TablePath.CACHE_REUSE), mode="append")
+        tables: dict[str, pl.DataFrame] = {}
+        if produced is not None:
+            tables[
+                "artifacts/data"
+                if produced.artifact_type == "data"
+                else "artifacts/metrics"
+            ] = pl.DataFrame([produced.to_row()], schema=type(produced).POLARS_SCHEMA)
+            tables[TablePath.ARTIFACT_INDEX.value] = pl.DataFrame(
+                [
+                    {
+                        "artifact_id": produced.artifact_id,
+                        "artifact_type": produced.artifact_type,
+                        "origin_step_number": produced.origin_step_number,
+                        "metadata": json.dumps(produced.metadata),
+                    }
+                ],
+                schema=ARTIFACT_INDEX_SCHEMA,
+            )
+        if execution_id is not None:
+            timing = {
+                "source_data": 10.0,
+                "source_metric": 99.0,
+                "current_data": 2.0,
+                "other_data": 88.0,
+                "other_metric": 77.0,
+            }[name]
+            tables[TablePath.EXECUTIONS.value] = pl.DataFrame(
+                [
+                    _execution(
+                        execution_id, step_ids[(run_id, number)], number, name, timing
+                    )
+                ],
+                schema=EXECUTIONS_SCHEMA,
+            )
+            output = produced if produced is not None else source
+            edge_rows = []
+            if source is not None and produced is not None:
+                edge_rows.append(
+                    _edge(execution_id, "input", "data", source.artifact_id)
+                )
+            if output is not None:
+                edge_rows.append(
+                    _edge(
+                        execution_id, "output", output.artifact_type, output.artifact_id
+                    )
+                )
+            tables[TablePath.EXECUTION_EDGES.value] = pl.DataFrame(
+                edge_rows, schema=EXECUTION_EDGES_SCHEMA
+            )
+            if source is not None and produced is not None:
+                tables[TablePath.ARTIFACT_EDGES.value] = pl.DataFrame(
+                    [
+                        _artifact_edge(
+                            execution_id, source.artifact_id, produced.artifact_id
+                        )
+                    ],
+                    schema=ARTIFACT_EDGES_SCHEMA,
+                )
+        else:
+            tables[TablePath.CACHE_REUSE.value] = pl.DataFrame(
+                [
+                    {
+                        "current_step_run_id": step_ids[(current_run, 5)],
+                        "cached_execution_run_id": execution_ids["source_metric"],
+                    }
+                ],
+                schema=CACHE_REUSE_SCHEMA,
+            )
+        commit_test_step(root, staging_root, rows, tables)
 
     return CacheIsolationStore(
         root=root,
