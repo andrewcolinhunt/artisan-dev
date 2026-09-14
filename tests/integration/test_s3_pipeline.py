@@ -84,23 +84,15 @@ class TestS3PipelineEndToEnd:
         assert exec_df.height >= 2  # one per step (curator) or per worker (creator)
         assert all(exec_df["success"].to_list())
 
-    def test_recover_staging_does_not_crash_on_cloud_failure_logs(
-        self, s3_pipeline_env
-    ):
-        """PipelineManager(recover_staging=True) constructs cleanly on cloud delta.
-
-        Validates PR 2's failure-logs-root fix in the cloud context: the
-        manager initializes without crashing on `os.makedirs(s3://...)`.
-        Without PR 2, this would fail before any step runs.
-        """
+    def test_manager_initializes_with_cloud_failure_logs(self, s3_pipeline_env):
+        """PipelineManager constructs cleanly with cloud persistence roots."""
         env = s3_pipeline_env
         config = PipelineConfig(
-            name="s3_recover_staging",
+            name="s3_manager_init",
             delta_root=env["delta_root"],
             staging_root=env["staging_root"],
             working_root=env["working_root"],
             files_root=env["files_root"],
-            recover_staging=True,
             storage=env["storage"],
         )
         # Just constructing must not crash.

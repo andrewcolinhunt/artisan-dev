@@ -467,7 +467,6 @@ class TestPipelineManager:
             name="local",
             delta_root=self.delta_root,
             staging_root=self.staging_root,
-            recover_staging=False,
         )
 
         pipeline = PipelineManager(config, configure_logging=False)

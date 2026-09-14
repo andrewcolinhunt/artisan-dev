@@ -36,7 +36,7 @@ from artisan.orchestration.runners import Runner, RunnerBase, resolve_runner
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy
+from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy, TablePath
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.operation_config.compute import ComputeProvider
@@ -250,6 +250,7 @@ def _promote_file_paths_to_store(
     config: PipelineConfig,
     step_number: int,
     operation_name: str,
+    step_run_id: str,
 ) -> tuple[dict[str, list[str]] | None, int, set[str]]:
     """Validate file paths, create FileRefArtifacts, and commit to delta.
 
@@ -371,7 +372,8 @@ def _promote_file_paths_to_store(
         },
     )
 
-    # Commit directly to Delta Lake (pre-dispatch)
+    # Register verified raw inputs through their own pre-dispatch commit.
+    from artisan.storage.io.commit_plan import build_commit_plan
     from artisan.storage.io.staging import StagingManager
 
     fs = config.storage.filesystem()
@@ -383,8 +385,6 @@ def _promote_file_paths_to_store(
         fs=fs,
         storage_options=storage_options,
     )
-    committer.commit_dataframe(file_ref_df, "artifacts/file_refs")
-    committer.commit_dataframe(index_df, TablePath.ARTIFACT_INDEX)
     location_df = pl.DataFrame(
         [
             {"artifact_id": artifact.artifact_id, "uri": artifact.path}
@@ -392,7 +392,34 @@ def _promote_file_paths_to_store(
         ],
         schema={"artifact_id": pl.String, "uri": pl.String},
     )
-    committer.commit_dataframe(location_df, TablePath.ARTIFACT_LOCATIONS)
+    staging_kwargs = {
+        "step_run_id": step_run_id,
+        "step_number": step_number,
+        "operation_name": operation_name,
+    }
+    staging_manager.stage_orchestrator_dataframe(
+        file_ref_df,
+        "artifacts/file_refs",
+        **staging_kwargs,
+    )
+    staging_manager.stage_orchestrator_dataframe(
+        index_df,
+        TablePath.ARTIFACT_INDEX.value,
+        **staging_kwargs,
+    )
+    staging_manager.stage_orchestrator_dataframe(
+        location_df,
+        TablePath.ARTIFACT_LOCATIONS.value,
+        **staging_kwargs,
+    )
+    plan = build_commit_plan(
+        delta_root=config.delta_root,
+        staging_root=config.staging_root,
+        fs=fs,
+        commit_kind="input_registration",
+        **staging_kwargs,
+    )
+    committer.commit_logical(plan, preserve_staging=config.preserve_staging)
 
     artifact_ids: list[str] = [
         a.artifact_id for a in file_ref_artifacts if a.artifact_id is not None
@@ -896,9 +923,6 @@ class PipelineManager:
             storage_options=storage_options,
         )
         committer.initialize_tables()
-        if config.recover_staging:
-            committer.recover_staged(preserve_staging=config.preserve_staging)
-
         self._start_time: float = time.time()
         self._current_step: int = 0
         self._step_results: list[StepResult] = []
@@ -1438,7 +1462,6 @@ class PipelineManager:
         default_step_runner: str | RunnerBase = "local",
         preserve_staging: bool = False,
         preserve_working: bool = False,
-        recover_staging: bool = True,
         skip_cache: bool = False,
     ) -> PipelineManager:
         """Factory method to create a PipelineManager.
@@ -1458,8 +1481,6 @@ class PipelineManager:
                 ``"local"``). External providers are passed as instances.
             preserve_staging: Debug flag to preserve staging files after commit.
             preserve_working: Debug flag to preserve sandbox after execution.
-            recover_staging: Commit leftover staging files from prior crashed
-                runs at pipeline init. Defaults to True.
             skip_cache: Bypass all cache lookups for every step.
 
         Returns:
@@ -1479,7 +1500,6 @@ class PipelineManager:
             default_step_runner=resolved.name,
             preserve_staging=preserve_staging,
             preserve_working=preserve_working,
-            recover_staging=recover_staging,
             skip_cache=skip_cache,
         )
         instance = cls(config, default_step_runner=resolved)
@@ -1502,7 +1522,6 @@ class PipelineManager:
         cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
         preserve_staging: bool = False,
         preserve_working: bool = False,
-        recover_staging: bool = True,
         skip_cache: bool = False,
         storage: StorageConfig | None = None,
     ) -> PipelineManager:
@@ -1525,7 +1544,6 @@ class PipelineManager:
             cache_policy: Controls which usable terminal steps qualify as cache hits.
             preserve_staging: Preserve staging files after commit.
             preserve_working: Preserve worker sandboxes after execution.
-            recover_staging: Commit leftover staging from interrupted runs.
             skip_cache: Bypass cache lookups for subsequent steps.
             storage: Filesystem and Delta storage configuration.
 
@@ -1575,7 +1593,6 @@ class PipelineManager:
             "cache_policy": cache_policy,
             "preserve_staging": preserve_staging,
             "preserve_working": preserve_working,
-            "recover_staging": recover_staging,
             "skip_cache": skip_cache,
             "storage": storage,
         }
@@ -2287,22 +2304,17 @@ class PipelineManager:
                 "metadata": current_metadata,
             }
         )
-        reuse_committed = self._commit_whole_step_reuse(
+        committed_result = self._commit_whole_step_reuse(
             step_run_id,
             cached.execution_run_ids,
             step_number=step_number,
             operation_name=prepared_operation.name,
+            result=result,
+            step_spec_id=step_spec_id,
+            attempt_started_at=attempt_started_at,
         )
-        duration_seconds = time.perf_counter() - attempt_started_at
-        if reuse_committed:
-            result = result.model_copy(update={"duration_seconds": duration_seconds})
-            self._step_tracker.transition(
-                step_run_id,
-                StepStatus.RUNNING,
-                result.status,
-                step_spec_id=step_spec_id,
-                result=result,
-            )
+        if committed_result is not None:
+            result = committed_result
             self._step_status_readers[step_number].set(result.status)
             self._compact_after_terminal(ov.compact)
         else:
@@ -2331,14 +2343,16 @@ class PipelineManager:
         *,
         step_number: int,
         operation_name: str,
-    ) -> bool:
+        result: StepResult,
+        step_spec_id: str,
+        attempt_started_at: float,
+    ) -> StepResult | None:
         """Validate, stage, and commit a whole-step cache relation.
 
         Returns:
-            True after commit, or False if cancellation wins before staging.
+            Committed result, or None if cancellation wins before staging.
         """
         from artisan.storage.core.run_scope import validate_cached_executions
-        from artisan.storage.io.commit import DeltaCommitter
         from artisan.storage.io.staging import StagingManager
 
         fs = self._config.storage.filesystem()
@@ -2352,7 +2366,7 @@ class PipelineManager:
             files_root=self._config.files_root,
         )
         if self._cancel_event.is_set():
-            return False
+            return None
         staging = StagingManager(self._config.staging_root, fs)
         staging.stage_cache_reuse(
             current_step_run_id,
@@ -2360,17 +2374,92 @@ class PipelineManager:
             step_number=step_number,
             operation_name=operation_name,
         )
+        return self._commit_execution_result(
+            result,
+            (),
+            step_name=result.step_name,
+            step_spec_id=step_spec_id,
+            operation_name=operation_name,
+            attempt_started_at=attempt_started_at,
+        )
+
+    def _commit_execution_result(
+        self,
+        result: StepResult,
+        execution_run_ids: tuple[str, ...],
+        *,
+        step_name: str,
+        step_spec_id: str,
+        operation_name: str,
+        attempt_started_at: float,
+    ) -> StepResult:
+        """Persist worker evidence and its terminal candidate as one commit."""
+        from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.commit_plan import build_commit_plan
+        from artisan.storage.io.staging import StagingManager
+
+        step_run_id = result.step_run_id
+        if step_run_id is None:
+            msg = "Persistence-bearing step result has no step_run_id"
+            raise PersistenceIntegrityError(msg)
+        finalized = result.model_copy(
+            update={
+                "step_name": step_name,
+                "duration_seconds": time.perf_counter() - attempt_started_at,
+                "step_run_id": step_run_id,
+            }
+        )
+        if finalized.cancellation_status is not None:
+            self._step_tracker.record_cancellation(
+                step_run_id,
+                StepStatus.RUNNING,
+                CancellationAcknowledgement(CancellationStatus.REQUESTED),
+            )
+            self._step_tracker.record_cancellation(
+                step_run_id,
+                StepStatus.RUNNING,
+                CancellationAcknowledgement(
+                    finalized.cancellation_status,
+                    finalized.error,
+                ),
+            )
+        candidate = self._step_tracker.prepare_terminal_candidate(
+            step_run_id,
+            StepStatus.RUNNING,
+            finalized.status,
+            step_spec_id=step_spec_id,
+            result=finalized,
+        )
+        fs = self._config.storage.filesystem()
+        options = self._config.storage.delta_storage_options()
+        staging = StagingManager(self._config.staging_root, fs)
+        staging.stage_orchestrator_dataframe(
+            candidate,
+            TablePath.STEPS.value,
+            step_run_id=step_run_id,
+            step_number=finalized.step_number,
+            operation_name=operation_name,
+        )
+        plan = build_commit_plan(
+            delta_root=self._config.delta_root,
+            staging_root=self._config.staging_root,
+            fs=fs,
+            commit_kind="step_result",
+            step_run_id=step_run_id,
+            step_number=finalized.step_number,
+            operation_name=operation_name,
+            execution_run_ids=execution_run_ids,
+        )
         DeltaCommitter(
             self._config.delta_root,
             staging,
             fs=fs,
             storage_options=options,
-        ).commit_all_tables(
-            cleanup_staging=not self._config.preserve_staging,
-            step_number=step_number,
-            operation_name=operation_name,
+        ).commit_logical(
+            plan,
+            preserve_staging=self._config.preserve_staging,
         )
-        return True
+        return self._step_tracker.current_state(step_run_id).to_step_result()
 
     def _handle_file_path_inputs(
         self,
@@ -2415,6 +2504,7 @@ class PipelineManager:
             self._config,
             step_number,
             operation.name,
+            step_run_id,
         )
         if promoted is None:
             msg = "File promotion returned no resolved inputs"
@@ -2475,15 +2565,18 @@ class PipelineManager:
                     cancel_event=self._cancel_event,
                     step_run_id=step_run_id,
                     step_run_ids=upstream_step_run_ids,
+                    persist_result=lambda result, execution_ids: (
+                        self._commit_execution_result(
+                            result,
+                            execution_ids,
+                            step_name=step_name,
+                            step_spec_id=step_spec_id,
+                            operation_name=prepared_operation.name,
+                            attempt_started_at=start,
+                        )
+                    ),
                 )
                 elapsed = time.perf_counter() - start
-                result = result.model_copy(
-                    update={
-                        "step_name": step_name,
-                        "duration_seconds": elapsed,
-                        "step_run_id": step_run_id,
-                    }
-                )
 
                 if result.status == StepStatus.CANCELLED:
                     logger.info(
@@ -2499,28 +2592,21 @@ class PipelineManager:
                         register=False,
                     )
 
-                if result.cancellation_status is not None:
-                    self._step_tracker.record_cancellation(
+                if result.status == StepStatus.SKIPPED:
+                    result = result.model_copy(
+                        update={
+                            "step_name": step_name,
+                            "duration_seconds": elapsed,
+                            "step_run_id": step_run_id,
+                        }
+                    )
+                    self._step_tracker.transition(
                         step_run_id,
                         StepStatus.RUNNING,
-                        CancellationAcknowledgement(CancellationStatus.REQUESTED),
+                        StepStatus.SKIPPED,
+                        step_spec_id=step_spec_id,
+                        result=result,
                     )
-                    self._step_tracker.record_cancellation(
-                        step_run_id,
-                        StepStatus.RUNNING,
-                        CancellationAcknowledgement(
-                            result.cancellation_status,
-                            result.error,
-                        ),
-                    )
-
-                self._step_tracker.transition(
-                    step_run_id,
-                    StepStatus.RUNNING,
-                    result.status,
-                    step_spec_id=step_spec_id,
-                    result=result,
-                )
                 self._step_status_readers[step_number].set(result.status)
                 self._compact_after_terminal(ov.compact)
                 logger.info(

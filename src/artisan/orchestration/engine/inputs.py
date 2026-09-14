@@ -15,6 +15,7 @@ from fsspec import AbstractFileSystem
 from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.storage.core.committed_scan import scan_committed
 from artisan.utils.hashing import CacheInputIdentity
 from artisan.utils.path import uri_join
 
@@ -97,7 +98,12 @@ def resolve_output_reference(
 
     # Query successful executions for the source step
     query = (
-        pl.scan_delta(executions_path, storage_options=storage_options)
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTIONS,
+            fs=fs,
+            storage_options=storage_options,
+        )
         .filter(pl.col("origin_step_number") == ref.source_step)
         .filter(pl.col("success") == True)  # noqa: E712
     )
@@ -122,7 +128,12 @@ def resolve_output_reference(
         return []
 
     provenance_result = (
-        pl.scan_delta(execution_edges_path, storage_options=storage_options)
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTION_EDGES,
+            fs=fs,
+            storage_options=storage_options,
+        )
         .filter(pl.col("execution_run_id").is_in(execution_run_ids))
         .filter(pl.col("direction") == "output")
         .filter(pl.col("role") == ref.role)

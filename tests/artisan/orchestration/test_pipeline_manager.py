@@ -228,7 +228,6 @@ class TestDefaultRunnerRetention:
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
             default_step_runner=runner,
-            recover_staging=False,
         )
 
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
@@ -2689,7 +2688,6 @@ class TestConfigureLoggingCloudGuard:
             staging_root="s3://bucket/staging",
             working_root=str(tmp_path / "working"),
             files_root="s3://bucket/files",
-            recover_staging=False,  # avoids actually touching s3 in __init__
             storage=StorageConfig(protocol="s3"),
         )
         # StepTracker construction reads from delta_root via fs.exists,
@@ -2748,7 +2746,6 @@ class TestPromoteFilePathsCloudUri:
             staging_root="memory:///promote-cloud-staging",
             working_root=str(tmp_path / "working"),
             files_root="memory:///promote-cloud-files",
-            recover_staging=False,
             storage=StorageConfig(protocol="memory"),
         )
         with patch("artisan.storage.io.commit.assert_store_format"):

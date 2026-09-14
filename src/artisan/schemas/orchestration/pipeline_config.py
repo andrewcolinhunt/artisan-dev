@@ -52,10 +52,6 @@ class PipelineConfig(BaseModel):
         default=False,
         description="Debug flag to preserve sandbox after execution.",
     )
-    recover_staging: bool = Field(
-        default=True,
-        description="Commit leftover staging files from prior crashed runs at pipeline init.",
-    )
     skip_cache: bool = Field(
         default=False,
         description="Bypass all cache lookups (step-level and execution-level).",
