@@ -1219,6 +1219,7 @@ class TestArtifactStoreBackendParametrized:
         """Seed artifact_index via DeltaCommitter, then query via ArtifactStore."""
         from artisan.schemas.enums import TablePath
         from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.commit_plan import build_commit_plan
         from artisan.storage.io.staging import StagingManager
 
         fs, storage, root = backend_fs
@@ -1247,8 +1248,24 @@ class TestArtifactStoreBackendParametrized:
             },
             schema=ARTIFACT_INDEX_SCHEMA,
         )
-        rows = committer.commit_dataframe(index_df, TablePath.ARTIFACT_INDEX.value)
-        assert rows == 1
+        step_run_id = "a" * 32
+        sm.stage_orchestrator_dataframe(
+            index_df,
+            TablePath.ARTIFACT_INDEX.value,
+            step_run_id=step_run_id,
+            step_number=0,
+            operation_name="test_input_registration",
+        )
+        plan = build_commit_plan(
+            delta_root=delta_root,
+            staging_root=staging_root,
+            fs=fs,
+            commit_kind="input_registration",
+            step_run_id=step_run_id,
+            step_number=0,
+            operation_name="test_input_registration",
+        )
+        assert committer.commit_logical(plan) == {"index": 1}
 
         # Verify the seeded table is readable via pl.read_delta directly.
         table_uri = f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}"

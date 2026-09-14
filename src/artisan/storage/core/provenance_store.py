@@ -12,6 +12,7 @@ import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.committed_scan import scan_committed
 from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 
@@ -71,7 +72,12 @@ class ProvenanceStore:
             return {}
 
         result = (
-            pl.scan_delta(prov_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_EDGES,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .select(["source_artifact_id", "target_artifact_id"])
             .collect()
         )
@@ -125,9 +131,12 @@ class ProvenanceStore:
         if not self._fs.exists(index_path):
             return {}
 
-        query = pl.scan_delta(index_path, storage_options=self._storage_options).select(
-            ["artifact_id", value_column]
-        )
+        query = scan_committed(
+            self.base_path,
+            TablePath.ARTIFACT_INDEX,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        ).select(["artifact_id", value_column])
         if artifact_ids is not None:
             query = query.filter(pl.col("artifact_id").is_in(list(artifact_ids)))
         result = query.collect()
@@ -191,7 +200,12 @@ class ProvenanceStore:
             return []
 
         result = (
-            pl.scan_delta(prov_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_EDGES,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("target_artifact_id") == artifact_id)
             .select("source_artifact_id")
             .collect()
@@ -230,9 +244,12 @@ class ProvenanceStore:
         if not self._fs.exists(prov_path):
             return {}
 
-        query = pl.scan_delta(prov_path, storage_options=self._storage_options).filter(
-            pl.col("source_artifact_id").is_in(list(source_artifact_ids))
-        )
+        query = scan_committed(
+            self.base_path,
+            TablePath.ARTIFACT_EDGES,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        ).filter(pl.col("source_artifact_id").is_in(list(source_artifact_ids)))
 
         if target_artifact_type is not None:
             query = query.filter(pl.col("target_artifact_type") == target_artifact_type)
@@ -266,7 +283,12 @@ class ProvenanceStore:
             return None
 
         result = (
-            pl.scan_delta(index_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id") == artifact_id)
             .select("origin_step_number")
             .limit(1)
@@ -298,7 +320,12 @@ class ProvenanceStore:
             return None
 
         result = (
-            pl.scan_delta(index_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(
                 pl.col("origin_step_number").min().alias("step_min"),
@@ -334,9 +361,12 @@ class ProvenanceStore:
         if not self._fs.exists(index_path):
             return set()
 
-        query = pl.scan_delta(index_path, storage_options=self._storage_options).filter(
-            pl.col("artifact_type") == artifact_type
-        )
+        query = scan_committed(
+            self.base_path,
+            TablePath.ARTIFACT_INDEX,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        ).filter(pl.col("artifact_type") == artifact_type)
         if step_numbers is not None:
             query = query.filter(pl.col("origin_step_number").is_in(step_numbers))
         if artifact_ids is not None:
@@ -418,13 +448,21 @@ class ProvenanceStore:
         if not self._fs.exists(prov_path) or not self._fs.exists(index_path):
             return empty
 
-        edges = pl.scan_delta(prov_path, storage_options=self._storage_options)
+        edges = scan_committed(
+            self.base_path,
+            TablePath.ARTIFACT_EDGES,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        )
         if execution_ids is not None:
             edges = edges.filter(pl.col("execution_run_id").is_in(execution_ids))
         edges = edges.select(output_cols)
-        index = pl.scan_delta(index_path, storage_options=self._storage_options).select(
-            ["artifact_id", "origin_step_number"]
-        )
+        index = scan_committed(
+            self.base_path,
+            TablePath.ARTIFACT_INDEX,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        ).select(["artifact_id", "origin_step_number"])
 
         result = (
             edges.join(index, left_on="source_artifact_id", right_on="artifact_id")
@@ -489,7 +527,12 @@ class ProvenanceStore:
             select_cols.append(type_col)
 
         edges = (
-            pl.scan_delta(prov_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_EDGES,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .select(select_cols)
             .collect()
         )

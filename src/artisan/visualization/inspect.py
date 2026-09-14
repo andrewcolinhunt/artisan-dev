@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.committed_scan import read_committed, scan_committed
 from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.dicts import flatten_dict
 
@@ -251,7 +252,12 @@ def inspect_failures(
         )
     else:
         failures = (
-            pl.scan_delta(executions_path, storage_options=storage_options)
+            scan_committed(
+                delta_root,
+                TablePath.EXECUTIONS,
+                fs=fs,
+                storage_options=storage_options,
+            )
             .filter(~pl.col("success"))
             .select(
                 "execution_run_id",
@@ -427,7 +433,12 @@ def _failure_upstream_edges(
     if not fs.exists(edge_path):
         return []
     artifact_ids = (
-        pl.scan_delta(edge_path, storage_options=storage.delta_storage_options())
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTION_EDGES,
+            fs=fs,
+            storage_options=storage.delta_storage_options(),
+        )
         .filter(
             pl.col("execution_run_id").is_in(execution_ids)
             & (pl.col("direction") == "output")
@@ -488,7 +499,12 @@ def inspect_step(
 
     if pipeline_run_id is None:
         idx_df = (
-            pl.scan_delta(index_path, storage_options=storage_options)
+            scan_committed(
+                delta_root,
+                TablePath.ARTIFACT_INDEX,
+                fs=fs,
+                storage_options=storage_options,
+            )
             .filter(pl.col("origin_step_number") == step_number)
             .collect()
         )
@@ -533,7 +549,12 @@ def inspect_step(
             continue
 
         df = (
-            pl.scan_delta(table_path, storage_options=storage_options)
+            scan_committed(
+                delta_root,
+                ArtifactTypeDef.get_table_path(art_type),
+                fs=fs,
+                storage_options=storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(art_ids))
             .collect()
         )
@@ -591,7 +612,12 @@ def inspect_metrics(
         msg = f"Metrics table not found at {table_path}"
         raise FileNotFoundError(msg)
 
-    scanner = pl.scan_delta(table_path, storage_options=storage_options)
+    scanner = scan_committed(
+        delta_root,
+        ArtifactTypeDef.get_table_path("metric"),
+        fs=fs,
+        storage_options=storage_options,
+    )
     current_steps: pl.DataFrame | None = None
     if pipeline_run_id is not None:
         from artisan.storage.core.run_scope import load_accepted_outputs
@@ -702,7 +728,12 @@ def inspect_data(
         msg = f"Data table not found at {table_path}"
         raise FileNotFoundError(msg)
 
-    scanner = pl.scan_delta(table_path, storage_options=storage_options)
+    scanner = scan_committed(
+        delta_root,
+        ArtifactTypeDef.get_table_path("data"),
+        fs=fs,
+        storage_options=storage_options,
+    )
     if name is not None:
         scanner = scanner.filter(pl.col("original_name") == name)
     if pipeline_run_id is not None:
@@ -730,9 +761,13 @@ def inspect_data(
     if df.is_empty():
         # Build a helpful error message
         all_names = (
-            pl.scan_delta(table_path, storage_options=storage_options)
-            .select("original_name")
-            .collect()["original_name"]
+            read_committed(
+                delta_root,
+                ArtifactTypeDef.get_table_path("data"),
+                fs=fs,
+                storage_options=storage_options,
+            )
+            .select("original_name")["original_name"]
             .to_list()
         )
         msg = f"No matching data artifacts found. Available names: {all_names}"
