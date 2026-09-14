@@ -10,6 +10,7 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.compute.local import LocalExecuteRouter
@@ -41,7 +42,6 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 
 def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> None:
-    publish_store_manifest(str(base_path), LocalFileSystem())
+    publish_test_store(str(base_path), LocalFileSystem())
     metrics_path = base_path / "artifacts/metrics"
     pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA).write_delta(
         str(metrics_path)

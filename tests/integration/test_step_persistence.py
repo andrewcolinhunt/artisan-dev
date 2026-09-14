@@ -70,15 +70,30 @@ def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     assert result2.step_name == result1.step_name
     assert result2.success is True
 
-    # A cache hit adds one terminal row for the current run, but no execution.
+    # A cache hit adds current-attempt lifecycle rows, but no new execution.
     steps_df2 = read_table(delta, "orchestration/steps")
-    assert len(steps_df2) == first_run_rows + 1
+    assert len(steps_df2) == first_run_rows + 2
     cached_rows = steps_df2.filter(
         pl.col("pipeline_run_id") == p2.config.pipeline_run_id
     )
-    assert cached_rows.height == 1
-    assert cached_rows.item(0, "status") == "completed"
-    assert cached_rows.item(0, "step_run_id") == result1.step_run_id
+    assert cached_rows.height == 2
+    assert set(cached_rows["step_run_id"].to_list()) == {result2.step_run_id}
+    terminal = cached_rows.filter(pl.col("status") == "completed")
+    assert terminal.height == 1
+    assert result2.step_run_id != result1.step_run_id
+    assert terminal.item(0, "step_run_id") == result2.step_run_id
+
+    source_execution_ids = set(
+        read_table(delta, "orchestration/executions")
+        .filter(pl.col("step_run_id") == result1.step_run_id)["execution_run_id"]
+        .to_list()
+    )
+    reuse_rows = read_table(delta, "orchestration/cache_reuse").filter(
+        pl.col("current_step_run_id") == result2.step_run_id
+    )
+    assert set(reuse_rows["cached_execution_run_id"].to_list()) == (
+        source_execution_ids
+    )
 
 
 def test_cache_only_run_can_resume_and_extend(
@@ -116,7 +131,7 @@ def test_cache_only_run_can_resume_and_extend(
     cached_run_id = cached.config.pipeline_run_id
     cached.finalize()
 
-    assert cached_result.step_run_id == source_result.step_run_id
+    assert cached_result.step_run_id != source_result.step_run_id
     resumed = PipelineManager.resume(
         delta_root=delta,
         staging_root=staging,
@@ -128,7 +143,7 @@ def test_cache_only_run_can_resume_and_extend(
     assert resumed[0].step_name == "cached_generator"
     assert resumed[0].output_roles == source_result.output_roles
     assert resumed[0].total_count == source_result.total_count
-    assert resumed._step_run_ids[0] == source_result.step_run_id
+    assert resumed._step_run_ids[0] == cached_result.step_run_id
     assert type(resumed._default_step_runner) is LocalRunner
     assert resumed._default_step_runner.default_max_workers == 2
 
@@ -157,12 +172,14 @@ def test_cache_only_run_can_resume_and_extend(
         "cached_generator",
         "data_transformer",
     ]
-    assert mixed._step_run_ids[0] == source_result.step_run_id
+    assert mixed._step_run_ids[0] == cached_result.step_run_id
 
     rows = read_table(delta, "orchestration/steps").filter(
         pl.col("pipeline_run_id") == cached_run_id
     )
-    assert rows.filter(pl.col("step_number") == 0).height == 1
+    cached_step_rows = rows.filter(pl.col("step_number") == 0)
+    assert cached_step_rows.height == 2
+    assert set(cached_step_rows["step_run_id"].to_list()) == {cached_result.step_run_id}
     assert sorted(
         rows.filter(pl.col("status") == "completed")["step_number"].to_list()
     ) == [0, 1]

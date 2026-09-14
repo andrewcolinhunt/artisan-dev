@@ -14,21 +14,27 @@ from datetime import UTC, datetime
 import polars as pl
 import pytest
 from fixtures.execution_records import executions_df
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.orchestration.engine.inputs import (
     resolve_output_reference,
 )
+from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
-from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import (
+    ARTIFACT_INDEX_SCHEMA,
+    CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
+    STEPS_SCHEMA,
 )
+from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.staging import StagingManager
 
 
 @pytest.fixture(autouse=True)
 def _supported_store(tmp_path):
-    publish_store_manifest(str(tmp_path), LocalFileSystem())
+    publish_test_store(str(tmp_path), LocalFileSystem())
 
 
 def _create_executions_df(**overrides) -> pl.DataFrame:
@@ -335,6 +341,137 @@ class TestResolveOutputReferenceNewSchema:
         assert result == sorted(result)
         assert result[0] == "a" * 32
         assert result[-1] == "z" * 32
+
+    def test_scoped_resolution_unions_direct_and_reused_outputs(self, tmp_path):
+        """Current membership, not artifact origin, defines scoped outputs."""
+        fs = LocalFileSystem()
+        DeltaCommitter(
+            str(tmp_path),
+            StagingManager(str(tmp_path / "staging"), fs),
+            fs=fs,
+        ).initialize_tables()
+        current = "a" * 32
+        direct = "b" * 32
+        cached = "c" * 32
+        failed = "d" * 32
+        now = datetime.now(UTC)
+        step = {
+            "step_run_id": current,
+            "step_spec_id": "e" * 32,
+            "pipeline_run_id": "current-run",
+            "step_number": 7,
+            "step_name": "current",
+            "status": "completed",
+            "operation_class": "example.Operation",
+            "params_json": "{}",
+            "input_refs_json": "{}",
+            "compute_backend": "local",
+            "compute_options_json": "{}",
+            "output_roles_json": '["data"]',
+            "output_types_json": '{"data":"data"}',
+            "total_count": 3,
+            "succeeded_count": 2,
+            "failed_count": 1,
+            "timestamp": now,
+            "duration_seconds": 1.0,
+            "error": None,
+            "dispatch_error": None,
+            "commit_error": None,
+            "metadata": "{}",
+        }
+        pl.DataFrame([step], schema=STEPS_SCHEMA).write_delta(
+            str(tmp_path / "orchestration/steps"), mode="append"
+        )
+        records = _create_executions_df(
+            execution_run_id=[direct, cached, failed],
+            execution_spec_id=["1" * 32, "2" * 32, "3" * 32],
+            step_run_id=[current, "4" * 32, "5" * 32],
+            origin_step_number=[7, 1, 1],
+            operation_name=["current", "source", "source"],
+            timestamp_start=[now] * 3,
+            timestamp_end=[now] * 3,
+            source_worker=[0] * 3,
+            success=[True, True, False],
+            error=[None, None, "failed"],
+            params=["{}"] * 3,
+            user_overrides=["{}"] * 3,
+            compute_backend=["local"] * 3,
+            tool_output=[None] * 3,
+            worker_log=[None] * 3,
+            metadata=["{}"] * 3,
+        )
+        records.write_delta(str(tmp_path / TablePath.EXECUTIONS), mode="append")
+        pl.DataFrame(
+            [
+                {"current_step_run_id": current, "cached_execution_run_id": cached},
+                {"current_step_run_id": current, "cached_execution_run_id": failed},
+            ],
+            schema=CACHE_REUSE_SCHEMA,
+        ).write_delta(str(tmp_path / TablePath.CACHE_REUSE), mode="append")
+        artifact_ids = ["6" * 32, "7" * 32, "8" * 32, "9" * 32]
+        pl.DataFrame(
+            [
+                {
+                    "artifact_id": artifact_id,
+                    "artifact_type": "data",
+                    "origin_step_number": 99,
+                    "metadata": "{}",
+                }
+                for artifact_id in artifact_ids
+            ],
+            schema=ARTIFACT_INDEX_SCHEMA,
+        ).write_delta(str(tmp_path / TablePath.ARTIFACT_INDEX), mode="append")
+        edges = [
+            {
+                "execution_run_id": direct,
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_ids[0],
+            },
+            {
+                "execution_run_id": cached,
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_ids[0],
+            },
+            {
+                "execution_run_id": cached,
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_ids[1],
+            },
+            {
+                "execution_run_id": cached,
+                "direction": "output",
+                "role": "other",
+                "artifact_id": artifact_ids[2],
+            },
+            {
+                "execution_run_id": failed,
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_ids[3],
+            },
+        ]
+        pl.DataFrame(edges, schema=EXECUTION_EDGES_SCHEMA).write_delta(
+            str(tmp_path / TablePath.EXECUTION_EDGES), mode="append"
+        )
+
+        result = resolve_output_reference(
+            OutputReference(source_step=7, role="data"),
+            str(tmp_path),
+            fs,
+            step_run_id=current,
+        )
+        no_origin_fallback = resolve_output_reference(
+            OutputReference(source_step=99, role="data"),
+            str(tmp_path),
+            fs,
+            step_run_id=current,
+        )
+
+        assert result == artifact_ids[:2]
+        assert no_origin_fallback == []
 
     def test_no_executions_returns_empty(self, tmp_path):
         """Test that missing executions table returns empty list."""

@@ -219,12 +219,16 @@ class TestResume:
         )
         p1.run(IngestMockOp, inputs=None)
 
-        # Run 2 — Ingest + MockOp (different steps, so not all cache hits)
+        # Run 2 — execute two steps so it is the newest complete run.
         p2 = PipelineManager.create(
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
-        p2.run(IngestMockOp, inputs=None)  # cache hit from run 1
-        p2.run(MockOp, inputs={"data": p2[0].output("file")})
+        p2.run(IngestMockOp, inputs=None, skip_cache=True)
+        p2.run(
+            MockOp,
+            inputs={"data": p2[0].output("file")},
+            skip_cache=True,
+        )
         run2_id = p2.config.pipeline_run_id
 
         # Resume without specifying run_id — should pick run 2 (most recent completed)

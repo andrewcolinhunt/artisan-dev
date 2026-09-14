@@ -8,18 +8,18 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 from fixtures.execution_records import executions_df
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import IncompatibleStoreError
 from artisan.orchestration.engine.inputs import resolve_output_reference
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
-from artisan.storage.core.store_format import publish_store_manifest
 
 
 @pytest.fixture(autouse=True)
 def _supported_store(tmp_path):
-    publish_store_manifest(str(tmp_path), LocalFileSystem())
+    publish_test_store(str(tmp_path), LocalFileSystem())
 
 
 def _create_executions_df(**overrides) -> pl.DataFrame:
