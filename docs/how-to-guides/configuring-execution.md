@@ -523,6 +523,56 @@ Pipeline defaults (PipelineManager.create)
             └── Step overrides (pipeline.run kwargs)   ← wins
 ```
 
+### Patch configuration without replacing defaults
+
+All model-valued step options use the same patch behavior:
+`runner_resources`, `batch_strategy`, `environment`, `tool`,
+`compute_provider`, and `compute_resources`.
+
+You can pass either a dict or the corresponding typed model. Both forms use
+the fields you supplied as the patch, including values that equal the model's
+schema default:
+
+```python
+# These are equivalent, even though RunnerResources.cpus defaults to 1.
+pipeline.run(operation=GpuInference, inputs=..., runner_resources={"cpus": 1})
+pipeline.run(
+    operation=GpuInference,
+    inputs=...,
+    runner_resources=RunnerResources(cpus=1),
+)
+```
+
+Fields you omit retain the operation's declared values. Explicit `None` inside
+a patch resets an optional field instead of falling back to the operation
+default:
+
+```python
+# Both clear an operation-level ComputeResources(gpu="A100") default.
+pipeline.run(operation=GpuInference, inputs=..., compute_resources={"gpu": None})
+pipeline.run(
+    operation=GpuInference,
+    inputs=...,
+    compute_resources=ComputeResources(gpu=None),
+)
+```
+
+Nested non-empty mappings merge recursively, so updating one environment
+variable preserves its siblings. Scalars, lists, `None`, and empty mappings
+replace the inherited value:
+
+```python
+# Preserve every existing variable except MODE.
+environment={"docker": {"env": {"MODE": "production"}}}
+
+# Clear the inherited env mapping.
+environment={"docker": {"env": {}}}
+```
+
+An empty root patch such as `runner_resources={}` supplies no fields and is a
+no-op. Top-level `None` also means no override; use `None` inside a patch to
+reset an optional field.
+
 ---
 
 ## Configure external tools and environments
@@ -617,7 +667,9 @@ environment variables.
 ### String, dict, or typed model — pick one
 
 Both `environment` and `compute_provider` accept three shapes. Pick the form
-that matches what you want to do.
+that matches what you want to do. Dict and typed forms that supply the same
+fields produce the same effective configuration. A string is shorthand for an
+`active` patch and follows the same validation path.
 
 `environment`:
 
@@ -667,10 +719,11 @@ pipeline.submit(
 )
 ```
 
-Passing a dict that configures a non-active provider (e.g.
-`environment={"docker": {...}}` without `active="docker"`) leaves the active
-provider unchanged — the `docker` block is merged in but stays unused. Set
-`active="docker"` to switch providers.
+Passing a dict that configures a non-active provider (for example,
+`environment={"docker": {...}}` without `active="docker"`) raises before
+dispatch. Set `active="docker"` in the patch to configure and select it. A
+string selector must name a target already configured on the operation;
+unknown or unconfigured targets also raise before cache lookup.
 
 ---
 
