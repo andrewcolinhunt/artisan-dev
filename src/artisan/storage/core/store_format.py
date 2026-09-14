@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from deltalake import DeltaTable
+from deltalake.exceptions import DeltaError
 from fsspec import AbstractFileSystem
 
 from artisan.errors import IncompatibleStoreError
@@ -20,7 +22,11 @@ STORE_MANIFEST = {
 STORE_MANIFEST_PATH = "_artisan/store.json"
 
 
-def assert_store_format(delta_root: str, fs: AbstractFileSystem) -> None:
+def assert_store_format(
+    delta_root: str,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str] | None = None,
+) -> None:
     """Require the exact supported store manifest before normal access."""
     manifest_path = uri_join(delta_root, STORE_MANIFEST_PATH)
     if not fs.exists(manifest_path):
@@ -35,11 +41,13 @@ def assert_store_format(delta_root: str, fs: AbstractFileSystem) -> None:
     if found != STORE_MANIFEST:
         detail = f"found {found!r}"
         raise _incompatible(detail)
+    _assert_cache_reuse_table(delta_root, fs, storage_options or {})
 
 
 def prepare_store_initialization(
     delta_root: str,
     fs: AbstractFileSystem,
+    storage_options: dict[str, str] | None = None,
 ) -> bool:
     """Validate an existing store or approve creation at an empty root.
 
@@ -49,7 +57,7 @@ def prepare_store_initialization(
     """
     manifest_path = uri_join(delta_root, STORE_MANIFEST_PATH)
     if fs.exists(manifest_path):
-        assert_store_format(delta_root, fs)
+        assert_store_format(delta_root, fs, storage_options)
         return False
     if fs.exists(delta_root) and fs.ls(delta_root, detail=False):
         detail = "Delta root is not empty and has no manifest"
@@ -75,6 +83,33 @@ def _known_table_paths() -> list[str]:
         *(member.value for member in TablePath),
         *(type_def.table_path for type_def in ArtifactTypeDef.get_all().values()),
     ]
+
+
+def _assert_cache_reuse_table(
+    delta_root: str,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str],
+) -> None:
+    """Require the exact D2 relation shape for every format-2 store."""
+    table_path = uri_join(delta_root, TablePath.CACHE_REUSE)
+    if not fs.exists(table_path):
+        detail = f"missing table {TablePath.CACHE_REUSE.value!r}"
+        raise _incompatible(detail)
+    try:
+        schema = json.loads(
+            DeltaTable(table_path, storage_options=storage_options).schema().to_json()
+        )
+        fields = [(field["name"], field["type"]) for field in schema["fields"]]
+    except (DeltaError, KeyError, OSError, TypeError, ValueError) as exc:
+        detail = f"malformed table {TablePath.CACHE_REUSE.value!r}: {exc}"
+        raise _incompatible(detail) from exc
+    expected = [
+        ("current_step_run_id", "string"),
+        ("cached_execution_run_id", "string"),
+    ]
+    if fields != expected:
+        detail = f"table {TablePath.CACHE_REUSE.value!r} has schema {fields!r}"
+        raise _incompatible(detail)
 
 
 def _incompatible(detail: str) -> IncompatibleStoreError:

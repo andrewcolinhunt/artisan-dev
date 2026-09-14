@@ -14,6 +14,7 @@ from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
     ARTIFACT_LOCATIONS_SCHEMA,
+    CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
     FRAMEWORK_SCHEMAS,
@@ -135,6 +136,13 @@ class TestFrameworkSchemaDefinitions:
         assert TablePath.EXECUTION_EDGES in NON_PARTITIONED_TABLES
         assert TablePath.ARTIFACT_INDEX in NON_PARTITIONED_TABLES
         assert TablePath.ARTIFACT_EDGES in NON_PARTITIONED_TABLES
+        assert TablePath.CACHE_REUSE in NON_PARTITIONED_TABLES
+
+    def test_cache_reuse_has_exact_domain_columns(self):
+        assert {
+            "current_step_run_id": pl.String,
+            "cached_execution_run_id": pl.String,
+        } == CACHE_REUSE_SCHEMA
 
     def test_artifact_index_has_required_columns(self):
         """artifact_index has all columns from v3 design."""
@@ -157,6 +165,7 @@ class TestFrameworkSchemaDefinitions:
             TablePath.ARTIFACT_EDGES,
             TablePath.EXECUTION_EDGES,
             TablePath.ARTIFACT_LOCATIONS,
+            TablePath.CACHE_REUSE,
         }
         for table_name, schema in FRAMEWORK_SCHEMAS.items():
             if table_name in tables_without_metadata:
@@ -216,6 +225,7 @@ class TestSchemaRegistry:
             TablePath.ARTIFACT_EDGES,
             TablePath.EXECUTION_EDGES,
             TablePath.ARTIFACT_LOCATIONS,
+            TablePath.CACHE_REUSE,
         }
         for table_path in TablePath:
             schema = get_schema(table_path)

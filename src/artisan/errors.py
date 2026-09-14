@@ -171,6 +171,7 @@ class ErrorCode:
     DELTA_ROOT_UNSET = "delta_root_unset"
     STORE_NOT_FOUND = "store_not_found"
     ARTIFACT_INTEGRITY_FAILED = "artifact_integrity_failed"
+    PERSISTENCE_INTEGRITY_FAILED = "persistence_integrity_failed"
     INCOMPATIBLE_STORE = "incompatible_store"
 
     # io — worker-side input resolution / output delivery (tool-endpoint wire)
@@ -230,6 +231,19 @@ class IncompatibleStoreError(ArtisanError):
             message=message,
             error_type="config",
             recovery_hint="CHECK_INPUT",
+        )
+
+
+class PersistenceIntegrityError(ArtisanError):
+    """Raised when persisted framework relations are inconsistent."""
+
+    def __init__(self, message: str) -> None:
+        """Create a fail-closed persistence integrity error."""
+        super().__init__(
+            code=ErrorCode.PERSISTENCE_INTEGRITY_FAILED,
+            message=message,
+            error_type="io",
+            recovery_hint="REPORT_TO_USER",
         )
 
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 
+import polars as pl
 import pytest
 from fsspec.implementations.local import LocalFileSystem
-from fsspec.implementations.memory import MemoryFileSystem
 
 from artisan.errors import IncompatibleStoreError
 from artisan.storage.core.store_format import (
@@ -20,13 +20,14 @@ from artisan.storage.io.commit import DeltaCommitter
 from artisan.storage.io.staging import StagingManager
 
 
-@pytest.mark.parametrize("fs", [LocalFileSystem(), MemoryFileSystem()])
-def test_manifest_round_trip_on_supported_filesystems(fs, tmp_path) -> None:
-    root = (
-        str(tmp_path / "delta") if isinstance(fs, LocalFileSystem) else "memory:/delta"
-    )
-
-    publish_store_manifest(root, fs)
+def test_manifest_round_trip_for_initialized_store(tmp_path) -> None:
+    fs = LocalFileSystem()
+    root = str(tmp_path / "delta")
+    DeltaCommitter(
+        root,
+        StagingManager(str(tmp_path / "staging"), fs),
+        fs=fs,
+    ).initialize_tables()
 
     assert_store_format(root, fs)
     with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "r") as stream:
@@ -42,6 +43,37 @@ def test_initialize_empty_root_publishes_manifest_last(tmp_path) -> None:
     committer.initialize_tables()
 
     assert_store_format(root, fs)
+
+
+def test_format_2_manifest_without_cache_reuse_table_fails(tmp_path) -> None:
+    fs = LocalFileSystem()
+    root = str(tmp_path / "delta")
+    publish_store_manifest(root, fs)
+
+    with pytest.raises(IncompatibleStoreError, match="missing table"):
+        assert_store_format(root, fs)
+
+
+def test_malformed_cache_reuse_table_fails(tmp_path) -> None:
+    fs = LocalFileSystem()
+    root = str(tmp_path / "delta")
+    fs.makedirs(f"{root}/orchestration/cache_reuse", exist_ok=True)
+    publish_store_manifest(root, fs)
+
+    with pytest.raises(IncompatibleStoreError, match="malformed table"):
+        assert_store_format(root, fs)
+
+
+def test_wrong_cache_reuse_schema_fails(tmp_path) -> None:
+    fs = LocalFileSystem()
+    root = str(tmp_path / "delta")
+    pl.DataFrame(schema={"cached_execution_run_id": pl.String}).write_delta(
+        f"{root}/orchestration/cache_reuse"
+    )
+    publish_store_manifest(root, fs)
+
+    with pytest.raises(IncompatibleStoreError, match="has schema"):
+        assert_store_format(root, fs)
 
 
 @pytest.mark.parametrize(

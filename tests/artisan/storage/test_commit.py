@@ -5,11 +5,11 @@ from __future__ import annotations
 import polars as pl
 import pytest
 from fixtures.execution_records import executions_df
+from fixtures.store_format import publish_test_store
 
-from artisan.errors import CommitError
+from artisan.errors import CommitError, PersistenceIntegrityError
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
@@ -41,7 +41,7 @@ def commit_env(backend_fs):
     committer = DeltaCommitter(
         delta_root, sm, fs=fs, storage_options=storage.delta_storage_options()
     )
-    publish_store_manifest(delta_root, fs)
+    publish_test_store(delta_root, fs, storage.delta_storage_options())
     return committer, fs, storage, delta_root, staging_root
 
 
@@ -201,6 +201,57 @@ class TestDeltaCommitter:
         assert "index" in results
         assert results["metrics"] == 1
         assert results["index"] == 1
+
+    def test_cache_reuse_commit_deduplicates_composite_pair(self, commit_env):
+        committer, _fs, storage, delta_root, _staging_root = commit_env
+        current = "a" * 32
+        committer.staging_manager.stage_cache_reuse(
+            current,
+            ["c" * 32, "b" * 32, "c" * 32],
+            step_number=3,
+            operation_name="cached",
+        )
+
+        first = committer.commit_table(
+            TablePath.CACHE_REUSE,
+            step_number=3,
+            operation_name="cached",
+        )
+        retry = committer.commit_table(
+            TablePath.CACHE_REUSE,
+            step_number=3,
+            operation_name="cached",
+        )
+        persisted = pl.read_delta(
+            f"{delta_root}/{TablePath.CACHE_REUSE.value}",
+            storage_options=storage.delta_storage_options(),
+        )
+
+        assert first == 2
+        assert retry == 0
+        assert persisted.sort("cached_execution_run_id").to_dicts() == [
+            {
+                "current_step_run_id": current,
+                "cached_execution_run_id": "b" * 32,
+            },
+            {
+                "current_step_run_id": current,
+                "cached_execution_run_id": "c" * 32,
+            },
+        ]
+
+    def test_cache_reuse_commit_rejects_extra_columns(self, commit_env):
+        committer, _fs, _storage, _delta_root, _staging_root = commit_env
+        invalid = pl.DataFrame(
+            {
+                "current_step_run_id": ["a" * 32],
+                "cached_execution_run_id": ["b" * 32],
+                "ownership": ["forbidden"],
+            }
+        )
+
+        with pytest.raises(PersistenceIntegrityError, match="exact schema"):
+            committer.commit_dataframe(invalid, TablePath.CACHE_REUSE)
 
     def test_commit_all_tables_cleanup(self, commit_env):
         """Commit all cleans up staging by default."""
@@ -831,7 +882,7 @@ class TestRecoverStaged:
         fs, storage, root = backend_fs
         delta_root = f"{root}/delta_no_staging"
         fs.makedirs(delta_root, exist_ok=True)
-        publish_store_manifest(delta_root, fs)
+        publish_test_store(delta_root, fs, storage.delta_storage_options())
         # Deliberately do NOT create staging_root — the fixture's
         # purpose is to exercise the missing-staging-dir path.
         nonexistent = f"{root}/no_such_staging"
@@ -969,7 +1020,7 @@ class TestDeltaCommitterBackendParametrized:
             fs=fs,
             storage_options=storage.delta_storage_options(),
         )
-        publish_store_manifest(delta_root, fs)
+        publish_test_store(delta_root, fs, storage.delta_storage_options())
 
         df = pl.DataFrame(
             {
@@ -1008,7 +1059,7 @@ class TestDeltaCommitterBackendParametrized:
             fs=fs,
             storage_options=storage.delta_storage_options(),
         )
-        publish_store_manifest(delta_root, fs)
+        publish_test_store(delta_root, fs, storage.delta_storage_options())
 
         df = pl.DataFrame(
             {

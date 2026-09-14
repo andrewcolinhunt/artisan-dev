@@ -15,7 +15,7 @@ import polars as pl
 from deltalake import DeltaTable, WriterProperties
 from fsspec import AbstractFileSystem
 
-from artisan.errors import CommitError
+from artisan.errors import CommitError, PersistenceIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.store_format import (
@@ -51,15 +51,17 @@ def _get_commit_order() -> list[str]:
     """Build the table commit order from the current artifact registry.
 
     Order ensures referential integrity on partial failure: content
-    tables first, then index, then provenance edges, then executions.
+    tables first, then index/locations, executions, provenance edges,
+    and finally cache reuse.
     """
     artifact_paths = [td.table_path for td in ArtifactTypeDef.get_all().values()]
     framework_paths = [
         TablePath.ARTIFACT_INDEX.value,
         TablePath.ARTIFACT_LOCATIONS.value,
-        TablePath.ARTIFACT_EDGES.value,
-        TablePath.EXECUTION_EDGES.value,
         TablePath.EXECUTIONS.value,
+        TablePath.EXECUTION_EDGES.value,
+        TablePath.ARTIFACT_EDGES.value,
+        TablePath.CACHE_REUSE.value,
     ]
     return [*artifact_paths, *framework_paths]
 
@@ -101,10 +103,6 @@ class DeltaCommitter:
         """Check if a table should not be partitioned."""
         return table in NON_PARTITIONED_TABLES
 
-    def _has_artifact_id(self, table: str) -> bool:
-        """Check if the table supports artifact_id deduplication."""
-        return table != TablePath.EXECUTION_EDGES.value
-
     # -------------------------------------------------------------------------
     # Commit operations
     # -------------------------------------------------------------------------
@@ -136,7 +134,7 @@ class DeltaCommitter:
             all rows were deduplicated.
         """
         table = _normalize_table(table)
-        assert_store_format(self.delta_base_path, self._fs)
+        assert_store_format(self.delta_base_path, self._fs, self._storage_options)
         table_name = _table_name_from_path(table)
 
         # Read all staged files for this table
@@ -145,6 +143,7 @@ class DeltaCommitter:
         )
         if staged_df is None or staged_df.is_empty():
             return 0
+        self._validate_table_shape(table, staged_df)
 
         table_path = self._table_path(table)
 
@@ -156,16 +155,12 @@ class DeltaCommitter:
             else:
                 partition_by = ["origin_step_number"]
 
-        # Handle deduplication for artifact tables
-        if (
-            deduplicate
-            and "artifact_id" in staged_df.columns
-            and self._has_artifact_id(table)
-        ):
-            staged_df = self._deduplicate_artifacts(
+        key = self._deduplication_key(table, staged_df)
+        if deduplicate and key is not None:
+            staged_df = self._deduplicate_rows(
                 staged_df,
                 table_path,
-                table=table,
+                key=key,
             )
             if staged_df.is_empty():
                 return 0
@@ -271,7 +266,7 @@ class DeltaCommitter:
             Mapping of table name to rows committed. Empty dict when
             no leftover staging files are found or recovery failed.
         """
-        assert_store_format(self.delta_base_path, self._fs)
+        assert_store_format(self.delta_base_path, self._fs, self._storage_options)
         if not self._fs.exists(self.staging_manager.staging_dir):
             return {}
 
@@ -341,19 +336,27 @@ class DeltaCommitter:
     # Helper methods
     # -------------------------------------------------------------------------
 
-    def _deduplicate_artifacts(
+    @staticmethod
+    def _deduplication_key(table: str, df: pl.DataFrame) -> list[str] | None:
+        """Return the logical idempotency key for supported tables."""
+        if table == TablePath.CACHE_REUSE.value:
+            return ["current_step_run_id", "cached_execution_run_id"]
+        if "artifact_id" not in df.columns:
+            return None
+        if table == TablePath.EXECUTION_EDGES.value:
+            return None
+        if table == TablePath.ARTIFACT_LOCATIONS.value:
+            return ["artifact_id", "uri"]
+        return ["artifact_id"]
+
+    def _deduplicate_rows(
         self,
         df: pl.DataFrame,
         table_path: str,
         *,
-        table: str,
+        key: list[str],
     ) -> pl.DataFrame:
-        """Remove rows whose logical artifact key already exists in Delta."""
-        key = (
-            ["artifact_id", "uri"]
-            if table == TablePath.ARTIFACT_LOCATIONS.value
-            else ["artifact_id"]
-        )
+        """Remove rows whose logical key already exists in Delta."""
         df = df.unique(subset=key, keep="first", maintain_order=True)
         if not self._fs.exists(table_path):
             return df
@@ -431,11 +434,13 @@ class DeltaCommitter:
             or all rows were deduplicated.
         """
         table = _normalize_table(table)
-        assert_store_format(self.delta_base_path, self._fs)
+        assert_store_format(self.delta_base_path, self._fs, self._storage_options)
         table_path = self._table_path(table)
+        self._validate_table_shape(table, df)
 
-        if deduplicate and "artifact_id" in df.columns and self._has_artifact_id(table):
-            df = self._deduplicate_artifacts(df, table_path, table=table)
+        key = self._deduplication_key(table, df)
+        if deduplicate and key is not None:
+            df = self._deduplicate_rows(df, table_path, key=key)
             if df.is_empty():
                 return 0
 
@@ -446,6 +451,19 @@ class DeltaCommitter:
         self._write_df(df, table_path, partition_by=partition_by)
 
         return df.shape[0]
+
+    @staticmethod
+    def _validate_table_shape(table: str, df: pl.DataFrame) -> None:
+        """Prevent writes from widening D2's deliberately minimal relation."""
+        if table != TablePath.CACHE_REUSE.value:
+            return
+        expected = FRAMEWORK_SCHEMAS[TablePath.CACHE_REUSE]
+        if dict(df.schema) != expected:
+            msg = (
+                f"cache_reuse rows must have exact schema {expected!r}; "
+                f"found {dict(df.schema)!r}"
+            )
+            raise PersistenceIntegrityError(msg)
 
     # -------------------------------------------------------------------------
     # Table management
@@ -460,6 +478,7 @@ class DeltaCommitter:
         publish_manifest = prepare_store_initialization(
             self.delta_base_path,
             self._fs,
+            self._storage_options,
         )
 
         # Initialize framework tables
@@ -505,7 +524,7 @@ class DeltaCommitter:
             Dict with ``files_added`` and ``files_removed`` counts.
         """
         table = _normalize_table(table)
-        assert_store_format(self.delta_base_path, self._fs)
+        assert_store_format(self.delta_base_path, self._fs, self._storage_options)
         table_path = self._table_path(table)
         if not self._fs.exists(table_path):
             return {"files_added": 0, "files_removed": 0}
@@ -564,6 +583,7 @@ class DeltaCommitter:
             "target_artifact_id",
         ]
         zorder_config[TablePath.EXECUTION_EDGES.value] = ["execution_run_id"]
+        zorder_config[TablePath.CACHE_REUSE.value] = ["current_step_run_id"]
         zorder_config[TablePath.STEPS.value] = ["step_spec_id"]
 
         for table, z_order_cols in zorder_config.items():
@@ -586,7 +606,7 @@ class DeltaCommitter:
             retention_hours: Keep files newer than this threshold.
                 Defaults to 168 (7 days).
         """
-        assert_store_format(self.delta_base_path, self._fs)
+        assert_store_format(self.delta_base_path, self._fs, self._storage_options)
         table_path = self._table_path(_normalize_table(table))
         if not self._fs.exists(table_path):
             return
