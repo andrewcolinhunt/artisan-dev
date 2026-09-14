@@ -17,6 +17,7 @@ from unittest.mock import Mock
 import polars as pl
 import pytest
 from fixtures.csv import make_csv
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator import IngestData
 from artisan.schemas.artifact import FileRefArtifact
@@ -53,6 +54,7 @@ def make_file_ref(
 
 def _mock_store_with_refs(file_refs: list[FileRefArtifact]) -> Mock:
     store = Mock()
+    store.filesystem = LocalFileSystem()
     store.get_artifacts_by_type.return_value = {fr.artifact_id: fr for fr in file_refs}
     return store
 

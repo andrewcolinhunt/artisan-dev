@@ -72,6 +72,11 @@ class ArtifactStore:
             )
         return self._provenance
 
+    @property
+    def filesystem(self) -> AbstractFileSystem:
+        """Return the configured filesystem used for artifact I/O."""
+        return self._fs
+
     def _table_path(self, table: TablePath) -> str:
         """Resolve the URI for a Delta table."""
         return uri_join(self.base_path, table)

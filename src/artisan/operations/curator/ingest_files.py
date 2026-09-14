@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from enum import StrEnum, auto
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 import polars as pl
 
@@ -20,6 +20,8 @@ from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
+    from fsspec import AbstractFileSystem
+
     from artisan.storage.core.artifact_store import ArtifactStore
 
 
@@ -44,12 +46,19 @@ class IngestFiles(OperationDefinition):
 
     # ---------- Lifecycle ----------
     @abstractmethod
-    def convert_file(self, file_ref: FileRefArtifact, step_number: int) -> Artifact:
+    def convert_file(
+        self,
+        file_ref: FileRefArtifact,
+        step_number: int,
+        *,
+        fs: AbstractFileSystem | None = None,
+    ) -> Artifact:
         """Convert a single FileRefArtifact into a domain artifact.
 
         Args:
             file_ref: The file reference to convert.
             step_number: Current pipeline step number.
+            fs: Configured filesystem for reading the file.
 
         Returns:
             A draft artifact of the target type.
@@ -90,7 +99,13 @@ class IngestFiles(OperationDefinition):
         for fid in file_ref_ids:
             file_ref = file_refs_by_id.get(fid)
             if file_ref is not None:
-                drafts.append(self.convert_file(file_ref, step_number))  # type: ignore[arg-type]  # file_ref is FileRefArtifact at runtime; dict values typed as base Artifact
+                drafts.append(
+                    self.convert_file(
+                        cast("FileRefArtifact", file_ref),
+                        step_number,
+                        fs=artifact_store.filesystem,
+                    )
+                )
 
         if not drafts:
             return ArtifactResult(

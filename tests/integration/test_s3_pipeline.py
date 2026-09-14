@@ -129,16 +129,22 @@ class TestS3PipelineEndToEnd:
             ],
             step_runner=Runner.LOCAL,
         )
-        pipeline.finalize()
+        result = pipeline.finalize()
+        assert result["overall_success"]
 
-        # Verify two FileRefArtifacts landed with the s3:// URIs preserved.
+        # Verify two FileRefArtifacts landed with separate s3:// locations.
         storage_options = env["storage"].delta_storage_options()
         file_refs_uri = f"{env['delta_root']}/artifacts/file_refs"
         file_refs_df = pl.read_delta(file_refs_uri, storage_options=storage_options)
         assert file_refs_df.height == 2
-        # Stored paths should be s3:// URIs (not abspath'd local paths).
-        for path in file_refs_df["path"].to_list():
-            assert path.startswith("s3://"), f"Expected s3:// path, got {path!r}"
+        locations_uri = f"{env['delta_root']}/artifacts/locations"
+        locations_df = pl.read_delta(locations_uri, storage_options=storage_options)
+        file_locations = locations_df.join(
+            file_refs_df.select("artifact_id"), on="artifact_id", how="inner"
+        )
+        assert file_locations.height == 2
+        for uri in file_locations["uri"].to_list():
+            assert uri.startswith("s3://"), f"Expected s3:// URI, got {uri!r}"
 
     def test_large_file_outputs_uploaded_to_files_root(self, s3_pipeline_env):
         """LargeFileGenerator on cloud files_root uploads via fs.put and rewrites external_path.
@@ -158,7 +164,8 @@ class TestS3PipelineEndToEnd:
             params={"count": 2, "file_size_bytes": 1024, "seed": 0},
             step_runner=Runner.LOCAL,
         )
-        pipeline.finalize()
+        result = pipeline.finalize()
+        assert result["overall_success"]
 
         # Read the LargeFileArtifact rows from Delta.
         storage_options = env["storage"].delta_storage_options()
@@ -166,15 +173,17 @@ class TestS3PipelineEndToEnd:
         df = pl.read_delta(table_uri, storage_options=storage_options)
         assert df.height == 2
 
-        # external_path must be cloud URIs; bytes must live on MinIO.
+        # Locations must be cloud URIs and their bytes must live on MinIO.
+        locations_uri = f"{env['delta_root']}/artifacts/locations"
+        locations_df = pl.read_delta(locations_uri, storage_options=storage_options)
+        file_locations = locations_df.join(
+            df.select("artifact_id"), on="artifact_id", how="inner"
+        )
+        assert file_locations.height == 2
         fs = env["fs"]
-        for ext_path in df["external_path"].to_list():
-            assert ext_path.startswith("s3://"), (
-                f"Expected cloud external_path, got {ext_path!r}"
-            )
-            assert fs.exists(ext_path), (
-                f"external_path {ext_path!r} does not resolve on the fixture fs"
-            )
+        for uri in file_locations["uri"].to_list():
+            assert uri.startswith("s3://"), f"Expected cloud URI, got {uri!r}"
+            assert fs.exists(uri), f"Artifact location {uri!r} is not readable"
 
         # No new literal-colon leak from this run under the repo root.
         # (Pre-existing dirs from before PR 7 may still be present; this
