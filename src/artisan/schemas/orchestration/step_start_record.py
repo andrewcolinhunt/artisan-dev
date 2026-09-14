@@ -10,7 +10,7 @@ class StepStartRecord(BaseModel):
 
     Attributes:
         step_run_id: Unique ID for this step execution attempt.
-        step_spec_id: Deterministic ID for cache lookup.
+        step_spec_id: Deterministic ID for cache lookup, once inputs resolve.
         step_number: Sequential pipeline step index.
         step_name: Human-readable step label.
         operation_class: Fully qualified operation class name.
@@ -24,7 +24,7 @@ class StepStartRecord(BaseModel):
     """
 
     step_run_id: str
-    step_spec_id: str
+    step_spec_id: str | None = None
     step_number: int
     step_name: str
     operation_class: str

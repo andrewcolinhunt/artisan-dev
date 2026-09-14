@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
+
 
 @dataclass(frozen=True)
 class UnitResult:
@@ -26,3 +28,4 @@ class UnitResult:
     item_count: int
     execution_run_ids: list[str]
     worker_log: str | None = None
+    cancellation_acknowledgement: CancellationAcknowledgement | None = None

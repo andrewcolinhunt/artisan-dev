@@ -5,11 +5,21 @@ from __future__ import annotations
 from artisan.schemas.orchestration.batch_config import BatchConfig
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
 from artisan.schemas.orchestration.step_result import StepResult
 
 __all__ = [
     "BatchConfig",
+    "CancellationAcknowledgement",
+    "CancellationStatus",
     "OutputReference",
     "PipelineConfig",
+    "StepDisposition",
     "StepResult",
+    "StepStatus",
 ]
