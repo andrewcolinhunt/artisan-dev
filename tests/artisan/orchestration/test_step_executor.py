@@ -862,7 +862,7 @@ class TestStepTimingIntegration:
         assert "batch_and_cache" in timings
         assert "execute" in timings
         assert "verify_staging" in timings
-        assert "commit" in timings
+        assert "commit" not in timings
         assert "compact" not in timings
         assert "total" in timings
         # All values should be non-negative floats
@@ -915,7 +915,7 @@ class TestStepTimingIntegration:
         assert "batch_and_cache" in timings
         assert "execute" in timings
         assert "verify_staging" in timings
-        assert "commit" in timings
+        assert "commit" not in timings
         assert "compact" not in timings
         assert "total" in timings
         for key, value in timings.items():
@@ -1345,12 +1345,10 @@ class TestCreatorCancellationCleanup:
 class TestCommitFailureHandling:
     """Tests for F16: commit phase failure resilience."""
 
-    @patch("artisan.storage.io.commit.DeltaCommitter.commit_all_tables")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_creator_commit_failure_propagates(
         self,
         mock_cache,
-        mock_commit,
         tmp_path,
     ):
         """Creator commit errors propagate for manager terminalization."""
@@ -1373,7 +1371,10 @@ class TestCommitFailureHandling:
         )
 
         mock_cache.return_value = None
-        mock_commit.side_effect = OSError("Disk full")
+
+        def fail_persistence(*_args):
+            msg = "Disk full"
+            raise OSError(msg)
 
         with pytest.raises(OSError, match="Disk full"):
             _execute_creator_step(
@@ -1383,6 +1384,7 @@ class TestCommitFailureHandling:
                 step_number=1,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
+                persist_result=fail_persistence,
             )
 
 

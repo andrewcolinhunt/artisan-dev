@@ -28,9 +28,13 @@ from artisan.schemas.orchestration.step_lifecycle import (
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.orchestration.step_state import StepState
+from artisan.storage.core.committed_scan import (
+    filter_committed_rows,
+    read_logical_commits,
+)
 from artisan.storage.core.run_scope import load_execution_membership
 from artisan.storage.core.store_format import assert_store_format
-from artisan.storage.core.table_schemas import STEPS_SCHEMA
+from artisan.storage.core.table_schemas import STEPS_SCHEMA, get_physical_schema
 from artisan.utils.path import uri_join
 
 WRITER_PROPS = WriterProperties(compression="ZSTD")
@@ -99,47 +103,102 @@ class StepTracker:
         changed retry payload, or transition from a terminal state fails closed.
         """
         with self._lock:
-            rows = self._rows_for_attempt(step_run_id)
-            if rows.is_empty():
-                msg = f"Unknown step attempt {step_run_id}"
+            if target in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+                msg = f"{target.value} must be persisted by a logical commit"
                 raise PersistenceIntegrityError(msg)
-            current = self._validate_attempt_rows(rows)
-            if current.status in TERMINAL_STEP_STATUSES:
-                if current.status == target and self._terminal_retry_matches(
-                    current,
-                    result,
-                    error,
-                    step_spec_id,
-                    metadata,
-                ):
-                    return current
-                msg = f"Step attempt {step_run_id} is already {current.status.value}"
-                raise PersistenceIntegrityError(msg)
-            if current.status != expected:
-                msg = (
-                    f"Stale step transition for {step_run_id}: expected "
-                    f"{expected.value}, found {current.status.value}"
-                )
-                raise PersistenceIntegrityError(msg)
-            try:
-                validate_step_transition(current.status, target)
-            except ValueError as exc:
-                raise PersistenceIntegrityError(str(exc)) from exc
-
-            row = self._state_to_row(current)
-            row.update(
-                status=target.value,
-                state_sequence=self._next_physical_sequence(rows),
-                timestamp=datetime.now(UTC),
+            row, current = self._prepare_transition_row(
+                step_run_id,
+                expected,
+                target,
+                step_spec_id=step_spec_id,
+                result=result,
+                error=error,
+                metadata=metadata,
             )
-            if step_spec_id is not None:
-                row["step_spec_id"] = step_spec_id
-            if target == StepStatus.RUNNING:
-                self._validate_nonterminal_row(row)
-            else:
-                self._apply_terminal_result(row, target, result, error, metadata)
+            if row is None:
+                return current
             self._write_row(row)
             return self._row_to_state(row)
+
+    def prepare_terminal_candidate(
+        self,
+        step_run_id: str,
+        expected: StepStatus,
+        target: StepStatus,
+        *,
+        step_spec_id: str | None = None,
+        result: StepResult,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> pl.DataFrame:
+        """Build but do not persist a terminal snapshot for a commit plan."""
+        if target not in {StepStatus.SUCCEEDED, StepStatus.PARTIAL, StepStatus.FAILED}:
+            msg = f"{target.value} is not a commit-controlled terminal status"
+            raise PersistenceIntegrityError(msg)
+        with self._lock:
+            row, current = self._prepare_transition_row(
+                step_run_id,
+                expected,
+                target,
+                step_spec_id=step_spec_id,
+                result=result,
+                error=error,
+                metadata=metadata,
+            )
+            candidate = self._state_to_row(current) if row is None else row
+            return pl.DataFrame([candidate], schema=STEPS_SCHEMA)
+
+    def _prepare_transition_row(
+        self,
+        step_run_id: str,
+        expected: StepStatus,
+        target: StepStatus,
+        *,
+        step_spec_id: str | None,
+        result: StepResult | None,
+        error: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, StepState]:
+        """Validate a transition and return its unpersisted ownerless row."""
+        rows = self._rows_for_attempt(step_run_id)
+        if rows.is_empty():
+            msg = f"Unknown step attempt {step_run_id}"
+            raise PersistenceIntegrityError(msg)
+        current = self._validate_attempt_rows(rows)
+        if current.status in TERMINAL_STEP_STATUSES:
+            if current.status == target and self._terminal_retry_matches(
+                current,
+                result,
+                error,
+                step_spec_id,
+                metadata,
+            ):
+                return None, current
+            msg = f"Step attempt {step_run_id} is already {current.status.value}"
+            raise PersistenceIntegrityError(msg)
+        if current.status != expected:
+            msg = (
+                f"Stale step transition for {step_run_id}: expected "
+                f"{expected.value}, found {current.status.value}"
+            )
+            raise PersistenceIntegrityError(msg)
+        try:
+            validate_step_transition(current.status, target)
+        except ValueError as exc:
+            raise PersistenceIntegrityError(str(exc)) from exc
+        row = self._state_to_row(current)
+        row.update(
+            status=target.value,
+            state_sequence=self._next_physical_sequence(rows),
+            timestamp=datetime.now(UTC),
+        )
+        if step_spec_id is not None:
+            row["step_spec_id"] = step_spec_id
+        if target == StepStatus.RUNNING:
+            self._validate_nonterminal_row(row)
+        else:
+            self._apply_terminal_result(row, target, result, error, metadata)
+        return row, current
 
     def record_cancellation(
         self,
@@ -320,10 +379,13 @@ class StepTracker:
     def _read_rows(self) -> pl.DataFrame:
         """Read the steps table or return an empty physical-schema frame."""
         if not self._fs.exists(self._steps_path):
-            return pl.DataFrame(schema=STEPS_SCHEMA)
+            return pl.DataFrame(schema=get_physical_schema(TablePath.STEPS))
         rows = pl.scan_delta(
             self._steps_path, storage_options=self._storage_options
         ).collect()
+        if dict(rows.schema) != get_physical_schema(TablePath.STEPS):
+            msg = "Steps table has an unexpected physical schema"
+            raise PersistenceIntegrityError(msg)
         if "state_sequence" not in rows.columns or rows["state_sequence"].null_count():
             msg = "Steps table contains lifecycle rows without state_sequence"
             raise PersistenceIntegrityError(msg)
@@ -349,8 +411,6 @@ class StepTracker:
 
     def _validate_attempt_rows(self, rows: pl.DataFrame) -> StepState:
         """Validate sequence/history invariants and select the current row."""
-        # D5 will authorize non-null logical_commit_id rows through its control
-        # table. Until that owner lands, only direct D4 snapshots are current.
         physical_sequences = sorted(set(rows["state_sequence"].to_list()))
         if physical_sequences != list(range(physical_sequences[-1] + 1)):
             msg = f"Step attempt {rows['step_run_id'][0]} has a sequence gap"
@@ -364,7 +424,16 @@ class StepTracker:
                 )
                 raise PersistenceIntegrityError(msg)
 
-        authoritative = rows.filter(pl.col("logical_commit_id").is_null())
+        controls = read_logical_commits(
+            self._delta_root,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        )
+        authoritative = filter_committed_rows(
+            rows,
+            TablePath.STEPS.value,
+            controls,
+        )
         if authoritative.is_empty():
             msg = f"Step attempt {rows['step_run_id'][0]} has no authoritative state"
             raise PersistenceIntegrityError(msg)
@@ -495,7 +564,6 @@ class StepTracker:
             "state_sequence": state_sequence,
             "disposition": None,
             "cancellation_status": None,
-            "logical_commit_id": None,
             "operation_class": record.operation_class,
             "params_json": record.params_json,
             "input_refs_json": record.input_refs_json,
@@ -634,7 +702,10 @@ class StepTracker:
 
     def _write_row(self, row: dict[str, Any]) -> None:
         """Append one physical snapshot."""
-        df = pl.DataFrame([row], schema=STEPS_SCHEMA)
+        df = pl.DataFrame([row], schema=STEPS_SCHEMA).with_columns(
+            pl.lit(None).cast(pl.String).alias("logical_commit_id")
+        )
+        df = df.cast(get_physical_schema(TablePath.STEPS))
         mode: Literal["append", "overwrite"] = (
             "append" if self._fs.exists(self._steps_path) else "overwrite"
         )
@@ -691,7 +762,6 @@ class StepTracker:
             "cancellation_status": (
                 state.cancellation_status.value if state.cancellation_status else None
             ),
-            "logical_commit_id": None,
             "operation_class": state.operation_class,
             "params_json": state.params_json,
             "input_refs_json": state.input_refs_json,

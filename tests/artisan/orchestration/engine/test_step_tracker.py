@@ -17,6 +17,9 @@ from artisan.schemas.orchestration.step_lifecycle import (
 )
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
+from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.commit_plan import build_commit_plan
+from artisan.storage.io.staging import StagingManager
 
 
 def _record(
@@ -65,6 +68,36 @@ def _result(
     raise AssertionError(status)
 
 
+def _commit_terminal(tracker, tmp_path, result):
+    candidate = tracker.prepare_terminal_candidate(
+        "a" * 32,
+        StepStatus.RUNNING,
+        result.status,
+        step_spec_id="b" * 32,
+        result=result,
+    )
+    staging = StagingManager(str(tmp_path / "staging"), tracker._fs)
+    staging.stage_orchestrator_dataframe(
+        candidate,
+        "orchestration/steps",
+        step_run_id="a" * 32,
+        step_number=0,
+        operation_name="op",
+    )
+    plan = build_commit_plan(
+        delta_root=str(tmp_path),
+        staging_root=staging.staging_dir,
+        fs=tracker._fs,
+        commit_kind="step_result",
+        step_run_id="a" * 32,
+        step_number=0,
+        operation_name="op",
+    )
+    committer = DeltaCommitter(str(tmp_path), staging, fs=tracker._fs)
+    committer.commit_logical(plan)
+    return tracker.current_state("a" * 32), committer, plan
+
+
 def test_create_attempt_is_pending_and_idempotent(tmp_path) -> None:
     tracker = StepTracker(str(tmp_path), "run")
     record = _record()
@@ -79,13 +112,7 @@ def test_running_to_succeeded_uses_monotonic_sequences(tmp_path) -> None:
     tracker = StepTracker(str(tmp_path), "run")
     tracker.create_attempt(_record())
     tracker.transition("a" * 32, StepStatus.PENDING, StepStatus.RUNNING)
-    terminal = tracker.transition(
-        "a" * 32,
-        StepStatus.RUNNING,
-        StepStatus.SUCCEEDED,
-        step_spec_id="b" * 32,
-        result=_result(),
-    )
+    terminal, _, _ = _commit_terminal(tracker, tmp_path, _result())
     assert terminal.status is StepStatus.SUCCEEDED
     assert terminal.state_sequence == 2
     rows = pl.read_delta(str(tmp_path / "orchestration/steps"))
@@ -109,19 +136,9 @@ def test_terminal_retry_is_idempotent_but_conflict_fails(tmp_path) -> None:
     tracker.create_attempt(_record())
     tracker.transition("a" * 32, StepStatus.PENDING, StepStatus.RUNNING)
     result = _result()
-    tracker.transition(
-        "a" * 32,
-        StepStatus.RUNNING,
-        StepStatus.SUCCEEDED,
-        step_spec_id="b" * 32,
-        result=result,
-    )
-    retry = tracker.transition(
-        "a" * 32,
-        StepStatus.RUNNING,
-        StepStatus.SUCCEEDED,
-        result=result,
-    )
+    _, committer, plan = _commit_terminal(tracker, tmp_path, result)
+    committer.commit_logical(plan)
+    retry = tracker.current_state("a" * 32)
     assert retry.status is StepStatus.SUCCEEDED
     with pytest.raises(PersistenceIntegrityError, match="already succeeded"):
         tracker.transition(
@@ -138,7 +155,7 @@ def test_terminal_result_must_name_current_attempt(tmp_path) -> None:
     tracker.transition("a" * 32, StepStatus.PENDING, StepStatus.RUNNING)
 
     with pytest.raises(PersistenceIntegrityError, match="current step attempt"):
-        tracker.transition(
+        tracker.prepare_terminal_candidate(
             "a" * 32,
             StepStatus.RUNNING,
             StepStatus.SUCCEEDED,

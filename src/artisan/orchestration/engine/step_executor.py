@@ -12,6 +12,7 @@ import os
 import resource
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from copy import deepcopy
@@ -225,9 +226,8 @@ def check_cache_for_batch(
     fs = storage.filesystem()
     storage_options = storage.delta_storage_options()
 
-    executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
     result = cache_lookup(
-        executions_path,
+        delta_root,
         execution_spec_id,
         fs=fs,
         storage_options=storage_options,
@@ -398,35 +398,15 @@ def _skip_for_empty_inputs(
     )
 
 
-def _commit_staged(
-    config: PipelineConfig,
-    runtime_env: RuntimeEnvironment,
-    step_number: int,
-    operation_name: str,
-    timings: dict[str, Any],
-    *,
-    has_work: bool,
-) -> None:
-    """Commit staged rows before the manager publishes terminal state."""
-    with phase_timer("commit", timings):
-        if has_work:
-            from artisan.storage.io.commit import DeltaCommitter
-            from artisan.storage.io.staging import StagingManager
-
-            fs = config.storage.filesystem()
-            storage_options = config.storage.delta_storage_options()
-            staging_manager = StagingManager(config.staging_root, fs)
-            committer = DeltaCommitter(
-                config.delta_root,
-                staging_manager,
-                fs=fs,
-                storage_options=storage_options,
-            )
-            committer.commit_all_tables(
-                cleanup_staging=not runtime_env.preserve_staging,
-                step_number=step_number,
-                operation_name=operation_name,
-            )
+def _persist_result(
+    result: StepResult,
+    execution_run_ids: list[str],
+    persist: Callable[[StepResult, tuple[str, ...]], StepResult] | None,
+) -> StepResult:
+    """Hand one terminal result and its exact dispatch IDs to the manager."""
+    if persist is None:
+        return result
+    return persist(result, tuple(execution_run_ids))
 
 
 def _result_error(results: list[UnitResult], fallback: str | None = None) -> str | None:
@@ -573,6 +553,7 @@ def execute_step(
     cancel_event: threading.Event | None = None,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
+    persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
 ) -> StepResult:
     """Execute a single pipeline step.
 
@@ -606,6 +587,7 @@ def execute_step(
             config.storage.filesystem(),
             group_by=operation.group_by,
             step_run_ids=step_run_ids,
+            persist_result=persist_result,
             storage_options=config.storage.delta_storage_options(),
             files_root=config.files_root,
         )
@@ -653,6 +635,7 @@ def execute_step(
         skip_cache=skip_cache,
         step_run_id=step_run_id,
         step_run_ids=step_run_ids,
+        persist_result=persist_result,
     )
 
 
@@ -668,6 +651,7 @@ def _execute_curator_step(
     skip_cache: bool = False,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
+    persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
 ) -> StepResult:
     """Execute a curator operation locally in an isolated subprocess.
 
@@ -754,24 +738,15 @@ def _execute_curator_step(
                         failure_policy,
                         step_run_id=step_run_id,
                     )
-                has_reuse = _stage_cache_reuse(
+                _stage_cache_reuse(
                     config,
                     step_run_id,
                     validated_reuse,
                     step_number=step_number,
                     operation_name=operation.name,
                 )
-                runtime_env = _create_runtime_environment(config, operation)
-                _commit_staged(
-                    config,
-                    runtime_env,
-                    step_number,
-                    operation.name,
-                    timings,
-                    has_work=has_reuse,
-                )
                 _finalize_timings(timings, total_start, step_number, "Curator")
-                return build_step_result(
+                result = build_step_result(
                     operation=operation,
                     step_number=step_number,
                     succeeded_count=cached_count,
@@ -781,6 +756,7 @@ def _execute_curator_step(
                     metadata={"timings": timings},
                     step_run_id=step_run_id,
                 )
+                return _persist_result(result, [], persist_result)
 
     # --- cancel check: before execute ---
     if cancel_event is not None and cancel_event.is_set():
@@ -887,14 +863,6 @@ def _execute_curator_step(
             operation, step_number, failure_policy, step_run_id=step_run_id
         )
 
-    _commit_staged(
-        config,
-        runtime_env,
-        step_number,
-        operation.name,
-        timings,
-        has_work=bool(results),
-    )
     _finalize_timings(timings, total_start, step_number, "Curator")
 
     status = classify_step_status(
@@ -904,7 +872,7 @@ def _execute_curator_step(
         infrastructure_error=dispatch_error is not None,
     )
 
-    return build_step_result(
+    result = build_step_result(
         operation=operation,
         step_number=step_number,
         succeeded_count=succeeded,
@@ -916,6 +884,7 @@ def _execute_curator_step(
         metadata={"timings": timings},
         step_run_id=step_run_id,
     )
+    return _persist_result(result, extract_execution_run_ids(results), persist_result)
 
 
 def _run_curator_in_subprocess(
@@ -1166,6 +1135,7 @@ def _execute_creator_step(
     skip_cache: bool = False,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
+    persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
 ) -> StepResult:
     """Execute a creator operation step through its lifecycle runner.
 
@@ -1472,7 +1442,7 @@ def _execute_creator_step(
                 operation, step_number, failure_policy, step_run_id=step_run_id
             )
 
-        has_reuse = _stage_cache_reuse(
+        _stage_cache_reuse(
             config,
             step_run_id,
             validated_reuse,
@@ -1480,14 +1450,6 @@ def _execute_creator_step(
             operation_name=operation.name,
         )
 
-        _commit_staged(
-            config,
-            runtime_env,
-            step_number,
-            operation.name,
-            timings,
-            has_work=bool(units_to_dispatch) or has_reuse,
-        )
     finally:
         if step_run_id is not None:
             sentinel = cancel_sentinel_path(config.staging_root, step_run_id)
@@ -1506,7 +1468,7 @@ def _execute_creator_step(
         infrastructure_error=dispatch_error is not None,
     )
 
-    return build_step_result(
+    result = build_step_result(
         operation=operation,
         step_number=step_number,
         succeeded_count=succeeded + cached_count,
@@ -1534,6 +1496,7 @@ def _execute_creator_step(
         metadata={"timings": timings},
         step_run_id=step_run_id,
     )
+    return _persist_result(result, extract_execution_run_ids(results), persist_result)
 
 
 def _compact_step_tables(

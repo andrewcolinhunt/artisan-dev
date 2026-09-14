@@ -35,6 +35,7 @@ from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepSt
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage.core.committed_scan import read_committed
 from artisan.utils.dataframes import encode_metric_value
 from artisan.utils.dicts import flatten_dict
 from artisan.utils.hashing import digest_utf8
@@ -164,11 +165,12 @@ class InteractiveFilter:
             )
             execution_ids = set(membership["execution_run_id"].to_list())
         else:
-            all_index = (
-                pl.scan_delta(index_path, storage_options=self._storage_options)
-                .select(["artifact_id", "artifact_type", "origin_step_number"])
-                .collect()
-            )
+            all_index = read_committed(
+                self._delta_root,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            ).select(["artifact_id", "artifact_type", "origin_step_number"])
 
         if artifact_type is not None:
             primary_mask = all_index["artifact_type"] == artifact_type
@@ -659,6 +661,7 @@ class InteractiveFilter:
         from artisan.operations.curator.filter import Filter
         from artisan.schemas.execution.execution_context import ExecutionContext
         from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.commit_plan import build_commit_plan
         from artisan.storage.io.staging import StagingManager
 
         diagnostics = self._build_diagnostics(filtered)
@@ -696,10 +699,6 @@ class InteractiveFilter:
             fs=self._fs,
             storage_options=self._storage_options,
         )
-        committer.commit_all_tables(
-            step_number=step_number,
-            operation_name=type(operation).name,
-        )
         result = StepResult(
             step_name=step_name,
             step_number=step_number,
@@ -713,14 +712,32 @@ class InteractiveFilter:
             metadata={"diagnostics": diagnostics},
             step_run_id=step_run_id,
         )
-        tracker.transition(
+        candidate = tracker.prepare_terminal_candidate(
             step_run_id,
             StepStatus.RUNNING,
             StepStatus.SUCCEEDED,
             step_spec_id=step_spec_id,
             result=result,
         )
-        return result
+        staging_manager.stage_orchestrator_dataframe(
+            candidate,
+            TablePath.STEPS.value,
+            step_run_id=step_run_id,
+            step_number=step_number,
+            operation_name=type(operation).name,
+        )
+        plan = build_commit_plan(
+            delta_root=self._delta_root,
+            staging_root=staging_root,
+            fs=self._fs,
+            commit_kind="step_result",
+            step_run_id=step_run_id,
+            step_number=step_number,
+            operation_name=type(operation).name,
+            execution_run_ids=(execution_run_id,),
+        )
+        committer.commit_logical(plan)
+        return tracker.current_state(step_run_id).to_step_result()
 
     def _build_diagnostics(self, filtered: list[str]) -> dict[str, Any]:
         """Build v4 diagnostics dict matching Filter's format.
@@ -795,10 +812,12 @@ class InteractiveFilter:
         if not self._fs.exists(steps_path):
             return 0
 
-        result = (
-            pl.scan_delta(steps_path, storage_options=self._storage_options)
-            .select(pl.col("step_number").max().alias("max_step"))
-            .collect()
-        )
-        max_val = result.item(0, 0)
+        from artisan.orchestration.engine.step_tracker import StepTracker
+
+        states = StepTracker(
+            self._delta_root,
+            storage_options=self._storage_options,
+            fs=self._fs,
+        ).load_all_current_states()
+        max_val = max((state.step_number for state in states), default=None)
         return (max_val + 1) if max_val is not None else 0

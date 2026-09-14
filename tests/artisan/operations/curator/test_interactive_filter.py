@@ -26,6 +26,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 from fixtures.cache_isolation_store import build_cache_isolation_store
+from fixtures.logical_commit_store import commit_test_inputs, commit_test_step
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
@@ -34,11 +35,11 @@ from artisan.operations.curator.interactive_filter import (
     InteractiveFilter,
 )
 from artisan.schemas.artifact.metric import MetricArtifact
+from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
-    CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
     STEPS_SCHEMA,
@@ -49,6 +50,7 @@ from artisan.storage.core.table_schemas import (
 # ---------------------------------------------------------------------------
 
 _ID_REWRITES: dict[str, str] = {}
+_PENDING_INDEX: dict[Path, list[dict]] = {}
 
 
 def _write_delta(
@@ -78,15 +80,21 @@ def _write_delta(
             _ID_REWRITES[old_id] = artifact.artifact_id
         _rewrite_existing_ids(delta_root)
 
-    publish_test_store(str(delta_root), LocalFileSystem())
-    table_path = delta_root / rel_path
-    table_path.parent.mkdir(parents=True, exist_ok=True)
-    persisted = _step_snapshots(normalized) if schema is STEPS_SCHEMA else normalized
-    df = pl.DataFrame(persisted, schema=schema)
-    mode = "overwrite" if table_path.exists() else "error"
-    df.write_delta(str(table_path), mode=mode)
-    if rel_path == "orchestration/steps":
+    if schema is ARTIFACT_INDEX_SCHEMA:
+        _PENDING_INDEX.setdefault(delta_root, []).extend(normalized)
+        publish_test_store(str(delta_root), LocalFileSystem())
+        return
+    if schema is STEPS_SCHEMA:
+        _flush_pending_index(delta_root)
         _write_run_membership(delta_root, normalized)
+        return
+    tables = {rel_path: pl.DataFrame(normalized, schema=schema)}
+    pending = _PENDING_INDEX.pop(delta_root, [])
+    if pending:
+        tables[TablePath.ARTIFACT_INDEX.value] = pl.DataFrame(
+            pending, schema=ARTIFACT_INDEX_SCHEMA
+        )
+    commit_test_inputs(delta_root, delta_root.parent / "staging", tables)
 
 
 def _step_snapshots(terminal_rows: list[dict]) -> list[dict]:
@@ -118,22 +126,24 @@ def _step_snapshots(terminal_rows: list[dict]) -> list[dict]:
 
 
 def _rewrite_existing_ids(delta_root: Path) -> None:
-    """Apply newly concrete artifact IDs to tables written earlier."""
-    for relative, columns in (
-        ("artifacts/index", ("artifact_id",)),
-        (
-            "provenance/artifact_edges",
-            ("source_artifact_id", "target_artifact_id"),
-        ),
-    ):
-        path = delta_root / relative
-        if not path.exists():
-            continue
-        frame = pl.read_delta(str(path))
-        frame = frame.with_columns(
-            pl.col(column).replace(_ID_REWRITES).alias(column) for column in columns
+    """Apply newly concrete artifact IDs to deferred index rows."""
+    for row in _PENDING_INDEX.get(delta_root, []):
+        row["artifact_id"] = _ID_REWRITES.get(row["artifact_id"], row["artifact_id"])
+
+
+def _flush_pending_index(delta_root: Path) -> None:
+    """Commit any deferred index rows after metric IDs are finalized."""
+    pending = _PENDING_INDEX.pop(delta_root, [])
+    if pending:
+        commit_test_inputs(
+            delta_root,
+            delta_root.parent / "staging",
+            {
+                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                    pending, schema=ARTIFACT_INDEX_SCHEMA
+                )
+            },
         )
-        frame.write_delta(str(path), mode="overwrite")
 
 
 def _write_run_membership(delta_root: Path, step_rows: list[dict]) -> None:
@@ -144,10 +154,13 @@ def _write_run_membership(delta_root: Path, step_rows: list[dict]) -> None:
         for row in step_rows
         if row["pipeline_run_id"] == selected_run and row["status"] == "succeeded"
     }
-    index = pl.read_delta(str(delta_root / "artifacts/index"))
+    from artisan.storage.core.committed_scan import read_committed
+
+    fs = LocalFileSystem()
+    index = read_committed(str(delta_root), TablePath.ARTIFACT_INDEX, fs=fs)
     artifact_edges_path = delta_root / "provenance/artifact_edges"
     artifact_edges = (
-        pl.read_delta(str(artifact_edges_path))
+        read_committed(str(delta_root), TablePath.ARTIFACT_EDGES, fs=fs)
         if artifact_edges_path.exists()
         else pl.DataFrame(schema=ARTIFACT_EDGES_SCHEMA)
     )
@@ -195,24 +208,29 @@ def _write_run_membership(delta_root: Path, step_rows: list[dict]) -> None:
         }
         for execution_id, step in execution_owners.items()
     ]
-    _write_delta(
-        delta_root,
-        "orchestration/executions",
-        executions,
-        EXECUTIONS_SCHEMA,
-    )
-    _write_delta(
-        delta_root,
-        "provenance/execution_edges",
-        output_edges,
-        EXECUTION_EDGES_SCHEMA,
-    )
-    _write_delta(
-        delta_root,
-        "orchestration/cache_reuse",
-        [],
-        CACHE_REUSE_SCHEMA,
-    )
+    for step in step_rows:
+        step_executions = [
+            row for row in executions if row["step_run_id"] == step["step_run_id"]
+        ]
+        execution_ids = {row["execution_run_id"] for row in step_executions}
+        step_edges = [
+            row for row in output_edges if row["execution_run_id"] in execution_ids
+        ]
+        tables = {}
+        if step_executions:
+            tables[TablePath.EXECUTIONS.value] = pl.DataFrame(
+                step_executions, schema=EXECUTIONS_SCHEMA
+            )
+        if step_edges:
+            tables[TablePath.EXECUTION_EDGES.value] = pl.DataFrame(
+                step_edges, schema=EXECUTION_EDGES_SCHEMA
+            )
+        commit_test_step(
+            delta_root,
+            delta_root.parent / "staging",
+            [step],
+            tables,
+        )
 
 
 def _pad(short_id: str) -> str:
@@ -407,20 +425,8 @@ class TestLoad:
         assert "accuracy" in metric_cols
         assert "score" in metric_cols
 
-    def test_metric_from_step_zero_uses_recorded_step_name(
-        self, delta_root: Path
-    ) -> None:
-        """Step zero is a valid producing step, not an unknown sentinel."""
-        metric_id = _pad("m1_0")
-        index_path = delta_root / "artifacts/index"
-        index = pl.read_delta(str(index_path)).with_columns(
-            pl.when(pl.col("artifact_id") == metric_id)
-            .then(pl.lit(0))
-            .otherwise(pl.col("origin_step_number"))
-            .alias("origin_step_number")
-        )
-        index.write_delta(str(index_path), mode="overwrite")
-
+    def test_metric_uses_recorded_step_name(self, delta_root: Path) -> None:
+        """Metric names resolve through authoritative lifecycle state."""
         filt = InteractiveFilter(delta_root)
         filt.load()
 
@@ -428,8 +434,8 @@ class TestLoad:
             (pl.col("artifact_id") == _pad("s0"))
             & (pl.col("metric_name") == "confidence")
         ).row(0, named=True)
-        assert row["step_number"] == 0
-        assert row["step_name"] == "ingest"
+        assert row["step_number"] == 1
+        assert row["step_name"] == "calc_metrics"
 
     def test_load_with_step_numbers_filters_primary_artifacts(
         self, delta_root: Path
@@ -443,7 +449,7 @@ class TestLoad:
         root = tmp_path / "nonexistent"
         publish_test_store(str(root), LocalFileSystem())
         filt = InteractiveFilter(root)
-        with pytest.raises(ValueError, match="Artifact index not found"):
+        with pytest.raises(ValueError, match="No primary artifacts found"):
             filt.load()
 
     def test_load_raises_on_no_matching_artifacts(self, delta_root: Path) -> None:
@@ -881,7 +887,7 @@ class TestCommit:
 
         with (
             patch(
-                "artisan.storage.io.commit.DeltaCommitter.commit_all_tables",
+                "artisan.storage.io.commit.DeltaCommitter.commit_logical",
                 side_effect=OSError("storage unavailable"),
             ),
             pytest.raises(OSError, match="storage unavailable"),
@@ -1027,7 +1033,7 @@ class TestCommit:
         """Characterization: committed executions/execution_edges rows.
 
         Pins the exact execution record and edge rows so the rerouting of
-        commit() through record_passthrough + commit_all_tables can be
+        commit() through record_passthrough + commit_logical can be
         proven byte-identical. Fields set at commit time (run/spec IDs,
         timestamps) are asserted structurally; content columns exactly.
         """
