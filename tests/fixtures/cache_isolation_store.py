@@ -41,7 +41,11 @@ class CacheIsolationStore:
     current_cache_step_id: str
 
 
-def build_cache_isolation_store(tmp_path: Path) -> CacheIsolationStore:
+def build_cache_isolation_store(
+    tmp_path: Path,
+    *,
+    reuse_source_metric_at_step_zero: bool = False,
+) -> CacheIsolationStore:
     """Create direct/reused membership with same-number cross-run noise."""
     root = tmp_path / "cache-isolation-delta"
     staging_root = tmp_path / "cache-isolation-staging"
@@ -155,6 +159,20 @@ def build_cache_isolation_store(tmp_path: Path) -> CacheIsolationStore:
                     ],
                     schema=ARTIFACT_EDGES_SCHEMA,
                 )
+            if (
+                reuse_source_metric_at_step_zero
+                and run_id == current_run
+                and number == 0
+            ):
+                tables[TablePath.CACHE_REUSE.value] = pl.DataFrame(
+                    [
+                        {
+                            "current_step_run_id": step_ids[(current_run, 0)],
+                            "cached_execution_run_id": execution_ids["source_metric"],
+                        }
+                    ],
+                    schema=CACHE_REUSE_SCHEMA,
+                )
         else:
             tables[TablePath.CACHE_REUSE.value] = pl.DataFrame(
                 [
@@ -200,7 +218,6 @@ def _step_rows(
         "state_sequence": 0,
         "disposition": None,
         "cancellation_status": None,
-        "logical_commit_id": None,
         "operation_class": "example.Operation",
         "params_json": "{}",
         "input_refs_json": "{}",

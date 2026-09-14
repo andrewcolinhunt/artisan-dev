@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 import polars as pl
 import pytest
 from fixtures.execution_records import executions_df
-from fixtures.store_format import publish_test_store
+from fixtures.store_format import commit_test_tables, publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.orchestration.engine.inputs import (
@@ -32,6 +32,7 @@ from artisan.storage.core.table_schemas import (
     EXECUTION_EDGES_SCHEMA,
 )
 from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.commit_plan import build_commit_plan
 from artisan.storage.io.staging import StagingManager
 
 
@@ -98,12 +99,28 @@ def _write_tables(
     records_df: pl.DataFrame,
     execution_edges: list[dict],
 ):
-    """Write both executions and execution_edges tables."""
-    records_path = tmp_path / "orchestration/executions"
-    provenance_path = tmp_path / "provenance/execution_edges"
-
-    records_df.write_delta(str(records_path))
-    _create_execution_edges_df(execution_edges).write_delta(str(provenance_path))
+    """Commit executions and execution edges as visible format-2 rows."""
+    edges = _create_execution_edges_df(execution_edges)
+    for (step_number,), records in records_df.group_by(
+        "origin_step_number", maintain_order=True
+    ):
+        step_run_id = f"seed-step-{step_number}"
+        execution_ids = records["execution_run_id"].to_list()
+        committed_records = records.with_columns(
+            pl.lit(step_run_id).alias("step_run_id")
+        )
+        committed_edges = edges.filter(pl.col("execution_run_id").is_in(execution_ids))
+        commit_test_tables(
+            str(tmp_path),
+            str(tmp_path / "staging"),
+            LocalFileSystem(),
+            {
+                TablePath.EXECUTIONS.value: committed_records,
+                TablePath.EXECUTION_EDGES.value: committed_edges,
+            },
+            step_run_id=step_run_id,
+            step_number=step_number,
+        )
 
 
 class TestResolveOutputReferenceNewSchema:
@@ -380,24 +397,25 @@ class TestResolveOutputReferenceNewSchema:
             StepStatus.RUNNING,
             step_spec_id="e" * 32,
         )
-        tracker.transition(
+        result = StepResult(
+            step_run_id=current,
+            step_name="current",
+            step_number=7,
+            status=StepStatus.PARTIAL,
+            disposition=StepDisposition.EXECUTED,
+            total_count=3,
+            succeeded_count=2,
+            failed_count=1,
+            output_roles=frozenset({"data"}),
+            output_types={"data": "data"},
+            duration_seconds=1.0,
+        )
+        candidate = tracker.prepare_terminal_candidate(
             current,
             StepStatus.RUNNING,
             StepStatus.PARTIAL,
             step_spec_id="e" * 32,
-            result=StepResult(
-                step_run_id=current,
-                step_name="current",
-                step_number=7,
-                status=StepStatus.PARTIAL,
-                disposition=StepDisposition.EXECUTED,
-                total_count=3,
-                succeeded_count=2,
-                failed_count=1,
-                output_roles=frozenset({"data"}),
-                output_types={"data": "data"},
-                duration_seconds=1.0,
-            ),
+            result=result,
         )
         records = _create_executions_df(
             execution_run_id=[direct, cached, failed],
@@ -417,16 +435,15 @@ class TestResolveOutputReferenceNewSchema:
             worker_log=[None] * 3,
             metadata=["{}"] * 3,
         )
-        records.write_delta(str(tmp_path / TablePath.EXECUTIONS), mode="append")
-        pl.DataFrame(
+        reuse = pl.DataFrame(
             [
                 {"current_step_run_id": current, "cached_execution_run_id": cached},
                 {"current_step_run_id": current, "cached_execution_run_id": failed},
             ],
             schema=CACHE_REUSE_SCHEMA,
-        ).write_delta(str(tmp_path / TablePath.CACHE_REUSE), mode="append")
+        )
         artifact_ids = ["6" * 32, "7" * 32, "8" * 32, "9" * 32]
-        pl.DataFrame(
+        artifacts = pl.DataFrame(
             [
                 {
                     "artifact_id": artifact_id,
@@ -437,7 +454,7 @@ class TestResolveOutputReferenceNewSchema:
                 for artifact_id in artifact_ids
             ],
             schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(str(tmp_path / TablePath.ARTIFACT_INDEX), mode="append")
+        )
         edges = [
             {
                 "execution_run_id": direct,
@@ -470,9 +487,50 @@ class TestResolveOutputReferenceNewSchema:
                 "artifact_id": artifact_ids[3],
             },
         ]
-        pl.DataFrame(edges, schema=EXECUTION_EDGES_SCHEMA).write_delta(
-            str(tmp_path / TablePath.EXECUTION_EDGES), mode="append"
+        edge_frame = pl.DataFrame(edges, schema=EXECUTION_EDGES_SCHEMA)
+
+        _write_tables(
+            tmp_path,
+            records.slice(1),
+            edges[1:],
         )
+        commit_test_tables(
+            str(tmp_path),
+            str(tmp_path / "staging"),
+            fs,
+            {TablePath.ARTIFACT_INDEX.value: artifacts},
+            step_run_id="artifact-seed",
+            step_number=99,
+        )
+        staging = StagingManager(str(tmp_path / "staging"), fs)
+        for table, frame in {
+            TablePath.EXECUTIONS.value: records.slice(0, 1),
+            TablePath.EXECUTION_EDGES.value: edge_frame.slice(0, 1),
+            TablePath.CACHE_REUSE.value: reuse,
+            TablePath.STEPS.value: candidate,
+        }.items():
+            staging.stage_orchestrator_dataframe(
+                frame,
+                table,
+                commit_kind="step_result",
+                step_run_id=current,
+                step_number=7,
+                operation_name="current",
+            )
+        plan = build_commit_plan(
+            delta_root=str(tmp_path),
+            staging_root=str(tmp_path / "staging"),
+            fs=fs,
+            commit_kind="step_result",
+            step_run_id=current,
+            step_number=7,
+            operation_name="current",
+        )
+        DeltaCommitter(
+            str(tmp_path),
+            staging,
+            fs=fs,
+        ).commit_logical(plan)
 
         result = resolve_output_reference(
             OutputReference(source_step=7, role="data"),
@@ -616,11 +674,10 @@ class TestResolveOutputReferenceNewSchema:
         assert "b" * 32 in result
         assert "c" * 32 in result
 
-    def test_no_provenance_table_returns_empty(self, tmp_path):
-        """Test that missing execution_edges table returns empty list."""
+    def test_no_provenance_rows_returns_empty(self, tmp_path):
+        """A committed execution with no edges resolves to an empty list."""
         records_df = _create_executions_df()
-        records_df.write_delta(str(tmp_path / "orchestration/executions"))
-        # Don't create provenance table
+        _write_tables(tmp_path, records_df, [])
 
         ref = OutputReference(source_step=0, role="data")
 
