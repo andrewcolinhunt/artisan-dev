@@ -45,6 +45,7 @@ def execute_unit(
                 error=result.error,
                 item_count=len(result.artifact_ids) if result.success else 1,
                 execution_run_ids=[result.execution_run_id],  # type: ignore[list-item]  # failure paths may omit a run id
+                cancellation_acknowledgement=result.cancellation_acknowledgement,
             )
 
         from artisan.execution.executors.creator import run_creator_flow
@@ -55,6 +56,7 @@ def execute_unit(
             error=result.error,
             item_count=unit.get_batch_size() or 1,
             execution_run_ids=[result.execution_run_id],  # type: ignore[list-item]  # failure paths may omit a run id
+            cancellation_acknowledgement=result.cancellation_acknowledgement,
         )
     except KeyboardInterrupt:
         msg = "Operation interrupted by SIGINT"

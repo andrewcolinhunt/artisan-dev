@@ -30,6 +30,7 @@ from artisan.schemas.operation_config.environment_spec import DockerEnvironmentS
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus, StepStatus
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -154,7 +155,8 @@ class TestCreatorCancelChecks:
             cancel_event=event,
         )
 
-        assert result.metadata.get("cancelled") is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
 
     def test_cancel_before_execute_phase_curator(self):
         """Cancel event set before execute should return cancelled result for curator."""
@@ -181,19 +183,21 @@ class TestCreatorCancelChecks:
             skip_cache=True,
         )
 
-        assert result.metadata.get("cancelled") is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
 
 
 class TestCancelledResult:
     """Tests for the _cancelled_result helper."""
 
-    def test_cancelled_result_has_metadata(self):
+    def test_cancelled_result_has_explicit_state(self):
         mock_op = MagicMock()
         mock_op.name = "test"
         mock_op.outputs = {}
 
         result = _cancelled_result(mock_op, 1, FailurePolicy.CONTINUE)
-        assert result.metadata["cancelled"] is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
         assert result.succeeded_count == 0
         assert result.failed_count == 0
 

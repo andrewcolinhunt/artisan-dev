@@ -12,8 +12,10 @@ import polars as pl
 from pydantic import BaseModel
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -93,6 +95,17 @@ def _mock_execute_step(**kwargs):
     )
 
 
+def _mock_prepared_inputs(inputs, *_args, **_kwargs) -> PreparedInputs:
+    """Keep output-reference inputs concrete in mocked execution tests."""
+    resolved = {} if inputs is None else {"data": ["a" * 32]}
+    return PreparedInputs(
+        inputs=resolved,
+        artifact_types={},
+        group_ids=None,
+        cache_inputs={},
+    )
+
+
 class TestPersistence:
     """Tests for delta table persistence via run()."""
 
@@ -112,11 +125,11 @@ class TestPersistence:
         steps_path = str(tmp_path / "delta" / "orchestration/steps")
         assert os.path.exists(steps_path)
         df = pl.read_delta(steps_path)
-        # Should have running + completed rows
-        assert len(df) == 2
+        # Every attempt persists pending, running, then one terminal snapshot.
+        assert len(df) == 3
         statuses = set(df["status"].to_list())
-        assert "running" in statuses
-        assert "completed" in statuses
+        assert statuses == {"pending", "running", "succeeded"}
+        assert df.sort("state_sequence")["state_sequence"].to_list() == [0, 1, 2]
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
@@ -154,7 +167,8 @@ class TestPersistence:
         # execute_step NOT called again
         assert mock_exec.call_count == 1
         assert result.step_name == "Ingest"
-        assert result.success is True
+        assert result.status == StepStatus.SUCCEEDED
+        assert result.disposition == StepDisposition.CACHE_HIT
         assert result.step_run_id != first_result.step_run_id
         assert len(result.step_run_id) == 32
         commit_reuse.assert_called_once_with(
@@ -167,10 +181,13 @@ class TestPersistence:
         rows = pl.read_delta(delta / "orchestration" / "steps").filter(
             pl.col("pipeline_run_id") == p2.config.pipeline_run_id
         )
-        assert rows.height == 2
+        assert rows.height == 3
         assert set(rows["step_run_id"].to_list()) == {result.step_run_id}
-        row = rows.filter(pl.col("status") == "completed").row(0, named=True)
-        assert row["status"] == "completed"
+        row = rows.filter(pl.col("status") == StepStatus.SUCCEEDED.value).row(
+            0, named=True
+        )
+        assert row["status"] == StepStatus.SUCCEEDED.value
+        assert row["disposition"] == StepDisposition.CACHE_HIT.value
         assert row["step_run_id"] == result.step_run_id
         assert row["total_count"] == 5
         assert json.loads(row["output_roles_json"]) == ["file"]
@@ -180,11 +197,15 @@ class TestPersistence:
         assert options["pipeline_default_local_runner"] == {"default_max_workers": 4}
 
     @patch(
+        "artisan.orchestration.pipeline_manager.prepare_inputs",
+        side_effect=_mock_prepared_inputs,
+    )
+    @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_mock_execute_step,
     )
     def test_upstream_change_without_output_change_reuses_downstream(
-        self, mock_exec, tmp_path
+        self, mock_exec, mock_prepare, tmp_path
     ):
         """Changed upstream params do not invalidate identical concrete inputs."""
         from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit

@@ -41,10 +41,12 @@ class OrchestratorTraits:
     Attributes:
         shared_filesystem: Whether the staging filesystem is shared (NFS).
         staging_verification_timeout: Seconds to wait for staging files to appear.
+        cancellation_confirmation_timeout: Maximum seconds to prove cancellation.
     """
 
     shared_filesystem: bool = False
     staging_verification_timeout: float = 60.0
+    cancellation_confirmation_timeout: float = 10.0
 
     @property
     def needs_staging_verification(self) -> bool:

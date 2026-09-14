@@ -22,7 +22,6 @@ from typing import Any, Never, cast
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel
 
-from artisan.errors import CommitError
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.executors.curator import (
     is_curator_operation,
@@ -41,8 +40,8 @@ from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
     aggregate_results,
+    classify_step_status,
     extract_execution_run_ids,
-    raise_if_fail_fast,
 )
 from artisan.orchestration.engine.worker_logs import persist_worker_logs
 from artisan.orchestration.runners.base import RunnerBase
@@ -51,6 +50,12 @@ from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
 from artisan.storage.cache.cache_lookup import cache_lookup
@@ -238,6 +243,10 @@ def build_step_result(
     failure_policy: FailurePolicy,
     metadata: dict[str, Any] | None = None,
     step_run_id: str | None = None,
+    disposition: StepDisposition | None = StepDisposition.EXECUTED,
+    status: StepStatus | None = None,
+    cancellation_status: CancellationStatus | None = None,
+    error: str | None = None,
 ) -> StepResult:
     """Build StepResult after step execution completes.
 
@@ -253,10 +262,17 @@ def build_step_result(
     Returns:
         StepResult with execution metadata.
     """
-    # Extract output roles and types from operation
+    classified = status or classify_step_status(
+        succeeded_count,
+        failed_count,
+        failure_policy,
+    )
+
+    # Unusable terminal states cannot expose output references.
     output_roles: dict[str, str | None] = {}
-    for role, spec in operation.outputs.items():
-        output_roles[role] = spec.artifact_type
+    if classified in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+        for role, spec in operation.outputs.items():
+            output_roles[role] = spec.artifact_type
 
     builder = StepResultBuilder(
         step_name=operation.name,
@@ -268,12 +284,15 @@ def build_step_result(
     builder.add_success(succeeded_count)
     builder.add_failure(failed_count)
 
-    # With fail_fast, any failure means step failure
-    success_override = None
-    if failure_policy == FailurePolicy.FAIL_FAST and failed_count > 0:
-        success_override = False
-
-    return builder.build(success_override=success_override, metadata=metadata)
+    if classified in {StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.CANCELLED}:
+        disposition = None
+    return builder.build(
+        classified,
+        disposition=disposition,
+        cancellation_status=cancellation_status,
+        error=error,
+        metadata=metadata,
+    )
 
 
 def _cancelled_result(
@@ -289,7 +308,8 @@ def _cancelled_result(
         succeeded_count=0,
         failed_count=0,
         failure_policy=failure_policy,
-        metadata={"cancelled": True},
+        status=StepStatus.CANCELLED,
+        cancellation_status=CancellationStatus.CONFIRMED,
         step_run_id=step_run_id,
     )
 
@@ -337,13 +357,6 @@ def _stage_cache_reuse(
     return True
 
 
-def _raise_reuse_commit_failure(commit_error: str | None, has_reuse: bool) -> None:
-    """Prevent terminal success when accepted cache links are not durable."""
-    if commit_error is None or not has_reuse:
-        return
-    raise CommitError([TablePath.CACHE_REUSE.table_name])
-
-
 def _all_inputs_empty(resolved_inputs: dict[str, list[str]]) -> bool:
     """Return True when every input role resolved to zero artifact IDs.
 
@@ -378,7 +391,9 @@ def _skip_for_empty_inputs(
         succeeded_count=0,
         failed_count=0,
         failure_policy=failure_policy,
-        metadata={"skipped": True, "skip_reason": "empty_inputs"},
+        status=StepStatus.SKIPPED,
+        disposition=None,
+        metadata={"skip_reason": "empty_inputs"},
         step_run_id=step_run_id,
     )
 
@@ -392,32 +407,27 @@ def _commit_and_compact(
     *,
     has_work: bool,
     compact: bool,
-) -> str | None:
-    """Run commit and compact phases, returning any commit error message."""
-    commit_error = None
+) -> None:
+    """Run commit and compact phases, failing when persistence fails."""
     with phase_timer("commit", timings):
         if has_work:
-            try:
-                from artisan.storage.io.commit import DeltaCommitter
-                from artisan.storage.io.staging import StagingManager
+            from artisan.storage.io.commit import DeltaCommitter
+            from artisan.storage.io.staging import StagingManager
 
-                fs = config.storage.filesystem()
-                storage_options = config.storage.delta_storage_options()
-                staging_manager = StagingManager(config.staging_root, fs)
-                committer = DeltaCommitter(
-                    config.delta_root,
-                    staging_manager,
-                    fs=fs,
-                    storage_options=storage_options,
-                )
-                committer.commit_all_tables(
-                    cleanup_staging=not runtime_env.preserve_staging,
-                    step_number=step_number,
-                    operation_name=operation_name,
-                )
-            except Exception as exc:
-                commit_error = f"{type(exc).__name__}: {exc}"
-                logger.error("Commit failed for step %d: %s", step_number, commit_error)
+            fs = config.storage.filesystem()
+            storage_options = config.storage.delta_storage_options()
+            staging_manager = StagingManager(config.staging_root, fs)
+            committer = DeltaCommitter(
+                config.delta_root,
+                staging_manager,
+                fs=fs,
+                storage_options=storage_options,
+            )
+            committer.commit_all_tables(
+                cleanup_staging=not runtime_env.preserve_staging,
+                step_number=step_number,
+                operation_name=operation_name,
+            )
 
     with phase_timer("compact", timings):
         if has_work and compact:
@@ -430,21 +440,69 @@ def _commit_and_compact(
                 storage_options=storage_options,
             )
 
-    return commit_error
+
+def _result_error(results: list[UnitResult], fallback: str | None = None) -> str | None:
+    """Return the first unit diagnostic, then an infrastructure fallback."""
+    return next(
+        (result.error for result in results if not result.success and result.error),
+        fallback,
+    )
 
 
-def _build_step_metadata(
-    timings: dict[str, Any],
-    commit_error: str | None,
-    dispatch_error: str | None,
-) -> dict[str, Any]:
-    """Build the metadata dict for a StepResult."""
-    metadata: dict[str, Any] = {"timings": timings}
-    if commit_error:
-        metadata["commit_error"] = commit_error
-    if dispatch_error:
-        metadata["dispatch_error"] = dispatch_error
-    return metadata
+def _aggregate_cancellation(
+    results: list[UnitResult],
+    router_outcome: CancellationAcknowledgement | None,
+) -> CancellationAcknowledgement | None:
+    """Combine provider and per-unit cancellation evidence conservatively."""
+    outcomes = [
+        outcome
+        for outcome in [
+            router_outcome,
+            *(result.cancellation_acknowledgement for result in results),
+        ]
+        if outcome is not None
+    ]
+    if not outcomes:
+        return None
+    for status in (
+        CancellationStatus.UNKNOWN,
+        CancellationStatus.REJECTED,
+        CancellationStatus.CONFIRMED,
+        CancellationStatus.REQUESTED,
+    ):
+        matching = [outcome for outcome in outcomes if outcome.status == status]
+        if matching:
+            selected = matching[0]
+            if status == CancellationStatus.REQUESTED:
+                return CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    selected.message or "Cancellation remained unconfirmed",
+                )
+            return selected
+    return None
+
+
+def _unknown_cancellation_result(
+    operation: type[OperationDefinition] | OperationDefinition,
+    step_number: int,
+    failure_policy: FailurePolicy,
+    outcome: CancellationAcknowledgement,
+    *,
+    step_run_id: str | None,
+) -> StepResult:
+    """Build a fail-closed terminal result for indeterminate cancellation."""
+    return build_step_result(
+        operation=operation,
+        step_number=step_number,
+        succeeded_count=0,
+        failed_count=0,
+        failure_policy=failure_policy,
+        status=StepStatus.FAILED,
+        disposition=None,
+        cancellation_status=CancellationStatus.UNKNOWN,
+        error=outcome.message or "Cancellation outcome is unknown",
+        step_run_id=step_run_id,
+    )
 
 
 def _verify_staging_if_needed(
@@ -459,21 +517,13 @@ def _verify_staging_if_needed(
     with phase_timer("verify_staging", timings):
         if step_runner.orchestrator_traits.needs_staging_verification:
             execution_run_ids = extract_execution_run_ids(results)
-            try:
-                await_staging_files(
-                    staging_root=config.staging_root,
-                    execution_run_ids=execution_run_ids,
-                    timeout_seconds=step_runner.orchestrator_traits.staging_verification_timeout,
-                    step_number=step_number,
-                    operation_name=operation_name,
-                )
-            except TimeoutError:
-                logger.warning(
-                    "Staging file verification timed out for step %d (%s). "
-                    "Proceeding to commit with available files.",
-                    step_number,
-                    operation_name,
-                )
+            await_staging_files(
+                staging_root=config.staging_root,
+                execution_run_ids=execution_run_ids,
+                timeout_seconds=step_runner.orchestrator_traits.staging_verification_timeout,
+                step_number=step_number,
+                operation_name=operation_name,
+            )
 
 
 def _finalize_timings(
@@ -728,7 +778,7 @@ def _execute_curator_step(
                     operation_name=operation.name,
                 )
                 runtime_env = _create_runtime_environment(config, operation)
-                commit_error = _commit_and_compact(
+                _commit_and_compact(
                     config,
                     runtime_env,
                     step_number,
@@ -737,7 +787,6 @@ def _execute_curator_step(
                     has_work=has_reuse,
                     compact=compact,
                 )
-                _raise_reuse_commit_failure(commit_error, has_reuse)
                 _finalize_timings(timings, total_start, step_number, "Curator")
                 return build_step_result(
                     operation=operation,
@@ -745,7 +794,8 @@ def _execute_curator_step(
                     succeeded_count=cached_count,
                     failed_count=0,
                     failure_policy=failure_policy,
-                    metadata=_build_step_metadata(timings, commit_error, None),
+                    disposition=StepDisposition.CACHE_HIT,
+                    metadata={"timings": timings},
                     step_run_id=step_run_id,
                 )
 
@@ -790,7 +840,7 @@ def _execute_curator_step(
                     execution_run_ids=[staging_result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
                 )
             ]
-            succeeded, failed = aggregate_results(results, failure_policy)
+            succeeded, failed = aggregate_results(results)
 
             # Log filter-specific diagnostics
             if operation.name == "filter":
@@ -854,7 +904,7 @@ def _execute_curator_step(
             operation, step_number, failure_policy, step_run_id=step_run_id
         )
 
-    commit_error = _commit_and_compact(
+    _commit_and_compact(
         config,
         runtime_env,
         step_number,
@@ -865,8 +915,12 @@ def _execute_curator_step(
     )
     _finalize_timings(timings, total_start, step_number, "Curator")
 
-    # fail_fast aborts only after the failure record is committed (above).
-    raise_if_fail_fast(failure_policy, failed, results, dispatch_error)
+    status = classify_step_status(
+        succeeded,
+        failed,
+        failure_policy,
+        infrastructure_error=dispatch_error is not None,
+    )
 
     return build_step_result(
         operation=operation,
@@ -874,7 +928,10 @@ def _execute_curator_step(
         succeeded_count=succeeded,
         failed_count=failed,
         failure_policy=failure_policy,
-        metadata=_build_step_metadata(timings, commit_error, dispatch_error),
+        status=status,
+        disposition=StepDisposition.EXECUTED,
+        error=_result_error(results, dispatch_error),
+        metadata={"timings": timings},
         step_run_id=step_run_id,
     )
 
@@ -1081,7 +1138,7 @@ def _record_dispatch_failure(
         user_overrides,
         step_run_id=step_run_id,
     )
-    succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
+    succeeded, failed = aggregate_results(results)
     return dispatch_error, results, succeeded, failed
 
 
@@ -1280,6 +1337,7 @@ def _execute_creator_step(
         )
 
     staging_fs = config.storage.filesystem()
+    cancellation_outcome: CancellationAcknowledgement | None = None
     try:
         # --- execute phase ---
         dispatch_error: str | None = None
@@ -1311,8 +1369,15 @@ def _execute_creator_step(
                         units_to_dispatch,
                         runtime_env,
                         cancel_event=cancel_event,
+                        cancellation_confirmation_timeout=(
+                            step_runner.orchestrator_traits.cancellation_confirmation_timeout
+                        ),
                     )
-                    succeeded, failed = aggregate_results(results, failure_policy)
+                    cancellation_outcome = _aggregate_cancellation(
+                        results,
+                        router.cancellation_acknowledgement,
+                    )
+                    succeeded, failed = aggregate_results(results)
                     # Backfill any pre-try failures the worker never recorded
                     # (unimportable/unpicklable op -> empty execution_run_ids).
                     results = _synthesize_missing_failure_records(
@@ -1352,7 +1417,7 @@ def _execute_creator_step(
                                 execution_run_ids=[run_id] if run_id else [],
                             )
                         )
-                    succeeded, failed = aggregate_results(results, failure_policy)
+                    succeeded, failed = aggregate_results(results)
                 except Exception as exc:
                     dispatch_error, results, succeeded, failed = (
                         _record_dispatch_failure(
@@ -1392,7 +1457,31 @@ def _execute_creator_step(
         # =====================================================================
 
         # --- cancel check: before commit ---
-        if cancel_event is not None and cancel_event.is_set():
+        if (
+            cancellation_outcome is not None
+            and cancellation_outcome.status == CancellationStatus.UNKNOWN
+        ):
+            _discard_cancelled_staging(
+                results,
+                runtime_env,
+                operation.name,
+                step_number,
+            )
+            return _unknown_cancellation_result(
+                operation,
+                step_number,
+                failure_policy,
+                cancellation_outcome,
+                step_run_id=step_run_id,
+            )
+        if (
+            cancel_event is not None
+            and cancel_event.is_set()
+            and (
+                cancellation_outcome is None
+                or cancellation_outcome.status == CancellationStatus.CONFIRMED
+            )
+        ):
             _discard_cancelled_staging(
                 results,
                 runtime_env,
@@ -1411,7 +1500,7 @@ def _execute_creator_step(
             operation_name=operation.name,
         )
 
-        commit_error = _commit_and_compact(
+        _commit_and_compact(
             config,
             runtime_env,
             step_number,
@@ -1420,7 +1509,6 @@ def _execute_creator_step(
             has_work=bool(units_to_dispatch) or has_reuse,
             compact=compact,
         )
-        _raise_reuse_commit_failure(commit_error, has_reuse)
     finally:
         if step_run_id is not None:
             sentinel = cancel_sentinel_path(config.staging_root, step_run_id)
@@ -1432,8 +1520,12 @@ def _execute_creator_step(
 
     _finalize_timings(timings, total_start, step_number, "Creator")
 
-    # fail_fast aborts only after the failure records are committed (above).
-    raise_if_fail_fast(failure_policy, failed, results, dispatch_error)
+    status = classify_step_status(
+        succeeded + cached_count,
+        failed,
+        failure_policy,
+        infrastructure_error=dispatch_error is not None,
+    )
 
     return build_step_result(
         operation=operation,
@@ -1441,7 +1533,26 @@ def _execute_creator_step(
         succeeded_count=succeeded + cached_count,
         failed_count=failed,
         failure_policy=failure_policy,
-        metadata=_build_step_metadata(timings, commit_error, dispatch_error),
+        status=status,
+        disposition=(
+            StepDisposition.EXECUTED if units_to_dispatch else StepDisposition.CACHE_HIT
+        ),
+        cancellation_status=(
+            CancellationStatus.REJECTED
+            if cancellation_outcome is not None
+            and cancellation_outcome.status == CancellationStatus.REJECTED
+            else None
+        ),
+        error=(
+            _result_error(results, dispatch_error)
+            or (
+                cancellation_outcome.message
+                if cancellation_outcome is not None
+                and cancellation_outcome.status == CancellationStatus.REJECTED
+                else None
+            )
+        ),
+        metadata={"timings": timings},
         step_run_id=step_run_id,
     )
 

@@ -364,10 +364,28 @@ def build_app(
             )
 
         @web.post("/cancel")
-        def cancel(call_id: str) -> dict[str, bool]:
-            """Cancel a running job, terminating its container."""
-            modal_rt.FunctionCall.from_id(call_id).cancel(terminate_containers=True)
-            return {"cancelled": True}
+        def cancel(call_id: str) -> dict[str, Any]:
+            """Cancel one named job and report the outcome actually observed."""
+            retained = _retained(call_id)
+            if retained != "pending":
+                return {
+                    "call_id": call_id,
+                    "status": "rejected",
+                    "message": "Work completed before cancellation",
+                }
+            try:
+                modal_rt.FunctionCall.from_id(call_id).cancel(terminate_containers=True)
+            except Exception as exc:
+                return {
+                    "call_id": call_id,
+                    "status": "unknown",
+                    "message": f"Cancellation failed: {type(exc).__name__}",
+                }
+            return {
+                "call_id": call_id,
+                "status": "confirmed",
+                "message": "Named worker call was terminated",
+            }
 
         return web
 

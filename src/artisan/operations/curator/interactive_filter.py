@@ -31,6 +31,7 @@ from artisan.provenance.traversal import walk_forward
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.artifact_store import ArtifactStore
@@ -603,23 +604,70 @@ class InteractiveFilter:
             storage_options=self._storage_options,
             fs=self._fs,
         )
-        tracker.record_step_start(start_record)
+        tracker.create_attempt(start_record)
+        tracker.transition(
+            step_run_id,
+            StepStatus.PENDING,
+            StepStatus.RUNNING,
+            step_spec_id=step_spec_id,
+        )
 
-        # Build v4 diagnostics
-        diagnostics = self._build_diagnostics(filtered)
+        try:
+            return self._commit_running_attempt(
+                tracker=tracker,
+                step_name=step_name,
+                step_number=step_number,
+                step_spec_id=step_spec_id,
+                step_run_id=step_run_id,
+                execution_spec_id=execution_spec_id,
+                execution_run_id=execution_run_id,
+                filtered=filtered,
+                now=now,
+            )
+        except Exception as exc:
+            current = tracker.current_state(step_run_id)
+            if current.status != StepStatus.RUNNING:
+                raise
+            error = f"{type(exc).__name__}: {exc}"
+            failed = StepResult(
+                step_name=step_name,
+                step_number=step_number,
+                status=StepStatus.FAILED,
+                error=error,
+                output_roles=frozenset(["passthrough"]),
+                output_types={"passthrough": ArtifactTypes.ANY},
+                step_run_id=step_run_id,
+            )
+            tracker.transition(
+                step_run_id,
+                StepStatus.RUNNING,
+                StepStatus.FAILED,
+                step_spec_id=step_spec_id,
+                result=failed,
+            )
+            raise
 
-        # Stage + commit the execution record and edges through the shared
-        # recorder so executions/execution_edges rows come from the single
-        # writer (recorder.py) instead of being hand-built here. This flow
-        # has no ExecutionUnit; ExecutionContext still requires a real
-        # operation and store, so supply a Filter instance (its name yields
-        # the "filter" operation_name) and the store this instance holds.
+    def _commit_running_attempt(
+        self,
+        *,
+        tracker: Any,
+        step_name: str,
+        step_number: int,
+        step_spec_id: str,
+        step_run_id: str,
+        execution_spec_id: str,
+        execution_run_id: str,
+        filtered: list[str],
+        now: datetime,
+    ) -> StepResult:
+        """Commit one interactive selection and its terminal snapshot."""
         from artisan.execution.recording.recorder import record_passthrough
         from artisan.operations.curator.filter import Filter
         from artisan.schemas.execution.execution_context import ExecutionContext
         from artisan.storage.io.commit import DeltaCommitter
         from artisan.storage.io.staging import StagingManager
 
+        diagnostics = self._build_diagnostics(filtered)
         operation = Filter()
         staging_root = uri_join(self._delta_root, "_staging")
         execution_context = ExecutionContext(
@@ -647,7 +695,6 @@ class InteractiveFilter:
             params={"criteria": [c.model_dump() for c in self._criteria]},
             result_metadata={"diagnostics": diagnostics},
         )
-
         staging_manager = StagingManager(staging_root, self._fs)
         committer = DeltaCommitter(
             self._delta_root,
@@ -656,14 +703,14 @@ class InteractiveFilter:
             storage_options=self._storage_options,
         )
         committer.commit_all_tables(
-            step_number=step_number, operation_name=type(operation).name
+            step_number=step_number,
+            operation_name=type(operation).name,
         )
-
-        # Build and record step result
         result = StepResult(
             step_name=step_name,
             step_number=step_number,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=len(self._primary_artifact_ids),
             succeeded_count=len(filtered),
             failed_count=0,
@@ -672,8 +719,13 @@ class InteractiveFilter:
             metadata={"diagnostics": diagnostics},
             step_run_id=step_run_id,
         )
-        tracker.record_step_completed(start_record, result)
-
+        tracker.transition(
+            step_run_id,
+            StepStatus.RUNNING,
+            StepStatus.SUCCEEDED,
+            step_spec_id=step_spec_id,
+            result=result,
+        )
         return result
 
     def _build_diagnostics(self, filtered: list[str]) -> dict[str, Any]:

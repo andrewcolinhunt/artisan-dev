@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import warnings
 from concurrent.futures import Future
 from typing import ClassVar
@@ -18,6 +19,7 @@ from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.process_call import execute_process_call
@@ -192,6 +194,43 @@ class TestLocalRunnerValidateOperation:
 
 
 class TestLocalLifecycleRouter:
+    def test_cancel_confirms_only_after_owned_process_exits(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        executor = MagicMock()
+        process = MagicMock()
+        process.is_alive.side_effect = [True, False]
+        executor._processes = {123: process}
+        handle._dispatch_started = True
+        handle._executor = executor
+
+        requested = handle.cancel()
+        assert requested.status == CancellationStatus.REQUESTED
+        assert handle._cancel_requested_at is not None
+        handle._cancel_requested_at = time.monotonic() - 2
+
+        confirmed = handle.cancel()
+
+        assert confirmed.status == CancellationStatus.CONFIRMED
+        process.terminate.assert_called_once_with()
+        process.join.assert_called_once()
+
+    def test_cancel_is_unknown_when_owned_process_remains_alive(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        executor = MagicMock()
+        process = MagicMock()
+        process.is_alive.return_value = True
+        executor._processes = {123: process}
+        handle._dispatch_started = True
+        handle._executor = executor
+
+        handle.cancel()
+        assert handle._cancel_requested_at is not None
+        handle._cancel_requested_at = time.monotonic() - 2
+
+        outcome = handle.cancel()
+
+        assert outcome.status == CancellationStatus.UNKNOWN
+
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_pool_creation_failure_returns_one_result_per_unit(
         self,

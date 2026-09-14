@@ -13,7 +13,6 @@ from artisan.orchestration.engine.batching import (
     get_batch_config,
 )
 from artisan.orchestration.engine.results import aggregate_results
-from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.batch_config import BatchConfig
 from artisan.utils.hashing import CacheInputIdentity
@@ -315,7 +314,7 @@ class TestAggregateResults:
             UnitResult(success=True, error=None, item_count=5, execution_run_ids=[]),
             UnitResult(success=True, error=None, item_count=3, execution_run_ids=[]),
         ]
-        succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
+        succeeded, failed = aggregate_results(results)
         assert succeeded == 8
         assert failed == 0
 
@@ -325,7 +324,7 @@ class TestAggregateResults:
             UnitResult(success=False, error="err1", item_count=2, execution_run_ids=[]),
             UnitResult(success=False, error="err2", item_count=3, execution_run_ids=[]),
         ]
-        succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
+        succeeded, failed = aggregate_results(results)
         assert succeeded == 0
         assert failed == 5
 
@@ -338,37 +337,12 @@ class TestAggregateResults:
             ),
             UnitResult(success=True, error=None, item_count=2, execution_run_ids=[]),
         ]
-        succeeded, failed = aggregate_results(results, FailurePolicy.CONTINUE)
+        succeeded, failed = aggregate_results(results)
         assert succeeded == 6
         assert failed == 1
 
-    def test_fail_fast_counts_without_raising(self):
-        """fail_fast aggregation counts failures; the abort moved post-commit."""
-        results = [
-            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
-            UnitResult(
-                success=False,
-                error="something broke",
-                item_count=1,
-                execution_run_ids=[],
-            ),
-        ]
-        succeeded, failed = aggregate_results(results, FailurePolicy.FAIL_FAST)
-        assert succeeded == 1
-        assert failed == 1
-
-    def test_fail_fast_no_failures(self):
-        """Test fail_fast policy with all successes."""
-        results = [
-            UnitResult(success=True, error=None, item_count=5, execution_run_ids=[]),
-            UnitResult(success=True, error=None, item_count=5, execution_run_ids=[]),
-        ]
-        succeeded, failed = aggregate_results(results, FailurePolicy.FAIL_FAST)
-        assert succeeded == 10
-        assert failed == 0
-
     def test_empty_results(self):
         """Test with empty results list."""
-        succeeded, failed = aggregate_results([], FailurePolicy.CONTINUE)
+        succeeded, failed = aggregate_results([])
         assert succeeded == 0
         assert failed == 0

@@ -23,9 +23,17 @@ from typing import Any, NoReturn
 import httpx
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
-from artisan.execution.tool_endpoint.protocol import ResultResponse, ToolManifest
+from artisan.execution.tool_endpoint.protocol import (
+    CancelResponse,
+    ResultResponse,
+    ToolManifest,
+)
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.schemas.operation_config.compute import ModalComputeConfig
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
 from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.utils.env_file import env_or_dotenv
 
@@ -47,6 +55,14 @@ _cancel_event: ContextVar[threading.Event | None] = ContextVar(
 )
 
 
+class EndpointCancellationError(RuntimeError):
+    """Typed terminal cancellation evidence from one named endpoint call."""
+
+    def __init__(self, acknowledgement: CancellationAcknowledgement) -> None:
+        super().__init__(acknowledgement.message or acknowledgement.status.value)
+        self.acknowledgement = acknowledgement
+
+
 @contextmanager
 def cancel_scope(event: threading.Event) -> Iterator[None]:
     """Expose a cancel event to ``call_endpoint`` poll loops in this context."""
@@ -57,7 +73,9 @@ def cancel_scope(event: threading.Event) -> Iterator[None]:
         _cancel_event.reset(token)
 
 
-def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
+def call_endpoint(
+    operation: Any, inputs: ExecuteInput
+) -> CancellationAcknowledgement | None:
     """Run a tool op's execute on its deployed endpoint.
 
     Args:
@@ -131,7 +149,12 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
         _check(response, operation.name)
         call_id = str(response.json()["call_id"])
 
-        manifest = _poll(client, call_id, cfg.poll_interval, operation.name)
+        manifest, cancellation = _poll(
+            client,
+            call_id,
+            cfg.poll_interval,
+            operation.name,
+        )
         if manifest.log_tail and inputs.log_path:
             _append_log(inputs.log_path, manifest.log_tail)
         if manifest.error is not None:
@@ -160,18 +183,53 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
             download = client.get("/download", params={"call_id": call_id})
             _check(download, operation.name)
             transport.unpack_outputs(download.content, inputs.execute_dir)
+        return cancellation
 
 
 def _poll(
     client: httpx.Client, call_id: str, interval: float, op_name: str
-) -> ToolManifest:
+) -> tuple[ToolManifest, CancellationAcknowledgement | None]:
     """Poll ``/result`` until the job leaves ``pending``; honor cancellation."""
     cancel = _cancel_event.get()
+    cancellation: CancellationAcknowledgement | None = None
     while True:
-        if cancel is not None and cancel.is_set():
-            client.post("/cancel", params={"call_id": call_id})
-            msg = f"tool endpoint job {call_id} cancelled"
-            raise RuntimeError(msg)
+        if cancel is not None and cancel.is_set() and cancellation is None:
+            try:
+                response = client.post("/cancel", params={"call_id": call_id})
+                _check(response, op_name)
+                cancelled = CancelResponse.model_validate(response.json())
+            except Exception as exc:
+                acknowledgement = CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    (
+                        f"Could not validate cancellation outcome for call "
+                        f"{call_id}: {type(exc).__name__}"
+                    ),
+                )
+                raise EndpointCancellationError(acknowledgement) from exc
+            if cancelled.call_id != call_id:
+                acknowledgement = CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    (
+                        f"Cancellation response named {cancelled.call_id!r}; "
+                        f"expected {call_id!r}"
+                    ),
+                )
+                raise EndpointCancellationError(acknowledgement)
+            acknowledgement = CancellationAcknowledgement(
+                cancelled.status,
+                cancelled.message,
+            )
+            if acknowledgement.status in {
+                CancellationStatus.CONFIRMED,
+                CancellationStatus.UNKNOWN,
+            }:
+                raise EndpointCancellationError(acknowledgement)
+            if acknowledgement.status == CancellationStatus.REJECTED:
+                cancellation = acknowledgement
+            else:
+                time.sleep(interval)
+                continue
         response = client.get("/result", params={"call_id": call_id})
         _check(response, op_name)
         result = ResultResponse(**response.json())
@@ -195,7 +253,7 @@ def _poll(
                 error_type="compute",
                 operation_name=op_name,
             )
-        return result.manifest
+        return result.manifest, cancellation
 
 
 def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:

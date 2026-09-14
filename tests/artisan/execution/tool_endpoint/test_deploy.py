@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import ClassVar
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import jsonschema
 import modal
@@ -15,10 +15,11 @@ from fixtures.endpoint_ops import GpuTool, PlainTool
 
 from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint.deploy import build_app
-from artisan.execution.tool_endpoint.protocol import SchemaResponse
+from artisan.execution.tool_endpoint.protocol import CancelResponse, SchemaResponse
 from artisan.execution.tool_endpoint.spec import endpoint_spec
 from artisan.operations.examples import DataGenerator, WaitTool
 from artisan.registry.schemas import params_schema_for
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
 _PARAMS = json.dumps({"contigs": "10-20"})
 """Minimal valid GpuTool params — /submit schema-validates before anything else."""
@@ -394,6 +395,63 @@ class TestRetainedResultRoutes:
         response = client.get("/download", params={"call_id": "fc-1"})
         assert response.status_code == 200
         assert response.content == b"tarbytes"
+
+
+class TestCancellationRoute:
+    """Exercise cancellation without the environment's blocked TestClient."""
+
+    @pytest.fixture
+    def cancel_endpoint(self, mock_modal: MagicMock):
+        build_app(GpuTool)
+        endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
+        web = endpoint_fn()
+        return next(route.endpoint for route in web.routes if route.path == "/cancel")
+
+    def test_pending_call_returns_confirmed_for_same_call_id(
+        self, cancel_endpoint, monkeypatch
+    ):
+        function_call = MagicMock()
+        function_call.get.side_effect = modal.exception.TimeoutError()
+        lookup = MagicMock(return_value=function_call)
+        monkeypatch.setattr(modal.FunctionCall, "from_id", lookup)
+
+        response = CancelResponse(**cancel_endpoint(call_id="fc-1"))
+
+        assert response.call_id == "fc-1"
+        assert response.status is CancellationStatus.CONFIRMED
+        assert lookup.call_args_list == [call("fc-1"), call("fc-1")]
+        function_call.cancel.assert_called_once_with(terminate_containers=True)
+
+    def test_completed_call_returns_rejected_without_cancelling(
+        self, cancel_endpoint, monkeypatch
+    ):
+        function_call = MagicMock()
+        function_call.get.return_value = {"manifest": {}, "output_tar": None}
+        monkeypatch.setattr(
+            modal.FunctionCall, "from_id", lambda _call_id: function_call
+        )
+
+        response = CancelResponse(**cancel_endpoint(call_id="fc-finished"))
+
+        assert response.call_id == "fc-finished"
+        assert response.status is CancellationStatus.REJECTED
+        function_call.cancel.assert_not_called()
+
+    def test_cancellation_error_returns_unknown_for_same_call_id(
+        self, cancel_endpoint, monkeypatch
+    ):
+        function_call = MagicMock()
+        function_call.get.side_effect = modal.exception.TimeoutError()
+        function_call.cancel.side_effect = RuntimeError("lost acknowledgement")
+        monkeypatch.setattr(
+            modal.FunctionCall, "from_id", lambda _call_id: function_call
+        )
+
+        response = CancelResponse(**cancel_endpoint(call_id="fc-unknown"))
+
+        assert response.call_id == "fc-unknown"
+        assert response.status is CancellationStatus.UNKNOWN
+        assert response.message == "Cancellation failed: RuntimeError"
 
 
 class TestParameterlessSubmit:

@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,10 +22,15 @@ from artisan.execution.recording.recorder import (
     record_execution_failure,
     record_execution_success,
 )
+from artisan.execution.tool_endpoint.client import EndpointCancellationError
 from artisan.execution.utils import generate_execution_run_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
 from artisan.utils.hashing import serialize_params
 from artisan.utils.path import cancel_sentinel_path
 from artisan.utils.timing import phase_timer
@@ -73,6 +78,7 @@ class LifecycleResult:
     edges: list[ArtifactProvenanceEdge]
     timings: dict[str, float] = field(default_factory=dict)
     tool_output: str | None = None
+    cancellation_acknowledgement: CancellationAcknowledgement | None = None
 
 
 def run_creator_lifecycle(
@@ -142,6 +148,21 @@ def run_creator_lifecycle(
         # contract); surface them here — downstream _reassemble_results
         # silently filters them, which masks the real error as an
         # empty-artifact validation failure.
+        cancellation_failures = [
+            result
+            for result in raw_results
+            if isinstance(result, EndpointCancellationError)
+        ]
+        if cancellation_failures:
+            unknown = next(
+                (
+                    failure
+                    for failure in cancellation_failures
+                    if failure.acknowledgement.status == CancellationStatus.UNKNOWN
+                ),
+                None,
+            )
+            raise unknown or cancellation_failures[0]
         failures = [r for r in raw_results if isinstance(r, Exception)]
         if failures:
             msg = (
@@ -155,7 +176,15 @@ def run_creator_lifecycle(
                 msg, tool_output=_read_tool_output(prepped.log_path)
             ) from failures[0]
 
-    return post_unit(prepped, raw_results, runtime_env)
+    result = post_unit(prepped, raw_results, runtime_env)
+    acknowledgements = getattr(
+        execute_router,
+        "cancellation_acknowledgements",
+        (),
+    )
+    if acknowledgements:
+        result.cancellation_acknowledgement = acknowledgements[0]
+    return result
 
 
 def _cancel_check(
@@ -250,6 +279,20 @@ def run_creator_flow(
                 user_overrides=user_overrides,
                 tool_output=lifecycle_result.tool_output,
             )
+            staging_result = replace(
+                staging_result,
+                cancellation_acknowledgement=(
+                    lifecycle_result.cancellation_acknowledgement
+                ),
+            )
+    except EndpointCancellationError as exc:
+        staging_result = StagingResult(
+            success=False,
+            error=str(exc),
+            execution_run_id=execution_run_id,
+            artifact_ids=[],
+            cancellation_acknowledgement=exc.acknowledgement,
+        )
     except (_PostprocessFailure, _ExecuteFailure) as exc:
         # Lifecycle failures with clean error messages
         if isinstance(exc, _ExecuteFailure):

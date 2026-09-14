@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from artisan.orchestration.engine.inputs import PreparedInputs
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.utils.hashing import CacheInputIdentity
 
 
@@ -32,6 +33,7 @@ def _prepared(inputs: dict[str, list[str]]) -> PreparedInputs:
 class TestCreatorBrokenProcessPool:
     """Fix 3: BrokenProcessPool in creator dispatch produces failed StepResult."""
 
+    @patch("artisan.orchestration.engine.step_executor._commit_and_compact")
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
@@ -48,6 +50,7 @@ class TestCreatorBrokenProcessPool:
         mock_cache,
         mock_eu_cls,
         mock_create_rt,
+        mock_commit,
     ):
         from artisan.orchestration.engine.step_executor import _execute_creator_step
 
@@ -84,13 +87,14 @@ class TestCreatorBrokenProcessPool:
             config=config,
         )
 
-        assert result.success is False
+        assert result.status == StepStatus.FAILED
         assert result.failed_count == 2
 
 
 class TestCuratorCancelAwareMessage:
     """Fix 4: BrokenProcessPool during cancellation uses cancel-specific message."""
 
+    @patch("artisan.orchestration.engine.step_executor._commit_and_compact")
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
     @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
@@ -103,6 +107,7 @@ class TestCuratorCancelAwareMessage:
         mock_create_rt,
         mock_build_ctx,
         mock_record_failure,
+        mock_commit,
         caplog,
     ):
         """BrokenProcessPool with cancel_event set logs cancellation message."""
@@ -119,6 +124,7 @@ class TestCuratorCancelAwareMessage:
         mock_unit.inputs = {"passthrough": ["id1"]}
         mock_unit.operation = mock_op
         mock_unit.step_number = 1
+        mock_unit.get_batch_size.return_value = 1
         mock_eu_cls.return_value = mock_unit
 
         mock_record_failure.return_value = MagicMock(success=False, error="killed")
@@ -150,6 +156,7 @@ class TestCuratorCancelAwareMessage:
             f"Expected 'cancellation' in log, got: {[r.message for r in caplog.records]}"
         )
 
+    @patch("artisan.orchestration.engine.step_executor._commit_and_compact")
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
     @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
@@ -162,6 +169,7 @@ class TestCuratorCancelAwareMessage:
         mock_create_rt,
         mock_build_ctx,
         mock_record_failure,
+        mock_commit,
         caplog,
     ):
         """BrokenProcessPool without cancel logs OOM diagnostic message."""
@@ -178,6 +186,7 @@ class TestCuratorCancelAwareMessage:
         mock_unit.inputs = {"passthrough": ["id1"]}
         mock_unit.operation = mock_op
         mock_unit.step_number = 1
+        mock_unit.get_batch_size.return_value = 1
         mock_eu_cls.return_value = mock_unit
 
         mock_run_sub.side_effect = BrokenProcessPool("killed")
