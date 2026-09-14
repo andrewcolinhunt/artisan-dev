@@ -7,6 +7,7 @@ correctly stops the pipeline.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import signal
@@ -18,12 +19,12 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
-from fixtures.store_format import publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from fixtures.logical_commit_store import commit_test_inputs
 from pydantic import BaseModel
 
 from artisan.errors import ArtifactIntegrityError, CommitError
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.pipeline_manager import (
     PipelineManager,
     _extract_name_from_run_id,
@@ -62,6 +63,7 @@ from artisan.schemas.orchestration.step_lifecycle import (
 )
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
+from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.store_format import STORE_MANIFEST
@@ -74,6 +76,58 @@ _INPUT_ARTIFACT = DataArtifact.draft(
 ).finalize()
 assert _INPUT_ARTIFACT.artifact_id is not None
 _INPUT_ID = _INPUT_ARTIFACT.artifact_id
+_SEEDED_INPUT_ROOTS: set[str] = set()
+
+
+def _configure_pipeline_test_doubles(pipeline: PipelineManager) -> None:
+    """Back mocked boundaries with the real persistence contracts."""
+    tracker = pipeline._step_tracker
+    if isinstance(tracker, MagicMock) and not isinstance(
+        getattr(tracker, "_lifecycle_backend", None), StepTracker
+    ):
+        backend = StepTracker(
+            pipeline.config.delta_root,
+            pipeline.config.pipeline_run_id,
+            fs=pipeline.config.storage.filesystem(),
+            storage_options=pipeline.config.storage.delta_storage_options(),
+        )
+        tracker._lifecycle_backend = backend
+        for method in (
+            "create_attempt",
+            "transition",
+            "prepare_terminal_candidate",
+            "record_cancellation",
+            "current_state",
+        ):
+            getattr(tracker, method).side_effect = getattr(backend, method)
+        if isinstance(tracker.check_cache.return_value, MagicMock):
+            tracker.check_cache.return_value = None
+
+    import artisan.orchestration.pipeline_manager as pipeline_manager_module
+
+    execute_mock = pipeline_manager_module.execute_step
+    if isinstance(execute_mock, MagicMock) and execute_mock.side_effect is None:
+
+        def _persist_mock_result(**kwargs: Any) -> StepResult:
+            result = execute_mock.return_value
+            if not isinstance(result, StepResult):
+                return result
+            operation = kwargs["operation"]
+            owned = result.model_copy(
+                update={
+                    "step_run_id": kwargs["step_run_id"],
+                    "output_roles": frozenset(operation.outputs),
+                    "output_types": {
+                        role: spec.artifact_type
+                        for role, spec in operation.outputs.items()
+                    },
+                }
+            )
+            if owned.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+                return kwargs["persist_result"](owned, ())
+            return owned
+
+        execute_mock.side_effect = _persist_mock_result
 
 
 def _prime_attempt(
@@ -84,39 +138,57 @@ def _prime_attempt(
     step_name: str = "step",
 ) -> None:
     """Prime manager-owned attempt context for direct private-helper tests."""
-    pipeline._step_start_records[0] = MagicMock(
+    _configure_pipeline_test_doubles(pipeline)
+    record = StepStartRecord(
         step_run_id=step_run_id,
         step_number=0,
         step_name=step_name,
+        operation_class="test.MockOperation",
+        params_json="{}",
+        input_refs_json="{}",
+        compute_backend="local",
+        compute_options_json="{}",
+        output_roles_json="[]",
+        output_types_json="{}",
     )
+    pipeline._step_start_records[0] = record
     pipeline._step_status_readers[0] = _StepStatusReader(status)
-    current = MagicMock(status=status, step_number=0, step_run_id=step_run_id)
-    pipeline._step_tracker.current_state.return_value = current
-    pipeline._step_tracker.record_cancellation.return_value = current
+    backend = pipeline._step_tracker._lifecycle_backend
+    backend.create_attempt(record)
+    if status == StepStatus.RUNNING:
+        backend.transition(step_run_id, StepStatus.PENDING, StepStatus.RUNNING)
+    pipeline._step_tracker.reset_mock()
 
 
 def _seed_input_artifact(delta_root: Path) -> None:
     """Seed the concrete input consumed by pipeline-manager tests."""
-    publish_test_store(str(delta_root), LocalFileSystem())
-    content_path = delta_root / ArtifactTypeDef.get_table_path(ArtifactTypes.DATA)
-    index_path = delta_root / TablePath.ARTIFACT_INDEX.value
-    if not content_path.exists():
-        pl.DataFrame(
-            [_INPUT_ARTIFACT.to_row()],
-            schema=DataArtifact.POLARS_SCHEMA,
-        ).write_delta(content_path)
-    if not index_path.exists():
-        pl.DataFrame(
-            [
-                {
-                    "artifact_id": _INPUT_ID,
-                    "artifact_type": ArtifactTypes.DATA,
-                    "origin_step_number": 0,
-                    "metadata": "{}",
-                }
-            ],
-            schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(index_path)
+    root_key = str(delta_root.resolve())
+    if root_key in _SEEDED_INPUT_ROOTS:
+        return
+    owner = hashlib.sha256(root_key.encode()).hexdigest()[:32]
+    commit_test_inputs(
+        delta_root,
+        delta_root.parent / "fixture-staging",
+        {
+            ArtifactTypeDef.get_table_path(ArtifactTypes.DATA): pl.DataFrame(
+                [_INPUT_ARTIFACT.to_row()],
+                schema=DataArtifact.POLARS_SCHEMA,
+            ),
+            TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                [
+                    {
+                        "artifact_id": _INPUT_ID,
+                        "artifact_type": ArtifactTypes.DATA,
+                        "origin_step_number": 0,
+                        "metadata": "{}",
+                    }
+                ],
+                schema=ARTIFACT_INDEX_SCHEMA,
+            ),
+        },
+        step_run_id=owner,
+    )
+    _SEEDED_INPUT_ROOTS.add(root_key)
 
 
 @pytest.fixture(autouse=True)
@@ -202,7 +274,9 @@ def _make_pipeline(tmp_path) -> PipelineManager:
         staging_root=str(tmp_path / "staging"),
         working_root=str(tmp_path / "working"),
     )
-    return PipelineManager(config)
+    pipeline = PipelineManager(config)
+    _configure_pipeline_test_doubles(pipeline)
+    return pipeline
 
 
 class TestDefaultRunnerRetention:
@@ -229,6 +303,7 @@ class TestDefaultRunnerRetention:
             staging_root=str(tmp_path / "staging"),
             default_step_runner=runner,
         )
+        _configure_pipeline_test_doubles(pipeline)
 
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
 
@@ -628,8 +703,12 @@ class TestEmptyInputsHandling:
 
         assert result.succeeded_count == 0
         assert mock_tracker.transition.call_args.args[1:3] == (
+            StepStatus.PENDING,
             StepStatus.RUNNING,
-            StepStatus.SUCCEEDED,
+        )
+        assert (
+            mock_tracker.current_state(result.step_run_id).status
+            == StepStatus.SUCCEEDED
         )
         # Pipeline should NOT be stopped
         assert pipeline._stopped is False
@@ -2170,7 +2249,7 @@ class TestSkipStep:
         pipeline = _make_pipeline(tmp_path)
         outputs = {"output": MagicMock(artifact_type="data")}
         step_run_id = "a" * 32
-        _prime_attempt(pipeline, step_run_id)
+        _prime_attempt(pipeline, step_run_id, step_name="skipped")
         future = pipeline._skip_step("skipped", outputs, "test_reason", step_run_id)
         result = future.result()
         assert result.status == StepStatus.SKIPPED
@@ -2189,7 +2268,7 @@ class TestSkipStep:
         pipeline = _make_pipeline(tmp_path)
         assert pipeline._current_step == 0
         outputs = {"output": MagicMock(artifact_type="data")}
-        _prime_attempt(pipeline, "a" * 32)
+        _prime_attempt(pipeline, "a" * 32, step_name="s")
         pipeline._skip_step("s", outputs, "reason", "a" * 32)
         assert pipeline._current_step == 1
 
@@ -2198,7 +2277,7 @@ class TestSkipStep:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         outputs = {"output": MagicMock(artifact_type="data")}
-        _prime_attempt(pipeline, "a" * 32)
+        _prime_attempt(pipeline, "a" * 32, step_name="my_step")
         pipeline._skip_step("my_step", outputs, "reason", "a" * 32)
         assert len(pipeline._step_results) == 1
         assert "my_step" in pipeline._step_registry
@@ -2234,9 +2313,12 @@ class TestWholeStepCacheReuse:
             execution_run_ids=(cached_execution,),
         )
 
+        def _commit_reuse(*_args: Any, **kwargs: Any) -> StepResult:
+            return kwargs["result"].model_copy(update={"duration_seconds": 4.0})
+
         with (
             patch.object(
-                pipeline, "_commit_whole_step_reuse", return_value=True
+                pipeline, "_commit_whole_step_reuse", side_effect=_commit_reuse
             ) as commit_reuse,
             patch(
                 "artisan.orchestration.pipeline_manager.time.perf_counter",
@@ -2262,18 +2344,14 @@ class TestWholeStepCacheReuse:
         assert result.duration_seconds == 4.0
         assert result.metadata == {"diagnostic": "kept"}
         assert pipeline._step_run_ids[0] == current
-        commit_reuse.assert_called_once_with(
-            current,
-            (cached_execution,),
-            step_number=0,
-            operation_name=_MockOp.name,
-        )
-        assert tracker.transition.call_args.args[1:3] == (
-            StepStatus.RUNNING,
-            StepStatus.SUCCEEDED,
-        )
-        persisted = tracker.transition.call_args.kwargs["result"]
+        commit_reuse.assert_called_once()
+        assert commit_reuse.call_args.args == (current, (cached_execution,))
+        assert commit_reuse.call_args.kwargs["step_number"] == 0
+        assert commit_reuse.call_args.kwargs["operation_name"] == _MockOp.name
+        assert commit_reuse.call_args.kwargs["step_spec_id"] == "spec"
+        persisted = commit_reuse.call_args.kwargs["result"]
         assert persisted.disposition == StepDisposition.CACHE_HIT
+        tracker.transition.assert_not_called()
 
     def test_compaction_failure_follows_terminal_and_preserves_success(
         self, tmp_path
@@ -2299,9 +2377,10 @@ class TestWholeStepCacheReuse:
             execution_run_ids=("c" * 32,),
         )
         events: list[str] = []
-        tracker.transition.side_effect = lambda *args, **kwargs: events.append(
-            "terminal"
-        )
+
+        def _commit_reuse(*_args: Any, **kwargs: Any) -> StepResult:
+            events.append("terminal")
+            return kwargs["result"]
 
         def _fail_compaction(*args, **kwargs) -> None:
             events.append("compact")
@@ -2309,7 +2388,11 @@ class TestWholeStepCacheReuse:
             raise OSError(msg)
 
         with (
-            patch.object(pipeline, "_commit_whole_step_reuse", return_value=True),
+            patch.object(
+                pipeline,
+                "_commit_whole_step_reuse",
+                side_effect=_commit_reuse,
+            ),
             patch(
                 "artisan.orchestration.engine.step_executor._compact_step_tables",
                 side_effect=_fail_compaction,
@@ -2337,7 +2420,12 @@ class TestWholeStepCacheReuse:
         pipeline = _make_pipeline(tmp_path)
         tracker = MagicMock()
         pipeline._step_tracker = tracker
-        _prime_attempt(pipeline, "b" * 32, status=StepStatus.RUNNING)
+        _prime_attempt(
+            pipeline,
+            "b" * 32,
+            status=StepStatus.RUNNING,
+            step_name="current",
+        )
         tracker.check_cache.return_value = _WholeStepCacheHit(
             result=StepResult(
                 step_name="source",
@@ -2356,7 +2444,14 @@ class TestWholeStepCacheReuse:
             patch.object(
                 pipeline,
                 "_commit_whole_step_reuse",
-                side_effect=CommitError([TablePath.CACHE_REUSE.table_name]),
+                side_effect=CommitError(
+                    "step_result:" + "b" * 32,
+                    TablePath.CACHE_REUSE.value,
+                    "d" * 32,
+                    [],
+                    ["cache_reuse.parquet"],
+                    "cache reuse commit failed",
+                ),
             ),
             pytest.raises(CommitError),
         ):
@@ -2387,14 +2482,24 @@ class TestWholeStepCacheReuse:
             patch("artisan.storage.io.staging.StagingManager") as staging,
             patch("artisan.storage.io.commit.DeltaCommitter") as committer,
         ):
+            result = StepResult(
+                step_name="mock_op",
+                step_number=0,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.CACHE_HIT,
+                step_run_id="b" * 32,
+            )
             committed = pipeline._commit_whole_step_reuse(
                 "b" * 32,
                 ("c" * 32,),
                 step_number=0,
                 operation_name="mock_op",
+                result=result,
+                step_spec_id="spec",
+                attempt_started_at=0.0,
             )
 
-        assert committed is False
+        assert committed is None
         validate.assert_called_once()
         staging.assert_not_called()
         committer.assert_not_called()
@@ -2405,7 +2510,12 @@ class TestWholeStepCacheReuse:
         pipeline = _make_pipeline(tmp_path)
         tracker = MagicMock()
         pipeline._step_tracker = tracker
-        _prime_attempt(pipeline, "b" * 32, status=StepStatus.RUNNING)
+        _prime_attempt(
+            pipeline,
+            "b" * 32,
+            status=StepStatus.RUNNING,
+            step_name="current",
+        )
         tracker.check_cache.return_value = _WholeStepCacheHit(
             result=StepResult(
                 step_name="source",
@@ -2420,7 +2530,7 @@ class TestWholeStepCacheReuse:
             execution_run_ids=("c" * 32,),
         )
 
-        with patch.object(pipeline, "_commit_whole_step_reuse", return_value=False):
+        with patch.object(pipeline, "_commit_whole_step_reuse", return_value=None):
             future = pipeline._try_cached_step(
                 _MockOp,
                 {"data": [_INPUT_ID]},
@@ -2725,6 +2835,7 @@ class TestPromoteFilePathsCloudUri:
         import contextlib
 
         import fsspec
+        from fixtures.store_format import publish_test_store
 
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
@@ -2736,28 +2847,27 @@ class TestPromoteFilePathsCloudUri:
             with mem_fs.open(f"/promote-cloud/data_{i}.csv", "wb") as f:
                 f.write(f"x,y\n{i},{i + 1}\n".encode())
 
-        # Pipeline storage is "memory" so step 1 of resolve_fs matches
-        # and uses storage.filesystem() (the same MemoryFileSystem).
-        # delta_root and staging_root must also live on memory:// so
-        # DeltaCommitter can write there.
+        # The input URI uses MemoryFileSystem while the committed format-2
+        # store stays local, exercising the cross-protocol resolution path.
         config = PipelineConfig(
             name="test",
-            delta_root="memory:///promote-cloud-delta",
-            staging_root="memory:///promote-cloud-staging",
+            delta_root=str(tmp_path / "promote-cloud-delta"),
+            staging_root=str(tmp_path / "promote-cloud-staging"),
             working_root=str(tmp_path / "working"),
-            files_root="memory:///promote-cloud-files",
-            storage=StorageConfig(protocol="memory"),
+            files_root=str(tmp_path / "promote-cloud-files"),
+            storage=StorageConfig(),
         )
-        with patch("artisan.storage.io.commit.assert_store_format"):
-            result, count, verified = _promote_file_paths_to_store(
-                [
-                    "memory:///promote-cloud/data_0.csv",
-                    "memory:///promote-cloud/data_1.csv",
-                ],
-                config,
-                step_number=1,
-                operation_name="ingest",
-            )
+        publish_test_store(config.delta_root, config.storage.filesystem())
+        result, count, verified = _promote_file_paths_to_store(
+            [
+                "memory:///promote-cloud/data_0.csv",
+                "memory:///promote-cloud/data_1.csv",
+            ],
+            config,
+            step_number=1,
+            operation_name="ingest",
+            step_run_id="a" * 32,
+        )
         assert count == 2
         assert result is not None
         assert "file" in result
@@ -2766,11 +2876,7 @@ class TestPromoteFilePathsCloudUri:
 
         # Best-effort cleanup of the in-memory fs. MemoryFileSystem
         # doesn't track empty dirs, so a missing parent on rm is fine.
-        for path in (
-            "/promote-cloud",
-            "/promote-cloud-delta",
-            "/promote-cloud-staging",
-        ):
+        for path in ("/promote-cloud",):
             with contextlib.suppress(FileNotFoundError):
                 mem_fs.rm(path, recursive=True)
 
@@ -2797,6 +2903,7 @@ class TestPromoteFilePathsCloudUri:
                 config,
                 step_number=1,
                 operation_name="ingest",
+                step_run_id="a" * 32,
             )
 
 

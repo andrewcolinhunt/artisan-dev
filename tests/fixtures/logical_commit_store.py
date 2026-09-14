@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
@@ -110,6 +111,7 @@ def commit_test_step(
         staging.stage_orchestrator_dataframe(
             frame,
             table_path,
+            commit_kind="step_result",
             step_run_id=step_run_id,
             step_number=step_number,
             operation_name=operation_name,
@@ -118,6 +120,7 @@ def commit_test_step(
     staging.stage_orchestrator_dataframe(
         terminal_frame,
         TablePath.STEPS.value,
+        commit_kind="step_result",
         step_run_id=step_run_id,
         step_number=step_number,
         operation_name=operation_name,
@@ -164,16 +167,23 @@ def _terminal_result(
 
 
 def commit_test_inputs(
-    delta_root: Path,
-    staging_root: Path,
+    delta_root: str | Path,
+    staging_root: str | Path,
     tables: dict[str, pl.DataFrame],
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict[str, Any] | None = None,
+    step_run_id: str | None = None,
 ) -> None:
     """Persist ownerless artifact fixture rows as input registrations."""
-    fs = LocalFileSystem()
+    fs = fs or LocalFileSystem()
+    delta_root_text = str(delta_root)
+    staging_root_text = str(staging_root)
     DeltaCommitter(
-        str(delta_root),
-        StagingManager(str(staging_root), fs),
+        delta_root_text,
+        StagingManager(staging_root_text, fs),
         fs=fs,
+        storage_options=storage_options,
     ).initialize_tables()
     step_numbers = sorted(
         {
@@ -183,9 +193,12 @@ def commit_test_inputs(
             for value in frame["origin_step_number"].unique().to_list()
         }
     ) or [0]
+    if step_run_id is not None and len(step_numbers) != 1:
+        msg = "An explicit fixture owner requires exactly one origin step"
+        raise ValueError(msg)
     for step_number in step_numbers:
-        step_run_id = uuid.uuid4().hex
-        staging = StagingManager(str(staging_root), fs)
+        owner = step_run_id or uuid.uuid4().hex
+        staging = StagingManager(staging_root_text, fs)
         staged_any = False
         for table_path, frame in tables.items():
             selected = (
@@ -199,23 +212,41 @@ def commit_test_inputs(
             staging.stage_orchestrator_dataframe(
                 selected,
                 table_path,
-                step_run_id=step_run_id,
+                commit_kind="input_registration",
+                step_run_id=owner,
                 step_number=step_number,
                 operation_name="test_input_registration",
             )
         if not staged_any:
             continue
         plan = build_commit_plan(
-            delta_root=str(delta_root),
-            staging_root=str(staging_root),
+            delta_root=delta_root_text,
+            staging_root=staging_root_text,
             fs=fs,
             commit_kind="input_registration",
-            step_run_id=step_run_id,
+            step_run_id=owner,
             step_number=step_number,
             operation_name="test_input_registration",
         )
         DeltaCommitter(
-            str(delta_root),
+            delta_root_text,
             staging,
             fs=fs,
+            storage_options=storage_options,
         ).commit_logical(plan)
+
+
+def commit_test_tables(
+    delta_root: str | Path,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, Any] | None,
+    tables: dict[str, pl.DataFrame],
+) -> None:
+    """Seed reader fixtures through a complete logical input registration."""
+    commit_test_inputs(
+        delta_root,
+        f"{delta_root}/_test_staging",
+        tables,
+        fs=fs,
+        storage_options=storage_options,
+    )

@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 
 import polars as pl
 import pytest
-from fixtures.execution_records import executions_df
+from fixtures.logical_commit_store import (
+    commit_test_step,
+)
+from fixtures.logical_commit_store import (
+    commit_test_tables as _commit_tables,
+)
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
@@ -16,12 +21,12 @@ from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.enums import TablePath
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
     ARTIFACT_LOCATIONS_SCHEMA,
-    STEPS_SCHEMA,
 )
 from artisan.utils.hashing import compute_content_digest
 
@@ -74,28 +79,31 @@ def _write_file_ref(
         original_name="payload",
         extension=".bin",
     ).finalize()
-    pl.DataFrame([artifact.to_row()], schema=FileRefArtifact.POLARS_SCHEMA).write_delta(
-        str(root / "artifacts/file_refs")
-    )
-    pl.DataFrame(
-        [
-            {
-                "artifact_id": artifact.artifact_id,
-                "artifact_type": artifact.artifact_type,
-                "origin_step_number": artifact.origin_step_number,
-                "metadata": "{}",
-            }
-        ],
-        schema=ARTIFACT_INDEX_SCHEMA,
-    ).write_delta(str(root / "artifacts/index"))
+    tables = {
+        "artifacts/file_refs": pl.DataFrame(
+            [artifact.to_row()], schema=FileRefArtifact.POLARS_SCHEMA
+        ),
+        TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+            [
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "artifact_type": artifact.artifact_type,
+                    "origin_step_number": artifact.origin_step_number,
+                    "metadata": "{}",
+                }
+            ],
+            schema=ARTIFACT_INDEX_SCHEMA,
+        ),
+    }
     if locations:
-        pl.DataFrame(
+        tables[TablePath.ARTIFACT_LOCATIONS.value] = pl.DataFrame(
             [
                 {"artifact_id": artifact.artifact_id, "uri": location}
                 for location in locations
             ],
             schema=ARTIFACT_LOCATIONS_SCHEMA,
-        ).write_delta(str(root / "artifacts/locations"))
+        )
+    _commit_tables(root, LocalFileSystem(), None, tables)
     return artifact
 
 
@@ -224,11 +232,16 @@ class TestArtifactStoreReadWithDelta:
         df = pl.DataFrame(
             [artifact.to_row() for artifact in artifacts], schema=METRICS_SCHEMA
         )
-        df.write_delta(f"{root}/artifacts/metrics", storage_options=opts)
-
-        # Create artifact_index with test data
-        pl.DataFrame(_index_rows(artifacts), schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                "artifacts/metrics": df,
+                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                    _index_rows(artifacts), schema=ARTIFACT_INDEX_SCHEMA
+                ),
+            },
         )
 
         return store, [artifact.artifact_id for artifact in artifacts]
@@ -285,9 +298,7 @@ class TestBulkLoadMethods:
             "origin_step_number": [0, 1, 2, 1],
             "metadata": ["{}", "{}", "{}", "{}"],
         }
-        pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
+        index = pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA)
 
         # Create artifact_edges: A -> B -> C, A -> D
         prov_data = {
@@ -301,8 +312,16 @@ class TestBulkLoadMethods:
             "group_id": [None, None, None],
             "step_boundary": [True, True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: index,
+                TablePath.ARTIFACT_EDGES.value: pl.DataFrame(prov_data).cast(
+                    ARTIFACT_EDGES_SCHEMA
+                ),
+            },
         )
 
         return store
@@ -378,9 +397,17 @@ class TestGetArtifactsByType:
             _metric({"score": 0.85}, "metric_2", 1),
             _metric({"score": 0.70}, "metric_3", 2),
         ]
-        pl.DataFrame(
-            [artifact.to_row() for artifact in artifacts], schema=METRICS_SCHEMA
-        ).write_delta(f"{root}/artifacts/metrics", storage_options=opts)
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                "artifacts/metrics": pl.DataFrame(
+                    [artifact.to_row() for artifact in artifacts],
+                    schema=METRICS_SCHEMA,
+                )
+            },
+        )
 
         return store, [artifact.artifact_id for artifact in artifacts]
 
@@ -430,8 +457,15 @@ class TestGetArtifactsByType:
         store = ArtifactStore(root, fs=fs, storage_options=opts)
 
         artifact = _config({"key": "val"}, "config_1")
-        pl.DataFrame([artifact.to_row()], schema=CONFIGS_SCHEMA).write_delta(
-            f"{root}/artifacts/configs", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                "artifacts/configs": pl.DataFrame(
+                    [artifact.to_row()], schema=CONFIGS_SCHEMA
+                )
+            },
         )
 
         assert artifact.artifact_id is not None
@@ -461,9 +495,7 @@ class TestLoadOriginalNames:
             "origin_step_number": [1, 1, 2, 2],
             "metadata": ["{}"] * 4,
         }
-        pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
+        index = pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA)
 
         metrics_data = {
             "artifact_id": metric_ids,
@@ -473,9 +505,7 @@ class TestLoadOriginalNames:
             "extension": [".json", ".json"],
             "metadata": ["{}", "{}"],
         }
-        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(
-            f"{root}/artifacts/metrics", storage_options=opts
-        )
+        metrics = pl.DataFrame(metrics_data, schema=METRICS_SCHEMA)
 
         configs_data = {
             "artifact_id": config_ids,
@@ -485,8 +515,15 @@ class TestLoadOriginalNames:
             "extension": [".cfg", ".cfg"],
             "metadata": ["{}", "{}"],
         }
-        pl.DataFrame(configs_data, schema=CONFIGS_SCHEMA).write_delta(
-            f"{root}/artifacts/configs", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: index,
+                "artifacts/metrics": metrics,
+                "artifacts/configs": pl.DataFrame(configs_data, schema=CONFIGS_SCHEMA),
+            },
         )
 
         return store, metric_ids, config_ids
@@ -546,9 +583,7 @@ class TestLoadOriginalNames:
             "origin_step_number": [1, 1],
             "metadata": ["{}", "{}"],
         }
-        pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
+        index = pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA)
 
         metrics_data = {
             "artifact_id": ids,
@@ -558,8 +593,14 @@ class TestLoadOriginalNames:
             "extension": [".json", ".json"],
             "metadata": ["{}", "{}"],
         }
-        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(
-            f"{root}/artifacts/metrics", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: index,
+                "artifacts/metrics": pl.DataFrame(metrics_data, schema=METRICS_SCHEMA),
+            },
         )
 
         result = store.load_original_names(ids)
@@ -587,9 +628,7 @@ class TestArtifactStoreProvenanceQueries:
             "origin_step_number": [0, 1, 2],
             "metadata": ["{}", "{}", "{}"],
         }
-        pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
+        index = pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA)
 
         # Create artifact_edges: A -> B -> C
         prov_data = {
@@ -603,8 +642,16 @@ class TestArtifactStoreProvenanceQueries:
             "group_id": [None, None],
             "step_boundary": [True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: index,
+                TablePath.ARTIFACT_EDGES.value: pl.DataFrame(prov_data).cast(
+                    ARTIFACT_EDGES_SCHEMA
+                ),
+            },
         )
 
         return store
@@ -680,11 +727,16 @@ class TestMetricOriginalNamePersistence:
         df = pl.DataFrame(
             [artifact.to_row() for artifact in artifacts], schema=METRICS_SCHEMA
         )
-        df.write_delta(f"{root}/artifacts/metrics", storage_options=opts)
-
-        # Create artifact_index for lookups
-        pl.DataFrame(_index_rows(artifacts), schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                "artifacts/metrics": df,
+                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                    _index_rows(artifacts), schema=ARTIFACT_INDEX_SCHEMA
+                ),
+            },
         )
 
         return store, [artifact.artifact_id for artifact in artifacts]
@@ -720,11 +772,18 @@ class TestExecutionConfigArtifactRoundTrip:
             {"contig": "40-150,A8-10", "length": "175-275"},
             "5w3x_motif_0_config",
         )
-        pl.DataFrame(_index_rows([artifact]), schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
-        pl.DataFrame([artifact.to_row()], schema=CONFIGS_SCHEMA).write_delta(
-            f"{root}/artifacts/configs", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                    _index_rows([artifact]), schema=ARTIFACT_INDEX_SCHEMA
+                ),
+                "artifacts/configs": pl.DataFrame(
+                    [artifact.to_row()], schema=CONFIGS_SCHEMA
+                ),
+            },
         )
 
         return store, artifact.artifact_id
@@ -796,8 +855,15 @@ class TestGetDescendantArtifactIds:
             "group_id": [None, None, None],
             "step_boundary": [True, True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: pl.DataFrame(prov_data).cast(
+                    ARTIFACT_EDGES_SCHEMA
+                )
+            },
         )
 
         return store
@@ -856,7 +922,7 @@ class TestLoadArtifactTypeMap:
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        pl.DataFrame(
+        index = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
                 "artifact_type": [
@@ -869,7 +935,13 @@ class TestLoadArtifactTypeMap:
                 "metadata": ["{}", "{}", "{}", "{}"],
             },
             schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(f"{root}/artifacts/index", storage_options=opts)
+        )
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {TablePath.ARTIFACT_INDEX.value: index},
+        )
         return store
 
     def test_load_all(self, store_with_index):
@@ -910,7 +982,7 @@ class TestLoadArtifactIdsByType:
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        pl.DataFrame(
+        index = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
                 "artifact_type": ["data", "data", "metric", "metric"],
@@ -918,7 +990,13 @@ class TestLoadArtifactIdsByType:
                 "metadata": ["{}", "{}", "{}", "{}"],
             },
             schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(f"{root}/artifacts/index", storage_options=opts)
+        )
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {TablePath.ARTIFACT_INDEX.value: index},
+        )
         return store
 
     def test_filter_by_type(self, store_with_index):
@@ -968,7 +1046,7 @@ class TestLoadForwardProvenanceMap:
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        pl.DataFrame(
+        edges = pl.DataFrame(
             {
                 "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
                 "source_artifact_id": ["a" * 32, "b" * 32, "a" * 32],
@@ -980,8 +1058,12 @@ class TestLoadForwardProvenanceMap:
                 "group_id": [None, None, None],
                 "step_boundary": [True, True, True],
             },
-        ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
+        ).cast(ARTIFACT_EDGES_SCHEMA)
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {TablePath.ARTIFACT_EDGES.value: edges},
         )
         return store
 
@@ -1055,9 +1137,15 @@ class TestLoadStepNameMap:
                 "duration_seconds": 1.0,
             }
             rows.extend([base, running, succeeded])
-        pl.DataFrame(rows, schema=STEPS_SCHEMA).write_delta(
-            f"{root}/orchestration/steps", storage_options=opts
-        )
+        for offset in range(0, len(rows), 3):
+            commit_test_step(
+                root,
+                f"{root}/_test_staging",
+                rows[offset : offset + 3],
+                {},
+                fs=fs,
+                storage_options=opts,
+            )
         return store
 
     def test_loads_step_names(self, store_with_steps):
@@ -1079,25 +1167,6 @@ class TestLoadStepNameMap:
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        ts = datetime(2025, 1, 1, tzinfo=UTC)
-        executions_df(
-            execution_run_id=["e" * 32],
-            execution_spec_id=["s" * 32],
-            step_run_id=[None],
-            origin_step_number=[0],
-            operation_name=["ingest_fallback"],
-            params=["{}"],
-            user_overrides=["{}"],
-            timestamp_start=[ts],
-            timestamp_end=[ts],
-            source_worker=[0],
-            compute_backend=["local"],
-            success=[True],
-            error=[None],
-            tool_output=[None],
-            worker_log=[None],
-            metadata=["{}"],
-        ).write_delta(f"{root}/orchestration/executions", storage_options=opts)
         result = store.provenance.load_step_name_map()
         assert result == {}
 
@@ -1127,7 +1196,7 @@ class TestGetAssociated:
         target_ids = [artifact.artifact_id for artifact in artifacts]
 
         # Create provenance edges: S1 -> M1, S1 -> M2, S2 -> M3
-        pl.DataFrame(
+        edges = pl.DataFrame(
             {
                 "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
                 "source_artifact_id": [
@@ -1147,14 +1216,21 @@ class TestGetAssociated:
                 "group_id": [None, None, None],
                 "step_boundary": [True, True, True],
             },
-        ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
-        )
+        ).cast(ARTIFACT_EDGES_SCHEMA)
 
         # Create metrics table
-        pl.DataFrame(
-            [artifact.to_row() for artifact in artifacts], schema=METRICS_SCHEMA
-        ).write_delta(f"{root}/artifacts/metrics", storage_options=opts)
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                "artifacts/metrics": pl.DataFrame(
+                    [artifact.to_row() for artifact in artifacts],
+                    schema=METRICS_SCHEMA,
+                ),
+            },
+        )
 
         return store, sources
 
@@ -1252,6 +1328,7 @@ class TestArtifactStoreBackendParametrized:
         sm.stage_orchestrator_dataframe(
             index_df,
             TablePath.ARTIFACT_INDEX.value,
+            commit_kind="input_registration",
             step_run_id=step_run_id,
             step_number=0,
             operation_name="test_input_registration",
