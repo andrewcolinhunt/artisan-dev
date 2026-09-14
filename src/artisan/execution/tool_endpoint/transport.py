@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import io
 import os
+import posixpath
 import shutil
 import tarfile
 import tempfile
 import uuid
 from collections.abc import Iterable
 from typing import Any, BinaryIO
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import httpx
 
@@ -86,7 +87,7 @@ class InlineTransport:
         refs: list[InputRef] = []
         total = 0
         for name, source in files.items():
-            filename = os.path.basename(source.rstrip("/"))
+            filename = _input_filename(source)
             if "://" in source:
                 expected = (expected_content or {}).get(source)
                 if expected is None:
@@ -137,6 +138,10 @@ class InlineTransport:
                 f"Duplicate input roles: {', '.join(repr(name) for name in duplicates)}"
             )
             raise ValueError(msg)
+
+        inline_size = sum(len(ref.data) for ref in refs if ref.data is not None)
+        if inline_size > MAX_INLINE_BYTES:
+            raise ValueError(_inline_input_limit_message())
 
         data_policy = policy or ToolEndpointDataPolicy()
         authorized = {
@@ -307,13 +312,13 @@ def upload_outputs(
         # MinIO, rejected (401) by R2 and modern AWS buckets.
         options = {"config_kwargs": {"signature_version": "s3v4"}}
         try:
-            fs, remote = _resolve_s3(final_target.transport_target, **options)
-            fs.put(spool, remote)
+            fs, remote = _resolve_s3(final_target, **options)
             presigned = str(fs.sign(remote, expiration=PRESIGN_EXPIRY_SECONDS))
+            data_policy.authorize_output(presigned)
+            fs.put(spool, remote)
         except Exception as exc:
             msg = f"output transfer failed for {final_target.safe_display}"
             raise EndpointTransportError(msg) from exc
-        data_policy.authorize_output(presigned)
         return StoredOutputs(uri=final_target.transport_target, presigned_url=presigned)
     finally:
         shutil.rmtree(spool_dir, ignore_errors=True)
@@ -436,7 +441,7 @@ def _compressed_limit_message() -> str:
 def _copy_s3_input(ref: InputRef, target: _EndpointUri, local: str) -> None:
     """Fetch one authorized S3 object and verify its complete contents."""
     try:
-        fs, remote = _resolve_s3(target.transport_target)
+        fs, remote = _resolve_s3(target)
         copy_verified_file(
             artifact_id=None,
             artifact_type="tool input",
@@ -447,7 +452,8 @@ def _copy_s3_input(ref: InputRef, target: _EndpointUri, local: str) -> None:
             fs=fs,
         )
     except ArtifactIntegrityError:
-        raise
+        msg = f"External tool input failed integrity at {target.safe_display}"
+        raise ArtifactIntegrityError(msg) from None
     except Exception as exc:
         msg = f"input transfer failed for {target.safe_display}"
         raise EndpointTransportError(msg) from exc
@@ -519,12 +525,33 @@ def _check_http_response(
         raise EndpointTransportError(msg)
 
 
-def _resolve_s3(uri: str, **storage_options: Any) -> tuple[Any, str]:
+def _resolve_s3(target: object, **storage_options: Any) -> tuple[Any, str]:
     """Return an S3 filesystem and path for an already-authorized target."""
-    if urlsplit(uri).scheme.lower() != "s3":
+    if not isinstance(target, _EndpointUri) or target.scheme != "s3":
         msg = "endpoint credentialed transport supports s3:// only"
         raise ValueError(msg)
     import fsspec
 
-    derived_fs, path = fsspec.core.url_to_fs(uri, **storage_options)
-    return derived_fs, path
+    derived_fs, _path = fsspec.core.url_to_fs(
+        f"s3://{target.authority}",
+        **storage_options,
+    )
+    return derived_fs, _s3_remote_path(target)
+
+
+def _s3_remote_path(target: _EndpointUri) -> str:
+    """Build the fs-native object name from the authorized decoded segments."""
+    return "/".join((target.authority, *target.segments))
+
+
+def _input_filename(source: str) -> str:
+    """Return a local basename that never contains a remote capability query."""
+    if "://" not in source:
+        return os.path.basename(source.rstrip("/"))
+    try:
+        path = urlsplit(source).path
+    except ValueError:
+        return "input"
+    basename = posixpath.basename(path.rstrip("/"))
+    decoded = unquote(basename, errors="replace")
+    return posixpath.basename(decoded.replace("\\", "/")) or "input"

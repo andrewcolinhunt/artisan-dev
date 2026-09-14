@@ -382,6 +382,23 @@ class TestRunToolRequest:
         )
         assert result.manifest.error is None
 
+    def test_copied_deployment_policy_is_revalidated_before_effects(self):
+        policy = ToolEndpointDataPolicy().model_copy(
+            update={"input_allowlist": ("file:///tmp",)}
+        )
+        with (
+            patch.object(server_mod, "instantiate_op") as construct,
+            patch.object(server_mod.tempfile, "mkdtemp") as workspace,
+        ):
+            result = run_tool_request(CatTool, ToolRequest(), data_policy=policy)
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "tool_endpoint_misconfigured"
+        assert error.message == "endpoint deployment data policy is invalid"
+        construct.assert_not_called()
+        workspace.assert_not_called()
+
     def test_bad_input_ref_returns_envelope(self):
         # a ref carrying neither uri nor data raises ValueError in
         # unpack_inputs when an internal caller bypasses InputRef validation
@@ -412,8 +429,21 @@ class TestRunToolRequest:
         error = result.manifest.error
         assert error is not None
         assert error.code == "input_resolution_failed"
-        assert "Duplicate input roles" in error.message
+        assert error.message == "could not resolve tool input"
         assert error.recovery_hint == "CHECK_INPUT"
+
+    def test_input_resolution_error_does_not_echo_untrusted_path(self):
+        marker = "private-marker-" + "x" * 5_000
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(inputs=[InputRef(name=marker, data=b"one")]),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.message == "could not resolve tool input"
+        assert marker not in error.message
 
     def test_missing_input_filesystem_dependency_returns_envelope(self, monkeypatch):
         def boom(self, refs, dest, policy=None):
@@ -645,9 +675,15 @@ class TestRunToolRequestStoredOutputs:
         }
 
     def test_stored_path_never_reaches_inline_cap(self, monkeypatch):
-        # with the cap below any tar, pack_outputs would raise — proving
-        # the stored path never invokes it (the any-size criterion)
-        monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 1)
+        # Stored delivery must never invoke the inline output packer.
+        def fail_inline_pack(*_args, **_kwargs):
+            pytest.fail("stored delivery must not pack outputs inline")
+
+        monkeypatch.setattr(
+            transport_mod.InlineTransport,
+            "pack_outputs",
+            fail_inline_pack,
+        )
         monkeypatch.setattr(
             server_mod,
             "upload_outputs",

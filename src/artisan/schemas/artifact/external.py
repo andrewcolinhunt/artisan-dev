@@ -192,8 +192,15 @@ def _consume_verified_chunks(
     hasher = xxhash.xxh3_128()
     size_bytes = 0
     for chunk in source_chunks:
-        hasher.update(chunk)
         size_bytes += len(chunk)
+        if size_bytes > expected_size:
+            msg = (
+                f"External {artifact_type} artifact {artifact_id} failed integrity "
+                f"at {sanitized_uri(uri)!r}: expected {expected_digest}/"
+                f"{expected_size} bytes, received more than {expected_size} bytes"
+            )
+            raise ArtifactIntegrityError(msg)
+        hasher.update(chunk)
         if target is not None:
             target.write(chunk)
         if chunks is not None:

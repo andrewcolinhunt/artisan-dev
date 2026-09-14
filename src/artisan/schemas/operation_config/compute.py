@@ -129,6 +129,8 @@ class ModalComputeConfig(ComputeConfig):
             remote URI while leaving inline transport available.
     """
 
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
     image: str = ARTISAN_WORKER_IMAGE
     retries: int = Field(default=3, ge=0)
     min_containers: int = Field(default=0, ge=0)
@@ -206,7 +208,7 @@ class ComputeProvider(BaseModel):
         local: Local compute provider config (always available).
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     active: str = "local"
     local: LocalComputeConfig = Field(

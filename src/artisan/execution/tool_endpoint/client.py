@@ -21,6 +21,7 @@ from contextvars import ContextVar
 from typing import Any, NoReturn
 
 import httpx
+from pydantic import ValidationError
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.tool_endpoint.protocol import (
@@ -101,6 +102,7 @@ def call_endpoint(
             operation_name=operation.name,
             recovery_hint="CHECK_INPUT",
         )
+    cfg = _validated_modal_config(cfg, operation.name)
     base_url, headers = _resolve_target_and_auth(cfg, operation.name)
     transport = InlineTransport()
     refs = _pack_request_inputs(operation.name, inputs, cfg, transport)
@@ -315,7 +317,12 @@ def _resolve_target_and_auth(
     """Resolve one endpoint target together with credentials scoped to it."""
     if cfg.endpoint_url is None:
         target = _validated_target(_resolve_url(op_name), op_name, authenticated=True)
-        prefix = cfg.auth_secret or DEFAULT_AUTH_PREFIX
+        prefix = DEFAULT_AUTH_PREFIX if cfg.auth_secret is None else cfg.auth_secret
+        if not prefix.strip():
+            raise _config_error(
+                op_name,
+                "auth_secret must be a nonempty variable prefix",
+            )
         return target, _auth_headers(prefix, op_name)
     authenticated = cfg.auth_secret is not None
     target = _validated_target(cfg.endpoint_url, op_name, authenticated=authenticated)
@@ -324,6 +331,31 @@ def _resolve_target_and_auth(
     if not cfg.auth_secret.strip():
         raise _config_error(op_name, "auth_secret must be a nonempty variable prefix")
     return target, _auth_headers(cfg.auth_secret, op_name)
+
+
+def _validated_modal_config(
+    cfg: ModalComputeConfig,
+    op_name: str,
+) -> ModalComputeConfig:
+    """Revalidate configuration copied through Pydantic's unchecked update path."""
+    try:
+        return ModalComputeConfig.model_validate(
+            cfg.model_dump(mode="python", warnings=False)
+        )
+    except ValidationError as exc:
+        detail = "tool endpoint configuration is invalid"
+        issues = exc.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )
+        if issues:
+            issue = issues[0]
+            reason = str(issue["msg"]).removeprefix("Value error, ")
+            detail = f"{detail}: {reason}"
+        raise _config_error(op_name, detail) from exc
+    except (TypeError, ValueError) as exc:
+        raise _config_error(op_name, "tool endpoint configuration is invalid") from exc
 
 
 def _validated_target(url: str, op_name: str, *, authenticated: bool) -> str:
@@ -346,7 +378,12 @@ def _auth_headers(prefix: str, op_name: str) -> dict[str, str]:
     """
     token_id = env_or_dotenv(f"{prefix}_TOKEN_ID")
     token_secret = env_or_dotenv(f"{prefix}_TOKEN_SECRET")
-    if not token_id or not token_secret:
+    if (
+        not token_id
+        or not token_id.strip()
+        or not token_secret
+        or not token_secret.strip()
+    ):
         raise _config_error(
             op_name,
             f"proxy-auth token pair for prefix {prefix!r} is missing or incomplete",
@@ -380,6 +417,7 @@ def _pack_request_inputs(
             if (
                 not isinstance(digest, str)
                 or len(digest) != 32
+                or any(char not in "0123456789abcdef" for char in digest)
                 or not isinstance(size, int)
                 or isinstance(size, bool)
                 or size < 0
@@ -393,7 +431,14 @@ def _pack_request_inputs(
                 "verified digest and size",
             ) from exc
         authorized_files[name] = target.transport_target
-        expected[target.transport_target] = (digest, size)
+        descriptor = (digest, size)
+        previous = expected.setdefault(target.transport_target, descriptor)
+        if previous != descriptor:
+            raise _config_error(
+                op_name,
+                "canonical-equivalent external inputs carry conflicting "
+                "digest or size descriptors",
+            )
     try:
         return transport.pack_inputs(authorized_files, expected)
     except (OSError, ValueError) as exc:
@@ -446,14 +491,9 @@ def _check(response: httpx.Response, op_name: str) -> None:
             recovery_hint="CHECK_INPUT",
         )
     if not 200 <= response.status_code < 300:
-        detail = (
-            response.text[:500]
-            if response.is_stream_consumed
-            else "response body was not buffered"
-        )
         raise ArtisanError(
             code=ErrorCode.OP_EXECUTE_FAILED,
-            message=(f"tool endpoint returned {response.status_code}: {detail}"),
+            message=f"tool endpoint request failed ({response.status_code})",
             error_type="compute",
             operation_name=op_name,
         )

@@ -77,11 +77,18 @@ class TestToolEndpointDataPolicy:
             "s3://bucket/a/%2E%2E/b",
             "s3://bucket/a%2Fb",
             "s3://bucket/a%5Cb",
+            "s3://bucket/a%3Fb",
             "s3://bucket/a%ZZ",
             "s3://bucket/a?token=secret",
             "s3://bucket:9000/a",
+            "s3://bucket:/a",
             "s3://user:secret@bucket/a",
             "s3://buck*/a",
+            "s3://[::1]/a",
+            "s3://127.0.0.1/a",
+            "s3://bucket_name/a",
+            "s3://-bucket/a",
+            "s3://bucket-/a",
             "file:///tmp/a",
             "memory://bucket/a",
         ],
@@ -122,6 +129,46 @@ class TestToolEndpointDataPolicy:
             with pytest.raises(ValueError, match="not allowed"):
                 policy.authorize_input(uri)
 
+    def test_http_host_uses_transport_idna_without_alias_collisions(self):
+        policy = ToolEndpointDataPolicy(input_allowlist=("https://faß.de",))
+
+        assert policy.input_allowlist == ("https://xn--fa-hia.de",)
+        assert (
+            policy.authorize_input("https://faß.de/input").transport_target
+            == "https://xn--fa-hia.de/input"
+        )
+        with pytest.raises(ValueError, match="not allowed"):
+            policy.authorize_input("https://fass.de/input")
+
+    def test_unicode_terminal_dot_is_normalized_once_and_idempotently(self):
+        policy = ToolEndpointDataPolicy(input_allowlist=("https://example.com。",))
+
+        assert policy.input_allowlist == ("https://example.com",)
+        assert ToolEndpointDataPolicy.model_validate(policy.model_dump()) == policy
+
+    @pytest.mark.parametrize(
+        "root",
+        [
+            "https://[v1.example]",
+            "https://example.com..",
+            " https://example.com",
+            "https://example.com?",
+            "https://example.com#",
+            "s3://bucket/path?",
+            "s3://bucket/path#",
+        ],
+    )
+    def test_ambiguous_authority_and_empty_delimiters_are_rejected(self, root):
+        with pytest.raises(ValidationError):
+            ToolEndpointDataPolicy(input_allowlist=(root,))
+
+    def test_http_capability_requires_explicit_path(self):
+        policy = ToolEndpointDataPolicy(input_allowlist=("https://example.com",))
+
+        for uri in ("https://example.com", "https://example.com?sig=x"):
+            with pytest.raises(ValueError, match="input URI is invalid"):
+                policy.authorize_input(uri)
+
     @pytest.mark.parametrize(
         "root",
         [
@@ -154,6 +201,21 @@ class TestToolEndpointDataPolicy:
         with pytest.raises(ValidationError, match="Extra inputs"):
             ToolEndpointDataPolicy(allow_all=True)
 
+    def test_policy_validation_errors_hide_sensitive_inputs(self):
+        secret = "fake-password"
+        username = "alice-private"
+
+        with pytest.raises(ValidationError) as exc_info:
+            ToolEndpointDataPolicy(
+                input_allowlist=(
+                    f"https://{username}:{secret}@example.com?signature=fake-token",
+                )
+            )
+
+        message = str(exc_info.value)
+        for value in (username, secret, "signature", "fake-token"):
+            assert value not in message
+
     def test_rejection_removes_credentials_query_fragment_and_signature(self):
         policy = ToolEndpointDataPolicy()
         uri = "https://user:password@example.com/private?signature=fake-secret#token"
@@ -166,10 +228,43 @@ class TestToolEndpointDataPolicy:
         for secret in ("user", "password", "signature", "fake-secret", "token"):
             assert secret not in message
 
+    def test_safe_display_normalizes_matching_default_port(self):
+        policy = ToolEndpointDataPolicy()
+
+        with pytest.raises(ValueError) as exc_info:
+            policy.authorize_input(
+                "https://user:fake-secret@example.com:443/private#token"
+            )
+
+        assert "https://example.com/private" in str(exc_info.value)
+        assert ":443" not in str(exc_info.value)
+
+    def test_safe_display_is_bounded_and_never_emits_control_characters(self):
+        policy = ToolEndpointDataPolicy()
+        long_uri = f"https://example.com/{'a' * 1_000}?signature=fake-secret"
+
+        with pytest.raises(ValueError) as exc_info:
+            policy.authorize_input(long_uri)
+
+        message = str(exc_info.value)
+        assert len(message) < 400
+        assert "signature" not in message
+        assert "fake-secret" not in message
+
+        with pytest.raises(ValueError) as control_exc:
+            policy.authorize_input("https://example.com/a\x1btoken")
+        assert "\x1b" not in str(control_exc.value)
+        assert "token" not in str(control_exc.value)
+
     @pytest.mark.parametrize(
         "uri",
         [
             "https://example.com/a%ZZ",
+            "https://example.com:/path",
+            "https://example.com/a%0Aheader",
+            "https://example.com/a?value=%7f",
+            "https://example.com/a%C2%80header",
+            "https://example.com/a%E2%80%AEheader",
             "https://example.com/a\nheader",
             "https://example.com/a raw-space",
             "https://example.com/path#fragment",

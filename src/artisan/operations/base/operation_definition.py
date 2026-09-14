@@ -79,6 +79,7 @@ class OperationDefinition(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         str_strip_whitespace=True,
+        hide_input_in_errors=True,
     )
 
     _registry: ClassVar[dict[str, type[OperationDefinition]]] = {}
