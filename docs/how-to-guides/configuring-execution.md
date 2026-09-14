@@ -97,6 +97,7 @@ operation's declaration, or pass `compute_provider` to select or patch a
 provider for one invocation:
 
 ```python
+from artisan.schemas.operation_config import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 
@@ -167,11 +168,12 @@ Modal-specific provider configuration. Hardware fields (`gpu`, `cpu`,
 | `volumes` | `dict[str, str]` | `{}` | Mount path → volume name (e.g. `{"/weights": "foundry-weights"}`). Each volume is resolved via `modal.Volume.from_name(name, create_if_missing=True, version=2)` — surviving across cold starts is the point. |
 | `env` | `dict[str, str]` | `{}` | Environment variables set inside the container (e.g. `{"HF_XET_HIGH_PERFORMANCE": "1"}`). Applied as an image layer; cache hits survive as long as the dict is stable. |
 | `local_python_sources` | `list[str]` | `[]` | Top-level Python package names overlaid onto the **worker** image, shadowing the image's baked versions — dev-mode iteration only (`artisan modal deploy --overlay` appends). Default `[]`: op code is baked into the image. The endpoint image carries no artisan — it validates requests against the op's `Params` JSON schema baked in at deploy time. |
-| `endpoint_url` | `str \| None` | `None` | Base URL of an externally-deployed tool endpoint. `None` resolves the Artisan-deployed app `artisan-tool-<op.name>` via the Modal SDK. |
-| `auth_secret` | `str \| None` | `None` | Env-var prefix for the proxy-auth token pair (`<prefix>_TOKEN_ID` / `<prefix>_TOKEN_SECRET`). `None` uses `MODAL_PROXY`. |
+| `endpoint_url` | `str \| None` | `None` | Absolute root URL of an externally deployed endpoint. `None` resolves `artisan-tool-<op.name>` through Modal. Custom URLs may not contain credentials, a path, query, or fragment. |
+| `auth_secret` | `str \| None` | `None` | Env-var prefix for a proxy-auth token pair (`<prefix>_TOKEN_ID` / `<prefix>_TOKEN_SECRET`). For the built-in Modal endpoint, `None` uses `MODAL_PROXY`. A custom URL with `None` is unauthenticated; setting a prefix requires a complete pair and HTTPS. |
 | `poll_interval` | `float` | `2.0` | Seconds between `/result` polls while a tool job runs. |
 | `max_concurrent_calls` | `int` | `64` | Client-side cap on concurrent endpoint calls per unit — the execute router fans one thread per artifact up to this bound. The server-side sibling is `max_containers`. |
 | `output_store` | `str \| None` | `None` | Object-store prefix (`s3://bucket/prefix`) to deliver tool outputs under, sent per request. `None` returns outputs inline (100 MB bound). See *Object-store output delivery* below. |
+| `data_policy` | `ToolEndpointDataPolicy` | empty, default-deny | Deployment-owned input-read and output-write allowlists. Inline data needs no entry; every remote URI must match a baked S3 prefix or exact HTTP origin. |
 
 The worker image must carry everything the op needs — tool binaries,
 artisan, and the op's own module are baked in (see the op-container-images
@@ -235,13 +237,21 @@ shell-inherited exports. Override the variable prefix per op via
 `ModalComputeConfig.auth_secret`. Missing tokens fail fast with the setup
 instructions in the error, before any network call.
 
+Endpoint selection and authentication are one decision. A built-in Modal
+endpoint discovers `MODAL_PROXY`. A custom `endpoint_url` sends no
+authentication and does not look up `MODAL_PROXY` unless `auth_secret`
+explicitly names a token prefix. Authenticated endpoints must use HTTPS.
+Control requests never follow redirects; an unexpected redirect is a
+configuration error, not a new destination for the credentials.
+
 ### Transport limits
 
 Input files ship inline in the submit request and outputs return as a
-tar — bounded at 100 MB per direction. Inputs that already live on object
-storage pass their `s3://` URI by reference (no re-upload, no bound — see
+tar — bounded at 100 MB per direction. Eligible complete-file artifacts
+that already live on object storage pass their `s3://` URI by reference
+(no re-upload, no bound — see
 *Object-store input delivery* below), and outputs can be delivered to an
-object store with no size bound — see *Object-store output delivery*
+object store without the 100 MB inline bound — see *Object-store output delivery*
 below. Large static data (model weights) belongs on Modal Volumes
 (`ModalComputeConfig.volumes`), not in the request.
 
@@ -252,20 +262,48 @@ dev-host source for iteration.
 (object-store-input-delivery)=
 ### Object-store input delivery
 
-An input artifact whose bytes already live in an object store (a
-`LargeFileArtifact`, or any file-backed artifact produced on a cloud
-backend) crosses to the worker **by reference** on an endpoint step: the
-client sends the `s3://` URI, and the worker fetches it with its own
-ambient credentials. The client never downloads it and never inlines it,
-so the 100 MB inline bound does not apply — a 2 GB MSA database crosses
-the same way a 1 MB PDB does. Nothing changes for local execution, and
-nothing changes in your op: `preprocess` still reads
-`artifact.materialized_path` (now the URI). This is automatic — there is
-no flag to set.
+An externally stored `FileRefArtifact` or `LargeFileArtifact` crosses to
+the worker **by reference** on an endpoint step. The client sends its URI,
+`content_digest`, and `size_bytes`; the worker authorizes the URI,
+downloads the complete file, and verifies both integrity values before
+the tool can see a local path. An `AppendableArtifact` still selects and
+verifies its bounded record locally, then sends that record inline rather
+than exposing the shared container URI. Nothing changes for local
+execution or for the operation's `preprocess` implementation.
 
-The worker reads inputs with the **same Modal Secret** that delivers
-outputs, so scope that Secret's IAM policy to grant **read** on the input
-buckets as well as write on the output prefixes.
+Remote input access is off by default. The operation's class-level config
+must include every permitted S3 path-segment prefix or HTTP capability
+origin before deployment:
+
+```python
+data_policy=ToolEndpointDataPolicy(
+    input_allowlist=(
+        "s3://your-bucket/reference-data",
+        "https://downloads.example.com",
+    ),
+)
+```
+
+S3 matching is bucket- and segment-aware: allowing `s3://bucket/data`
+does not allow `s3://bucket/database`. HTTP entries are exact origins;
+signed paths and queries remain per-request capabilities. Other schemes,
+including `file://`, are not endpoint transports.
+
+Direct HTTP consumers encode the same contract as two role-keyed maps:
+
+```text
+input_uris={"dataset":"https://downloads.example.com/input.csv?sig=..."}
+input_integrity={"dataset":{"content_digest":"<32 lowercase hex>","size_bytes":123}}
+```
+
+The maps must have exactly the same keys. `data_policy` is never a request
+field; only the deployment owner can change it.
+
+The worker reads S3 inputs with the **same Modal Secret** that delivers
+S3 outputs, so scope that Secret's IAM policy to grant **read** on the
+allowed input prefixes as well as write on the allowed output prefixes.
+The policy and IAM scope are separate defenses: the policy constrains
+caller-directed I/O, while the Secret supplies credentials.
 
 :::{warning}
 **R2 / custom-endpoint footgun — a required deploy step.** For a
@@ -292,58 +330,69 @@ pipeline does this automatically via `files_root`.
 ### Object-store output delivery
 
 The 100 MB output bound applies only to inline returns. Set
-`output_store` to deliver outputs of any size to an object store
-instead. The destination is **request data**: every caller of one
-deployed endpoint picks its own, per run, with no redeploy.
+`output_store` to bypass that inline bound and deliver outputs to S3. The requested
+destination travels per call, but it must remain beneath an output prefix
+baked into the endpoint deployment. Changing or widening that policy
+requires a redeploy.
 
 ```python
-op = FoldComplex(
-    compute_provider=ComputeProvider(
-        active="modal",
+class FoldComplex(OperationDefinition):
+    compute_provider = ComputeProvider(
         modal=ModalComputeConfig(
             image="ghcr.io/your-org/boltz-worker:0.4",
-            secrets=["aws-s3"],  # worker upload credentials
-            output_store="s3://your-bucket/runs",  # this caller's choice
+            secrets=["aws-s3"],
+            output_store="s3://your-bucket/runs",
+            data_policy=ToolEndpointDataPolicy(
+                output_allowlist=(
+                    "s3://your-bucket/runs",
+                    "https://your-bucket.s3.amazonaws.com",
+                ),
+            ),
         ),
     )
-)
+    ...
+
+# Redeploy after defining or changing the policy:
+# artisan modal deploy fold_complex
 ```
 
 The worker tars the outputs, uploads
 `<output_store>/<op-name>/<uuid>.tar.gz` with its own credentials, and
 the `/result` manifest carries the URI plus a presigned GET URL (7-day
 expiry, matching Modal's result retention). The artisan client fetches
-the tarball straight from the store; `/download` 307-redirects to the
-same URL for curl-style consumers — one plain HTTP GET, no AWS
-credentials. Omit `output_store` and behavior is exactly the inline
-mode above.
+the tarball straight from the store with one plain, non-redirecting HTTP
+GET and no AWS credentials. The generated URL's exact origin must also be
+in `output_allowlist`. `/download` exposes the same capability to raw
+consumers as a redirect, but Artisan's client treats every control-plane
+redirect as an error. Omit `output_store` and behavior is exactly the
+inline mode above.
 
 Operational notes:
 
 - **Credentials.** Prefix-mode uploads run with the worker's Modal
   Secret (`secrets=["aws-s3"]`). Use long-lived IAM user keys — STS
   session credentials cap presign lifetime below 7 days — and scope the
-  key's IAM policy to the prefixes callers may target: that policy is
-  the access-control surface for worker-identity writes.
+  key's IAM policy to the prefixes the deployment allows.
 - **Lifecycle.** Artisan never deletes delivered tarballs. Pair
   destination prefixes with a bucket lifecycle policy (≥ 7 days,
   matching presign and result expiry).
-- **Caller-owned buckets.** A caller outside the worker's IAM universe
+- **Caller-owned buckets.** The endpoint policy must allow the destination.
+  A caller outside the worker's IAM universe
   either grants the worker's principal `s3:PutObject` on its prefix via
   bucket policy, or skips shared credentials entirely with a presigned
   PUT (below).
-- **Redeploy to enable.** An endpoint deployed before this feature
-  ignores the field and silently falls back to inline delivery.
+- **Redeploy to change access.** `data_policy` is baked into the worker;
+  caller fields cannot add or widen its roots.
 
 (presigned-puts-and-external-consumers-capability-mode)=
 #### Presigned PUTs and external consumers (capability mode)
 
 `output_store` rides `/submit` as a plain form field, so a consumer
-with no artisan installation can direct delivery. Two forms,
-discriminated by scheme: an object-store prefix (`s3://…`, the worker's
-credentials write) or a presigned PUT URL (`https://…`) the caller
-mints for its own bucket — the worker PUTs the tarball through it and
-no store credentials cross the boundary in either direction:
+with no artisan installation can request delivery within the deployment
+policy. Two forms are accepted: an S3 prefix written with worker
+credentials, or an HTTP(S) PUT capability minted by the caller. Capability
+mode works only when that exact HTTP origin is in the deployment's
+`output_allowlist`; the signed path and query remain request data:
 
 ```bash
 # mint a presigned PUT with your own credentials, e.g. boto3:
@@ -366,14 +415,16 @@ unless configured with `Config(signature_version="s3v4")` — R2 and
 modern AWS buckets reject SigV2 with 401) with default (host-only)
 signed headers — the worker adds an explicit `Content-Length` and
 nothing else. A single presigned PUT is bounded by S3's 5 GiB
-per-object limit; prefix mode multiparts transparently and has no such
-bound. Presigned PUT URLs are per-request
+per-object limit; prefix mode can use the filesystem's multipart upload.
+Artisan's compressed-size, expanded-size, and member-count archive budgets
+still apply to both modes. Presigned PUT URLs are per-request
 wire data: `ModalComputeConfig.output_store` rejects them at
 import time, and the artisan client always uses prefix mode.
 
-Inputs compose: input-ref URIs accept presigned GET URLs too, so a
-fully credential-free deployment (presigned GETs in, presigned PUT out)
-needs no object-store secret at all.
+Inputs compose: input-ref URIs accept presigned GET URLs whose origins are
+in `input_allowlist`, and each ref must include `content_digest` and
+`size_bytes`. A deployment using only authorized GET and PUT capabilities
+needs no object-store secret.
 
 ---
 
