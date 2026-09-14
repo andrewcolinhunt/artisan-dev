@@ -263,9 +263,9 @@ def _stage_execution_edges(
     if execution_edges.is_empty():
         return
     with fs.open(f"{staging_path}/execution_edges.parquet", "wb") as f:
-        execution_edges.cast(get_schema(TablePath.EXECUTION_EDGES)).write_parquet(
-            f, compression="zstd"
-        )
+        execution_edges.cast(
+            pl.Schema(get_schema(TablePath.EXECUTION_EDGES))
+        ).write_parquet(f, compression="zstd")
 
 
 def _write_execution_record(

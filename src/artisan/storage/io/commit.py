@@ -432,7 +432,7 @@ class DeltaCommitter:
 
     def _append(self, frame: pl.DataFrame, table_path: str) -> None:
         expected = get_physical_schema_for_path(table_path)
-        frame = frame.cast(expected)
+        frame = frame.cast(pl.Schema(expected))
         if dict(frame.schema) != expected:
             msg = f"Refusing a schema-changing write to {table_path!r}"
             raise StoreIntegrityError(msg)

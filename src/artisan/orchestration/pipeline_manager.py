@@ -393,35 +393,38 @@ def _promote_file_paths_to_store(
         ],
         schema={"artifact_id": pl.String, "uri": pl.String},
     )
-    staging_kwargs = {
-        "step_run_id": step_run_id,
-        "step_number": step_number,
-        "operation_name": operation_name,
-    }
     staging_manager.stage_orchestrator_dataframe(
         file_ref_df,
         "artifacts/file_refs",
         commit_kind="input_registration",
-        **staging_kwargs,
+        step_run_id=step_run_id,
+        step_number=step_number,
+        operation_name=operation_name,
     )
     staging_manager.stage_orchestrator_dataframe(
         index_df,
         TablePath.ARTIFACT_INDEX.value,
         commit_kind="input_registration",
-        **staging_kwargs,
+        step_run_id=step_run_id,
+        step_number=step_number,
+        operation_name=operation_name,
     )
     staging_manager.stage_orchestrator_dataframe(
         location_df,
         TablePath.ARTIFACT_LOCATIONS.value,
         commit_kind="input_registration",
-        **staging_kwargs,
+        step_run_id=step_run_id,
+        step_number=step_number,
+        operation_name=operation_name,
     )
     plan = build_commit_plan(
         delta_root=config.delta_root,
         staging_root=config.staging_root,
         fs=fs,
         commit_kind="input_registration",
-        **staging_kwargs,
+        step_run_id=step_run_id,
+        step_number=step_number,
+        operation_name=operation_name,
     )
     committer.commit_logical(plan, preserve_staging=config.preserve_staging)
 

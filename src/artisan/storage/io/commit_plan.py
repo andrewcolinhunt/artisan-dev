@@ -384,7 +384,7 @@ def _inspect_staging(
 ) -> dict[str, list[tuple[PlannedFile, pl.DataFrame]]]:
     """Inspect only the named worker and orchestrator directories."""
     allowed = _staging_table_paths()
-    directories = [
+    directories: list[tuple[str, str | None]] = [
         (
             shard_uri(
                 staging_root,

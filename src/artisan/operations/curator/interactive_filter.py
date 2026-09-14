@@ -11,7 +11,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
@@ -40,6 +40,9 @@ from artisan.utils.dataframes import encode_metric_value
 from artisan.utils.dicts import flatten_dict
 from artisan.utils.hashing import digest_utf8
 from artisan.utils.path import uri_join
+
+if TYPE_CHECKING:
+    from artisan.orchestration.engine.step_tracker import StepTracker
 
 
 @dataclass
@@ -646,7 +649,7 @@ class InteractiveFilter:
     def _commit_running_attempt(
         self,
         *,
-        tracker: Any,
+        tracker: StepTracker,
         step_name: str,
         step_number: int,
         step_spec_id: str,
