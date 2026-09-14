@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from artisan.storage.core.store_format import assert_store_format
+
 if TYPE_CHECKING:
     from fsspec import AbstractFileSystem
 
@@ -94,6 +96,7 @@ def run_status(
     from artisan.visualization.inspect import inspect_pipeline
 
     storage = storage or StorageConfig()
+    assert_store_format(delta_root, storage.filesystem())
     steps_df = inspect_pipeline(
         delta_root,
         pipeline_run_id=pipeline_run_id,
@@ -160,12 +163,14 @@ def resolve_step_number(
     import polars as pl
 
     from artisan.schemas.enums import TablePath
+    from artisan.storage.core.store_format import assert_store_format
     from artisan.utils.path import uri_join
 
     if fs is None:
         from fsspec.implementations.local import LocalFileSystem
 
         fs = LocalFileSystem()
+    assert_store_format(delta_root, fs)
     steps_path = uri_join(delta_root, TablePath.STEPS)
     if not fs.exists(steps_path):
         msg = f"Steps table not found at {steps_path}"

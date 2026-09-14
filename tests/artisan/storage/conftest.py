@@ -13,6 +13,7 @@ import pytest
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.storage.core.store_format import publish_store_manifest
 
 
 @pytest.fixture(
@@ -38,5 +39,9 @@ def backend_fs(request, tmp_path):
     invisible to the fixture closure the auto-marker inspects.
     """
     if request.param == "local":
-        return LocalFileSystem(), StorageConfig(), str(tmp_path)
-    return request.getfixturevalue("s3_fs")  # already (fs, storage, uri_prefix)
+        result = LocalFileSystem(), StorageConfig(), str(tmp_path)
+    else:
+        result = request.getfixturevalue("s3_fs")
+    fs, _storage, root = result
+    publish_store_manifest(root, fs)
+    return result

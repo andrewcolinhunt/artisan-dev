@@ -20,6 +20,7 @@ from fsspec import AbstractFileSystem
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
@@ -46,6 +47,7 @@ def _scan_or_empty(
         from fsspec.implementations.local import LocalFileSystem
 
         fs = LocalFileSystem()
+    assert_store_format(delta_root, fs)
     table_path = uri_join(delta_root, table)
     if not fs.exists(table_path):
         return pl.DataFrame(schema=empty_schema)

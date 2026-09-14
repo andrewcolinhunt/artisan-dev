@@ -104,6 +104,11 @@ ARTIFACT_INDEX_SCHEMA = {
     "metadata": pl.String,  # JSON - additional data
 }
 
+ARTIFACT_LOCATIONS_SCHEMA = {
+    "artifact_id": pl.String,
+    "uri": pl.String,
+}
+
 # =============================================================================
 # steps table
 # =============================================================================
@@ -152,6 +157,7 @@ FRAMEWORK_SCHEMAS: dict[TablePath, dict[str, Any]] = {
     TablePath.EXECUTION_EDGES: EXECUTION_EDGES_SCHEMA,
     TablePath.ARTIFACT_EDGES: ARTIFACT_EDGES_SCHEMA,
     TablePath.ARTIFACT_INDEX: ARTIFACT_INDEX_SCHEMA,
+    TablePath.ARTIFACT_LOCATIONS: ARTIFACT_LOCATIONS_SCHEMA,
     TablePath.STEPS: STEPS_SCHEMA,
 }
 
@@ -160,6 +166,7 @@ FRAMEWORK_SCHEMAS: dict[TablePath, dict[str, Any]] = {
 NON_PARTITIONED_TABLES: frozenset[TablePath] = frozenset(
     {
         TablePath.ARTIFACT_INDEX,
+        TablePath.ARTIFACT_LOCATIONS,
         TablePath.ARTIFACT_EDGES,
         TablePath.EXECUTION_EDGES,
         TablePath.STEPS,

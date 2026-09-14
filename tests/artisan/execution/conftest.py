@@ -2,23 +2,24 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import polars as pl
 import pytest
-import xxhash
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
+from artisan.utils.hashing import compute_content_digest
 
 
-def compute_artifact_id(content: bytes) -> str:
-    """Compute xxh3_128 hash for content-addressed ID."""
-    return xxhash.xxh3_128(content).hexdigest()
+@pytest.fixture(autouse=True)
+def _format_common_delta_root(tmp_path: Path) -> None:
+    """Initialize the conventional execution-test Delta root as format 2."""
+    publish_store_manifest(str(tmp_path / "delta"), LocalFileSystem())
 
 
 def _setup_delta_tables(
@@ -37,6 +38,7 @@ def _setup_delta_tables(
         file_refs: List of file ref artifact data dicts.
         index_entries: List of artifact_index entries.
     """
+    publish_store_manifest(str(base_path), LocalFileSystem())
     if metrics:
         metrics_path = base_path / "artifacts/metrics"
         df = pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA)
@@ -57,26 +59,14 @@ def _setup_delta_tables(
 def metric_artifact():
     """Create a test MetricArtifact."""
     metrics = {"score": 0.95, "confidence": 0.87}
-    content = json.dumps(metrics).encode("utf-8")
-    artifact_id = compute_artifact_id(content)
-    return MetricArtifact(
-        artifact_id=artifact_id,
-        origin_step_number=1,
-        content=content,
-    )
+    return MetricArtifact.draft(metrics, "metric.json", 1).finalize()
 
 
 @pytest.fixture
 def metric_artifact_2():
     """Create a second test MetricArtifact with different content."""
     metrics = {"score": 0.72, "accuracy": 1.23}
-    content = json.dumps(metrics).encode("utf-8")
-    artifact_id = compute_artifact_id(content)
-    return MetricArtifact(
-        artifact_id=artifact_id,
-        origin_step_number=1,
-        content=content,
-    )
+    return MetricArtifact.draft(metrics, "metric_2.json", 1).finalize()
 
 
 @pytest.fixture
@@ -88,24 +78,12 @@ def file_ref_artifact(tmp_path):
     content = b"ATOM      1  CA  GLY A   1       1.000   2.000   3.000  1.00  0.00           C\n"
     file_path.write_bytes(content)
 
-    content_hash = compute_artifact_id(content)
-    # Two-step hash: artifact_id is hash of metadata (content_hash, path, size)
-    metadata_str = json.dumps(
-        {
-            "content_hash": content_hash,
-            "path": str(file_path),
-            "size_bytes": len(content),
-        },
-        sort_keys=True,
-    )
-    artifact_id = compute_artifact_id(metadata_str.encode())
-    return FileRefArtifact(
-        artifact_id=artifact_id,
-        origin_step_number=0,
-        content_hash=content_hash,
+    return FileRefArtifact.draft(
         path=str(file_path),
+        content_hash=compute_content_digest(content),
         size_bytes=len(content),
-    )
+        step_number=0,
+    ).finalize()
 
 
 @pytest.fixture
@@ -115,17 +93,7 @@ def artifact_store_with_metric(tmp_path, metric_artifact):
 
     _setup_delta_tables(
         base_path,
-        metrics=[
-            {
-                "artifact_id": metric_artifact.artifact_id,
-                "origin_step_number": metric_artifact.origin_step_number,
-                "content": metric_artifact.content,
-                "original_name": None,
-                "extension": None,
-                "metadata": "{}",
-                "external_path": None,
-            }
-        ],
+        metrics=[metric_artifact.to_row()],
         index_entries=[
             {
                 "artifact_id": metric_artifact.artifact_id,
@@ -146,19 +114,7 @@ def artifact_store_with_file_ref(tmp_path, file_ref_artifact):
 
     _setup_delta_tables(
         base_path,
-        file_refs=[
-            {
-                "artifact_id": file_ref_artifact.artifact_id,
-                "origin_step_number": file_ref_artifact.origin_step_number,
-                "content_hash": file_ref_artifact.content_hash,
-                "path": file_ref_artifact.path,
-                "size_bytes": file_ref_artifact.size_bytes,
-                "original_name": None,
-                "extension": None,
-                "metadata": "{}",
-                "external_path": None,
-            }
-        ],
+        file_refs=[file_ref_artifact.to_row()],
         index_entries=[
             {
                 "artifact_id": file_ref_artifact.artifact_id,
@@ -168,6 +124,10 @@ def artifact_store_with_file_ref(tmp_path, file_ref_artifact):
             }
         ],
     )
+    pl.DataFrame(
+        [{"artifact_id": file_ref_artifact.artifact_id, "uri": file_ref_artifact.path}],
+        schema={"artifact_id": pl.String, "uri": pl.String},
+    ).write_delta(str(base_path / "artifacts/locations"))
 
     return ArtifactStore(str(base_path), fs=LocalFileSystem())
 
@@ -183,30 +143,8 @@ def artifact_store_with_all_types(
 
     _setup_delta_tables(
         base_path,
-        metrics=[
-            {
-                "artifact_id": metric_artifact.artifact_id,
-                "origin_step_number": metric_artifact.origin_step_number,
-                "content": metric_artifact.content,
-                "original_name": None,
-                "extension": None,
-                "metadata": "{}",
-                "external_path": None,
-            }
-        ],
-        file_refs=[
-            {
-                "artifact_id": file_ref_artifact.artifact_id,
-                "origin_step_number": file_ref_artifact.origin_step_number,
-                "content_hash": file_ref_artifact.content_hash,
-                "path": file_ref_artifact.path,
-                "size_bytes": file_ref_artifact.size_bytes,
-                "original_name": None,
-                "extension": None,
-                "metadata": "{}",
-                "external_path": None,
-            }
-        ],
+        metrics=[metric_artifact.to_row()],
+        file_refs=[file_ref_artifact.to_row()],
         index_entries=[
             {
                 "artifact_id": metric_artifact.artifact_id,
@@ -222,5 +160,9 @@ def artifact_store_with_all_types(
             },
         ],
     )
+    pl.DataFrame(
+        [{"artifact_id": file_ref_artifact.artifact_id, "uri": file_ref_artifact.path}],
+        schema={"artifact_id": pl.String, "uri": pl.String},
+    ).write_delta(str(base_path / "artifacts/locations"))
 
     return ArtifactStore(str(base_path), fs=LocalFileSystem())

@@ -18,6 +18,7 @@ from artisan.schemas.enums import CachePolicy, TablePath
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.orchestration.step_state import StepState
+from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import STEPS_SCHEMA
 from artisan.utils.path import uri_join
 
@@ -50,6 +51,7 @@ class StepTracker:
         self._steps_path = uri_join(delta_root, TablePath.STEPS)
         self._pipeline_run_id = pipeline_run_id
         self._storage_options = storage_options
+        assert_store_format(delta_root, self._fs)
 
     def check_cache(
         self,

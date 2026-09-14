@@ -12,6 +12,7 @@ import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 
 
@@ -43,6 +44,7 @@ class ProvenanceStore:
         self.base_path = base_path
         self._fs = fs
         self._storage_options = storage_options or {}
+        assert_store_format(self.base_path, self._fs)
 
     def _table_path(self, table: TablePath) -> str:
         """Resolve the URI for a Delta table."""

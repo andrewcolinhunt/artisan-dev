@@ -52,14 +52,15 @@ class TestTablePath:
     def test_tables_defined(self):
         """Verify all framework Delta Lake table paths."""
         assert TablePath.ARTIFACT_INDEX == "artifacts/index"
+        assert TablePath.ARTIFACT_LOCATIONS == "artifacts/locations"
         assert TablePath.ARTIFACT_EDGES == "provenance/artifact_edges"
         assert TablePath.EXECUTION_EDGES == "provenance/execution_edges"
         assert TablePath.EXECUTIONS == "orchestration/executions"
         assert TablePath.STEPS == "orchestration/steps"
 
     def test_enum_count(self):
-        """Ensure exactly 5 framework tables."""
-        assert len(TablePath) == 5
+        """Ensure exactly 6 framework tables."""
+        assert len(TablePath) == 6
 
     def test_execution_edges_value(self):
         """Test EXECUTION_EDGES enum value."""

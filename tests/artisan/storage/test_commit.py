@@ -9,6 +9,7 @@ from fixtures.execution_records import executions_df
 from artisan.errors import CommitError
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
@@ -40,6 +41,7 @@ def commit_env(backend_fs):
     committer = DeltaCommitter(
         delta_root, sm, fs=fs, storage_options=storage.delta_storage_options()
     )
+    publish_store_manifest(delta_root, fs)
     return committer, fs, storage, delta_root, staging_root
 
 
@@ -60,7 +62,6 @@ class TestDeltaCommitter:
                 "original_name": ["test"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -85,7 +86,6 @@ class TestDeltaCommitter:
                 "original_name": ["a"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -104,7 +104,6 @@ class TestDeltaCommitter:
                 "original_name": ["b"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -135,7 +134,6 @@ class TestDeltaCommitter:
                 "original_name": ["a"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -154,7 +152,6 @@ class TestDeltaCommitter:
                 "original_name": ["a"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -180,7 +177,6 @@ class TestDeltaCommitter:
                 "original_name": ["test"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -220,7 +216,6 @@ class TestDeltaCommitter:
                 "original_name": ["test"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -249,7 +244,6 @@ class TestDeltaCommitter:
                 "original_name": ["test"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -307,7 +301,6 @@ class TestDeltaCommitter:
                 "original_name": ["a"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -320,7 +313,6 @@ class TestDeltaCommitter:
                 "original_name": ["b"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -378,7 +370,6 @@ class TestDeltaCommitter:
                 "original_name": ["test"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -408,7 +399,6 @@ class TestDeltaCommitter:
                     "original_name": f"test{i}",
                     "extension": ".json",
                     "metadata": "{}",
-                    "external_path": None,
                 }
             )
 
@@ -453,7 +443,6 @@ class TestDeltaCommitter:
                 "original_name": ["test"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -496,7 +485,6 @@ class TestDeltaCommitter:
                         "original_name": f"test_s{step}_{i}",
                         "extension": ".json",
                         "metadata": "{}",
-                        "external_path": None,
                     }
                 )
 
@@ -544,7 +532,6 @@ class TestDeltaCommitter:
                 "original_name": ["test"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -820,7 +807,6 @@ class TestRecoverStaged:
                 "original_name": ["test"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -845,6 +831,7 @@ class TestRecoverStaged:
         fs, storage, root = backend_fs
         delta_root = f"{root}/delta_no_staging"
         fs.makedirs(delta_root, exist_ok=True)
+        publish_store_manifest(delta_root, fs)
         # Deliberately do NOT create staging_root — the fixture's
         # purpose is to exercise the missing-staging-dir path.
         nonexistent = f"{root}/no_such_staging"
@@ -982,6 +969,7 @@ class TestDeltaCommitterBackendParametrized:
             fs=fs,
             storage_options=storage.delta_storage_options(),
         )
+        publish_store_manifest(delta_root, fs)
 
         df = pl.DataFrame(
             {
@@ -991,7 +979,6 @@ class TestDeltaCommitterBackendParametrized:
                 "original_name": ["smoke"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
@@ -1021,6 +1008,7 @@ class TestDeltaCommitterBackendParametrized:
             fs=fs,
             storage_options=storage.delta_storage_options(),
         )
+        publish_store_manifest(delta_root, fs)
 
         df = pl.DataFrame(
             {
@@ -1030,7 +1018,6 @@ class TestDeltaCommitterBackendParametrized:
                 "original_name": ["dup"],
                 "extension": [".json"],
                 "metadata": ["{}"],
-                "external_path": [None],
             },
             schema=METRICS_SCHEMA,
         )
