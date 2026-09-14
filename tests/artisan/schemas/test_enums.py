@@ -56,11 +56,13 @@ class TestTablePath:
         assert TablePath.ARTIFACT_EDGES == "provenance/artifact_edges"
         assert TablePath.EXECUTION_EDGES == "provenance/execution_edges"
         assert TablePath.EXECUTIONS == "orchestration/executions"
+        assert TablePath.CACHE_REUSE == "orchestration/cache_reuse"
+        assert TablePath.LOGICAL_COMMITS == "orchestration/logical_commits"
         assert TablePath.STEPS == "orchestration/steps"
 
     def test_enum_count(self):
-        """Ensure exactly 6 framework tables."""
-        assert len(TablePath) == 6
+        """Ensure exactly 8 framework tables."""
+        assert len(TablePath) == 8
 
     def test_execution_edges_value(self):
         """Test EXECUTION_EDGES enum value."""
