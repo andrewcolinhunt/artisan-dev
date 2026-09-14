@@ -332,6 +332,19 @@ class TestPipelineConfig:
                 prefect_server=False,  # type: ignore[call-arg]
             )
 
+    def test_default_compute_provider_removed(self):
+        """The inert pipeline compute default is absent and rejected."""
+        assert "default_compute_provider" not in PipelineConfig.model_fields
+        assert "default_step_runner" in PipelineConfig.model_fields
+
+        with pytest.raises(ValidationError, match="default_compute_provider"):
+            PipelineConfig(
+                name="test",
+                delta_root="/data/delta",
+                staging_root="/data/staging",
+                default_compute_provider="modal",  # type: ignore[call-arg]
+            )
+
 
 class TestPipelineManager:
     """Tests for PipelineManager class."""
@@ -392,6 +405,27 @@ class TestPipelineManager:
                 delta_root="/data/delta",
                 staging_root="/data/staging",
                 prefect_server=False,  # type: ignore[call-arg]
+            )
+
+    def test_default_compute_provider_removed_from_factory_signatures(self):
+        """Factories reject the removed compute-provider default keyword."""
+        for factory in (PipelineManager.create, PipelineManager.resume):
+            parameters = inspect.signature(factory).parameters
+            assert "default_compute_provider" not in parameters
+            assert "default_step_runner" in parameters
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            PipelineManager.create(
+                name="test",
+                delta_root="/data/delta",
+                staging_root="/data/staging",
+                default_compute_provider="modal",  # type: ignore[call-arg]
+            )
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            PipelineManager.resume(
+                delta_root="/data/delta",
+                staging_root="/data/staging",
+                default_compute_provider="modal",  # type: ignore[call-arg]
             )
 
     def test_external_runner_name_requires_runtime_instance(self):
