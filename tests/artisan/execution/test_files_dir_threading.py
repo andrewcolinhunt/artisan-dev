@@ -9,8 +9,9 @@ from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
 
-import polars as pl
 import pytest
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.executors.creator import run_creator_lifecycle
 from artisan.execution.models.execution_unit import ExecutionUnit
@@ -24,17 +25,11 @@ from artisan.schemas.specs.input_models import (
     PostprocessInput,
 )
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 
 def _setup_delta_tables(base_path: Path) -> None:
     """Create minimal empty Delta tables so ArtifactStore can initialize."""
-    index_path = base_path / "artifacts/index"
-    df = pl.DataFrame(
-        [],
-        schema=ARTIFACT_INDEX_SCHEMA,
-    )
-    df.write_delta(str(index_path))
+    publish_test_store(str(base_path), LocalFileSystem())
 
 
 # ---------------------------------------------------------------------------
