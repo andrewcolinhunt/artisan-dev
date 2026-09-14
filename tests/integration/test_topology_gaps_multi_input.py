@@ -229,8 +229,13 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
     # 2 datasets, each with 2 configs = 4 execution units (product expansion)
     assert count_executions_by_step(delta_root, 2) == 4
 
-    # Each execution unit produces 1 result artifact = 4 total
-    assert count_artifacts_by_step(delta_root, 2) == 4
+    # Each execution records its output occurrence, but this operation does not
+    # use the config value. The two config variants for one dataset therefore
+    # produce the same typed semantic artifact and deduplicate globally.
+    output_ids = get_execution_outputs(delta_root, 2, "result")
+    assert len(output_ids) == 4
+    assert len(set(output_ids)) == 2
+    assert count_artifacts_by_step(delta_root, 2) == 2
 
 
 def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
