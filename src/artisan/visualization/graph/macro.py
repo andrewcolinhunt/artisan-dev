@@ -45,7 +45,7 @@ def _load_completed_steps(
         from fsspec.implementations.local import LocalFileSystem
 
         fs = LocalFileSystem()
-    assert_store_format(delta_root, fs)
+    assert_store_format(delta_root, fs, storage_options)
     table_path = uri_join(delta_root, TablePath.STEPS)
     if not fs.exists(table_path):
         return pl.DataFrame(

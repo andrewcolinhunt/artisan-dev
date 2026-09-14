@@ -60,7 +60,7 @@ class ArtifactStore:
         self._storage_options = storage_options or {}
         self.files_root = files_root
         self._provenance: ProvenanceStore | None = None
-        assert_store_format(self.base_path, self._fs)
+        assert_store_format(self.base_path, self._fs, self._storage_options)
 
     @property
     def provenance(self) -> ProvenanceStore:

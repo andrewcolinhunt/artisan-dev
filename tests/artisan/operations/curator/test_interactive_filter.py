@@ -19,10 +19,14 @@ Tests cover:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
 import pytest
+from fixtures.cache_isolation_store import build_cache_isolation_store
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator.interactive_filter import (
     FilterSummary,
@@ -32,6 +36,9 @@ from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
+    CACHE_REUSE_SCHEMA,
+    EXECUTION_EDGES_SCHEMA,
+    EXECUTIONS_SCHEMA,
     STEPS_SCHEMA,
 )
 
@@ -39,19 +46,148 @@ from artisan.storage.core.table_schemas import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+_ID_REWRITES: dict[str, str] = {}
+
 
 def _write_delta(
     delta_root: Path, rel_path: str, rows: list[dict], schema: dict
 ) -> None:
+    normalized = [
+        {
+            key: _ID_REWRITES.get(value, value)
+            if key.endswith("artifact_id") and isinstance(value, str)
+            else value
+            for key, value in row.items()
+        }
+        for row in rows
+    ]
+    if schema is MetricArtifact.POLARS_SCHEMA:
+        for row in normalized:
+            old_id = row["artifact_id"]
+            artifact = MetricArtifact(
+                artifact_id=None,
+                origin_step_number=row["origin_step_number"],
+                content=row["content"],
+                original_name=row["original_name"],
+                extension=row["extension"],
+                metadata=json.loads(row["metadata"]),
+            ).finalize()
+            row["artifact_id"] = artifact.artifact_id
+            _ID_REWRITES[old_id] = artifact.artifact_id
+        _rewrite_existing_ids(delta_root)
+
+    publish_test_store(str(delta_root), LocalFileSystem())
     table_path = delta_root / rel_path
     table_path.parent.mkdir(parents=True, exist_ok=True)
-    df = pl.DataFrame(rows, schema=schema)
-    df.write_delta(str(table_path))
+    df = pl.DataFrame(normalized, schema=schema)
+    mode = "overwrite" if table_path.exists() else "error"
+    df.write_delta(str(table_path), mode=mode)
+    if rel_path == "orchestration/steps":
+        _write_run_membership(delta_root, normalized)
+
+
+def _rewrite_existing_ids(delta_root: Path) -> None:
+    """Apply newly concrete artifact IDs to tables written earlier."""
+    for relative, columns in (
+        ("artifacts/index", ("artifact_id",)),
+        (
+            "provenance/artifact_edges",
+            ("source_artifact_id", "target_artifact_id"),
+        ),
+    ):
+        path = delta_root / relative
+        if not path.exists():
+            continue
+        frame = pl.read_delta(str(path))
+        frame = frame.with_columns(
+            pl.col(column).replace(_ID_REWRITES).alias(column) for column in columns
+        )
+        frame.write_delta(str(path), mode="overwrite")
+
+
+def _write_run_membership(delta_root: Path, step_rows: list[dict]) -> None:
+    """Derive direct execution/output fixtures for the auto-detected run."""
+    selected_run = max(step_rows, key=lambda row: row["timestamp"])["pipeline_run_id"]
+    selected_steps = {
+        row["step_number"]: row
+        for row in step_rows
+        if row["pipeline_run_id"] == selected_run and row["status"] == "completed"
+    }
+    index = pl.read_delta(str(delta_root / "artifacts/index"))
+    artifact_edges_path = delta_root / "provenance/artifact_edges"
+    artifact_edges = (
+        pl.read_delta(str(artifact_edges_path))
+        if artifact_edges_path.exists()
+        else pl.DataFrame(schema=ARTIFACT_EDGES_SCHEMA)
+    )
+    execution_owners: dict[str, dict] = {}
+    output_edges: list[dict] = []
+    for artifact in index.iter_rows(named=True):
+        step = selected_steps.get(artifact["origin_step_number"])
+        if step is None:
+            continue
+        producers = artifact_edges.filter(
+            pl.col("target_artifact_id") == artifact["artifact_id"]
+        )["execution_run_id"].unique()
+        execution_ids = producers.to_list() or [_pad(f"direct{step['step_number']}")]
+        for execution_id in execution_ids:
+            execution_owners.setdefault(execution_id, step)
+            output_edges.append(
+                {
+                    "execution_run_id": execution_id,
+                    "direction": "output",
+                    "role": "output",
+                    "artifact_id": artifact["artifact_id"],
+                }
+            )
+
+    now = datetime.now(UTC)
+    executions = [
+        {
+            "execution_run_id": execution_id,
+            "execution_spec_id": _pad(f"spec{step['step_number']}"),
+            "step_run_id": step["step_run_id"],
+            "origin_step_number": step["step_number"],
+            "operation_name": step["step_name"],
+            "params": "{}",
+            "user_overrides": "{}",
+            "timestamp_start": now,
+            "timestamp_end": now,
+            "source_worker": 0,
+            "compute_backend": "local",
+            "success": True,
+            "error": None,
+            "error_envelope": None,
+            "tool_output": None,
+            "worker_log": None,
+            "metadata": "{}",
+        }
+        for execution_id, step in execution_owners.items()
+    ]
+    _write_delta(
+        delta_root,
+        "orchestration/executions",
+        executions,
+        EXECUTIONS_SCHEMA,
+    )
+    _write_delta(
+        delta_root,
+        "provenance/execution_edges",
+        output_edges,
+        EXECUTION_EDGES_SCHEMA,
+    )
+    _write_delta(
+        delta_root,
+        "orchestration/cache_reuse",
+        [],
+        CACHE_REUSE_SCHEMA,
+    )
 
 
 def _pad(short_id: str) -> str:
     """Pad a short ID to 32 characters."""
-    return short_id.ljust(32, "0")[:32]
+    provisional = short_id.ljust(32, "0")[:32]
+    return _ID_REWRITES.get(provisional, provisional)
 
 
 def _metric_content(values: dict) -> bytes:
@@ -176,8 +312,6 @@ def delta_root(tmp_path: Path) -> Path:
     _write_delta(root, "provenance/artifact_edges", edge_rows, ARTIFACT_EDGES_SCHEMA)
 
     # -- steps table --
-    from datetime import UTC, datetime
-
     now = datetime.now(UTC)
     steps_rows = []
     for step_num, step_name, op_class in [
@@ -273,7 +407,9 @@ class TestLoad:
         assert filt.wide_df.height == 4
 
     def test_load_raises_on_empty_delta(self, tmp_path: Path) -> None:
-        filt = InteractiveFilter(tmp_path / "nonexistent")
+        root = tmp_path / "nonexistent"
+        publish_test_store(str(root), LocalFileSystem())
+        filt = InteractiveFilter(root)
         with pytest.raises(ValueError, match="Artifact index not found"):
             filt.load()
 
@@ -1649,6 +1785,16 @@ class TestRunScopedStepNames:
             "step_name": "eval_detected",
             "metric_count": 2,
         } in filt._metric_sources
+
+    def test_explicit_run_uses_cached_metric_provenance_only(self, tmp_path) -> None:
+        store = build_cache_isolation_store(tmp_path)
+
+        filt = InteractiveFilter(store.root)
+        filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
+
+        assert filt.wide_df["artifact_id"].to_list() == [store.data_id]
+        assert filt.wide_df["score"].to_list() == [0.9]
+        assert store.other_data_id not in filt.wide_df["artifact_id"].to_list()
 
 
 class TestExistingFloatMetricsStillWork:

@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA
@@ -14,6 +16,7 @@ A, B, C = "a" * 32, "b" * 32, "c" * 32
 
 
 def _seed_edges(root: Path, pairs: list[tuple[str, str]]) -> None:
+    publish_test_store(str(root), LocalFileSystem())
     n = len(pairs)
     pl.DataFrame(
         {
@@ -55,6 +58,7 @@ class TestProvenanceTool:
         assert result["truncated"] is True
 
     def test_missing_table_degrades_to_empty(self, make_app, invoke, tmp_path) -> None:
+        publish_test_store(str(tmp_path), LocalFileSystem())
         app = make_app(delta_root=tmp_path)
         result = invoke(app, "artisan_get_provenance_graph", {"artifact_id": A})
         assert result["edges"] == []

@@ -84,7 +84,7 @@ class PipelineTimings:
             from fsspec.implementations.local import LocalFileSystem
 
             fs = LocalFileSystem()
-        assert_store_format(delta_root, fs)
+        assert_store_format(delta_root, fs, storage_options)
         steps_path = uri_join(delta_root, TablePath.STEPS)
         if not fs.exists(steps_path):
             msg = f"steps table not found at {steps_path}"
@@ -101,6 +101,7 @@ class PipelineTimings:
             scanner.sort("step_number")
             .select(
                 "pipeline_run_id",
+                "step_run_id",
                 "step_number",
                 "step_name",
                 "duration_seconds",
@@ -120,25 +121,14 @@ class PipelineTimings:
         if pipeline_run_id is None:
             steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
 
-        # Read executions if available
-        exec_path = uri_join(delta_root, TablePath.EXECUTIONS)
-        exec_df = None
-        if fs.exists(exec_path):
-            exec_scanner = pl.scan_delta(
-                exec_path, storage_options=storage_options
-            ).filter(
-                pl.col("success") == True  # noqa: E712
-            )
-            exec_df = (
-                exec_scanner.sort("origin_step_number")
-                .select(
-                    "execution_run_id",
-                    "origin_step_number",
-                    "operation_name",
-                    "metadata",
-                )
-                .collect()
-            )
+        from artisan.storage.core.run_scope import load_execution_membership
+
+        exec_df = load_execution_membership(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            pipeline_run_id=run_id,
+        ).filter(pl.col("success") & ~pl.col("cache_hit"))
 
         # Build structured data
         steps = []
@@ -148,17 +138,18 @@ class PipelineTimings:
 
             # Gather executions for this step
             executions = []
-            if exec_df is not None:
-                step_execs = exec_df.filter(pl.col("origin_step_number") == step_num)
-                for exec_row in step_execs.iter_rows(named=True):
-                    exec_timings = _parse_timings(exec_row["metadata"])
-                    executions.append(
-                        {
-                            "execution_run_id": exec_row["execution_run_id"],
-                            "operation_name": exec_row["operation_name"],
-                            "timings": exec_timings or {},
-                        }
-                    )
+            step_execs = exec_df.filter(
+                pl.col("current_step_run_id") == row["step_run_id"]
+            )
+            for exec_row in step_execs.iter_rows(named=True):
+                exec_timings = _parse_timings(exec_row["metadata"])
+                executions.append(
+                    {
+                        "execution_run_id": exec_row["execution_run_id"],
+                        "operation_name": exec_row["operation_name"],
+                        "timings": exec_timings or {},
+                    }
+                )
 
             steps.append(
                 {

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from fixtures.cache_isolation_store import build_cache_isolation_store
 
+from artisan.errors import IncompatibleStoreError
 from artisan.visualization.timing import PipelineTimings
 
 
@@ -303,5 +305,25 @@ class TestPipelineTimingsFromDelta:
     """Tests for from_delta() loading."""
 
     def test_missing_path_raises(self, tmp_path):
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(IncompatibleStoreError, match="missing manifest"):
             PipelineTimings.from_delta(tmp_path)
+
+    def test_run_excludes_other_and_reused_execution_timings(self, tmp_path):
+        store = build_cache_isolation_store(tmp_path)
+
+        timings = PipelineTimings.from_delta(
+            store.root,
+            pipeline_run_id=store.current_run,
+        )
+
+        assert timings.execution_timings(0)["execution_run_id"].to_list() == [
+            store.current_data_execution
+        ]
+        assert timings.execution_timings(5).is_empty()
+        all_execution_ids = {
+            row["execution_run_id"]
+            for step in timings._data["steps"]
+            for row in step["executions"]
+        }
+        assert store.source_metric_execution not in all_execution_ids
+        assert store.other_data_execution not in all_execution_ids

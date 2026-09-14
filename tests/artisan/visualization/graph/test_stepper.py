@@ -7,6 +7,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 from fixtures.execution_records import executions_df
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.storage.core.table_schemas import (
     ARTIFACT_INDEX_SCHEMA,
@@ -22,10 +24,12 @@ except ImportError:
 
 
 @pytest.fixture
-def delta_root_with_steps(tmp_path: Path) -> Path:
+def delta_root_with_steps(tmp_path: Path, monkeypatch) -> Path:
     """Create Delta Lake tables with multi-step test data."""
+    monkeypatch.setenv("IPYTHONDIR", str(tmp_path / "ipython"))
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
+    publish_test_store(str(delta_root), LocalFileSystem())
 
     # Create executions with 3 steps
     exec_data = {
@@ -63,10 +67,12 @@ def delta_root_with_steps(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def empty_delta_root(tmp_path: Path) -> Path:
+def empty_delta_root(tmp_path: Path, monkeypatch) -> Path:
     """Create empty Delta Lake root directory."""
+    monkeypatch.setenv("IPYTHONDIR", str(tmp_path / "ipython"))
     delta_root = tmp_path / "delta_empty"
     delta_root.mkdir()
+    publish_test_store(str(delta_root), LocalFileSystem())
     return delta_root
 
 

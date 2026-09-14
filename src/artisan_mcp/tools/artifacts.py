@@ -31,13 +31,11 @@ def register(mcp: FastMCP) -> None:
         """Find artifacts by type or run to get ids for provenance walks.
 
         Returns a page of artifact references — artifact_id, artifact_type,
-        origin_step_number, and index metadata — filtered by artifact_type
+        origin_step_number, current_step_number, and index metadata — filtered by artifact_type
         and/or pipeline_run_id (AND-ed), with has_more and next_cursor. Pages
         are capped at 100 items.
         References only: never artifact content. Use the returned
-        artifact_id with artisan_get_provenance_graph to walk lineage. The
-        index is not run-scoped, so a run filter resolves the run's step
-        numbers and can over-return in multi-run stores.
+        artifact_id with artisan_get_provenance_graph to walk lineage.
         """
         config = ctx.lifespan_context["config"]
 
@@ -60,7 +58,7 @@ def register(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Get the artifacts one step produced, grouped by artifact type.
 
-        Resolves the step name to its number within the run, then returns
+        Resolves the step name to its current number within the run, then returns
         that step's artifact references grouped by artifact_type
         (artifact_id, origin_step_number, metadata). References only, never
         payloads — feed an artifact_id to artisan_get_provenance_graph to
@@ -92,7 +90,7 @@ def register(mcp: FastMCP) -> None:
             )
             grouped: dict[str, list[dict[str, Any]]] = {}
             for ref in refs:
-                if ref.origin_step_number == number:
+                if ref.current_step_number == number:
                     grouped.setdefault(ref.artifact_type, []).append(ref.model_dump())
             return grouped
 

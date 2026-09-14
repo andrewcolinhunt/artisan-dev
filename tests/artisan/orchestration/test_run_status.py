@@ -7,6 +7,8 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.orchestration.run_status import (
     RunStatus,
@@ -14,7 +16,7 @@ from artisan.orchestration.run_status import (
     run_status,
 )
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.table_schemas import STEPS_SCHEMA
+from artisan.storage.core.table_schemas import EXECUTIONS_SCHEMA, STEPS_SCHEMA
 
 
 def _seed_steps(
@@ -28,6 +30,10 @@ def _seed_steps(
     status, ``(number, name, status, succeeded, failed)`` — counts default
     to ``1`` succeeded / ``0`` failed.
     """
+    publish_test_store(str(root), LocalFileSystem())
+    executions_path = root / TablePath.EXECUTIONS.value
+    if not executions_path.exists():
+        pl.DataFrame(schema=EXECUTIONS_SCHEMA).write_delta(str(executions_path))
     rows = []
     t0 = datetime(2026, 7, 1, tzinfo=UTC)
     for i, spec in enumerate(steps):

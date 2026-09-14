@@ -44,7 +44,7 @@ class ProvenanceStore:
         self.base_path = base_path
         self._fs = fs
         self._storage_options = storage_options or {}
-        assert_store_format(self.base_path, self._fs)
+        assert_store_format(self.base_path, self._fs, self._storage_options)
 
     def _table_path(self, table: TablePath) -> str:
         """Resolve the URI for a Delta table."""
@@ -410,6 +410,7 @@ class ProvenanceStore:
         *,
         include_target_type: bool = False,
         include_roles: bool = False,
+        execution_ids: set[str] | list[str] | None = None,
     ) -> pl.DataFrame:
         """Load provenance edges where both endpoints fall within a step range.
 
@@ -422,6 +423,8 @@ class ProvenanceStore:
                 ``target_role``, and ``group_id`` columns. Used by
                 callers that need to dedup edges by their full identity
                 tuple (e.g. ``DeclareLineage``).
+            execution_ids: When provided, restrict edges to executions in an
+                authoritative current-run membership projection.
 
         Returns:
             DataFrame with columns ``[source_artifact_id,
@@ -445,9 +448,10 @@ class ProvenanceStore:
         if not self._fs.exists(prov_path) or not self._fs.exists(index_path):
             return empty
 
-        edges = pl.scan_delta(prov_path, storage_options=self._storage_options).select(
-            output_cols
-        )
+        edges = pl.scan_delta(prov_path, storage_options=self._storage_options)
+        if execution_ids is not None:
+            edges = edges.filter(pl.col("execution_run_id").is_in(execution_ids))
+        edges = edges.select(output_cols)
         index = pl.scan_delta(index_path, storage_options=self._storage_options).select(
             ["artifact_id", "origin_step_number"]
         )

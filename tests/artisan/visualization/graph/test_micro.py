@@ -8,7 +8,10 @@ from pathlib import Path
 import graphviz
 import polars as pl
 import pytest
+from fixtures.cache_isolation_store import build_cache_isolation_store
 from fixtures.execution_records import executions_df
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -30,6 +33,7 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     """Create Delta Lake tables with test provenance data."""
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
+    publish_test_store(str(delta_root), LocalFileSystem())
 
     # Create executions
     exec_data = {
@@ -71,7 +75,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "original_name": ["parsed_result", "energy"],
         "extension": [".json", ".json"],
         "metadata": ["{}", "{}"],
-        "external_path": [None, None],
     }
     metric_df = pl.DataFrame(metric_data, schema=MetricArtifact.POLARS_SCHEMA)
     metric_df.write_delta(str(delta_root / "artifacts/metrics"), mode="overwrite")
@@ -81,12 +84,10 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "artifact_id": ["art_ext_1"],
         "origin_step_number": [0],
         "content_hash": ["hash123"],
-        "path": ["/data/input/sample.csv"],
         "size_bytes": [200],
         "metadata": ["{}"],
         "original_name": ["sample"],
         "extension": [".csv"],
-        "external_path": [None],
     }
     ext_df = pl.DataFrame(ext_data, schema=FileRefArtifact.POLARS_SCHEMA)
     ext_df.write_delta(str(delta_root / "artifacts/file_refs"), mode="overwrite")
@@ -128,6 +129,7 @@ def empty_delta_root(tmp_path: Path) -> Path:
     """Create empty Delta Lake root directory."""
     delta_root = tmp_path / "delta_empty"
     delta_root.mkdir()
+    publish_test_store(str(delta_root), LocalFileSystem())
     return delta_root
 
 
@@ -231,6 +233,26 @@ class TestBuildMicroGraph:
 
         assert isinstance(graph1, graphviz.Digraph)
         assert isinstance(graph2, graphviz.Digraph)
+
+    def test_run_scope_places_cached_participation_and_excludes_other_run(
+        self, tmp_path: Path
+    ) -> None:
+        store = build_cache_isolation_store(tmp_path)
+
+        source = build_micro_graph(
+            store.root,
+            pipeline_run_id=store.current_run,
+        ).source
+
+        assert "(0) current_data" in source
+        assert "(5) source_metric" in source
+        assert "other_data" not in source
+        assert "other_metric" not in source
+        participation = (
+            f"exec_{store.current_cache_step_id}_{store.source_metric_execution}"
+        )
+        assert participation in source
+        assert source.count(f"art_{store.metric_id}") >= 1
 
 
 class TestRenderMicroGraph:
