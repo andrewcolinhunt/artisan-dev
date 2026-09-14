@@ -25,6 +25,7 @@ import polars as pl
 
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
 from artisan.orchestration.engine.step_executor import (
     execute_step,
     instantiate_operation,
@@ -50,8 +51,8 @@ from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.orchestration.step_state import StepState
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import (
-    compute_artifact_id,
     compute_step_spec_id,
+    compute_stream_digest,
     digest_utf8,
     effective_config_payload,
 )
@@ -242,7 +243,7 @@ def _promote_file_paths_to_store(
     config: PipelineConfig,
     step_number: int,
     operation_name: str,
-) -> tuple[dict[str, list[str]] | None, int]:
+) -> tuple[dict[str, list[str]] | None, int, set[str]]:
     """Validate file paths, create FileRefArtifacts, and commit to delta.
 
     Args:
@@ -252,12 +253,13 @@ def _promote_file_paths_to_store(
         operation_name: Operation name (for logging).
 
     Returns:
-        Tuple of (resolved inputs dict or None if all invalid,
-        count of valid files).
+        Tuple of resolved inputs (or None), valid-file count, and IDs verified
+        by this promotion read.
     """
     from fsspec import AbstractFileSystem
     from fsspec.implementations.local import LocalFileSystem
 
+    from artisan.schemas.artifact.external import validate_persistable_uri
     from artisan.schemas.artifact.file_ref import FileRefArtifact
     from artisan.schemas.enums import TablePath
     from artisan.schemas.execution.fs import resolve_fs
@@ -299,15 +301,13 @@ def _promote_file_paths_to_store(
         )
 
     if not valid_paths:
-        return None, 0
+        return None, 0, set()
 
     # Create FileRefArtifacts and finalize
     file_ref_artifacts: list[FileRefArtifact] = []
     for original, fs, stripped in valid_paths:
         with fs.open(stripped, "rb") as f:
-            content = f.read()
-        content_hash = compute_artifact_id(content)
-        size_bytes = len(content)
+            content_hash, size_bytes = compute_stream_digest(f)
         # basename/splitext are pure string ops — work on URIs.
         basename = os.path.basename(original)
         _name_part, ext_part = os.path.splitext(basename)
@@ -318,6 +318,7 @@ def _promote_file_paths_to_store(
         stored_path = (
             os.path.abspath(original) if isinstance(fs, LocalFileSystem) else original
         )
+        validate_persistable_uri(stored_path)
         artifact = cast(
             FileRefArtifact,
             FileRefArtifact.draft(
@@ -368,11 +369,19 @@ def _promote_file_paths_to_store(
     )
     committer.commit_dataframe(file_ref_df, "artifacts/file_refs")
     committer.commit_dataframe(index_df, TablePath.ARTIFACT_INDEX)
+    location_df = pl.DataFrame(
+        [
+            {"artifact_id": artifact.artifact_id, "uri": artifact.path}
+            for artifact in file_ref_artifacts
+        ],
+        schema={"artifact_id": pl.String, "uri": pl.String},
+    )
+    committer.commit_dataframe(location_df, TablePath.ARTIFACT_LOCATIONS)
 
     artifact_ids: list[str] = [
         a.artifact_id for a in file_ref_artifacts if a.artifact_id is not None
     ]
-    resolved_inputs = {"file": sorted(artifact_ids)}
+    resolved_inputs = {"file": artifact_ids}
 
     logger.debug(
         "Step %d (%s): promoted %d file paths to Delta Lake",
@@ -380,7 +389,7 @@ def _promote_file_paths_to_store(
         operation_name,
         len(valid_paths),
     )
-    return resolved_inputs, len(valid_paths)
+    return resolved_inputs, len(valid_paths), set(artifact_ids)
 
 
 # =============================================================================
@@ -840,19 +849,20 @@ class PipelineManager:
 
         self._config = config
 
-        if config.recover_staging:
-            from artisan.storage.io.commit import DeltaCommitter
-            from artisan.storage.io.staging import StagingManager
+        from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.staging import StagingManager
 
-            fs = config.storage.filesystem()
-            storage_options = config.storage.delta_storage_options()
-            staging_manager = StagingManager(config.staging_root, fs)
-            committer = DeltaCommitter(
-                config.delta_root,
-                staging_manager,
-                fs=fs,
-                storage_options=storage_options,
-            )
+        fs = config.storage.filesystem()
+        storage_options = config.storage.delta_storage_options()
+        staging_manager = StagingManager(config.staging_root, fs)
+        committer = DeltaCommitter(
+            config.delta_root,
+            staging_manager,
+            fs=fs,
+            storage_options=storage_options,
+        )
+        committer.initialize_tables()
+        if config.recover_staging:
             committer.recover_staged(preserve_staging=config.preserve_staging)
 
         self._start_time: float = time.time()
@@ -1539,17 +1549,53 @@ class PipelineManager:
 
         step_number = self._current_step
 
-        # 4. Prepare the operation once, then hash that exact instance. The
-        #    same object continues through cache checks, routing, and execution.
+        # 4. Prepare the operation once. The same object continues through
+        #    cache checks, routing, and execution.
         prepared_operation = instantiate_operation(operation, ov)
-        step_spec_id = self._prepare_step_spec(prepared_operation, step_number, inputs)
+        input_refs = inputs
+        already_verified: set[str] = set()
 
-        # 5. Cache check: if a prior run produced identical spec_id, return
-        #    the cached StepResult immediately without re-executing.
+        # 5. File path promotion: if the user passed raw file paths (list of
+        #    strings), validate them and commit FileRefArtifacts to Delta Lake
+        #    before either cache can inspect the concrete input snapshot.
+        #    Only curator operations accept raw paths; creators must receive
+        #    artifact references from a prior ingest step.
+        if _is_file_path_input(inputs):
+            file_result = self._handle_file_path_inputs(
+                cast(list[str], inputs),
+                prepared_operation,
+                operation,
+                step_number,
+                step_name,
+                ov.failure_policy,
+            )
+            if isinstance(file_result, StepFuture):
+                return file_result
+            inputs, already_verified = file_result  # type: ignore[assignment]
+
+        # 6. Resolve, type, verify, group, and hash the exact input snapshot
+        #    that execution will consume.
+        prepared_inputs = prepare_inputs(
+            inputs,  # type: ignore[arg-type]
+            self._config.delta_root,
+            self._config.storage.filesystem(),
+            group_by=prepared_operation.group_by,
+            step_run_ids=self._step_run_ids,
+            storage_options=self._config.storage.delta_storage_options(),
+            files_root=self._config.files_root,
+            already_verified=already_verified,
+        )
+        step_spec_id = self._prepare_step_spec(
+            prepared_operation,
+            step_number,
+            prepared_inputs,
+        )
+
+        # 7. Whole-step cache decisions use the prepared concrete snapshot.
         if not (ov.skip_cache or self._config.skip_cache):
             cached = self._try_cached_step(
                 operation,
-                inputs,
+                input_refs,
                 ov,
                 step_spec_id=step_spec_id,
                 step_number=step_number,
@@ -1559,31 +1605,13 @@ class PipelineManager:
             if cached is not None:
                 return cached
 
-        # 6. File path promotion: if the user passed raw file paths (list of
-        #    strings), validate them and commit FileRefArtifacts to Delta Lake
-        #    so downstream execution sees artifact IDs, not filesystem paths.
-        #    Only curator operations accept raw paths; creators must receive
-        #    artifact references from a prior ingest step.
-        if _is_file_path_input(inputs):
-            file_result = self._handle_file_path_inputs(
-                cast(list[str], inputs),
-                prepared_operation,
-                operation,
-                step_number,
-                step_spec_id,
-                step_name,
-                ov.failure_policy,
-            )
-            if isinstance(file_result, StepFuture):
-                return file_result
-            inputs = file_result  # type: ignore[assignment]
-
-        # 7. Dispatch: register the step, resolve its runner,
+        # 8. Dispatch: register the step, resolve its runner,
         #    record the step start in Delta, and submit the _run() closure to
         #    the thread pool executor for background execution.
         return self._dispatch_step(
             operation=operation,
-            inputs=inputs,
+            inputs=prepared_inputs,
+            input_refs=input_refs,
             ov=ov,
             step_name=step_name,
             step_number=step_number,
@@ -1740,7 +1768,7 @@ class PipelineManager:
         self,
         operation: OperationDefinition,
         step_number: int,
-        inputs: Any,
+        prepared_inputs: PreparedInputs,
     ) -> str:
         """Compute a deterministic step spec ID from a prepared operation.
 
@@ -1766,12 +1794,11 @@ class PipelineManager:
 
         config_overrides = effective_config_payload(operation)
 
-        input_spec = self._build_input_spec(inputs)
         return compute_step_spec_id(
             operation_name=operation.name,
             step_number=step_number,
             params=full_params if full_params else None,
-            input_spec=input_spec,
+            inputs=prepared_inputs.cache_inputs,
             config_overrides=config_overrides,
         )
 
@@ -1911,10 +1938,9 @@ class PipelineManager:
         prepared_operation: OperationDefinition,
         operation: type[OperationDefinition],
         step_number: int,
-        step_spec_id: str,
         step_name: str,
         failure_policy: FailurePolicy | None,
-    ) -> dict[str, list[str]] | StepFuture:
+    ) -> tuple[dict[str, list[str]], set[str]] | StepFuture:
         """Promote raw file paths to FileRefArtifacts in the store.
 
         When the user passes ``["path/a.nc", "path/b.nc"]`` as inputs,
@@ -1943,14 +1969,14 @@ class PipelineManager:
             )
             raise ValueError(msg)
 
-        promoted, _count = _promote_file_paths_to_store(
+        promoted, _count, verified = _promote_file_paths_to_store(
             inputs,
             self._config,
             step_number,
             operation.name,
         )
         if promoted is not None:
-            return promoted
+            return promoted, verified
 
         from artisan.orchestration.engine.step_executor import build_step_result
 
@@ -1963,7 +1989,6 @@ class PipelineManager:
             failure_policy=_fp,
             metadata={"error": "All input files are invalid"},
         )
-        self._step_spec_ids[step_number] = step_spec_id
         self._step_results.append(failed_result)
         self._register_step(step_name, step_number, operation.outputs)
         self._named_steps.setdefault(failed_result.step_name, []).append(failed_result)
@@ -1981,7 +2006,8 @@ class PipelineManager:
     def _dispatch_step(
         self,
         operation: type[OperationDefinition],
-        inputs: Any,
+        inputs: PreparedInputs,
+        input_refs: Any,
         ov: StepOverrides,
         *,
         step_name: str,
@@ -2025,7 +2051,7 @@ class PipelineManager:
         resolved_runner = self._resolve_step_runner(prepared_operation, ov)
         start_record = self._build_step_start_record(
             operation,
-            inputs,
+            input_refs,
             ov,
             step_name=step_name,
             step_number=step_number,
@@ -2071,7 +2097,6 @@ class PipelineManager:
                     step_runner=resolved_runner,
                     step_number=step_number,
                     config=self._config,
-                    step_spec_id=step_spec_id,
                     cancel_event=self._cancel_event,
                     step_run_id=step_run_id,
                     step_run_ids=upstream_step_run_ids,
@@ -2393,32 +2418,6 @@ class PipelineManager:
     # =========================================================================
     # Internal helpers
     # =========================================================================
-
-    def _build_input_spec(self, inputs: Any) -> dict[str, tuple[str, str]]:
-        """Convert inputs to (upstream_spec_id, role) tuples for hashing."""
-        if inputs is None:
-            return {}
-        if isinstance(inputs, dict):
-            spec: dict[str, tuple[str, str]] = {}
-            for role, value in inputs.items():
-                if isinstance(value, OutputReference):
-                    upstream_spec_id = self._step_spec_ids[value.source_step]
-                    spec[role] = (upstream_spec_id, value.role)
-                elif isinstance(value, list):
-                    ids_hash = digest_utf8(",".join(sorted(value)))
-                    spec[role] = (ids_hash, "")
-            return spec
-        if isinstance(inputs, list):
-            if inputs and isinstance(inputs[0], OutputReference):
-                parts = []
-                for ref in inputs:
-                    upstream_spec_id = self._step_spec_ids[ref.source_step]
-                    parts.append(f"{upstream_spec_id}:{ref.role}")
-                composite_hash = digest_utf8(",".join(parts))
-                return {"_merged_streams": (composite_hash, "")}
-            paths_hash = digest_utf8(",".join(sorted(str(p) for p in inputs)))
-            return {"_file_paths": (paths_hash, "")}
-        return {}
 
     def _wait_for_predecessors(self, inputs: Any) -> None:
         """Block until all upstream step futures have completed.

@@ -27,7 +27,6 @@ from artisan.execution.executors.curator import (
     is_curator_operation,
     run_curator_flow,
 )
-from artisan.execution.inputs.grouping import group_inputs
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import record_execution_failure
@@ -37,7 +36,7 @@ from artisan.orchestration.engine.batching import (
     get_batch_config,
 )
 from artisan.orchestration.engine.dispatch import failure_results_for_units
-from artisan.orchestration.engine.inputs import resolve_inputs
+from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
 from artisan.orchestration.engine.results import (
     aggregate_results,
@@ -478,7 +477,6 @@ def execute_step(
     *,
     step_number: int = 0,
     config: PipelineConfig | None = None,
-    step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
@@ -498,9 +496,6 @@ def execute_step(
         step_runner: Resolved lifecycle runner to use for execution.
         step_number: Pipeline step number.
         config: Pipeline configuration.
-        step_spec_id: Pre-computed step spec ID from PipelineManager. When
-            provided for curator ops, used directly as execution_spec_id to
-            skip the O(N log N) compute_execution_spec_id call.
         cancel_event: Set to request cooperative cancellation between phases.
         step_run_id: Unique ID for this step attempt (for output isolation).
         step_run_ids: Mapping of upstream step_number to step_run_id
@@ -510,6 +505,17 @@ def execute_step(
         StepResult with output references and execution metadata.
     """
     user_overrides = ov.params or {}
+    config = cast(PipelineConfig, config)
+    if not isinstance(inputs, PreparedInputs):
+        inputs = prepare_inputs(
+            inputs,
+            config.delta_root,
+            config.storage.filesystem(),
+            group_by=operation.group_by,
+            step_run_ids=step_run_ids,
+            storage_options=config.storage.delta_storage_options(),
+            files_root=config.files_root,
+        )
 
     # Cache-affecting config (environment, tool, compute_provider,
     # compute_resources, group_by, version) read off the instantiated op —
@@ -520,11 +526,9 @@ def execute_step(
     # Resolve runtime knobs against pipeline defaults: ov carries the raw
     # per-step values; an unset one falls back to config.
     failure_policy = (
-        ov.failure_policy
-        if ov.failure_policy is not None
-        else (config.failure_policy if config is not None else FailurePolicy.CONTINUE)
+        ov.failure_policy if ov.failure_policy is not None else config.failure_policy
     )
-    skip_cache = ov.skip_cache or (config.skip_cache if config is not None else False)
+    skip_cache = ov.skip_cache or config.skip_cache
 
     # Check if this is a curator operation
     if is_curator_operation(operation):
@@ -537,7 +541,6 @@ def execute_step(
             failure_policy=failure_policy,
             compact=ov.compact,
             user_overrides=user_overrides,
-            step_spec_id=step_spec_id,
             cancel_event=cancel_event,
             skip_cache=skip_cache,
             step_run_id=step_run_id,
@@ -564,14 +567,13 @@ def execute_step(
 
 def _execute_curator_step(
     operation: OperationDefinition,
-    inputs: Any,
+    inputs: PreparedInputs,
     config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
     compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
-    step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
     skip_cache: bool = False,
     step_run_id: str | None = None,
@@ -591,8 +593,6 @@ def _execute_curator_step(
         failure_policy: Continue or fail-fast on errors.
         compact: Whether to run Delta Lake compaction.
         user_overrides: User-provided parameter overrides.
-        step_spec_id: Pre-computed step spec ID; when provided, reused as
-            execution_spec_id and cache check is skipped.
         cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
@@ -608,14 +608,9 @@ def _execute_curator_step(
 
     # --- resolve_inputs phase ---
     with phase_timer("resolve_inputs", timings):
-        resolved_inputs = resolve_inputs(
-            inputs,
-            config.delta_root,
-            step_run_ids=step_run_ids,
-            storage_options=config.storage.delta_storage_options(),
-            fs=config.storage.filesystem(),
-        )
-        total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
+        paired_inputs = inputs.inputs
+        group_ids = inputs.group_ids
+        total_artifacts = sum(len(ids) for ids in paired_inputs.values())
         if total_artifacts > 0:
             logger.debug(
                 "Step %d (%s): resolved %d input artifacts",
@@ -625,68 +620,42 @@ def _execute_curator_step(
             )
 
         skip_result = _skip_for_empty_inputs(
-            operation, resolved_inputs, step_number, failure_policy
+            operation, paired_inputs, step_number, failure_policy
         )
         if skip_result is not None:
             return skip_result
 
-        # Framework pairing for curator ops with group_by
-        if operation.group_by is not None:
-            from artisan.storage.core.artifact_store import ArtifactStore
-
-            _fs = config.storage.filesystem()
-            _so = config.storage.delta_storage_options()
-            artifact_store = ArtifactStore(
-                config.delta_root,
-                fs=_fs,
-                storage_options=_so,
-                files_root=config.files_root,
-            )
-            paired_inputs, group_ids = group_inputs(
-                resolved_inputs, operation.group_by, artifact_store
-            )
-        else:
-            paired_inputs = resolved_inputs
-            group_ids = None
-
     # --- batch_and_cache phase ---
     with phase_timer("batch_and_cache", timings):
-        if step_spec_id is not None:
-            # Fast path: step-level cache in PipelineManager already validated
-            # inputs via step_spec_id. Reuse it directly as execution_spec_id
-            # to skip the O(N log N) compute_execution_spec_id call.
-            spec_id = step_spec_id
-        else:
-            # Fallback: direct calls without PipelineManager (tests, standalone)
-            merged_params = serialize_params(operation)
-            from artisan.utils.hashing import compute_execution_spec_id
+        merged_params = serialize_params(operation)
+        from artisan.utils.hashing import compute_execution_spec_id
 
-            spec_id = compute_execution_spec_id(
-                operation_name=operation.name,
-                inputs=paired_inputs,
-                params=merged_params,
-                config_overrides=config_overrides,
+        spec_id = compute_execution_spec_id(
+            operation_name=operation.name,
+            inputs=inputs.cache_inputs,
+            params=merged_params,
+            config_overrides=config_overrides,
+        )
+        if not skip_cache:
+            cache_result = check_cache_for_batch(
+                spec_id,
+                config.delta_root,
+                config=config,
             )
-            if not skip_cache:
-                cache_result = check_cache_for_batch(
-                    spec_id,
-                    config.delta_root,
-                    config=config,
+            if cache_result is not None:
+                logger.info(
+                    "Step %d (%s) CACHED — skipping execution",
+                    step_number,
+                    operation.name,
                 )
-                if cache_result is not None:
-                    logger.info(
-                        "Step %d (%s) CACHED — skipping execution",
-                        step_number,
-                        operation.name,
-                    )
-                    cached_count = sum(len(ids) for ids in paired_inputs.values()) or 1
-                    return build_step_result(
-                        operation=operation,
-                        step_number=step_number,
-                        succeeded_count=cached_count,
-                        failed_count=0,
-                        failure_policy=failure_policy,
-                    )
+                cached_count = sum(len(ids) for ids in paired_inputs.values()) or 1
+                return build_step_result(
+                    operation=operation,
+                    step_number=step_number,
+                    succeeded_count=cached_count,
+                    failed_count=0,
+                    failure_policy=failure_policy,
+                )
 
     # --- cancel check: before execute ---
     if cancel_event is not None and cancel_event.is_set():
@@ -1051,7 +1020,7 @@ def _discard_cancelled_staging(
 
 def _execute_creator_step(
     operation: OperationDefinition,
-    inputs: Any,
+    inputs: PreparedInputs,
     step_runner: RunnerBase,
     config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
@@ -1095,47 +1064,22 @@ def _execute_creator_step(
 
     # --- resolve_inputs phase ---
     with phase_timer("resolve_inputs", timings):
-        # Resolve inputs to artifact IDs
-        resolved_inputs = resolve_inputs(
-            inputs,
-            config.delta_root,
-            step_run_ids=step_run_ids,
-            storage_options=config.storage.delta_storage_options(),
-            fs=config.storage.filesystem(),
-        )
+        paired_inputs = inputs.inputs
+        group_ids = inputs.group_ids
 
         skip_result = _skip_for_empty_inputs(
-            operation, resolved_inputs, step_number, failure_policy
+            operation, paired_inputs, step_number, failure_policy
         )
         if skip_result is not None:
             return skip_result
 
-        total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
+        total_artifacts = sum(len(ids) for ids in paired_inputs.values())
         logger.debug(
             "Step %d (%s): resolved %d input artifacts",
             step_number,
             operation.name,
             total_artifacts,
         )
-
-        # Framework pairing for multi-input creator ops with group_by
-        if operation.group_by is not None:
-            from artisan.storage.core.artifact_store import ArtifactStore
-
-            _fs = config.storage.filesystem()
-            _so = config.storage.delta_storage_options()
-            artifact_store = ArtifactStore(
-                config.delta_root,
-                fs=_fs,
-                storage_options=_so,
-                files_root=config.files_root,
-            )
-            paired_inputs, group_ids = group_inputs(
-                resolved_inputs, operation.group_by, artifact_store
-            )
-        else:
-            paired_inputs = resolved_inputs
-            group_ids = None
 
     # --- batch_and_cache phase ---
     with phase_timer("batch_and_cache", timings):
@@ -1149,7 +1093,10 @@ def _execute_creator_step(
 
         # Generate ExecutionUnit batches (Level 1)
         execution_unit_batches = generate_execution_unit_batches(
-            paired_inputs, batch_config, group_ids=group_ids
+            paired_inputs,
+            batch_config,
+            group_ids=group_ids,
+            cache_inputs=inputs.cache_inputs,
         )
 
         # Create ExecutionUnits with cache checking
@@ -1157,11 +1104,15 @@ def _execute_creator_step(
         cached_count = 0
         cached_units = 0
 
-        for execution_unit_inputs, batch_group_ids in execution_unit_batches:
+        for (
+            execution_unit_inputs,
+            batch_group_ids,
+            execution_cache_inputs,
+        ) in execution_unit_batches:
             # Compute spec_id for cache lookup
             spec_id = compute_execution_spec_id(
                 operation_name=operation.name,
-                inputs=execution_unit_inputs,
+                inputs=execution_cache_inputs,
                 params=merged_params,
                 config_overrides=config_overrides,
             )

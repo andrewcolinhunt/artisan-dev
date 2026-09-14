@@ -7,15 +7,28 @@ translate lazy step-output references into sorted artifact ID lists.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.utils.hashing import CacheInputIdentity
 from artisan.utils.path import uri_join
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedInputs:
+    """One resolved, verified, grouped input snapshot used by both caches."""
+
+    inputs: dict[str, list[str]]
+    artifact_types: dict[str, str]
+    group_ids: list[str] | None
+    cache_inputs: dict[str, list[CacheInputIdentity]]
 
 
 def resolve_output_reference(
@@ -203,7 +216,7 @@ def resolve_inputs(
                         f"Expected 32-character hex string."
                     )
                     raise ValueError(msg)
-            resolved[role] = sorted(value)  # Sort for determinism
+            resolved[role] = list(value)
         else:
             msg = (  # type: ignore[unreachable]  # runtime defense against bad input types
                 f"Invalid input type for role '{role}': {type(value).__name__}. "
@@ -212,6 +225,94 @@ def resolve_inputs(
             raise TypeError(msg)
 
     return resolved
+
+
+def prepare_inputs(
+    inputs: dict[str, OutputReference | list[str]] | list[OutputReference] | None,
+    delta_root: str,
+    fs: AbstractFileSystem,
+    *,
+    group_by: object = None,
+    step_run_ids: dict[int, str] | None = None,
+    storage_options: dict[str, str] | None = None,
+    files_root: str | None = None,
+    already_verified: set[str] | None = None,
+) -> PreparedInputs:
+    """Resolve, type, verify, group, and encode concrete operation inputs."""
+    from artisan.execution.inputs.grouping import group_inputs
+    from artisan.schemas.enums import GroupByStrategy
+    from artisan.storage.core.artifact_store import ArtifactStore
+
+    resolved = resolve_inputs(
+        inputs,
+        delta_root,
+        fs,
+        step_run_ids=step_run_ids,
+        storage_options=storage_options,
+    )
+    store = ArtifactStore(
+        delta_root,
+        fs=fs,
+        storage_options=storage_options,
+        files_root=files_root,
+    )
+    ordered_ids = [artifact_id for ids in resolved.values() for artifact_id in ids]
+    type_map = store.load_type_map(ordered_ids)
+    missing = [
+        artifact_id for artifact_id in ordered_ids if artifact_id not in type_map
+    ]
+    if missing:
+        msg = f"Input artifact IDs are missing from the index: {missing!r}"
+        raise ArtifactIntegrityError(msg)
+
+    verified = already_verified or set()
+    ids_by_type: dict[str, list[str]] = {}
+    for artifact_id in ordered_ids:
+        if artifact_id not in verified:
+            ids_by_type.setdefault(type_map[artifact_id], []).append(artifact_id)
+    for artifact_type, artifact_ids in ids_by_type.items():
+        model = store.get_artifacts_by_type(artifact_ids, artifact_type)
+        if len(model) != len(set(artifact_ids)):
+            missing_content = sorted(set(artifact_ids) - set(model))
+            msg = f"Input artifacts are missing content rows: {missing_content!r}"
+            raise ArtifactIntegrityError(msg)
+
+    if group_by is not None:
+        if not isinstance(group_by, GroupByStrategy):
+            msg = f"Invalid group_by value: {group_by!r}"
+            raise TypeError(msg)
+        aligned, group_ids = group_inputs(
+            resolved,
+            group_by,
+            store,
+            artifact_types=type_map,
+        )
+    else:
+        aligned, group_ids = resolved, None
+
+    cache_inputs = _build_cache_inputs(aligned, type_map, group_ids)
+    return PreparedInputs(aligned, type_map, group_ids, cache_inputs)
+
+
+def _build_cache_inputs(
+    inputs: dict[str, list[str]],
+    artifact_types: dict[str, str],
+    group_ids: list[str] | None,
+) -> dict[str, list[CacheInputIdentity]]:
+    """Build ordered role-local cache occurrences for prepared inputs."""
+    return {
+        role: [
+            CacheInputIdentity(
+                role=role,
+                group_id=group_ids[position] if group_ids is not None else None,
+                position=position,
+                artifact_type=artifact_types[artifact_id],
+                artifact_id=artifact_id,
+            )
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in inputs.items()
+    }
 
 
 def _resolve_list_inputs(

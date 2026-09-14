@@ -12,16 +12,14 @@ Strategies: ZIP (positional), LINEAGE (provenance ancestry), CROSS_PRODUCT
 
 from __future__ import annotations
 
-import json
 import logging
 from itertools import product
 from typing import TYPE_CHECKING
 
-import xxhash
-
 from artisan.execution.inputs.lineage_matching import match_by_ancestry
 from artisan.schemas.enums import GroupByStrategy
 from artisan.utils.filename import strip_extensions
+from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 
 if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
@@ -29,26 +27,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def compute_group_id(artifact_ids: list[str]) -> str:
-    """Compute a deterministic group_id from sorted source artifact IDs.
+def compute_group_id(artifacts: dict[str, tuple[str, str]]) -> str:
+    """Compute a role- and type-aware group identifier.
 
     The group_id is a content-addressed hash that identifies a particular
     pairing of source artifacts, independent of role names or target outputs.
 
     Args:
-        artifact_ids: All source artifact IDs in the pairing (one per role).
+        artifacts: Role to ``(artifact_type, artifact_id)`` mapping.
 
     Returns:
         32-character xxh3_128 hex digest.
     """
-    content = json.dumps(sorted(artifact_ids), sort_keys=True).encode("utf-8")
-    return xxhash.xxh3_128(content).hexdigest()
+    payload = {
+        "domain": "input-group-v2",
+        "artifacts": [
+            {
+                "role": role,
+                "artifact_type": artifacts[role][0],
+                "artifact_id": artifacts[role][1],
+            }
+            for role in sorted(artifacts)
+        ],
+    }
+    return compute_content_digest(canonical_json_bytes(payload))
 
 
 def group_inputs(
     inputs: dict[str, list[str]],
     strategy: GroupByStrategy,
     artifact_store: ArtifactStore | None = None,
+    *,
+    artifact_types: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Pair multi-role input artifact IDs using the given strategy.
 
@@ -62,6 +72,7 @@ def group_inputs(
         strategy: ZIP, LINEAGE, CROSS_PRODUCT, or NAME.
         artifact_store: Required for LINEAGE and NAME strategies (provenance
             and ``original_name`` access respectively).
+        artifact_types: Bulk ID-to-type map for the concrete input snapshot.
 
     Returns:
         Tuple of:
@@ -86,7 +97,7 @@ def group_inputs(
         msg = f"Unknown group_by strategy: {strategy}"  # type: ignore[unreachable]
         raise ValueError(msg)
 
-    return _matched_sets_to_aligned(inputs, matched_sets)
+    return _matched_sets_to_aligned(inputs, matched_sets, artifact_types)
 
 
 def match_inputs_to_primary(
@@ -451,6 +462,7 @@ def _build_stems_by_role(
 def _matched_sets_to_aligned(
     inputs: dict[str, list[str]],
     matched_sets: list[dict[str, str]],
+    artifact_types: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Convert a list of matched dicts to positionally-aligned lists + group_ids.
 
@@ -466,11 +478,16 @@ def _matched_sets_to_aligned(
     group_ids: list[str] = []
 
     for matched_set in matched_sets:
-        ids_at_index: list[str] = []
+        artifacts_at_index: dict[str, tuple[str, str]] = {}
         for role in roles:
             artifact_id = matched_set[role]
             aligned[role].append(artifact_id)
-            ids_at_index.append(artifact_id)
-        group_ids.append(compute_group_id(ids_at_index))
+            try:
+                artifact_type = artifact_types[artifact_id]
+            except KeyError as exc:
+                msg = f"Missing artifact type for grouped input {artifact_id}"
+                raise ValueError(msg) from exc
+            artifacts_at_index[role] = (artifact_type, artifact_id)
+        group_ids.append(compute_group_id(artifacts_at_index))
 
     return aligned, group_ids
