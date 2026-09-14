@@ -57,8 +57,13 @@ def test_format_2_manifest_without_cache_reuse_table_fails(tmp_path) -> None:
 def test_malformed_cache_reuse_table_fails(tmp_path) -> None:
     fs = LocalFileSystem()
     root = str(tmp_path / "delta")
+    DeltaCommitter(
+        root,
+        StagingManager(str(tmp_path / "staging"), fs),
+        fs=fs,
+    ).initialize_tables()
+    fs.rm(f"{root}/orchestration/cache_reuse", recursive=True)
     fs.makedirs(f"{root}/orchestration/cache_reuse", exist_ok=True)
-    publish_store_manifest(root, fs)
 
     with pytest.raises(IncompatibleStoreError, match="malformed table"):
         assert_store_format(root, fs)
@@ -67,10 +72,15 @@ def test_malformed_cache_reuse_table_fails(tmp_path) -> None:
 def test_wrong_cache_reuse_schema_fails(tmp_path) -> None:
     fs = LocalFileSystem()
     root = str(tmp_path / "delta")
+    DeltaCommitter(
+        root,
+        StagingManager(str(tmp_path / "staging"), fs),
+        fs=fs,
+    ).initialize_tables()
+    fs.rm(f"{root}/orchestration/cache_reuse", recursive=True)
     pl.DataFrame(schema={"cached_execution_run_id": pl.String}).write_delta(
         f"{root}/orchestration/cache_reuse"
     )
-    publish_store_manifest(root, fs)
 
     with pytest.raises(IncompatibleStoreError, match="has schema"):
         assert_store_format(root, fs)

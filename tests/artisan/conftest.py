@@ -13,6 +13,7 @@ def seed_artifact_edges():
 
     def _seed(root: Path, pairs: list[tuple[str, str]]) -> None:
         import polars as pl
+        from fixtures.logical_commit_store import commit_test_inputs
 
         from artisan.schemas.enums import TablePath
         from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA
@@ -32,6 +33,10 @@ def seed_artifact_edges():
             },
             schema=ARTIFACT_EDGES_SCHEMA,
         )
-        df.write_delta(str(root / TablePath.ARTIFACT_EDGES))
+        commit_test_inputs(
+            root,
+            root.parent / "staging",
+            {TablePath.ARTIFACT_EDGES.value: df},
+        )
 
     return _seed

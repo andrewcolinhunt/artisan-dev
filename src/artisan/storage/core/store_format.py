@@ -12,6 +12,7 @@ from fsspec import AbstractFileSystem
 from artisan.errors import IncompatibleStoreError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.table_schemas import get_physical_schema_for_path
 from artisan.utils.path import uri_join
 
 STORE_MANIFEST = {
@@ -41,7 +42,7 @@ def assert_store_format(
     if found != STORE_MANIFEST:
         detail = f"found {found!r}"
         raise _incompatible(detail)
-    _assert_cache_reuse_table(delta_root, fs, storage_options or {})
+    _assert_table_schemas(delta_root, fs, storage_options or {})
 
 
 def prepare_store_initialization(
@@ -85,31 +86,56 @@ def _known_table_paths() -> list[str]:
     ]
 
 
-def _assert_cache_reuse_table(
+def _assert_table_schemas(
     delta_root: str,
     fs: AbstractFileSystem,
     storage_options: dict[str, str],
 ) -> None:
-    """Require the exact D2 relation shape for every format-2 store."""
-    table_path = uri_join(delta_root, TablePath.CACHE_REUSE)
-    if not fs.exists(table_path):
-        detail = f"missing table {TablePath.CACHE_REUSE.value!r}"
-        raise _incompatible(detail)
-    try:
-        schema = json.loads(
-            DeltaTable(table_path, storage_options=storage_options).schema().to_json()
-        )
-        fields = [(field["name"], field["type"]) for field in schema["fields"]]
-    except (DeltaError, KeyError, OSError, TypeError, ValueError) as exc:
-        detail = f"malformed table {TablePath.CACHE_REUSE.value!r}: {exc}"
-        raise _incompatible(detail) from exc
-    expected = [
-        ("current_step_run_id", "string"),
-        ("cached_execution_run_id", "string"),
-    ]
-    if fields != expected:
-        detail = f"table {TablePath.CACHE_REUSE.value!r} has schema {fields!r}"
-        raise _incompatible(detail)
+    """Require every coordinated format-2 table with its exact schema."""
+    for table in _known_table_paths():
+        table_path = uri_join(delta_root, table)
+        if not fs.exists(table_path):
+            detail = f"missing table {table!r}"
+            raise _incompatible(detail)
+        try:
+            schema = json.loads(
+                DeltaTable(table_path, storage_options=storage_options)
+                .schema()
+                .to_json()
+            )
+            fields = [(field["name"], field["type"]) for field in schema["fields"]]
+        except (DeltaError, KeyError, OSError, TypeError, ValueError) as exc:
+            detail = f"malformed table {table!r}: {exc}"
+            raise _incompatible(detail) from exc
+        expected = [
+            (name, _delta_type(dtype))
+            for name, dtype in get_physical_schema_for_path(table).items()
+        ]
+        if fields != expected:
+            detail = f"table {table!r} has schema {fields!r}"
+            raise _incompatible(detail)
+
+
+def _delta_type(dtype: object) -> str:
+    """Map supported Polars types to Delta schema JSON names."""
+    import polars as pl
+
+    if dtype == pl.String:
+        return "string"
+    if dtype in {pl.Int32, pl.UInt32}:
+        return "integer"
+    if dtype == pl.Int64:
+        return "long"
+    if dtype == pl.Float64:
+        return "double"
+    if dtype == pl.Boolean:
+        return "boolean"
+    if dtype == pl.Binary:
+        return "binary"
+    if isinstance(dtype, pl.Datetime):
+        return "timestamp"
+    msg = f"unsupported physical schema type {dtype!r}"
+    raise TypeError(msg)
 
 
 def _incompatible(detail: str) -> IncompatibleStoreError:
