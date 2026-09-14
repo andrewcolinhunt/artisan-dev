@@ -88,9 +88,10 @@ framework finalizes all draft artifacts in bulk after an operation's postprocess
 phase completes.
 
 **Why not freeze the whole model?** Drafts need mutation while an operation
-builds them, and runtime locations may change after content is moved. Artisan
-therefore protects durable fields only after finalization. Location and
-materialization fields remain mutable; identity-bearing state does not.
+builds them, and external locations may change after content is moved. Artisan
+therefore protects durable fields only after finalization. `materialized_path`
+and locators explicitly declared by external artifact types remain mutable;
+embedded source-path fields and all other durable state do not.
 
 ---
 
@@ -106,7 +107,7 @@ its purpose.
 | **Config** | Execution parameters and tool configurations | JSON-encoded bytes | Can reference other artifacts via `$artifact` patterns |
 | **Data** | Generic tabular data (CSV) | Raw CSV bytes | Captures schema metadata (columns, row count) at creation |
 | **File ref** | Pointers to external files | Metadata only (no embedded content) | Lightweight reference without copying large files into storage |
-| **Large file** | External one-to-one files (model weights, matrices, simulation outputs) | Metadata only (bytes stay at `external_path`) | Handles files too large to embed in a Parquet column |
+| **Large file** | External one-to-one files (model weights, matrices, simulation outputs) | Digest and size descriptor (bytes stay at a verified location) | Handles files too large to embed in a Parquet column |
 | **Appendable** | Individual records in a shared JSONL file | Metadata only (each record lives in the JSONL file) | Many records share one file; each is addressed by `record_id` |
 
 Each type maps to its own Delta Lake table (e.g., `artifacts/metrics`,
@@ -172,9 +173,9 @@ modifying the framework.
 Registration requires two things: an artifact model class (the data shape) and
 a type definition (the registry entry binding a key, table path, and model
 class together). Registration is automatic -- defining a type definition
-subclass triggers `__init_subclass__`, which validates that the model has the
-required serialization interface (`POLARS_SCHEMA`, `to_row`, `from_row`) and
-registers the type in both the type namespace and the type definition registry.
+subclass triggers `__init_subclass__`, which requires an `Artifact` subclass
+with a matching concrete type, a unique non-reserved table path, and—when
+external—the common locator, verification, and materialization contract.
 
 **Why this matters:** the framework has zero knowledge of domain-specific data.
 A domain layer can add a custom artifact type, and the framework automatically

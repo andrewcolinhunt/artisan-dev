@@ -17,9 +17,11 @@ never corrupt the shared artifact store.
 (glossary-artifact)=
 ## Artifact
 
-An immutable, content-addressed data node identified by the `xxh3_128` hash of
-its content. Artifacts are the fundamental data units flowing through pipelines.
-Once finalized, an artifact's ID is a permanent commitment to its exact content.
+An immutable, content-addressed data node identified by an `xxh3_128` hash over
+a typed identity envelope: the concrete artifact type, its canonical payload,
+and common semantic metadata such as its lineage-visible name. Artifacts are the
+fundamental data units flowing through pipelines. External locations are kept
+outside identity and verified against the artifact's digest and size.
 Artifacts follow a [draft/finalize](#glossary-draft-finalize) lifecycle: they
 are created as mutable drafts and become immutable when finalized. The six
 built-in artifact types are `data`, `metric`, `file_ref`, `config`,
@@ -42,8 +44,10 @@ Lazily initializes a `ProvenanceStore` for graph queries.
 
 A registry entry describing an artifact type. Each concrete subclass declares a
 `key` (e.g. `"data"`), a `table_path` for its Delta Lake table, and a `model`
-class with serialization methods (`to_row`, `from_row`, `POLARS_SCHEMA`).
-Registration is automatic at class definition time via `__init_subclass__`.
+`Artifact` model with a `POLARS_SCHEMA`. Registration validates the concrete
+type key, unique non-reserved table path, and the verification/materialization
+contract for external types. It is automatic at class definition time via
+`__init_subclass__`.
 
 ---
 
@@ -112,10 +116,12 @@ execute phase runs inside that worker. See
 (glossary-content-addressing)=
 ## Content addressing
 
-A storage strategy where data is identified by the hash of its content rather
-than by location or name. In Artisan, `artifact_id = xxh3_128(content)`,
-meaning identical content always produces the same ID. This enables automatic
-deduplication and deterministic caching.
+A storage strategy where semantic data is identified independently of its
+storage location. In Artisan, a versioned, length-framed envelope combines the
+artifact type, canonical payload, and identity metadata. Identical envelopes
+produce the same ID, while equal bytes belonging to different types or carrying
+different semantic names remain distinct. This enables safe deduplication and
+deterministic caching.
 
 ---
 
@@ -158,9 +164,9 @@ pruning without requiring an external database server.
 
 The artifact lifecycle pattern. A **draft** artifact has `artifact_id=None` and
 is mutable -- created via `Subclass.draft()`. Calling `artifact.finalize()`
-computes the content hash, sets the `artifact_id`, and makes the artifact
-semantically immutable. Operations create drafts in `postprocess` and the
-framework finalizes them before committing to storage.
+computes the typed identity hash, sets the `artifact_id`, and snapshots durable
+state so direct and nested mutation are rejected. Operations create drafts in
+`postprocess` and the framework finalizes them before committing to storage.
 
 ---
 
@@ -189,7 +195,8 @@ through the entire execution flow.
 
 A row in the executions Delta Lake table logging a single execution attempt.
 Carries dual identity: `execution_spec_id` (deterministic cache key, computed
-from operation name, input artifact IDs, and merged parameters) and
+from operation configuration and the ordered role/group/position/type/ID input
+occurrences) and
 `execution_run_id` (unique per attempt, used for provenance edges).
 
 ---
