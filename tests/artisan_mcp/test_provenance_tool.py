@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import polars as pl
-from fixtures.store_format import publish_test_store
+from fixtures.store_format import commit_test_tables, publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.enums import TablePath
@@ -16,22 +16,30 @@ A, B, C = "a" * 32, "b" * 32, "c" * 32
 
 
 def _seed_edges(root: Path, pairs: list[tuple[str, str]]) -> None:
-    publish_test_store(str(root), LocalFileSystem())
     n = len(pairs)
-    pl.DataFrame(
+    commit_test_tables(
+        str(root),
+        str(root / "staging"),
+        LocalFileSystem(),
         {
-            "execution_run_id": ["run"] * n,
-            "source_artifact_id": [p[0] for p in pairs],
-            "target_artifact_id": [p[1] for p in pairs],
-            "source_artifact_type": ["data"] * n,
-            "target_artifact_type": ["data"] * n,
-            "source_role": ["input"] * n,
-            "target_role": ["output"] * n,
-            "group_id": [None] * n,
-            "step_boundary": [True] * n,
+            TablePath.ARTIFACT_EDGES.value: pl.DataFrame(
+                {
+                    "execution_run_id": ["run"] * n,
+                    "source_artifact_id": [p[0] for p in pairs],
+                    "target_artifact_id": [p[1] for p in pairs],
+                    "source_artifact_type": ["data"] * n,
+                    "target_artifact_type": ["data"] * n,
+                    "source_role": ["input"] * n,
+                    "target_role": ["output"] * n,
+                    "group_id": [None] * n,
+                    "step_boundary": [True] * n,
+                },
+                schema=ARTIFACT_EDGES_SCHEMA,
+            )
         },
-        schema=ARTIFACT_EDGES_SCHEMA,
-    ).write_delta(str(root / TablePath.ARTIFACT_EDGES))
+        step_run_id="seed-provenance-edges",
+        operation_name="seed_provenance",
+    )
 
 
 class TestProvenanceTool:

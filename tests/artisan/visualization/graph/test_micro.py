@@ -10,7 +10,7 @@ import polars as pl
 import pytest
 from fixtures.cache_isolation_store import build_cache_isolation_store
 from fixtures.execution_records import executions_df
-from fixtures.store_format import publish_test_store
+from fixtures.store_format import commit_test_tables, publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.file_ref import FileRefArtifact
@@ -18,7 +18,6 @@ from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
-    CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
 )
 from artisan.visualization.graph import (
@@ -34,13 +33,12 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     """Create Delta Lake tables with test provenance data."""
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
-    publish_test_store(str(delta_root), LocalFileSystem())
 
     # Create executions
     exec_data = {
         "execution_run_id": ["exec_1", "exec_2"],
         "execution_spec_id": ["spec_1", "spec_2"],
-        "step_run_id": [None, None],
+        "step_run_id": ["seed-micro-1", "seed-micro-2"],
         "origin_step_number": [1, 2],
         "operation_name": ["data_parser", "metric_calc"],
         "params": ["{}", "{}"],
@@ -56,7 +54,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "metadata": ["{}", "{}"],
     }
     exec_df = executions_df(**exec_data)
-    exec_df.write_delta(str(delta_root / "orchestration/executions"), mode="overwrite")
 
     # Create artifact_index
     artifact_data = {
@@ -66,7 +63,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "metadata": ["{}", "{}", "{}"],
     }
     artifact_df = pl.DataFrame(artifact_data, schema=ARTIFACT_INDEX_SCHEMA)
-    artifact_df.write_delta(str(delta_root / "artifacts/index"), mode="overwrite")
 
     # Create metrics (intermediate + final)
     metric_data = {
@@ -78,7 +74,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "metadata": ["{}", "{}"],
     }
     metric_df = pl.DataFrame(metric_data, schema=MetricArtifact.POLARS_SCHEMA)
-    metric_df.write_delta(str(delta_root / "artifacts/metrics"), mode="overwrite")
 
     # Create file_refs
     ext_data = {
@@ -91,7 +86,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "extension": [".csv"],
     }
     ext_df = pl.DataFrame(ext_data, schema=FileRefArtifact.POLARS_SCHEMA)
-    ext_df.write_delta(str(delta_root / "artifacts/file_refs"), mode="overwrite")
 
     # Create execution_edges
     exec_prov_data = {
@@ -101,9 +95,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "artifact_id": ["art_ext_1", "art_inter_1", "art_inter_1", "art_metric_1"],
     }
     exec_prov_df = pl.DataFrame(exec_prov_data, schema=EXECUTION_EDGES_SCHEMA)
-    exec_prov_df.write_delta(
-        str(delta_root / "provenance/execution_edges"), mode="overwrite"
-    )
 
     # Create artifact_edges
     art_prov_data = {
@@ -118,9 +109,46 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "step_boundary": [True, True],
     }
     art_prov_df = pl.DataFrame(art_prov_data, schema=ARTIFACT_EDGES_SCHEMA)
-    art_prov_df.write_delta(
-        str(delta_root / "provenance/artifact_edges"), mode="overwrite"
+    fs = LocalFileSystem()
+    staging_root = str(tmp_path / "staging")
+    commit_test_tables(
+        str(delta_root),
+        staging_root,
+        fs,
+        {
+            "artifacts/index": artifact_df.filter(pl.col("origin_step_number") == 0),
+            "artifacts/file_refs": ext_df,
+        },
+        step_run_id="seed-micro-0",
+        step_number=0,
+        operation_name="seed_file_ref",
     )
+    for step_number, execution_id in ((1, "exec_1"), (2, "exec_2")):
+        commit_test_tables(
+            str(delta_root),
+            staging_root,
+            fs,
+            {
+                "orchestration/executions": exec_df.filter(
+                    pl.col("origin_step_number") == step_number
+                ),
+                "artifacts/index": artifact_df.filter(
+                    pl.col("origin_step_number") == step_number
+                ),
+                "artifacts/metrics": metric_df.filter(
+                    pl.col("origin_step_number") == step_number
+                ),
+                "provenance/execution_edges": exec_prov_df.filter(
+                    pl.col("execution_run_id") == execution_id
+                ),
+                "provenance/artifact_edges": art_prov_df.filter(
+                    pl.col("execution_run_id") == execution_id
+                ),
+            },
+            step_run_id=f"seed-micro-{step_number}",
+            step_number=step_number,
+            operation_name=f"seed_micro_{step_number}",
+        )
 
     return delta_root
 
@@ -437,7 +465,10 @@ class TestMaxStepFiltering:
     def test_run_scoped_max_step_uses_current_cached_participation(
         self, tmp_path: Path
     ) -> None:
-        store = build_cache_isolation_store(tmp_path)
+        store = build_cache_isolation_store(
+            tmp_path,
+            reuse_source_metric_at_step_zero=True,
+        )
         steps = pl.read_delta(str(store.root / "orchestration/steps"))
         current_step_id = (
             steps.filter(
@@ -447,16 +478,6 @@ class TestMaxStepFiltering:
             .unique()
             .item()
         )
-        pl.DataFrame(
-            [
-                {
-                    "current_step_run_id": current_step_id,
-                    "cached_execution_run_id": store.source_metric_execution,
-                }
-            ],
-            schema=CACHE_REUSE_SCHEMA,
-        ).write_delta(str(store.root / "orchestration/cache_reuse"), mode="append")
-
         source = build_micro_graph(
             store.root,
             max_step=0,

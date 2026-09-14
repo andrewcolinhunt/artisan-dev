@@ -8,8 +8,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from fixtures.store_format import publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from fixtures.logical_commit_store import commit_test_step
 
 from artisan.errors import IncompatibleStoreError
 from artisan.schemas.enums import TablePath
@@ -18,7 +17,6 @@ from artisan.storage.core.table_schemas import (
     ARTIFACT_INDEX_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
-    STEPS_SCHEMA,
 )
 from artisan.visualization.inspect import RunDiagnosis, diagnose_run
 
@@ -39,7 +37,6 @@ def _step_rows(
         "state_sequence": 0,
         "disposition": None,
         "cancellation_status": None,
-        "logical_commit_id": None,
         "operation_class": "DataGenerator",
         "params_json": "{}",
         "input_refs_json": "{}",
@@ -83,16 +80,6 @@ def _step_rows(
 @pytest.fixture
 def failed_store(tmp_path: Path) -> Path:
     """Seed run-1 (a failed transform) plus an older failed run-0."""
-    publish_test_store(str(tmp_path), LocalFileSystem())
-    steps = [
-        *_step_rows("run-0", 1, "generate", "failed", 0),
-        *_step_rows("run-1", 1, "generate", "succeeded", 10),
-        *_step_rows("run-1", 2, "transform", "failed", 20),
-    ]
-    pl.DataFrame(steps, schema=STEPS_SCHEMA).write_delta(
-        str(tmp_path / TablePath.STEPS)
-    )
-
     envelope = {
         "error_type": "validation",
         "code": "artifact_validation_failed",
@@ -120,11 +107,7 @@ def failed_store(tmp_path: Path) -> Path:
         worker_log="",
         metadata="{}",
     )
-    pl.DataFrame([exec_row], schema=EXECUTIONS_SCHEMA).write_delta(
-        str(tmp_path / TablePath.EXECUTIONS)
-    )
-
-    pl.DataFrame(
+    execution_edges = pl.DataFrame(
         {
             "execution_run_id": ["exec-2"],
             "direction": ["output"],
@@ -132,9 +115,9 @@ def failed_store(tmp_path: Path) -> Path:
             "artifact_id": [B],
         },
         schema=EXECUTION_EDGES_SCHEMA,
-    ).write_delta(str(tmp_path / TablePath.EXECUTION_EDGES))
+    )
 
-    pl.DataFrame(
+    artifact_index = pl.DataFrame(
         {
             "artifact_id": [B],
             "artifact_type": ["data"],
@@ -142,9 +125,9 @@ def failed_store(tmp_path: Path) -> Path:
             "metadata": ["{}"],
         },
         schema=ARTIFACT_INDEX_SCHEMA,
-    ).write_delta(str(tmp_path / TablePath.ARTIFACT_INDEX))
+    )
 
-    pl.DataFrame(
+    artifact_edges = pl.DataFrame(
         {
             "execution_run_id": ["exec-2"],
             "source_artifact_id": [A],
@@ -157,7 +140,31 @@ def failed_store(tmp_path: Path) -> Path:
             "step_boundary": [True],
         },
         schema=ARTIFACT_EDGES_SCHEMA,
-    ).write_delta(str(tmp_path / TablePath.ARTIFACT_EDGES))
+    )
+    staging_root = str(tmp_path / "staging")
+    for run_id, number, name, status, minute in (
+        ("run-0", 1, "generate", "failed", 0),
+        ("run-1", 1, "generate", "succeeded", 10),
+    ):
+        commit_test_step(
+            tmp_path,
+            staging_root,
+            _step_rows(run_id, number, name, status, minute),
+            {},
+        )
+    commit_test_step(
+        tmp_path,
+        staging_root,
+        _step_rows("run-1", 2, "transform", "failed", 20),
+        {
+            TablePath.EXECUTIONS.value: pl.DataFrame(
+                [exec_row], schema=EXECUTIONS_SCHEMA
+            ),
+            TablePath.EXECUTION_EDGES.value: execution_edges,
+            TablePath.ARTIFACT_INDEX.value: artifact_index,
+            TablePath.ARTIFACT_EDGES.value: artifact_edges,
+        },
+    )
     return tmp_path
 
 
@@ -189,13 +196,12 @@ class TestDiagnoseRun:
 
     def test_steps_but_no_executions_degrades(self, tmp_path) -> None:
         """A real store with no executions recorded yields an empty diagnosis."""
-        publish_test_store(str(tmp_path), LocalFileSystem())
-        pl.DataFrame(schema=EXECUTIONS_SCHEMA).write_delta(
-            str(tmp_path / TablePath.EXECUTIONS)
-        )
         steps = _step_rows("run-1", 1, "generate", "running", 0)
-        pl.DataFrame(steps, schema=STEPS_SCHEMA).write_delta(
-            str(tmp_path / TablePath.STEPS)
+        commit_test_step(
+            tmp_path,
+            str(tmp_path / "staging"),
+            steps,
+            {},
         )
 
         diag = diagnose_run(str(tmp_path), "run-1")
