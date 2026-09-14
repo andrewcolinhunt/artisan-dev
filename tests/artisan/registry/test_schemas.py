@@ -59,7 +59,12 @@ class TestParamsSchemaFor:
 
     def test_parameter_less_op_returns_empty_schema(self) -> None:
         schema = params_schema_for(Merge)
-        assert schema == {"type": "object", "title": "Params", "properties": {}}
+        assert schema == {
+            "type": "object",
+            "title": "Params",
+            "properties": {},
+            "additionalProperties": False,
+        }
 
 
 class TestFieldPrecedence:

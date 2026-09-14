@@ -189,6 +189,7 @@ def execute_curator(
     step_number: int,
     artifact_store: ArtifactStore,
 ) -> PassthroughResult | ArtifactResult:
+    ...
 ```
 
 `inputs` is a dict mapping role names to Polars DataFrames, each with at least
