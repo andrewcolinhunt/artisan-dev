@@ -34,7 +34,7 @@ class TestGetRunStatus:
         assert status["pipeline_run_id"] == seeded_run.run_id
         assert status["step_count"] == 2
         by_name = {s["name"]: s["status"] for s in status["steps"]}
-        assert by_name == {"generate": "ok", "transform": "failed"}
+        assert by_name == {"generate": "succeeded", "transform": "failed"}
 
     def test_unknown_run_is_empty(self, make_app, invoke, seeded_run) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
@@ -79,7 +79,7 @@ class TestRunResources:
         rows = {
             "pipeline_run_id": [f"run-{index}" for index in range(101)],
             "step_count": [1] * 101,
-            "last_status": ["completed"] * 101,
+            "last_status": ["succeeded"] * 101,
             "started_at": [datetime(2026, 1, 1, tzinfo=UTC)] * 101,
             "ended_at": [datetime(2026, 1, 1, tzinfo=UTC)] * 101,
         }
@@ -112,7 +112,7 @@ class TestRunResources:
         module = importlib.import_module("artisan.orchestration.run_status")
         payload = {
             "pipeline_run_id": "large-run",
-            "last_status": "completed",
+            "last_status": "succeeded",
             "step_count": 101,
             "started_at": None,
             "ended_at": None,

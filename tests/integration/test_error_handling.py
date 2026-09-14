@@ -14,6 +14,7 @@ from artisan.operations.examples import DataGenerator, DataTransformer, MetricCa
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 from .conftest import (
     FailingTransformer,
@@ -47,7 +48,7 @@ def test_fail_fast_policy(pipeline_env: dict[str, str]):
         step_runner=Runner.LOCAL,
     )
 
-    assert step1.success is False
+    assert step1.status is StepStatus.FAILED
 
     # Step status recorded as "failed" in delta
     status = get_step_status(delta_root, 1)
@@ -86,7 +87,7 @@ def test_continue_policy(pipeline_env: dict[str, str]):
     assert step1.failed_count == 1
 
     status = get_step_status(delta_root, 1)
-    assert status == "completed"
+    assert status == "partial"
 
     # 2 artifacts persisted from the successful executions
     assert count_artifacts_by_step(delta_root, 1) == 2
@@ -98,12 +99,11 @@ def test_continue_policy(pipeline_env: dict[str, str]):
         step_runner=Runner.LOCAL,
     )
 
-    assert step2.success is True
+    assert step2.status is StepStatus.SUCCEEDED
     assert step2.succeeded_count == 2
 
     result = pipeline.finalize()
-    # overall_success is False because step 1 has failed_count > 0
-    # (StepResult.success = failed_count == 0)
+    # overall_success is false because step 1 is explicitly partial.
     assert result["overall_success"] is False
 
 
@@ -138,11 +138,11 @@ def test_all_executions_fail_continue(pipeline_env: dict[str, str]):
     # Step 2: no inputs available → skipped
     step2 = pipeline.run(
         MetricCalculator,
-        inputs={"dataset": step1.output("dataset")},
+        inputs={"dataset": pipeline.output("failing_transformer", "dataset")},
         step_runner=Runner.LOCAL,
     )
 
-    assert step2.metadata.get("skipped") is True
+    assert step2.status is StepStatus.SKIPPED
 
     result = pipeline.finalize()
     assert result is not None
@@ -169,7 +169,7 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
         params={"count": 2, "seed": 42},
         step_runner=Runner.LOCAL,
     )
-    assert step0.success is True
+    assert step0.status is StepStatus.SUCCEEDED
 
     step1 = p1.run(
         FailingTransformer,
@@ -177,7 +177,7 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
         params={"fail_on_all": True},
         step_runner=Runner.LOCAL,
     )
-    assert step1.success is False
+    assert step1.status is StepStatus.FAILED
     p1.finalize()
 
     # Run 2: resume, replace step 1 with DataTransformer, add step 2
@@ -202,7 +202,7 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
         },
         step_runner=Runner.LOCAL,
     )
-    assert step1b.success is True
+    assert step1b.status is StepStatus.SUCCEEDED
 
     # Step 2: MetricCalculator
     step2 = p2.run(
@@ -210,7 +210,7 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
         inputs={"dataset": step1b.output("dataset")},
         step_runner=Runner.LOCAL,
     )
-    assert step2.success is True
+    assert step2.status is StepStatus.SUCCEEDED
 
     result = p2.finalize()
     assert result["overall_success"] is True

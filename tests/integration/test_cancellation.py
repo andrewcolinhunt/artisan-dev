@@ -13,10 +13,11 @@ pytestmark = pytest.mark.integration
 from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 
 def test_cancel_before_any_steps(pipeline_env: dict[str, str]):
-    """cancel() before running steps causes subsequent steps to skip."""
+    """cancel() before running steps confirms queued cancellation."""
     pipeline = PipelineManager.create(
         name="test_cancel_before",
         delta_root=pipeline_env["delta_root"],
@@ -32,10 +33,7 @@ def test_cancel_before_any_steps(pipeline_env: dict[str, str]):
         step_runner=Runner.LOCAL,
     )
 
-    assert (
-        result.metadata.get("skipped") is True
-        or result.metadata.get("cancelled") is True
-    )
+    assert result.status is StepStatus.CANCELLED
     assert result.succeeded_count == 0
 
     summary = pipeline.finalize()
@@ -57,7 +55,7 @@ def test_cancel_skips_downstream_steps(pipeline_env: dict[str, str]):
         params={"count": 2, "seed": 42},
         step_runner=Runner.LOCAL,
     )
-    assert step0.success is True
+    assert step0.status is StepStatus.SUCCEEDED
 
     pipeline.cancel()
 
@@ -73,8 +71,7 @@ def test_cancel_skips_downstream_steps(pipeline_env: dict[str, str]):
         step_runner=Runner.LOCAL,
     )
 
-    assert step1.metadata.get("skipped") is True
-    assert step1.metadata.get("skip_reason") == "cancelled"
+    assert step1.status is StepStatus.CANCELLED
 
     summary = pipeline.finalize()
     assert summary["total_steps"] == 2
@@ -110,10 +107,7 @@ def test_cancel_during_submit(pipeline_env: dict[str, str]):
     )
 
     result = future.result(timeout=10)
-    assert (
-        result.metadata.get("skipped") is True
-        or result.metadata.get("cancelled") is True
-    )
+    assert result.status is StepStatus.CANCELLED
 
     summary = pipeline.finalize()
     assert "pipeline_name" in summary
@@ -235,8 +229,8 @@ def test_cancelled_creator_staging_is_not_recovered_or_cached(
     pipeline.finalize()
 
     executions_path = Path(pipeline_env["delta_root"]) / "orchestration/executions"
-    assert cancelled.metadata["cancelled"] is True
-    assert not executions_path.exists()
+    assert cancelled.status is StepStatus.CANCELLED
+    assert pl.read_delta(executions_path).is_empty()
     assert not list(Path(pipeline_env["staging_root"]).rglob("*.parquet"))
 
     rerun = PipelineManager.create(
@@ -301,8 +295,8 @@ def test_finalize_terminalizes_running_and_queued_cancellations(
 
     assert summary["total_steps"] == 2
     assert [step["name"] for step in summary["steps"]] == ["running", "queued"]
-    assert all(result.metadata["cancelled"] is True for result in pipeline)
-    assert queued.status == "cancelled"
+    assert all(result.status is StepStatus.CANCELLED for result in pipeline)
+    assert queued.status is StepStatus.CANCELLED
     with pytest.raises(CancelledError):
         queued.result()
 

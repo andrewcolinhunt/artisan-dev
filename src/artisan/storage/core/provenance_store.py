@@ -358,44 +358,14 @@ class ProvenanceStore:
         """
         steps_path = self._table_path(TablePath.STEPS)
         if self._fs.exists(steps_path):
-            lf = pl.scan_delta(
-                steps_path, storage_options=self._storage_options
-            ).filter(pl.col("status") == "completed")
-            if pipeline_run_id:
-                lf = lf.filter(pl.col("pipeline_run_id") == pipeline_run_id)
+            from artisan.orchestration.engine.step_tracker import StepTracker
 
-            df = (
-                lf.sort("timestamp", descending=True)
-                .unique(subset=["step_number"], keep="first")
-                .select(["step_number", "step_name"])
-                .collect()
-            )
-            if not df.is_empty():
-                return dict(
-                    zip(
-                        df["step_number"].to_list(),
-                        df["step_name"].to_list(),
-                        strict=True,
-                    )
-                )
-
-        records_path = self._table_path(TablePath.EXECUTIONS)
-        if self._fs.exists(records_path):
-            df = (
-                pl.scan_delta(records_path, storage_options=self._storage_options)
-                .filter(pl.col("success") == True)  # noqa: E712
-                .select(["origin_step_number", "operation_name"])
-                .unique(subset=["origin_step_number"], keep="first")
-                .collect()
-            )
-            if not df.is_empty():
-                return dict(
-                    zip(
-                        df["origin_step_number"].to_list(),
-                        df["operation_name"].to_list(),
-                        strict=True,
-                    )
-                )
+            states = StepTracker(
+                self.base_path,
+                storage_options=self._storage_options,
+                fs=self._fs,
+            ).load_current_states(pipeline_run_id)
+            return {state.step_number: state.step_name for state in states}
 
         return {}
 

@@ -1011,33 +1011,53 @@ class TestLoadStepNameMap:
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
         ts = datetime(2025, 1, 1, tzinfo=UTC)
-        pl.DataFrame(
-            {
-                "step_run_id": ["r0" + "0" * 30, "r1" + "0" * 30],
-                "step_spec_id": ["s0" + "0" * 30, "s1" + "0" * 30],
-                "pipeline_run_id": ["p" * 32, "p" * 32],
-                "step_number": [0, 1],
-                "step_name": ["ingest", "tool_c"],
-                "status": ["completed", "completed"],
-                "operation_class": ["Ingest", "ToolC"],
-                "params_json": ["{}", "{}"],
-                "input_refs_json": ["{}", "{}"],
-                "compute_backend": ["local", "local"],
-                "compute_options_json": ["{}", "{}"],
-                "output_roles_json": ["{}", "{}"],
-                "output_types_json": ["{}", "{}"],
-                "total_count": [1, 1],
-                "succeeded_count": [1, 1],
-                "failed_count": [0, 0],
-                "timestamp": [ts, ts],
-                "duration_seconds": [1.0, 1.0],
-                "error": [None, None],
-                "dispatch_error": [None, None],
-                "commit_error": [None, None],
-                "metadata": ["{}", "{}"],
-            },
-            schema=STEPS_SCHEMA,
-        ).write_delta(f"{root}/orchestration/steps", storage_options=opts)
+        rows = []
+        for number, name, operation in (
+            (0, "ingest", "Ingest"),
+            (1, "tool_c", "ToolC"),
+        ):
+            base = {
+                "step_run_id": f"r{number}" + "0" * 30,
+                "step_spec_id": None,
+                "pipeline_run_id": "p" * 32,
+                "step_number": number,
+                "step_name": name,
+                "status": "pending",
+                "state_sequence": 0,
+                "disposition": None,
+                "cancellation_status": None,
+                "logical_commit_id": None,
+                "operation_class": operation,
+                "params_json": "{}",
+                "input_refs_json": "{}",
+                "compute_backend": "local",
+                "compute_options_json": "{}",
+                "output_roles_json": "[]",
+                "output_types_json": "{}",
+                "total_count": None,
+                "succeeded_count": None,
+                "failed_count": None,
+                "timestamp": ts,
+                "duration_seconds": None,
+                "error": None,
+                "metadata": None,
+            }
+            running = {**base, "status": "running", "state_sequence": 1}
+            succeeded = {
+                **running,
+                "step_spec_id": f"s{number}" + "0" * 30,
+                "status": "succeeded",
+                "state_sequence": 2,
+                "disposition": "executed",
+                "total_count": 1,
+                "succeeded_count": 1,
+                "failed_count": 0,
+                "duration_seconds": 1.0,
+            }
+            rows.extend([base, running, succeeded])
+        pl.DataFrame(rows, schema=STEPS_SCHEMA).write_delta(
+            f"{root}/orchestration/steps", storage_options=opts
+        )
         return store
 
     def test_loads_step_names(self, store_with_steps):
@@ -1054,8 +1074,8 @@ class TestLoadStepNameMap:
         )
         assert store.provenance.load_step_name_map() == {}
 
-    def test_fallback_to_executions(self, backend_fs):
-        """Falls back to executions when steps table is missing."""
+    def test_executions_do_not_override_authoritative_empty_steps(self, backend_fs):
+        """Execution rows cannot invent lifecycle-owned step names."""
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
@@ -1079,7 +1099,7 @@ class TestLoadStepNameMap:
             metadata=["{}"],
         ).write_delta(f"{root}/orchestration/executions", storage_options=opts)
         result = store.provenance.load_step_name_map()
-        assert result[0] == "ingest_fallback"
+        assert result == {}
 
 
 class TestGetAssociated:

@@ -25,6 +25,7 @@ from artisan.operations.examples import (
 )
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.output_spec import OutputSpec
 
 from .conftest import (
@@ -196,7 +197,7 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
     # Step 3: MetricCalculator (should be skipped — pipeline stopped)
     step3_result = pipeline.run(
         MetricCalculator,
-        inputs={"dataset": step2_result.output("dataset")},
+        inputs={"dataset": pipeline.output("data_transformer", "dataset")},
         step_runner=Runner.LOCAL,
     )
 
@@ -207,9 +208,8 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
     passthrough_ids = get_execution_outputs(delta_root, 1, "passthrough")
     assert len(passthrough_ids) == 0
 
-    # Post-filter steps are skipped (check via StepResult metadata)
-    assert step2_result.metadata.get("skipped") is True
-    assert step3_result.metadata.get("skipped") is True
+    assert step2_result.status is StepStatus.SKIPPED
+    assert step3_result.status is StepStatus.SKIPPED
 
     # Skipped steps produce 0 artifacts
     assert count_artifacts_by_step(delta_root, 2) == 0

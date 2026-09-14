@@ -107,13 +107,7 @@ def build_cache_isolation_store(tmp_path: Path) -> CacheIsolationStore:
 
     base = datetime(2026, 9, 1, tzinfo=UTC)
     step_rows = [
-        _step(
-            step_ids[(run_id, number)],
-            run_id,
-            number,
-            name,
-            base + timedelta(seconds=index),
-        )
+        row
         for index, (run_id, number, name) in enumerate(
             [
                 (source_run, 0, "source_data"),
@@ -123,6 +117,13 @@ def build_cache_isolation_store(tmp_path: Path) -> CacheIsolationStore:
                 (other_run, 0, "other_data"),
                 (other_run, 5, "other_metric"),
             ]
+        )
+        for row in _step_rows(
+            step_ids[(run_id, number)],
+            run_id,
+            number,
+            name,
+            base + timedelta(seconds=index),
         )
     ]
     pl.DataFrame(step_rows, schema=STEPS_SCHEMA).write_delta(
@@ -217,20 +218,24 @@ def build_cache_isolation_store(tmp_path: Path) -> CacheIsolationStore:
     )
 
 
-def _step(
+def _step_rows(
     step_id: str,
     run_id: str,
     number: int,
     name: str,
     timestamp: datetime,
-) -> dict[str, object]:
-    return {
+) -> list[dict[str, object]]:
+    base = {
         "step_run_id": step_id,
-        "step_spec_id": digest_utf8(f"{run_id}:spec:{number}"),
+        "step_spec_id": None,
         "pipeline_run_id": run_id,
         "step_number": number,
         "step_name": name,
-        "status": "completed",
+        "status": "pending",
+        "state_sequence": 0,
+        "disposition": None,
+        "cancellation_status": None,
+        "logical_commit_id": None,
         "operation_class": "example.Operation",
         "params_json": "{}",
         "input_refs_json": "{}",
@@ -238,16 +243,34 @@ def _step(
         "compute_options_json": "{}",
         "output_roles_json": "[]",
         "output_types_json": "{}",
+        "total_count": None,
+        "succeeded_count": None,
+        "failed_count": None,
+        "timestamp": timestamp - timedelta(microseconds=2),
+        "duration_seconds": None,
+        "error": None,
+        "metadata": None,
+    }
+    running = {
+        **base,
+        "status": "running",
+        "state_sequence": 1,
+        "timestamp": timestamp - timedelta(microseconds=1),
+    }
+    succeeded = {
+        **running,
+        "step_spec_id": digest_utf8(f"{run_id}:spec:{number}"),
+        "status": "succeeded",
+        "state_sequence": 2,
+        "disposition": "cache_hit" if "cached" in name else "executed",
         "total_count": 1,
         "succeeded_count": 1,
         "failed_count": 0,
         "timestamp": timestamp,
         "duration_seconds": 1.0,
-        "error": None,
-        "dispatch_error": None,
-        "commit_error": None,
         "metadata": json.dumps({"timings": {"total": 1.0}}),
     }
+    return [base, running, succeeded]
 
 
 def _execution(

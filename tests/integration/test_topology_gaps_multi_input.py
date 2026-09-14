@@ -32,6 +32,7 @@ from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -314,8 +315,8 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     assert result["overall_success"]
 
     # New steps executed
-    assert get_step_status(delta_root, 3) == "completed"
-    assert get_step_status(delta_root, 4) == "completed"
+    assert get_step_status(delta_root, 3) == StepStatus.SUCCEEDED
+    assert get_step_status(delta_root, 4) == StepStatus.SUCCEEDED
 
     # New steps produced artifacts
     passthrough_ids = get_execution_outputs(delta_root, 3, "passthrough")

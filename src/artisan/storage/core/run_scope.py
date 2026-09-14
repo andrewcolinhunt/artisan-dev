@@ -14,7 +14,7 @@ from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 
 _HEX_ID = re.compile(r"[0-9a-f]{32}")
-_ACCEPTED_OUTPUT_STATUSES = frozenset({"completed", "succeeded", "partial"})
+_ACCEPTED_OUTPUT_STATUSES = frozenset({"succeeded", "partial"})
 
 _MEMBERSHIP_SCHEMA: dict[str, Any] = {
     "pipeline_run_id": pl.String,
@@ -77,7 +77,7 @@ def load_execution_membership(
     reuse = _read_cache_reuse(delta_root, options)
     _validate_relations(steps, executions, reuse)
 
-    attempts = _latest_attempts(steps)
+    attempts = _current_attempts(delta_root, fs, options)
     if pipeline_run_id is not None:
         attempts = attempts.filter(pl.col("pipeline_run_id") == pipeline_run_id)
     if step_run_id is not None:
@@ -310,9 +310,20 @@ def _read_cache_reuse(delta_root: str, options: dict[str, str]) -> pl.DataFrame:
     )
 
 
-def _latest_attempts(steps: pl.DataFrame) -> pl.DataFrame:
-    """Select the latest lifecycle event for every exact step attempt."""
-    if steps.is_empty():
+def _current_attempts(
+    delta_root: str,
+    fs: AbstractFileSystem,
+    options: dict[str, str],
+) -> pl.DataFrame:
+    """Project centrally validated current lifecycle attempts."""
+    from artisan.orchestration.engine.step_tracker import StepTracker
+
+    states = StepTracker(
+        delta_root,
+        storage_options=options,
+        fs=fs,
+    ).load_all_current_states()
+    if not states:
         return pl.DataFrame(
             schema={
                 "pipeline_run_id": pl.String,
@@ -321,15 +332,22 @@ def _latest_attempts(steps: pl.DataFrame) -> pl.DataFrame:
                 "status": pl.String,
             }
         )
-    return (
-        steps.sort("timestamp", descending=True)
-        .unique(subset=["step_run_id"], keep="first")
-        .select(
-            "pipeline_run_id",
-            pl.col("step_run_id").alias("current_step_run_id"),
-            pl.col("step_number").alias("current_step_number"),
-            "status",
-        )
+    return pl.DataFrame(
+        [
+            {
+                "pipeline_run_id": state.pipeline_run_id,
+                "current_step_run_id": state.step_run_id,
+                "current_step_number": state.step_number,
+                "status": state.status.value,
+            }
+            for state in states
+        ],
+        schema={
+            "pipeline_run_id": pl.String,
+            "current_step_run_id": pl.String,
+            "current_step_number": pl.Int32,
+            "status": pl.String,
+        },
     )
 
 

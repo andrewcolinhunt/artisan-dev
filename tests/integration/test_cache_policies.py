@@ -14,6 +14,7 @@ from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas.enums import CachePolicy, FailurePolicy
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 
 from .conftest import (
     FailingTransformer,
@@ -152,7 +153,7 @@ def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, str]):
 
 
 def test_step_completed_partial_failure_cached(pipeline_env: dict[str, str]):
-    """STEP_COMPLETED: partial failure IS cached (step completed regardless)."""
+    """STEP_COMPLETED reuses a policy-accepted partial result."""
     delta_root = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
     working = pipeline_env["working_root"]
@@ -208,4 +209,5 @@ def test_step_completed_partial_failure_cached(pipeline_env: dict[str, str]):
     assert exec_count2 == exec_count1, (
         "STEP_COMPLETED: partial failure should be cached"
     )
-    assert step1b.success is False, "Cached result preserves failure status"
+    assert step1b.status is StepStatus.PARTIAL
+    assert step1b.disposition is StepDisposition.CACHE_HIT

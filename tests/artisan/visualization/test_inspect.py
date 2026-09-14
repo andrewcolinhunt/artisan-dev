@@ -20,6 +20,7 @@ from artisan.storage.core.table_schemas import (
     CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
+    STEPS_SCHEMA,
 )
 from artisan.utils.dicts import flatten_dict as _flatten_dict
 from artisan.visualization.inspect import (
@@ -34,34 +35,6 @@ from artisan.visualization.inspect import (
 # ======================================================================
 # Fixtures: write minimal Delta tables to tmp_path
 # ======================================================================
-
-# Schemas match the subset of columns each inspect function reads.
-# All columns typed to avoid Null dtype errors in write_delta.
-
-STEPS_SCHEMA = {
-    "step_run_id": pl.String,
-    "step_spec_id": pl.String,
-    "pipeline_run_id": pl.String,
-    "step_number": pl.Int32,
-    "step_name": pl.String,
-    "status": pl.String,
-    "operation_class": pl.String,
-    "params_json": pl.String,
-    "input_refs_json": pl.String,
-    "compute_backend": pl.String,
-    "compute_options_json": pl.String,
-    "output_roles_json": pl.String,
-    "output_types_json": pl.String,
-    "total_count": pl.Int32,
-    "succeeded_count": pl.Int32,
-    "failed_count": pl.Int32,
-    "timestamp": pl.String,
-    "duration_seconds": pl.Float64,
-    "error": pl.String,
-    "dispatch_error": pl.String,
-    "commit_error": pl.String,
-    "metadata": pl.String,
-}
 
 INDEX_SCHEMA = {
     "artifact_id": pl.String,
@@ -109,7 +82,8 @@ def _write_delta(
 
 
 def _write_steps(delta_root: Path, rows: list[dict]) -> None:
-    _write_delta(delta_root, "orchestration/steps", rows, STEPS_SCHEMA)
+    snapshots = [snapshot for row in rows for snapshot in _step_history(row)]
+    _write_delta(delta_root, "orchestration/steps", snapshots, STEPS_SCHEMA)
     executions = [
         {
             "execution_run_id": f"exec-{row['step_run_id']}",
@@ -123,7 +97,7 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
             "timestamp_end": datetime(2026, 1, 1, tzinfo=UTC),
             "source_worker": 0,
             "compute_backend": "local",
-            "success": row["status"] == "completed",
+            "success": row["status"] in {"succeeded", "partial"},
             "error": row.get("error"),
             "error_envelope": None,
             "tool_output": None,
@@ -131,6 +105,7 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
             "metadata": "{}",
         }
         for row in rows
+        if row["status"] not in {"pending", "skipped", "cancelled"}
     ]
     _write_delta(
         delta_root,
@@ -213,14 +188,25 @@ def _step_row(
     total_count: int = 3,
     duration_seconds: float = 0.5,
 ) -> dict:
-    """Build a minimal completed step row."""
+    """Build a minimal authoritative terminal step row."""
+    failed_count = total_count - succeeded_count
+    if failed_count == 0:
+        status = "succeeded"
+    elif succeeded_count:
+        status = "partial"
+    else:
+        status = "failed"
     return {
         "step_run_id": f"sr{step_number}",
         "step_spec_id": f"ss{step_number}",
         "pipeline_run_id": pipeline_run_id,
         "step_number": step_number,
         "step_name": step_name,
-        "status": "completed",
+        "status": status,
+        "state_sequence": 2,
+        "disposition": "executed" if status != "failed" else None,
+        "cancellation_status": None,
+        "logical_commit_id": None,
         "operation_class": operation_class,
         "params_json": "{}",
         "input_refs_json": "{}",
@@ -230,14 +216,73 @@ def _step_row(
         "output_types_json": "{}",
         "total_count": total_count,
         "succeeded_count": succeeded_count,
-        "failed_count": total_count - succeeded_count,
-        "timestamp": "2026-01-01T00:00:00",
+        "failed_count": failed_count,
+        "timestamp": datetime(2026, 1, 1, tzinfo=UTC),
         "duration_seconds": duration_seconds,
-        "error": "",
-        "dispatch_error": None,
-        "commit_error": None,
+        "error": "step failed" if status == "failed" else None,
         "metadata": "{}",
     }
+
+
+def _step_history(terminal: dict) -> list[dict]:
+    """Expand one logical row into its guarded lifecycle snapshots."""
+    pending = {
+        **terminal,
+        "step_spec_id": None,
+        "status": "pending",
+        "state_sequence": 0,
+        "disposition": None,
+        "cancellation_status": None,
+        "logical_commit_id": None,
+        "total_count": None,
+        "succeeded_count": None,
+        "failed_count": None,
+        "duration_seconds": None,
+        "error": None,
+        "metadata": None,
+    }
+    status = terminal["status"]
+    if status == "pending":
+        return [pending]
+    if status == "skipped":
+        skipped = {
+            **terminal,
+            "state_sequence": 1,
+            "disposition": None,
+            "cancellation_status": None,
+            "total_count": 0,
+            "succeeded_count": 0,
+            "failed_count": 0,
+            "duration_seconds": None,
+            "error": None,
+            "output_roles_json": "[]",
+            "output_types_json": "{}",
+        }
+        return [pending, skipped]
+    if status == "cancelled":
+        requested = {**pending, "state_sequence": 1, "cancellation_status": "requested"}
+        confirmed = {
+            **requested,
+            "state_sequence": 2,
+            "cancellation_status": "confirmed",
+        }
+        cancelled = {
+            **terminal,
+            "state_sequence": 3,
+            "disposition": None,
+            "cancellation_status": "confirmed",
+            "total_count": 0,
+            "succeeded_count": 0,
+            "failed_count": 0,
+            "duration_seconds": None,
+            "output_roles_json": "[]",
+            "output_types_json": "{}",
+        }
+        return [pending, requested, confirmed, cancelled]
+    running = {**pending, "status": "running", "state_sequence": 1}
+    if status == "running":
+        return [pending, running]
+    return [pending, running, terminal]
 
 
 # ======================================================================
@@ -351,7 +396,7 @@ def test_inspect_pipeline_skipped_steps(tmp_path: Path) -> None:
 
     result = inspect_pipeline(delta_root)
     assert result.shape[0] == 2
-    assert result["status"][0] == "ok"
+    assert result["status"][0] == "succeeded"
     assert result["status"][1] == "skipped"
     assert result["produced"][1] == "-"
     assert result["duration"][1] == "-"
@@ -361,7 +406,11 @@ def test_inspect_pipeline_cancelled_steps(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
     cancelled_row = _step_row(step_number=1, step_name="data_transformer")
     cancelled_row["status"] = "cancelled"
-    cancelled_row["succeeded_count"] = None
+    cancelled_row["total_count"] = 0
+    cancelled_row["succeeded_count"] = 0
+    cancelled_row["failed_count"] = 0
+    cancelled_row["disposition"] = None
+    cancelled_row["cancellation_status"] = "confirmed"
     cancelled_row["duration_seconds"] = None
     _write_steps(
         delta_root,
@@ -384,7 +433,7 @@ def test_inspect_pipeline_cancelled_steps(tmp_path: Path) -> None:
 
     result = inspect_pipeline(delta_root)
     assert result.shape[0] == 2
-    assert result["status"][0] == "ok"
+    assert result["status"][0] == "succeeded"
     assert result["status"][1] == "cancelled"
     assert result["produced"][1] == "-"
     assert result["duration"][1] == "-"
@@ -401,6 +450,11 @@ def test_inspect_pipeline_failed_steps(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
     failed_row = _step_row(step_number=1, step_name="transform")
     failed_row["status"] = "failed"
+    failed_row["disposition"] = None
+    failed_row["total_count"] = 1
+    failed_row["succeeded_count"] = 0
+    failed_row["failed_count"] = 1
+    failed_row["error"] = "step failed"
     _write_steps(
         delta_root,
         [
@@ -422,24 +476,19 @@ def test_inspect_pipeline_failed_steps(tmp_path: Path) -> None:
 
     result = inspect_pipeline(delta_root)
     assert result.shape[0] == 2
-    assert result["status"][0] == "ok"
+    assert result["status"][0] == "succeeded"
     assert result["status"][1] == "failed"
     assert result["produced"][1] == "-"
     assert result["duration"][1] == "-"
 
 
-def test_inspect_pipeline_completed_all_units_failed_is_failed(tmp_path: Path) -> None:
-    """A step that 'completed' under CONTINUE with every unit failed is failed.
-
-    The step row persists status='completed' (it ran to completion), but the
-    counts say 0 succeeded / 1 failed. This is the tutorial's transform step:
-    it must read as 'failed', not 'ok'.
-    """
+def test_inspect_pipeline_all_units_failed_preserves_failed(tmp_path: Path) -> None:
+    """A step with every unit failed preserves authoritative failed status."""
     delta_root = tmp_path / "delta"
     row = _step_row(
         step_number=0, step_name="transform", total_count=1, succeeded_count=0
     )
-    assert row["status"] == "completed"
+    assert row["status"] == "failed"
     assert row["failed_count"] == 1
     _write_steps(delta_root, [row])
 
@@ -447,10 +496,10 @@ def test_inspect_pipeline_completed_all_units_failed_is_failed(tmp_path: Path) -
     assert result["status"][0] == "failed"
 
 
-def test_inspect_pipeline_completed_some_units_failed_is_partial(
+def test_inspect_pipeline_mixed_units_preserves_partial(
     tmp_path: Path,
 ) -> None:
-    """A completed step with a mix of succeeded and failed units is partial."""
+    """A mixed step preserves authoritative partial status."""
     delta_root = tmp_path / "delta"
     row = _step_row(
         step_number=0, step_name="transform", total_count=3, succeeded_count=2
@@ -462,26 +511,21 @@ def test_inspect_pipeline_completed_some_units_failed_is_partial(
     assert result["status"][0] == "partial"
 
 
-def test_inspect_pipeline_filter_failed_count_stays_ok(tmp_path: Path) -> None:
-    """A filter's filtered-out artifacts are not failures — status stays ok.
-
-    A filter records one curator execution; artifacts that don't pass the
-    predicate are logged, never counted as failed. Even with a nonzero
-    failed_count on the row, a filter step is 'ok'.
-    """
+def test_inspect_pipeline_filter_uses_authoritative_succeeded(tmp_path: Path) -> None:
+    """Filtered-out artifacts do not become failed execution units."""
     delta_root = tmp_path / "delta"
     row = _step_row(
         step_number=0,
         step_name="filter",
         operation_class="artisan.operations.curator.Filter",
-        total_count=5,
+        total_count=2,
         succeeded_count=2,
     )
-    assert row["failed_count"] == 3
+    assert row["failed_count"] == 0
     _write_steps(delta_root, [row])
 
     result = inspect_pipeline(delta_root)
-    assert result["status"][0] == "ok"
+    assert result["status"][0] == "succeeded"
 
 
 # ======================================================================
@@ -1132,14 +1176,15 @@ def test_inspect_metrics_preserves_reuse_at_multiple_current_steps(
     steps = pl.read_delta(str(steps_path))
     repeated = steps.filter(
         pl.col("step_run_id") == store.current_cache_step_id
-    ).to_dicts()[0]
+    ).to_dicts()
     repeated_step_id = "e" * 32
-    repeated.update(
-        step_run_id=repeated_step_id,
-        step_number=6,
-        step_name="current_metric_cached_again",
-    )
-    pl.DataFrame([repeated], schema=steps.schema).write_delta(
+    for snapshot in repeated:
+        snapshot.update(
+            step_run_id=repeated_step_id,
+            step_number=6,
+            step_name="current_metric_cached_again",
+        )
+    pl.DataFrame(repeated, schema=steps.schema).write_delta(
         str(steps_path), mode="append"
     )
     pl.DataFrame(

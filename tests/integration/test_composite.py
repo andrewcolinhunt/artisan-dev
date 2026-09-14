@@ -22,6 +22,7 @@ from artisan.operations.examples import DataGenerator, DataTransformer, MetricCa
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas.operation_config.compute_resources import ComputeResources
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -258,7 +259,7 @@ def test_composite_level_step_runner_reaches_child(pipeline_env: dict[str, str])
     pipeline.finalize()
     results = list(pipeline)
     assert len(results) == 3
-    assert all(r.success for r in results)
+    assert all(r.status is StepStatus.SUCCEEDED for r in results)
 
 
 def test_composite_level_environment_reaches_child(pipeline_env: dict[str, str]):

@@ -14,6 +14,7 @@ pytestmark = pytest.mark.integration
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 
 def test_invalid_params_raises(pipeline_env: dict[str, str]):
@@ -161,7 +162,7 @@ def test_valid_overrides_accepted(pipeline_env: dict[str, str]):
         step_runner=Runner.LOCAL,
     )
 
-    assert step0.success is True
+    assert step0.status is StepStatus.SUCCEEDED
 
     summary = pipeline.finalize()
     assert summary["overall_success"] is True

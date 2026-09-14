@@ -18,6 +18,7 @@ from artisan.operations.curator.interactive_filter import (
 from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 from .conftest import (
     get_execution_inputs,
@@ -91,12 +92,12 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, str]):
 
     # Commit
     step_result = filt.commit("interactive_filter")
-    assert step_result.success
+    assert step_result.status is StepStatus.SUCCEEDED
     assert step_result.succeeded_count == 4
     assert step_result.step_number == 2
 
     # Verify committed step visible in steps table
-    assert get_step_status(delta_root, 2) == "completed"
+    assert get_step_status(delta_root, 2) == "succeeded"
 
     # Verify execution edges
     outputs = get_execution_outputs(delta_root, 2, "passthrough")
@@ -155,7 +156,7 @@ def test_interactive_filter_selective_criteria(pipeline_env: dict[str, str]):
     # Commit and verify only passing artifacts are in outputs
     if len(filtered) > 0:
         step_result = filt.commit("selective_filter")
-        assert step_result.success
+        assert step_result.status is StepStatus.SUCCEEDED
         assert step_result.succeeded_count == len(filtered)
 
         outputs = get_execution_outputs(delta_root, 2, "passthrough")
