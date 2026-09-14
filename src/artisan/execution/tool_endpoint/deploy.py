@@ -146,10 +146,29 @@ def build_app(
                 raise ValueError(msg)
             return parsed_map
 
+        def _integrity_map(raw: str) -> dict[str, dict[str, Any]]:
+            """Parse URI input digest and size contracts."""
+            parsed_map = json.loads(raw)
+            if not isinstance(parsed_map, dict):
+                msg = "input_integrity must be a JSON object"
+                raise ValueError(msg)
+            for role, contract in parsed_map.items():
+                if (
+                    not isinstance(role, str)
+                    or not isinstance(contract, dict)
+                    or set(contract) != {"content_digest", "size_bytes"}
+                    or not isinstance(contract["content_digest"], str)
+                    or not isinstance(contract["size_bytes"], int)
+                ):
+                    msg = "input_integrity values must contain digest and byte count"
+                    raise ValueError(msg)
+            return parsed_map
+
         def _file_roles(
             uploads: list[UploadFile],
             uris: dict[str, str],
             filenames: dict[str, str],
+            integrity: dict[str, dict[str, Any]],
         ) -> list[str]:
             """Validate submitted roles and return multipart roles in order."""
             roles = [upload.filename or "input" for upload in uploads]
@@ -165,7 +184,7 @@ def build_app(
 
             known = set(input_roles)
             provided = set(roles) | set(uris)
-            unknown = (provided | set(filenames)) - known
+            unknown = (provided | set(filenames) | set(integrity)) - known
             if unknown:
                 msg = f"unknown input roles: {sorted(unknown)}"
                 raise ValueError(msg)
@@ -179,6 +198,11 @@ def build_app(
             dangling = set(filenames) - provided
             if dangling:
                 msg = f"input_filenames has no matching input: {sorted(dangling)}"
+                raise ValueError(msg)
+            if set(integrity) != set(uris):
+                msg = (
+                    "input_integrity must describe every URI input and only URI inputs"
+                )
                 raise ValueError(msg)
             return roles
 
@@ -238,6 +262,7 @@ def build_app(
             params: str = Form("{}"),
             input_uris: str = Form("{}"),
             input_filenames: str = Form("{}"),
+            input_integrity: str = Form("{}"),
             output_store: str = Form(""),
             files: list[UploadFile] = File(default=[]),  # noqa: B008 — FastAPI DI idiom
         ) -> dict[str, str]:
@@ -256,9 +281,10 @@ def build_app(
                     raise ValueError(msg)
                 uris = _string_map(input_uris, "input_uris")
                 filenames = _string_map(input_filenames, "input_filenames")
+                integrity = _integrity_map(input_integrity)
                 if params_schema:
                     jsonschema.validate(parsed, params_schema)
-                roles = _file_roles(files, uris, filenames)
+                roles = _file_roles(files, uris, filenames, integrity)
             except (ValueError, jsonschema.ValidationError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             if output_store and "://" not in output_store:
@@ -276,6 +302,7 @@ def build_app(
                     "filename": filenames.get(name),
                     "uri": uri,
                     "data": None,
+                    **integrity[name],
                 }
                 for name, uri in uris.items()
             ]

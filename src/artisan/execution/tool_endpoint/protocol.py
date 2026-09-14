@@ -36,12 +36,25 @@ class InputRef(BaseModel):
     filename: str | None = None
     uri: str | None = None
     data: bytes | None = None
+    content_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    size_bytes: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _one_data_plane(self) -> InputRef:
         """Require exactly one inline or referenced input payload."""
         if (self.uri is None) == (self.data is None):
             msg = "InputRef must carry exactly one of uri or data"
+            raise ValueError(msg)
+        has_digest = self.content_digest is not None
+        has_size = self.size_bytes is not None
+        if has_digest != has_size:
+            msg = "InputRef content_digest and size_bytes must be provided together"
+            raise ValueError(msg)
+        if self.uri is not None and not has_digest:
+            msg = "URI InputRef requires content_digest and size_bytes"
+            raise ValueError(msg)
+        if self.data is not None and has_digest:
+            msg = "Inline InputRef must not carry URI integrity fields"
             raise ValueError(msg)
         return self
 

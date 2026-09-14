@@ -18,7 +18,13 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from artisan.errors import ArtisanError, ErrorCode, ErrorType, RecoveryHint
+from artisan.errors import (
+    ArtifactIntegrityError,
+    ArtisanError,
+    ErrorCode,
+    ErrorType,
+    RecoveryHint,
+)
 from artisan.execution.compute.invoke import invoke_op_work
 from artisan.execution.tool_endpoint.protocol import (
     ToolManifest,
@@ -152,6 +158,14 @@ def run_tool_request(
         transport = InlineTransport()
         try:
             inputs = transport.unpack_inputs(request.inputs, inputs_dir)
+        except ArtifactIntegrityError as exc:
+            return _error_result(
+                op_cls.name,
+                ErrorCode.ARTIFACT_INTEGRITY_FAILED,
+                str(exc),
+                "io",
+                "CHECK_INPUT",
+            )
         except ImportError as exc:
             return _error_result(
                 op_cls.name,

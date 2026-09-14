@@ -92,12 +92,27 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
         )
     base_url = cfg.endpoint_url or _resolve_url(operation.name)
     transport = InlineTransport()
-    refs = transport.pack_inputs(_file_inputs(operation.name, inputs.inputs))
+    expected_content = {
+        source: (str(contract["content_digest"]), int(contract["size_bytes"]))
+        for source, contract in inputs.metadata.get("external_integrity", {}).items()
+    }
+    refs = transport.pack_inputs(
+        _file_inputs(operation.name, inputs.inputs),
+        expected_content,
+    )
     multipart = [
         ("files", (ref.name, ref.data)) for ref in refs if ref.data is not None
     ]
     uris = {ref.name: ref.uri for ref in refs if ref.uri is not None}
     filenames = {ref.name: ref.filename for ref in refs if ref.filename}
+    integrity = {
+        ref.name: {
+            "content_digest": ref.content_digest,
+            "size_bytes": ref.size_bytes,
+        }
+        for ref in refs
+        if ref.uri is not None
+    }
 
     with httpx.Client(
         base_url=base_url,
@@ -108,6 +123,7 @@ def call_endpoint(operation: Any, inputs: ExecuteInput) -> None:
             "params": operation.params_json(),
             "input_uris": json.dumps(uris),
             "input_filenames": json.dumps(filenames),
+            "input_integrity": json.dumps(integrity),
         }
         if cfg.output_store:
             data["output_store"] = cfg.output_store

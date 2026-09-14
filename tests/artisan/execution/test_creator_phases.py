@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
-import xxhash
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executors.creator import (
@@ -41,6 +41,7 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.storage.core.store_format import publish_store_manifest
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 # ---------------------------------------------------------------------------
@@ -48,11 +49,8 @@ from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 # ---------------------------------------------------------------------------
 
 
-def _compute_id(content: bytes) -> str:
-    return xxhash.xxh3_128(content).hexdigest()
-
-
 def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> None:
+    publish_store_manifest(str(base_path), LocalFileSystem())
     metrics_path = base_path / "artifacts/metrics"
     pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA).write_delta(
         str(metrics_path)
@@ -139,23 +137,13 @@ def delta_env(tmp_path: Path):
     index = []
     ids = []
     for i in range(2):
-        content = json.dumps({"value": i}, sort_keys=True).encode("utf-8")
-        aid = _compute_id(content)
-        ids.append(aid)
-        metrics.append(
-            {
-                "artifact_id": aid,
-                "origin_step_number": 0,
-                "content": content,
-                "original_name": f"metric_{i}",
-                "extension": ".json",
-                "metadata": "{}",
-                "external_path": None,
-            }
-        )
+        artifact = MetricArtifact.draft({"value": i}, f"metric_{i}.json", step_number=0)
+        artifact.finalize()
+        ids.append(artifact.artifact_id)
+        metrics.append(artifact.to_row())
         index.append(
             {
-                "artifact_id": aid,
+                "artifact_id": artifact.artifact_id,
                 "artifact_type": "metric",
                 "origin_step_number": 0,
                 "metadata": "{}",

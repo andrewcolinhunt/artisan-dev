@@ -349,7 +349,16 @@ class TestRunToolRequest:
         monkeypatch.setattr(server_mod.InlineTransport, "unpack_inputs", boom)
         result = run_tool_request(
             WaitTool,
-            ToolRequest(inputs=[InputRef(name="dataset", uri="s3://bucket/x")]),
+            ToolRequest(
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        uri="s3://bucket/x",
+                        content_digest="a" * 32,
+                        size_bytes=1,
+                    )
+                ]
+            ),
         )
 
         error = result.manifest.error
@@ -371,7 +380,14 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
-                inputs=[InputRef(name="dataset", uri="s3://bucket/missing.pdb")]
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        uri="s3://bucket/missing.pdb",
+                        content_digest="a" * 32,
+                        size_bytes=1,
+                    )
+                ]
             ),
         )
         error = result.manifest.error
@@ -406,7 +422,16 @@ class TestRunToolRequest:
         )
         result = run_tool_request(
             WaitTool,
-            ToolRequest(inputs=[InputRef(name="dataset", uri="s3://bucket/x.csv")]),
+            ToolRequest(
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        uri="s3://bucket/x.csv",
+                        content_digest="a" * 32,
+                        size_bytes=1,
+                    )
+                ]
+            ),
         )
         assert result.output_tar is None
         error = result.manifest.error
@@ -699,14 +724,16 @@ class TestRunToolRequestInlinePackaging:
 
     def test_output_count_excludes_reserved_log(self, tmp_path, monkeypatch):
         monkeypatch.setattr(server_mod, "MAX_ARCHIVE_MEMBERS", 1)
-        (tmp_path / "tool_output.log").write_text("log")
-        (tmp_path / "result.csv").write_text("result")
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+        (output_dir / "tool_output.log").write_text("log")
+        (output_dir / "result.csv").write_text("result")
 
-        assert server_mod._list_outputs(str(tmp_path)) == ["result.csv"]
+        assert server_mod._list_outputs(str(output_dir)) == ["result.csv"]
 
-        (tmp_path / "second.csv").write_text("second")
+        (output_dir / "second.csv").write_text("second")
         with pytest.raises(ValueError, match="exceeds 1 members"):
-            server_mod._list_outputs(str(tmp_path))
+            server_mod._list_outputs(str(output_dir))
 
 
 class TestRunToolRequestUriInputMinIO:

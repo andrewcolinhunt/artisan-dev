@@ -25,8 +25,25 @@ class TestInputRef:
         assert ref.data == b"ATOM"
 
     def test_uri_ref(self):
-        ref = InputRef(name="pdb", uri="s3://bucket/key.pdb")
+        ref = InputRef(
+            name="pdb",
+            uri="s3://bucket/key.pdb",
+            content_digest="a" * 32,
+            size_bytes=4,
+        )
         assert ref.data is None
+
+    def test_uri_requires_digest_and_size(self):
+        with pytest.raises(ValidationError, match="requires content_digest"):
+            InputRef(name="pdb", uri="s3://bucket/key.pdb")
+
+    def test_uri_integrity_fields_are_required_together(self):
+        with pytest.raises(ValidationError, match="provided together"):
+            InputRef(
+                name="pdb",
+                uri="s3://bucket/key.pdb",
+                content_digest="a" * 32,
+            )
 
     def test_rejects_ref_without_data_plane(self):
         with pytest.raises(ValidationError, match="exactly one of uri or data"):

@@ -114,6 +114,14 @@ class TestCallEndpointHappyPath:
             ExecuteInput(
                 inputs={"pdb": str(source), "ref": "s3://bucket/key"},
                 execute_dir=str(tmp_path),
+                metadata={
+                    "external_integrity": {
+                        "s3://bucket/key": {
+                            "content_digest": "a" * 32,
+                            "size_bytes": 4,
+                        }
+                    }
+                },
             ),
         )
 
@@ -121,6 +129,9 @@ class TestCallEndpointHappyPath:
         assert submit_kwargs["files"] == [("files", ("pdb", b"ATOM"))]
         assert json.loads(submit_kwargs["data"]["input_uris"]) == {
             "ref": "s3://bucket/key"
+        }
+        assert json.loads(submit_kwargs["data"]["input_integrity"]) == {
+            "ref": {"content_digest": "a" * 32, "size_bytes": 4}
         }
         # original filenames ride along so the worker preserves basenames
         assert json.loads(submit_kwargs["data"]["input_filenames"]) == {

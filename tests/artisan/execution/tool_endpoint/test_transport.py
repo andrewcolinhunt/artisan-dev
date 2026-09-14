@@ -17,10 +17,13 @@ import pytest
 from artisan.execution.tool_endpoint import transport as transport_mod
 from artisan.execution.tool_endpoint.protocol import InputRef
 from artisan.execution.tool_endpoint.transport import InlineTransport, upload_outputs
+from artisan.utils.hashing import compute_content_digest
 
 
 class _FakeFs:
     """fsspec stand-in: records get/put/sign calls; get writes a marker file."""
+
+    protocol = "s3"
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -31,6 +34,11 @@ class _FakeFs:
     def get(self, remote: str, local: str) -> None:
         self.calls.append((remote, local))
         Path(local).write_bytes(b"remote-bytes")
+
+    def open(self, remote: str, mode: str):
+        assert mode == "rb"
+        self.calls.append((remote, "open"))
+        return BytesIO(b"remote-bytes")
 
     def put(self, local: str, remote: str) -> None:
         self.puts.append((local, remote))
@@ -71,9 +79,19 @@ class TestPackInputs:
         assert refs == [InputRef(name="pdb", filename="input.pdb", data=b"ATOM")]
 
     def test_uri_passes_through_without_reading(self):
-        refs = InlineTransport().pack_inputs({"pdb": "s3://bucket/key.pdb"})
+        uri = "s3://bucket/key.pdb"
+        refs = InlineTransport().pack_inputs(
+            {"pdb": uri},
+            {uri: ("a" * 32, 4)},
+        )
         assert refs == [
-            InputRef(name="pdb", filename="key.pdb", uri="s3://bucket/key.pdb")
+            InputRef(
+                name="pdb",
+                filename="key.pdb",
+                uri=uri,
+                content_digest="a" * 32,
+                size_bytes=4,
+            )
         ]
 
     def test_over_limit_raises(self, tmp_path: Path, monkeypatch):
@@ -120,13 +138,35 @@ class TestUnpackInputs:
 
     def test_uri_ref_fetched_via_fs(self, tmp_path: Path):
         fs = _FakeFs()
+        content = b"remote-bytes"
         paths = InlineTransport().unpack_inputs(
-            [InputRef(name="pdb", uri="s3://bucket/key.pdb")],
+            [
+                InputRef(
+                    name="pdb",
+                    uri="s3://bucket/key.pdb",
+                    content_digest=compute_content_digest(content),
+                    size_bytes=len(content),
+                )
+            ],
             str(tmp_path),
             fs=fs,
         )
-        assert fs.calls == [("s3://bucket/key.pdb", paths["pdb"])]
+        assert fs.calls == [("s3://bucket/key.pdb", "open")]
         assert Path(paths["pdb"]).read_bytes() == b"remote-bytes"
+
+    def test_changed_uri_bytes_are_rejected(self, tmp_path: Path):
+        fs = _FakeFs()
+        ref = InputRef(
+            name="pdb",
+            uri="s3://bucket/key.pdb",
+            content_digest=compute_content_digest(b"original"),
+            size_bytes=len(b"original"),
+        )
+
+        with pytest.raises(Exception, match="failed integrity"):
+            InlineTransport().unpack_inputs([ref], str(tmp_path), fs=fs)
+
+        assert not (tmp_path / "pdb" / "key.pdb").exists()
 
     def test_original_filename_preserved_on_disk(self, tmp_path: Path):
         """Lineage stem-matching needs the worker-side basename to match local."""

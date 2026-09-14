@@ -20,7 +20,6 @@ from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
-import xxhash
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.compute.base import ExecuteRouter
@@ -50,11 +49,6 @@ from artisan.schemas.specs.input_models import (
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.path import shard_uri
-
-
-def compute_artifact_id(content: bytes) -> str:
-    """Compute xxh3_128 hash for content-addressed ID."""
-    return xxhash.xxh3_128(content).hexdigest()
 
 
 def _setup_delta_tables(
@@ -343,22 +337,13 @@ def working_root(tmp_path):
 def delta_root_with_input(tmp_path):
     """Create delta root with a single metric artifact."""
     base_path = tmp_path / "delta"
-    content = json.dumps({"score": 0.5}).encode("utf-8")
-    artifact_id = compute_artifact_id(content)
+    artifact = MetricArtifact.draft({"score": 0.5}, "input.json", 0)
+    artifact.finalize()
+    artifact_id = artifact.artifact_id
 
     _setup_delta_tables(
         base_path,
-        metrics=[
-            {
-                "artifact_id": artifact_id,
-                "origin_step_number": 0,
-                "content": content,
-                "original_name": "input",
-                "extension": ".json",
-                "metadata": "{}",
-                "external_path": None,
-            }
-        ],
+        metrics=[artifact.to_row()],
         index_entries=[
             {
                 "artifact_id": artifact_id,
