@@ -32,12 +32,26 @@ from __future__ import annotations
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.run_history import list_runs
 from artisan.orchestration.runners import Runner, RunnerBase
+from artisan.orchestration.step_future import StepFuture
+from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
+from artisan.schemas.orchestration.step_result import StepResult
 
 __all__ = [
+    "CancellationStatus",
+    "OutputReference",
     "PipelineConfig",
     "PipelineManager",
     "Runner",
     "RunnerBase",
+    "StepDisposition",
+    "StepFuture",
+    "StepResult",
+    "StepStatus",
     "list_runs",
 ]

@@ -4,24 +4,25 @@ from __future__ import annotations
 
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.common import JsonContentMixin, get_compound_extension
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
 
 __all__ = [
     "AppendableArtifact",
     "Artifact",
-    "ArtifactProvenanceEdge",
     "ArtifactTypeDef",
     "ArtifactTypes",
     "DataArtifact",
     "ExecutionConfigArtifact",
     "FileRefArtifact",
+    "JsonContentMixin",
     "LargeFileArtifact",
     "MetricArtifact",
+    "get_compound_extension",
 ]

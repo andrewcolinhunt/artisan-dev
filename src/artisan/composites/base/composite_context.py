@@ -88,7 +88,6 @@ class CompositeContext:
             msg = f"Unknown input role '{role}'. Available: {available}"
             raise ValueError(msg)
         return CompositeRef(
-            source=None,
             output_reference=self._input_refs[role],
             role=role,
         )
@@ -329,7 +328,6 @@ class _NestedHandle(CompositeStepHandle):
             raise ValueError(msg)
         out_ref = self._nested_result.output(role)
         return CompositeRef(
-            source=None,
             output_reference=out_ref,
             role=role,
         )
