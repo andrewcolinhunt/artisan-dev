@@ -19,10 +19,24 @@ from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
-from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.process_call import execute_process_call
+
+
+class _LocalOperation(OperationDefinition):
+    """Concrete local operation for serialized router batches."""
+
+    name: ClassVar[str] = "local_test_operation"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+    def execute_function(self, inputs, output_dir):
+        raise NotImplementedError
 
 
 @pytest.fixture
@@ -231,6 +245,48 @@ class TestLocalLifecycleRouter:
 
         assert outcome.status == CancellationStatus.UNKNOWN
 
+    def test_local_exit_without_remote_acknowledgement_is_unknown(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        executor = MagicMock()
+        process = MagicMock()
+        process.is_alive.side_effect = [True, False]
+        executor._processes = {123: process}
+        handle._dispatch_started = True
+        handle._executor = executor
+        handle._requires_remote_cancellation_evidence = True
+
+        handle.cancel()
+        assert handle._cancel_requested_at is not None
+        handle._cancel_requested_at = time.monotonic() - 2
+
+        outcome = handle.cancel()
+
+        assert outcome.status == CancellationStatus.UNKNOWN
+        assert outcome.message is not None
+        assert "remote cancellation evidence" in outcome.message
+
+    def test_remote_acknowledgement_survives_local_completion_race(self) -> None:
+        acknowledgement = CancellationAcknowledgement(
+            CancellationStatus.CONFIRMED,
+            "named endpoint call stopped",
+        )
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        handle._dispatch_started = True
+        handle._cancel_requested = True
+        handle._requires_remote_cancellation_evidence = True
+        handle._results = [
+            UnitResult(
+                success=False,
+                error="cancelled",
+                item_count=1,
+                execution_run_ids=[],
+                cancellation_acknowledgement=acknowledgement,
+            )
+        ]
+        handle._done.set()
+
+        assert handle.cancel() == acknowledgement
+
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_pool_creation_failure_returns_one_result_per_unit(
         self,
@@ -265,7 +321,13 @@ class TestLocalLifecycleRouter:
         )
         second.set_result([UnitResult(True, None, 1, ["c"])])
         executor.submit.side_effect = [first, second]
-        units = [MagicMock(), MagicMock(), MagicMock()]
+        units = [
+            ExecutionUnit(
+                operation=_LocalOperation(),
+                execution_spec_id=f"spec-{index}",
+            )
+            for index in range(3)
+        ]
         handle = LocalLifecycleRouter(max_workers=2, units_per_worker=2)
 
         results = handle.run(units, MagicMock())

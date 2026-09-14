@@ -50,11 +50,12 @@ class RunStatus(BaseModel):
 
     Attributes:
         pipeline_run_id: The run this status describes.
-        last_status: Status of the most recent step event, or None when the
-            run is not found.
+        last_status: Status of the latest authoritative attempt, or None when
+            the run is not found.
         step_count: Distinct steps recorded for the run.
-        started_at: ISO timestamp of the first step event, or None.
-        ended_at: ISO timestamp of the last step event, or None.
+        started_at: ISO timestamp of the first pending snapshot, or None.
+        ended_at: ISO timestamp of the last terminal snapshot, or None while
+            the run is active.
         steps: Per-step current statuses, ordered by step number.
     """
 

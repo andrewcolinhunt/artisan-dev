@@ -161,14 +161,7 @@ class LifecycleRouter(ABC):
                 if cancellation_started is None:
                     self._write_cancel_sentinel(units, runtime_env)
                     cancellation_started = time.monotonic()
-                provider_evidence: object = self.cancel()
-                if not isinstance(provider_evidence, CancellationAcknowledgement):
-                    acknowledgement = CancellationAcknowledgement(
-                        CancellationStatus.UNKNOWN,
-                        "Lifecycle runner returned malformed cancellation evidence",
-                    )
-                else:
-                    acknowledgement = provider_evidence
+                acknowledgement = self._validated_cancellation_evidence(self.cancel())
                 self._cancellation_acknowledgement = acknowledgement
                 if acknowledgement.status == CancellationStatus.REQUESTED:
                     assert cancellation_started is not None
@@ -188,6 +181,19 @@ class LifecycleRouter(ABC):
                 else:
                     cancellation_resolved = True
             time.sleep(0.1)
+        if (
+            self._cancellation_acknowledgement is not None
+            and self._cancellation_acknowledgement.status
+            == CancellationStatus.REQUESTED
+            and self.is_done()
+        ):
+            final_evidence = self._validated_cancellation_evidence(self.cancel())
+            if final_evidence.status == CancellationStatus.REQUESTED:
+                final_evidence = CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    "Lifecycle work completed without final cancellation evidence",
+                )
+            self._cancellation_acknowledgement = final_evidence
         if (
             self._cancellation_acknowledgement is not None
             and self._cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
@@ -216,6 +222,18 @@ class LifecycleRouter(ABC):
     ) -> CancellationAcknowledgement | None:
         """Return the final evidence observed by the blocking run template."""
         return self._cancellation_acknowledgement
+
+    @staticmethod
+    def _validated_cancellation_evidence(
+        evidence: object,
+    ) -> CancellationAcknowledgement:
+        """Fail closed when a lifecycle provider returns malformed evidence."""
+        if isinstance(evidence, CancellationAcknowledgement):
+            return evidence
+        return CancellationAcknowledgement(
+            CancellationStatus.UNKNOWN,
+            "Lifecycle runner returned malformed cancellation evidence",
+        )
 
     @staticmethod
     def _write_cancel_sentinel(

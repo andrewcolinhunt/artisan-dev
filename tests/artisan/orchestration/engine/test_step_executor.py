@@ -364,7 +364,6 @@ class TestComputeRoutingSelection:
             step_runner=mock_backend,
             step_number=1,
             config=config,
-            compact=False,
         )
 
         mock_backend.validate_operation.assert_called_once_with(op)
@@ -408,7 +407,6 @@ class TestComputeRoutingSelection:
             step_runner=mock_backend,
             step_number=1,
             config=config,
-            compact=False,
         )
 
         mock_backend.create_lifecycle_router.assert_called_once()

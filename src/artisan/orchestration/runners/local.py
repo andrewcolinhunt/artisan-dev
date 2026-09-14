@@ -11,6 +11,7 @@ from concurrent.futures.process import BrokenProcessPool
 from contextlib import suppress
 from typing import Any
 
+from artisan.execution.compute.routing import routes_to_endpoint
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.orchestration.engine.batching import pack_units
 from artisan.orchestration.engine.dispatch import (
@@ -57,6 +58,7 @@ class LocalLifecycleRouter(LifecycleRouter):
         self._cancel_requested = False
         self._cancel_requested_at: float | None = None
         self._cancel_acknowledgement: CancellationAcknowledgement | None = None
+        self._requires_remote_cancellation_evidence = False
 
     def _dispatch(
         self,
@@ -67,6 +69,9 @@ class LocalLifecycleRouter(LifecycleRouter):
         batches = pack_units(units, self._units_per_worker)
         with self._lock:
             self._dispatch_started = True
+            self._requires_remote_cancellation_evidence = any(
+                routes_to_endpoint(unit.operation) for unit in units
+            )
         self._start_background(lambda: self._run_batches(batches, runtime_env))
 
     def _run_batches(
@@ -149,10 +154,9 @@ class LocalLifecycleRouter(LifecycleRouter):
                     "Local work has not been dispatched",
                 )
             if self.is_done():
-                return CancellationAcknowledgement(
-                    CancellationStatus.REJECTED,
-                    "Local work completed before cancellation",
-                )
+                acknowledgement = self._completed_cancellation_evidence()
+                self._cancel_acknowledgement = acknowledgement
+                return acknowledgement
             if not self._cancel_requested:
                 self._cancel_requested = True
                 self._cancel_requested_at = time.monotonic()
@@ -177,17 +181,68 @@ class LocalLifecycleRouter(LifecycleRouter):
         for future in futures:
             future.cancel()
         confirmed = executor is None or _terminate_process_pool(executor)
-        acknowledgement = CancellationAcknowledgement(
-            CancellationStatus.CONFIRMED if confirmed else CancellationStatus.UNKNOWN,
-            (
-                "Local worker processes exited"
-                if confirmed
-                else "Could not prove local worker process exit"
-            ),
-        )
+        if confirmed and not self._requires_remote_cancellation_evidence:
+            acknowledgement = CancellationAcknowledgement(
+                CancellationStatus.CONFIRMED,
+                "Local worker processes exited",
+            )
+        else:
+            acknowledgement = CancellationAcknowledgement(
+                CancellationStatus.UNKNOWN,
+                (
+                    "Local worker processes exited without remote cancellation evidence"
+                    if confirmed
+                    else "Could not prove local worker process exit"
+                ),
+            )
         with self._lock:
             self._cancel_acknowledgement = acknowledgement
         return acknowledgement
+
+    def _completed_cancellation_evidence(self) -> CancellationAcknowledgement:
+        """Resolve a completion race without discarding nested endpoint proof."""
+        if (
+            not self._cancel_requested
+            or not self._requires_remote_cancellation_evidence
+        ):
+            return CancellationAcknowledgement(
+                CancellationStatus.REJECTED,
+                "Local work completed before cancellation",
+            )
+        if self._error is not None or self._results is None:
+            return CancellationAcknowledgement(
+                CancellationStatus.UNKNOWN,
+                "Remote work completed without cancellation evidence",
+            )
+        outcomes = [
+            result.cancellation_acknowledgement
+            for result in self._results
+            if result.cancellation_acknowledgement is not None
+        ]
+        for status in (
+            CancellationStatus.UNKNOWN,
+            CancellationStatus.REQUESTED,
+            CancellationStatus.REJECTED,
+            CancellationStatus.CONFIRMED,
+        ):
+            matching = [outcome for outcome in outcomes if outcome.status == status]
+            if matching:
+                outcome = matching[0]
+                if status == CancellationStatus.REQUESTED:
+                    return CancellationAcknowledgement(
+                        CancellationStatus.UNKNOWN,
+                        outcome.message or "Remote cancellation remained unconfirmed",
+                    )
+                return outcome
+        if all(result.success for result in self._results):
+            return CancellationAcknowledgement(
+                CancellationStatus.REJECTED,
+                "Remote work completed before cancellation",
+            )
+        return CancellationAcknowledgement(
+            CancellationStatus.UNKNOWN,
+            "Remote work failed without cancellation evidence",
+        )
 
 
 def _terminate_process_pool(executor: ProcessPoolExecutor) -> bool:

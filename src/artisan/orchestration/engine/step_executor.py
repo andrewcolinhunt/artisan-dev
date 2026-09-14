@@ -398,7 +398,7 @@ def _skip_for_empty_inputs(
     )
 
 
-def _commit_and_compact(
+def _commit_staged(
     config: PipelineConfig,
     runtime_env: RuntimeEnvironment,
     step_number: int,
@@ -406,9 +406,8 @@ def _commit_and_compact(
     timings: dict[str, Any],
     *,
     has_work: bool,
-    compact: bool,
 ) -> None:
-    """Run commit and compact phases, failing when persistence fails."""
+    """Commit staged rows before the manager publishes terminal state."""
     with phase_timer("commit", timings):
         if has_work:
             from artisan.storage.io.commit import DeltaCommitter
@@ -427,17 +426,6 @@ def _commit_and_compact(
                 cleanup_staging=not runtime_env.preserve_staging,
                 step_number=step_number,
                 operation_name=operation_name,
-            )
-
-    with phase_timer("compact", timings):
-        if has_work and compact:
-            fs = config.storage.filesystem()
-            storage_options = config.storage.delta_storage_options()
-            _compact_step_tables(
-                config.delta_root,
-                config.staging_root,
-                fs=fs,
-                storage_options=storage_options,
             )
 
 
@@ -644,7 +632,6 @@ def execute_step(
             step_number=step_number,
             config=config,
             failure_policy=failure_policy,
-            compact=ov.compact,
             user_overrides=user_overrides,
             cancel_event=cancel_event,
             skip_cache=skip_cache,
@@ -661,7 +648,6 @@ def execute_step(
         step_number=step_number,
         config=config,
         failure_policy=failure_policy,
-        compact=ov.compact,
         user_overrides=user_overrides,
         cancel_event=cancel_event,
         skip_cache=skip_cache,
@@ -677,7 +663,6 @@ def _execute_curator_step(
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
-    compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
     cancel_event: threading.Event | None = None,
     skip_cache: bool = False,
@@ -696,7 +681,6 @@ def _execute_curator_step(
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
-        compact: Whether to run Delta Lake compaction.
         user_overrides: User-provided parameter overrides.
         cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass execution-level cache lookups.
@@ -778,14 +762,13 @@ def _execute_curator_step(
                     operation_name=operation.name,
                 )
                 runtime_env = _create_runtime_environment(config, operation)
-                _commit_and_compact(
+                _commit_staged(
                     config,
                     runtime_env,
                     step_number,
                     operation.name,
                     timings,
                     has_work=has_reuse,
-                    compact=compact,
                 )
                 _finalize_timings(timings, total_start, step_number, "Curator")
                 return build_step_result(
@@ -904,14 +887,13 @@ def _execute_curator_step(
             operation, step_number, failure_policy, step_run_id=step_run_id
         )
 
-    _commit_and_compact(
+    _commit_staged(
         config,
         runtime_env,
         step_number,
         operation.name,
         timings,
         has_work=bool(results),
-        compact=compact,
     )
     _finalize_timings(timings, total_start, step_number, "Curator")
 
@@ -1179,7 +1161,6 @@ def _execute_creator_step(
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
-    compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
     cancel_event: threading.Event | None = None,
     skip_cache: bool = False,
@@ -1196,7 +1177,6 @@ def _execute_creator_step(
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
-        compact: Whether to run Delta Lake compaction.
         user_overrides: User-provided parameter overrides.
         cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass per-batch execution-level cache lookups.
@@ -1500,14 +1480,13 @@ def _execute_creator_step(
             operation_name=operation.name,
         )
 
-        _commit_and_compact(
+        _commit_staged(
             config,
             runtime_env,
             step_number,
             operation.name,
             timings,
             has_work=bool(units_to_dispatch) or has_reuse,
-            compact=compact,
         )
     finally:
         if step_run_id is not None:
@@ -1565,7 +1544,7 @@ def _compact_step_tables(
     fs: AbstractFileSystem | None = None,
     storage_options: dict[str, str] | None = None,
 ) -> None:
-    """Compact Delta Lake tables to merge small parquet files.
+    """Best-effort compaction after terminal state is authoritative.
 
     Args:
         delta_root: Root URI for Delta Lake tables.
@@ -1582,23 +1561,33 @@ def _compact_step_tables(
 
         fs = LocalFileSystem()
 
-    staging_manager = StagingManager(staging_root, fs)
-    committer = DeltaCommitter(
-        delta_root,
-        staging_manager,
-        fs=fs,
-        storage_options=storage_options,
-    )
+    try:
+        staging_manager = StagingManager(staging_root, fs)
+        committer = DeltaCommitter(
+            delta_root,
+            staging_manager,
+            fs=fs,
+            storage_options=storage_options,
+        )
 
-    if tables is None:
-        from artisan.schemas.artifact.registry import ArtifactTypeDef
+        if tables is None:
+            from artisan.schemas.artifact.registry import ArtifactTypeDef
 
-        artifact_tables = [td.table_path for td in ArtifactTypeDef.get_all().values()]
-        tables = [
-            *artifact_tables,
-            TablePath.ARTIFACT_INDEX.value,
-            TablePath.EXECUTIONS.value,
-        ]
+            artifact_tables = [
+                type_def.table_path for type_def in ArtifactTypeDef.get_all().values()
+            ]
+            tables = [
+                *artifact_tables,
+                TablePath.ARTIFACT_INDEX.value,
+                TablePath.EXECUTIONS.value,
+            ]
+    except Exception as exc:
+        logger.warning(
+            "Compaction setup failed after terminalization: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return
 
     for table in tables:
         table_name = table.rsplit("/", 1)[-1]

@@ -64,10 +64,12 @@ def _mock_execute_step(**kwargs):
     from artisan.orchestration.engine.step_executor import build_step_result
     from artisan.schemas.enums import FailurePolicy
 
+    operation = kwargs["operation"]
+    succeeded_count = 0 if isinstance(operation, IngestMockOp) else 5
     return build_step_result(
-        operation=kwargs["operation"],
+        operation=operation,
         step_number=kwargs["step_number"],
-        succeeded_count=5,
+        succeeded_count=succeeded_count,
         failed_count=0,
         failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
     )

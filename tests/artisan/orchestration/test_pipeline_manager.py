@@ -361,6 +361,10 @@ class TestRunReturnsFailedStepResult:
         """A background exception should publish a failed terminal result."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
+        mock_tracker.current_state.return_value = MagicMock(
+            status=StepStatus.RUNNING,
+            cancellation_status=None,
+        )
         mock_tracker_cls.return_value = mock_tracker
 
         mock_execute.side_effect = RuntimeError("something broke")
@@ -382,6 +386,10 @@ class TestRunReturnsFailedStepResult:
         """Failed step should persist running then failed snapshots."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
+        mock_tracker.current_state.return_value = MagicMock(
+            status=StepStatus.RUNNING,
+            cancellation_status=None,
+        )
         mock_tracker_cls.return_value = mock_tracker
 
         mock_execute.side_effect = ValueError("bad input")
@@ -560,23 +568,20 @@ class TestResilientPredecessorWaiting:
 class TestEmptyInputsHandling:
     """Tests for empty-inputs detection and pipeline stopping."""
 
-    @patch("artisan.orchestration.pipeline_manager.prepare_inputs")
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_pipeline_stops_after_empty_inputs(
-        self, mock_tracker_cls, mock_execute, mock_prepare, tmp_path
+        self, mock_tracker_cls, mock_execute, tmp_path
     ):
         """Known-empty inputs persist skipped and stop downstream execution."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
         mock_tracker_cls.return_value = mock_tracker
 
-        mock_prepare.return_value = MagicMock(inputs={"data": []})
-
         pipeline = _make_pipeline(tmp_path)
 
         # Run step 0 — should trigger _stopped
-        result0 = pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
+        result0 = pipeline.run(_MockOp, inputs={"data": []})
         assert result0.status == StepStatus.SKIPPED
         assert result0.metadata["skip_reason"] == "empty_inputs"
         assert mock_tracker.transition.call_args.args[1:3] == (
@@ -597,10 +602,10 @@ class TestEmptyInputsHandling:
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_completed_zero_outputs_still_cached(
+    def test_succeeded_zero_outputs_still_cached(
         self, mock_tracker_cls, mock_execute, tmp_path
     ):
-        """A step with zero outputs but no skipped metadata is still cached normally."""
+        """A succeeded zero-output step remains distinct from skipped."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
         mock_tracker_cls.return_value = mock_tracker
@@ -629,6 +634,27 @@ class TestEmptyInputsHandling:
         )
         # Pipeline should NOT be stopped
         assert pipeline._stopped is False
+
+    def test_preparation_failure_transitions_running_before_failure(
+        self, tmp_path
+    ) -> None:
+        pipeline = _make_pipeline(tmp_path)
+
+        with patch(
+            "artisan.orchestration.pipeline_manager.instantiate_operation",
+            side_effect=ValueError("invalid operation preparation"),
+        ):
+            result = pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
+
+        assert result.status == StepStatus.FAILED
+        rows = pl.read_delta(str(tmp_path / "delta" / TablePath.STEPS)).filter(
+            pl.col("step_run_id") == result.step_run_id
+        )
+        assert rows.sort("state_sequence")["status"].to_list() == [
+            "pending",
+            "running",
+            "failed",
+        ]
 
 
 class TestExtractSourceSteps:
@@ -744,6 +770,10 @@ class TestStepNameOverride:
         """Failed step with custom name should still use that name."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
+        mock_tracker.current_state.return_value = MagicMock(
+            status=StepStatus.RUNNING,
+            cancellation_status=None,
+        )
         mock_tracker_cls.return_value = mock_tracker
 
         mock_execute.side_effect = RuntimeError("boom")
@@ -2246,6 +2276,62 @@ class TestWholeStepCacheReuse:
         persisted = tracker.transition.call_args.kwargs["result"]
         assert persisted.disposition == StepDisposition.CACHE_HIT
 
+    def test_compaction_failure_follows_terminal_and_preserves_success(
+        self, tmp_path
+    ) -> None:
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
+        pipeline = _make_pipeline(tmp_path)
+        tracker = MagicMock()
+        pipeline._step_tracker = tracker
+        current = "b" * 32
+        _prime_attempt(pipeline, current, status=StepStatus.RUNNING)
+        tracker.check_cache.return_value = _WholeStepCacheHit(
+            result=StepResult(
+                step_name="source",
+                step_number=8,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+                output_roles=frozenset({"output"}),
+                output_types={"output": ArtifactTypes.DATA},
+                step_run_id="a" * 32,
+            ),
+            source_step_run_id="a" * 32,
+            execution_run_ids=("c" * 32,),
+        )
+        events: list[str] = []
+        tracker.transition.side_effect = lambda *args, **kwargs: events.append(
+            "terminal"
+        )
+
+        def _fail_compaction(*args, **kwargs) -> None:
+            events.append("compact")
+            msg = "maintenance unavailable"
+            raise OSError(msg)
+
+        with (
+            patch.object(pipeline, "_commit_whole_step_reuse", return_value=True),
+            patch(
+                "artisan.orchestration.engine.step_executor._compact_step_tables",
+                side_effect=_fail_compaction,
+            ),
+        ):
+            future = pipeline._try_cached_step(
+                _MockOp,
+                {"data": [_INPUT_ID]},
+                StepOverrides.from_user(),
+                step_spec_id="spec",
+                step_number=0,
+                step_name="current",
+                prepared_operation=_MockOp(),
+                step_run_id=current,
+                attempt_started_at=0.0,
+            )
+
+        assert future is not None
+        assert future.result().status == StepStatus.SUCCEEDED
+        assert events == ["terminal", "compact"]
+
     def test_relation_commit_failure_prevents_terminal_success(self, tmp_path):
         from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
 
@@ -3049,7 +3135,10 @@ def test_unconfigured_compute_selector_terminalizes_after_attempt_creation(
 ) -> None:
     """Provider resolution failures become durable failed attempts."""
     tracker = MagicMock()
-    tracker.current_state.return_value.status = StepStatus.PENDING
+    tracker.current_state.return_value = MagicMock(
+        status=StepStatus.RUNNING,
+        cancellation_status=None,
+    )
     mock_tracker_cls.return_value = tracker
     pipeline = _make_pipeline(tmp_path)
 

@@ -23,6 +23,7 @@ from uuid import uuid4
 
 import polars as pl
 
+from artisan.errors import PersistenceIntegrityError
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
@@ -1207,6 +1208,26 @@ class PipelineManager:
             status_reader=self._step_status_readers[result.step_number].get,
         )
 
+    def _compact_after_terminal(self, enabled: bool) -> None:
+        """Run best-effort maintenance after lifecycle publication."""
+        if not enabled:
+            return
+        from artisan.orchestration.engine.step_executor import _compact_step_tables
+
+        try:
+            _compact_step_tables(
+                self._config.delta_root,
+                self._config.staging_root,
+                fs=self._config.storage.filesystem(),
+                storage_options=self._config.storage.delta_storage_options(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Compaction failed after terminalization: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+
     def _failed_step(
         self,
         operation: type[OperationDefinition],
@@ -1222,6 +1243,13 @@ class PipelineManager:
         """Fail an attempt through the authoritative tracker transition API."""
         record = self._step_start_records_by_id(step_run_id)
         current = self._step_tracker.current_state(step_run_id)
+        existing = self._publish_existing_terminal(
+            current,
+            operation.outputs,
+            register=register,
+        )
+        if existing is not None:
+            return existing
         if current.status == StepStatus.PENDING:
             self._step_tracker.transition(
                 step_run_id,
@@ -1230,6 +1258,28 @@ class PipelineManager:
                 step_spec_id=step_spec_id,
             )
             self._step_status_readers[record.step_number].set(StepStatus.RUNNING)
+            current = self._step_tracker.current_state(step_run_id)
+        if current.cancellation_status is None and cancellation_status is not None:
+            current = self._step_tracker.record_cancellation(
+                step_run_id,
+                StepStatus.RUNNING,
+                CancellationAcknowledgement(CancellationStatus.REQUESTED),
+            )
+        if current.cancellation_status == CancellationStatus.REQUESTED:
+            final_cancellation = cancellation_status or CancellationStatus.UNKNOWN
+            current = self._step_tracker.record_cancellation(
+                step_run_id,
+                StepStatus.RUNNING,
+                CancellationAcknowledgement(
+                    final_cancellation,
+                    (
+                        error
+                        if cancellation_status is not None
+                        else "Cancellation outcome became unknown during failure handling"
+                    ),
+                ),
+            )
+        cancellation_status = current.cancellation_status
         result = StepResult(
             step_name=step_name,
             step_number=record.step_number,
@@ -1711,8 +1761,8 @@ class PipelineManager:
         """
         from artisan.composites.base.composite_definition import CompositeDefinition
 
-        # 0. Bundle + coerce every per-step override once at the boundary so
-        #    every downstream consumer sees one frozen, single-shaped record.
+        # Bundle and coerce every per-step override once at the boundary so
+        # every downstream consumer sees one frozen, single-shaped record.
         ov = StepOverrides.from_user(
             params=params,
             step_runner=step_runner,
@@ -1729,9 +1779,8 @@ class PipelineManager:
             name=name,
         )
 
-        # 1. Reject composites at the boundary — they have a separate surface
-        #    (``submit_composite``/``run_composite``) so composite-only kwargs
-        #    don't pollute operation signatures.
+        # Reject composites at the boundary: their separate submission surface
+        # keeps composite-only arguments out of operation signatures.
         # Keep the runtime guard for untyped Python callers while the public
         # annotation continues to describe valid calls only.
         operation_value: object = operation
@@ -1745,15 +1794,12 @@ class PipelineManager:
             )
             raise TypeError(msg)
 
-        # 2. Fail-fast validation before any blocking work. Checks params,
-        #    resources, execution, environment, and tool keys against the
-        #    operation's declared fields, plus input role/type compatibility.
+        # Validate the public call shape before allocating an attempt.
         self._validate_operation_overrides(operation, inputs, ov)
 
         step_name = ov.name or operation.name
 
-        # 3. Allocate the run-owned occurrence before any operational work.
-        #    API-shape validation above is the only phase allowed to precede it.
+        # API-shape validation is the only phase allowed before allocation.
         step_number = self._current_step
         step_run_id = _generate_step_run_id()
         attempt_started_at = time.perf_counter()
@@ -1773,9 +1819,7 @@ class PipelineManager:
         self._step_tracker.create_attempt(start_record)
         self._step_status_readers[step_number] = _StepStatusReader(StepStatus.PENDING)
 
-        # 4. Early exit: skip if pipeline is stopped (earlier step had empty
-        #    inputs) or cancelled. Also blocks until predecessor steps finish,
-        #    then re-checks cancellation.
+        # Resolve pre-work skip and cancellation conditions while still pending.
         early = self._check_early_exit(
             step_name,
             operation.outputs,
@@ -1786,8 +1830,15 @@ class PipelineManager:
             return early
 
         try:
-            # Prepare once. Input resolution remains pending long enough to
-            # distinguish a known false precondition from started work.
+            self._step_tracker.transition(
+                step_run_id,
+                StepStatus.PENDING,
+                StepStatus.RUNNING,
+            )
+            self._step_status_readers[step_number].set(StepStatus.RUNNING)
+
+            # Prepare once after running is durable: input resolution, path
+            # promotion, cache lookup, and dispatch are operational work.
             prepared_operation = instantiate_operation(operation, ov)
             input_refs = inputs
             already_verified: set[str] = set()
@@ -1819,26 +1870,14 @@ class PipelineManager:
             if prepared_inputs.inputs and all(
                 not artifact_ids for artifact_ids in prepared_inputs.inputs.values()
             ):
-                self._stopped = True
-                return self._skip_step(
-                    step_name,
-                    operation.outputs,
-                    "empty_inputs",
-                    step_run_id,
-                )
+                msg = "Input precondition changed after the attempt entered running"
+                raise PersistenceIntegrityError(msg)
 
             step_spec_id = self._prepare_step_spec(
                 prepared_operation,
                 step_number,
                 prepared_inputs,
             )
-            self._step_tracker.transition(
-                step_run_id,
-                StepStatus.PENDING,
-                StepStatus.RUNNING,
-                step_spec_id=step_spec_id,
-            )
-            self._step_status_readers[step_number].set(StepStatus.RUNNING)
 
             if not (ov.skip_cache or self._config.skip_cache):
                 cached = self._try_cached_step(
@@ -1985,13 +2024,8 @@ class PipelineManager:
     ) -> StepFuture | None:
         """Check stop/cancel conditions and wait for predecessors.
 
-        Three gates are checked in order:
-        1. ``_stopped`` — set when a prior step had empty inputs, halting
-           the pipeline to prevent meaningless downstream work.
-        2. ``_cancel_event`` — set by SIGINT/SIGTERM or explicit cancel().
-        3. Predecessor wait — blocks until all upstream StepFutures
-           complete, then re-checks cancellation (which may have been
-           signalled while waiting).
+        The check covers a prior stop, a cancellation request, predecessor
+        completion, and inputs that are already known to have no usable values.
 
         Used by ``submit()``.
 
@@ -2041,7 +2075,44 @@ class PipelineManager:
             )
             return self._resolved_step_future(result)
 
+        if self._inputs_known_empty(inputs):
+            self._stopped = True
+            return self._skip_step(
+                step_name,
+                operation_outputs,
+                "empty_inputs",
+                step_run_id,
+            )
+
         return None
+
+    def _inputs_known_empty(self, inputs: Any) -> bool:
+        """Return whether declared inputs have no usable values before work."""
+        if inputs is None or inputs == {}:
+            return False
+        values = list(inputs.values()) if isinstance(inputs, dict) else inputs
+        if not isinstance(values, list):
+            values = [values]
+        return all(self._input_value_known_empty(value) for value in values)
+
+    def _input_value_known_empty(self, value: Any) -> bool:
+        """Resolve one literal or upstream reference for pre-work emptiness."""
+        if isinstance(value, list):
+            return all(self._input_value_known_empty(item) for item in value)
+        if isinstance(value, OutputReference):
+            source = next(
+                (
+                    result
+                    for result in self._step_results
+                    if result.step_number == value.source_step
+                ),
+                None,
+            )
+            return source is not None and (
+                source.status not in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+                or source.succeeded_count == 0
+            )
+        return value is None
 
     def _prepare_step_spec(
         self,
@@ -2233,6 +2304,7 @@ class PipelineManager:
                 result=result,
             )
             self._step_status_readers[step_number].set(result.status)
+            self._compact_after_terminal(ov.compact)
         else:
             result = self._cancel_step(
                 step_name,
@@ -2450,6 +2522,7 @@ class PipelineManager:
                     result=result,
                 )
                 self._step_status_readers[step_number].set(result.status)
+                self._compact_after_terminal(ov.compact)
                 logger.info(
                     "Step %d (%s) %s in %.1fs [%d/%d succeeded]",
                     step_number,

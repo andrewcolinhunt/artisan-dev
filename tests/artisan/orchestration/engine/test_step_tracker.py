@@ -217,3 +217,28 @@ def test_reader_rejects_combined_status_and_cancellation_change(tmp_path) -> Non
 
     with pytest.raises(PersistenceIntegrityError, match="cannot change status"):
         tracker.current_state("a" * 32)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("output_roles_json", '["other"]'),
+        ("output_types_json", '{"other":"metric"}'),
+    ],
+)
+def test_reader_rejects_changed_output_contract(
+    tmp_path, field: str, value: str
+) -> None:
+    tracker = StepTracker(str(tmp_path), "run")
+    tracker.create_attempt(_record())
+    tracker.transition("a" * 32, StepStatus.PENDING, StepStatus.RUNNING)
+    rows = pl.read_delta(str(tmp_path / "orchestration/steps")).with_columns(
+        pl.when(pl.col("status") == "running")
+        .then(pl.lit(value))
+        .otherwise(pl.col(field))
+        .alias(field)
+    )
+    rows.write_delta(str(tmp_path / "orchestration/steps"), mode="overwrite")
+
+    with pytest.raises(PersistenceIntegrityError, match="changed output contract"):
+        tracker.current_state("a" * 32)

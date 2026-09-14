@@ -146,6 +146,8 @@ class TestRunTemplateMethod:
                 self.cancel_count += 1
                 if self.cancel_count == 2:
                     self.complete([_result(success=False, error="Cancelled")])
+                if self.cancel_count == 3:
+                    return CancellationAcknowledgement(CancellationStatus.REJECTED)
                 return CancellationAcknowledgement(CancellationStatus.REQUESTED)
 
         handle = _RetryCancelHandle()
@@ -154,8 +156,29 @@ class TestRunTemplateMethod:
 
         results = handle.run([object()], None, cancel_event=cancel_event)
 
-        assert handle.cancel_count == 2
+        assert handle.cancel_count == 3
         assert results[0].error == "Cancelled"
+        assert handle.cancellation_acknowledgement == CancellationAcknowledgement(
+            CancellationStatus.REJECTED
+        )
+
+    def test_run_fails_closed_when_completed_router_remains_requested(self) -> None:
+        class _UnresolvedHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                if self.cancel_count == 1:
+                    self.complete([_result(success=False, error="cancelled")])
+                return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+
+        handle = _UnresolvedHandle()
+        event = threading.Event()
+        event.set()
+
+        handle.run([object()], None, cancel_event=event)
+
+        assert handle.cancel_count == 2
+        assert handle.cancellation_acknowledgement is not None
+        assert handle.cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
 
     def test_run_propagates_errors(self) -> None:
         class _ErrorHandle(LifecycleRouter):

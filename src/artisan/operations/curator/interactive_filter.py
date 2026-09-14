@@ -301,21 +301,17 @@ class InteractiveFilter:
         self._tidy_df = pl.DataFrame(rows, schema=tidy_schema)
 
     def _detect_pipeline_run_id(self) -> str | None:
-        """Try to detect the pipeline_run_id from the steps table."""
-        steps_path = uri_join(self._delta_root, TablePath.STEPS)
-        if not self._fs.exists(steps_path):
+        """Return the newest run selected by the authoritative state reader."""
+        from artisan.orchestration.engine.step_tracker import StepTracker
+
+        states = StepTracker(
+            self._delta_root,
+            storage_options=self._storage_options,
+            fs=self._fs,
+        ).load_current_states()
+        if not states:
             return None
-        result = (
-            pl.scan_delta(steps_path, storage_options=self._storage_options)
-            .sort("timestamp", descending=True)
-            .limit(1)
-            .select("pipeline_run_id")
-            .collect()
-        )
-        if result.is_empty():
-            return None
-        value = result.item(0, 0)
-        return str(value) if value is not None else None
+        return states[0].pipeline_run_id
 
     # ------------------------------------------------------------------
     # Properties
@@ -634,8 +630,6 @@ class InteractiveFilter:
                 step_number=step_number,
                 status=StepStatus.FAILED,
                 error=error,
-                output_roles=frozenset(["passthrough"]),
-                output_types={"passthrough": ArtifactTypes.ANY},
                 step_run_id=step_run_id,
             )
             tracker.transition(
@@ -711,7 +705,7 @@ class InteractiveFilter:
             step_number=step_number,
             status=StepStatus.SUCCEEDED,
             disposition=StepDisposition.EXECUTED,
-            total_count=len(self._primary_artifact_ids),
+            total_count=len(filtered),
             succeeded_count=len(filtered),
             failed_count=0,
             output_roles=frozenset(["passthrough"]),

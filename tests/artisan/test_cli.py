@@ -11,6 +11,8 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 from pydantic import BaseModel, Field
 
 from artisan.cli import _CONTAINER_VIEW_FIELDS, main
@@ -316,7 +318,7 @@ class TestOpRun:
 
 
 def _seed_steps(root: Path, run_ids: list[str]) -> None:
-    """Write a steps table with a running+completed row pair per run."""
+    """Write a format-2 pending/running/succeeded lifecycle per run."""
     from datetime import UTC, datetime, timedelta
 
     import polars as pl
@@ -327,7 +329,8 @@ def _seed_steps(root: Path, run_ids: list[str]) -> None:
     rows = []
     t0 = datetime(2026, 7, 1, tzinfo=UTC)
     for i, run_id in enumerate(run_ids):
-        for j, status in enumerate(["running", "completed"]):
+        for sequence, status in enumerate(["pending", "running", "succeeded"]):
+            terminal = status == "succeeded"
             rows.append(
                 {
                     "step_run_id": f"{run_id}-step-1",
@@ -336,24 +339,27 @@ def _seed_steps(root: Path, run_ids: list[str]) -> None:
                     "step_number": 1,
                     "step_name": "generate",
                     "status": status,
+                    "state_sequence": sequence,
+                    "disposition": "executed" if terminal else None,
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "DataGenerator",
                     "params_json": "{}",
                     "input_refs_json": "{}",
                     "compute_backend": "local",
                     "compute_options_json": "{}",
                     "output_roles_json": "[]",
-                    "output_types_json": "[]",
-                    "total_count": 1,
-                    "succeeded_count": 1,
-                    "failed_count": 0,
-                    "timestamp": t0 + timedelta(minutes=10 * i + j),
-                    "duration_seconds": 1.0,
+                    "output_types_json": "{}",
+                    "total_count": 1 if terminal else None,
+                    "succeeded_count": 1 if terminal else None,
+                    "failed_count": 0 if terminal else None,
+                    "timestamp": t0 + timedelta(minutes=10 * i + sequence),
+                    "duration_seconds": 1.0 if terminal else None,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
-                    "metadata": "{}",
+                    "metadata": None,
                 }
             )
+    publish_test_store(str(root), LocalFileSystem())
     df = pl.DataFrame(rows, schema=STEPS_SCHEMA)
     df.write_delta(str(root / TablePath.STEPS))
 
@@ -442,7 +448,7 @@ class TestRuns:
         payload = json.loads(capsys.readouterr().out)
         by_id = {item["pipeline_run_id"]: item for item in payload["items"]}
         assert set(by_id) == {"run-a", "run-b"}
-        assert by_id["run-a"]["last_status"] == "completed"
+        assert by_id["run-a"]["last_status"] == "succeeded"
         assert by_id["run-a"]["started_at"]  # datetime serialized via default=str
 
     def test_env_var_fallback(self, tmp_path, capsys, monkeypatch):
@@ -459,6 +465,7 @@ class TestFailures:
     """artisan failures."""
 
     def test_empty_root_emits_store_not_found(self, tmp_path, capsys):
+        publish_test_store(str(tmp_path), LocalFileSystem())
         rc = main(["failures", "--delta-root", str(tmp_path), "--json"])
 
         assert rc == 1
@@ -476,6 +483,7 @@ class TestProvenance:
     C = "c" * 32
 
     def test_backward_edges(self, tmp_path, capsys, seed_artifact_edges):
+        publish_test_store(str(tmp_path), LocalFileSystem())
         seed_artifact_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
         rc = main(["provenance", self.C, "--delta-root", str(tmp_path), "--json"])
 
@@ -488,6 +496,7 @@ class TestProvenance:
         assert payload["truncated"] is False
 
     def test_forward_depth_truncation(self, tmp_path, capsys, seed_artifact_edges):
+        publish_test_store(str(tmp_path), LocalFileSystem())
         seed_artifact_edges(tmp_path, [(self.A, self.B), (self.B, self.C)])
         rc = main(
             [
@@ -511,6 +520,7 @@ class TestProvenance:
         assert payload["truncated"] is True
 
     def test_missing_table_degrades_to_empty(self, tmp_path, capsys):
+        publish_test_store(str(tmp_path), LocalFileSystem())
         rc = main(["provenance", self.A, "--delta-root", str(tmp_path), "--json"])
 
         assert rc == 0
