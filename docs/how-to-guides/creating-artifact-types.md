@@ -184,7 +184,9 @@ the content table.
 
 ```python
 @classmethod
-def draft(cls, content: bytes, original_name: str, step_number: int, ...) -> DataRecordArtifact:
+def draft(
+    cls, content: bytes, original_name: str, step_number: int
+) -> DataRecordArtifact:
     return cls(
         artifact_id=None,
         origin_step_number=step_number,
@@ -192,14 +194,12 @@ def draft(cls, content: bytes, original_name: str, step_number: int, ...) -> Dat
         original_name=strip_extensions(original_name),
         extension=get_compound_extension(original_name),
         size_bytes=len(content),
-        ...
     )
 ```
 
-Use `strip_extensions()` from `artisan.utils.filename` to extract the bare
-filename stem and `get_compound_extension()` from
-`artisan.schemas.artifact.common` to capture compound extensions like
-`.tar.gz`.
+Use `strip_extensions()` from `artisan.utils` to extract the bare filename stem
+and `get_compound_extension()` from `artisan.schemas` to capture compound
+extensions like `.tar.gz`.
 
 ### Understand finalize (base class)
 
@@ -454,9 +454,9 @@ class MyJsonArtifact(JsonContentMixin, Artifact):
     # ... other fields
 
     @classmethod
-    def draft(cls, content: dict[str, Any], ...) -> MyJsonArtifact:
+    def draft(cls, content: dict[str, Any]) -> MyJsonArtifact:
         encoded = json.dumps(content, sort_keys=True).encode("utf-8")
-        return cls(artifact_id=None, content=encoded, ...)
+        return cls(artifact_id=None, content=encoded)
 ```
 
 After drafting or loading, access parsed values with `artifact.values` instead

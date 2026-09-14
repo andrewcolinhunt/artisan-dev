@@ -8,7 +8,7 @@ import json
 import subprocess
 import sys
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import jsonschema
@@ -723,35 +723,68 @@ class TestCancellationRoute:
 
 
 class TestParameterlessSubmit:
-    """A parameter-less op bakes the empty-object schema, not ``{}``.
+    """A parameter-less op bakes and enforces the closed empty-object schema.
 
-    ``/submit`` still accepts any params object; the seam is only that a
-    non-object body is now rejected at the boundary instead of reaching the
-    worker and failing opaquely at ``op(**params)``.
+    Both non-object bodies and nonempty objects fail before worker dispatch.
     """
 
     @pytest.fixture
-    def client(self, mock_modal: MagicMock) -> TestClient:
+    def routes(self, mock_modal: MagicMock) -> tuple[Any, Any, MagicMock]:
         build_app(PlainTool)
         endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
-        return TestClient(endpoint_fn())
+        web = endpoint_fn()
+        schema = next(route.endpoint for route in web.routes if route.path == "/schema")
+        submit = next(route.endpoint for route in web.routes if route.path == "/submit")
+        worker = mock_modal.App.return_value.function.return_value.return_value
+        return schema, submit, worker
 
-    @pytest.fixture
-    def worker(self, mock_modal: MagicMock) -> MagicMock:
-        return mock_modal.App.return_value.function.return_value.return_value
+    def test_schema_serves_closed_empty_object_shape(self, routes) -> None:
+        schema, _, _ = routes
 
-    def test_schema_serves_empty_object_shape(self, client: TestClient):
-        served = client.get("/schema").json()["params_schema"]
-        assert served == {"type": "object", "title": "Params", "properties": {}}
+        assert schema()["params_schema"] == {
+            "type": "object",
+            "title": "Params",
+            "properties": {},
+            "additionalProperties": False,
+        }
 
-    def test_empty_params_still_validates(self, client: TestClient, worker: MagicMock):
+    def test_empty_params_still_validates(self, routes) -> None:
+        _, submit, worker = routes
         worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
-        # default "{}" — an object satisfies the empty-object schema
-        assert client.post("/submit", data={"params": "{}"}).status_code == 200
 
-    def test_non_object_body_now_422s(self, client: TestClient):
-        # a JSON array is not an object — rejected at the boundary
-        assert client.post("/submit", data={"params": "[]"}).status_code == 422
+        result = asyncio.run(
+            submit(
+                params="{}",
+                input_uris="{}",
+                input_filenames="{}",
+                input_integrity="{}",
+                output_store="",
+                files=[],
+            )
+        )
+
+        assert result == {"call_id": "fc-1"}
+
+    @pytest.mark.parametrize("params", ['{"unexpected": 1}', "[]"])
+    def test_nonempty_or_nonobject_params_rejected_before_dispatch(
+        self, routes, params: str
+    ) -> None:
+        _, submit, worker = routes
+
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                submit(
+                    params=params,
+                    input_uris="{}",
+                    input_filenames="{}",
+                    input_integrity="{}",
+                    output_store="",
+                    files=[],
+                )
+            )
+
+        assert getattr(exc_info.value, "status_code", None) == 422
+        worker.spawn.aio.assert_not_called()
 
     def test_non_object_body_rejected_without_schema(
         self, mock_modal: MagicMock, monkeypatch
@@ -760,11 +793,22 @@ class TestParameterlessSubmit:
         monkeypatch.setattr(deploy_mod, "endpoint_spec", lambda _op: spec)
         build_app(PlainTool)
         endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
-        client = TestClient(endpoint_fn())
+        web = endpoint_fn()
+        submit = next(route.endpoint for route in web.routes if route.path == "/submit")
         worker = mock_modal.App.return_value.function.return_value.return_value
 
-        response = client.post("/submit", data={"params": "[]"})
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(
+                submit(
+                    params="[]",
+                    input_uris="{}",
+                    input_filenames="{}",
+                    input_integrity="{}",
+                    output_store="",
+                    files=[],
+                )
+            )
 
-        assert response.status_code == 422
-        assert response.json()["detail"] == "params must be a JSON object"
+        assert getattr(exc_info.value, "status_code", None) == 422
+        assert getattr(exc_info.value, "detail", None) == "params must be a JSON object"
         worker.spawn.aio.assert_not_called()

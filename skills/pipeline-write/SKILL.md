@@ -87,7 +87,7 @@ Both methods accept identical parameters. `run()` blocks and returns
 `StepResult`. `submit()` returns `StepFuture` immediately.
 
 ```python
-pipeline.run(
+result = pipeline.run(
     operation,                # type[OperationDefinition]
     inputs=None,              # Input wiring (see below)
     params=None,              # dict — operation parameters
@@ -103,7 +103,7 @@ pipeline.run(
     compact=True,             # bool — compact provenance
     name=None,                # str — step name for wiring and display
     skip_cache=False,         # bool — bypass cache lookup for this step
-) -> StepResult
+)
 ```
 
 Core accepts `"local"` as its only string runner name. For any optional runner,
@@ -134,7 +134,7 @@ Runs a composite — each internal `ctx.run()` becomes its own pipeline step.
 raises `TypeError`).
 
 ```python
-pipeline.run_composite(
+result = pipeline.run_composite(
     composite,                # type[CompositeDefinition] — the composite class
     inputs=None,              # Input wiring (same as run())
     params=None,              # dict — composite parameters
@@ -149,7 +149,7 @@ pipeline.run_composite(
     failure_policy=None,      # default for every child step
     compact=True,             # default for every child step
     skip_cache=False,         # default for every child step
-) -> CompositeResult
+)
 ```
 
 Composite-level overrides are defaults for each child step; a value set on a

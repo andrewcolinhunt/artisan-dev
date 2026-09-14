@@ -5,9 +5,10 @@ from __future__ import annotations
 import ast
 import json
 import re
-import textwrap
 from collections.abc import Iterator
 from pathlib import Path
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ALLOW_INTERNAL = "<!-- artisan-import-policy: allow-internal -->"
@@ -35,18 +36,13 @@ def _is_python_fence(info: str) -> bool:
     words = info.strip().lower().split()
     if not words:
         return False
-    if words[0] in _PYTHON_LANGUAGES:
+    language = words[0].strip("{}").removeprefix(".")
+    if language in _PYTHON_LANGUAGES:
         return True
     return (
-        words[0] == "{code-cell}"
+        words[0] in {"{code-cell}", "{code-block}"}
         and len(words) > 1
-        and words[1]
-        in {
-            "python",
-            "python3",
-            "ipython",
-            "ipython3",
-        }
+        and words[1].strip("{}").removeprefix(".") in _PYTHON_LANGUAGES
     )
 
 
@@ -86,8 +82,9 @@ def _notebook_blocks(path: Path) -> Iterator[tuple[str, int, str]]:
 
 def _published_blocks() -> Iterator[tuple[str, int, str]]:
     yield from _markdown_blocks(_ROOT / "README.md")
+    generated_docs = _ROOT / "docs" / "_build"
     for path in sorted((_ROOT / "docs").rglob("*")):
-        if "_build" in path.parts:
+        if path.is_relative_to(generated_docs):
             continue
         if path.suffix == ".md":
             yield from _markdown_blocks(path)
@@ -100,37 +97,155 @@ def _published_blocks() -> Iterator[tuple[str, int, str]]:
 
 
 def _artisan_modules(source: str) -> Iterator[tuple[str, int]]:
-    lines = source.splitlines()
-    index = 0
-    while index < len(lines):
-        stripped = lines[index].lstrip()
-        if not stripped.startswith(("import ", "from ")):
-            index += 1
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if _is_artisan_module(alias.name):
+                    yield alias.name, node.lineno
             continue
-        start = index + 1
-        statement = [lines[index]]
-        balance = stripped.count("(") - stripped.count(")")
-        continued = stripped.rstrip().endswith("\\")
-        index += 1
-        while index < len(lines) and (balance > 0 or continued):
-            statement.append(lines[index])
-            balance += lines[index].count("(") - lines[index].count(")")
-            continued = lines[index].rstrip().endswith("\\")
-            index += 1
+        if not isinstance(node, ast.ImportFrom):
+            continue
 
-        tree = ast.parse(textwrap.dedent("\n".join(statement)))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                modules = (alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module is not None:
-                modules = (node.module,)
-            else:
-                continue
-            for module in modules:
-                if module in {"artisan", "artisan_mcp"} or module.startswith(
-                    ("artisan.", "artisan_mcp.")
-                ):
-                    yield module, start + node.lineno - 1
+        module = node.module or ""
+        if _is_artisan_module(module):
+            yield f"{'.' * node.level}{module}", node.lineno
+            continue
+        if node.level:
+            for alias in node.names:
+                if _is_artisan_module(alias.name):
+                    prefix = f"{module}." if module else ""
+                    yield f"{'.' * node.level}{prefix}{alias.name}", node.lineno
+
+
+def _is_artisan_module(module: str) -> bool:
+    return module in {"artisan", "artisan_mcp"} or module.startswith(
+        ("artisan.", "artisan_mcp.")
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import artisan.schemas as schemas", [("artisan.schemas", 1)]),
+        (
+            "if True: import artisan.execution.private as hidden",
+            [("artisan.execution.private", 1)],
+        ),
+        (
+            "ready = True; import artisan.schemas.artifact.base",
+            [("artisan.schemas.artifact.base", 1)],
+        ),
+        (
+            "from artisan.schemas import (\n    Artifact,\n)",
+            [("artisan.schemas", 1)],
+        ),
+        ("from .artisan import schemas", [(".artisan", 1)]),
+        ("from ..artisan.schemas import Artifact", [("..artisan.schemas", 1)]),
+        ("from . import artisan", [(".artisan", 1)]),
+        ("from .helpers import artisan", [(".helpers.artisan", 1)]),
+        ('example = "import artisan.execution.private"', []),
+        ("from helpers import artisan", []),
+    ],
+)
+def test_artisan_modules_walks_the_complete_syntax_tree(
+    source: str, expected: list[tuple[str, int]]
+) -> None:
+    assert list(_artisan_modules(source)) == expected
+
+
+def test_artisan_modules_propagates_syntax_errors() -> None:
+    with pytest.raises(SyntaxError):
+        list(_artisan_modules("if True import artisan"))
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        "python",
+        "Python title=example.py",
+        "python {.example}",
+        "{python} title=example.py",
+        "{.python #example}",
+        "{code-cell} python",
+        "{code-block} python",
+        "{CODE-CELL} IPYTHON3 tags=[example]",
+    ],
+)
+def test_python_fence_languages_and_attributes_are_recognized(info: str) -> None:
+    assert _is_python_fence(info)
+
+
+@pytest.mark.parametrize("info", ["", "text", "{include} page.md", "javascript"])
+def test_non_python_fences_are_ignored(info: str) -> None:
+    assert not _is_python_fence(info)
+
+
+def test_allow_marker_exempts_only_the_immediately_following_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(_markdown_blocks.__globals__, "_ROOT", tmp_path)
+    page = tmp_path / "page.md"
+    page.write_text(
+        "\n".join(
+            [
+                _ALLOW_INTERNAL,
+                "```Python title=internal.py",
+                "import artisan.private",
+                "```",
+                _ALLOW_INTERNAL,
+                "",
+                "~~~{code-cell} python",
+                "import artisan.schemas",
+                "~~~",
+            ]
+        )
+    )
+
+    assert list(_markdown_blocks(page)) == [("import artisan.schemas", 8, "page.md")]
+
+
+@pytest.mark.parametrize(
+    "source", ["import artisan.schemas\n", ["import artisan.schemas\n"]]
+)
+def test_notebook_code_cell_accepts_string_and_list_sources(
+    source: str | list[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(_notebook_blocks.__globals__, "_ROOT", tmp_path)
+    notebook = tmp_path / "example.ipynb"
+    notebook.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {"cell_type": "markdown", "source": "ignored"},
+                    {"cell_type": "code", "source": source},
+                ]
+            }
+        )
+    )
+
+    assert list(_notebook_blocks(notebook)) == [
+        ("import artisan.schemas\n", 1, "example.ipynb:cell-2")
+    ]
+
+
+def test_only_top_level_generated_docs_are_excluded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(_published_blocks.__globals__, "_ROOT", tmp_path)
+    (tmp_path / "README.md").write_text("")
+    generated = tmp_path / "docs" / "_build"
+    generated.mkdir(parents=True)
+    (generated / "generated.md").write_text(
+        "```python\nimport artisan.generated.private\n```\n"
+    )
+    published = tmp_path / "docs" / "chapter" / "_build"
+    published.mkdir(parents=True)
+    (published / "page.md").write_text("```python\nimport artisan.schemas\n```\n")
+
+    locations = [location for _, _, location in _published_blocks()]
+
+    assert locations == ["docs/chapter/_build/page.md"]
 
 
 def test_published_python_uses_only_supported_facades() -> None:

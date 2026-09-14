@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from enum import StrEnum, auto
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar, Generic, TypeVar
 
 import pytest
 from pydantic import BaseModel, Field, ValidationError
@@ -22,6 +22,8 @@ from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+
+_T = TypeVar("_T")
 
 
 class SimpleOperation(OperationDefinition):
@@ -380,6 +382,85 @@ class TestOperationDefinitionValidation:
             class RedefinedFieldOnly(SimpleOperation):
                 name: ClassVar[str] = "redefined_field_only_shape_test"
                 params: SimpleOperation.Params = SimpleOperation.Params(count=2)
+
+    def test_annotated_exact_params_type_is_valid(self) -> None:
+        class AnnotatedParams(OperationDefinition):
+            name: ClassVar[str] = "annotated_params_shape_test"
+            inputs: ClassVar[dict[str, InputSpec]] = {}
+            outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+            class Params(BaseModel):
+                count: int = Field(default=1, description="Result count.")
+
+            params: Annotated[Params, "operation params"] = Params()
+
+            def execute_function(self, inputs):
+                return None
+
+        assert AnnotatedParams().params == AnnotatedParams.Params(count=1)
+
+    def test_optional_params_annotation_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="exact nested Params class"):
+
+            class OptionalParams(OperationDefinition):
+                name: ClassVar[str] = "optional_params_shape_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                class Params(BaseModel):
+                    count: int = Field(default=1, description="Result count.")
+
+                params: Params | None = Params()
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_specialized_generic_params_annotation_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="exact nested Params class"):
+
+            class GenericParams(OperationDefinition):
+                name: ClassVar[str] = "generic_params_shape_test"
+                inputs: ClassVar[dict[str, InputSpec]] = {}
+                outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+                class Params(BaseModel, Generic[_T]):
+                    value: _T = Field(description="Generic value.")
+
+                params: Params[int] = Params[int](value=1)
+
+                def execute_function(self, inputs):
+                    return None
+
+    def test_dynamic_flat_field_is_rejected(self) -> None:
+        def execute_function(_self, _inputs):
+            return None
+
+        namespace = {
+            "__module__": __name__,
+            "__annotations__": {
+                "name": ClassVar[str],
+                "rate": float,
+            },
+            "name": "dynamic_flat_params_shape_test",
+            "rate": 1.0,
+            "execute_function": execute_function,
+        }
+
+        with pytest.raises(TypeError, match="top-level model fields.*rate"):
+            type("DynamicFlatParams", (OperationDefinition,), namespace)
+
+    def test_abstract_flat_field_fails_when_concrete(self) -> None:
+        class AbstractFlat(OperationDefinition):
+            name: ClassVar[str] = ""
+            rate: float = 1.0
+
+        with pytest.raises(TypeError, match="top-level model fields.*rate"):
+
+            class ConcreteFlat(AbstractFlat):
+                name: ClassVar[str] = "concrete_abstract_flat_params_shape_test"
+
+                def execute_function(self, inputs):
+                    return None
 
 
 class TestRegistryMetadataValidation:
