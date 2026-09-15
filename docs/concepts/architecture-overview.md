@@ -22,7 +22,7 @@ about the infrastructure running it.
 ```
 You write:   "Run this operation on these datasets"
                       │
-Framework handles:    resolve inputs → check cache → dispatch to workers
+Framework handles:    resolve + verify + group inputs → check cache → dispatch
                       → materialize inputs → run operation → capture lineage
                       → stage results → commit atomically to Delta Lake
 ```
@@ -163,7 +163,8 @@ cleanly isolated.
 ```
 
 **Dispatch** (orchestrator) resolves input references into concrete artifact
-IDs, computes a cache key, checks the cache, and dispatches work to workers.
+IDs, validates their stored type and content, applies grouping, computes cache
+keys from the same prepared snapshot, and dispatches work to workers.
 **Execute** (workers) creates an isolated sandbox, materializes inputs to disk,
 runs the operation lifecycle, captures lineage, and stages results as Parquet
 files. **Commit** (orchestrator) collects staged files and writes them
@@ -187,19 +188,21 @@ surrounding pipeline. See
 ### Artifacts: immutable, content-addressed data
 
 Every piece of data in the system — metrics, configurations, datasets, file
-references — is an **artifact** identified by the hash of its content
-(`artifact_id = xxh3_128(content)`). Same content always produces the same
-ID.
+references — is an **artifact** identified by a versioned hash of its registered
+type, canonical content, and semantic metadata. Runtime locations and producing
+step numbers stay outside that identity.
 
 This gives you three things for free:
 
-- **Deduplication** — identical results are stored once
+- **Deduplication** — identical typed semantic artifacts are stored once
 - **Deterministic caching** — same inputs + same parameters = same cache key
 - **Immutable provenance** — edges between artifacts are permanent because
   artifacts never change
 
-The framework ships four built-in artifact types (metric, file_ref, config,
-data) and supports registering custom types through the artifact type registry.
+The framework ships six built-in artifact types (metric, file ref, config,
+data, large file, and appendable) and supports registering custom types through
+the artifact type registry. External artifact locations live in a separate
+relation so verified bytes can move or be replicated without changing identity.
 
 For artifact types and the draft/finalize lifecycle, see
 [Artifacts and Content Addressing](artifacts-and-content-addressing.md).

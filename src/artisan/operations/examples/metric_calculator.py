@@ -75,7 +75,9 @@ class MetricCalculator(OperationDefinition):
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Execution ----------
-    batch_strategy: BatchStrategy = BatchStrategy(job_name="metric_calculator", artifacts_per_unit=10000)  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(
+        job_name="metric_calculator", artifacts_per_unit=10000
+    )  # type: ignore[call-arg]  # pydantic defaults
 
     # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
@@ -94,7 +96,8 @@ class MetricCalculator(OperationDefinition):
         """Compute score distribution statistics for each input CSV."""
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:
-            raise ValueError("No dataset input provided")
+            msg = "No dataset input provided"
+            raise ValueError(msg)
 
         if isinstance(dataset_input, str):
             input_files = [dataset_input]
@@ -105,17 +108,20 @@ class MetricCalculator(OperationDefinition):
 
         for input_path in input_files:
             if not os.path.exists(input_path):
-                raise FileNotFoundError(f"Input file not found: {input_path}")
+                msg = f"Input file not found: {input_path}"
+                raise FileNotFoundError(msg)
 
             metrics = _compute_csv_statistics(input_path)
             stem = os.path.splitext(os.path.basename(input_path))[0]
             metric_key = f"{stem}_metrics.json"
 
-            calculated_metrics.append({
-                "input": input_path,
-                "metric_key": metric_key,
-                **metrics,
-            })
+            calculated_metrics.append(
+                {
+                    "input": input_path,
+                    "metric_key": metric_key,
+                    **metrics,
+                }
+            )
 
         return {"calculated_metrics": calculated_metrics}
 

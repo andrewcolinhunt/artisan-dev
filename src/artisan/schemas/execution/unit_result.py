@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
+
 
 @dataclass(frozen=True)
 class UnitResult:
@@ -18,7 +20,7 @@ class UnitResult:
         error: Error message if execution failed, else None.
         item_count: Number of items processed.
         execution_run_ids: Run IDs produced by this unit.
-        worker_log: Optional stdout/stderr captured by the runner provider.
+        worker_log: Optional stdout/stderr captured by the step runner.
     """
 
     success: bool
@@ -26,3 +28,4 @@ class UnitResult:
     item_count: int
     execution_run_ids: list[str]
     worker_log: str | None = None
+    cancellation_acknowledgement: CancellationAcknowledgement | None = None

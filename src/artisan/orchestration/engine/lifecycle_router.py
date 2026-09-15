@@ -17,6 +17,10 @@ from collections.abc import Callable
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
 from artisan.utils.path import cancel_sentinel_path, uri_parent
 
 logger = logging.getLogger(__name__)
@@ -50,6 +54,7 @@ class LifecycleRouter(ABC):
         self._results: list[UnitResult] | None = None
         self._error: Exception | None = None
         self._done = threading.Event()
+        self._cancellation_acknowledgement: CancellationAcknowledgement | None = None
 
     # ------------------------------------------------------------------
     # Provider hooks
@@ -84,8 +89,8 @@ class LifecycleRouter(ABC):
         """Submit work and arrange for completion state to be populated."""
 
     @abstractmethod
-    def cancel(self) -> None:
-        """Cancel in-flight work. Thread-safe and idempotent.
+    def cancel(self) -> CancellationAcknowledgement:
+        """Request cancellation and return provider evidence.
 
         Providers must promptly drive dispatched work to completion after a
         successful cancellation request. Once ``is_done()`` is true,
@@ -134,6 +139,7 @@ class LifecycleRouter(ABC):
         units: list[ExecutionUnit],
         runtime_env: RuntimeEnvironment,
         cancel_event: threading.Event | None = None,
+        cancellation_confirmation_timeout: float = 10.0,
     ) -> list[UnitResult]:
         """Execute the step. Blocks until completion or cancellation.
 
@@ -144,15 +150,90 @@ class LifecycleRouter(ABC):
         ``cancel()``.
         """
         self.dispatch(units, runtime_env)
-        cancelled = False
+        cancellation_started: float | None = None
+        cancellation_resolved = False
         while not self.is_done():
-            if cancel_event is not None and cancel_event.is_set():
-                if not cancelled:
+            if (
+                cancel_event is not None
+                and cancel_event.is_set()
+                and not cancellation_resolved
+            ):
+                if cancellation_started is None:
                     self._write_cancel_sentinel(units, runtime_env)
-                    cancelled = True
-                self.cancel()
+                    cancellation_started = time.monotonic()
+                acknowledgement = self._validated_cancellation_evidence(self.cancel())
+                self._cancellation_acknowledgement = acknowledgement
+                if acknowledgement.status == CancellationStatus.REQUESTED:
+                    assert cancellation_started is not None
+                    if (
+                        time.monotonic() - cancellation_started
+                        >= cancellation_confirmation_timeout
+                    ):
+                        self._cancellation_acknowledgement = (
+                            CancellationAcknowledgement(
+                                CancellationStatus.UNKNOWN,
+                                "Cancellation confirmation timed out",
+                            )
+                        )
+                        break
+                elif acknowledgement.status == CancellationStatus.UNKNOWN:
+                    break
+                else:
+                    cancellation_resolved = True
             time.sleep(0.1)
+        if (
+            self._cancellation_acknowledgement is not None
+            and self._cancellation_acknowledgement.status
+            == CancellationStatus.REQUESTED
+            and self.is_done()
+        ):
+            final_evidence = self._validated_cancellation_evidence(self.cancel())
+            if final_evidence.status == CancellationStatus.REQUESTED:
+                final_evidence = CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    "Lifecycle work completed without final cancellation evidence",
+                )
+            self._cancellation_acknowledgement = final_evidence
+        if (
+            self._cancellation_acknowledgement is not None
+            and self._cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
+            and not self.is_done()
+        ):
+            acknowledgement = self._cancellation_acknowledgement
+            return [
+                UnitResult(
+                    success=False,
+                    error=acknowledgement.message or "Cancellation outcome unknown",
+                    item_count=(
+                        unit.get_batch_size() or 1
+                        if callable(getattr(unit, "get_batch_size", None))
+                        else 1
+                    ),
+                    execution_run_ids=[],
+                    cancellation_acknowledgement=acknowledgement,
+                )
+                for unit in units
+            ]
         return self.collect()
+
+    @property
+    def cancellation_acknowledgement(
+        self,
+    ) -> CancellationAcknowledgement | None:
+        """Return the final evidence observed by the blocking run template."""
+        return self._cancellation_acknowledgement
+
+    @staticmethod
+    def _validated_cancellation_evidence(
+        evidence: object,
+    ) -> CancellationAcknowledgement:
+        """Fail closed when a lifecycle provider returns malformed evidence."""
+        if isinstance(evidence, CancellationAcknowledgement):
+            return evidence
+        return CancellationAcknowledgement(
+            CancellationStatus.UNKNOWN,
+            "Lifecycle runner returned malformed cancellation evidence",
+        )
 
     @staticmethod
     def _write_cancel_sentinel(

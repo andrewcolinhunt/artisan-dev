@@ -41,18 +41,6 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
 
-class MockParams(BaseModel):
-    """Mock params for ``MockOpWithParams``.
-
-    Attributes:
-        count: Mock counter.
-        seed: Mock RNG seed.
-    """
-
-    count: int = 1
-    seed: int = 42
-
-
 class MockOpWithParams(OperationDefinition):
     """Operation with a params sub-model."""
 
@@ -66,7 +54,19 @@ class MockOpWithParams(OperationDefinition):
             artifact_type=ArtifactTypes.DATA, is_memory_output=True
         ),
     }
-    params: MockParams = MockParams()
+
+    class Params(BaseModel):
+        """Mock parameters.
+
+        Attributes:
+            count: Mock counter.
+            seed: Mock RNG seed.
+        """
+
+        count: int = 1
+        seed: int = 42
+
+    params: Params = Params()
 
     def execute_curator(self, execute_input: Any) -> Any:
         from artisan.schemas.execution.curator_result import ArtifactResult

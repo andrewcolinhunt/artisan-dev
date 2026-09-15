@@ -126,6 +126,21 @@ class TestInferLineageFrom:
             )
         assert "Invalid keys" in str(exc_info.value)
 
+    def test_rejects_empty_output_references(self) -> None:
+        with pytest.raises(ValidationError, match="at least one output role"):
+            OutputSpec(
+                artifact_type=ArtifactTypes.METRIC,
+                infer_lineage_from={"outputs": []},
+            )
+
+    @pytest.mark.parametrize("reference_kind", ["inputs", "outputs"])
+    def test_rejects_duplicate_lineage_roles(self, reference_kind: str) -> None:
+        with pytest.raises(ValidationError, match="Duplicate roles"):
+            OutputSpec(
+                artifact_type=ArtifactTypes.METRIC,
+                infer_lineage_from={reference_kind: ["data", "data"]},
+            )
+
     def test_hash_with_infer_lineage_from(self):
         """Test that OutputSpec is hashable with infer_lineage_from."""
         spec1 = OutputSpec(

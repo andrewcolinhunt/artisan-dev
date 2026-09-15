@@ -55,14 +55,8 @@ def append_role_docs(cls: type) -> None:
         cls.__doc__ = doc
 
 
-def validate_role_enums(cls: type, _class_label: str) -> None:
-    """Validate that OutputRole/InputRole enums match outputs/inputs dicts.
-
-    Args:
-        cls: The definition subclass being validated.
-        _class_label: Unused; accepted so the operation and composite call
-            sites share one signature.
-    """
+def validate_role_enums(cls: type) -> None:
+    """Validate that OutputRole/InputRole enums match outputs/inputs dicts."""
     # Accessed on OperationDefinition/CompositeDefinition subclasses which
     # declare `inputs`/`outputs` as ClassVars; `type` alone is too narrow.
     inputs = cls.inputs  # type: ignore[attr-defined]

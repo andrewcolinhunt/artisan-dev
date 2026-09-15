@@ -54,3 +54,20 @@ class TestBatchStrategy:
     def test_negative_values_rejected(self):
         with pytest.raises(ValidationError):
             BatchStrategy(artifacts_per_unit=-1)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("max_artifacts_per_unit", 0),
+            ("max_workers", 0),
+            ("estimated_seconds", 0),
+            ("estimated_seconds", -0.1),
+        ],
+    )
+    def test_optional_limits_must_be_positive(self, field: str, value: float):
+        with pytest.raises(ValidationError, match=field):
+            BatchStrategy(**{field: value})
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValidationError, match="artifact_per_unit"):
+            BatchStrategy(artifact_per_unit=2)

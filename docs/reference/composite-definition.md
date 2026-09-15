@@ -11,7 +11,7 @@ For a step-by-step guide, see
 
 ## CompositeDefinition
 
-`artisan.composites.base.composite_definition.CompositeDefinition`
+`artisan.composites.CompositeDefinition`
 
 Base class for composite operations. Subclasses declare inputs, outputs,
 and a `compose()` method that wires internal operations together.
@@ -77,8 +77,7 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.composites import CompositeDefinition, CompositeContext
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.schemas import InputSpec, OutputSpec
 
 
 class MyComposite(CompositeDefinition):
@@ -117,7 +116,7 @@ class MyComposite(CompositeDefinition):
 
 ## Pipeline methods
 
-`artisan.orchestration.pipeline_manager.PipelineManager`
+`artisan.orchestration.PipelineManager`
 
 Composites run through `submit_composite` (non-blocking) and
 `run_composite` (blocking). Each internal `ctx.run()` becomes a real
@@ -143,7 +142,8 @@ def submit_composite(
     failure_policy: FailurePolicy | None = None,
     compact: bool = True,
     skip_cache: bool = False,
-) -> CompositeResult
+) -> CompositeResult:
+    ...
 ```
 
 | Parameter | Type | Default | Description |
@@ -179,7 +179,7 @@ completes (via `CompositeResult.wait()`), then returns the resolved
 
 ## CompositeContext
 
-`artisan.composites.base.composite_context.CompositeContext`
+`artisan.composites.CompositeContext`
 
 Build-time context passed to `CompositeDefinition.compose`. A single
 concrete class; each `run()` submits a real pipeline step.
@@ -216,7 +216,8 @@ def run(
     skip_cache: bool | None = None,
     failure_policy: FailurePolicy | None = None,
     compact: bool | None = None,
-) -> CompositeStepHandle
+) -> CompositeStepHandle:
+    ...
 ```
 
 | Parameter | Type | Default | Description |
@@ -254,7 +255,7 @@ Map an internal result to a declared output of this composite.
 
 ## CompositeStepHandle
 
-`artisan.composites.base.results.CompositeStepHandle`
+`artisan.composites.CompositeStepHandle`
 
 Handle returned by `ctx.run()`. Wraps the child step's `StepFuture`.
 
@@ -276,7 +277,7 @@ or to `ctx.output()`.
 
 ## CompositeRef
 
-`artisan.schemas.composites.composite_ref.CompositeRef`
+`artisan.composites.CompositeRef`
 
 Frozen dataclass. A lightweight reference used as input wiring between
 internal operations.
@@ -291,7 +292,7 @@ internal operations.
 
 ## CompositeResult
 
-`artisan.composites.base.results.CompositeResult`
+`artisan.composites.CompositeResult`
 
 Returned by `submit_composite`/`run_composite`. Maps composite outputs to
 their producing pipeline steps. Duck-types with `StepResult` and

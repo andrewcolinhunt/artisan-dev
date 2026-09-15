@@ -34,7 +34,7 @@ Both align with the [W3C PROV](https://www.w3.org/TR/prov-overview/) standard:
 
 | Framework concept | W3C PROV equivalent |
 |-------------------|---------------------|
-| `ExecutionRecord` | Activity |
+| Executions row | Activity |
 | `Artifact` | Entity |
 | `ArtifactProvenanceEdge` | wasDerivedFrom |
 | `ExecutionEdge` (input) | used |
@@ -55,7 +55,7 @@ record alone.
 ```
 Execution provenance              Artifact provenance
 
-ExecutionRecord                   A ──→ D
+Executions row                    A ──→ D
   consumed: [A, B, C]            B ──→ E
   produced: [D, E, F]            C ──→ F
 
@@ -83,7 +83,7 @@ conflicting requirements.
 
 | Identity | Purpose | Computed from |
 |----------|---------|---------------|
-| `execution_spec_id` | Cache key (deterministic) | operation name + sorted input IDs + merged params + config overrides |
+| `execution_spec_id` | Cache key (deterministic) | operation config + ordered role/group/position/type/ID input occurrences |
 | `execution_run_id` | Provenance tracking (unique per attempt) | spec_id + timestamp + worker_id |
 
 Same `spec_id` means "same request" -- a cache hit. Different `run_id` means
@@ -305,8 +305,9 @@ use co-input edges.
 | Aggregate({d1, d2, d3}) | Requires all inputs | Co-input |
 | Join(left_table, right_table) | Requires both tables | Co-input |
 
-Co-input edges share a `group_id` -- a deterministic hash computed from the set
-of source artifact IDs. Multiple `ArtifactProvenanceEdge` records with the same
+Co-input edges share a `group_id` -- a deterministic hash computed from the
+role, concrete type, and artifact ID of each aligned input. Multiple
+`ArtifactProvenanceEdge` records with the same
 `group_id` and `target_artifact_id` represent a single joint derivation. This
 allows queries like "what were ALL the inputs to this derivation?" without
 requiring intermediate aggregate artifacts.
@@ -373,7 +374,7 @@ between steps. This view answers "what is the pipeline shape?" and comes from
 the steps table alone -- no artifact-level provenance needed.
 
 **Micro graphs** show individual artifacts and executions. Every artifact and
-execution record appears as its own node, with both execution edges
+every row in the executions table appears as its own node, with both execution edges
 (artifact-to-execution links) and lineage edges (artifact-to-artifact
 derivations) overlaid. This view answers "what happened to this specific
 artifact?" and uses all three provenance tables.

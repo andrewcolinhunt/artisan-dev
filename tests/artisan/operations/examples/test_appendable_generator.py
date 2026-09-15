@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
-
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.executors.creator import run_creator_lifecycle
@@ -17,7 +17,7 @@ from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 def _run(
@@ -116,7 +116,7 @@ class TestAppendableGenerator:
         jsonl_path = raw["records"][0]["output_path"]
         with open(jsonl_path) as fh:
             line = fh.read().strip()
-        expected = compute_artifact_id(line.encode())
+        expected = compute_content_digest(line.encode())
         assert raw["records"][0]["content_hash"] == expected
 
 
@@ -124,7 +124,7 @@ class TestNumFiles:
     """Tests for the num_files parameter."""
 
     def test_splits_records_evenly(self, tmp_path: Path) -> None:
-        raw, result = _run(tmp_path, count=6, num_files=3)
+        _raw, result = _run(tmp_path, count=6, num_files=3)
         paths = {a.external_path for a in result.artifacts["records"]}
         assert len(paths) == 3
         for path in paths:
@@ -133,7 +133,7 @@ class TestNumFiles:
             assert len(lines) == 2
 
     def test_uneven_split(self, tmp_path: Path) -> None:
-        raw, result = _run(tmp_path, count=7, num_files=3)
+        _raw, result = _run(tmp_path, count=7, num_files=3)
         paths = sorted({a.external_path for a in result.artifacts["records"]})
         assert len(paths) == 3
         line_counts = []
@@ -184,14 +184,21 @@ def backend_env(request, tmp_path):
     if request.param == "local":
         files_root = tmp_path / "files_root"
         files_root.mkdir()
+        fs = LocalFileSystem()
+        storage = StorageConfig(protocol="file")
+        delta_root = str(tmp_path / "delta")
+        publish_test_store(delta_root, fs, storage.delta_storage_options())
         return (
-            LocalFileSystem(),
-            StorageConfig(protocol="file"),
+            fs,
+            storage,
+            delta_root,
             str(files_root),
             str(working),
         )
     fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
-    return fs, storage, f"{uri_prefix}/files", str(working)
+    delta_root = f"{uri_prefix}/delta"
+    publish_test_store(delta_root, fs, storage.delta_storage_options())
+    return fs, storage, delta_root, f"{uri_prefix}/files", str(working)
 
 
 class TestAppendableGeneratorLifecycle:
@@ -207,10 +214,10 @@ class TestAppendableGeneratorLifecycle:
     def test_shared_external_path_preserved_after_upload(
         self, backend_env, tmp_path: Path
     ) -> None:
-        fs, storage, files_root, working_root = backend_env
+        fs, storage, delta_root, files_root, working_root = backend_env
 
         env = RuntimeEnvironment(
-            delta_root=str(tmp_path / "delta"),
+            delta_root=delta_root,
             working_root=working_root,
             staging_root=str(tmp_path / "staging"),
             files_root=files_root,

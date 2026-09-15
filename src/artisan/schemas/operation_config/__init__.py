@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from artisan.schemas.operation_config.compute import (
-    ARTISAN_WORKER_IMAGE,
-    ComputeConfig,
     ComputeProvider,
-    LocalComputeConfig,
     ModalComputeConfig,
 )
+from artisan.schemas.operation_config.compute_resources import ComputeResources
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.environment_spec import (
     ApptainerEnvironmentSpec,
     DockerEnvironmentSpec,
@@ -21,23 +20,16 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 
 __all__ = [
-    # ComputeConfig hierarchy
-    "ARTISAN_WORKER_IMAGE",
     "ApptainerEnvironmentSpec",
-    "ComputeConfig",
-    # Compute provider model
     "ComputeProvider",
+    "ComputeResources",
     "DockerEnvironmentSpec",
-    # EnvironmentSpec hierarchy
     "EnvironmentSpec",
-    # Environments model
     "Environments",
-    "LocalComputeConfig",
     "LocalEnvironmentSpec",
     "ModalComputeConfig",
     "PixiEnvironmentSpec",
-    # RunnerResources
     "RunnerResources",
-    # ToolSpec
+    "ToolEndpointDataPolicy",
     "ToolSpec",
 ]

@@ -60,12 +60,10 @@ pipeline = PipelineManager.create(
 | `staging_root` | `str` | — | Where workers write intermediate files before commit |
 | `working_root` | `str \| None` | `tempfile.gettempdir()` | Worker sandbox directory. Defaults to `$TMPDIR` |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | How to handle step failures (`CONTINUE` or `FAIL_FAST`) |
-| `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When completed steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
+| `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | Which usable terminal steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Default step runner. Core accepts `"local"`; optional providers are passed as runner instances |
-| `default_compute_provider` | `str` | `"local"` | Default compute provider for execute-phase routing (`"local"` or `"modal"`) |
 | `preserve_staging` | `bool` | `False` | Keep staging files after commit (debugging) |
 | `preserve_working` | `bool` | `False` | Keep worker sandboxes after execution (debugging) |
-| `recover_staging` | `bool` | `True` | Commit leftover staging files from prior crashed runs at init |
 
 Both `delta_root` and `staging_root` are created automatically if they do not
 exist. Cluster runner providers can map the default `working_root` to
@@ -323,9 +321,8 @@ subclassing `CompositeDefinition` and implementing `compose()`:
 from enum import StrEnum
 from typing import ClassVar
 
-from artisan.composites import CompositeDefinition, CompositeContext
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.composites import CompositeContext, CompositeDefinition
+from artisan.schemas import InputSpec, OutputSpec
 
 
 class TransformAndScore(CompositeDefinition):
@@ -451,7 +448,7 @@ print(runs)  # polars DataFrame with run IDs, step counts, and timestamps
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | `Output role 'X' not available` | Mismatched role name in `.output()` | Check the operation's output role names |
-| Downstream step receives 0 artifacts | Upstream step failed or filtered everything out | Check `step.success` and `step.succeeded_count` |
+| Downstream step receives 0 artifacts | Upstream step failed or filtered everything out | Check `step.status` and `step.succeeded_count` |
 | `Raw file paths are not allowed for creator operations` | Passed a file path list to a creator operation | Use `IngestData` first, then wire its output |
 | Pipeline hangs on exit | Forgot `finalize()` after using `submit()` | Call `pipeline.finalize()` |
 | Stale results after code change | Content-addressed cache hit from a previous run | Use a fresh `delta_root` |
@@ -463,13 +460,15 @@ print(runs)  # polars DataFrame with run IDs, step counts, and timestamps
 Run your pipeline with a small dataset to confirm wiring and output:
 
 ```python
+from artisan.orchestration import StepStatus
+
 pipeline = PipelineManager.create(
     name="test",
     delta_root="test/delta",
     staging_root="test/staging",
 )
 step = pipeline.run(operation=DataGenerator, params={"count": 3})
-assert step.success
+assert step.status is StepStatus.SUCCEEDED
 assert step.succeeded_count == 3
 ```
 

@@ -17,9 +17,12 @@ import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external import validate_persistable_uri
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA
+from artisan.schemas.enums import TablePath
+from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
+from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
 from artisan.utils.json import artisan_json_default
 from artisan.utils.path import shard_uri
 
@@ -77,6 +80,7 @@ class StagingResult:
     staging_path: str | None = None
     execution_run_id: str | None = None
     artifact_ids: list[str] = field(default_factory=list)
+    cancellation_acknowledgement: CancellationAcknowledgement | None = None
 
 
 def _stage_artifacts(
@@ -93,6 +97,7 @@ def _stage_artifacts(
     """
     _stage_artifacts_by_type(artifacts, staging_path, fs)
     _stage_artifact_index(artifacts, step_number, staging_path, fs)
+    _stage_artifact_locations(artifacts, staging_path, fs)
     _stage_artifact_edges(artifact_edges, staging_path, fs)
 
     return [
@@ -164,7 +169,7 @@ def _stage_artifacts_by_type(
 
     for type_key, typed_artifacts in by_type.items():
         type_def = ArtifactTypeDef.get(type_key)
-        rows = [a.to_row() for a in typed_artifacts]  # type: ignore[attr-defined]  # to_row defined on each concrete artifact subclass, not the base
+        rows = [a.to_row() for a in typed_artifacts]
         df = pl.DataFrame(rows, schema=type_def.polars_schema())
         with fs.open(f"{staging_path}/{type_def.parquet_filename()}", "wb") as f:
             df.write_parquet(f, compression="zstd")
@@ -189,7 +194,35 @@ def _stage_artifact_index(
     ]
     if rows:
         with fs.open(f"{staging_path}/index.parquet", "wb") as f:
-            pl.DataFrame(rows).write_parquet(f, compression="zstd")
+            pl.DataFrame(
+                rows, schema=get_schema(TablePath.ARTIFACT_INDEX)
+            ).write_parquet(f, compression="zstd")
+
+
+def _stage_artifact_locations(
+    artifacts: dict[str, list[Artifact]],
+    staging_path: str,
+    fs: AbstractFileSystem,
+) -> None:
+    """Write global location rows for externally backed artifacts."""
+    rows: list[dict[str, str]] = []
+    for artifact_list in artifacts.values():
+        for artifact in artifact_list:
+            if not artifact.EXTERNALLY_BACKED or artifact.artifact_id is None:
+                continue
+            locator = next(iter(artifact.LOCATOR_FIELDS))
+            uri = getattr(artifact, locator)
+            if uri is None:
+                continue
+            validate_persistable_uri(uri)
+            rows.append({"artifact_id": artifact.artifact_id, "uri": uri})
+    if rows:
+        df = pl.DataFrame(
+            rows,
+            schema=get_schema(TablePath.ARTIFACT_LOCATIONS),
+        ).unique(maintain_order=True)
+        with fs.open(f"{staging_path}/locations.parquet", "wb") as stream:
+            df.write_parquet(stream, compression="zstd")
 
 
 def _stage_artifact_edges(
@@ -230,7 +263,9 @@ def _stage_execution_edges(
     if execution_edges.is_empty():
         return
     with fs.open(f"{staging_path}/execution_edges.parquet", "wb") as f:
-        execution_edges.write_parquet(f, compression="zstd")
+        execution_edges.cast(
+            pl.Schema(get_schema(TablePath.EXECUTION_EDGES))
+        ).write_parquet(f, compression="zstd")
 
 
 def _write_execution_record(
@@ -280,14 +315,6 @@ def _write_execution_record(
         "compute_backend": compute_backend,
         "metadata": json.dumps(result_metadata or {}, default=artisan_json_default),
     }
-    df = pl.DataFrame([row]).cast(
-        {
-            "error": pl.String,
-            "error_envelope": pl.String,
-            "tool_output": pl.String,
-            "worker_log": pl.String,
-            "step_run_id": pl.String,
-        }
-    )
+    df = pl.DataFrame([row], schema=get_schema(TablePath.EXECUTIONS))
     with fs.open(f"{staging_path}/executions.parquet", "wb") as f:
         df.write_parquet(f, compression="zstd")

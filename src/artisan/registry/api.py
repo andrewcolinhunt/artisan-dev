@@ -104,4 +104,4 @@ def examples(name: str) -> list[OperationExample]:
             suggestions=suggest(name, registered),
             recovery_hint="CHECK_INPUT",
         )
-    return list(cls.examples)
+    return cls._copy_examples()

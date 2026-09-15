@@ -2,33 +2,79 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 from fixtures.execution_records import executions_df
+from fixtures.logical_commit_store import commit_test_step
 
-from artisan.schemas.enums import CacheValidationReason
+from artisan.schemas.enums import CacheValidationReason, TablePath
 from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
 from artisan.storage.cache.cache_lookup import cache_lookup
 
 
+def _seed_executions(
+    backend_fs,
+    records_data: dict[str, list[object]],
+) -> tuple[str, object, dict[str, str]]:
+    """Commit execution fixtures through the format-2 persistence boundary."""
+    fs, storage, root = backend_fs
+    options = storage.delta_storage_options()
+    delta_root = f"{root}/delta"
+    staging_root = f"{root}/staging"
+    step_run_id = "c" * 32
+    records_data["step_run_id"] = [step_run_id] * len(records_data["execution_run_id"])
+    succeeded = sum(bool(value) for value in records_data["success"])
+    total = len(records_data["success"])
+    status = "succeeded" if succeeded == total else "partial"
+    terminal = {
+        "step_run_id": step_run_id,
+        "step_spec_id": "d" * 32,
+        "pipeline_run_id": "cache-test-run",
+        "step_number": 1,
+        "step_name": "cache-test",
+        "status": status,
+        "state_sequence": 2,
+        "disposition": "executed",
+        "cancellation_status": None,
+        "operation_class": "tests.CacheOperation",
+        "params_json": "{}",
+        "input_refs_json": "{}",
+        "compute_backend": "local",
+        "compute_options_json": "{}",
+        "output_roles_json": "[]",
+        "output_types_json": "{}",
+        "total_count": total,
+        "succeeded_count": succeeded,
+        "failed_count": total - succeeded,
+        "timestamp": datetime.now(UTC),
+        "duration_seconds": 1.0,
+        "error": None if succeeded == total else "one execution failed",
+        "metadata": None,
+    }
+    commit_test_step(
+        delta_root,
+        staging_root,
+        [terminal],
+        {TablePath.EXECUTIONS.value: executions_df(**records_data)},
+        fs=fs,
+        storage_options=options,
+    )
+    return delta_root, fs, options
+
+
 @pytest.fixture
 def cache_env(backend_fs):
-    """Yield ``(executions_path, fs, storage_options, root)`` per step_runner.
+    """Yield ``(delta_root, fs, storage_options)`` per storage backend.
 
     Seeds ``orchestration/executions`` with one success + one failure so
     consumers test the three primary outcomes (hit / miss-failed /
     miss-unknown-spec) without having to re-seed.
     """
-    fs, storage, root = backend_fs
-    opts = storage.delta_storage_options()
-    executions_path = f"{root}/orchestration/executions"
-
     now = datetime.now()
     records_data = {
         "execution_run_id": ["run_success", "run_failed"],
         "execution_spec_id": ["spec_success", "spec_failed"],
-        "step_run_id": [None, None],
         "origin_step_number": [1, 1],
         "operation_name": ["relax", "relax"],
         "params": ["{}", "{}"],
@@ -43,11 +89,7 @@ def cache_env(backend_fs):
         "worker_log": [None, None],
         "metadata": ["{}", "{}"],
     }
-    executions_df(**records_data).write_delta(
-        executions_path, mode="overwrite", storage_options=opts
-    )
-
-    return executions_path, fs, opts, root
+    return _seed_executions(backend_fs, records_data)
 
 
 class TestCacheLookup:
@@ -58,8 +100,8 @@ class TestCacheLookup:
 
     def test_cache_hit(self, cache_env):
         """Cache hit returns the matching successful execution."""
-        executions_path, fs, opts, _root = cache_env
-        result = cache_lookup(executions_path, "spec_success", fs, storage_options=opts)
+        delta_root, fs, opts = cache_env
+        result = cache_lookup(delta_root, "spec_success", fs, storage_options=opts)
 
         assert isinstance(result, CacheHit)
         assert result.execution_spec_id == "spec_success"
@@ -80,35 +122,28 @@ class TestCacheLookup:
 
     def test_cache_miss_failed_execution(self, cache_env):
         """Cache miss when execution exists but failed."""
-        executions_path, fs, opts, _root = cache_env
-        result = cache_lookup(executions_path, "spec_failed", fs, storage_options=opts)
+        delta_root, fs, opts = cache_env
+        result = cache_lookup(delta_root, "spec_failed", fs, storage_options=opts)
 
         assert isinstance(result, CacheMiss)
         assert result.reason == CacheValidationReason.EXECUTION_FAILED
 
     def test_cache_miss_unknown_spec_id(self, cache_env):
         """Cache miss when spec_id not found in existing table."""
-        executions_path, fs, opts, _root = cache_env
-        result = cache_lookup(
-            executions_path, "nonexistent_spec", fs, storage_options=opts
-        )
+        delta_root, fs, opts = cache_env
+        result = cache_lookup(delta_root, "nonexistent_spec", fs, storage_options=opts)
 
         assert isinstance(result, CacheMiss)
         assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
 
     def test_cache_lookup_returns_most_recent_on_multiple_successes(self, backend_fs):
         """When multiple successful executions exist, return most recent."""
-        fs, storage, root = backend_fs
-        opts = storage.delta_storage_options()
-        executions_path = f"{root}/orchestration/executions"
-
         earlier = datetime(2024, 1, 1, 10, 0, 0)
         later = datetime(2024, 1, 1, 12, 0, 0)
 
         records_data = {
             "execution_run_id": ["run_old", "run_new"],
             "execution_spec_id": ["same_spec", "same_spec"],
-            "step_run_id": [None, None],
             "origin_step_number": [1, 1],
             "operation_name": ["op", "op"],
             "params": ["{}", "{}"],
@@ -123,11 +158,8 @@ class TestCacheLookup:
             "worker_log": [None, None],
             "metadata": ["{}", "{}"],
         }
-        executions_df(**records_data).write_delta(
-            executions_path, mode="overwrite", storage_options=opts
-        )
-
-        result = cache_lookup(executions_path, "same_spec", fs, storage_options=opts)
+        delta_root, fs, opts = _seed_executions(backend_fs, records_data)
+        result = cache_lookup(delta_root, "same_spec", fs, storage_options=opts)
 
         assert isinstance(result, CacheHit)
         assert result.execution_run_id == "run_new"
@@ -189,36 +221,28 @@ class TestCacheLookupBackendParametrized:
 
     def test_cache_hit_round_trip(self, backend_fs):
         """A successful execution produces a CacheHit on either step_runner."""
-        fs, storage, root = backend_fs
-        delta_root = f"{root}/delta"
-        executions_path = f"{delta_root}/orchestration/executions"
-        storage_options = storage.delta_storage_options()
-
         now = datetime.now()
-        records_df = executions_df(
-            execution_run_id=["run_success"],
-            execution_spec_id=["spec_success"],
-            step_run_id=[None],
-            origin_step_number=[1],
-            operation_name=["relax"],
-            params=["{}"],
-            user_overrides=["{}"],
-            timestamp_start=[now],
-            timestamp_end=[now],
-            source_worker=[0],
-            compute_backend=["local"],
-            success=[True],
-            error=[None],
-            tool_output=[None],
-            worker_log=[None],
-            metadata=["{}"],
-        )
-        records_df.write_delta(
-            executions_path, mode="overwrite", storage_options=storage_options
-        )
+        records_data = {
+            "execution_run_id": ["run_success"],
+            "execution_spec_id": ["spec_success"],
+            "origin_step_number": [1],
+            "operation_name": ["relax"],
+            "params": ["{}"],
+            "user_overrides": ["{}"],
+            "timestamp_start": [now],
+            "timestamp_end": [now],
+            "source_worker": [0],
+            "compute_backend": ["local"],
+            "success": [True],
+            "error": [None],
+            "tool_output": [None],
+            "worker_log": [None],
+            "metadata": ["{}"],
+        }
+        delta_root, fs, storage_options = _seed_executions(backend_fs, records_data)
 
         result = cache_lookup(
-            executions_path,
+            delta_root,
             "spec_success",
             fs,
             storage_options=storage_options,

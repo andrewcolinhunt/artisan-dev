@@ -20,6 +20,8 @@ from fsspec import AbstractFileSystem
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.committed_scan import scan_committed
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
@@ -46,11 +48,17 @@ def _scan_or_empty(
         from fsspec.implementations.local import LocalFileSystem
 
         fs = LocalFileSystem()
+    assert_store_format(delta_root, fs, storage_options)
     table_path = uri_join(delta_root, table)
     if not fs.exists(table_path):
         return pl.DataFrame(schema=empty_schema)
     return (
-        pl.scan_delta(table_path, storage_options=storage_options)
+        scan_committed(
+            delta_root,
+            table,
+            fs=fs,
+            storage_options=storage_options,
+        )
         .select(columns)
         .collect()
     )
@@ -122,7 +130,12 @@ def _load_artifact_labels(
 
         if "original_name" in schema:
             df = (
-                pl.scan_delta(table_path, storage_options=storage_options)
+                scan_committed(
+                    delta_root,
+                    typedef.table_path,
+                    fs=fs,
+                    storage_options=storage_options,
+                )
                 .select(["artifact_id", "original_name"])
                 .collect()
             )
@@ -134,7 +147,12 @@ def _load_artifact_labels(
                     )[0]
         elif "path" in schema:
             df = (
-                pl.scan_delta(table_path, storage_options=storage_options)
+                scan_committed(
+                    delta_root,
+                    typedef.table_path,
+                    fs=fs,
+                    storage_options=storage_options,
+                )
                 .select(["artifact_id", "path"])
                 .collect()
             )
@@ -177,8 +195,9 @@ def _load_artifact_edges(
     return _scan_or_empty(
         delta_root,
         TablePath.ARTIFACT_EDGES,
-        ["source_artifact_id", "target_artifact_id"],
+        ["execution_run_id", "source_artifact_id", "target_artifact_id"],
         {
+            "execution_run_id": pl.String,
             "source_artifact_id": pl.String,
             "target_artifact_id": pl.String,
         },
@@ -214,6 +233,8 @@ def build_micro_graph(
     max_step: int | None = None,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
 ) -> graphviz.Digraph:
     """Build a Graphviz Digraph from Delta Lake provenance tables.
 
@@ -232,6 +253,8 @@ def build_micro_graph(
             Useful for step-by-step visualization of pipeline execution.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        pipeline_run_id: Optional exact run to project. Reused executions get
+            a distinct participation node at every current logical step.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
@@ -251,22 +274,76 @@ def build_micro_graph(
         delta_root, storage_options=storage_options, fs=fs
     )
 
+    if pipeline_run_id is not None:
+        if fs is None:
+            from fsspec.implementations.local import LocalFileSystem
+
+            fs = LocalFileSystem()
+        from artisan.storage.core.run_scope import load_execution_membership
+
+        membership = load_execution_membership(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            pipeline_run_id=pipeline_run_id,
+        ).unique(subset=["current_step_run_id", "execution_run_id"])
+        participation = membership.select(
+            pl.col("execution_run_id").alias("actual_execution_run_id"),
+            pl.concat_str(
+                "current_step_run_id", "execution_run_id", separator="_"
+            ).alias("execution_run_id"),
+            "operation_name",
+            pl.col("current_step_number").alias("origin_step_number"),
+        )
+        executions = participation.select(
+            "execution_run_id", "operation_name", "origin_step_number"
+        )
+        exec_edges = (
+            exec_edges.rename({"execution_run_id": "actual_execution_run_id"})
+            .join(
+                participation.select("actual_execution_run_id", "execution_run_id"),
+                on="actual_execution_run_id",
+                how="inner",
+            )
+            .select("execution_run_id", "direction", "artifact_id")
+        )
+        actual_ids = set(participation["actual_execution_run_id"].to_list())
+        artifact_edges = artifact_edges.filter(
+            pl.col("execution_run_id").is_in(actual_ids)
+        )
+        included_artifact_ids = set(exec_edges["artifact_id"].to_list())
+        artifact_index = artifact_index.filter(
+            pl.col("artifact_id").is_in(included_artifact_ids)
+        )
+        artifact_edges = artifact_edges.filter(
+            pl.col("source_artifact_id").is_in(included_artifact_ids)
+            & pl.col("target_artifact_id").is_in(included_artifact_ids)
+        )
+
     # Filter by max_step if provided
     if max_step is not None:
         # Filter executions to steps <= max_step
         executions = executions.filter(pl.col("origin_step_number") <= max_step)
 
-        # Filter artifacts to steps <= max_step
-        artifact_index = artifact_index.filter(pl.col("origin_step_number") <= max_step)
-
-        # Get the set of included execution and artifact IDs for edge filtering
+        # A run-scoped graph uses current participation for the step boundary;
+        # cached artifacts retain their global origin, which may be any number.
         included_exec_ids = set(executions["execution_run_id"].to_list())
+        exec_edges = exec_edges.filter(
+            pl.col("execution_run_id").is_in(included_exec_ids)
+        )
+        if pipeline_run_id is None:
+            artifact_index = artifact_index.filter(
+                pl.col("origin_step_number") <= max_step
+            )
+        else:
+            artifact_index = artifact_index.filter(
+                pl.col("artifact_id").is_in(exec_edges["artifact_id"].to_list())
+            )
         included_artifact_ids = set(artifact_index["artifact_id"].to_list())
 
         # Filter execution provenance to only edges where both endpoints are included
         exec_edges = exec_edges.filter(
-            pl.col("execution_run_id").is_in(included_exec_ids)
-            & pl.col("artifact_id").is_in(included_artifact_ids)
+            pl.col("artifact_id").is_in(included_artifact_ids)
         )
 
         # Filter artifact provenance to only edges where both endpoints are included
@@ -465,6 +542,8 @@ def render_micro_graph(
     max_step: int | None = None,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
 ) -> str:
     """Build and render the micro (artifact-level) provenance graph to a file.
 
@@ -475,12 +554,17 @@ def render_micro_graph(
         max_step: If provided, only include steps 0 through max_step (inclusive).
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        pipeline_run_id: Optional exact run to project.
 
     Returns:
         Path to the rendered file.
     """
     graph = build_micro_graph(
-        delta_root, max_step=max_step, storage_options=storage_options, fs=fs
+        delta_root,
+        max_step=max_step,
+        storage_options=storage_options,
+        fs=fs,
+        pipeline_run_id=pipeline_run_id,
     )
     return render_graph(graph, output_path, format)
 
@@ -489,6 +573,8 @@ def get_max_step_number(
     delta_root: str,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
 ) -> int | None:
     """Return the highest step number present in the executions table.
 
@@ -496,11 +582,31 @@ def get_max_step_number(
         delta_root: Path to Delta Lake root directory.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        pipeline_run_id: Optional exact run to inspect.
 
     Returns:
         Maximum step number, or None if no executions exist.
     """
-    executions = _load_executions(delta_root, storage_options=storage_options, fs=fs)
+    if pipeline_run_id is None:
+        executions = _load_executions(
+            delta_root, storage_options=storage_options, fs=fs
+        )
+    else:
+        if fs is None:
+            from fsspec.implementations.local import LocalFileSystem
+
+            fs = LocalFileSystem()
+        from artisan.storage.core.run_scope import load_execution_membership
+
+        membership = load_execution_membership(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            pipeline_run_id=pipeline_run_id,
+        )
+        executions = membership.select(
+            pl.col("current_step_number").alias("origin_step_number")
+        )
     if executions.is_empty():
         return None
     return cast("int | None", executions["origin_step_number"].max())

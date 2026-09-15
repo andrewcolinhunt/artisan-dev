@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.executors.creator import run_creator_lifecycle
@@ -15,7 +16,7 @@ from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 def _run(
@@ -81,7 +82,7 @@ class TestLargeFileGenerator:
         assert hashes_1 != hashes_2
 
     def test_one_artifact_per_file(self, tmp_path: Path) -> None:
-        raw, result = _run(tmp_path, count=3)
+        _raw, result = _run(tmp_path, count=3)
         paths = {a.external_path for a in result.artifacts["files"]}
         assert len(paths) == 3
 
@@ -101,7 +102,7 @@ class TestLargeFileGenerator:
         file_path = raw["files"][0]["path"]
         with open(file_path, "rb") as fh:
             data = fh.read()
-        expected = compute_artifact_id(data)
+        expected = compute_content_digest(data)
         assert raw["files"][0]["content_hash"] == expected
 
 
@@ -132,14 +133,21 @@ def backend_env(request, tmp_path):
     if request.param == "local":
         files_root = tmp_path / "files_root"
         files_root.mkdir()
+        fs = LocalFileSystem()
+        storage = StorageConfig(protocol="file")
+        delta_root = str(tmp_path / "delta")
+        publish_test_store(delta_root, fs, storage.delta_storage_options())
         return (
-            LocalFileSystem(),
-            StorageConfig(protocol="file"),
+            fs,
+            storage,
+            delta_root,
             str(files_root),
             str(working),
         )
     fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
-    return fs, storage, f"{uri_prefix}/files", str(working)
+    delta_root = f"{uri_prefix}/delta"
+    publish_test_store(delta_root, fs, storage.delta_storage_options())
+    return fs, storage, delta_root, f"{uri_prefix}/files", str(working)
 
 
 class TestLargeFileGeneratorLifecycle:
@@ -154,10 +162,10 @@ class TestLargeFileGeneratorLifecycle:
     def test_external_path_resolves_on_parametrized_backend(
         self, backend_env, tmp_path: Path
     ) -> None:
-        fs, storage, files_root, working_root = backend_env
+        fs, storage, delta_root, files_root, working_root = backend_env
 
         env = RuntimeEnvironment(
-            delta_root=str(tmp_path / "delta"),
+            delta_root=delta_root,
             working_root=working_root,
             staging_root=str(tmp_path / "staging"),
             files_root=files_root,
@@ -165,9 +173,7 @@ class TestLargeFileGeneratorLifecycle:
         )
         unit = ExecutionUnit(
             operation=LargeFileGenerator(
-                params=LargeFileGenerator.Params(
-                    count=2, file_size_bytes=256, seed=0
-                )
+                params=LargeFileGenerator.Params(count=2, file_size_bytes=256, seed=0)
             ),
             inputs={},
             execution_spec_id="lfg_smoke_" + "0" * 22,

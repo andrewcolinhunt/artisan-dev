@@ -32,14 +32,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from artisan.operations.curator import Filter, Merge
+from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-
-# Import operations used in this pipeline
-from artisan.operations.examples.data_generator import DataGenerator
-from artisan.operations.examples.data_transformer import DataTransformer
-from artisan.operations.examples.metric_calculator import MetricCalculator
-from artisan.operations.curator.filter import Filter
-from artisan.operations.curator.merge import Merge
 
 
 def main() -> None:
@@ -92,7 +87,7 @@ Both methods accept identical parameters. `run()` blocks and returns
 `StepResult`. `submit()` returns `StepFuture` immediately.
 
 ```python
-pipeline.run(
+result = pipeline.run(
     operation,                # type[OperationDefinition]
     inputs=None,              # Input wiring (see below)
     params=None,              # dict — operation parameters
@@ -108,7 +103,7 @@ pipeline.run(
     compact=True,             # bool — compact provenance
     name=None,                # str — step name for wiring and display
     skip_cache=False,         # bool — bypass cache lookup for this step
-) -> StepResult
+)
 ```
 
 Core accepts `"local"` as its only string runner name. For any optional runner,
@@ -139,7 +134,7 @@ Runs a composite — each internal `ctx.run()` becomes its own pipeline step.
 raises `TypeError`).
 
 ```python
-pipeline.run_composite(
+result = pipeline.run_composite(
     composite,                # type[CompositeDefinition] — the composite class
     inputs=None,              # Input wiring (same as run())
     params=None,              # dict — composite parameters
@@ -154,7 +149,7 @@ pipeline.run_composite(
     failure_policy=None,      # default for every child step
     compact=True,             # default for every child step
     skip_cache=False,         # default for every child step
-) -> CompositeResult
+)
 ```
 
 Composite-level overrides are defaults for each child step; a value set on a
@@ -405,7 +400,6 @@ summary = pipeline.finalize()
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | Default for all steps |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When to cache step results |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Built-in local runner or external provider instance |
-| `default_compute_provider` | `str` | `"local"` | Default execute-phase compute target |
 | `preserve_staging` | `bool` | `False` | Keep staging dirs after commit |
 | `preserve_working` | `bool` | `False` | Keep working dirs after execution |
 | `recover_staging` | `bool` | `True` | Recover incomplete staging on resume |

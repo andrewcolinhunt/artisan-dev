@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 import pytest
-import xxhash
+from fixtures.store_format import commit_test_tables
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executors.creator import (
@@ -23,6 +24,7 @@ from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
+from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.input_models import (
@@ -35,18 +37,33 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 
-def _compute_id(content: bytes) -> str:
-    return xxhash.xxh3_128(content).hexdigest()
-
-
-def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> None:
+def _setup_delta(base_path: Path, artifacts: list[MetricArtifact]) -> None:
     """Write Delta Lake tables for test input artifacts."""
-    metrics_path = base_path / "artifacts/metrics"
-    pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA).write_delta(
-        str(metrics_path)
+    commit_test_tables(
+        str(base_path),
+        str(base_path.parent / "seed-staging"),
+        LocalFileSystem(),
+        {
+            "artifacts/metrics": pl.DataFrame(
+                [artifact.to_row() for artifact in artifacts],
+                schema=MetricArtifact.POLARS_SCHEMA,
+            ),
+            TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                [
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "artifact_type": artifact.artifact_type,
+                        "origin_step_number": artifact.origin_step_number,
+                        "metadata": json.dumps(artifact.metadata),
+                    }
+                    for artifact in artifacts
+                ],
+                schema=ARTIFACT_INDEX_SCHEMA,
+            ),
+        },
+        step_run_id="f" * 32,
+        operation_name="seed_compute_routing",
     )
-    index_path = base_path / "artifacts/index"
-    pl.DataFrame(index, schema=ARTIFACT_INDEX_SCHEMA).write_delta(str(index_path))
 
 
 class _SimpleOp(OperationDefinition):
@@ -106,30 +123,14 @@ class _SimpleOp(OperationDefinition):
 def delta_env(tmp_path: Path):
     """Create Delta root, working dir, and staging dir with one input."""
     base = tmp_path / "delta"
-    content = json.dumps({"value": 1}, sort_keys=True).encode("utf-8")
-    aid = _compute_id(content)
+    artifact = MetricArtifact.draft(
+        {"value": 1}, "test_metric.json", step_number=0
+    ).finalize()
+    aid = artifact.artifact_id
 
     _setup_delta(
         base,
-        metrics=[
-            {
-                "artifact_id": aid,
-                "origin_step_number": 0,
-                "content": content,
-                "original_name": "test_metric",
-                "extension": ".json",
-                "metadata": "{}",
-                "external_path": None,
-            }
-        ],
-        index=[
-            {
-                "artifact_id": aid,
-                "artifact_type": "metric",
-                "origin_step_number": 0,
-                "metadata": "{}",
-            }
-        ],
+        [artifact],
     )
 
     working = tmp_path / "working"

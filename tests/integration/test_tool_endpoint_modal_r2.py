@@ -48,6 +48,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from artisan.schemas.operation_config import ToolEndpointDataPolicy
+
 pytestmark = pytest.mark.modal
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -57,7 +59,36 @@ _ENV_FILES = (
 )
 
 R2_SECRET_NAME = "r2-artisan"
+INTEGRATION_OUTPUT_PREFIX = "integration"
+TUTORIAL_OUTPUT_PREFIX = "artisan-tutorial"
 POLL_DEADLINE_S = 900  # first call pulls the worker image — minutes, not seconds
+
+
+class _ProxyHeaders(dict[str, str]):
+    """HTTP headers whose failure representation never exposes credentials."""
+
+    def __repr__(self) -> str:
+        return "{'Modal-Key': '<redacted>', 'Modal-Secret': '<redacted>'}"
+
+
+def test_proxy_headers_repr_redacts_credentials() -> None:
+    """Failure diagnostics must not reveal either proxy credential."""
+    headers = _ProxyHeaders(
+        {"Modal-Key": "wk-sensitive", "Modal-Secret": "ws-sensitive"}
+    )
+
+    assert "sensitive" not in repr(headers)
+
+
+def _output_policy(r2: dict[str, str]) -> ToolEndpointDataPolicy:
+    """Return the policy shared by the deployed worker and SDK client."""
+    return ToolEndpointDataPolicy(
+        output_allowlist=(
+            f"s3://{r2['bucket']}/{INTEGRATION_OUTPUT_PREFIX}",
+            f"s3://{r2['bucket']}/{TUTORIAL_OUTPUT_PREFIX}",
+            r2["endpoint"],
+        ),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -87,7 +118,7 @@ def r2() -> dict[str, str]:
 
 
 @pytest.fixture(scope="module")
-def proxy_headers() -> dict[str, str]:
+def proxy_headers() -> _ProxyHeaders:
     """Proxy-auth headers for raw-httpx consumers; skip when tokens absent."""
     from artisan.utils.env_file import env_or_dotenv
 
@@ -95,7 +126,7 @@ def proxy_headers() -> dict[str, str]:
     token_secret = env_or_dotenv("MODAL_PROXY_TOKEN_SECRET")
     if not (token_id and token_secret):
         pytest.skip("no MODAL_PROXY_TOKEN_ID/SECRET (repo-root .env)")
-    return {"Modal-Key": token_id, "Modal-Secret": token_secret}
+    return _ProxyHeaders({"Modal-Key": token_id, "Modal-Secret": token_secret})
 
 
 @pytest.fixture(scope="module")
@@ -120,6 +151,7 @@ def endpoint_url(r2: dict[str, str]) -> str:
         update={
             "secrets": [R2_SECRET_NAME],
             "image": os.environ.get("ARTISAN_TEST_WORKER_IMAGE", original.modal.image),
+            "data_policy": _output_policy(r2),
         }
     )
     field.default = ComputeProvider(modal=deploy_cfg)
@@ -146,7 +178,7 @@ def test_prefix_mode_via_artisan_client(
     )
     from artisan.schemas.specs.input_models import ExecuteInput
 
-    run_prefix = f"integration/endpoint-{uuid.uuid4().hex[:8]}"
+    run_prefix = f"{INTEGRATION_OUTPUT_PREFIX}/endpoint-{uuid.uuid4().hex[:8]}"
     op = WaitTool(
         params=WaitTool.Params(seconds=2),
         compute_provider=ComputeProvider(
@@ -154,6 +186,7 @@ def test_prefix_mode_via_artisan_client(
             modal=ModalComputeConfig(
                 output_store=f"s3://{r2['bucket']}/{run_prefix}",
                 poll_interval=2.0,
+                data_policy=_output_policy(r2),
             ),
         ),
     )
@@ -210,7 +243,10 @@ def test_capability_mode_external_consumer(
 
     try:
         with httpx.Client(
-            base_url=endpoint_url, headers=proxy_headers, timeout=120.0
+            base_url=endpoint_url,
+            headers=proxy_headers,
+            timeout=120.0,
+            follow_redirects=False,
         ) as client:
             response = client.post(
                 "/submit",

@@ -35,33 +35,34 @@ unlikely. Each principle below targets one or more of these failure modes.
 
 ## Content is identity
 
-Every artifact is identified by the hash of its content
-(`artifact_id = xxh3_128(content)`), producing a 32-character hexadecimal
-string. The ID *is* the data. There is no separate registry mapping names to
-values, no auto-incrementing counter, no UUID that could accidentally refer to
-different content on two machines.
+Every artifact is identified by a versioned hash of its registered type,
+type-owned canonical content, and framework-owned semantic metadata. The
+32-character hexadecimal ID names an exact meaning, not a storage row or a
+filesystem location. A source URI can change without changing identity; a name
+or semantic metadata change produces a new identity even when the raw bytes are
+the same.
 
 Content addressing extends beyond artifact storage. Execution cache keys use
-the same hashing approach: `compute_execution_spec_id` hashes the operation
-name, deduplicated and sorted input artifact IDs, canonicalized parameters, and
-config overrides into a single deterministic key. Step-level cache keys (`compute_step_spec_id`)
-work the same way but reference upstream step spec IDs instead of resolved
-artifact IDs, enabling cache lookups before individual artifacts are known.
+the same discipline through a separate cache identity version. Both step and
+execution keys use concrete typed input occurrences. Each occurrence retains
+its role, group, role-local position, type, and artifact ID; duplicates and
+pairing order are never erased. Parameters and effective execution
+configuration complete the preimage.
 
 **What this buys you:**
 
-- **Automatic deduplication.** Same content, same ID — stored once regardless
-  of how many pipeline steps produce it.
-- **Deterministic caching.** Cache keys are derived from content hashes of
-  inputs plus operation parameters. No manual invalidation. Different inputs
-  produce different keys automatically.
-- **Immutability by construction.** Changing an artifact's content changes its
-  ID, which means the original artifact still exists. You cannot silently
-  overwrite prior results.
+- **Automatic deduplication.** The same typed semantic identity is stored once,
+  regardless of how many pipeline steps produce it.
+- **Deterministic caching.** Cache keys are derived from ordered typed input
+  occurrences plus operation parameters and effective configuration. No manual
+  invalidation. Different invocation semantics produce different keys.
+- **Immutability after finalization.** Durable fields and nested semantic values
+  are protected and checked against a saved identity snapshot. Runtime
+  locations remain movable.
 
 Artifacts follow a draft/finalize lifecycle: drafts have `artifact_id=None`
-and are mutable; calling `finalize()` hashes the content, sets the ID, and
-makes the artifact semantically immutable. This two-phase design lets operations
+and are mutable; calling `finalize()` computes the typed identity, sets the ID,
+and protects durable semantics. This two-phase design lets operations
 build outputs incrementally without computing hashes until the content is
 complete.
 
@@ -213,18 +214,14 @@ orchestrator-worker split.
 
 Workers never write to Delta Lake directly. Instead, each worker writes
 results to an isolated staging directory, and the orchestrator commits them
-after all workers complete. Each Delta table is committed independently in a
-fixed order — content tables first, then the artifact index, then artifact
-edges, then execution edges, then executions — to minimize referential
-integrity issues on partial failure. No optimistic concurrency, no write
-conflicts.
+after all workers complete. The orchestrator seals one immutable commit plan,
+writes its tables in a fixed order, and publishes the completion marker last.
+Readers expose plan-owned rows only after that marker exists.
 
-Content-addressed deduplication runs at commit time: before appending rows,
-the committer filters out any `artifact_id` values that already exist in the
-target table. This makes commits idempotent — if a crash interrupts a commit
-and the orchestrator retries, duplicate rows are silently dropped. The
-`recover_staged` method exploits this property to commit leftover staging files
-from a prior crashed run.
+Content-addressed artifacts may reuse an existing identical row. Every other
+retry must match the immutable plan and its exact natural keys. A crash leaves
+the plan and partial physical effects available to `artisan store repair`;
+unplanned staging is never guessed into a commit.
 
 **Why this principle exists:** Pipelines run thousands of concurrent workers.
 If each worker wrote directly to shared tables, write conflicts would be

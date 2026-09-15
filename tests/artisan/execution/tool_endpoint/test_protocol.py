@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.tool_endpoint.protocol import (
+    CancelResponse,
     InputRef,
     ResultResponse,
     SchemaResponse,
@@ -25,8 +26,33 @@ class TestInputRef:
         assert ref.data == b"ATOM"
 
     def test_uri_ref(self):
-        ref = InputRef(name="pdb", uri="s3://bucket/key.pdb")
+        ref = InputRef(
+            name="pdb",
+            uri="s3://bucket/key.pdb",
+            content_digest="a" * 32,
+            size_bytes=4,
+        )
         assert ref.data is None
+
+    def test_uri_requires_digest_and_size(self):
+        with pytest.raises(ValidationError, match="requires content_digest"):
+            InputRef(name="pdb", uri="s3://bucket/key.pdb")
+
+    def test_uri_integrity_fields_are_required_together(self):
+        with pytest.raises(ValidationError, match="provided together"):
+            InputRef(
+                name="pdb",
+                uri="s3://bucket/key.pdb",
+                content_digest="a" * 32,
+            )
+
+    def test_rejects_ref_without_data_plane(self):
+        with pytest.raises(ValidationError, match="exactly one of uri or data"):
+            InputRef(name="pdb")
+
+    def test_rejects_ref_with_both_data_planes(self):
+        with pytest.raises(ValidationError, match="exactly one of uri or data"):
+            InputRef(name="pdb", uri="s3://bucket/key.pdb", data=b"ATOM")
 
 
 class TestToolRequest:
@@ -46,6 +72,24 @@ class TestToolRequest:
     def test_output_store_round_trips(self):
         request = ToolRequest(output_store="s3://bucket/prefix")
         assert ToolRequest(**request.model_dump()) == request
+
+    def test_deployment_policy_is_not_a_wire_field(self):
+        assert set(ToolRequest.model_fields) == {"params", "inputs", "output_store"}
+        schema = ToolRequest.model_json_schema()
+        assert "data_policy" not in schema["properties"]
+        assert "input_allowlist" not in schema["properties"]
+        assert "output_allowlist" not in schema["properties"]
+
+    def test_deployment_policy_cannot_be_submitted_as_extra_data(self):
+        with pytest.raises(ValidationError, match="Extra inputs"):
+            ToolRequest.model_validate(
+                {
+                    "data_policy": {
+                        "input_allowlist": ["s3://attacker"],
+                        "output_allowlist": ["s3://attacker"],
+                    }
+                }
+            )
 
 
 class TestToolManifest:
@@ -117,6 +161,13 @@ class TestWorkerResult:
 class TestResponses:
     def test_submit_response(self):
         assert SubmitResponse(call_id="fc-123").call_id == "fc-123"
+
+    @pytest.mark.parametrize(
+        "status", ["requested", "confirmed", "rejected", "unknown"]
+    )
+    def test_cancel_response_statuses(self, status):
+        response = CancelResponse(call_id="fc-123", status=status)
+        assert response.status.value == status
 
     def test_schema_response_defaults(self):
         response = SchemaResponse(operation="wait_tool")

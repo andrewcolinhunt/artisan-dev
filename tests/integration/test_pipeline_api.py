@@ -14,6 +14,7 @@ from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 # =============================================================================
 # Dunder methods
@@ -324,7 +325,7 @@ class TestOutputNameLookup:
             step_runner=Runner.LOCAL,
         )
 
-        assert step1.success is True
+        assert step1.status is StepStatus.SUCCEEDED
         assert step1.succeeded_count == 2
 
         pipeline.finalize()
@@ -376,8 +377,8 @@ class TestStepFutureProperties:
 
         result = future.result(timeout=30)
         assert future.done is True
-        assert future.status == "completed"
-        assert result.success is True
+        assert future.status is StepStatus.SUCCEEDED
+        assert result.status is StepStatus.SUCCEEDED
 
         pipeline.finalize()
 
@@ -405,8 +406,8 @@ class TestStepFutureProperties:
         result0 = future0.result(timeout=30)
         result1 = future1.result(timeout=30)
 
-        assert result0.success is True
-        assert result1.success is True
+        assert result0.status is StepStatus.SUCCEEDED
+        assert result1.status is StepStatus.SUCCEEDED
 
         pipeline.finalize()
 

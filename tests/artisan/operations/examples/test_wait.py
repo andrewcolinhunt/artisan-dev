@@ -1,5 +1,7 @@
 """Tests for Wait operation."""
 
+from __future__ import annotations
+
 import csv
 import glob
 import os
@@ -17,7 +19,8 @@ class TestWait:
 
         result = op.execute_function(ExecuteInput(inputs={}, execute_dir=execute_dir))
         files = sorted(
-            f for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
+            f
+            for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
             if os.path.isfile(f)
         )
 

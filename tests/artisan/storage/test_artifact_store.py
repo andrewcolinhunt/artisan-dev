@@ -2,25 +2,109 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import polars as pl
 import pytest
-from fixtures.execution_records import executions_df
+from fixtures.logical_commit_store import (
+    commit_test_step,
+)
+from fixtures.logical_commit_store import (
+    commit_test_tables as _commit_tables,
+)
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.enums import TablePath
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
-    STEPS_SCHEMA,
+    ARTIFACT_LOCATIONS_SCHEMA,
 )
+from artisan.utils.hashing import compute_content_digest
 
 METRICS_SCHEMA = MetricArtifact.POLARS_SCHEMA
 CONFIGS_SCHEMA = ExecutionConfigArtifact.POLARS_SCHEMA
+
+
+@pytest.fixture(autouse=True)
+def _format_local_tmp_root(tmp_path) -> None:
+    """Give direct local test stores the exact format-2 manifest."""
+    publish_test_store(str(tmp_path), LocalFileSystem())
+
+
+def _metric(values: dict, name: str, step: int = 1) -> MetricArtifact:
+    """Build a finalized metric row with a valid format-2 identity."""
+    return MetricArtifact.draft(values, f"{name}.json", step).finalize()  # type: ignore[return-value]
+
+
+def _config(values: dict, name: str, step: int = 1) -> ExecutionConfigArtifact:
+    """Build a finalized config row with a valid format-2 identity."""
+    return ExecutionConfigArtifact.draft(values, f"{name}.json", step).finalize()  # type: ignore[return-value]
+
+
+def _index_rows(
+    artifacts: list[MetricArtifact | ExecutionConfigArtifact],
+) -> list[dict]:
+    """Build index rows for finalized test artifacts."""
+    return [
+        {
+            "artifact_id": artifact.artifact_id,
+            "artifact_type": artifact.artifact_type,
+            "origin_step_number": artifact.origin_step_number,
+            "metadata": json.dumps(artifact.metadata),
+        }
+        for artifact in artifacts
+    ]
+
+
+def _write_file_ref(
+    root,
+    content: bytes,
+    locations: list[str],
+) -> FileRefArtifact:
+    """Write one external artifact and its optional location rows."""
+    artifact = FileRefArtifact.draft(
+        path=locations[0] if locations else "",
+        content_hash=compute_content_digest(content),
+        size_bytes=len(content),
+        step_number=1,
+        original_name="payload",
+        extension=".bin",
+    ).finalize()
+    tables = {
+        "artifacts/file_refs": pl.DataFrame(
+            [artifact.to_row()], schema=FileRefArtifact.POLARS_SCHEMA
+        ),
+        TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+            [
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "artifact_type": artifact.artifact_type,
+                    "origin_step_number": artifact.origin_step_number,
+                    "metadata": "{}",
+                }
+            ],
+            schema=ARTIFACT_INDEX_SCHEMA,
+        ),
+    }
+    if locations:
+        tables[TablePath.ARTIFACT_LOCATIONS.value] = pl.DataFrame(
+            [
+                {"artifact_id": artifact.artifact_id, "uri": location}
+                for location in locations
+            ],
+            schema=ARTIFACT_LOCATIONS_SCHEMA,
+        )
+    _commit_tables(root, LocalFileSystem(), None, tables)
+    return artifact
 
 
 class TestArtifactStorePrepare:
@@ -67,6 +151,56 @@ class TestArtifactStoreFilesRoot:
         assert store.files_root is None
 
 
+class TestExternalLocationSelection:
+    """External hydration selects and verifies the shared location relation."""
+
+    def test_missing_candidate_falls_back_to_next_location(self, tmp_path):
+        content = b"verified"
+        missing = str(tmp_path / "a-missing.bin")
+        valid = tmp_path / "z-valid.bin"
+        valid.write_bytes(content)
+        artifact = _write_file_ref(tmp_path, content, [missing, str(valid)])
+
+        loaded = ArtifactStore(str(tmp_path)).get_artifact(artifact.artifact_id)
+
+        assert loaded is not None
+        assert loaded.path == str(valid)
+
+    def test_readable_wrong_candidate_fails_immediately(self, tmp_path):
+        expected = b"verified"
+        wrong = tmp_path / "a-wrong.bin"
+        wrong.write_bytes(b"changed")
+        valid = tmp_path / "z-valid.bin"
+        valid.write_bytes(expected)
+        artifact = _write_file_ref(tmp_path, expected, [str(wrong), str(valid)])
+
+        with pytest.raises(ArtifactIntegrityError, match="failed integrity"):
+            ArtifactStore(str(tmp_path)).get_artifact(artifact.artifact_id)
+
+    def test_managed_location_precedes_unmanaged_location(self, tmp_path):
+        content = b"verified"
+        unmanaged = tmp_path / "a-unmanaged.bin"
+        unmanaged.write_bytes(content)
+        files_root = tmp_path / "managed"
+        files_root.mkdir()
+        managed = files_root / "z-managed.bin"
+        managed.write_bytes(content)
+        artifact = _write_file_ref(tmp_path, content, [str(unmanaged), str(managed)])
+
+        loaded = ArtifactStore(str(tmp_path), files_root=str(files_root)).get_artifact(
+            artifact.artifact_id
+        )
+
+        assert loaded is not None
+        assert loaded.path == str(managed)
+
+    def test_missing_location_relation_fails_with_integrity_error(self, tmp_path):
+        artifact = _write_file_ref(tmp_path, b"verified", [])
+
+        with pytest.raises(ArtifactIntegrityError, match="no readable verified"):
+            ArtifactStore(str(tmp_path)).get_artifact(artifact.artifact_id)
+
+
 class TestArtifactStoreFsDefault:
     """Tests for the fs parameter defaulting to LocalFileSystem."""
 
@@ -94,57 +228,52 @@ class TestArtifactStoreReadWithDelta:
         store = ArtifactStore(root, fs=fs, storage_options=opts)
 
         # Create metrics table with test data
-        metrics_data = {
-            "artifact_id": ["a" * 32, "b" * 32],
-            "origin_step_number": [1, 1],
-            "content": [b'{"score": 0.5}', b'{"score": 0.8}'],
-            "original_name": ["a", "b"],
-            "extension": [".json", ".json"],
-            "metadata": ["{}", "{}"],
-            "external_path": [None, None],
-        }
-        df = pl.DataFrame(metrics_data, schema=METRICS_SCHEMA)
-        df.write_delta(f"{root}/artifacts/metrics", storage_options=opts)
-
-        # Create artifact_index with test data
-        index_data = {
-            "artifact_id": ["a" * 32, "b" * 32],
-            "artifact_type": ["metric", "metric"],
-            "origin_step_number": [1, 1],
-            "metadata": ["{}", "{}"],
-        }
-        pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
+        artifacts = [_metric({"score": 0.5}, "a"), _metric({"score": 0.8}, "b")]
+        df = pl.DataFrame(
+            [artifact.to_row() for artifact in artifacts], schema=METRICS_SCHEMA
+        )
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                "artifacts/metrics": df,
+                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                    _index_rows(artifacts), schema=ARTIFACT_INDEX_SCHEMA
+                ),
+            },
         )
 
-        return store
+        return store, [artifact.artifact_id for artifact in artifacts]
 
     def test_get_artifact_by_id_with_type(self, store_with_data):
         """Get artifact when type is known."""
-        result = store_with_data.get_artifact(
-            "a" * 32, artifact_type=ArtifactTypes.METRIC
-        )
+        store, ids = store_with_data
+        result = store.get_artifact(ids[0], artifact_type=ArtifactTypes.METRIC)
 
         assert result is not None
-        assert result.artifact_id == "a" * 32
+        assert result.artifact_id == ids[0]
         assert result.content == b'{"score": 0.5}'
 
     def test_get_artifact_by_id_without_type(self, store_with_data):
         """Get artifact using index lookup."""
-        result = store_with_data.get_artifact("a" * 32)
+        store, ids = store_with_data
+        result = store.get_artifact(ids[0])
 
         assert result is not None
-        assert result.artifact_id == "a" * 32
+        assert result.artifact_id == ids[0]
 
     def test_get_artifact_not_found(self, store_with_data):
         """Get nonexistent artifact returns None."""
-        result = store_with_data.get_artifact("x" * 32)
+        store, _ids = store_with_data
+        result = store.get_artifact("x" * 32)
         assert result is None
 
     def test_artifact_exists(self, store_with_data):
         """artifact_exists returns correct boolean."""
-        assert store_with_data.artifact_exists("a" * 32) is True
-        assert store_with_data.artifact_exists("x" * 32) is False
+        store, ids = store_with_data
+        assert store.artifact_exists(ids[0]) is True
+        assert store.artifact_exists("x" * 32) is False
 
 
 class TestBulkLoadMethods:
@@ -169,9 +298,7 @@ class TestBulkLoadMethods:
             "origin_step_number": [0, 1, 2, 1],
             "metadata": ["{}", "{}", "{}", "{}"],
         }
-        pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
+        index = pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA)
 
         # Create artifact_edges: A -> B -> C, A -> D
         prov_data = {
@@ -185,8 +312,16 @@ class TestBulkLoadMethods:
             "group_id": [None, None, None],
             "step_boundary": [True, True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: index,
+                TablePath.ARTIFACT_EDGES.value: pl.DataFrame(prov_data).cast(
+                    ARTIFACT_EDGES_SCHEMA
+                ),
+            },
         )
 
         return store
@@ -257,53 +392,53 @@ class TestGetArtifactsByType:
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
 
-        metrics_data = {
-            "artifact_id": ["m1" + "a" * 30, "m2" + "b" * 30, "m3" + "c" * 30],
-            "origin_step_number": [1, 1, 2],
-            "content": [
-                b'{"score": 0.95}',
-                b'{"score": 0.85}',
-                b'{"score": 0.70}',
-            ],
-            "original_name": ["metric_1", "metric_2", "metric_3"],
-            "extension": [".json", ".json", ".json"],
-            "metadata": ["{}", "{}", "{}"],
-            "external_path": [None, None, None],
-        }
-        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(
-            f"{root}/artifacts/metrics", storage_options=opts
+        artifacts = [
+            _metric({"score": 0.95}, "metric_1", 1),
+            _metric({"score": 0.85}, "metric_2", 1),
+            _metric({"score": 0.70}, "metric_3", 2),
+        ]
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                "artifacts/metrics": pl.DataFrame(
+                    [artifact.to_row() for artifact in artifacts],
+                    schema=METRICS_SCHEMA,
+                )
+            },
         )
 
-        return store
+        return store, [artifact.artifact_id for artifact in artifacts]
 
     def test_bulk_load_all_found(self, store_with_metrics):
         """All requested IDs are found and returned."""
-        ids = ["m1" + "a" * 30, "m2" + "b" * 30]
-        result = store_with_metrics.get_artifacts_by_type(ids, ArtifactTypes.METRIC)
+        store, ids = store_with_metrics
+        result = store.get_artifacts_by_type(ids[:2], ArtifactTypes.METRIC)
 
         assert len(result) == 2
-        assert result["m1" + "a" * 30].values == {"score": 0.95}
-        assert result["m2" + "b" * 30].values == {"score": 0.85}
+        assert result[ids[0]].values == {"score": 0.95}
+        assert result[ids[1]].values == {"score": 0.85}
 
     def test_bulk_load_missing_ids_omitted(self, store_with_metrics):
         """Missing IDs are silently omitted from the result."""
-        ids = ["m1" + "a" * 30, "z" * 32]
-        result = store_with_metrics.get_artifacts_by_type(ids, ArtifactTypes.METRIC)
+        store, ids = store_with_metrics
+        result = store.get_artifacts_by_type([ids[0], "z" * 32], ArtifactTypes.METRIC)
 
         assert len(result) == 1
-        assert "m1" + "a" * 30 in result
+        assert ids[0] in result
         assert "z" * 32 not in result
 
     def test_bulk_load_empty_list(self, store_with_metrics):
         """Empty ID list returns empty dict without scanning."""
-        result = store_with_metrics.get_artifacts_by_type([], ArtifactTypes.METRIC)
+        store, _ids = store_with_metrics
+        result = store.get_artifacts_by_type([], ArtifactTypes.METRIC)
         assert result == {}
 
     def test_bulk_load_all_missing(self, store_with_metrics):
         """All IDs missing returns empty dict."""
-        result = store_with_metrics.get_artifacts_by_type(
-            ["x" * 32, "y" * 32], ArtifactTypes.METRIC
-        )
+        store, _ids = store_with_metrics
+        result = store.get_artifacts_by_type(["x" * 32, "y" * 32], ArtifactTypes.METRIC)
         assert result == {}
 
     def test_bulk_load_no_table(self, backend_fs):
@@ -321,22 +456,24 @@ class TestGetArtifactsByType:
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
 
-        configs_data = {
-            "artifact_id": ["c1" + "a" * 30],
-            "origin_step_number": [1],
-            "content": [b'{"key": "val"}'],
-            "original_name": ["config_1"],
-            "extension": [".json"],
-            "metadata": ["{}"],
-            "external_path": [None],
-        }
-        pl.DataFrame(configs_data, schema=CONFIGS_SCHEMA).write_delta(
-            f"{root}/artifacts/configs", storage_options=opts
+        artifact = _config({"key": "val"}, "config_1")
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                "artifacts/configs": pl.DataFrame(
+                    [artifact.to_row()], schema=CONFIGS_SCHEMA
+                )
+            },
         )
 
-        result = store.get_artifacts_by_type(["c1" + "a" * 30], ArtifactTypes.CONFIG)
+        assert artifact.artifact_id is not None
+        result = store.get_artifacts_by_type(
+            [artifact.artifact_id], ArtifactTypes.CONFIG
+        )
         assert len(result) == 1
-        assert result["c1" + "a" * 30].content == b'{"key": "val"}'
+        assert result[artifact.artifact_id].content == b'{"key": "val"}'
 
 
 class TestLoadOriginalNames:
@@ -358,9 +495,7 @@ class TestLoadOriginalNames:
             "origin_step_number": [1, 1, 2, 2],
             "metadata": ["{}"] * 4,
         }
-        pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
+        index = pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA)
 
         metrics_data = {
             "artifact_id": metric_ids,
@@ -369,11 +504,8 @@ class TestLoadOriginalNames:
             "original_name": ["sample_001.json", "sample_002.json"],
             "extension": [".json", ".json"],
             "metadata": ["{}", "{}"],
-            "external_path": [None, None],
         }
-        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(
-            f"{root}/artifacts/metrics", storage_options=opts
-        )
+        metrics = pl.DataFrame(metrics_data, schema=METRICS_SCHEMA)
 
         configs_data = {
             "artifact_id": config_ids,
@@ -382,10 +514,16 @@ class TestLoadOriginalNames:
             "original_name": ["sample_001.cfg", "sample_002.cfg"],
             "extension": [".cfg", ".cfg"],
             "metadata": ["{}", "{}"],
-            "external_path": [None, None],
         }
-        pl.DataFrame(configs_data, schema=CONFIGS_SCHEMA).write_delta(
-            f"{root}/artifacts/configs", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: index,
+                "artifacts/metrics": metrics,
+                "artifacts/configs": pl.DataFrame(configs_data, schema=CONFIGS_SCHEMA),
+            },
         )
 
         return store, metric_ids, config_ids
@@ -445,9 +583,7 @@ class TestLoadOriginalNames:
             "origin_step_number": [1, 1],
             "metadata": ["{}", "{}"],
         }
-        pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
+        index = pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA)
 
         metrics_data = {
             "artifact_id": ids,
@@ -456,10 +592,15 @@ class TestLoadOriginalNames:
             "original_name": ["named.json", None],
             "extension": [".json", ".json"],
             "metadata": ["{}", "{}"],
-            "external_path": [None, None],
         }
-        pl.DataFrame(metrics_data, schema=METRICS_SCHEMA).write_delta(
-            f"{root}/artifacts/metrics", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: index,
+                "artifacts/metrics": pl.DataFrame(metrics_data, schema=METRICS_SCHEMA),
+            },
         )
 
         result = store.load_original_names(ids)
@@ -487,9 +628,7 @@ class TestArtifactStoreProvenanceQueries:
             "origin_step_number": [0, 1, 2],
             "metadata": ["{}", "{}", "{}"],
         }
-        pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
-        )
+        index = pl.DataFrame(index_data).cast(ARTIFACT_INDEX_SCHEMA)
 
         # Create artifact_edges: A -> B -> C
         prov_data = {
@@ -503,8 +642,16 @@ class TestArtifactStoreProvenanceQueries:
             "group_id": [None, None],
             "step_boundary": [True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: index,
+                TablePath.ARTIFACT_EDGES.value: pl.DataFrame(prov_data).cast(
+                    ARTIFACT_EDGES_SCHEMA
+                ),
+            },
         )
 
         return store
@@ -573,46 +720,39 @@ class TestMetricOriginalNamePersistence:
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
 
-        # Create metrics table with test data
-        metrics_data = {
-            "artifact_id": ["m1" + "a" * 30, "m2" + "b" * 30],
-            "origin_step_number": [1, 1],
-            "content": [b'{"score": 0.95}', b'{"score": 0.85}'],
-            "original_name": ["sample_001_metrics", "sample_002_metrics"],
-            "extension": [".json", ".json"],
-            "metadata": ["{}", "{}"],
-            "external_path": [None, None],
-        }
-        df = pl.DataFrame(metrics_data, schema=METRICS_SCHEMA)
-        df.write_delta(f"{root}/artifacts/metrics", storage_options=opts)
-
-        # Create artifact_index for lookups
-        index_data = {
-            "artifact_id": ["m1" + "a" * 30, "m2" + "b" * 30],
-            "artifact_type": ["metric", "metric"],
-            "origin_step_number": [1, 1],
-            "metadata": ["{}", "{}"],
-        }
-        pl.DataFrame(index_data, schema=ARTIFACT_INDEX_SCHEMA).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
+        artifacts = [
+            _metric({"score": 0.95}, "sample_001_metrics"),
+            _metric({"score": 0.85}, "sample_002_metrics"),
+        ]
+        df = pl.DataFrame(
+            [artifact.to_row() for artifact in artifacts], schema=METRICS_SCHEMA
+        )
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                "artifacts/metrics": df,
+                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                    _index_rows(artifacts), schema=ARTIFACT_INDEX_SCHEMA
+                ),
+            },
         )
 
-        return store
+        return store, [artifact.artifact_id for artifact in artifacts]
 
     def test_metric_original_name_round_trip(self, store_with_metrics):
         """Metric with original_name preserves it after storage round-trip."""
-        result = store_with_metrics.get_artifact(
-            "m1" + "a" * 30, artifact_type=ArtifactTypes.METRIC
-        )
+        store, ids = store_with_metrics
+        result = store.get_artifact(ids[0], artifact_type=ArtifactTypes.METRIC)
 
         assert result is not None
         assert result.original_name == "sample_001_metrics"  # Stem only
 
     def test_metric_second_original_name_round_trip(self, store_with_metrics):
         """Second metric preserves original_name after storage round-trip."""
-        result = store_with_metrics.get_artifact(
-            "m2" + "b" * 30, artifact_type=ArtifactTypes.METRIC
-        )
+        store, ids = store_with_metrics
+        result = store.get_artifact(ids[1], artifact_type=ArtifactTypes.METRIC)
 
         assert result is not None
         assert result.original_name == "sample_002_metrics"
@@ -624,58 +764,46 @@ class TestExecutionConfigArtifactRoundTrip:
     @pytest.fixture
     def store_with_configs(self, backend_fs):
         """Create store with configs table."""
-        import json
-
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
 
-        # Create artifact_index
-        index_data = {
-            "artifact_id": ["c" * 32],
-            "artifact_type": ["config"],
-            "origin_step_number": [1],
-            "metadata": ["{}"],
-        }
-        pl.DataFrame(index_data).write_delta(
-            f"{root}/artifacts/index", storage_options=opts
+        artifact = _config(
+            {"contig": "40-150,A8-10", "length": "175-275"},
+            "5w3x_motif_0_config",
+        )
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                    _index_rows([artifact]), schema=ARTIFACT_INDEX_SCHEMA
+                ),
+                "artifacts/configs": pl.DataFrame(
+                    [artifact.to_row()], schema=CONFIGS_SCHEMA
+                ),
+            },
         )
 
-        # Create configs table
-        config_content = json.dumps(
-            {"contig": "40-150,A8-10", "length": "175-275"}, sort_keys=True
-        ).encode("utf-8")
-        config_data = {
-            "artifact_id": ["c" * 32],
-            "origin_step_number": [1],
-            "content": [config_content],
-            "original_name": ["5w3x_motif_0_config"],  # Stem only
-            "extension": [".json"],
-            "metadata": ["{}"],
-            "external_path": [None],
-        }
-        pl.DataFrame(config_data, schema=CONFIGS_SCHEMA).write_delta(
-            f"{root}/artifacts/configs", storage_options=opts
-        )
-
-        return store
+        return store, artifact.artifact_id
 
     def test_get_artifact_by_id_with_type(self, store_with_configs):
         """Can retrieve ExecutionConfigArtifact by ID with type hint."""
-        artifact = store_with_configs.get_artifact(
-            "c" * 32, artifact_type=ArtifactTypes.CONFIG
-        )
+        store, artifact_id = store_with_configs
+        artifact = store.get_artifact(artifact_id, artifact_type=ArtifactTypes.CONFIG)
 
         assert artifact is not None
         assert isinstance(artifact, ExecutionConfigArtifact)
-        assert artifact.artifact_id == "c" * 32
+        assert artifact.artifact_id == artifact_id
         assert artifact.original_name == "5w3x_motif_0_config"  # Stem only
         assert artifact.values["contig"] == "40-150,A8-10"
         assert artifact.values["length"] == "175-275"
 
     def test_get_artifact_by_id_without_type(self, store_with_configs):
         """Can retrieve ExecutionConfigArtifact by ID using artifact_index."""
-        artifact = store_with_configs.get_artifact("c" * 32)
+        store, artifact_id = store_with_configs
+        artifact = store.get_artifact(artifact_id)
 
         assert artifact is not None
         assert isinstance(artifact, ExecutionConfigArtifact)
@@ -683,21 +811,21 @@ class TestExecutionConfigArtifactRoundTrip:
 
     def test_id_only_mode(self, store_with_configs):
         """Can retrieve ID-only ExecutionConfigArtifact."""
-        artifact = store_with_configs.get_artifact(
-            "c" * 32, artifact_type=ArtifactTypes.CONFIG, hydrate=False
+        store, artifact_id = store_with_configs
+        artifact = store.get_artifact(
+            artifact_id, artifact_type=ArtifactTypes.CONFIG, hydrate=False
         )
 
         assert artifact is not None
         assert isinstance(artifact, ExecutionConfigArtifact)
-        assert artifact.artifact_id == "c" * 32
+        assert artifact.artifact_id == artifact_id
         assert artifact.content is None
         assert not artifact.is_hydrated
 
     def test_original_name_persisted(self, store_with_configs):
         """original_name survives round-trip storage."""
-        artifact = store_with_configs.get_artifact(
-            "c" * 32, artifact_type=ArtifactTypes.CONFIG
-        )
+        store, artifact_id = store_with_configs
+        artifact = store.get_artifact(artifact_id, artifact_type=ArtifactTypes.CONFIG)
 
         assert artifact.original_name == "5w3x_motif_0_config"  # Stem only
 
@@ -727,8 +855,15 @@ class TestGetDescendantArtifactIds:
             "group_id": [None, None, None],
             "step_boundary": [True, True, True],
         }
-        pl.DataFrame(prov_data).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: pl.DataFrame(prov_data).cast(
+                    ARTIFACT_EDGES_SCHEMA
+                )
+            },
         )
 
         return store
@@ -787,7 +922,7 @@ class TestLoadArtifactTypeMap:
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        pl.DataFrame(
+        index = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
                 "artifact_type": [
@@ -800,7 +935,13 @@ class TestLoadArtifactTypeMap:
                 "metadata": ["{}", "{}", "{}", "{}"],
             },
             schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(f"{root}/artifacts/index", storage_options=opts)
+        )
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {TablePath.ARTIFACT_INDEX.value: index},
+        )
         return store
 
     def test_load_all(self, store_with_index):
@@ -841,7 +982,7 @@ class TestLoadArtifactIdsByType:
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        pl.DataFrame(
+        index = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
                 "artifact_type": ["data", "data", "metric", "metric"],
@@ -849,7 +990,13 @@ class TestLoadArtifactIdsByType:
                 "metadata": ["{}", "{}", "{}", "{}"],
             },
             schema=ARTIFACT_INDEX_SCHEMA,
-        ).write_delta(f"{root}/artifacts/index", storage_options=opts)
+        )
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {TablePath.ARTIFACT_INDEX.value: index},
+        )
         return store
 
     def test_filter_by_type(self, store_with_index):
@@ -899,7 +1046,7 @@ class TestLoadForwardProvenanceMap:
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        pl.DataFrame(
+        edges = pl.DataFrame(
             {
                 "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
                 "source_artifact_id": ["a" * 32, "b" * 32, "a" * 32],
@@ -911,8 +1058,12 @@ class TestLoadForwardProvenanceMap:
                 "group_id": [None, None, None],
                 "step_boundary": [True, True, True],
             },
-        ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
+        ).cast(ARTIFACT_EDGES_SCHEMA)
+        _commit_tables(
+            root,
+            fs,
+            opts,
+            {TablePath.ARTIFACT_EDGES.value: edges},
         )
         return store
 
@@ -942,33 +1093,59 @@ class TestLoadStepNameMap:
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
         ts = datetime(2025, 1, 1, tzinfo=UTC)
-        pl.DataFrame(
-            {
-                "step_run_id": ["r0" + "0" * 30, "r1" + "0" * 30],
-                "step_spec_id": ["s0" + "0" * 30, "s1" + "0" * 30],
-                "pipeline_run_id": ["p" * 32, "p" * 32],
-                "step_number": [0, 1],
-                "step_name": ["ingest", "tool_c"],
-                "status": ["completed", "completed"],
-                "operation_class": ["Ingest", "ToolC"],
-                "params_json": ["{}", "{}"],
-                "input_refs_json": ["{}", "{}"],
-                "compute_backend": ["local", "local"],
-                "compute_options_json": ["{}", "{}"],
-                "output_roles_json": ["{}", "{}"],
-                "output_types_json": ["{}", "{}"],
-                "total_count": [1, 1],
-                "succeeded_count": [1, 1],
-                "failed_count": [0, 0],
-                "timestamp": [ts, ts],
-                "duration_seconds": [1.0, 1.0],
-                "error": [None, None],
-                "dispatch_error": [None, None],
-                "commit_error": [None, None],
-                "metadata": ["{}", "{}"],
-            },
-            schema=STEPS_SCHEMA,
-        ).write_delta(f"{root}/orchestration/steps", storage_options=opts)
+        rows = []
+        for number, name, operation in (
+            (0, "ingest", "Ingest"),
+            (1, "tool_c", "ToolC"),
+        ):
+            base = {
+                "step_run_id": f"r{number}" + "0" * 30,
+                "step_spec_id": None,
+                "pipeline_run_id": "p" * 32,
+                "step_number": number,
+                "step_name": name,
+                "status": "pending",
+                "state_sequence": 0,
+                "disposition": None,
+                "cancellation_status": None,
+                "logical_commit_id": None,
+                "operation_class": operation,
+                "params_json": "{}",
+                "input_refs_json": "{}",
+                "compute_backend": "local",
+                "compute_options_json": "{}",
+                "output_roles_json": "[]",
+                "output_types_json": "{}",
+                "total_count": None,
+                "succeeded_count": None,
+                "failed_count": None,
+                "timestamp": ts,
+                "duration_seconds": None,
+                "error": None,
+                "metadata": None,
+            }
+            running = {**base, "status": "running", "state_sequence": 1}
+            succeeded = {
+                **running,
+                "step_spec_id": f"s{number}" + "0" * 30,
+                "status": "succeeded",
+                "state_sequence": 2,
+                "disposition": "executed",
+                "total_count": 1,
+                "succeeded_count": 1,
+                "failed_count": 0,
+                "duration_seconds": 1.0,
+            }
+            rows.extend([base, running, succeeded])
+        for offset in range(0, len(rows), 3):
+            commit_test_step(
+                root,
+                f"{root}/_test_staging",
+                rows[offset : offset + 3],
+                {},
+                fs=fs,
+                storage_options=opts,
+            )
         return store
 
     def test_loads_step_names(self, store_with_steps):
@@ -985,32 +1162,13 @@ class TestLoadStepNameMap:
         )
         assert store.provenance.load_step_name_map() == {}
 
-    def test_fallback_to_executions(self, backend_fs):
-        """Falls back to executions when steps table is missing."""
+    def test_executions_do_not_override_authoritative_empty_steps(self, backend_fs):
+        """Execution rows cannot invent lifecycle-owned step names."""
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
-        ts = datetime(2025, 1, 1, tzinfo=UTC)
-        executions_df(
-            execution_run_id=["e" * 32],
-            execution_spec_id=["s" * 32],
-            step_run_id=[None],
-            origin_step_number=[0],
-            operation_name=["ingest_fallback"],
-            params=["{}"],
-            user_overrides=["{}"],
-            timestamp_start=[ts],
-            timestamp_end=[ts],
-            source_worker=[0],
-            compute_backend=["local"],
-            success=[True],
-            error=[None],
-            tool_output=[None],
-            worker_log=[None],
-            metadata=["{}"],
-        ).write_delta(f"{root}/orchestration/executions", storage_options=opts)
         result = store.provenance.load_step_name_map()
-        assert result[0] == "ingest_fallback"
+        assert result == {}
 
 
 class TestGetAssociated:
@@ -1023,26 +1181,30 @@ class TestGetAssociated:
         Graph: S1 -> M1 (metric), S1 -> M2 (metric), S2 -> M3 (metric)
         S1 and S2 are source configs, M1/M2/M3 are derived metrics.
         """
-        import json
-
         fs, storage, root = backend_fs
         opts = storage.delta_storage_options()
         store = ArtifactStore(root, fs=fs, storage_options=opts)
+        sources = [
+            _config({"source": 1}, "source_1").artifact_id,
+            _config({"source": 2}, "source_2").artifact_id,
+        ]
+        artifacts = [
+            _metric({"component": "A/CMP/1"}, "s1_metric_1", 1),
+            _metric({"site": "A/SER/30"}, "s1_metric_2", 1),
+            _metric({"pocket": "B/1-10"}, "s2_metric_1", 2),
+        ]
+        target_ids = [artifact.artifact_id for artifact in artifacts]
 
         # Create provenance edges: S1 -> M1, S1 -> M2, S2 -> M3
-        pl.DataFrame(
+        edges = pl.DataFrame(
             {
                 "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
                 "source_artifact_id": [
-                    "s1" + "a" * 30,
-                    "s1" + "a" * 30,
-                    "s2" + "b" * 30,
+                    sources[0],
+                    sources[0],
+                    sources[1],
                 ],
-                "target_artifact_id": [
-                    "m1" + "c" * 30,
-                    "m2" + "d" * 30,
-                    "m3" + "e" * 30,
-                ],
+                "target_artifact_id": target_ids,
                 "source_artifact_type": ["config", "config", "config"],
                 "target_artifact_type": [
                     "metric",
@@ -1054,38 +1216,31 @@ class TestGetAssociated:
                 "group_id": [None, None, None],
                 "step_boundary": [True, True, True],
             },
-        ).cast(ARTIFACT_EDGES_SCHEMA).write_delta(
-            f"{root}/provenance/artifact_edges", storage_options=opts
-        )
+        ).cast(ARTIFACT_EDGES_SCHEMA)
 
         # Create metrics table
-        pl.DataFrame(
+        _commit_tables(
+            root,
+            fs,
+            opts,
             {
-                "artifact_id": ["m1" + "c" * 30, "m2" + "d" * 30, "m3" + "e" * 30],
-                "origin_step_number": [1, 1, 2],
-                "content": [
-                    json.dumps({"component": "A/CMP/1"}).encode(),
-                    json.dumps({"site": "A/SER/30"}).encode(),
-                    json.dumps({"pocket": "B/1-10"}).encode(),
-                ],
-                "original_name": ["s1_metric_1", "s1_metric_2", "s2_metric_1"],
-                "extension": [".json", ".json", ".json"],
-                "metadata": ["{}", "{}", "{}"],
-                "external_path": [None, None, None],
+                TablePath.ARTIFACT_EDGES.value: edges,
+                "artifacts/metrics": pl.DataFrame(
+                    [artifact.to_row() for artifact in artifacts],
+                    schema=METRICS_SCHEMA,
+                ),
             },
-            schema=METRICS_SCHEMA,
-        ).write_delta(f"{root}/artifacts/metrics", storage_options=opts)
+        )
 
-        return store
+        return store, sources
 
     def test_returns_matching_descendants(self, store_with_associated_metrics):
         """Returns metrics associated with a config via provenance."""
-        result = store_with_associated_metrics.get_associated(
-            {"s1" + "a" * 30}, "metric"
-        )
+        store, sources = store_with_associated_metrics
+        result = store.get_associated({sources[0]}, "metric")
 
-        assert "s1" + "a" * 30 in result
-        metrics = result["s1" + "a" * 30]
+        assert sources[0] in result
+        metrics = result[sources[0]]
         assert len(metrics) == 2
         val_sets = {frozenset(m.values.items()) for m in metrics}
         assert frozenset({("component", "A/CMP/1")}) in val_sets
@@ -1093,29 +1248,29 @@ class TestGetAssociated:
 
     def test_multiple_sources(self, store_with_associated_metrics):
         """Returns metrics for multiple configs at once."""
-        result = store_with_associated_metrics.get_associated(
-            {"s1" + "a" * 30, "s2" + "b" * 30}, "metric"
-        )
+        store, sources = store_with_associated_metrics
+        result = store.get_associated(set(sources), "metric")
 
         assert len(result) == 2
-        assert len(result["s1" + "a" * 30]) == 2
-        assert len(result["s2" + "b" * 30]) == 1
+        assert len(result[sources[0]]) == 2
+        assert len(result[sources[1]]) == 1
 
     def test_empty_when_no_edges(self, store_with_associated_metrics):
         """Returns empty dict when no provenance edges exist for the source."""
-        result = store_with_associated_metrics.get_associated({"z" * 32}, "metric")
+        store, _sources = store_with_associated_metrics
+        result = store.get_associated({"z" * 32}, "metric")
         assert result == {}
 
     def test_filters_by_type(self, store_with_associated_metrics):
         """Only returns descendants of the requested type."""
-        result = store_with_associated_metrics.get_associated(
-            {"s1" + "a" * 30}, "config"
-        )
+        store, sources = store_with_associated_metrics
+        result = store.get_associated({sources[0]}, "config")
         assert result == {}
 
     def test_empty_input(self, store_with_associated_metrics):
         """Empty input returns empty dict."""
-        result = store_with_associated_metrics.get_associated(set(), "metric")
+        store, _sources = store_with_associated_metrics
+        result = store.get_associated(set(), "metric")
         assert result == {}
 
     def test_missing_provenance_table(self, backend_fs):
@@ -1140,11 +1295,17 @@ class TestArtifactStoreBackendParametrized:
         """Seed artifact_index via DeltaCommitter, then query via ArtifactStore."""
         from artisan.schemas.enums import TablePath
         from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.commit_plan import build_commit_plan
         from artisan.storage.io.staging import StagingManager
 
         fs, storage, root = backend_fs
         delta_root = f"{root}/delta"
         staging_root = f"{root}/staging"
+        publish_test_store(
+            delta_root,
+            fs,
+            storage.delta_storage_options(),
+        )
 
         sm = StagingManager(staging_root, fs)
         committer = DeltaCommitter(
@@ -1163,8 +1324,25 @@ class TestArtifactStoreBackendParametrized:
             },
             schema=ARTIFACT_INDEX_SCHEMA,
         )
-        rows = committer.commit_dataframe(index_df, TablePath.ARTIFACT_INDEX.value)
-        assert rows == 1
+        step_run_id = "a" * 32
+        sm.stage_orchestrator_dataframe(
+            index_df,
+            TablePath.ARTIFACT_INDEX.value,
+            commit_kind="input_registration",
+            step_run_id=step_run_id,
+            step_number=0,
+            operation_name="test_input_registration",
+        )
+        plan = build_commit_plan(
+            delta_root=delta_root,
+            staging_root=staging_root,
+            fs=fs,
+            commit_kind="input_registration",
+            step_run_id=step_run_id,
+            step_number=0,
+            operation_name="test_input_registration",
+        )
+        assert committer.commit_logical(plan) == {"index": 1}
 
         # Verify the seeded table is readable via pl.read_delta directly.
         table_uri = f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}"

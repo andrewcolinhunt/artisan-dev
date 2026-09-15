@@ -6,7 +6,7 @@ is active at runtime.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from artisan.schemas.operation_config.environment_spec import (
     ApptainerEnvironmentSpec,
@@ -30,6 +30,8 @@ class Environments(BaseModel):
         apptainer: Apptainer execution config, or None if not configured.
         pixi: Pixi execution config, or None if not configured.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     active: str = "local"
     local: LocalEnvironmentSpec = Field(default_factory=LocalEnvironmentSpec)

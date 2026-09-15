@@ -11,7 +11,7 @@ import os
 import shutil
 import socket
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def _find_free_port() -> int:
@@ -28,6 +28,8 @@ class EnvironmentSpec(BaseModel):
     Attributes:
         env: Extra environment variables merged into the subprocess env.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     env: dict[str, str] = Field(default_factory=dict)
 

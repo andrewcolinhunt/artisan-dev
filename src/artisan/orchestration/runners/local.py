@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import multiprocessing
 import threading
+import time
 import warnings
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from contextlib import suppress
 from typing import Any
 
+from artisan.execution.compute.routing import routes_to_endpoint
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.orchestration.engine.batching import pack_units
 from artisan.orchestration.engine.dispatch import (
@@ -26,8 +29,14 @@ from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
 from artisan.utils.process_call import execute_process_call, serialize_process_call
 from artisan.utils.spawn import ignore_sigint, suppress_main_reimport
+
+_COOPERATIVE_CANCEL_SECONDS = 1.0
 
 
 class LocalLifecycleRouter(LifecycleRouter):
@@ -47,6 +56,9 @@ class LocalLifecycleRouter(LifecycleRouter):
         self._futures: list[Future[list[UnitResult]]] = []
         self._dispatch_started = False
         self._cancel_requested = False
+        self._cancel_requested_at: float | None = None
+        self._cancel_acknowledgement: CancellationAcknowledgement | None = None
+        self._requires_remote_cancellation_evidence = False
 
     def _dispatch(
         self,
@@ -57,6 +69,9 @@ class LocalLifecycleRouter(LifecycleRouter):
         batches = pack_units(units, self._units_per_worker)
         with self._lock:
             self._dispatch_started = True
+            self._requires_remote_cancellation_evidence = any(
+                routes_to_endpoint(unit.operation) for unit in units
+            )
         self._start_background(lambda: self._run_batches(batches, runtime_env))
 
     def _run_batches(
@@ -128,40 +143,135 @@ class LocalLifecycleRouter(LifecycleRouter):
                 self._futures.append(future)
             return list(self._futures)
 
-    def cancel(self) -> None:
-        """Cancel pending work and terminate this router's worker processes."""
+    def cancel(self) -> CancellationAcknowledgement:
+        """Cancel owned work and confirm only after worker exit is proved."""
         with self._lock:
-            if not self._dispatch_started or self._cancel_requested or self.is_done():
-                return
-            self._cancel_requested = True
+            if self._cancel_acknowledgement is not None:
+                return self._cancel_acknowledgement
+            if not self._dispatch_started:
+                return CancellationAcknowledgement(
+                    CancellationStatus.REJECTED,
+                    "Local work has not been dispatched",
+                )
+            if self.is_done():
+                acknowledgement = self._completed_cancellation_evidence()
+                self._cancel_acknowledgement = acknowledgement
+                return acknowledgement
+            if not self._cancel_requested:
+                self._cancel_requested = True
+                self._cancel_requested_at = time.monotonic()
+                futures = list(self._futures)
+                for future in futures:
+                    future.cancel()
+                return CancellationAcknowledgement(
+                    CancellationStatus.REQUESTED,
+                    "Waiting for cooperative worker cancellation",
+                )
+            assert self._cancel_requested_at is not None
+            if (
+                time.monotonic() - self._cancel_requested_at
+                < _COOPERATIVE_CANCEL_SECONDS
+            ):
+                return CancellationAcknowledgement(
+                    CancellationStatus.REQUESTED,
+                    "Waiting for cooperative worker cancellation",
+                )
             futures = list(self._futures)
             executor = self._executor
         for future in futures:
             future.cancel()
-        if executor is not None:
-            _terminate_process_pool(executor)
+        confirmed = executor is None or _terminate_process_pool(executor)
+        if confirmed and not self._requires_remote_cancellation_evidence:
+            acknowledgement = CancellationAcknowledgement(
+                CancellationStatus.CONFIRMED,
+                "Local worker processes exited",
+            )
+        else:
+            acknowledgement = CancellationAcknowledgement(
+                CancellationStatus.UNKNOWN,
+                (
+                    "Local worker processes exited without remote cancellation evidence"
+                    if confirmed
+                    else "Could not prove local worker process exit"
+                ),
+            )
+        with self._lock:
+            self._cancel_acknowledgement = acknowledgement
+        return acknowledgement
+
+    def _completed_cancellation_evidence(self) -> CancellationAcknowledgement:
+        """Resolve a completion race without discarding nested endpoint proof."""
+        if (
+            not self._cancel_requested
+            or not self._requires_remote_cancellation_evidence
+        ):
+            return CancellationAcknowledgement(
+                CancellationStatus.REJECTED,
+                "Local work completed before cancellation",
+            )
+        if self._error is not None or self._results is None:
+            return CancellationAcknowledgement(
+                CancellationStatus.UNKNOWN,
+                "Remote work completed without cancellation evidence",
+            )
+        outcomes = [
+            result.cancellation_acknowledgement
+            for result in self._results
+            if result.cancellation_acknowledgement is not None
+        ]
+        for status in (
+            CancellationStatus.UNKNOWN,
+            CancellationStatus.REQUESTED,
+            CancellationStatus.REJECTED,
+            CancellationStatus.CONFIRMED,
+        ):
+            matching = [outcome for outcome in outcomes if outcome.status == status]
+            if matching:
+                outcome = matching[0]
+                if status == CancellationStatus.REQUESTED:
+                    return CancellationAcknowledgement(
+                        CancellationStatus.UNKNOWN,
+                        outcome.message or "Remote cancellation remained unconfirmed",
+                    )
+                return outcome
+        if all(result.success for result in self._results):
+            return CancellationAcknowledgement(
+                CancellationStatus.REJECTED,
+                "Remote work completed before cancellation",
+            )
+        return CancellationAcknowledgement(
+            CancellationStatus.UNKNOWN,
+            "Remote work failed without cancellation evidence",
+        )
 
 
-def _terminate_process_pool(executor: ProcessPoolExecutor) -> None:
-    """Terminate workers owned by one process pool without affecting others."""
+def _terminate_process_pool(executor: ProcessPoolExecutor) -> bool:
+    """Terminate owned workers and report whether every process exited."""
+    processes_by_pid = getattr(executor, "_processes", None)
+    processes = () if processes_by_pid is None else tuple(processes_by_pid.values())
     terminate_workers = getattr(type(executor), "terminate_workers", None)
     if callable(terminate_workers):
         terminate_workers(executor)
-        return
+    else:
+        # Python 3.12 has no public termination API. These are the exact processes
+        # owned by this executor; shutdown alone cannot stop an in-flight call.
+        try:
+            for process in processes:
+                try:
+                    if process.is_alive():
+                        process.terminate()
+                except (ProcessLookupError, ValueError):
+                    pass
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
-    # Python 3.12 has no public termination API. These are the exact processes
-    # owned by this executor; shutdown alone cannot stop an in-flight call.
-    processes_by_pid = getattr(executor, "_processes", None)
-    processes = () if processes_by_pid is None else tuple(processes_by_pid.values())
+    for process in processes:
+        with suppress(AssertionError, ProcessLookupError, ValueError):
+            process.join(timeout=1.0)
     try:
-        for process in processes:
-            try:
-                if process.is_alive():
-                    process.terminate()
-            except (ProcessLookupError, ValueError):
-                pass
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        return all(not process.is_alive() for process in processes)
+    except (AssertionError, ProcessLookupError, ValueError):
+        return False
 
 
 def _collect_batch_futures(

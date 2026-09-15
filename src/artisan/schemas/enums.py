@@ -25,8 +25,8 @@ class FailurePolicy(Enum):
 
     - CONTINUE: Log failures and continue processing remaining items.
       Commit successful items and report failures in StepResult.
-    - FAIL_FAST: Stop immediately on first failure.
-      Raise exception, no commit performed.
+    - FAIL_FAST: Stop after the first observed failure. Persist the failed
+      attempt and any already-finished sibling work before returning failure.
     """
 
     CONTINUE = "continue"
@@ -34,12 +34,11 @@ class FailurePolicy(Enum):
 
 
 class CachePolicy(Enum):
-    """Policy controlling when a completed step qualifies as a cache hit.
+    """Policy controlling which usable terminal step can be a cache hit.
 
-    - ALL_SUCCEEDED: Cache hit only when step had zero execution failures.
-      Infrastructure errors (dispatch/commit) always block caching.
-    - STEP_COMPLETED: Cache hit for any completed step, regardless of
-      execution failure count. Infrastructure errors still block caching.
+    - ALL_SUCCEEDED: Cache hit only for ``succeeded`` attempts.
+    - STEP_COMPLETED: Cache hit for ``succeeded`` or ``partial`` attempts.
+      Failed, cancelled, and skipped attempts never qualify.
     """
 
     ALL_SUCCEEDED = "all_succeeded"
@@ -70,6 +69,7 @@ class TablePath(str, Enum):
     """
 
     ARTIFACT_INDEX = "artifacts/index"
+    ARTIFACT_LOCATIONS = "artifacts/locations"
 
     # Provenance tables
     ARTIFACT_EDGES = "provenance/artifact_edges"
@@ -77,6 +77,8 @@ class TablePath(str, Enum):
 
     # Orchestration tables
     EXECUTIONS = "orchestration/executions"
+    CACHE_REUSE = "orchestration/cache_reuse"
+    LOGICAL_COMMITS = "orchestration/logical_commits"
     STEPS = "orchestration/steps"
 
     @property

@@ -12,16 +12,33 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import polars as pl
+import pytest
 from fixtures.execution_records import executions_df
+from fixtures.store_format import commit_test_tables, publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.orchestration.engine.inputs import (
     resolve_output_reference,
 )
+from artisan.orchestration.engine.step_tracker import StepTracker
+from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
+from artisan.schemas.orchestration.step_result import StepResult
+from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.table_schemas import (
+    ARTIFACT_INDEX_SCHEMA,
+    CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
 )
+from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.commit_plan import build_commit_plan
+from artisan.storage.io.staging import StagingManager
+
+
+@pytest.fixture(autouse=True)
+def _supported_store(tmp_path):
+    publish_test_store(str(tmp_path), LocalFileSystem())
 
 
 def _create_executions_df(**overrides) -> pl.DataFrame:
@@ -82,12 +99,28 @@ def _write_tables(
     records_df: pl.DataFrame,
     execution_edges: list[dict],
 ):
-    """Write both executions and execution_edges tables."""
-    records_path = tmp_path / "orchestration/executions"
-    provenance_path = tmp_path / "provenance/execution_edges"
-
-    records_df.write_delta(str(records_path))
-    _create_execution_edges_df(execution_edges).write_delta(str(provenance_path))
+    """Commit executions and execution edges as visible format-2 rows."""
+    edges = _create_execution_edges_df(execution_edges)
+    for (step_number,), records in records_df.group_by(
+        "origin_step_number", maintain_order=True
+    ):
+        step_run_id = f"seed-step-{step_number}"
+        execution_ids = records["execution_run_id"].to_list()
+        committed_records = records.with_columns(
+            pl.lit(step_run_id).alias("step_run_id")
+        )
+        committed_edges = edges.filter(pl.col("execution_run_id").is_in(execution_ids))
+        commit_test_tables(
+            str(tmp_path),
+            str(tmp_path / "staging"),
+            LocalFileSystem(),
+            {
+                TablePath.EXECUTIONS.value: committed_records,
+                TablePath.EXECUTION_EDGES.value: committed_edges,
+            },
+            step_run_id=step_run_id,
+            step_number=step_number,
+        )
 
 
 class TestResolveOutputReferenceNewSchema:
@@ -329,6 +362,192 @@ class TestResolveOutputReferenceNewSchema:
         assert result[0] == "a" * 32
         assert result[-1] == "z" * 32
 
+    def test_scoped_resolution_unions_direct_and_reused_outputs(self, tmp_path):
+        """Current membership, not artifact origin, defines scoped outputs."""
+        fs = LocalFileSystem()
+        DeltaCommitter(
+            str(tmp_path),
+            StagingManager(str(tmp_path / "staging"), fs),
+            fs=fs,
+        ).initialize_tables()
+        current = "a" * 32
+        direct = "b" * 32
+        cached = "c" * 32
+        failed = "d" * 32
+        now = datetime.now(UTC)
+        tracker = StepTracker(str(tmp_path), "current-run")
+        tracker.create_attempt(
+            StepStartRecord(
+                step_run_id=current,
+                step_spec_id="e" * 32,
+                step_number=7,
+                step_name="current",
+                operation_class="example.Operation",
+                params_json="{}",
+                input_refs_json="{}",
+                compute_backend="local",
+                compute_options_json="{}",
+                output_roles_json='["data"]',
+                output_types_json='{"data":"data"}',
+            )
+        )
+        tracker.transition(
+            current,
+            StepStatus.PENDING,
+            StepStatus.RUNNING,
+            step_spec_id="e" * 32,
+        )
+        result = StepResult(
+            step_run_id=current,
+            step_name="current",
+            step_number=7,
+            status=StepStatus.PARTIAL,
+            disposition=StepDisposition.EXECUTED,
+            total_count=3,
+            succeeded_count=2,
+            failed_count=1,
+            output_roles=frozenset({"data"}),
+            output_types={"data": "data"},
+            duration_seconds=1.0,
+        )
+        candidate = tracker.prepare_terminal_candidate(
+            current,
+            StepStatus.RUNNING,
+            StepStatus.PARTIAL,
+            step_spec_id="e" * 32,
+            result=result,
+        )
+        records = _create_executions_df(
+            execution_run_id=[direct, cached, failed],
+            execution_spec_id=["1" * 32, "2" * 32, "3" * 32],
+            step_run_id=[current, "4" * 32, "5" * 32],
+            origin_step_number=[7, 1, 1],
+            operation_name=["current", "source", "source"],
+            timestamp_start=[now] * 3,
+            timestamp_end=[now] * 3,
+            source_worker=[0] * 3,
+            success=[True, True, False],
+            error=[None, None, "failed"],
+            params=["{}"] * 3,
+            user_overrides=["{}"] * 3,
+            compute_backend=["local"] * 3,
+            tool_output=[None] * 3,
+            worker_log=[None] * 3,
+            metadata=["{}"] * 3,
+        )
+        reuse = pl.DataFrame(
+            [
+                {"current_step_run_id": current, "cached_execution_run_id": cached},
+                {"current_step_run_id": current, "cached_execution_run_id": failed},
+            ],
+            schema=CACHE_REUSE_SCHEMA,
+        )
+        artifact_ids = ["6" * 32, "7" * 32, "8" * 32, "9" * 32]
+        artifacts = pl.DataFrame(
+            [
+                {
+                    "artifact_id": artifact_id,
+                    "artifact_type": "data",
+                    "origin_step_number": 99,
+                    "metadata": "{}",
+                }
+                for artifact_id in artifact_ids
+            ],
+            schema=ARTIFACT_INDEX_SCHEMA,
+        )
+        edges = [
+            {
+                "execution_run_id": direct,
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_ids[0],
+            },
+            {
+                "execution_run_id": cached,
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_ids[0],
+            },
+            {
+                "execution_run_id": cached,
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_ids[1],
+            },
+            {
+                "execution_run_id": cached,
+                "direction": "output",
+                "role": "other",
+                "artifact_id": artifact_ids[2],
+            },
+            {
+                "execution_run_id": failed,
+                "direction": "output",
+                "role": "data",
+                "artifact_id": artifact_ids[3],
+            },
+        ]
+        edge_frame = pl.DataFrame(edges, schema=EXECUTION_EDGES_SCHEMA)
+
+        _write_tables(
+            tmp_path,
+            records.slice(1),
+            edges[1:],
+        )
+        commit_test_tables(
+            str(tmp_path),
+            str(tmp_path / "staging"),
+            fs,
+            {TablePath.ARTIFACT_INDEX.value: artifacts},
+            step_run_id="artifact-seed",
+            step_number=99,
+        )
+        staging = StagingManager(str(tmp_path / "staging"), fs)
+        for table, frame in {
+            TablePath.EXECUTIONS.value: records.slice(0, 1),
+            TablePath.EXECUTION_EDGES.value: edge_frame.slice(0, 1),
+            TablePath.CACHE_REUSE.value: reuse,
+            TablePath.STEPS.value: candidate,
+        }.items():
+            staging.stage_orchestrator_dataframe(
+                frame,
+                table,
+                commit_kind="step_result",
+                step_run_id=current,
+                step_number=7,
+                operation_name="current",
+            )
+        plan = build_commit_plan(
+            delta_root=str(tmp_path),
+            staging_root=str(tmp_path / "staging"),
+            fs=fs,
+            commit_kind="step_result",
+            step_run_id=current,
+            step_number=7,
+            operation_name="current",
+        )
+        DeltaCommitter(
+            str(tmp_path),
+            staging,
+            fs=fs,
+        ).commit_logical(plan)
+
+        result = resolve_output_reference(
+            OutputReference(source_step=7, role="data"),
+            str(tmp_path),
+            fs,
+            step_run_id=current,
+        )
+        no_origin_fallback = resolve_output_reference(
+            OutputReference(source_step=99, role="data"),
+            str(tmp_path),
+            fs,
+            step_run_id=current,
+        )
+
+        assert result == artifact_ids[:2]
+        assert no_origin_fallback == []
+
     def test_no_executions_returns_empty(self, tmp_path):
         """Test that missing executions table returns empty list."""
         ref = OutputReference(source_step=0, role="data")
@@ -455,11 +674,10 @@ class TestResolveOutputReferenceNewSchema:
         assert "b" * 32 in result
         assert "c" * 32 in result
 
-    def test_no_provenance_table_returns_empty(self, tmp_path):
-        """Test that missing execution_edges table returns empty list."""
+    def test_no_provenance_rows_returns_empty(self, tmp_path):
+        """A committed execution with no edges resolves to an empty list."""
         records_df = _create_executions_df()
-        records_df.write_delta(str(tmp_path / "orchestration/executions"))
-        # Don't create provenance table
+        _write_tables(tmp_path, records_df, [])
 
         ref = OutputReference(source_step=0, role="data")
 

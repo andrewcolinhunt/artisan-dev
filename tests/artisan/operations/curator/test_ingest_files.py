@@ -16,6 +16,7 @@ from unittest.mock import Mock
 
 import polars as pl
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator.ingest_files import IngestFiles
 from artisan.schemas.artifact.base import Artifact
@@ -23,6 +24,7 @@ from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.hashing import compute_content_digest
 
 
 def _df(ids: list[str]) -> pl.DataFrame:
@@ -31,17 +33,16 @@ def _df(ids: list[str]) -> pl.DataFrame:
 
 def make_file_ref(
     path: str,
-    content_hash: str = "a" * 32,
-    size_bytes: int = 100,
     step_number: int = 0,
 ) -> FileRefArtifact:
     """Helper to create a finalized FileRefArtifact for testing."""
     from pathlib import Path as P
 
+    content = P(path).read_bytes()
     return FileRefArtifact.draft(
         path=path,
-        content_hash=content_hash,
-        size_bytes=size_bytes,
+        content_hash=compute_content_digest(content),
+        size_bytes=len(content),
         step_number=step_number,
         original_name=P(path).stem,
         extension=P(path).suffix,
@@ -64,8 +65,10 @@ class ConcreteIngest(IngestFiles):
         ),
     }
 
-    def convert_file(self, file_ref: FileRefArtifact, step_number: int) -> Artifact:
-        content = file_ref.read_content()
+    def convert_file(
+        self, file_ref: FileRefArtifact, step_number: int, *, fs=None
+    ) -> Artifact:
+        content = file_ref.read_content(fs=fs)
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"
         return DataArtifact.draft(
             content=content,
@@ -78,6 +81,7 @@ class ConcreteIngest(IngestFiles):
 def _mock_store_with_refs(file_refs: list[FileRefArtifact]) -> Mock:
     """Create a mock ArtifactStore that returns file refs from get_artifacts_by_type."""
     store = Mock()
+    store.filesystem = LocalFileSystem()
     store.get_artifacts_by_type.return_value = {fr.artifact_id: fr for fr in file_refs}
     return store
 
@@ -123,7 +127,7 @@ class TestIngestFilesExecution:
         for i, name in enumerate(["a.dat", "b.dat", "c.dat"]):
             p = tmp_path / name
             p.write_bytes(f"content_{i}".encode())
-            refs.append(make_file_ref(str(p), content_hash=f"{chr(97 + i)}" * 32))
+            refs.append(make_file_ref(str(p)))
 
         op = ConcreteIngest()
         store = _mock_store_with_refs(refs)

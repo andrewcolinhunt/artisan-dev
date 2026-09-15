@@ -26,7 +26,6 @@ def _row(artifact_id: str = "a" * 32, name: str = "test") -> dict:
         "original_name": [name],
         "extension": [".json"],
         "metadata": ["{}"],
-        "external_path": [None],
     }
 
 
@@ -73,7 +72,7 @@ class TestStagingArea:
         # reads via fsspec when given an s3:// URI directly.
         with fs.open(uri, "rb") as f:
             read_back = pl.read_parquet(f)
-        assert read_back.shape == (1, 7)
+        assert read_back.shape == (1, 6)
 
     def test_stage_dataframe_append(self, backend_fs):
         """Staging same table twice appends data."""
@@ -169,6 +168,7 @@ class TestStagingManager:
     def populated_staging(self, backend_fs):
         """Create staging directory with multiple batches on the parametrized step_runner."""
         fs, _, root = backend_fs
+        root = f"{root}/staging"
 
         batch1 = StagingArea(root, fs, batch_id="batch1", worker_id=0)
         batch1.stage_dataframe(
@@ -214,6 +214,45 @@ class TestStagingManager:
         manager = StagingManager(root, fs)
         result = manager.read_all_staged_for_table("metrics")
         assert result is None
+
+    def test_stage_cache_reuse_is_exact_sorted_and_retry_idempotent(self, backend_fs):
+        fs, _, root = backend_fs
+        manager = StagingManager(f"{root}/staging", fs)
+        current = "a" * 32
+
+        uri = manager.stage_cache_reuse(
+            current,
+            ["c" * 32, "b" * 32, "c" * 32],
+            step_number=3,
+            operation_name="cached",
+        )
+        manager.stage_cache_reuse(
+            current,
+            ["b" * 32],
+            step_number=3,
+            operation_name="cached",
+        )
+
+        assert uri is not None
+        with fs.open(uri, "rb") as stream:
+            staged = pl.read_parquet(stream)
+        assert staged.columns == [
+            "current_step_run_id",
+            "cached_execution_run_id",
+        ]
+        assert staged["cached_execution_run_id"].to_list() == ["b" * 32, "c" * 32]
+
+    def test_stage_cache_reuse_rejects_noncanonical_ids(self, backend_fs):
+        fs, _, root = backend_fs
+        manager = StagingManager(f"{root}/staging", fs)
+
+        with pytest.raises(ValueError, match="current_step_run_id"):
+            manager.stage_cache_reuse(
+                "not-an-id",
+                ["b" * 32],
+                step_number=0,
+                operation_name="cached",
+            )
 
     def test_cleanup_batch(self, populated_staging):
         """Cleanup specific batch."""

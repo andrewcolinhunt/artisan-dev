@@ -24,9 +24,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from artisan.operations.base import OperationDefinition
-from artisan.schemas import ArtifactResult, OutputSpec
-from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
+from artisan.schemas import ArtifactResult, DataArtifact, ExecuteInput, OutputSpec, PostprocessInput
 
 
 class HelloGenerator(OperationDefinition):
@@ -76,10 +74,12 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base import OperationDefinition
-from artisan.schemas import ArtifactResult, InputSpec, OutputSpec
-from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas.specs.input_models import (
+from artisan.schemas import (
+    ArtifactResult,
+    DataArtifact,
     ExecuteInput,
+    InputSpec,
+    OutputSpec,
     PostprocessInput,
     PreprocessInput,
 )
@@ -581,12 +581,12 @@ Set `tool` to a `ToolSpec` declaring the binary or script to invoke, and
 configure the execution environment with `environments`:
 
 ```python
-from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.operation_config.environment_spec import (
+from artisan.schemas import (
     DockerEnvironmentSpec,
+    Environments,
     LocalEnvironmentSpec,
+    ToolSpec,
 )
-from artisan.schemas.operation_config.environments import Environments
 
 
 class MyToolOp(OperationDefinition):
@@ -613,10 +613,10 @@ class MyToolOp(OperationDefinition):
 
 In `execute`, use `self.tool.parts()` to build the command prefix and
 `self.environments.current()` to get the active environment spec. Use
-`run_command()` from `artisan.utils.external_tools` to invoke the tool:
+`run_command()` from `artisan.utils` to invoke the tool:
 
 ```python
-from artisan.utils.external_tools import format_args, run_command
+from artisan.utils import format_args, run_command
 
 
 def execute_function(self, inputs: ExecuteInput) -> Any:
@@ -641,7 +641,7 @@ endpoint remotely, a standalone container CLI — set one flag:
 ```python
 class EmbedSequences(OperationDefinition):
     name = "embed_sequences"
-    execute_as_tool: ClassVar[bool] = True   # the entire opt-in
+    execute_as_tool: ClassVar[bool] = True  # the entire opt-in
     ...
 
     class Params(BaseModel):
@@ -649,8 +649,9 @@ class EmbedSequences(OperationDefinition):
 
     params: Params = Params()
 
-    def execute_function(self, inputs: ExecuteInput) -> None:
-        ...  # read input files, write output files to inputs.execute_dir
+    def execute_function(
+        self, inputs: ExecuteInput
+    ) -> None: ...  # read input files, write output files to inputs.execute_dir
 ```
 
 No `ToolSpec`, no `execute_command` — the framework supplies the command
@@ -701,7 +702,7 @@ how artifacts are paired across roles, and use `inputs.grouped()` in
 preprocess:
 
 ```python
-from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas import GroupByStrategy
 
 
 class AlignOp(OperationDefinition):
@@ -804,7 +805,7 @@ Test your operation outside a pipeline by constructing inputs directly:
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
+from artisan.schemas import ExecuteInput, PostprocessInput
 
 op = ScaleData(params={"factor": 3.0})
 
@@ -840,6 +841,7 @@ For a full integration test, run in a pipeline (defaults to local backend):
 
 ```python
 from artisan.orchestration import PipelineManager
+from artisan.orchestration import StepStatus
 
 pipeline = PipelineManager.create(
     name="test",
@@ -851,7 +853,7 @@ pipeline.run(operation=DataGenerator, name="source", params={"count": 3})
 step = pipeline.run(
     operation=ScaleData, inputs={"dataset": output("source", "datasets")}
 )
-assert step.success
+assert step.status is StepStatus.SUCCEEDED
 assert step.succeeded_count > 0
 ```
 

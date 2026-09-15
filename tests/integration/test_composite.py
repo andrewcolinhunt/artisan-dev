@@ -7,9 +7,12 @@ to child steps, and nested composites expand recursively.
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum
-from typing import ClassVar
+from pathlib import Path
+from typing import Any, ClassVar
 
+import polars as pl
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -18,6 +21,8 @@ from artisan.composites import CompositeContext, CompositeDefinition
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
+from artisan.schemas.operation_config.compute_resources import ComputeResources
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -110,6 +115,53 @@ class GenThenNested(CompositeDefinition):
             TransformComposite,
             inputs={"data": gen.output("datasets")},
         )
+        ctx.output("dataset", nested.output("dataset"))
+
+
+class _OverrideDefaultsGenerator(DataGenerator):
+    """Generator with a non-schema compute-resource default."""
+
+    name: ClassVar[str] = "composite_override_defaults_generator"
+    compute_resources: ComputeResources = ComputeResources(
+        gpu="A100",
+        memory_gb=32,
+    )
+
+
+class _OverrideChildComposite(CompositeDefinition):
+    """Run one child whose operation default can be reset by a patch."""
+
+    name: ClassVar[str] = "override_child_composite"
+
+    class OutputRole(StrEnum):
+        DATASET = "dataset"
+
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "dataset": OutputSpec(artifact_type="data"),
+    }
+
+    def compose(self, ctx: CompositeContext) -> None:
+        child = ctx.run(
+            _OverrideDefaultsGenerator,
+            params={"count": 1, "seed": 42},
+        )
+        ctx.output("dataset", child.output("datasets"))
+
+
+class _NestedOverrideComposite(CompositeDefinition):
+    """Forward an override default through a nested composite."""
+
+    name: ClassVar[str] = "nested_override_composite"
+
+    class OutputRole(StrEnum):
+        DATASET = "dataset"
+
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "dataset": OutputSpec(artifact_type="data"),
+    }
+
+    def compose(self, ctx: CompositeContext) -> None:
+        nested = ctx.run(_OverrideChildComposite)
         ctx.output("dataset", nested.output("dataset"))
 
 
@@ -207,7 +259,7 @@ def test_composite_level_step_runner_reaches_child(pipeline_env: dict[str, str])
     pipeline.finalize()
     results = list(pipeline)
     assert len(results) == 3
-    assert all(r.success for r in results)
+    assert all(r.status is StepStatus.SUCCEEDED for r in results)
 
 
 def test_composite_level_environment_reaches_child(pipeline_env: dict[str, str]):
@@ -253,3 +305,61 @@ def test_nested_composite(pipeline_env: dict[str, str]):
         n.startswith("test_gen_then_nested.test_transform_composite.")
         for n in step_names
     )
+
+
+def test_composite_defaults_share_direct_presence_patch_semantics(
+    tmp_path: Path,
+) -> None:
+    """Direct, composite, and nested typed/mapping patches prepare identically."""
+    delta_root = str(tmp_path / "delta")
+    mapping_patch: dict[str, Any] = {"gpu": None}
+    typed_patch = ComputeResources(gpu=None)
+
+    def _pipeline(label: str) -> PipelineManager:
+        return PipelineManager.create(
+            name=f"composite_patch_{label}",
+            delta_root=delta_root,
+            staging_root=str(tmp_path / f"staging_{label}"),
+            working_root=str(tmp_path / f"working_{label}"),
+        )
+
+    def _result(
+        label: str,
+        target: str,
+        patch: ComputeResources | dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        pipeline = _pipeline(label)
+        if target == "direct":
+            pipeline.run(
+                _OverrideDefaultsGenerator,
+                params={"count": 1, "seed": 42},
+                compute_resources=patch,
+            )
+        else:
+            composite = (
+                _OverrideChildComposite
+                if target == "composite"
+                else _NestedOverrideComposite
+            )
+            pipeline.run_composite(
+                composite,
+                compute_resources=patch,
+            )
+        pipeline.finalize()
+        row = (
+            pl.read_delta(str(Path(delta_root) / "orchestration" / "steps"))
+            .filter(pl.col("pipeline_run_id") == pipeline.config.pipeline_run_id)
+            .row(0, named=True)
+        )
+        return pipeline._step_spec_ids[0], json.loads(row["compute_options_json"])
+
+    results = [
+        _result("direct_mapping", "direct", mapping_patch),
+        _result("composite_mapping", "composite", mapping_patch),
+        _result("composite_typed", "composite", typed_patch),
+        _result("nested_mapping", "nested", mapping_patch),
+        _result("nested_typed", "nested", typed_patch),
+    ]
+
+    assert len({step_id for step_id, _ in results}) == 1
+    assert all(options["compute_resources"] == mapping_patch for _, options in results)

@@ -17,9 +17,11 @@ never corrupt the shared artifact store.
 (glossary-artifact)=
 ## Artifact
 
-An immutable, content-addressed data node identified by the `xxh3_128` hash of
-its content. Artifacts are the fundamental data units flowing through pipelines.
-Once finalized, an artifact's ID is a permanent commitment to its exact content.
+An immutable, content-addressed data node identified by an `xxh3_128` hash over
+a typed identity envelope: the concrete artifact type, its canonical payload,
+and common semantic metadata such as its lineage-visible name. Artifacts are the
+fundamental data units flowing through pipelines. External locations are kept
+outside identity and verified against the artifact's digest and size.
 Artifacts follow a [draft/finalize](#glossary-draft-finalize) lifecycle: they
 are created as mutable drafts and become immutable when finalized. The six
 built-in artifact types are `data`, `metric`, `file_ref`, `config`,
@@ -42,8 +44,10 @@ Lazily initializes a `ProvenanceStore` for graph queries.
 
 A registry entry describing an artifact type. Each concrete subclass declares a
 `key` (e.g. `"data"`), a `table_path` for its Delta Lake table, and a `model`
-class with serialization methods (`to_row`, `from_row`, `POLARS_SCHEMA`).
-Registration is automatic at class definition time via `__init_subclass__`.
+`Artifact` model with a `POLARS_SCHEMA`. Registration validates the concrete
+type key, unique non-reserved table path, and the verification/materialization
+contract for external types. It is automatic at class definition time via
+`__init_subclass__`.
 
 ---
 
@@ -72,11 +76,20 @@ configured via [BatchStrategy](#glossary-execution-config) on the operation.
 (glossary-cache-policy)=
 ## CachePolicy
 
-Controls when a completed step qualifies as a cache hit on subsequent pipeline
-runs. `ALL_SUCCEEDED` (default) requires zero execution failures.
-`STEP_COMPLETED` accepts any completed step, regardless of individual failures.
-Infrastructure errors (dispatch or commit failures) always block caching under
-both policies.
+Controls which usable terminal step qualifies as a cache hit on subsequent
+pipeline runs. `ALL_SUCCEEDED` (default) accepts only `succeeded` attempts.
+`STEP_COMPLETED` accepts `succeeded` and `partial` attempts. Failed, cancelled,
+and skipped attempts never qualify.
+
+---
+
+(glossary-cancellation-status)=
+## CancellationStatus
+
+The acknowledgement state of a cancellation request: `requested`, then exactly
+one of `confirmed`, `rejected`, or `unknown`. A step becomes `cancelled` only
+after confirmation. Rejected work may finish naturally; an unknown outcome
+fails closed as a failed step.
 
 ---
 
@@ -112,10 +125,12 @@ execute phase runs inside that worker. See
 (glossary-content-addressing)=
 ## Content addressing
 
-A storage strategy where data is identified by the hash of its content rather
-than by location or name. In Artisan, `artifact_id = xxh3_128(content)`,
-meaning identical content always produces the same ID. This enables automatic
-deduplication and deterministic caching.
+A storage strategy where semantic data is identified independently of its
+storage location. In Artisan, a versioned, length-framed envelope combines the
+artifact type, canonical payload, and identity metadata. Identical envelopes
+produce the same ID, while equal bytes belonging to different types or carrying
+different semantic names remain distinct. This enables safe deduplication and
+deterministic caching.
 
 ---
 
@@ -158,9 +173,9 @@ pruning without requiring an external database server.
 
 The artifact lifecycle pattern. A **draft** artifact has `artifact_id=None` and
 is mutable -- created via `Subclass.draft()`. Calling `artifact.finalize()`
-computes the content hash, sets the `artifact_id`, and makes the artifact
-semantically immutable. Operations create drafts in `postprocess` and the
-framework finalizes them before committing to storage.
+computes the typed identity hash, sets the `artifact_id`, and snapshots durable
+state so direct and nested mutation are rejected. Operations create drafts in
+`postprocess` and the framework finalizes them before committing to storage.
 
 ---
 
@@ -185,11 +200,12 @@ through the entire execution flow.
 ---
 
 (glossary-execution-record)=
-## ExecutionRecord
+## Execution record
 
 A row in the executions Delta Lake table logging a single execution attempt.
 Carries dual identity: `execution_spec_id` (deterministic cache key, computed
-from operation name, input artifact IDs, and merged parameters) and
+from operation configuration and the ordered role/group/position/type/ID input
+occurrences) and
 `execution_run_id` (unique per attempt, used for provenance edges).
 
 ---
@@ -423,23 +439,43 @@ has a sequential step number, an operation, resolved inputs, and produces a
 
 ---
 
+(glossary-step-disposition)=
+## StepDisposition
+
+How a usable `StepResult` was obtained: `executed` or `cache_hit`. Only
+`succeeded` and `partial` results carry a disposition.
+
+---
+
 (glossary-step-future)=
 ## StepFuture
 
 A non-blocking handle returned by `pipeline.submit()`. Wraps a concurrent
-future and provides `output()` for wiring to downstream steps without waiting
-for completion, plus `result()` for blocking retrieval and a `status` property
-(`"running"`, `"completed"`, or `"failed"`).
+future and provides `output()` for wiring to downstream steps without waiting,
+plus `result()` for blocking retrieval and a `status` property containing the
+latest durably persisted [StepStatus](#glossary-step-status).
 
 ---
 
 (glossary-step-result)=
 ## StepResult
 
-The object returned by `pipeline.run()`. Contains metadata about the step
-execution: success status, artifact counts, duration, and output
-[roles](#glossary-role). Call `step_result.output("role")` to create an
-[OutputReference](#glossary-output-reference) for wiring into downstream steps.
+The terminal object returned by `pipeline.run()`. Its `status` is authoritative;
+it also contains a disposition for usable output, item counts, duration, one
+diagnostic `error`, optional cancellation acknowledgement, and output
+[roles](#glossary-role). Output roles are exposed only for `succeeded` and
+`partial` results. Call `step_result.output("role")` to create an
+[OutputReference](#glossary-output-reference) for downstream wiring.
+
+---
+
+(glossary-step-status)=
+## StepStatus
+
+The authoritative state of one step attempt: `pending`, `running`, `succeeded`,
+`partial`, `failed`, `cancelled`, or `skipped`. An attempt starts `pending`, may
+become `running`, and ends in exactly one terminal state. Terminal states never
+transition again.
 
 ---
 

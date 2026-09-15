@@ -11,12 +11,14 @@ from __future__ import annotations
 import polars as pl
 from fsspec import AbstractFileSystem
 
-from artisan.schemas.enums import CacheValidationReason
+from artisan.schemas.enums import CacheValidationReason, TablePath
 from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
+from artisan.storage.core.committed_scan import scan_committed
+from artisan.utils.path import uri_join
 
 
 def cache_lookup(
-    executions_path: str,
+    delta_root: str,
     execution_spec_id: str,
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
@@ -28,7 +30,7 @@ def cache_lookup(
     identifiers so the caller can skip re-execution.
 
     Args:
-        executions_path: URI/path to the executions Delta table.
+        delta_root: Root URI/path containing the executions Delta table.
         execution_spec_id: Deterministic ID computed from operation,
             inputs, and merged params.
         fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
@@ -40,6 +42,7 @@ def cache_lookup(
         ``NO_PREVIOUS_EXECUTION`` or ``EXECUTION_FAILED``.
     """
     storage_options = storage_options or {}
+    executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
 
     if not fs.exists(executions_path):
         return CacheMiss(
@@ -49,7 +52,12 @@ def cache_lookup(
 
     # Query for successful execution with this spec_id
     result = (
-        pl.scan_delta(executions_path, storage_options=storage_options)
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTIONS,
+            fs=fs,
+            storage_options=storage_options,
+        )
         .filter(pl.col("execution_spec_id") == execution_spec_id)
         .filter(pl.col("success") == True)  # noqa: E712
         .sort("timestamp_start", descending=True)  # Most recent first
@@ -60,7 +68,12 @@ def cache_lookup(
     if result.is_empty():
         # Check if there's a failed execution (for better error message)
         any_exec = (
-            pl.scan_delta(executions_path, storage_options=storage_options)
+            scan_committed(
+                delta_root,
+                TablePath.EXECUTIONS,
+                fs=fs,
+                storage_options=storage_options,
+            )
             .filter(pl.col("execution_spec_id") == execution_spec_id)
             .limit(1)
             .collect()

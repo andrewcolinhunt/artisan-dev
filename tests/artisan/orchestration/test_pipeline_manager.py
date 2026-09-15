@@ -7,6 +7,8 @@ correctly stops the pipeline.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import signal
 from concurrent.futures import Future
@@ -15,10 +17,14 @@ from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
+import polars as pl
 import pytest
+from fixtures.logical_commit_store import commit_test_inputs
 from pydantic import BaseModel
 
+from artisan.errors import ArtifactIntegrityError, CommitError
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.pipeline_manager import (
     PipelineManager,
     _extract_name_from_run_id,
@@ -29,6 +35,7 @@ from artisan.orchestration.pipeline_manager import (
     _qualified_name,
     _serialize_input_refs,
     _set_default,
+    _StepStatusReader,
     _validate_execution,
     _validate_input_roles,
     _validate_input_types,
@@ -38,16 +45,156 @@ from artisan.orchestration.pipeline_manager import (
 )
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
+from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.enums import GroupByStrategy, TablePath
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
+from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.storage.core.store_format import STORE_MANIFEST
+from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
+
+_INPUT_ARTIFACT = DataArtifact.draft(
+    b"value\n1\n",
+    "pipeline-input.csv",
+    step_number=0,
+).finalize()
+assert _INPUT_ARTIFACT.artifact_id is not None
+_INPUT_ID = _INPUT_ARTIFACT.artifact_id
+_SEEDED_INPUT_ROOTS: set[str] = set()
+
+
+def _configure_pipeline_test_doubles(pipeline: PipelineManager) -> None:
+    """Back mocked boundaries with the real persistence contracts."""
+    tracker = pipeline._step_tracker
+    if isinstance(tracker, MagicMock) and not isinstance(
+        getattr(tracker, "_lifecycle_backend", None), StepTracker
+    ):
+        backend = StepTracker(
+            pipeline.config.delta_root,
+            pipeline.config.pipeline_run_id,
+            fs=pipeline.config.storage.filesystem(),
+            storage_options=pipeline.config.storage.delta_storage_options(),
+        )
+        tracker._lifecycle_backend = backend
+        for method in (
+            "create_attempt",
+            "transition",
+            "prepare_terminal_candidate",
+            "record_cancellation",
+            "current_state",
+        ):
+            getattr(tracker, method).side_effect = getattr(backend, method)
+        if isinstance(tracker.check_cache.return_value, MagicMock):
+            tracker.check_cache.return_value = None
+
+    import artisan.orchestration.pipeline_manager as pipeline_manager_module
+
+    execute_mock = pipeline_manager_module.execute_step
+    if isinstance(execute_mock, MagicMock) and execute_mock.side_effect is None:
+
+        def _persist_mock_result(**kwargs: Any) -> StepResult:
+            result = execute_mock.return_value
+            if not isinstance(result, StepResult):
+                return result
+            operation = kwargs["operation"]
+            owned = result.model_copy(
+                update={
+                    "step_run_id": kwargs["step_run_id"],
+                    "output_roles": frozenset(operation.outputs),
+                    "output_types": {
+                        role: spec.artifact_type
+                        for role, spec in operation.outputs.items()
+                    },
+                }
+            )
+            if owned.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+                return kwargs["persist_result"](owned, ())
+            return owned
+
+        execute_mock.side_effect = _persist_mock_result
+
+
+def _prime_attempt(
+    pipeline: PipelineManager,
+    step_run_id: str,
+    *,
+    status: StepStatus = StepStatus.PENDING,
+    step_name: str = "step",
+) -> None:
+    """Prime manager-owned attempt context for direct private-helper tests."""
+    _configure_pipeline_test_doubles(pipeline)
+    record = StepStartRecord(
+        step_run_id=step_run_id,
+        step_number=0,
+        step_name=step_name,
+        operation_class="test.MockOperation",
+        params_json="{}",
+        input_refs_json="{}",
+        compute_backend="local",
+        compute_options_json="{}",
+        output_roles_json="[]",
+        output_types_json="{}",
+    )
+    pipeline._step_start_records[0] = record
+    pipeline._step_status_readers[0] = _StepStatusReader(status)
+    backend = pipeline._step_tracker._lifecycle_backend
+    backend.create_attempt(record)
+    if status == StepStatus.RUNNING:
+        backend.transition(step_run_id, StepStatus.PENDING, StepStatus.RUNNING)
+    pipeline._step_tracker.reset_mock()
+
+
+def _seed_input_artifact(delta_root: Path) -> None:
+    """Seed the concrete input consumed by pipeline-manager tests."""
+    root_key = str(delta_root.resolve())
+    if root_key in _SEEDED_INPUT_ROOTS:
+        return
+    owner = hashlib.sha256(root_key.encode()).hexdigest()[:32]
+    commit_test_inputs(
+        delta_root,
+        delta_root.parent / "fixture-staging",
+        {
+            ArtifactTypeDef.get_table_path(ArtifactTypes.DATA): pl.DataFrame(
+                [_INPUT_ARTIFACT.to_row()],
+                schema=DataArtifact.POLARS_SCHEMA,
+            ),
+            TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                [
+                    {
+                        "artifact_id": _INPUT_ID,
+                        "artifact_type": ArtifactTypes.DATA,
+                        "origin_step_number": 0,
+                        "metadata": "{}",
+                    }
+                ],
+                schema=ARTIFACT_INDEX_SCHEMA,
+            ),
+        },
+        step_run_id=owner,
+    )
+    _SEEDED_INPUT_ROOTS.add(root_key)
+
+
+@pytest.fixture(autouse=True)
+def _seed_valid_input_artifact(tmp_path: Path) -> None:
+    """Seed the conventional per-test Delta root."""
+    _seed_input_artifact(tmp_path / "delta")
 
 
 # Minimal mock operation for testing
@@ -76,6 +223,42 @@ class _MockOp(OperationDefinition):
         return None
 
 
+class _ComputeDefaultsOp(_MockOp):
+    """Mock op whose compute defaults differ from schema defaults."""
+
+    name: ClassVar[str] = "compute_defaults_op"
+    compute_resources: ComputeResources = ComputeResources(
+        gpu="A100",
+        memory_gb=32,
+    )
+
+
+class _RecursivePatchOp(OperationDefinition):
+    """Command op with nested configuration defaults for public patch tests."""
+
+    name: ClassVar[str] = "recursive_patch_op"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {}
+    tool: ToolSpec = ToolSpec(executable="bash")
+    environments: Environments = Environments(
+        active="docker",
+        docker=DockerEnvironmentSpec(
+            image="image:v1",
+            env={"KEEP": "yes", "CHANGE": "old"},
+        ),
+    )
+    compute_provider: ComputeProvider = ComputeProvider(
+        active="modal",
+        modal=ModalComputeConfig(
+            retries=5,
+            env={"KEEP": "yes", "CHANGE": "old"},
+        ),
+    )
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return ["bash", "-c", "true"]
+
+
 class _ExternalRunner(LocalRunner):
     """Concrete stand-in for a runner supplied by an external provider."""
 
@@ -84,13 +267,16 @@ class _ExternalRunner(LocalRunner):
 
 def _make_pipeline(tmp_path) -> PipelineManager:
     """Create a minimal PipelineManager without Prefect."""
+    _seed_input_artifact(tmp_path / "delta")
     config = PipelineConfig(
         name="test",
         delta_root=str(tmp_path / "delta"),
         staging_root=str(tmp_path / "staging"),
         working_root=str(tmp_path / "working"),
     )
-    return PipelineManager(config)
+    pipeline = PipelineManager(config)
+    _configure_pipeline_test_doubles(pipeline)
+    return pipeline
 
 
 class TestDefaultRunnerRetention:
@@ -107,7 +293,8 @@ class TestDefaultRunnerRetention:
         mock_execute.return_value = StepResult(
             step_name=_MockOp.name,
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
         )
         runner = _ExternalRunner()
         pipeline = PipelineManager.create(
@@ -115,13 +302,126 @@ class TestDefaultRunnerRetention:
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
             default_step_runner=runner,
-            recover_staging=False,
         )
+        _configure_pipeline_test_doubles(pipeline)
 
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
 
         assert pipeline.config.default_step_runner == "external_test"
         assert mock_execute.call_args.kwargs["step_runner"] is runner
+
+
+class TestPreparedOperationSnapshot:
+    """Step hashing and execution share one prepared operation instance."""
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_hashed_operation_is_passed_to_execution(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ) -> None:
+        tracker = MagicMock()
+        tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = tracker
+        mock_execute.return_value = StepResult(
+            step_name=_MockOp.name,
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+        pipeline = _make_pipeline(tmp_path)
+
+        with patch.object(
+            pipeline,
+            "_prepare_step_spec",
+            wraps=pipeline._prepare_step_spec,
+        ) as mock_prepare:
+            pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
+
+        prepared = mock_prepare.call_args.args[0]
+        assert mock_execute.call_args.kwargs["operation"] is prepared
+        assert "operation_class" not in mock_execute.call_args.kwargs
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_reset_forms_share_record_and_hash_but_change_effective_identity(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ) -> None:
+        tracker = MagicMock()
+        tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = tracker
+        mock_execute.return_value = StepResult(
+            step_name=_ComputeDefaultsOp.name,
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+
+        def _submit(
+            path: Path,
+            override: ComputeResources | dict[str, Any] | None = None,
+        ) -> tuple[str, dict[str, Any]]:
+            pipeline = _make_pipeline(path)
+            kwargs = {} if override is None else {"compute_resources": override}
+            pipeline.run(
+                _ComputeDefaultsOp,
+                inputs={"data": [_INPUT_ID]},
+                **kwargs,
+            )
+            options = json.loads(pipeline._step_start_records[0].compute_options_json)
+            pipeline.finalize()
+            return pipeline._step_spec_ids[0], options
+
+        base_id, _ = _submit(tmp_path / "base")
+        mapping_id, mapping_record = _submit(tmp_path / "mapping", {"gpu": None})
+        typed_id, typed_record = _submit(tmp_path / "typed", ComputeResources(gpu=None))
+
+        assert base_id != mapping_id
+        assert mapping_id == typed_id
+        assert mapping_record == typed_record
+        assert mapping_record["compute_resources"] == {"gpu": None}
+
+    @patch("artisan.orchestration.pipeline_manager.execute_step")
+    @patch("artisan.orchestration.pipeline_manager.StepTracker")
+    def test_submit_recursively_merges_selected_environment_and_provider(
+        self, mock_tracker_cls, mock_execute, tmp_path
+    ) -> None:
+        tracker = MagicMock()
+        tracker.check_cache.return_value = None
+        mock_tracker_cls.return_value = tracker
+        mock_execute.return_value = StepResult(
+            step_name=_RecursivePatchOp.name,
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+        pipeline = _make_pipeline(tmp_path)
+
+        future = pipeline.submit(
+            _RecursivePatchOp,
+            environment={
+                "active": "docker",
+                "docker": {"env": {"CHANGE": "new"}},
+            },
+            compute_provider={
+                "active": "modal",
+                "modal": {"env": {"CHANGE": "new"}},
+            },
+        )
+        future.result()
+
+        operation = mock_execute.call_args.kwargs["operation"]
+        assert operation.environments.active == "docker"
+        assert operation.environments.docker.image == "image:v1"
+        assert operation.environments.docker.env == {
+            "KEEP": "yes",
+            "CHANGE": "new",
+        }
+        assert operation.compute_provider.active == "modal"
+        assert operation.compute_provider.modal.retries == 5
+        assert operation.compute_provider.modal.env == {
+            "KEEP": "yes",
+            "CHANGE": "new",
+        }
 
 
 class TestRunReturnsFailedStepResult:
@@ -132,39 +432,53 @@ class TestRunReturnsFailedStepResult:
     def test_failed_step_appears_in_step_results(
         self, mock_tracker_cls, mock_execute, tmp_path
     ):
-        """A step that raises should produce StepResult(success=False)."""
+        """A background exception should publish a failed terminal result."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
+        mock_tracker.current_state.return_value = MagicMock(
+            status=StepStatus.RUNNING,
+            cancellation_status=None,
+        )
         mock_tracker_cls.return_value = mock_tracker
 
         mock_execute.side_effect = RuntimeError("something broke")
 
         pipeline = _make_pipeline(tmp_path)
-        result = pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
+        result = pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
 
-        assert result.success is False
-        assert "error" in result.metadata
-        assert "RuntimeError" in result.metadata["error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "RuntimeError" in result.error
         assert result in pipeline._step_results
+        assert pipeline._step_status_readers[0].get() == StepStatus.FAILED
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_failed_step_records_failure_in_tracker(
         self, mock_tracker_cls, mock_execute, tmp_path
     ):
-        """Failed step should call record_step_failed on the tracker."""
+        """Failed step should persist running then failed snapshots."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
+        mock_tracker.current_state.return_value = MagicMock(
+            status=StepStatus.RUNNING,
+            cancellation_status=None,
+        )
         mock_tracker_cls.return_value = mock_tracker
 
         mock_execute.side_effect = ValueError("bad input")
 
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
 
-        mock_tracker.record_step_failed.assert_called_once()
-        call_args = mock_tracker.record_step_failed.call_args
-        assert "ValueError" in call_args[0][1]
+        transitions = mock_tracker.transition.call_args_list
+        assert [call.args[1:3] for call in transitions] == [
+            (StepStatus.PENDING, StepStatus.RUNNING),
+            (StepStatus.RUNNING, StepStatus.FAILED),
+        ]
+        failed = transitions[-1].kwargs["result"]
+        assert failed.error is not None
+        assert "ValueError" in failed.error
 
 
 class TestResilientFinalize:
@@ -201,14 +515,18 @@ class TestResilientFinalize:
             StepResult(
                 step_name="op1",
                 step_number=0,
-                success=True,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+                total_count=5,
                 succeeded_count=5,
                 failed_count=0,
             ),
             StepResult(
                 step_name="op2",
                 step_number=1,
-                success=False,
+                status=StepStatus.FAILED,
+                error="test failure",
+                total_count=3,
                 succeeded_count=0,
                 failed_count=3,
             ),
@@ -329,49 +647,39 @@ class TestEmptyInputsHandling:
     def test_pipeline_stops_after_empty_inputs(
         self, mock_tracker_cls, mock_execute, tmp_path
     ):
-        """Step with skipped metadata triggers pipeline stop; next step skips."""
+        """Known-empty inputs persist skipped and stop downstream execution."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
         mock_tracker_cls.return_value = mock_tracker
 
-        # Step 0: execute_step returns a skipped result
-        skipped_result = StepResult(
-            step_name="mock_op",
-            step_number=0,
-            success=True,
-            total_count=0,
-            succeeded_count=0,
-            failed_count=0,
-            output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
-            metadata={"skipped": True, "skip_reason": "all_inputs_empty"},
-        )
-        mock_execute.return_value = skipped_result
-
         pipeline = _make_pipeline(tmp_path)
 
         # Run step 0 — should trigger _stopped
-        result0 = pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
-        assert result0.metadata.get("skipped") is True
-        mock_tracker.record_step_skipped.assert_called_once()
-        mock_tracker.record_step_completed.assert_not_called()
+        result0 = pipeline.run(_MockOp, inputs={"data": []})
+        assert result0.status == StepStatus.SKIPPED
+        assert result0.metadata["skip_reason"] == "empty_inputs"
+        assert mock_tracker.transition.call_args.args[1:3] == (
+            StepStatus.PENDING,
+            StepStatus.SKIPPED,
+        )
+        mock_execute.assert_not_called()
 
         # Run step 1 — should be immediately skipped without calling execute_step
         mock_execute.reset_mock()
         result1 = pipeline.run(
             _MockOp,
-            inputs={"data": result0.output("output")},
+            inputs={"data": pipeline.output("mock_op", "output")},
         )
-        assert result1.metadata.get("skipped") is True
+        assert result1.status == StepStatus.SKIPPED
         assert result1.metadata.get("skip_reason") == "pipeline_stopped"
         mock_execute.assert_not_called()
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_completed_zero_outputs_still_cached(
+    def test_succeeded_zero_outputs_still_cached(
         self, mock_tracker_cls, mock_execute, tmp_path
     ):
-        """A step with zero outputs but no skipped metadata is still cached normally."""
+        """A succeeded zero-output step remains distinct from skipped."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
         mock_tracker_cls.return_value = mock_tracker
@@ -380,7 +688,8 @@ class TestEmptyInputsHandling:
         zero_result = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=0,
             succeeded_count=0,
             failed_count=0,
@@ -390,13 +699,40 @@ class TestEmptyInputsHandling:
         mock_execute.return_value = zero_result
 
         pipeline = _make_pipeline(tmp_path)
-        result = pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
+        result = pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
 
         assert result.succeeded_count == 0
-        mock_tracker.record_step_completed.assert_called_once()
-        mock_tracker.record_step_skipped.assert_not_called()
+        assert mock_tracker.transition.call_args.args[1:3] == (
+            StepStatus.PENDING,
+            StepStatus.RUNNING,
+        )
+        assert (
+            mock_tracker.current_state(result.step_run_id).status
+            == StepStatus.SUCCEEDED
+        )
         # Pipeline should NOT be stopped
         assert pipeline._stopped is False
+
+    def test_preparation_failure_transitions_running_before_failure(
+        self, tmp_path
+    ) -> None:
+        pipeline = _make_pipeline(tmp_path)
+
+        with patch(
+            "artisan.orchestration.pipeline_manager.instantiate_operation",
+            side_effect=ValueError("invalid operation preparation"),
+        ):
+            result = pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
+
+        assert result.status == StepStatus.FAILED
+        rows = pl.read_delta(str(tmp_path / "delta" / TablePath.STEPS)).filter(
+            pl.col("step_run_id") == result.step_run_id
+        )
+        assert rows.sort("state_sequence")["status"].to_list() == [
+            "pending",
+            "running",
+            "failed",
+        ]
 
 
 class TestExtractSourceSteps:
@@ -436,7 +772,8 @@ class TestStepNameOverride:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=3,
             succeeded_count=3,
             failed_count=0,
@@ -445,7 +782,7 @@ class TestStepNameOverride:
         )
 
         pipeline = _make_pipeline(tmp_path)
-        result = pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="acyl_rmsd")
+        result = pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="acyl_rmsd")
 
         assert result.step_name == "acyl_rmsd"
 
@@ -462,7 +799,8 @@ class TestStepNameOverride:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=3,
             succeeded_count=3,
             failed_count=0,
@@ -471,7 +809,7 @@ class TestStepNameOverride:
         )
 
         pipeline = _make_pipeline(tmp_path)
-        result = pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
+        result = pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
 
         assert result.step_name == "mock_op"
 
@@ -488,7 +826,8 @@ class TestStepNameOverride:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -497,10 +836,10 @@ class TestStepNameOverride:
         )
 
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="compute_metrics")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="compute_metrics")
 
-        mock_tracker.record_step_start.assert_called_once()
-        start_record = mock_tracker.record_step_start.call_args[0][0]
+        mock_tracker.create_attempt.assert_called_once()
+        start_record = mock_tracker.create_attempt.call_args.args[0]
         assert start_record.step_name == "compute_metrics"
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
@@ -509,14 +848,18 @@ class TestStepNameOverride:
         """Failed step with custom name should still use that name."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
+        mock_tracker.current_state.return_value = MagicMock(
+            status=StepStatus.RUNNING,
+            cancellation_status=None,
+        )
         mock_tracker_cls.return_value = mock_tracker
 
         mock_execute.side_effect = RuntimeError("boom")
 
         pipeline = _make_pipeline(tmp_path)
-        result = pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="custom_fail")
+        result = pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="custom_fail")
 
-        assert result.success is False
+        assert result.status == StepStatus.FAILED
         assert result.step_name == "custom_fail"
 
 
@@ -534,7 +877,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=3,
             succeeded_count=3,
             failed_count=0,
@@ -543,7 +887,7 @@ class TestPipelineOutputByName:
         )
 
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="foo")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="foo")
 
         ref = pipeline.output("foo", "output")
         assert isinstance(ref, OutputReference)
@@ -573,7 +917,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -582,7 +927,7 @@ class TestPipelineOutputByName:
         )
 
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="foo")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="foo")
 
         import pytest
 
@@ -603,7 +948,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -611,20 +957,21 @@ class TestPipelineOutputByName:
             output_types={"output": "data"},
         )
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="dup")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="dup")
 
         # Step 1
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=1,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=2,
             succeeded_count=2,
             failed_count=0,
             output_roles=frozenset(["output"]),
             output_types={"output": "data"},
         )
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="dup")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="dup")
 
         ref = pipeline.output("dup", "output")
         assert ref.source_step == 1
@@ -640,7 +987,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -649,7 +997,7 @@ class TestPipelineOutputByName:
         )
 
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]})
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]})
 
         ref = pipeline.output("mock_op", "output")
         assert ref.source_step == 0
@@ -666,7 +1014,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -675,7 +1024,7 @@ class TestPipelineOutputByName:
         )
 
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="foo")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="foo")
 
         assert "foo" in pipeline
         assert "bar" not in pipeline
@@ -694,7 +1043,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -702,20 +1052,21 @@ class TestPipelineOutputByName:
             output_types={"output": "data"},
         )
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="dup")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="dup")
 
         # Step 1
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=1,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=2,
             succeeded_count=2,
             failed_count=0,
             output_roles=frozenset(["output"]),
             output_types={"output": "data"},
         )
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="dup")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="dup")
 
         ref = pipeline.output("dup", "output", step_number=0)
         assert ref.source_step == 0
@@ -736,7 +1087,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -744,7 +1096,7 @@ class TestPipelineOutputByName:
             output_types={"output": "data"},
         )
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="foo")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="foo")
 
         with pytest.raises(ValueError, match="has no entry with step_number=99"):
             pipeline.output("foo", "output", step_number=99)
@@ -765,7 +1117,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -773,20 +1126,21 @@ class TestPipelineOutputByName:
             output_types={"output": "data"},
         )
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="alpha")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="alpha")
 
         # Step 1 named "beta"
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=1,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
             output_types={"output": "data"},
         )
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="beta")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="beta")
 
         # step_number=1 belongs to "beta", not "alpha"
         with pytest.raises(ValueError, match="has no entry with step_number=1"):
@@ -805,7 +1159,8 @@ class TestPipelineOutputByName:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -813,7 +1168,7 @@ class TestPipelineOutputByName:
             output_types={"output": "data"},
         )
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="solo")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="solo")
 
         ref = pipeline.output("solo", "output", step_number=0)
         assert ref.source_step == 0
@@ -834,14 +1189,15 @@ class TestPipelineOutputByName:
             mock_execute.return_value = StepResult(
                 step_name="mock_op",
                 step_number=i,
-                success=True,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
                 total_count=1,
                 succeeded_count=1,
                 failed_count=0,
                 output_roles=frozenset(["output"]),
                 output_types={"output": "data"},
             )
-            pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="repeat")
+            pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="repeat")
 
         for i in range(3):
             ref = pipeline.output("repeat", "output", step_number=i)
@@ -874,11 +1230,17 @@ class TestCancellation:
         pipeline = _make_pipeline(tmp_path)
         pipeline.cancel()  # Cancel before any steps run
 
-        result_future = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]})
+        result_future = pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]})
         result = result_future.result()
 
-        assert result.metadata.get("skipped") is True
-        assert result.metadata.get("skip_reason") == "cancelled"
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
+        assert result_future.status == StepStatus.CANCELLED
+        transitions = mock_tracker.transition.call_args_list
+        assert transitions[-1].args[1:3] == (
+            StepStatus.PENDING,
+            StepStatus.CANCELLED,
+        )
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -902,12 +1264,13 @@ class TestCancellation:
             "_prepare_step_spec",
             side_effect=_prepare_then_cancel,
         ):
-            future = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]})
+            future = pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]})
 
         result = future.result(timeout=2)
         pipeline.finalize()
 
-        assert result.metadata["cancelled"] is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
         mock_execute.assert_not_called()
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -945,7 +1308,8 @@ class TestCancellation:
             return StepResult(
                 step_name="mock_op",
                 step_number=0,
-                success=True,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
                 total_count=1,
                 succeeded_count=1,
                 failed_count=0,
@@ -956,7 +1320,7 @@ class TestCancellation:
         mock_execute.side_effect = slow_execute
 
         pipeline = _make_pipeline(tmp_path)
-        step0 = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="slow")
+        step0 = pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]}, name="slow")
 
         # Submit the dependent step from another thread (submit() blocks
         # in _wait_for_predecessors on the calling thread)
@@ -982,8 +1346,8 @@ class TestCancellation:
         assert not dep_thread.is_alive(), "Dependent step hung after cancel"
         assert len(dep_result_holder) == 1
         result = dep_result_holder[0]
-        assert result.metadata.get("skipped") is True
-        assert result.metadata.get("skip_reason") == "cancelled"
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
 
         # Release step0 so the executor can shut down
         barrier.set()
@@ -1002,7 +1366,8 @@ class TestCancellation:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -1015,7 +1380,7 @@ class TestCancellation:
         # Submit a step, then cancel before it can run.
         # Use a single-thread executor so the closure is queued.
         # We cancel after submit but the closure checks cancel at start.
-        step0 = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="step0")
+        step0 = pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]}, name="step0")
         step0.result(timeout=5)  # let step0 finish
 
         # Now cancel and submit another step
@@ -1027,8 +1392,8 @@ class TestCancellation:
         )
         result = step1.result(timeout=5)
 
-        assert result.metadata.get("skipped") is True
-        assert result.metadata.get("skip_reason") == "cancelled"
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -1040,10 +1405,10 @@ class TestCancellation:
     ):
         """A recorded running step becomes terminal when cancelled in the queue."""
         import threading
-        import time
 
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
+        mock_tracker.current_state.return_value.status = StepStatus.RUNNING
         mock_tracker_cls.return_value = mock_tracker
         first_started = threading.Event()
         release_first = threading.Event()
@@ -1055,7 +1420,8 @@ class TestCancellation:
             return StepResult(
                 step_name="mock_op",
                 step_number=kwargs["step_number"],
-                success=True,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
                 total_count=1,
                 succeeded_count=1,
                 failed_count=0,
@@ -1065,11 +1431,11 @@ class TestCancellation:
 
         mock_execute.side_effect = _execute
         pipeline = _make_pipeline(tmp_path)
-        pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="first")
+        pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]}, name="first")
         assert first_started.wait(timeout=2)
         queued = pipeline.submit(
             _MockOp,
-            inputs={"data": ["b" * 32]},
+            inputs={"data": [_INPUT_ID]},
             name="queued",
         )
 
@@ -1082,20 +1448,20 @@ class TestCancellation:
 
         finalize_thread = threading.Thread(target=_finalize)
         finalize_thread.start()
-        deadline = time.monotonic() + 2
-        while queued.status != "cancelled":
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
+        assert queued.status == StepStatus.RUNNING
         release_first.set()
         finalize_thread.join(timeout=5)
 
         assert finalized.is_set()
-        assert queued.status == "cancelled"
+        assert queued.status == StepStatus.CANCELLED
         result = next(result for result in pipeline if result.step_number == 1)
-        assert result.metadata["cancelled"] is True
-        cancelled_record = mock_tracker.record_step_cancelled.call_args.args[0]
-        assert cancelled_record.step_number == 1
-        assert cancelled_record.step_name == "queued"
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
+        terminal = mock_tracker.transition.call_args_list[-1]
+        assert terminal.args[1:3] == (
+            StepStatus.RUNNING,
+            StepStatus.CANCELLED,
+        )
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_finalize_cancel_during_future_wait(self, mock_tracker_cls, tmp_path):
@@ -1174,11 +1540,12 @@ class TestCancellation:
             result = StepResult(
                 step_name="late",
                 step_number=0,
-                success=True,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
                 total_count=0,
                 succeeded_count=0,
                 failed_count=0,
-                metadata={"cancelled": True, "terminal_writer": True},
+                metadata={"terminal_writer": True},
             )
             pipeline._step_results.append(result)
             return result
@@ -1191,6 +1558,7 @@ class TestCancellation:
             output_roles=frozenset(),
             output_types={},
             future=future,
+            status_reader=lambda: StepStatus.RUNNING,
         )
         pipeline._step_start_records[0] = MagicMock()
         assert started.wait(timeout=1)
@@ -1205,11 +1573,8 @@ class TestCancellation:
         assert elapsed >= 5.0
         assert pipeline._executor is None
         assert len(pipeline._step_results) == 1
-        assert pipeline._step_results[0].metadata == {
-            "cancelled": True,
-            "terminal_writer": True,
-        }
-        mock_tracker_cls.return_value.record_step_cancelled.assert_not_called()
+        assert pipeline._step_results[0].metadata == {"terminal_writer": True}
+        mock_tracker_cls.return_value.transition.assert_not_called()
 
 
 class TestStepRegistry:
@@ -1235,7 +1600,8 @@ class TestStepRegistry:
             return StepResult(
                 step_name="mock_op",
                 step_number=0,
-                success=True,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
                 total_count=1,
                 succeeded_count=1,
                 failed_count=0,
@@ -1246,7 +1612,7 @@ class TestStepRegistry:
         mock_execute.side_effect = slow_execute
 
         pipeline = _make_pipeline(tmp_path)
-        future = pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="gen")
+        future = pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]}, name="gen")
 
         # Step is still running — output() should work via _step_registry
         ref = pipeline.output("gen", "output")
@@ -1267,7 +1633,7 @@ class TestStepRegistry:
         pipeline = _make_pipeline(tmp_path)
         pipeline.cancel()
 
-        pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, name="cancelled_step")
+        pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]}, name="cancelled_step")
 
         ref = pipeline.output("cancelled_step", "output")
         assert isinstance(ref, OutputReference)
@@ -1298,7 +1664,8 @@ class TestStepRegistry:
         mock_execute.return_value = StepResult(
             step_name="mock_op",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=1,
             succeeded_count=1,
             failed_count=0,
@@ -1307,7 +1674,7 @@ class TestStepRegistry:
         )
 
         pipeline = _make_pipeline(tmp_path)
-        pipeline.run(_MockOp, inputs={"data": ["a" * 32]}, name="foo")
+        pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="foo")
 
         with pytest.raises(ValueError, match="Output role 'bad' not available"):
             pipeline.output("foo", "bad")
@@ -1341,13 +1708,13 @@ class TestGenerateStepRunId:
     """Tests for _generate_step_run_id."""
 
     def test_returns_32_char_hex(self):
-        result = _generate_step_run_id("spec123")
+        result = _generate_step_run_id()
         assert len(result) == 32
         int(result, 16)  # valid hex
 
     def test_different_spec_ids_differ(self):
-        a = _generate_step_run_id("spec_a")
-        b = _generate_step_run_id("spec_b")
+        a = _generate_step_run_id()
+        b = _generate_step_run_id()
         assert a != b
 
 
@@ -1659,8 +2026,18 @@ class TestPipelineManagerDunderMethods:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         pipeline._step_results = [
-            StepResult(step_name="a", step_number=0, success=True),
-            StepResult(step_name="b", step_number=1, success=False),
+            StepResult(
+                step_name="a",
+                step_number=0,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+            ),
+            StepResult(
+                step_name="b",
+                step_number=1,
+                status=StepStatus.FAILED,
+                error="test failure",
+            ),
         ]
         s = str(pipeline)
         assert "2 steps" in s
@@ -1671,7 +2048,12 @@ class TestPipelineManagerDunderMethods:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         pipeline._step_results = [
-            StepResult(step_name="a", step_number=0, success=True),
+            StepResult(
+                step_name="a",
+                step_number=0,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+            ),
         ]
         assert "all succeeded" in str(pipeline)
 
@@ -1681,7 +2063,12 @@ class TestPipelineManagerDunderMethods:
         pipeline = _make_pipeline(tmp_path)
         assert len(pipeline) == 0
         pipeline._step_results.append(
-            StepResult(step_name="a", step_number=0, success=True)
+            StepResult(
+                step_name="a",
+                step_number=0,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+            )
         )
         assert len(pipeline) == 1
 
@@ -1689,8 +2076,18 @@ class TestPipelineManagerDunderMethods:
     def test_iter(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
-        r1 = StepResult(step_name="a", step_number=0, success=True)
-        r2 = StepResult(step_name="b", step_number=1, success=True)
+        r1 = StepResult(
+            step_name="a",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+        r2 = StepResult(
+            step_name="b",
+            step_number=1,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
         pipeline._step_results = [r1, r2]
         assert list(pipeline) == [r1, r2]
 
@@ -1698,8 +2095,18 @@ class TestPipelineManagerDunderMethods:
     def test_getitem_index(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
-        r0 = StepResult(step_name="a", step_number=0, success=True)
-        r1 = StepResult(step_name="b", step_number=1, success=True)
+        r0 = StepResult(
+            step_name="a",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+        r1 = StepResult(
+            step_name="b",
+            step_number=1,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
         pipeline._step_results = [r0, r1]
         assert pipeline[0] == r0
         assert pipeline[1] == r1
@@ -1709,8 +2116,18 @@ class TestPipelineManagerDunderMethods:
     def test_getitem_slice(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
-        r0 = StepResult(step_name="a", step_number=0, success=True)
-        r1 = StepResult(step_name="b", step_number=1, success=True)
+        r0 = StepResult(
+            step_name="a",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+        r1 = StepResult(
+            step_name="b",
+            step_number=1,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
         pipeline._step_results = [r0, r1]
         assert pipeline[0:1] == [r0]
 
@@ -1732,7 +2149,12 @@ class TestPipelineManagerDunderMethods:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         pipeline._step_results = [
-            StepResult(step_name="a", step_number=0, success=True),
+            StepResult(
+                step_name="a",
+                step_number=0,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+            ),
         ]
         assert pipeline
 
@@ -1741,8 +2163,18 @@ class TestPipelineManagerDunderMethods:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         pipeline._step_results = [
-            StepResult(step_name="a", step_number=0, success=True),
-            StepResult(step_name="b", step_number=1, success=False),
+            StepResult(
+                step_name="a",
+                step_number=0,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+            ),
+            StepResult(
+                step_name="b",
+                step_number=1,
+                status=StepStatus.FAILED,
+                error="test failure",
+            ),
         ]
         assert not pipeline
 
@@ -1785,61 +2217,6 @@ class TestBuildOutputTypes:
         assert PipelineManager._build_output_types({}) == {}
 
 
-class TestBuildInputSpec:
-    """Tests for PipelineManager._build_input_spec."""
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_none_returns_empty(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        assert pipeline._build_input_spec(None) == {}
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_dict_with_output_reference(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        pipeline._step_spec_ids[0] = "upstream_spec_abc"
-        inputs = {"data": OutputReference(source_step=0, role="output")}
-        result = pipeline._build_input_spec(inputs)
-        assert "data" in result
-        assert result["data"] == ("upstream_spec_abc", "output")
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_dict_with_literal_list(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        inputs = {"data": ["artifact_id_1", "artifact_id_2"]}
-        result = pipeline._build_input_spec(inputs)
-        assert "data" in result
-        assert result["data"][1] == ""  # literal role is empty
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_list_of_output_references(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        pipeline._step_spec_ids[0] = "spec_0"
-        pipeline._step_spec_ids[1] = "spec_1"
-        inputs = [
-            OutputReference(source_step=0, role="data"),
-            OutputReference(source_step=1, role="data"),
-        ]
-        result = pipeline._build_input_spec(inputs)
-        assert "_merged_streams" in result
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_list_of_file_paths(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        result = pipeline._build_input_spec(["/path/a.nc", "/path/b.nc"])
-        assert "_file_paths" in result
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_unsupported_type_returns_empty(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        assert pipeline._build_input_spec(42) == {}
-
-
 class TestRegisterStep:
     """Tests for PipelineManager._register_step."""
 
@@ -1871,11 +2248,19 @@ class TestSkipStep:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         outputs = {"output": MagicMock(artifact_type="data")}
-        future = pipeline._skip_step("skipped", outputs, "test_reason")
+        step_run_id = "a" * 32
+        _prime_attempt(pipeline, step_run_id, step_name="skipped")
+        future = pipeline._skip_step("skipped", outputs, "test_reason", step_run_id)
         result = future.result()
-        assert result.metadata["skipped"] is True
+        assert result.status == StepStatus.SKIPPED
         assert result.metadata["skip_reason"] == "test_reason"
         assert result.step_name == "skipped"
+        assert result.step_run_id == step_run_id
+        assert future.status == StepStatus.SKIPPED
+        assert pipeline._step_tracker.transition.call_args.args[1:3] == (
+            StepStatus.PENDING,
+            StepStatus.SKIPPED,
+        )
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_increments_step_counter(self, mock_tracker_cls, tmp_path):
@@ -1883,7 +2268,8 @@ class TestSkipStep:
         pipeline = _make_pipeline(tmp_path)
         assert pipeline._current_step == 0
         outputs = {"output": MagicMock(artifact_type="data")}
-        pipeline._skip_step("s", outputs, "reason")
+        _prime_attempt(pipeline, "a" * 32, step_name="s")
+        pipeline._skip_step("s", outputs, "reason", "a" * 32)
         assert pipeline._current_step == 1
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -1891,10 +2277,282 @@ class TestSkipStep:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         outputs = {"output": MagicMock(artifact_type="data")}
-        pipeline._skip_step("my_step", outputs, "reason")
+        _prime_attempt(pipeline, "a" * 32, step_name="my_step")
+        pipeline._skip_step("my_step", outputs, "reason", "a" * 32)
         assert len(pipeline._step_results) == 1
         assert "my_step" in pipeline._step_registry
         assert "my_step" in pipeline._named_steps
+
+
+class TestWholeStepCacheReuse:
+    """Whole-step hits retain the new current-run attempt identity."""
+
+    def test_hit_keeps_current_id_and_captures_source_executions(self, tmp_path):
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
+        pipeline = _make_pipeline(tmp_path)
+        tracker = MagicMock()
+        pipeline._step_tracker = tracker
+        source = "a" * 32
+        current = "b" * 32
+        cached_execution = "c" * 32
+        _prime_attempt(pipeline, current, status=StepStatus.RUNNING)
+        tracker.check_cache.return_value = _WholeStepCacheHit(
+            result=StepResult(
+                step_name="source",
+                step_number=8,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+                duration_seconds=99.0,
+                output_roles=frozenset({"output"}),
+                output_types={"output": ArtifactTypes.DATA},
+                metadata={"timings": {"total": 99.0}, "diagnostic": "kept"},
+                step_run_id=source,
+            ),
+            source_step_run_id=source,
+            execution_run_ids=(cached_execution,),
+        )
+
+        def _commit_reuse(*_args: Any, **kwargs: Any) -> StepResult:
+            return kwargs["result"].model_copy(update={"duration_seconds": 4.0})
+
+        with (
+            patch.object(
+                pipeline, "_commit_whole_step_reuse", side_effect=_commit_reuse
+            ) as commit_reuse,
+            patch(
+                "artisan.orchestration.pipeline_manager.time.perf_counter",
+                return_value=14.0,
+            ),
+        ):
+            future = pipeline._try_cached_step(
+                _MockOp,
+                {"data": [_INPUT_ID]},
+                StepOverrides.from_user(),
+                step_spec_id="spec",
+                step_number=0,
+                step_name="current",
+                prepared_operation=_MockOp(),
+                step_run_id=current,
+                attempt_started_at=10.0,
+            )
+
+        assert future is not None
+        result = future.result()
+        assert result.step_run_id == current
+        assert result.step_run_id != source
+        assert result.duration_seconds == 4.0
+        assert result.metadata == {"diagnostic": "kept"}
+        assert pipeline._step_run_ids[0] == current
+        commit_reuse.assert_called_once()
+        assert commit_reuse.call_args.args == (current, (cached_execution,))
+        assert commit_reuse.call_args.kwargs["step_number"] == 0
+        assert commit_reuse.call_args.kwargs["operation_name"] == _MockOp.name
+        assert commit_reuse.call_args.kwargs["step_spec_id"] == "spec"
+        persisted = commit_reuse.call_args.kwargs["result"]
+        assert persisted.disposition == StepDisposition.CACHE_HIT
+        tracker.transition.assert_not_called()
+
+    def test_compaction_failure_follows_terminal_and_preserves_success(
+        self, tmp_path
+    ) -> None:
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
+        pipeline = _make_pipeline(tmp_path)
+        tracker = MagicMock()
+        pipeline._step_tracker = tracker
+        current = "b" * 32
+        _prime_attempt(pipeline, current, status=StepStatus.RUNNING)
+        tracker.check_cache.return_value = _WholeStepCacheHit(
+            result=StepResult(
+                step_name="source",
+                step_number=8,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+                output_roles=frozenset({"output"}),
+                output_types={"output": ArtifactTypes.DATA},
+                step_run_id="a" * 32,
+            ),
+            source_step_run_id="a" * 32,
+            execution_run_ids=("c" * 32,),
+        )
+        events: list[str] = []
+
+        def _commit_reuse(*_args: Any, **kwargs: Any) -> StepResult:
+            events.append("terminal")
+            return kwargs["result"]
+
+        def _fail_compaction(*args, **kwargs) -> None:
+            events.append("compact")
+            msg = "maintenance unavailable"
+            raise OSError(msg)
+
+        with (
+            patch.object(
+                pipeline,
+                "_commit_whole_step_reuse",
+                side_effect=_commit_reuse,
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._compact_step_tables",
+                side_effect=_fail_compaction,
+            ),
+        ):
+            future = pipeline._try_cached_step(
+                _MockOp,
+                {"data": [_INPUT_ID]},
+                StepOverrides.from_user(),
+                step_spec_id="spec",
+                step_number=0,
+                step_name="current",
+                prepared_operation=_MockOp(),
+                step_run_id=current,
+                attempt_started_at=0.0,
+            )
+
+        assert future is not None
+        assert future.result().status == StepStatus.SUCCEEDED
+        assert events == ["terminal", "compact"]
+
+    def test_relation_commit_failure_prevents_terminal_success(self, tmp_path):
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
+        pipeline = _make_pipeline(tmp_path)
+        tracker = MagicMock()
+        pipeline._step_tracker = tracker
+        _prime_attempt(
+            pipeline,
+            "b" * 32,
+            status=StepStatus.RUNNING,
+            step_name="current",
+        )
+        tracker.check_cache.return_value = _WholeStepCacheHit(
+            result=StepResult(
+                step_name="source",
+                step_number=8,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+                output_roles=frozenset({"output"}),
+                output_types={"output": ArtifactTypes.DATA},
+                step_run_id="a" * 32,
+            ),
+            source_step_run_id="a" * 32,
+            execution_run_ids=("c" * 32,),
+        )
+
+        with (
+            patch.object(
+                pipeline,
+                "_commit_whole_step_reuse",
+                side_effect=CommitError(
+                    "step_result:" + "b" * 32,
+                    TablePath.CACHE_REUSE.value,
+                    "d" * 32,
+                    [],
+                    ["cache_reuse.parquet"],
+                    "cache reuse commit failed",
+                ),
+            ),
+            pytest.raises(CommitError),
+        ):
+            pipeline._try_cached_step(
+                _MockOp,
+                {"data": [_INPUT_ID]},
+                StepOverrides.from_user(),
+                step_spec_id="spec",
+                step_number=0,
+                step_name="current",
+                prepared_operation=_MockOp(),
+                step_run_id="b" * 32,
+                attempt_started_at=0.0,
+            )
+
+        tracker.transition.assert_not_called()
+        assert pipeline._step_results == []
+
+    def test_final_cancellation_prevents_relation_staging(self, tmp_path):
+        pipeline = _make_pipeline(tmp_path)
+        pipeline._cancel_event.set()
+
+        with (
+            patch(
+                "artisan.storage.core.run_scope.validate_cached_executions",
+                return_value=["c" * 32],
+            ) as validate,
+            patch("artisan.storage.io.staging.StagingManager") as staging,
+            patch("artisan.storage.io.commit.DeltaCommitter") as committer,
+        ):
+            result = StepResult(
+                step_name="mock_op",
+                step_number=0,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.CACHE_HIT,
+                step_run_id="b" * 32,
+            )
+            committed = pipeline._commit_whole_step_reuse(
+                "b" * 32,
+                ("c" * 32,),
+                step_number=0,
+                operation_name="mock_op",
+                result=result,
+                step_spec_id="spec",
+                attempt_started_at=0.0,
+            )
+
+        assert committed is None
+        validate.assert_called_once()
+        staging.assert_not_called()
+        committer.assert_not_called()
+
+    def test_final_cancellation_records_current_attempt_as_cancelled(self, tmp_path):
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
+        pipeline = _make_pipeline(tmp_path)
+        tracker = MagicMock()
+        pipeline._step_tracker = tracker
+        _prime_attempt(
+            pipeline,
+            "b" * 32,
+            status=StepStatus.RUNNING,
+            step_name="current",
+        )
+        tracker.check_cache.return_value = _WholeStepCacheHit(
+            result=StepResult(
+                step_name="source",
+                step_number=8,
+                status=StepStatus.SUCCEEDED,
+                disposition=StepDisposition.EXECUTED,
+                output_roles=frozenset({"output"}),
+                output_types={"output": ArtifactTypes.DATA},
+                step_run_id="a" * 32,
+            ),
+            source_step_run_id="a" * 32,
+            execution_run_ids=("c" * 32,),
+        )
+
+        with patch.object(pipeline, "_commit_whole_step_reuse", return_value=None):
+            future = pipeline._try_cached_step(
+                _MockOp,
+                {"data": [_INPUT_ID]},
+                StepOverrides.from_user(),
+                step_spec_id="spec",
+                step_number=0,
+                step_name="current",
+                prepared_operation=_MockOp(),
+                step_run_id="b" * 32,
+                attempt_started_at=0.0,
+            )
+
+        assert future is not None
+        result = future.result()
+        assert result.step_run_id == "b" * 32
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
+        assert tracker.record_cancellation.call_count == 2
+        assert tracker.transition.call_args.args[1:3] == (
+            StepStatus.RUNNING,
+            StepStatus.CANCELLED,
+        )
 
 
 # =============================================================================
@@ -1962,7 +2620,7 @@ class TestValidateOperationOverrides:
     def test_no_overrides(self):
         PipelineManager._validate_operation_overrides(
             _MockOp,
-            {"data": ["a" * 32]},
+            {"data": [_INPUT_ID]},
             StepOverrides.from_user(),
         )
 
@@ -2005,7 +2663,7 @@ class TestValidateOperationOverrides:
         with pytest.raises(TypeError, match="GroupByStrategy") as exc_info:
             PipelineManager._validate_operation_overrides(
                 _MockOp,
-                {"data": ["a" * 32]},
+                {"data": [_INPUT_ID]},
                 StepOverrides.from_user(
                     group_by="cross_product"
                 ),  # str instead of enum
@@ -2020,7 +2678,7 @@ class TestValidateOperationOverrides:
 
         PipelineManager._validate_operation_overrides(
             _MockOp,
-            {"data": ["a" * 32]},
+            {"data": [_INPUT_ID]},
             StepOverrides.from_user(group_by=GroupByStrategy.CROSS_PRODUCT),
         )
 
@@ -2028,7 +2686,7 @@ class TestValidateOperationOverrides:
         """``None`` is a valid value and means 'preserve class default'."""
         PipelineManager._validate_operation_overrides(
             _MockOp,
-            {"data": ["a" * 32]},
+            {"data": [_INPUT_ID]},
             StepOverrides.from_user(),
         )
 
@@ -2046,7 +2704,7 @@ class TestCheckEarlyExit:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         outputs = {"output": MagicMock(artifact_type="data")}
-        result = pipeline._check_early_exit("step", outputs, None)
+        result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is None
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -2055,8 +2713,10 @@ class TestCheckEarlyExit:
         pipeline = _make_pipeline(tmp_path)
         pipeline._stopped = True
         outputs = {"output": MagicMock(artifact_type="data")}
-        result = pipeline._check_early_exit("step", outputs, None)
+        _prime_attempt(pipeline, "a" * 32)
+        result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is not None
+        assert result.status == StepStatus.SKIPPED
         assert result.result().metadata["skip_reason"] == "pipeline_stopped"
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -2065,9 +2725,11 @@ class TestCheckEarlyExit:
         pipeline = _make_pipeline(tmp_path)
         pipeline._cancel_event.set()
         outputs = {"output": MagicMock(artifact_type="data")}
-        result = pipeline._check_early_exit("step", outputs, None)
+        _prime_attempt(pipeline, "a" * 32)
+        result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is not None
-        assert result.result().metadata["skip_reason"] == "cancelled"
+        assert result.status == StepStatus.CANCELLED
+        assert result.result().cancellation_status == CancellationStatus.CONFIRMED
 
 
 # =============================================================================
@@ -2136,15 +2798,23 @@ class TestConfigureLoggingCloudGuard:
             staging_root="s3://bucket/staging",
             working_root=str(tmp_path / "working"),
             files_root="s3://bucket/files",
-            recover_staging=False,  # avoids actually touching s3 in __init__
             storage=StorageConfig(protocol="s3"),
         )
         # StepTracker construction reads from delta_root via fs.exists,
         # which would fail without a real S3 step_runner; mock the fs.
+        fake_fs = MagicMock()
+        fake_fs.exists.return_value = True
+        fake_fs.open.side_effect = lambda *_args, **_kwargs: io.StringIO(
+            json.dumps(STORE_MANIFEST)
+        )
         with (
             patch("artisan.utils.logging.configure_logging") as mock_configure,
-            patch.object(StorageConfig, "filesystem", return_value=MagicMock()),
-            patch("artisan.orchestration.engine.step_tracker.StepTracker"),
+            patch.object(StorageConfig, "filesystem", return_value=fake_fs),
+            patch(
+                "artisan.storage.io.commit.prepare_store_initialization",
+                return_value=False,
+            ),
+            patch("artisan.orchestration.pipeline_manager.StepTracker"),
         ):
             PipelineManager(config)
         mock_configure.assert_called_once()
@@ -2165,6 +2835,7 @@ class TestPromoteFilePathsCloudUri:
         import contextlib
 
         import fsspec
+        from fixtures.store_format import publish_test_store
 
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
@@ -2176,20 +2847,18 @@ class TestPromoteFilePathsCloudUri:
             with mem_fs.open(f"/promote-cloud/data_{i}.csv", "wb") as f:
                 f.write(f"x,y\n{i},{i + 1}\n".encode())
 
-        # Pipeline storage is "memory" so step 1 of resolve_fs matches
-        # and uses storage.filesystem() (the same MemoryFileSystem).
-        # delta_root and staging_root must also live on memory:// so
-        # DeltaCommitter can write there.
+        # The input URI uses MemoryFileSystem while the committed format-2
+        # store stays local, exercising the cross-protocol resolution path.
         config = PipelineConfig(
             name="test",
-            delta_root="memory:///promote-cloud-delta",
-            staging_root="memory:///promote-cloud-staging",
+            delta_root=str(tmp_path / "promote-cloud-delta"),
+            staging_root=str(tmp_path / "promote-cloud-staging"),
             working_root=str(tmp_path / "working"),
-            files_root="memory:///promote-cloud-files",
-            recover_staging=False,
-            storage=StorageConfig(protocol="memory"),
+            files_root=str(tmp_path / "promote-cloud-files"),
+            storage=StorageConfig(),
         )
-        result, count = _promote_file_paths_to_store(
+        publish_test_store(config.delta_root, config.storage.filesystem())
+        result, count, verified = _promote_file_paths_to_store(
             [
                 "memory:///promote-cloud/data_0.csv",
                 "memory:///promote-cloud/data_1.csv",
@@ -2197,24 +2866,22 @@ class TestPromoteFilePathsCloudUri:
             config,
             step_number=1,
             operation_name="ingest",
+            step_run_id="a" * 32,
         )
         assert count == 2
         assert result is not None
         assert "file" in result
         assert len(result["file"]) == 2
+        assert verified == set(result["file"])
 
         # Best-effort cleanup of the in-memory fs. MemoryFileSystem
         # doesn't track empty dirs, so a missing parent on rm is fine.
-        for path in (
-            "/promote-cloud",
-            "/promote-cloud-delta",
-            "/promote-cloud-staging",
-        ):
+        for path in ("/promote-cloud",):
             with contextlib.suppress(FileNotFoundError):
                 mem_fs.rm(path, recursive=True)
 
-    def test_invalid_uri_surfaces_in_warning_not_crash(self, tmp_path, caplog):
-        """A bogus cloud URI is reported as Inaccessible, not a kickoff crash."""
+    def test_invalid_uri_fails_closed(self, tmp_path):
+        """An inaccessible cloud URI aborts raw-input preparation."""
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
         )
@@ -2225,19 +2892,19 @@ class TestPromoteFilePathsCloudUri:
             staging_root=str(tmp_path / "staging"),
             working_root=str(tmp_path / "working"),
         )
-        (tmp_path / "delta").mkdir(parents=True)
-        (tmp_path / "staging").mkdir(parents=True)
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
 
         # gcs:// without gcsfs installed → ImportError surfaces as
         # Inaccessible, not a crash. (gcsfs is in optional deps.)
-        result, count = _promote_file_paths_to_store(
-            ["gcs://nope/notfound.csv"],
-            config,
-            step_number=1,
-            operation_name="ingest",
-        )
-        assert result is None
-        assert count == 0
+        with pytest.raises(ArtifactIntegrityError, match="Inaccessible"):
+            _promote_file_paths_to_store(
+                ["gcs://nope/notfound.csv"],
+                config,
+                step_number=1,
+                operation_name="ingest",
+                step_run_id="a" * 32,
+            )
 
 
 # =============================================================================
@@ -2458,7 +3125,7 @@ def _slow_execute_step(**kwargs):
 
     time.sleep(0.2)
     return build_step_result(
-        operation=kwargs["operation_class"],
+        operation=kwargs["operation"],
         step_number=kwargs["step_number"],
         succeeded_count=1,
         failed_count=0,
@@ -2547,12 +3214,11 @@ class TestSilentMisconfigRejection:
 # =============================================================================
 
 _GOLDEN_STEP_SPEC_IDS: dict[str, str] = {
-    "bare": "8666ba0b064487dba1826070fee00a57",
-    "environment_local": "8666ba0b064487dba1826070fee00a57",
-    "environment_docker_dict": "56bf45b7aacfd45a6e16cdb205b8c420",
-    "compute_provider_modal": "dec35b7ae6fe17642e9f53ccb66fe848",
-    "compute_resources_a100": "8a4149df518a7d0d97082988dd3284c7",
-    "group_by_cross": "7883b18c8795f11bc4982cb19da13b60",
+    "bare": "92387ad3e5a1814738c3fdca68691d22",
+    "environment_local": "92387ad3e5a1814738c3fdca68691d22",
+    "environment_docker_dict": "03ec1a49005ae3dccb3b40a946c3831c",
+    "compute_resources_a100": "826868038f08147c42efef26c5ce9a32",
+    "group_by_cross": "d74e91064aabff4a5e9c8996f6d60e8f",
 }
 
 _GOLDEN_OVERRIDES: dict[str, dict[str, Any]] = {
@@ -2561,10 +3227,40 @@ _GOLDEN_OVERRIDES: dict[str, dict[str, Any]] = {
     "environment_docker_dict": {
         "environment": {"active": "docker", "docker": {"image": "img:v2"}}
     },
-    "compute_provider_modal": {"compute_provider": "modal"},
     "compute_resources_a100": {"compute_resources": {"gpu": "A100", "memory_gb": 32}},
     "group_by_cross": {"group_by": GroupByStrategy.CROSS_PRODUCT},
 }
+
+
+@patch("artisan.orchestration.pipeline_manager.compute_step_spec_id")
+@patch("artisan.orchestration.pipeline_manager.StepTracker")
+def test_unconfigured_compute_selector_terminalizes_after_attempt_creation(
+    mock_tracker_cls, mock_hash, tmp_path
+) -> None:
+    """Provider resolution failures become durable failed attempts."""
+    tracker = MagicMock()
+    tracker.current_state.return_value = MagicMock(
+        status=StepStatus.RUNNING,
+        cancellation_status=None,
+    )
+    mock_tracker_cls.return_value = tracker
+    pipeline = _make_pipeline(tmp_path)
+
+    result = pipeline.submit(
+        _MockOp,
+        inputs={"data": [_INPUT_ID]},
+        compute_provider="modal",
+    ).result()
+
+    assert result.status == StepStatus.FAILED
+    assert result.error is not None
+    assert "not configured" in result.error
+    tracker.create_attempt.assert_called_once()
+    assert tracker.transition.call_args_list[-1].args[1:3] == (
+        StepStatus.RUNNING,
+        StepStatus.FAILED,
+    )
+    mock_hash.assert_not_called()
 
 
 @pytest.mark.parametrize("label", sorted(_GOLDEN_STEP_SPEC_IDS))
@@ -2573,14 +3269,15 @@ _GOLDEN_OVERRIDES: dict[str, dict[str, Any]] = {
 def test_step_spec_id_is_byte_identical(
     mock_tracker_cls, mock_execute, label, tmp_path
 ):
-    """submit() reproduces the pre-refactor step_spec_id for each override combo."""
+    """submit() reproduces the format-2 ID for each concrete override combo."""
     mock_tracker = MagicMock()
     mock_tracker.check_cache.return_value = None
     mock_tracker_cls.return_value = mock_tracker
     mock_execute.return_value = StepResult(
         step_name=_MockOp.name,
         step_number=0,
-        success=True,
+        status=StepStatus.SUCCEEDED,
+        disposition=StepDisposition.EXECUTED,
         total_count=0,
         succeeded_count=0,
         failed_count=0,
@@ -2588,7 +3285,7 @@ def test_step_spec_id_is_byte_identical(
     )
 
     pipeline = _make_pipeline(tmp_path)
-    pipeline.submit(_MockOp, inputs={"data": ["a" * 32]}, **_GOLDEN_OVERRIDES[label])
+    pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]}, **_GOLDEN_OVERRIDES[label])
     pipeline.finalize()
 
     assert pipeline._step_spec_ids[0] == _GOLDEN_STEP_SPEC_IDS[label]
@@ -2677,14 +3374,15 @@ def test_class_default_image_bump_changes_step_spec_id(
         mock_execute.return_value = StepResult(
             step_name=op.name,
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             total_count=0,
             succeeded_count=0,
             failed_count=0,
             duration_seconds=0.0,
         )
         pipeline = _make_pipeline(tmp_path / op.__name__)
-        pipeline.submit(op, inputs={"data": ["a" * 32]})
+        pipeline.submit(op, inputs={"data": [_INPUT_ID]})
         pipeline.finalize()
         return pipeline._step_spec_ids[0]
 

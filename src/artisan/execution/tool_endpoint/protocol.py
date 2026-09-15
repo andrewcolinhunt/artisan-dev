@@ -14,32 +14,56 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from artisan.errors import ArtisanErrorEnvelope
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
 
 class InputRef(BaseModel):
-    """A tool input file: inline bytes or an object-store URI.
+    """A tool input file: inline bytes or an authorized remote URI.
 
     ``name`` is the input role; ``filename`` preserves the original file
     name across the wire — the worker materializes the file under it, so
     ``execute_command`` and lineage stem-matching see the same basename as a
     local run. Clients send inline bytes as multipart parts keyed by
     ``name``; the endpoint repacks them into ``data`` for the worker hop.
-    ``uri`` refs (e.g. ``s3://bucket/key``) are fetched worker-side via
-    fsspec and bypass the inline bound — already-external artifacts
-    re-upload nothing.
+    Authorized ``s3://`` refs use deployment credentials; authorized
+    HTTP(S) refs are fetched as bare capabilities. Every URI carries the
+    complete-file digest and size that the worker verifies before execution.
     """
 
     name: str
     filename: str | None = None
     uri: str | None = None
     data: bytes | None = None
+    content_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    size_bytes: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _one_data_plane(self) -> InputRef:
+        """Require exactly one inline or referenced input payload."""
+        if (self.uri is None) == (self.data is None):
+            msg = "InputRef must carry exactly one of uri or data"
+            raise ValueError(msg)
+        has_digest = self.content_digest is not None
+        has_size = self.size_bytes is not None
+        if has_digest != has_size:
+            msg = "InputRef content_digest and size_bytes must be provided together"
+            raise ValueError(msg)
+        if self.uri is not None and not has_digest:
+            msg = "URI InputRef requires content_digest and size_bytes"
+            raise ValueError(msg)
+        if self.data is not None and has_digest:
+            msg = "Inline InputRef must not carry URI integrity fields"
+            raise ValueError(msg)
+        return self
 
 
 class ToolRequest(BaseModel):
     """Internal worker payload: validated params + input refs."""
+
+    model_config = ConfigDict(extra="forbid")
 
     params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[InputRef] = Field(default_factory=list)
@@ -105,6 +129,14 @@ class SubmitResponse(BaseModel):
     """``POST /submit`` response."""
 
     call_id: str
+
+
+class CancelResponse(BaseModel):
+    """``POST /cancel`` response naming the call and observed outcome."""
+
+    call_id: str
+    status: CancellationStatus
+    message: str | None = None
 
 
 class ResultResponse(BaseModel):

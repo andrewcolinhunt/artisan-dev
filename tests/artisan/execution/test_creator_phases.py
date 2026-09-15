@@ -10,7 +10,8 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
-import xxhash
+from fixtures.store_format import commit_test_tables
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executors.creator import (
@@ -48,17 +49,21 @@ from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 # ---------------------------------------------------------------------------
 
 
-def _compute_id(content: bytes) -> str:
-    return xxhash.xxh3_128(content).hexdigest()
-
-
 def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> None:
-    metrics_path = base_path / "artifacts/metrics"
-    pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA).write_delta(
-        str(metrics_path)
+    fs = LocalFileSystem()
+    staging_root = base_path.parent / "seed-staging"
+    commit_test_tables(
+        delta_root=str(base_path),
+        staging_root=str(staging_root),
+        fs=fs,
+        tables={
+            "artifacts/metrics": pl.DataFrame(
+                metrics, schema=MetricArtifact.POLARS_SCHEMA
+            ),
+            "artifacts/index": pl.DataFrame(index, schema=ARTIFACT_INDEX_SCHEMA),
+        },
+        step_run_id="0" * 32,
     )
-    index_path = base_path / "artifacts/index"
-    pl.DataFrame(index, schema=ARTIFACT_INDEX_SCHEMA).write_delta(str(index_path))
 
 
 class _SimpleOp(OperationDefinition):
@@ -139,23 +144,13 @@ def delta_env(tmp_path: Path):
     index = []
     ids = []
     for i in range(2):
-        content = json.dumps({"value": i}, sort_keys=True).encode("utf-8")
-        aid = _compute_id(content)
-        ids.append(aid)
-        metrics.append(
-            {
-                "artifact_id": aid,
-                "origin_step_number": 0,
-                "content": content,
-                "original_name": f"metric_{i}",
-                "extension": ".json",
-                "metadata": "{}",
-                "external_path": None,
-            }
-        )
+        artifact = MetricArtifact.draft({"value": i}, f"metric_{i}.json", step_number=0)
+        artifact.finalize()
+        ids.append(artifact.artifact_id)
+        metrics.append(artifact.to_row())
         index.append(
             {
-                "artifact_id": aid,
+                "artifact_id": artifact.artifact_id,
                 "artifact_type": "metric",
                 "origin_step_number": 0,
                 "metadata": "{}",
@@ -302,7 +297,20 @@ class TestReassembleResults:
         (d1 / "out_1.bin").write_text("b")
 
         _, _, pair_map = _reassemble_results([None, None], [str(d0), str(d1)])
-        assert pair_map == {"out_0": 0, "out_1": 1}
+        assert pair_map == {"out_0": [0], "out_1": [1]}
+
+    def test_output_pair_map_retains_duplicate_basename_occurrences(self, tmp_path):
+        """Equal basenames emitted by different slots retain both pair indices."""
+        directories = []
+        for slot in range(2):
+            directory = tmp_path / f"artifact_{slot}"
+            directory.mkdir()
+            (directory / "result.bin").write_text(str(slot))
+            directories.append(str(directory))
+
+        _, _, pair_map = _reassemble_results([None, None], directories)
+
+        assert pair_map == {"result": [0, 1]}
 
 
 # ---------------------------------------------------------------------------

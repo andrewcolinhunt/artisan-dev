@@ -1,8 +1,9 @@
 """Tool endpoints: per-tool Modal apps serving a typed, tool-native HTTP API.
 
 ``protocol`` holds the wire models, ``transport`` the bulk-file data plane,
-``server`` the worker-side execution, and ``deploy`` the Modal app builder
-(import ``deploy`` directly — it requires the ``modal`` SDK).
+``server`` the worker-side execution, and ``deploy`` the Modal app builder.
+The package and deployment module import without Modal; invoking deployment or
+default endpoint discovery requires the ``modal`` extra.
 """
 
 from __future__ import annotations

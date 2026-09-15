@@ -1,11 +1,10 @@
 """Structured error identity for agent-recoverable failures.
 
 ``ArtisanError`` + ``ErrorCode`` is the single source of truth for error
-*identity*; ``ArtisanErrorEnvelope`` is its *serialization*, produced only
-at the boundaries a machine reads the structure across — currently the
-tool-endpoint wire (``execution/tool_endpoint``) and registry discovery
-(``registry/api.py``). The envelope is not a field bolted onto every
-string-carrying result: a new ``ErrorCode`` or envelope field ships only
+*identity*; ``ArtisanErrorEnvelope`` is its *serialization*, consumed at
+machine-readable boundaries including CLI/MCP responses, the tool-endpoint
+wire, and persisted failure records. The envelope is not a field bolted onto
+every string-carrying result: a new ``ErrorCode`` or envelope field ships only
 together with a raise site **and** a reader that consumes it.
 """
 
@@ -35,8 +34,7 @@ class ArtisanErrorEnvelope(BaseModel):
     Attributes:
         error_type: Coarse category. Required at every raise site.
         code: Stable agent-recognizable identifier (e.g. ``"op_execute_failed"``).
-        message: Human-readable summary; unchanged from legacy string errors
-            so log-matching tests keep working.
+        message: Human-readable failure summary.
         operation_name: The operation whose validation/execution raised.
         step_name: The pipeline step name, when known.
         field: Dotted path locating the offending field
@@ -169,9 +167,14 @@ class ErrorCode:
     TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
-    # config/io — CLI machine-read boundary (cli.py store-reading commands)
+    # config/io — machine-readable store APIs
     DELTA_ROOT_UNSET = "delta_root_unset"
     STORE_NOT_FOUND = "store_not_found"
+    ARTIFACT_INTEGRITY_FAILED = "artifact_integrity_failed"
+    PERSISTENCE_INTEGRITY_FAILED = "persistence_integrity_failed"
+    STORE_INTEGRITY_FAILED = "store_integrity_failed"
+    COMMIT_FAILED = "commit_failed"
+    INCOMPATIBLE_STORE = "incompatible_store"
 
     # io — worker-side input resolution / output delivery (tool-endpoint wire)
     INPUT_RESOLUTION_FAILED = "input_resolution_failed"
@@ -184,27 +187,95 @@ class ErrorCode:
     PASSTHROUGH_VALIDATION_FAILED = "passthrough_validation_failed"
 
 
-class CommitError(Exception):
-    """Raised when one or more table commits fail in ``commit_all_tables``.
+class CommitError(ArtisanError):
+    """Raised at the first failed table in one immutable commit plan."""
 
-    Delta Lake has no multi-table transaction, so a partial failure can
-    leave earlier tables committed and the store inconsistent. The
-    committer preserves staging (skips cleanup) on failure so the commit
-    can be retried; ``DeltaCommitter.recover_staged`` re-commits the
-    preserved Parquet idempotently via anti-join deduplication.
+    def __init__(
+        self,
+        logical_commit_id: str,
+        table: str,
+        plan_key: str,
+        verified_tables: list[str],
+        staging_objects: list[str],
+        message: str,
+    ) -> None:
+        """Create a structured, repair-oriented commit failure."""
+        self.logical_commit_id = logical_commit_id
+        self.table = table
+        self.plan_key = plan_key
+        self.verified_tables = tuple(verified_tables)
+        self.staging_objects = tuple(staging_objects)
+        super().__init__(
+            code=ErrorCode.COMMIT_FAILED,
+            message=message,
+            error_type="io",
+            hint=f"Run `artisan store repair` for {logical_commit_id}",
+            recovery_hint="REPORT_TO_USER",
+        )
 
-    Attributes:
-        failed_tables: Names of the tables whose commit raised.
-    """
+    def to_dict(self, include_cause: bool = True) -> dict[str, Any]:
+        """Serialize the standard envelope with exact repair context."""
+        data = super().to_dict(include_cause=include_cause)
+        data.update(
+            logical_commit_id=self.logical_commit_id,
+            table=self.table,
+            plan_key=self.plan_key,
+            verified_tables=list(self.verified_tables),
+            staging_objects=list(self.staging_objects),
+        )
+        return data
 
-    def __init__(self, failed_tables: list[str]) -> None:
-        """Build the error from the list of failed table names.
 
-        Args:
-            failed_tables: Names of the tables whose commit raised.
-        """
-        self.failed_tables = failed_tables
-        super().__init__(f"Failed to commit tables: {', '.join(failed_tables)}")
+class StoreIntegrityError(ArtisanError):
+    """Raised when plan, control, staged, or persisted evidence conflicts."""
+
+    def __init__(self, message: str) -> None:
+        """Create a fail-closed store integrity error."""
+        super().__init__(
+            code=ErrorCode.STORE_INTEGRITY_FAILED,
+            message=message,
+            error_type="io",
+            recovery_hint="REPORT_TO_USER",
+        )
+
+
+class ArtifactIntegrityError(ArtisanError):
+    """Raised when persisted or externally backed artifact bytes drift."""
+
+    def __init__(self, message: str) -> None:
+        """Create a fail-closed artifact integrity error."""
+        super().__init__(
+            code=ErrorCode.ARTIFACT_INTEGRITY_FAILED,
+            message=message,
+            error_type="io",
+            recovery_hint="CHECK_INPUT",
+        )
+
+
+class IncompatibleStoreError(ArtisanError):
+    """Raised when a Delta root is not the required Artisan store format."""
+
+    def __init__(self, message: str) -> None:
+        """Create a store-format compatibility error."""
+        super().__init__(
+            code=ErrorCode.INCOMPATIBLE_STORE,
+            message=message,
+            error_type="config",
+            recovery_hint="CHECK_INPUT",
+        )
+
+
+class PersistenceIntegrityError(ArtisanError):
+    """Raised when persisted framework relations are inconsistent."""
+
+    def __init__(self, message: str) -> None:
+        """Create a fail-closed persistence integrity error."""
+        super().__init__(
+            code=ErrorCode.PERSISTENCE_INTEGRITY_FAILED,
+            message=message,
+            error_type="io",
+            recovery_hint="REPORT_TO_USER",
+        )
 
 
 def _default_doc_uri(code: str) -> str:

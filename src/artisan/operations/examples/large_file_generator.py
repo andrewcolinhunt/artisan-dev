@@ -23,7 +23,7 @@ from artisan.schemas.operation_config.compute import ComputeProvider, ModalCompu
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 class LargeFileGenerator(OperationDefinition):
@@ -88,13 +88,15 @@ class LargeFileGenerator(OperationDefinition):
             data = rng.randbytes(self.params.file_size_bytes)
             with open(output_path, "wb") as f:
                 f.write(data)
-            files_meta.append({
-                "path": output_path,
-                "content_hash": compute_artifact_id(data),
-                "size_bytes": len(data),
-                "original_name": f"output_{i:05d}",
-                "extension": ".bin",
-            })
+            files_meta.append(
+                {
+                    "path": output_path,
+                    "content_hash": compute_content_digest(data),
+                    "size_bytes": len(data),
+                    "original_name": f"output_{i:05d}",
+                    "extension": ".bin",
+                }
+            )
 
         return {"files": files_meta}
 

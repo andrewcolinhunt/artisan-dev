@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 
 
@@ -193,8 +194,6 @@ class TestTwoDataclassPattern:
 
     def test_artifact_edge_has_9_fields(self):
         """Test that ArtifactProvenanceEdge has exactly 9 fields."""
-        from artisan.schemas import ArtifactProvenanceEdge
-
         field_names = list(ArtifactProvenanceEdge.model_fields.keys())
         assert len(field_names) == 9
         assert set(field_names) == {

@@ -24,12 +24,13 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-from fixtures import failure_ops as fo
+from fixtures import failure_ops
 
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.visualization.inspect import inspect_failures
 
 from .conftest import (
@@ -88,12 +89,12 @@ def _assert_one_failure(
 @pytest.mark.parametrize(
     ("op", "code_populated"),
     [
-        (fo.FailPreprocess, False),
-        (fo.FailExecute, False),
-        (fo.FailExecuteArtisan, True),
-        (fo.FailPostprocessRaise, False),
-        (fo.FailPostprocessReturn, False),
-        (fo.FailCommand, True),
+        (failure_ops.FailPreprocess, False),
+        (failure_ops.FailExecute, False),
+        (failure_ops.FailExecuteArtisan, True),
+        (failure_ops.FailPostprocessRaise, False),
+        (failure_ops.FailPostprocessReturn, False),
+        (failure_ops.FailCommand, True),
     ],
     ids=[
         "preprocess",
@@ -110,7 +111,7 @@ def test_creator_continue_records_failure(
     """CONTINUE creator failure: one readable row + log, correct envelope."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.CONTINUE)
     step = pipeline.run(op, step_runner=Runner.LOCAL)
-    assert step.success is False
+    assert step.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
@@ -126,12 +127,15 @@ def test_creator_continue_records_failure(
 def test_creator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> None:
     """FAIL_FAST full failure lands a readable row (was stranded in staging)."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.FAIL_FAST)
-    step = pipeline.run(fo.FailExecute, step_runner=Runner.LOCAL)
-    assert step.success is False
+    step = pipeline.run(failure_ops.FailExecute, step_runner=Runner.LOCAL)
+    assert step.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
-        pipeline_env, operation=fo.FailExecute.name, step=0, code_populated=False
+        pipeline_env,
+        operation=failure_ops.FailExecute.name,
+        step=0,
+        code_populated=False,
     )
 
 
@@ -160,7 +164,10 @@ def test_creator_partial_keeps_sibling_success(
         params={"fail_on_index": 0},
         step_runner=Runner.LOCAL,
     )
-    assert step1.success is False
+    expected = (
+        StepStatus.PARTIAL if policy is FailurePolicy.CONTINUE else StepStatus.FAILED
+    )
+    assert step1.status is expected
     pipeline.finalize()
 
     # Exactly one failure row for the transformer step, with a log.
@@ -183,9 +190,9 @@ def test_creator_partial_keeps_sibling_success(
 @pytest.mark.parametrize(
     ("op", "code_populated"),
     [
-        (fo.FailCuratorRaise, False),
-        (fo.FailCuratorArtisan, True),
-        (fo.FailCuratorReturn, False),
+        (failure_ops.FailCuratorRaise, False),
+        (failure_ops.FailCuratorArtisan, True),
+        (failure_ops.FailCuratorReturn, False),
     ],
     ids=["body-raise", "body-artisanerror", "body-return-false"],
 )
@@ -200,7 +207,7 @@ def test_curator_continue_records_failure(
     step1 = pipeline.run(
         op, inputs={"passthrough": gen.output("datasets")}, step_runner=Runner.LOCAL
     )
-    assert step1.success is False
+    assert step1.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
@@ -215,15 +222,18 @@ def test_curator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> 
         DataGenerator, params={"count": 2, "seed": 5}, step_runner=Runner.LOCAL
     )
     step1 = pipeline.run(
-        fo.FailCuratorRaise,
+        failure_ops.FailCuratorRaise,
         inputs={"passthrough": gen.output("datasets")},
         step_runner=Runner.LOCAL,
     )
-    assert step1.success is False
+    assert step1.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
-        pipeline_env, operation=fo.FailCuratorRaise.name, step=1, code_populated=False
+        pipeline_env,
+        operation=failure_ops.FailCuratorRaise.name,
+        step=1,
+        code_populated=False,
     )
 
 
@@ -242,12 +252,17 @@ def test_composite_internal_failure_recorded(
 ) -> None:
     """A failing internal composite step records a readable failure row."""
     pipeline = _pipeline(pipeline_env, policy)
-    result = pipeline.submit_composite(fo.FailingComposite, step_runner=Runner.LOCAL)
+    result = pipeline.submit_composite(
+        failure_ops.FailingComposite, step_runner=Runner.LOCAL
+    )
     result.wait()
     pipeline.finalize()
 
     _assert_one_failure(
-        pipeline_env, operation=fo.FailExecute.name, step=0, code_populated=False
+        pipeline_env,
+        operation=failure_ops.FailExecute.name,
+        step=0,
+        code_populated=False,
     )
 
 
@@ -261,12 +276,15 @@ def test_creator_worker_crash_synthesizes_record(
 ) -> None:
     """A creator that os._exit's the worker still lands a synthesized row + log."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.CONTINUE)
-    step = pipeline.run(fo.WorkerCrash, step_runner=Runner.LOCAL)
-    assert step.success is False
+    step = pipeline.run(failure_ops.WorkerCrash, step_runner=Runner.LOCAL)
+    assert step.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
-        pipeline_env, operation=fo.WorkerCrash.name, step=0, code_populated=False
+        pipeline_env,
+        operation=failure_ops.WorkerCrash.name,
+        step=0,
+        code_populated=False,
     )
 
 
@@ -279,16 +297,16 @@ def test_curator_worker_crash_synthesizes_record(
         DataGenerator, params={"count": 1, "seed": 5}, step_runner=Runner.LOCAL
     )
     step1 = pipeline.run(
-        fo.CuratorWorkerCrash,
+        failure_ops.CuratorWorkerCrash,
         inputs={"passthrough": gen.output("datasets")},
         step_runner=Runner.LOCAL,
     )
-    assert step1.success is False
+    assert step1.status is StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
         pipeline_env,
-        operation=fo.CuratorWorkerCrash.name,
+        operation=failure_ops.CuratorWorkerCrash.name,
         step=1,
         code_populated=False,
     )

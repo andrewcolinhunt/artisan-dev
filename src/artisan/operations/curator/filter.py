@@ -7,11 +7,12 @@ criteria, and returns the IDs of passthrough artifacts that pass all criteria.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from enum import StrEnum, auto
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import polars as pl
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -173,6 +174,28 @@ def _build_metric_namespace(
     return base_df, step_info
 
 
+def _build_metric_sources(
+    metric_ids: set[str],
+    artifact_store: ArtifactStore,
+    pipeline_run_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Summarize distinct metric artifacts by producing step."""
+    if not metric_ids:
+        return []
+
+    step_number_map = artifact_store.provenance.load_step_map(metric_ids)
+    step_name_map = artifact_store.provenance.load_step_name_map(pipeline_run_id)
+    counts = Counter(step_number_map.values())
+    return [
+        {
+            "step_number": step_number,
+            "step_name": step_name_map.get(step_number, ""),
+            "metric_count": counts[step_number],
+        }
+        for step_number in sorted(counts)
+    ]
+
+
 def _check_collision(field: str, step_info: dict[str, Any]) -> None:
     """Raise ValueError if a field comes from multiple steps.
 
@@ -265,10 +288,13 @@ def _criterion_stats(
     numeric = wide[crit.metric].drop_nulls().cast(pl.Float64, strict=False).drop_nulls()
     if numeric.len() == 0:
         return pass_count, None
+    minimum = cast(float, numeric.min())
+    maximum = cast(float, numeric.max())
+    mean = cast(float, numeric.mean())
     return pass_count, {
-        "min": numeric.min(),
-        "max": numeric.max(),
-        "mean": round(float(numeric.mean()), 6),  # type: ignore[arg-type]
+        "min": minimum,
+        "max": maximum,
+        "mean": round(mean, 6),
     }
 
 
@@ -471,7 +497,7 @@ class Filter(OperationDefinition):
 
         criteria: list[Criterion] = []
         passthrough_failures: bool = False
-        chunk_size: int = 100_000
+        chunk_size: int = Field(default=100_000, gt=0)
 
     params: Params = Params()
 
@@ -578,11 +604,13 @@ class Filter(OperationDefinition):
             )
         )
 
-        total_metrics_discovered = (
-            all_metric_pairs["metric_id"].n_unique()
+        unique_metric_ids = (
+            set(all_metric_pairs["metric_id"].to_list())
             if not all_metric_pairs.is_empty()
-            else 0
+            else set()
         )
+        total_metrics_discovered = len(unique_metric_ids)
+        metric_sources = _build_metric_sources(unique_metric_ids, artifact_store)
 
         # ── Phase 2: Chunked hydration + evaluation ──
 
@@ -592,7 +620,6 @@ class Filter(OperationDefinition):
         accumulator = _DiagnosticsAccumulator(self.params.criteria)
         all_passed_ids: list[str] = []
         resolved_steps: list[int | None] = [None] * len(self.params.criteria)
-        metric_sources_map: dict[int, dict[str, Any]] = {}
 
         for chunk_start in range(0, passthrough_df.height, self.params.chunk_size):
             chunk_pt = passthrough_df.slice(chunk_start, self.params.chunk_size)
@@ -628,20 +655,16 @@ class Filter(OperationDefinition):
             for i, crit in enumerate(self.params.criteria):
                 if crit.step is None and crit.step_number is None:
                     continue
-                resolved_steps[i] = crit.step_number
-
-            # Collect metric source info from step_info
-            if step_info is not None:
-                for _field, step_nums in step_info.items():
-                    for sn in step_nums:
-                        if sn not in metric_sources_map:
-                            metric_sources_map[sn] = {
-                                "step_number": sn,
-                                "step_name": step_info.get("_step_names", {}).get(
-                                    sn, ""
-                                ),
-                                "metric_count": 0,
-                            }
+                if crit.step_number is not None:
+                    resolved_steps[i] = crit.step_number
+                elif step_info is not None:
+                    matching_steps = [
+                        sn
+                        for sn, name in step_info.get("_step_names", {}).items()
+                        if name == crit.step
+                    ]
+                    if len(matching_steps) == 1:
+                        resolved_steps[i] = matching_steps[0]
 
             # Add null columns for missing criteria references
             for c in self.params.criteria:
@@ -665,10 +688,6 @@ class Filter(OperationDefinition):
             accumulator.update(wide_chunk, bool_exprs)
 
         # ── Build final result ──
-
-        metric_sources = sorted(
-            metric_sources_map.values(), key=lambda x: x["step_number"]
-        )
 
         diagnostics = accumulator.finalize(
             criteria=self.params.criteria,

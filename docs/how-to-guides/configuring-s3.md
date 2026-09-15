@@ -21,7 +21,7 @@ read credentials from the environment:
 
 ```python
 from artisan.orchestration import PipelineConfig, PipelineManager
-from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas import StorageConfig
 
 pipeline = PipelineManager(
     PipelineConfig(
@@ -134,7 +134,9 @@ Construct the manager and submit a no-op:
 
 ```python
 pipeline = PipelineManager(config)
-print(pipeline.config.storage.delta_storage_options())  # confirms delta-rs sees the endpoint
+print(
+    pipeline.config.storage.delta_storage_options()
+)  # confirms delta-rs sees the endpoint
 ```
 
 If you're testing against MinIO locally, the project provides a

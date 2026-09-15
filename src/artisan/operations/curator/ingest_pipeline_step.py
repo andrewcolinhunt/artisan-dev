@@ -194,7 +194,8 @@ class IngestPipelineStep(OperationDefinition):
         """Re-draft an artifact for import into the current pipeline.
 
         Creates a copy with a new step number and clears the artifact_id
-        so finalize() recomputes it. Same content produces same artifact_id.
+        so finalize() recomputes it. The import metadata deliberately gives
+        the new root a distinct semantic identity from its source artifact.
 
         Args:
             artifact: Source artifact (finalized).

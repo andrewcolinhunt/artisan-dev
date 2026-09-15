@@ -10,6 +10,7 @@ from typing import Any
 
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.tool_endpoint.client import call_endpoint, cancel_scope
+from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
 from artisan.schemas.specs.input_models import ExecuteInput
 
 _CANCEL_POLL_SECONDS = 1.0
@@ -43,6 +44,8 @@ class EndpointExecuteRouter(ExecuteRouter):
         self._cancel_check = cancel_check
         self._max_concurrent_calls = max_concurrent_calls
         self._cancel = threading.Event()
+        self._acknowledgements: list[CancellationAcknowledgement] = []
+        self._acknowledgement_lock = threading.Lock()
 
     def route_execute(
         self,
@@ -66,11 +69,12 @@ class EndpointExecuteRouter(ExecuteRouter):
         if self._cancel_check is None:
             yield
             return
+        cancel_check = self._cancel_check
         stop = threading.Event()
 
         def _watch() -> None:
             while not stop.wait(_CANCEL_POLL_SECONDS):
-                if self._cancel_check():
+                if cancel_check():
                     self._cancel.set()
                     return
 
@@ -83,7 +87,16 @@ class EndpointExecuteRouter(ExecuteRouter):
     def _call_one(self, operation: Any, execute_input: ExecuteInput) -> Any:
         try:
             with cancel_scope(self._cancel):
-                call_endpoint(operation, execute_input)
+                acknowledgement = call_endpoint(operation, execute_input)
+                if acknowledgement is not None:
+                    with self._acknowledgement_lock:
+                        self._acknowledgements.append(acknowledgement)
                 return None
         except Exception as exc:
             return exc
+
+    @property
+    def cancellation_acknowledgements(self) -> tuple[CancellationAcknowledgement, ...]:
+        """Return cancellation evidence from calls that completed naturally."""
+        with self._acknowledgement_lock:
+            return tuple(self._acknowledgements)

@@ -111,6 +111,7 @@ Every package's `__init__.py` must contain three things:
 2. **Re-exports** — import public symbols from internal modules
 3. **`__all__`** — explicit list of public symbols
 
+<!-- artisan-import-policy: allow-internal -->
 ```python
 """Artisan curator operations: Filter, Merge, Ingest, InteractiveFilter."""
 
@@ -223,6 +224,7 @@ for the full diagram.
 When importing across packages, prefer importing from the package's
 re-exports (`__init__.py`). Each package's `__all__` defines its public API.
 
+<!-- artisan-import-policy: allow-internal -->
 ```python
 # Cross-package imports — use re-exports
 from artisan.schemas import DataArtifact, ArtifactResult, InputSpec, OutputSpec
@@ -421,7 +423,7 @@ def run_creator_flow(unit, runtime_env, worker_id=0) -> StagingResult:
     execution_run_id = generate_execution_run_id(...)
     try:
         # Lifecycle: setup → preprocess → execute → postprocess → lineage
-        lifecycle_result = run_creator_lifecycle(unit, runtime_env, worker_id, ...)
+        lifecycle_result = run_creator_lifecycle(unit, runtime_env, worker_id)
 
         # Record phase: stage results to parquet
         return record_execution_success(...)
@@ -439,7 +441,7 @@ def run_creator_flow(unit, runtime_env, worker_id=0) -> StagingResult:
         execution_context = _try_build_execution_context(...)
         if execution_context is None:
             # Setup itself failed — return a bare StagingResult
-            return StagingResult(success=False, error=error, ...)
+            return StagingResult(success=False, error=error)
         return record_execution_failure(...)
 ```
 
@@ -460,9 +462,9 @@ def execute_unit(unit, runtime_env):
             result = run_curator_flow(unit, runtime_env, worker_id=...)
         else:
             result = run_creator_flow(unit, runtime_env, worker_id=...)
-        return {"success": result.success, "error": result.error, ...}
+        return {"success": result.success, "error": result.error}
     except Exception as exc:
-        return {"success": False, "error": format_error(exc), ...}
+        return {"success": False, "error": format_error(exc)}
 ```
 
 ### The futures collection pattern
@@ -481,7 +483,7 @@ for f in futures:
         results.append(f.result())
     except Exception as exc:
         logger.error("Future raised during result collection: %s: %s", type(exc).__name__, exc)
-        results.append({"success": False, "error": format_error(exc), ...})
+        results.append({"success": False, "error": format_error(exc)})
 return results
 ```
 
@@ -511,7 +513,7 @@ for i, item in enumerate(batch_items):
         results.append(result)
     except Exception as e:
         logger.error("Item %s/%s failed: %s", i + 1, len(batch_items), e)
-        results.append({"success": False, "error": format_error(e), ...})
+        results.append({"success": False, "error": format_error(e)})
 # All items processed, all results collected
 return results
 ```

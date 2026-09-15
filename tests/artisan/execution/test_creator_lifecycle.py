@@ -14,7 +14,8 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
-import xxhash
+from fixtures.logical_commit_store import commit_test_inputs
+from pydantic import BaseModel, Field
 
 from artisan.execution.executors.creator import (
     LifecycleResult,
@@ -36,18 +37,30 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
 
-def _compute_id(content: bytes) -> str:
-    return xxhash.xxh3_128(content).hexdigest()
-
-
-def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> None:
-    """Write Delta Lake tables for test input artifacts."""
-    metrics_path = base_path / "artifacts/metrics"
-    pl.DataFrame(metrics, schema=MetricArtifact.POLARS_SCHEMA).write_delta(
-        str(metrics_path)
+def _setup_delta(base_path: Path, artifacts: list[MetricArtifact]) -> None:
+    """Commit test input artifacts through the logical-commit boundary."""
+    commit_test_inputs(
+        base_path,
+        base_path.parent / "fixture-staging",
+        {
+            "artifacts/metrics": pl.DataFrame(
+                [artifact.to_row() for artifact in artifacts],
+                schema=MetricArtifact.POLARS_SCHEMA,
+            ),
+            "artifacts/index": pl.DataFrame(
+                [
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "artifact_type": artifact.artifact_type,
+                        "origin_step_number": artifact.origin_step_number,
+                        "metadata": json.dumps(artifact.metadata),
+                    }
+                    for artifact in artifacts
+                ],
+                schema=ARTIFACT_INDEX_SCHEMA,
+            ),
+        },
     )
-    index_path = base_path / "artifacts/index"
-    pl.DataFrame(index, schema=ARTIFACT_INDEX_SCHEMA).write_delta(str(index_path))
 
 
 class _SuffixOp(OperationDefinition):
@@ -75,7 +88,10 @@ class _SuffixOp(OperationDefinition):
         ),
     }
 
-    suffix: str = "_scored"
+    class Params(BaseModel):
+        suffix: str = Field(default="_scored", description="Output file suffix.")
+
+    params: Params = Params()
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
@@ -90,7 +106,7 @@ class _SuffixOp(OperationDefinition):
                 content = json.loads(fh.read())
             content["scored"] = True
             stem = os.path.splitext(os.path.basename(path))[0]
-            out = os.path.join(inputs.execute_dir, f"{stem}{self.suffix}.json")
+            out = os.path.join(inputs.execute_dir, f"{stem}{self.params.suffix}.json")
             with open(out, "w") as fh:
                 fh.write(json.dumps(content))
         return {}
@@ -115,31 +131,11 @@ class _SuffixOp(OperationDefinition):
 def delta_with_named_input(tmp_path: Path):
     """Create a Delta root with a metric artifact that has a human name."""
     base = tmp_path / "delta"
-    content = json.dumps({"value": 42}, sort_keys=True).encode("utf-8")
-    aid = _compute_id(content)
+    artifact = MetricArtifact.draft({"value": 42}, "sample_001.json", 0)
+    artifact.finalize()
+    aid = artifact.artifact_id
 
-    _setup_delta(
-        base,
-        metrics=[
-            {
-                "artifact_id": aid,
-                "origin_step_number": 0,
-                "content": content,
-                "original_name": "sample_001",
-                "extension": ".json",
-                "metadata": "{}",
-                "external_path": None,
-            }
-        ],
-        index=[
-            {
-                "artifact_id": aid,
-                "artifact_type": "metric",
-                "origin_step_number": 0,
-                "metadata": "{}",
-            }
-        ],
-    )
+    _setup_delta(base, [artifact])
     return base, aid
 
 
@@ -162,7 +158,7 @@ class TestCreatorLifecycleNameDerivation:
             staging_root=str(staging),
         )
         unit = ExecutionUnit(
-            operation=_SuffixOp(suffix="_scored"),
+            operation=_SuffixOp(params=_SuffixOp.Params(suffix="_scored")),
             inputs={"source": [input_id]},
             execution_spec_id="spec01" + "0" * 26,
             step_number=1,
@@ -189,48 +185,14 @@ class TestCreatorLifecycleNameDerivation:
     def test_no_collision_with_duplicate_names(self, tmp_path: Path):
         """Two inputs with the same original_name produce distinct outputs."""
         base = tmp_path / "delta"
-        content_a = json.dumps({"v": 1}, sort_keys=True).encode("utf-8")
-        content_b = json.dumps({"v": 2}, sort_keys=True).encode("utf-8")
-        id_a = _compute_id(content_a)
-        id_b = _compute_id(content_b)
+        artifacts = [
+            MetricArtifact.draft({"v": value}, "output.json", 0) for value in (1, 2)
+        ]
+        for artifact in artifacts:
+            artifact.finalize()
+        id_a, id_b = (artifact.artifact_id for artifact in artifacts)
 
-        _setup_delta(
-            base,
-            metrics=[
-                {
-                    "artifact_id": id_a,
-                    "origin_step_number": 0,
-                    "content": content_a,
-                    "original_name": "output",
-                    "extension": ".json",
-                    "metadata": "{}",
-                    "external_path": None,
-                },
-                {
-                    "artifact_id": id_b,
-                    "origin_step_number": 0,
-                    "content": content_b,
-                    "original_name": "output",
-                    "extension": ".json",
-                    "metadata": "{}",
-                    "external_path": None,
-                },
-            ],
-            index=[
-                {
-                    "artifact_id": id_a,
-                    "artifact_type": "metric",
-                    "origin_step_number": 0,
-                    "metadata": "{}",
-                },
-                {
-                    "artifact_id": id_b,
-                    "artifact_type": "metric",
-                    "origin_step_number": 0,
-                    "metadata": "{}",
-                },
-            ],
-        )
+        _setup_delta(base, artifacts)
 
         working = tmp_path / "working"
         working.mkdir()
@@ -243,7 +205,7 @@ class TestCreatorLifecycleNameDerivation:
             staging_root=str(staging),
         )
         unit = ExecutionUnit(
-            operation=_SuffixOp(suffix="_processed"),
+            operation=_SuffixOp(params=_SuffixOp.Params(suffix="_processed")),
             inputs={"source": [id_a, id_b]},
             execution_spec_id="spec02" + "0" * 26,
             step_number=1,
@@ -265,35 +227,14 @@ class TestCreatorLifecycleNameDerivation:
 def delta_with_two_inputs(tmp_path: Path):
     """Create a Delta root with two metric artifacts."""
     base = tmp_path / "delta"
-    contents = [
-        json.dumps({"value": i}, sort_keys=True).encode("utf-8") for i in (1, 2)
+    artifacts = [
+        MetricArtifact.draft({"value": i}, f"sample_{i}.json", 0) for i in (1, 2)
     ]
-    aids = [_compute_id(c) for c in contents]
+    for artifact in artifacts:
+        artifact.finalize()
+    aids = [artifact.artifact_id for artifact in artifacts]
 
-    _setup_delta(
-        base,
-        metrics=[
-            {
-                "artifact_id": aid,
-                "origin_step_number": 0,
-                "content": content,
-                "original_name": f"sample_{i}",
-                "extension": ".json",
-                "metadata": "{}",
-                "external_path": None,
-            }
-            for i, (aid, content) in enumerate(zip(aids, contents, strict=True))
-        ],
-        index=[
-            {
-                "artifact_id": aid,
-                "artifact_type": "metric",
-                "origin_step_number": 0,
-                "metadata": "{}",
-            }
-            for aid in aids
-        ],
-    )
+    _setup_delta(base, artifacts)
 
     working = tmp_path / "working"
     working.mkdir()

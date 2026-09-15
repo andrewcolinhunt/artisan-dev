@@ -1,16 +1,15 @@
 """FastMCP application factory.
 
 ``build_mcp_app`` wires the lifespan (which runs operation discovery once)
-and registers the read-only tools, resources, and prompts. Write tools
-register only when ``ARTISAN_WRITE`` is set (Phase 2; unbuilt in v1). Tool
-bodies read the lifespan state via ``ctx.lifespan_context`` and call the
-artisan core directly — no server-side logic.
+and registers the read-only tools, resources, and prompts. Tool bodies read
+the lifespan state via ``ctx.lifespan_context`` and call the artisan core
+directly — no server-side logic.
 """
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 
@@ -33,9 +32,9 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
     cfg = config or ArtisanMCPConfig()
 
     @asynccontextmanager
-    async def lifespan(_app: FastMCP) -> AsyncIterator[dict]:
-        # Discovery runs once at startup; tools read the report and config
-        # back via ctx.lifespan_context. Kept a plain dict per the design.
+    async def lifespan(_app: FastMCP) -> AsyncIterator[dict[str, Any]]:
+        # Discovery runs once at startup; FastMCP exposes this mapping to tools
+        # as ctx.lifespan_context.
         from artisan.registry import discover
 
         report = discover(extra_modules=cfg.load_modules or None)
@@ -49,8 +48,6 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
     tools.artifacts.register(mcp)
     tools.logs.register(mcp)
     tools.provenance.register(mcp)
-    # Phase 2 write tools register here under `if cfg.write_enabled:`; unbuilt
-    # in v1, so a read-only agent sees exactly the ten read tools either way.
     resources.catalog.register(mcp)
     resources.runs.register(mcp)
     resources.lineage.register(mcp)

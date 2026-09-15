@@ -12,7 +12,7 @@ Artifact.draft() methods. The artifact_builder module provides:
 
 from __future__ import annotations
 
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 class TestComputeArtifactId:
@@ -21,7 +21,7 @@ class TestComputeArtifactId:
     def test_compute_artifact_id_returns_32_char_hex(self):
         """Artifact ID should be 32 hex characters (xxh3_128)."""
         content = b"test content"
-        artifact_id = compute_artifact_id(content)
+        artifact_id = compute_content_digest(content)
 
         assert len(artifact_id) == 32
         assert all(c in "0123456789abcdef" for c in artifact_id)
@@ -29,14 +29,14 @@ class TestComputeArtifactId:
     def test_compute_artifact_id_deterministic(self):
         """Same content should always produce same ID."""
         content = b"deterministic test"
-        id1 = compute_artifact_id(content)
-        id2 = compute_artifact_id(content)
+        id1 = compute_content_digest(content)
+        id2 = compute_content_digest(content)
 
         assert id1 == id2
 
     def test_compute_artifact_id_different_content_different_id(self):
         """Different content should produce different IDs."""
-        id1 = compute_artifact_id(b"content A")
-        id2 = compute_artifact_id(b"content B")
+        id1 = compute_content_digest(b"content A")
+        id2 = compute_content_digest(b"content B")
 
         assert id1 != id2

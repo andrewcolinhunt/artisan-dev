@@ -6,7 +6,13 @@ selector. Pipeline-level overrides change ``active`` via ``model_copy()``.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from artisan.schemas.operation_config.endpoint_policy import (
+    ToolEndpointDataPolicy,
+    _normalize_http_root,
+    _parse_endpoint_uri,
+)
 
 ARTISAN_WORKER_IMAGE = "ghcr.io/dexterity-systems/artisan-worker:latest"
 
@@ -17,6 +23,8 @@ class ComputeConfig(BaseModel):
     Mirrors the ``EnvironmentSpec`` hierarchy — each provider
     extends this base and ``create_execute_router()`` dispatches by type.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class LocalComputeConfig(ComputeConfig):
@@ -90,11 +98,10 @@ class ModalComputeConfig(ComputeConfig):
             consume an endpoint Artisan did not deploy.
         auth_secret: Variable-name prefix for the proxy-auth token pair
             (``<prefix>_TOKEN_ID`` / ``<prefix>_TOKEN_SECRET``), sent as
-            ``Modal-Key`` / ``Modal-Secret`` headers. None uses the
-            ``MODAL_PROXY`` prefix (``MODAL_PROXY_TOKEN_ID`` /
-            ``MODAL_PROXY_TOKEN_SECRET``). Tokens are dashboard-created
-            proxy-auth tokens, discovered from the process environment or
-            the nearest ``.env`` file (see ``.env.example``).
+            ``Modal-Key`` / ``Modal-Secret`` headers. For the built-in Modal
+            endpoint, None discovers the ``MODAL_PROXY`` pair. A custom URL
+            is unauthenticated when this is None and never discovers that
+            pair. Authenticated custom endpoints must use HTTPS.
         poll_interval: Seconds between ``/result`` polls while a tool
             job runs.
         max_concurrent_calls: Client-side cap on concurrent endpoint
@@ -117,13 +124,18 @@ class ModalComputeConfig(ComputeConfig):
             here: they name one object and expire, so they are
             per-request wire data for external callers, never static
             config.
+        data_policy: Deployment-owned directional allowlists for endpoint
+            input reads and output writes. The empty default denies every
+            remote URI while leaving inline transport available.
     """
 
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
     image: str = ARTISAN_WORKER_IMAGE
-    retries: int = 3
-    min_containers: int = 0
-    max_containers: int | None = None
-    scaledown_window: int | None = None
+    retries: int = Field(default=3, ge=0)
+    min_containers: int = Field(default=0, ge=0)
+    max_containers: int | None = Field(default=None, ge=1)
+    scaledown_window: int | None = Field(default=None, gt=0, le=1200)
     image_registry_secret: str | None = None
     secrets: list[str] = Field(default_factory=list)
     volumes: dict[str, str] = Field(default_factory=dict)
@@ -134,19 +146,54 @@ class ModalComputeConfig(ComputeConfig):
     poll_interval: float = Field(default=2.0, gt=0)
     max_concurrent_calls: int = Field(default=64, gt=0)
     output_store: str | None = None
+    data_policy: ToolEndpointDataPolicy = Field(default_factory=ToolEndpointDataPolicy)
+
+    @field_validator("endpoint_url")
+    @classmethod
+    def _validate_endpoint_url(cls, value: str | None) -> str | None:
+        """Normalize an explicit endpoint to an absolute root HTTP URL."""
+        return _normalize_http_root(value) if value is not None else None
+
+    @field_validator("auth_secret")
+    @classmethod
+    def _validate_auth_secret(cls, value: str | None) -> str | None:
+        """Reject an explicit empty credential prefix."""
+        if value is not None and not value.strip():
+            msg = "auth_secret must be a nonempty variable prefix"
+            raise ValueError(msg)
+        return value
 
     @field_validator("output_store")
     @classmethod
     def _reject_presigned_put(cls, value: str | None) -> str | None:
         """Constrain ``output_store`` to object-store prefixes."""
-        if value is not None and value.startswith(("http://", "https://")):
+        if value is None:
+            return None
+        try:
+            parsed = _parse_endpoint_uri(value, allowlist_root=False)
+        except ValueError as exc:
+            msg = "output_store must be a valid S3 prefix"
+            raise ValueError(msg) from exc
+        if parsed.scheme != "s3":
             msg = (
                 "output_store must be an object-store prefix (s3://…); a "
                 "presigned PUT URL names one object and expires — it is "
                 "per-request wire data for external callers, not static config"
             )
             raise ValueError(msg)
-        return value
+        return parsed.transport_target
+
+    @model_validator(mode="after")
+    def _authenticated_custom_endpoint_uses_https(self) -> ModalComputeConfig:
+        """Keep explicit endpoint credentials off cleartext HTTP."""
+        if (
+            self.endpoint_url is not None
+            and self.auth_secret is not None
+            and not self.endpoint_url.startswith("https://")
+        ):
+            msg = "authenticated custom endpoint_url must use HTTPS"
+            raise ValueError(msg)
+        return self
 
 
 class ComputeProvider(BaseModel):
@@ -160,6 +207,8 @@ class ComputeProvider(BaseModel):
         active: Name of the currently selected provider.
         local: Local compute provider config (always available).
     """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     active: str = "local"
     local: LocalComputeConfig = Field(

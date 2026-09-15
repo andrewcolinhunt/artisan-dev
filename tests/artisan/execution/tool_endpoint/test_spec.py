@@ -19,6 +19,7 @@ from artisan.execution.tool_endpoint.spec import endpoint_spec
 from artisan.operations.examples import CsvHead, DataGenerator, WaitTool
 from artisan.registry.schemas import params_schema_for
 from artisan.schemas.operation_config.compute import ARTISAN_WORKER_IMAGE
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 
 
 class TestEndpointSpec:
@@ -30,6 +31,59 @@ class TestEndpointSpec:
         assert spec.image == ARTISAN_WORKER_IMAGE
         # WaitTool pins the overlay explicitly — the field default is []
         assert spec.local_python_sources == ["artisan"]
+        assert spec.data_policy == {"input_allowlist": [], "output_allowlist": []}
+
+    def test_bakes_only_normalized_plain_policy_data(self, monkeypatch):
+        provider = WaitTool.model_fields["compute_provider"].default.model_copy(
+            update={
+                "modal": WaitTool.model_fields[
+                    "compute_provider"
+                ].default.modal.model_copy(
+                    update={
+                        "data_policy": ToolEndpointDataPolicy(
+                            input_allowlist=("S3://BUCKET/read/",),
+                            output_allowlist=("HTTPS://RESULTS.EXAMPLE:443/",),
+                        )
+                    }
+                )
+            }
+        )
+        monkeypatch.setattr(
+            WaitTool.model_fields["compute_provider"], "default", provider
+        )
+
+        assert endpoint_spec(WaitTool).data_policy == {
+            "input_allowlist": ["s3://bucket/read"],
+            "output_allowlist": ["https://results.example"],
+        }
+
+    def test_rejects_default_output_store_outside_baked_policy(self, monkeypatch):
+        modal = WaitTool.model_fields["compute_provider"].default.modal.model_copy(
+            update={"output_store": "s3://bucket/private"}
+        )
+        provider = WaitTool.model_fields["compute_provider"].default.model_copy(
+            update={"modal": modal}
+        )
+        monkeypatch.setattr(
+            WaitTool.model_fields["compute_provider"], "default", provider
+        )
+
+        with pytest.raises(ValueError, match="outside the endpoint data policy"):
+            endpoint_spec(WaitTool)
+
+    def test_revalidates_copied_class_default_policy(self, monkeypatch):
+        modal = WaitTool.model_fields["compute_provider"].default.modal.model_copy(
+            update={"data_policy": {"input_allowlist": ["file:///tmp"]}}
+        )
+        provider = WaitTool.model_fields["compute_provider"].default.model_copy(
+            update={"modal": modal}
+        )
+        monkeypatch.setattr(
+            WaitTool.model_fields["compute_provider"], "default", provider
+        )
+
+        with pytest.raises(ValueError, match="class-default.*invalid"):
+            endpoint_spec(WaitTool)
 
     def test_bakes_params_json_schema(self):
         """Boundary validation uses the baked schema — no artisan on the endpoint."""
@@ -116,12 +170,13 @@ class TestParamsSchemaSingleSource:
         )
 
     def test_parameter_less_op_serves_empty_params_shape(self):
-        # the one behavioral seam: {} becomes the permissive empty-object
-        # schema that params_schema_for returns
+        # Parameterless endpoints publish the same closed empty-object schema
+        # enforced by core construction.
         assert endpoint_spec(PlainTool).params_schema == {
             "type": "object",
             "title": "Params",
             "properties": {},
+            "additionalProperties": False,
         }
 
 

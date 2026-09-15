@@ -17,9 +17,11 @@ from unittest.mock import Mock
 import polars as pl
 import pytest
 from fixtures.csv import make_csv
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator import IngestData
 from artisan.schemas.artifact import FileRefArtifact
+from artisan.utils.hashing import compute_content_digest
 
 
 def _df(ids: list[str]) -> pl.DataFrame:
@@ -28,8 +30,6 @@ def _df(ids: list[str]) -> pl.DataFrame:
 
 def make_file_ref(
     path: str,
-    content_hash: str = "a" * 32,
-    size_bytes: int = 100,
     step_number: int = 0,
     original_name: str | None = None,
     extension: str | None = None,
@@ -41,10 +41,11 @@ def make_file_ref(
         original_name = P(path).stem
     if extension is None:
         extension = P(path).suffix
+    content = P(path).read_bytes()
     return FileRefArtifact.draft(
         path=path,
-        content_hash=content_hash,
-        size_bytes=size_bytes,
+        content_hash=compute_content_digest(content),
+        size_bytes=len(content),
         step_number=step_number,
         original_name=original_name,
         extension=extension,
@@ -53,6 +54,7 @@ def make_file_ref(
 
 def _mock_store_with_refs(file_refs: list[FileRefArtifact]) -> Mock:
     store = Mock()
+    store.filesystem = LocalFileSystem()
     store.get_artifacts_by_type.return_value = {fr.artifact_id: fr for fr in file_refs}
     return store
 
@@ -95,7 +97,7 @@ class TestIngestDataBasicExecution:
             content = make_csv(rows=5, seed=100 + i)
             path = tmp_path / f"data_{i}.csv"
             path.write_bytes(content)
-            files.append(make_file_ref(str(path), content_hash=f"{chr(97 + i)}" * 32))
+            files.append(make_file_ref(str(path)))
 
         op = IngestData()
         store = _mock_store_with_refs(files)

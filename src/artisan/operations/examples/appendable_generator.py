@@ -18,13 +18,13 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 class AppendableGenerator(OperationDefinition):
@@ -58,7 +58,9 @@ class AppendableGenerator(OperationDefinition):
     class Params(BaseModel):
         """Algorithm parameters for AppendableGenerator."""
 
-        count: int = Field(default=10, ge=1, description="Number of records to generate")
+        count: int = Field(
+            default=10, ge=1, description="Number of records to generate"
+        )
         num_files: int = Field(
             default=1, ge=1, description="Number of JSONL files to split records across"
         )
@@ -88,13 +90,15 @@ class AppendableGenerator(OperationDefinition):
         # Generate all records
         all_records: list[dict[str, Any]] = []
         for i in range(self.params.count):
-            all_records.append({
-                "record_id": f"rec_{i:06d}",
-                "values": {
-                    f"field_{j}": round(rng.gauss(0, 1), 6)
-                    for j in range(self.params.fields_per_record)
-                },
-            })
+            all_records.append(
+                {
+                    "record_id": f"rec_{i:06d}",
+                    "values": {
+                        f"field_{j}": round(rng.gauss(0, 1), 6)
+                        for j in range(self.params.fields_per_record)
+                    },
+                }
+            )
 
         # Split records across files (remainder goes to early files)
         base, remainder = divmod(self.params.count, num_files)
@@ -111,12 +115,14 @@ class AppendableGenerator(OperationDefinition):
                 for record in chunk:
                     line = json.dumps(record, sort_keys=True)
                     f.write(line + "\n")
-                    records_meta.append({
-                        "record_id": record["record_id"],
-                        "content_hash": compute_artifact_id(line.encode()),
-                        "size_bytes": len(line.encode()),
-                        "output_path": file_path,
-                    })
+                    records_meta.append(
+                        {
+                            "record_id": record["record_id"],
+                            "content_hash": compute_content_digest(line.encode()),
+                            "size_bytes": len(line.encode()),
+                            "output_path": file_path,
+                        }
+                    )
 
         return {"records": records_meta}
 

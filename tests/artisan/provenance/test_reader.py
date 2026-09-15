@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
+
 from artisan.provenance import provenance_edges
 
 A = "a" * 32
@@ -51,8 +54,9 @@ class TestProvenanceEdges:
         assert result.edges == []
         assert result.truncated is False
 
-    def test_missing_table_is_empty(self, tmp_path):
-        """A root without an artifact_edges table degrades to empty edges."""
+    def test_empty_table_is_empty(self, tmp_path):
+        """A coordinated store with no artifact edges returns an empty result."""
+        publish_test_store(str(tmp_path), LocalFileSystem())
         result = provenance_edges(str(tmp_path), A)
         assert result.edges == []
         assert result.truncated is False

@@ -11,7 +11,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
@@ -21,6 +21,7 @@ from artisan.operations.curator.filter import (
     _assemble_diagnostics,
     _build_funnel,
     _build_metric_namespace,
+    _build_metric_sources,
     _check_collision,
     _compute_funnel_counts,
     _criterion_stats,
@@ -30,13 +31,18 @@ from artisan.provenance.traversal import walk_forward
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage.core.committed_scan import read_committed
 from artisan.utils.dataframes import encode_metric_value
 from artisan.utils.dicts import flatten_dict
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import digest_utf8
 from artisan.utils.path import uri_join
+
+if TYPE_CHECKING:
+    from artisan.orchestration.engine.step_tracker import StepTracker
 
 
 @dataclass
@@ -135,12 +141,39 @@ class InteractiveFilter:
             msg = f"Artifact index not found at {index_path}"
             raise ValueError(msg)
 
-        # Load primary artifact IDs
-        all_index = (
-            pl.scan_delta(index_path, storage_options=self._storage_options)
-            .select(["artifact_id", "artifact_type", "origin_step_number"])
-            .collect()
-        )
+        self._pipeline_run_id = pipeline_run_id or self._detect_pipeline_run_id()
+        execution_ids: set[str] | None = None
+        if self._pipeline_run_id is not None:
+            from artisan.storage.core.run_scope import (
+                load_accepted_outputs,
+                load_execution_membership,
+            )
+
+            outputs = load_accepted_outputs(
+                self._delta_root,
+                fs=self._fs,
+                storage_options=self._storage_options,
+                pipeline_run_id=self._pipeline_run_id,
+            )
+            all_index = outputs.select(
+                "artifact_id",
+                "artifact_type",
+                pl.col("current_step_number").alias("origin_step_number"),
+            ).unique()
+            membership = load_execution_membership(
+                self._delta_root,
+                fs=self._fs,
+                storage_options=self._storage_options,
+                pipeline_run_id=self._pipeline_run_id,
+            )
+            execution_ids = set(membership["execution_run_id"].to_list())
+        else:
+            all_index = read_committed(
+                self._delta_root,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            ).select(["artifact_id", "artifact_type", "origin_step_number"])
 
         if artifact_type is not None:
             primary_mask = all_index["artifact_type"] == artifact_type
@@ -161,12 +194,6 @@ class InteractiveFilter:
         primary_ids = set(primary_df["artifact_id"].to_list())
         self._primary_artifact_ids = primary_ids
 
-        # Detect pipeline_run_id
-        if pipeline_run_id:
-            self._pipeline_run_id = pipeline_run_id
-        else:
-            self._pipeline_run_id = self._detect_pipeline_run_id()
-
         # ── Metric discovery via forward provenance walk ──
         # Use ALL artifact IDs for step range (not just primaries) so metrics
         # at higher steps are included in the edge scan.
@@ -179,7 +206,10 @@ class InteractiveFilter:
 
         step_min, step_max = step_range
         edges = self._store.provenance.load_edges_df(
-            step_min, step_max, include_target_type=True
+            step_min,
+            step_max,
+            include_target_type=True,
+            execution_ids=execution_ids,
         )
 
         if edges.is_empty():
@@ -209,28 +239,13 @@ class InteractiveFilter:
         self._wide_df = wide_df.rename({"passthrough_id": "artifact_id"})
         self._step_info = step_info
 
-        # Build metric_sources from step_info
-        self._metric_sources = []
-        if step_info is not None:
-            step_names: dict[int, str] = step_info.get("_step_names", {})
-            seen_steps: set[int] = set()
-            for field, step_nums in step_info.items():
-                if field.startswith("_"):
-                    continue
-                for sn in step_nums:
-                    seen_steps.add(sn)
-            for sn in sorted(seen_steps):
-                self._metric_sources.append(
-                    {
-                        "step_number": sn,
-                        "step_name": step_names.get(sn, ""),
-                    }
-                )
-
         # ── Build tidy DataFrame for exploration ──
         # Tidy uses qualified names (step_name.metric_name) for exploration.
         # Source metric IDs from walk_result.
         all_found_metric_ids = set(metric_pairs["metric_id"].unique().to_list())
+        self._metric_sources = _build_metric_sources(
+            all_found_metric_ids, self._store, self._pipeline_run_id
+        )
         metric_artifacts = self._store.get_artifacts_by_type(
             list(all_found_metric_ids), "metric"
         )
@@ -258,7 +273,9 @@ class InteractiveFilter:
 
                 step_num = metric_step_map.get(mid)
                 step_name = (
-                    step_name_map.get(step_num, "unknown") if step_num else "unknown"
+                    step_name_map.get(step_num, "unknown")
+                    if step_num is not None
+                    else "unknown"
                 )
 
                 for metric_name, raw_value in flatten_dict(values).items():
@@ -289,21 +306,17 @@ class InteractiveFilter:
         self._tidy_df = pl.DataFrame(rows, schema=tidy_schema)
 
     def _detect_pipeline_run_id(self) -> str | None:
-        """Try to detect the pipeline_run_id from the steps table."""
-        steps_path = uri_join(self._delta_root, TablePath.STEPS)
-        if not self._fs.exists(steps_path):
+        """Return the newest run selected by the authoritative state reader."""
+        from artisan.orchestration.engine.step_tracker import StepTracker
+
+        states = StepTracker(
+            self._delta_root,
+            storage_options=self._storage_options,
+            fs=self._fs,
+        ).load_current_states()
+        if not states:
             return None
-        result = (
-            pl.scan_delta(steps_path, storage_options=self._storage_options)
-            .sort("timestamp", descending=True)
-            .limit(1)
-            .select("pipeline_run_id")
-            .collect()
-        )
-        if result.is_empty():
-            return None
-        value = result.item(0, 0)
-        return str(value) if value is not None else None
+        return states[0].pipeline_run_id
 
     # ------------------------------------------------------------------
     # Properties
@@ -562,16 +575,10 @@ class InteractiveFilter:
         )
         sorted_input_ids = ",".join(sorted(self._primary_artifact_ids))
 
-        step_spec_id = compute_artifact_id(
-            f"{step_name}|{criteria_json}|{sorted_input_ids}".encode()
-        )
-        step_run_id = compute_artifact_id(f"{step_spec_id}|{timestamp_str}".encode())
-        execution_spec_id = compute_artifact_id(
-            f"filter|{sorted_input_ids}|{criteria_json}".encode()
-        )
-        execution_run_id = compute_artifact_id(
-            f"{execution_spec_id}|{timestamp_str}".encode()
-        )
+        step_spec_id = digest_utf8(f"{step_name}|{criteria_json}|{sorted_input_ids}")
+        step_run_id = uuid.uuid4().hex
+        execution_spec_id = digest_utf8(f"filter|{sorted_input_ids}|{criteria_json}")
+        execution_run_id = digest_utf8(f"{execution_spec_id}|{timestamp_str}")
 
         # Build and record step start
         start_record = StepStartRecord(
@@ -598,23 +605,69 @@ class InteractiveFilter:
             storage_options=self._storage_options,
             fs=self._fs,
         )
-        tracker.record_step_start(start_record)
+        tracker.create_attempt(start_record)
+        tracker.transition(
+            step_run_id,
+            StepStatus.PENDING,
+            StepStatus.RUNNING,
+            step_spec_id=step_spec_id,
+        )
 
-        # Build v4 diagnostics
-        diagnostics = self._build_diagnostics(filtered)
+        try:
+            return self._commit_running_attempt(
+                tracker=tracker,
+                step_name=step_name,
+                step_number=step_number,
+                step_spec_id=step_spec_id,
+                step_run_id=step_run_id,
+                execution_spec_id=execution_spec_id,
+                execution_run_id=execution_run_id,
+                filtered=filtered,
+                now=now,
+            )
+        except Exception as exc:
+            current = tracker.current_state(step_run_id)
+            if current.status != StepStatus.RUNNING:
+                raise
+            error = f"{type(exc).__name__}: {exc}"
+            failed = StepResult(
+                step_name=step_name,
+                step_number=step_number,
+                status=StepStatus.FAILED,
+                error=error,
+                step_run_id=step_run_id,
+            )
+            tracker.transition(
+                step_run_id,
+                StepStatus.RUNNING,
+                StepStatus.FAILED,
+                step_spec_id=step_spec_id,
+                result=failed,
+            )
+            raise
 
-        # Stage + commit the execution record and edges through the shared
-        # recorder so executions/execution_edges rows come from the single
-        # writer (recorder.py) instead of being hand-built here. This flow
-        # has no ExecutionUnit; ExecutionContext still requires a real
-        # operation and store, so supply a Filter instance (its name yields
-        # the "filter" operation_name) and the store this instance holds.
+    def _commit_running_attempt(
+        self,
+        *,
+        tracker: StepTracker,
+        step_name: str,
+        step_number: int,
+        step_spec_id: str,
+        step_run_id: str,
+        execution_spec_id: str,
+        execution_run_id: str,
+        filtered: list[str],
+        now: datetime,
+    ) -> StepResult:
+        """Commit one interactive selection and its terminal snapshot."""
         from artisan.execution.recording.recorder import record_passthrough
         from artisan.operations.curator.filter import Filter
         from artisan.schemas.execution.execution_context import ExecutionContext
         from artisan.storage.io.commit import DeltaCommitter
+        from artisan.storage.io.commit_plan import build_commit_plan
         from artisan.storage.io.staging import StagingManager
 
+        diagnostics = self._build_diagnostics(filtered)
         operation = Filter()
         staging_root = uri_join(self._delta_root, "_staging")
         execution_context = ExecutionContext(
@@ -631,7 +684,7 @@ class InteractiveFilter:
             sandbox_path=None,
             compute_backend="local",
             shared_filesystem=False,
-            step_run_id=None,
+            step_run_id=step_run_id,
         )
         record_passthrough(
             execution_context=execution_context,
@@ -642,7 +695,6 @@ class InteractiveFilter:
             params={"criteria": [c.model_dump() for c in self._criteria]},
             result_metadata={"diagnostics": diagnostics},
         )
-
         staging_manager = StagingManager(staging_root, self._fs)
         committer = DeltaCommitter(
             self._delta_root,
@@ -650,25 +702,46 @@ class InteractiveFilter:
             fs=self._fs,
             storage_options=self._storage_options,
         )
-        committer.commit_all_tables(
-            step_number=step_number, operation_name=type(operation).name
-        )
-
-        # Build and record step result
         result = StepResult(
             step_name=step_name,
             step_number=step_number,
-            success=True,
-            total_count=len(self._primary_artifact_ids),
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+            total_count=len(filtered),
             succeeded_count=len(filtered),
             failed_count=0,
             output_roles=frozenset(["passthrough"]),
             output_types={"passthrough": ArtifactTypes.ANY},
             metadata={"diagnostics": diagnostics},
+            step_run_id=step_run_id,
         )
-        tracker.record_step_completed(start_record, result)
-
-        return result
+        candidate = tracker.prepare_terminal_candidate(
+            step_run_id,
+            StepStatus.RUNNING,
+            StepStatus.SUCCEEDED,
+            step_spec_id=step_spec_id,
+            result=result,
+        )
+        staging_manager.stage_orchestrator_dataframe(
+            candidate,
+            TablePath.STEPS.value,
+            commit_kind="step_result",
+            step_run_id=step_run_id,
+            step_number=step_number,
+            operation_name=type(operation).name,
+        )
+        plan = build_commit_plan(
+            delta_root=self._delta_root,
+            staging_root=staging_root,
+            fs=self._fs,
+            commit_kind="step_result",
+            step_run_id=step_run_id,
+            step_number=step_number,
+            operation_name=type(operation).name,
+            execution_run_ids=(execution_run_id,),
+        )
+        committer.commit_logical(plan)
+        return tracker.current_state(step_run_id).to_step_result()
 
     def _build_diagnostics(self, filtered: list[str]) -> dict[str, Any]:
         """Build v4 diagnostics dict matching Filter's format.
@@ -697,6 +770,14 @@ class InteractiveFilter:
             resolved: int | None = None
             if crit.step_number is not None:
                 resolved = crit.step_number
+            elif crit.step is not None and self._step_info is not None:
+                matching_steps = [
+                    sn
+                    for sn, name in self._step_info.get("_step_names", {}).items()
+                    if name == crit.step
+                ]
+                if len(matching_steps) == 1:
+                    resolved = matching_steps[0]
             elif self._step_info is not None and crit.metric in self._step_info:
                 step_nums = self._step_info[crit.metric]
                 if len(step_nums) == 1:
@@ -735,10 +816,12 @@ class InteractiveFilter:
         if not self._fs.exists(steps_path):
             return 0
 
-        result = (
-            pl.scan_delta(steps_path, storage_options=self._storage_options)
-            .select(pl.col("step_number").max().alias("max_step"))
-            .collect()
-        )
-        max_val = result.item(0, 0)
+        from artisan.orchestration.engine.step_tracker import StepTracker
+
+        states = StepTracker(
+            self._delta_root,
+            storage_options=self._storage_options,
+            fs=self._fs,
+        ).load_all_current_states()
+        max_val = max((state.step_number for state in states), default=None)
         return (max_val + 1) if max_val is not None else 0

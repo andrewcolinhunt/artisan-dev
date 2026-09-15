@@ -16,6 +16,7 @@ from artisan.orchestration.runners.local import (
     _terminate_process_pool,
 )
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
 
 def _success() -> UnitResult:
@@ -50,22 +51,17 @@ class TestLocalLifecycleRouterCancel:
         handle.dispatch([MagicMock()], MagicMock())
         _wait_until(lambda: executor.submit.called)
 
-        handle.cancel()
-        handle.cancel()
+        requested = handle.cancel()
         assert handle._done.wait(timeout=2)
+        rejected = handle.cancel()
         results = handle.collect()
 
+        assert requested.status == CancellationStatus.REQUESTED
+        assert rejected.status == CancellationStatus.REJECTED
         assert len(results) == 1
         assert results[0].success is False
         assert "CancelledError" in results[0].error
-        executor.shutdown.assert_any_call(wait=False, cancel_futures=True)
-        assert (
-            sum(
-                call.kwargs.get("wait") is False
-                for call in executor.shutdown.call_args_list
-            )
-            == 1
-        )
+        executor.shutdown.assert_called_once_with(wait=True, cancel_futures=True)
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_cancel_terminates_in_flight_worker(
@@ -74,7 +70,7 @@ class TestLocalLifecycleRouterCancel:
     ) -> None:
         executor = mock_executor_class.return_value
         process = MagicMock()
-        process.is_alive.return_value = True
+        process.is_alive.side_effect = [True, False]
         executor._processes = {123: process}
         running: Future[list[UnitResult]] = Future()
         running.set_running_or_notify_cancel()
@@ -83,9 +79,16 @@ class TestLocalLifecycleRouterCancel:
         handle.dispatch([MagicMock()], MagicMock())
         _wait_until(lambda: executor.submit.called)
 
-        handle.cancel()
+        with patch(
+            "artisan.orchestration.runners.local.time.monotonic",
+            side_effect=[0.0, 2.0],
+        ):
+            requested = handle.cancel()
+            confirmed = handle.cancel()
         assert running.cancelled() is False
         process.terminate.assert_called_once_with()
+        assert requested.status == CancellationStatus.REQUESTED
+        assert confirmed.status == CancellationStatus.CONFIRMED
         running.set_exception(BrokenProcessPool("worker terminated"))
         assert handle._done.wait(timeout=2)
 

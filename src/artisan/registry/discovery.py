@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib
 import os
+from typing import Literal
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.registry.models import (
@@ -92,7 +93,7 @@ def _manual_modules(extra_modules: list[str] | None) -> list[str]:
 
 def _import_and_attribute(
     module_path: str,
-    kind: str,
+    kind: Literal["builtin", "manual"],
     errors: list[DiscoveryError],
 ) -> DiscoverySource | None:
     """Import one module, capturing failures and attributing new registrations.
@@ -101,10 +102,14 @@ def _import_and_attribute(
     before this import and whose ``__module__`` is ``module_path`` (or a
     submodule) is credited to this source.
     """
-    before = dict(OperationDefinition._registry)
+    registry_before = dict(OperationDefinition._registry)
+    collisions_before = list(OperationDefinition._name_collisions)
     try:
         importlib.import_module(module_path)
     except Exception as exc:
+        OperationDefinition._registry.clear()
+        OperationDefinition._registry.update(registry_before)
+        OperationDefinition._name_collisions[:] = collisions_before
         errors.append(
             DiscoveryError(
                 module=module_path,
@@ -117,7 +122,7 @@ def _import_and_attribute(
     new_registrations = [
         name
         for name, cls in OperationDefinition._registry.items()
-        if name not in before
+        if name not in registry_before
         and (
             cls.__module__ == module_path
             or cls.__module__.startswith(f"{module_path}.")

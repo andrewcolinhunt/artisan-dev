@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 class TestCapabilities:
     def test_reports_versions_and_read_only(self, make_app, invoke) -> None:
@@ -12,13 +14,10 @@ class TestCapabilities:
         assert payload["delta_root"] is None
         assert payload["discovery"]["operations_count"] >= 1
 
-    def test_write_flag_flips_read_only(self, make_app, invoke) -> None:
-        payload = invoke(make_app(write=True), "artisan_capabilities")
-        assert payload["read_only"] is False
-
-    def test_delta_root_surfaced(self, make_app, invoke, tmp_path) -> None:
+    def test_delta_root_is_withheld(self, make_app, invoke, tmp_path) -> None:
         payload = invoke(make_app(delta_root=tmp_path), "artisan_capabilities")
-        assert payload["delta_root"] == str(tmp_path)
+        assert payload["delta_root"] is None
+        assert str(tmp_path) not in str(payload)
 
 
 class TestListOperations:
@@ -65,9 +64,49 @@ class TestListOperations:
         assert second["items"][0]["name"] != first["items"][0]["name"]
 
     def test_last_page_has_no_cursor(self, make_app, invoke) -> None:
-        page = invoke(make_app(), "artisan_list_operations", {"limit": 1000})
+        app = make_app()
+        cursor = None
+        seen_cursors: set[str] = set()
+
+        for _ in range(100):
+            args: dict[str, int | str] = {"limit": 100}
+            if cursor is not None:
+                args["cursor"] = cursor
+            page = invoke(app, "artisan_list_operations", args)
+            if not page["has_more"]:
+                break
+
+            cursor = page["next_cursor"]
+            assert cursor is not None
+            assert cursor not in seen_cursors
+            seen_cursors.add(cursor)
+        else:
+            pytest.fail("operation pagination did not terminate within 100 pages")
+
         assert page["has_more"] is False
         assert page["next_cursor"] is None
+
+    @pytest.mark.parametrize("limit", [0, -1, 101])
+    def test_rejects_out_of_range_limit(self, make_app, invoke, limit) -> None:
+        result = invoke(make_app(), "artisan_list_operations", {"limit": limit})
+        assert result["code"] == "param_type_mismatch"
+        assert result["field"] == "limit"
+
+    @pytest.mark.parametrize("cursor", ["", "0", "-1", "01", "²", "999999"])
+    def test_rejects_invalid_or_stale_cursor(self, make_app, invoke, cursor) -> None:
+        result = invoke(
+            make_app(),
+            "artisan_list_operations",
+            {"limit": 1, "cursor": cursor},
+        )
+        assert result["code"] == "param_type_mismatch"
+        assert result["field"] == "cursor"
+
+    def test_rejects_unknown_kind(self, make_app, invoke_result) -> None:
+        result = invoke_result(
+            make_app(), "artisan_list_operations", {"kind": "transformer"}
+        )
+        assert result.is_error is True
 
 
 class TestDescribeOperation:
@@ -94,3 +133,29 @@ class TestOperationResource:
         content = read_resource(make_app(), "artisan://operations/data_transformer")
         meta = json.loads(content.text)
         assert meta["name"] == "data_transformer"
+
+    def test_unknown_operation_returns_envelope(self, make_app, read_resource) -> None:
+        import json
+
+        content = read_resource(make_app(), "artisan://operations/not-an-operation")
+        error = json.loads(content.text)
+        assert error["code"] == "unknown_operation"
+        assert "cause" not in error
+
+    def test_oversized_metadata_returns_bounded_reference(
+        self, make_app, read_resource, monkeypatch
+    ) -> None:
+        import json
+        from types import SimpleNamespace
+
+        import artisan.registry
+
+        metadata = SimpleNamespace(model_dump=lambda: {"schema": "x" * 100_000})
+        monkeypatch.setattr(artisan.registry, "describe", lambda _name: metadata)
+
+        content = read_resource(make_app(), "artisan://operations/large")
+        result = json.loads(content.text)
+
+        assert result["name"] == "large"
+        assert result["truncated"] is True
+        assert len(content.text) < 1_000

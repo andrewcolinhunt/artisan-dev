@@ -18,6 +18,7 @@ import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
@@ -32,16 +33,19 @@ from artisan.visualization.graph._styles import (
 # =============================================================================
 
 
-def _load_completed_steps(
+def _load_usable_steps(
     delta_root: str,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
 ) -> pl.DataFrame:
-    """Return completed steps, deduplicated by step_number (keeps last)."""
+    """Return current succeeded/partial steps for one pipeline run."""
     if fs is None:
         from fsspec.implementations.local import LocalFileSystem
 
         fs = LocalFileSystem()
+    assert_store_format(delta_root, fs, storage_options)
     table_path = uri_join(delta_root, TablePath.STEPS)
     if not fs.exists(table_path):
         return pl.DataFrame(
@@ -54,26 +58,38 @@ def _load_completed_steps(
             }
         )
 
-    df = (
-        pl.scan_delta(table_path, storage_options=storage_options)
-        .filter(pl.col("status") == "completed")
-        .select(
-            [
-                "step_number",
-                "step_name",
-                "output_roles_json",
-                "output_types_json",
-                "input_refs_json",
-            ]
+    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.schemas.orchestration.step_lifecycle import StepStatus
+
+    states = StepTracker(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+    ).load_current_states(pipeline_run_id)
+    rows = [
+        {
+            "step_number": state.step_number,
+            "step_name": state.step_name,
+            "output_roles_json": json.dumps(sorted(state.output_roles)),
+            "output_types_json": json.dumps(state.output_types),
+            "input_refs_json": state.input_refs_json,
+        }
+        for state in states
+        if state.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+    ]
+    return (
+        pl.DataFrame(rows)
+        if rows
+        else pl.DataFrame(
+            schema={
+                "step_number": pl.Int32,
+                "step_name": pl.String,
+                "output_roles_json": pl.String,
+                "output_types_json": pl.String,
+                "input_refs_json": pl.String,
+            }
         )
-        .collect()
     )
-
-    # Deduplicate by step_number (keep last row per step)
-    if not df.is_empty():
-        df = df.unique(subset=["step_number"], keep="last").sort("step_number")
-
-    return df
 
 
 # =============================================================================
@@ -123,12 +139,14 @@ def build_macro_graph(
     delta_root: str,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
 ) -> graphviz.Digraph:
     """Create a step-level pipeline graph from the steps table.
 
     Creates a bipartite graph with:
 
-    - **Execution nodes** — one per completed step, labelled ``(N) step_name``.
+    - **Execution nodes** — one per usable step, labelled ``(N) step_name``.
     - **Data nodes** — one per (step, output_role), coloured by artifact type.
     - **Edges** — output_ref connections from ``input_refs_json``.
 
@@ -136,11 +154,18 @@ def build_macro_graph(
         delta_root: Path to Delta Lake root directory.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        pipeline_run_id: Pipeline run to render. None renders the unscoped
+            steps table, preserving the existing Python API behavior.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    steps_df = _load_completed_steps(delta_root, storage_options=storage_options, fs=fs)
+    steps_df = _load_usable_steps(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+        pipeline_run_id=pipeline_run_id,
+    )
 
     graph = graphviz.Digraph("pipeline", format="svg")
     apply_default_layout(graph)

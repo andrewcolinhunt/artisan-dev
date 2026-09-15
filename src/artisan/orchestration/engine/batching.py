@@ -9,6 +9,7 @@ from __future__ import annotations
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.orchestration.batch_config import BatchConfig
+from artisan.utils.hashing import CacheInputIdentity
 
 
 def get_batch_config(
@@ -42,7 +43,15 @@ def generate_execution_unit_batches(
     inputs: dict[str, list[str]],
     batch_config: BatchConfig,
     group_ids: list[str] | None = None,
-) -> list[tuple[dict[str, list[str]], list[str] | None]]:
+    *,
+    cache_inputs: dict[str, list[CacheInputIdentity]],
+) -> list[
+    tuple[
+        dict[str, list[str]],
+        list[str] | None,
+        dict[str, list[CacheInputIdentity]],
+    ]
+]:
     """Generate ExecutionUnit input batches (Level 1 batching).
 
     Splits artifact IDs into batches based on artifacts_per_unit.
@@ -54,6 +63,7 @@ def generate_execution_unit_batches(
         batch_config: Batching configuration.
         group_ids: Optional per-index group_id list from framework pairing.
             Sliced in sync with input lists when present.
+        cache_inputs: Ordered typed cache occurrences to slice in lockstep.
 
     Returns:
         List of (input_dict, group_ids_slice) tuples, one per ExecutionUnit.
@@ -70,23 +80,42 @@ def generate_execution_unit_batches(
     """
     if not inputs:
         # Generative operation - single batch with empty inputs
-        return [({}, None)]
+        return [({}, None, {})]
 
     # Get total item count from first role
     first_role = next(iter(inputs.keys()))
     total_items = len(inputs[first_role])
 
     if total_items == 0:
-        return [({}, None)]
+        return [({}, None, {})]
 
     artifacts_per_unit = batch_config.artifacts_per_unit
-    batches: list[tuple[dict[str, list[str]], list[str] | None]] = []
+    batches: list[
+        tuple[
+            dict[str, list[str]],
+            list[str] | None,
+            dict[str, list[CacheInputIdentity]],
+        ]
+    ] = []
 
     for start in range(0, total_items, artifacts_per_unit):
         end = min(start + artifacts_per_unit, total_items)
         batch = {role: ids[start:end] for role, ids in inputs.items()}
         batch_group_ids = group_ids[start:end] if group_ids is not None else None
-        batches.append((batch, batch_group_ids))
+        batch_cache_inputs = {
+            role: [
+                CacheInputIdentity(
+                    role=entry.role,
+                    group_id=entry.group_id,
+                    position=position,
+                    artifact_type=entry.artifact_type,
+                    artifact_id=entry.artifact_id,
+                )
+                for position, entry in enumerate(entries[start:end])
+            ]
+            for role, entries in cache_inputs.items()
+        }
+        batches.append((batch, batch_group_ids, batch_cache_inputs))
 
     return batches
 

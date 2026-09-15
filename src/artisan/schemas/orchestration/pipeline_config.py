@@ -35,7 +35,7 @@ class PipelineConfig(BaseModel):
     )
     cache_policy: CachePolicy = Field(
         default=CachePolicy.ALL_SUCCEEDED,
-        description="Controls when completed steps qualify as cache hits.",
+        description="Controls which usable terminal steps qualify as cache hits.",
     )
     default_step_runner: str = Field(
         default="local",
@@ -44,10 +44,6 @@ class PipelineConfig(BaseModel):
             "the corresponding runtime instance when resuming."
         ),
     )
-    default_compute_provider: str = Field(
-        default="local",
-        description="Default compute_provider routing for step execution.",
-    )
     preserve_staging: bool = Field(
         default=False,
         description="Debug flag to preserve staging files after commit.",
@@ -55,10 +51,6 @@ class PipelineConfig(BaseModel):
     preserve_working: bool = Field(
         default=False,
         description="Debug flag to preserve sandbox after execution.",
-    )
-    recover_staging: bool = Field(
-        default=True,
-        description="Commit leftover staging files from prior crashed runs at pipeline init.",
     )
     skip_cache: bool = Field(
         default=False,

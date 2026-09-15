@@ -61,7 +61,6 @@ class CompositeStepHandle:
             msg = "CompositeStepHandle has no step_future set"
             raise ValueError(msg)
         return CompositeRef(
-            source=None,
             output_reference=self._step_future.output(role),
             role=role,
         )
