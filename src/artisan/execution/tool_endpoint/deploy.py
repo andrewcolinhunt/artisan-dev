@@ -124,6 +124,7 @@ def build_app(
     def endpoint() -> Any:
         # Runs in the slim endpoint image: imports must resolve there, and
         # responses are plain dicts shaped like the protocol models.
+        import builtins
         import io
         import json
 
@@ -345,6 +346,8 @@ def build_app(
                 return "expired"
             except modal_rt.exception.FunctionTimeoutError:
                 return "failed"
+            except builtins.TimeoutError:
+                return "pending"
             except modal_rt.exception.TimeoutError:
                 return "pending"
             except modal_rt.exception.Error:
