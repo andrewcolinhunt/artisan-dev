@@ -62,6 +62,22 @@ R2_SECRET_NAME = "r2-artisan"
 POLL_DEADLINE_S = 900  # first call pulls the worker image — minutes, not seconds
 
 
+class _ProxyHeaders(dict[str, str]):
+    """HTTP headers whose failure representation never exposes credentials."""
+
+    def __repr__(self) -> str:
+        return "{'Modal-Key': '<redacted>', 'Modal-Secret': '<redacted>'}"
+
+
+def test_proxy_headers_repr_redacts_credentials() -> None:
+    """Failure diagnostics must not reveal either proxy credential."""
+    headers = _ProxyHeaders(
+        {"Modal-Key": "wk-sensitive", "Modal-Secret": "ws-sensitive"}
+    )
+
+    assert "sensitive" not in repr(headers)
+
+
 def _output_policy(r2: dict[str, str]) -> ToolEndpointDataPolicy:
     """Return the policy shared by the deployed worker and SDK client."""
     return ToolEndpointDataPolicy(
@@ -99,7 +115,7 @@ def r2() -> dict[str, str]:
 
 
 @pytest.fixture(scope="module")
-def proxy_headers() -> dict[str, str]:
+def proxy_headers() -> _ProxyHeaders:
     """Proxy-auth headers for raw-httpx consumers; skip when tokens absent."""
     from artisan.utils.env_file import env_or_dotenv
 
@@ -107,7 +123,7 @@ def proxy_headers() -> dict[str, str]:
     token_secret = env_or_dotenv("MODAL_PROXY_TOKEN_SECRET")
     if not (token_id and token_secret):
         pytest.skip("no MODAL_PROXY_TOKEN_ID/SECRET (repo-root .env)")
-    return {"Modal-Key": token_id, "Modal-Secret": token_secret}
+    return _ProxyHeaders({"Modal-Key": token_id, "Modal-Secret": token_secret})
 
 
 @pytest.fixture(scope="module")

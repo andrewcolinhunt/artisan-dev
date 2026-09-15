@@ -614,6 +614,11 @@ class TestRetainedResultRoutes:
         body = client.get("/result", params={"call_id": "fc-1"}).json()
         assert body == {"status": "pending", "manifest": None}
 
+    def test_pending_builtin_timeout_returns_pending(self, client, monkeypatch):
+        self._raise(monkeypatch, TimeoutError())
+        body = client.get("/result", params={"call_id": "fc-1"}).json()
+        assert body == {"status": "pending", "manifest": None}
+
     def test_expired_modal_timeout_returns_expired(self, client, monkeypatch):
         self._raise(monkeypatch, modal.exception.OutputExpiredError())
         body = client.get("/result", params={"call_id": "fc-1"}).json()
