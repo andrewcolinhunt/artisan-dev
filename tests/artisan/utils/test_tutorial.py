@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from artisan.utils.tutorial import TutorialEnv, tutorial_setup
 
 
@@ -50,3 +52,25 @@ def test_custom_base_dir(tmp_path: Path) -> None:
     custom.mkdir()
     env = tutorial_setup("tut", base_dir=custom)
     assert env.runs_dir == os.path.join(str(custom), "runs", "tut")
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "../outside"])
+def test_rejects_name_outside_runs_directory(tmp_path: Path, name: str) -> None:
+    with pytest.raises(ValueError, match="must resolve beneath"):
+        tutorial_setup(name, base_dir=tmp_path)
+
+
+def test_rejects_absolute_name(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must resolve beneath"):
+        tutorial_setup(str(tmp_path / "outside"), base_dir=tmp_path)
+
+
+def test_rejects_symlink_outside_runs_directory(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    (runs_root / "linked").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="must resolve beneath"):
+        tutorial_setup("linked", base_dir=tmp_path)

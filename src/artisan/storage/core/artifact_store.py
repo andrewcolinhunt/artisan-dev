@@ -13,10 +13,14 @@ from typing import cast
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external import sanitized_uri, validate_persistable_uri
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.committed_scan import scan_committed
 from artisan.storage.core.provenance_store import ProvenanceStore
+from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import get_schema
 from artisan.utils.path import uri_join
 
@@ -57,6 +61,7 @@ class ArtifactStore:
         self._storage_options = storage_options or {}
         self.files_root = files_root
         self._provenance: ProvenanceStore | None = None
+        assert_store_format(self.base_path, self._fs, self._storage_options)
 
     @property
     def provenance(self) -> ProvenanceStore:
@@ -66,6 +71,11 @@ class ArtifactStore:
                 self.base_path, fs=self._fs, storage_options=self._storage_options
             )
         return self._provenance
+
+    @property
+    def filesystem(self) -> AbstractFileSystem:
+        """Return the configured filesystem used for artifact I/O."""
+        return self._fs
 
     def _table_path(self, table: TablePath) -> str:
         """Resolve the URI for a Delta table."""
@@ -96,11 +106,16 @@ class ArtifactStore:
             Typed artifact model, or None if the ID is not found in
             the index or content table.
         """
-        # Determine which table to query
-        if artifact_type is None:
-            artifact_type = self.get_artifact_type(artifact_id)
-            if artifact_type is None:
-                return None
+        stored_type = self.get_artifact_type(artifact_id)
+        if stored_type is None:
+            return None
+        if artifact_type is not None and artifact_type != stored_type:
+            msg = (
+                f"Artifact {artifact_id} is indexed as {stored_type!r}, "
+                f"not {artifact_type!r}"
+            )
+            raise ArtifactIntegrityError(msg)
+        artifact_type = stored_type
 
         # ID-only mode - return minimal artifact
         if not hydrate:
@@ -118,7 +133,12 @@ class ArtifactStore:
             return None
 
         result = (
-            pl.scan_delta(table_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id") == artifact_id)
             .limit(1)
             .collect()
@@ -129,7 +149,9 @@ class ArtifactStore:
 
         row = result.row(0, named=True)
         model_cls = ArtifactTypeDef.get_model(artifact_type)
-        return cast("Artifact", model_cls.from_row(row))  # type: ignore[attr-defined]
+        artifact = cast("Artifact", model_cls.from_row(row))  # type: ignore[attr-defined]
+        self._attach_verified_location(artifact)
+        return artifact
 
     def get_artifacts_by_type(
         self,
@@ -157,7 +179,12 @@ class ArtifactStore:
             return {}
 
         result = (
-            pl.scan_delta(table_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .collect()
         )
@@ -172,6 +199,7 @@ class ArtifactStore:
             # Artifacts loaded from storage are always finalized (artifact_id
             # is non-None).
             assert artifact.artifact_id is not None
+            self._attach_verified_location(artifact)
             artifacts[artifact.artifact_id] = artifact
 
         return artifacts
@@ -198,17 +226,107 @@ class ArtifactStore:
             return None
 
         result = (
-            pl.scan_delta(index_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id") == artifact_id)
             .select("artifact_type")
-            .limit(1)
             .collect()
         )
 
         if result.is_empty():
             return None
 
-        return cast("str | None", result["artifact_type"][0])
+        stored_types = set(result["artifact_type"].to_list())
+        if len(stored_types) != 1:
+            msg = (
+                f"Artifact {artifact_id} has contradictory index types {stored_types!r}"
+            )
+            raise ArtifactIntegrityError(msg)
+        return cast("str", next(iter(stored_types)))
+
+    def load_type_map(self, artifact_ids: list[str]) -> dict[str, str]:
+        """Bulk-load and validate unique type assignments for artifact IDs."""
+        if not artifact_ids:
+            return {}
+        result = (
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
+            .filter(pl.col("artifact_id").is_in(artifact_ids))
+            .select(["artifact_id", "artifact_type"])
+            .collect()
+        )
+        type_map: dict[str, str] = {}
+        for artifact_id, artifact_type in result.iter_rows():
+            previous = type_map.setdefault(artifact_id, artifact_type)
+            if previous != artifact_type:
+                msg = (
+                    f"Artifact {artifact_id} has contradictory index types "
+                    f"{previous!r} and {artifact_type!r}"
+                )
+                raise ArtifactIntegrityError(msg)
+        return type_map
+
+    def _attach_verified_location(self, artifact: Artifact) -> None:
+        """Select and verify a deterministic location for an external artifact."""
+        if not artifact.EXTERNALLY_BACKED:
+            return
+        assert artifact.artifact_id is not None
+        locations_path = self._table_path(TablePath.ARTIFACT_LOCATIONS)
+        if self._fs.exists(locations_path):
+            rows = (
+                scan_committed(
+                    self.base_path,
+                    TablePath.ARTIFACT_LOCATIONS,
+                    fs=self._fs,
+                    storage_options=self._storage_options,
+                )
+                .filter(pl.col("artifact_id") == artifact.artifact_id)
+                .select("uri")
+                .collect()
+            )
+        else:
+            rows = pl.DataFrame(schema={"uri": pl.String})
+        locations = sorted(
+            set(rows["uri"].to_list()),
+            key=lambda uri: (not self._is_managed_location(uri), uri),
+        )
+        attempted: list[str] = []
+        locator = next(iter(artifact.LOCATOR_FIELDS))
+        for uri in locations:
+            attempted.append(sanitized_uri(uri))
+            try:
+                validate_persistable_uri(uri)
+            except ValueError as exc:
+                msg = f"Persisted artifact location is invalid: {sanitized_uri(uri)!r}"
+                raise ArtifactIntegrityError(msg) from exc
+            setattr(artifact, locator, uri)
+            try:
+                artifact.verify_external_content(fs=self._fs)
+            except ArtifactIntegrityError:
+                raise
+            except Exception:
+                continue
+            return
+        msg = (
+            f"External {artifact.artifact_type} artifact {artifact.artifact_id} "
+            f"has no readable verified location; attempted {attempted!r}"
+        )
+        raise ArtifactIntegrityError(msg)
+
+    def _is_managed_location(self, uri: str) -> bool:
+        """Return whether a URI is under the configured managed files root."""
+        if self.files_root is None:
+            return False
+        root = self.files_root.rstrip("/")
+        return uri == root or uri.startswith(f"{root}/")
 
     def get_associated(
         self,
@@ -275,7 +393,12 @@ class ArtifactStore:
             return empty
 
         result = (
-            pl.scan_delta(table_path, storage_options=self._storage_options)
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(["artifact_id", "content"])
             .collect()
@@ -329,7 +452,12 @@ class ArtifactStore:
                 continue
 
             df = (
-                pl.scan_delta(table_path, storage_options=self._storage_options)
+                scan_committed(
+                    self.base_path,
+                    ArtifactTypeDef.get_table_path(artifact_type),
+                    fs=self._fs,
+                    storage_options=self._storage_options,
+                )
                 .filter(pl.col("artifact_id").is_in(ids))
                 .select(["artifact_id", "original_name"])
                 .collect()
@@ -368,3 +496,14 @@ class ArtifactStore:
             "metadata": ["{}"],
         }
         return pl.DataFrame(data, schema=get_schema(TablePath.ARTIFACT_INDEX))
+
+    def prepare_artifact_location_entry(
+        self,
+        artifact_id: str,
+        uri: str,
+    ) -> pl.DataFrame:
+        """Build one ownerless global artifact-location row."""
+        return pl.DataFrame(
+            {"artifact_id": [artifact_id], "uri": [uri]},
+            schema=get_schema(TablePath.ARTIFACT_LOCATIONS),
+        )

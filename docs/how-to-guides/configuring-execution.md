@@ -91,14 +91,21 @@ The default process pool size is 4.
 ## Configure compute routing
 
 Compute routing controls where the execute phase runs, independently of
-the step runner. Set it per step or as a pipeline-wide default:
+the step runner. Every operation has a class-level `ComputeProvider`; the base
+operation defaults to local compute. Omit the step keyword to use the
+operation's declaration, or pass `compute_provider` to select or patch a
+provider for one invocation:
 
 ```python
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
-from artisan.schemas.operation_config.compute_resources import ComputeResources
+from artisan.schemas import (
+    ComputeProvider,
+    ComputeResources,
+    ModalComputeConfig,
+    ToolEndpointDataPolicy,
+)
 
-# Pipeline-wide default
-pipeline = PipelineManager.create(..., default_compute_provider="local")
+# Use MyOp's declared compute provider
+pipeline.run(operation=MyOp, inputs=...)
 
 # Step-level override (string shorthand)
 pipeline.run(operation=MyOp, inputs=..., compute_provider="modal")
@@ -114,8 +121,13 @@ pipeline.run(
 
 | Compute target | How it runs | When to use |
 |----------------|-------------|-------------|
-| `"local"` (default) | Direct call inside the worker | Development, testing, CPU-only ops |
+| `"local"` (`OperationDefinition` default) | Direct call inside the worker | Development, testing, CPU-only ops |
 | `"modal"` | Call the tool's deployed Modal endpoint | GPU work, cloud burst, isolated environments |
+
+For a composite invocation, `run_composite(..., compute_provider=...)` and
+`submit_composite(...)` provide an explicit default for child steps. A
+`CompositeContext.run(..., compute_provider=...)` value wins for that child.
+When neither is supplied, the child operation keeps its class declaration.
 
 The modal provider runs **command ops** only — operations declaring a
 `ToolSpec` + `execute_command()` instead of `execute_function()` — and requires the
@@ -159,11 +171,12 @@ Modal-specific provider configuration. Hardware fields (`gpu`, `cpu`,
 | `volumes` | `dict[str, str]` | `{}` | Mount path → volume name (e.g. `{"/weights": "foundry-weights"}`). Each volume is resolved via `modal.Volume.from_name(name, create_if_missing=True, version=2)` — surviving across cold starts is the point. |
 | `env` | `dict[str, str]` | `{}` | Environment variables set inside the container (e.g. `{"HF_XET_HIGH_PERFORMANCE": "1"}`). Applied as an image layer; cache hits survive as long as the dict is stable. |
 | `local_python_sources` | `list[str]` | `[]` | Top-level Python package names overlaid onto the **worker** image, shadowing the image's baked versions — dev-mode iteration only (`artisan modal deploy --overlay` appends). Default `[]`: op code is baked into the image. The endpoint image carries no artisan — it validates requests against the op's `Params` JSON schema baked in at deploy time. |
-| `endpoint_url` | `str \| None` | `None` | Base URL of an externally-deployed tool endpoint. `None` resolves the Artisan-deployed app `artisan-tool-<op.name>` via the Modal SDK. |
-| `auth_secret` | `str \| None` | `None` | Env-var prefix for the proxy-auth token pair (`<prefix>_TOKEN_ID` / `<prefix>_TOKEN_SECRET`). `None` uses `MODAL_PROXY`. |
+| `endpoint_url` | `str \| None` | `None` | Absolute root URL of an externally deployed endpoint. `None` resolves `artisan-tool-<op.name>` through Modal. Custom URLs may not contain credentials, a path, query, or fragment. |
+| `auth_secret` | `str \| None` | `None` | Env-var prefix for a proxy-auth token pair (`<prefix>_TOKEN_ID` / `<prefix>_TOKEN_SECRET`). For the built-in Modal endpoint, `None` uses `MODAL_PROXY`. A custom URL with `None` is unauthenticated; setting a prefix requires a complete pair and HTTPS. |
 | `poll_interval` | `float` | `2.0` | Seconds between `/result` polls while a tool job runs. |
 | `max_concurrent_calls` | `int` | `64` | Client-side cap on concurrent endpoint calls per unit — the execute router fans one thread per artifact up to this bound. The server-side sibling is `max_containers`. |
 | `output_store` | `str \| None` | `None` | Object-store prefix (`s3://bucket/prefix`) to deliver tool outputs under, sent per request. `None` returns outputs inline (100 MB bound). See *Object-store output delivery* below. |
+| `data_policy` | `ToolEndpointDataPolicy` | empty, default-deny | Deployment-owned input-read and output-write allowlists. Inline data needs no entry; every remote URI must match a baked S3 prefix or exact HTTP origin. |
 
 The worker image must carry everything the op needs — tool binaries,
 artisan, and the op's own module are baked in (see the op-container-images
@@ -190,7 +203,9 @@ class GpuInference(OperationDefinition):
             max_containers=50,
         ),
     )
-    compute_resources = ComputeResources(gpu="A100", cpu=4.0, memory_gb=64, timeout=7200)
+    compute_resources = ComputeResources(
+        gpu="A100", cpu=4.0, memory_gb=64, timeout=7200
+    )
     ...
 ```
 
@@ -225,13 +240,21 @@ shell-inherited exports. Override the variable prefix per op via
 `ModalComputeConfig.auth_secret`. Missing tokens fail fast with the setup
 instructions in the error, before any network call.
 
+Endpoint selection and authentication are one decision. A built-in Modal
+endpoint discovers `MODAL_PROXY`. A custom `endpoint_url` sends no
+authentication and does not look up `MODAL_PROXY` unless `auth_secret`
+explicitly names a token prefix. Authenticated endpoints must use HTTPS.
+Control requests never follow redirects; an unexpected redirect is a
+configuration error, not a new destination for the credentials.
+
 ### Transport limits
 
 Input files ship inline in the submit request and outputs return as a
-tar — bounded at 100 MB per direction. Inputs that already live on object
-storage pass their `s3://` URI by reference (no re-upload, no bound — see
+tar — bounded at 100 MB per direction. Eligible complete-file artifacts
+that already live on object storage pass their `s3://` URI by reference
+(no re-upload, no bound — see
 *Object-store input delivery* below), and outputs can be delivered to an
-object store with no size bound — see *Object-store output delivery*
+object store without the 100 MB inline bound — see *Object-store output delivery*
 below. Large static data (model weights) belongs on Modal Volumes
 (`ModalComputeConfig.volumes`), not in the request.
 
@@ -242,20 +265,48 @@ dev-host source for iteration.
 (object-store-input-delivery)=
 ### Object-store input delivery
 
-An input artifact whose bytes already live in an object store (a
-`LargeFileArtifact`, or any file-backed artifact produced on a cloud
-backend) crosses to the worker **by reference** on an endpoint step: the
-client sends the `s3://` URI, and the worker fetches it with its own
-ambient credentials. The client never downloads it and never inlines it,
-so the 100 MB inline bound does not apply — a 2 GB MSA database crosses
-the same way a 1 MB PDB does. Nothing changes for local execution, and
-nothing changes in your op: `preprocess` still reads
-`artifact.materialized_path` (now the URI). This is automatic — there is
-no flag to set.
+An externally stored `FileRefArtifact` or `LargeFileArtifact` crosses to
+the worker **by reference** on an endpoint step. The client sends its URI,
+`content_digest`, and `size_bytes`; the worker authorizes the URI,
+downloads the complete file, and verifies both integrity values before
+the tool can see a local path. An `AppendableArtifact` still selects and
+verifies its bounded record locally, then sends that record inline rather
+than exposing the shared container URI. Nothing changes for local
+execution or for the operation's `preprocess` implementation.
 
-The worker reads inputs with the **same Modal Secret** that delivers
-outputs, so scope that Secret's IAM policy to grant **read** on the input
-buckets as well as write on the output prefixes.
+Remote input access is off by default. The operation's class-level config
+must include every permitted S3 path-segment prefix or HTTP capability
+origin before deployment:
+
+```python
+data_policy=ToolEndpointDataPolicy(
+    input_allowlist=(
+        "s3://your-bucket/reference-data",
+        "https://downloads.example.com",
+    ),
+)
+```
+
+S3 matching is bucket- and segment-aware: allowing `s3://bucket/data`
+does not allow `s3://bucket/database`. HTTP entries are exact origins;
+signed paths and queries remain per-request capabilities. Other schemes,
+including `file://`, are not endpoint transports.
+
+Direct HTTP consumers encode the same contract as two role-keyed maps:
+
+```text
+input_uris={"dataset":"https://downloads.example.com/input.csv?sig=..."}
+input_integrity={"dataset":{"content_digest":"<32 lowercase hex>","size_bytes":123}}
+```
+
+The maps must have exactly the same keys. `data_policy` is never a request
+field; only the deployment owner can change it.
+
+The worker reads S3 inputs with the **same Modal Secret** that delivers
+S3 outputs, so scope that Secret's IAM policy to grant **read** on the
+allowed input prefixes as well as write on the allowed output prefixes.
+The policy and IAM scope are separate defenses: the policy constrains
+caller-directed I/O, while the Secret supplies credentials.
 
 :::{warning}
 **R2 / custom-endpoint footgun — a required deploy step.** For a
@@ -282,58 +333,69 @@ pipeline does this automatically via `files_root`.
 ### Object-store output delivery
 
 The 100 MB output bound applies only to inline returns. Set
-`output_store` to deliver outputs of any size to an object store
-instead. The destination is **request data**: every caller of one
-deployed endpoint picks its own, per run, with no redeploy.
+`output_store` to bypass that inline bound and deliver outputs to S3. The requested
+destination travels per call, but it must remain beneath an output prefix
+baked into the endpoint deployment. Changing or widening that policy
+requires a redeploy.
 
 ```python
-op = FoldComplex(
-    compute_provider=ComputeProvider(
-        active="modal",
+class FoldComplex(OperationDefinition):
+    compute_provider = ComputeProvider(
         modal=ModalComputeConfig(
             image="ghcr.io/your-org/boltz-worker:0.4",
-            secrets=["aws-s3"],                    # worker upload credentials
-            output_store="s3://your-bucket/runs",  # this caller's choice
+            secrets=["aws-s3"],
+            output_store="s3://your-bucket/runs",
+            data_policy=ToolEndpointDataPolicy(
+                output_allowlist=(
+                    "s3://your-bucket/runs",
+                    "https://your-bucket.s3.amazonaws.com",
+                ),
+            ),
         ),
     )
-)
+    ...
+
+# Redeploy after defining or changing the policy:
+# artisan modal deploy fold_complex
 ```
 
 The worker tars the outputs, uploads
 `<output_store>/<op-name>/<uuid>.tar.gz` with its own credentials, and
 the `/result` manifest carries the URI plus a presigned GET URL (7-day
 expiry, matching Modal's result retention). The artisan client fetches
-the tarball straight from the store; `/download` 307-redirects to the
-same URL for curl-style consumers — one plain HTTP GET, no AWS
-credentials. Omit `output_store` and behavior is exactly the inline
-mode above.
+the tarball straight from the store with one plain, non-redirecting HTTP
+GET and no AWS credentials. The generated URL's exact origin must also be
+in `output_allowlist`. `/download` exposes the same capability to raw
+consumers as a redirect, but Artisan's client treats every control-plane
+redirect as an error. Omit `output_store` and behavior is exactly the
+inline mode above.
 
 Operational notes:
 
 - **Credentials.** Prefix-mode uploads run with the worker's Modal
   Secret (`secrets=["aws-s3"]`). Use long-lived IAM user keys — STS
   session credentials cap presign lifetime below 7 days — and scope the
-  key's IAM policy to the prefixes callers may target: that policy is
-  the access-control surface for worker-identity writes.
+  key's IAM policy to the prefixes the deployment allows.
 - **Lifecycle.** Artisan never deletes delivered tarballs. Pair
   destination prefixes with a bucket lifecycle policy (≥ 7 days,
   matching presign and result expiry).
-- **Caller-owned buckets.** A caller outside the worker's IAM universe
+- **Caller-owned buckets.** The endpoint policy must allow the destination.
+  A caller outside the worker's IAM universe
   either grants the worker's principal `s3:PutObject` on its prefix via
   bucket policy, or skips shared credentials entirely with a presigned
   PUT (below).
-- **Redeploy to enable.** An endpoint deployed before this feature
-  ignores the field and silently falls back to inline delivery.
+- **Redeploy to change access.** `data_policy` is baked into the worker;
+  caller fields cannot add or widen its roots.
 
 (presigned-puts-and-external-consumers-capability-mode)=
 #### Presigned PUTs and external consumers (capability mode)
 
 `output_store` rides `/submit` as a plain form field, so a consumer
-with no artisan installation can direct delivery. Two forms,
-discriminated by scheme: an object-store prefix (`s3://…`, the worker's
-credentials write) or a presigned PUT URL (`https://…`) the caller
-mints for its own bucket — the worker PUTs the tarball through it and
-no store credentials cross the boundary in either direction:
+with no artisan installation can request delivery within the deployment
+policy. Two forms are accepted: an S3 prefix written with worker
+credentials, or an HTTP(S) PUT capability minted by the caller. Capability
+mode works only when that exact HTTP origin is in the deployment's
+`output_allowlist`; the signed path and query remain request data:
 
 ```bash
 # mint a presigned PUT with your own credentials, e.g. boto3:
@@ -356,14 +418,16 @@ unless configured with `Config(signature_version="s3v4")` — R2 and
 modern AWS buckets reject SigV2 with 401) with default (host-only)
 signed headers — the worker adds an explicit `Content-Length` and
 nothing else. A single presigned PUT is bounded by S3's 5 GiB
-per-object limit; prefix mode multiparts transparently and has no such
-bound. Presigned PUT URLs are per-request
+per-object limit; prefix mode can use the filesystem's multipart upload.
+Artisan's compressed-size, expanded-size, and member-count archive budgets
+still apply to both modes. Presigned PUT URLs are per-request
 wire data: `ModalComputeConfig.output_store` rejects them at
 import time, and the artisan client always uses prefix mode.
 
-Inputs compose: input-ref URIs accept presigned GET URLs too, so a
-fully credential-free deployment (presigned GETs in, presigned PUT out)
-needs no object-store secret at all.
+Inputs compose: input-ref URIs accept presigned GET URLs whose origins are
+in `input_allowlist`, and each ref must include `content_digest` and
+`size_bytes`. A deployment using only authorized GET and PUT capabilities
+needs no object-store secret.
 
 ---
 
@@ -483,8 +547,7 @@ don't repeat the same overrides at every step:
 
 ```python
 from artisan.operations.base import OperationDefinition
-from artisan.schemas.operation_config.runner_resources import RunnerResources
-from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas import BatchStrategy, RunnerResources
 
 
 class GpuInference(OperationDefinition):
@@ -513,13 +576,75 @@ pipeline.run(operation=GpuInference, inputs=..., runner_resources={"memory_gb": 
 # gpus, time_limit, extra keep their operation defaults
 ```
 
-### Override precedence
+### Override sources and precedence
 
+An explicit `pipeline.run()` or `pipeline.submit()` value wins, but the value
+it overrides depends on the setting:
+
+| Setting | Default source | Explicit override |
+|---------|----------------|-------------------|
+| `step_runner` | `PipelineManager.create(default_step_runner=...)` | Step `step_runner` |
+| `failure_policy` | `PipelineManager.create(failure_policy=...)` | Step `failure_policy` |
+| `compute_provider` | Operation class | Step `compute_provider` |
+| `runner_resources`, `batch_strategy`, `environment`, `tool`, `compute_resources` | Operation class | Matching step keyword |
+| `group_by` | Operation class | Step `group_by` |
+
+Pipeline defaults do not provide an intermediate compute-routing layer. The
+effective provider is the operation declaration patched by the explicit step
+value, when present.
+
+### Patch configuration without replacing defaults
+
+All model-valued step options use the same patch behavior:
+`runner_resources`, `batch_strategy`, `environment`, `tool`,
+`compute_provider`, and `compute_resources`.
+
+You can pass either a dict or the corresponding typed model. Both forms use
+the fields you supplied as the patch, including values that equal the model's
+schema default:
+
+```python
+# These are equivalent, even though RunnerResources.cpus defaults to 1.
+pipeline.run(operation=GpuInference, inputs=..., runner_resources={"cpus": 1})
+pipeline.run(
+    operation=GpuInference,
+    inputs=...,
+    runner_resources=RunnerResources(cpus=1),
+)
 ```
-Pipeline defaults (PipelineManager.create)
-    └── Operation defaults (class fields)
-            └── Step overrides (pipeline.run kwargs)   ← wins
+
+Fields you omit retain the operation's declared values. Explicit `None` inside
+a patch resets an optional field instead of falling back to the operation
+default:
+
+```python
+# Both clear an operation-level ComputeResources(gpu="A100") default.
+pipeline.run(operation=GpuInference, inputs=..., compute_resources={"gpu": None})
+pipeline.run(
+    operation=GpuInference,
+    inputs=...,
+    compute_resources=ComputeResources(gpu=None),
+)
 ```
+
+Nested non-empty mappings merge recursively, so updating one environment
+variable preserves its siblings. Scalars, lists, `None`, and empty mappings
+replace the inherited value:
+
+```python
+# Preserve every existing variable except MODE.
+environment={
+    "active": "docker",
+    "docker": {"env": {"MODE": "production"}},
+}
+
+# Clear the inherited env mapping.
+environment={"active": "docker", "docker": {"env": {}}}
+```
+
+An empty root patch such as `runner_resources={}` supplies no fields and is a
+no-op. Top-level `None` also means no override; use `None` inside a patch to
+reset an optional field.
 
 ---
 
@@ -531,9 +656,7 @@ that wraps the command):
 
 ```python
 from artisan.operations.base import OperationDefinition
-from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.environment_spec import ApptainerEnvironmentSpec
+from artisan.schemas import ApptainerEnvironmentSpec, Environments, ToolSpec
 
 
 class ToolAOp(OperationDefinition):
@@ -566,7 +689,10 @@ pipeline.run(
     operation=ToolAOp,
     inputs=...,
     tool={"executable": "run_tool_a_v2.sh"},
-    environment={"apptainer": {"image": "/tools/tool_a_v2.sif"}},
+    environment={
+        "active": "apptainer",
+        "apptainer": {"image": "/tools/tool_a_v2.sif"},
+    },
 )
 ```
 
@@ -615,7 +741,9 @@ environment variables.
 ### String, dict, or typed model — pick one
 
 Both `environment` and `compute_provider` accept three shapes. Pick the form
-that matches what you want to do.
+that matches what you want to do. Dict and typed forms that supply the same
+fields produce the same effective configuration. A string is shorthand for an
+`active` patch and follows the same validation path.
 
 `environment`:
 
@@ -624,10 +752,17 @@ that matches what you want to do.
 pipeline.submit(MyOp, environment="docker")
 
 # Dict form (configure provider — must set 'active'):
-pipeline.submit(MyOp, environment={"active": "docker", "docker": {"image": "myimg:latest"}})
+pipeline.submit(
+    MyOp, environment={"active": "docker", "docker": {"image": "myimg:latest"}}
+)
 
 # Typed-model form (autocomplete + validation):
-pipeline.submit(MyOp, environment=Environments(active="docker", docker=DockerEnvironmentSpec(image="myimg:latest")))
+pipeline.submit(
+    MyOp,
+    environment=Environments(
+        active="docker", docker=DockerEnvironmentSpec(image="myimg:latest")
+    ),
+)
 ```
 
 `compute_provider`:
@@ -640,7 +775,10 @@ pipeline.submit(MyOp, compute_provider="modal")
 # on compute_resources, not the provider's modal block:
 pipeline.submit(
     MyOp,
-    compute_provider={"active": "modal", "modal": {"image": "ghcr.io/your-org/img:latest"}},
+    compute_provider={
+        "active": "modal",
+        "modal": {"image": "ghcr.io/your-org/img:latest"},
+    },
     compute_resources={"gpu": "A100", "memory_gb": 32},
 )
 
@@ -655,10 +793,11 @@ pipeline.submit(
 )
 ```
 
-Passing a dict that configures a non-active provider (e.g.
-`environment={"docker": {...}}` without `active="docker"`) leaves the active
-provider unchanged — the `docker` block is merged in but stays unused. Set
-`active="docker"` to switch providers.
+Passing a dict that configures a non-active provider (for example,
+`environment={"docker": {...}}` without `active="docker"`) raises before
+dispatch. Set `active="docker"` in the patch to configure and select it. A
+string selector must name a target already configured on the operation;
+unknown or unconfigured targets also raise before cache lookup.
 
 ---
 
@@ -667,7 +806,7 @@ provider unchanged — the `docker` block is merged in but stays unused. Set
 Control what happens when some artifacts fail within a step:
 
 ```python
-from artisan.schemas.enums import FailurePolicy
+from artisan.schemas import FailurePolicy
 
 # Pipeline-wide default
 pipeline = PipelineManager.create(..., failure_policy=FailurePolicy.CONTINUE)
@@ -689,23 +828,22 @@ Failures are always recorded for diagnosis.
 
 ## Set cache policy
 
-Cache policy controls when a previously completed step qualifies as a cache
-hit on re-run (e.g., when resuming a pipeline):
+Cache policy controls which previously usable terminal step qualifies as a
+cache hit on re-run (for example, when resuming a pipeline):
 
 ```python
-from artisan.schemas.enums import CachePolicy
+from artisan.schemas import CachePolicy
 
 pipeline = PipelineManager.create(..., cache_policy=CachePolicy.STEP_COMPLETED)
 ```
 
 | Policy | Behavior |
 |--------|----------|
-| `CachePolicy.ALL_SUCCEEDED` (default) | Cache hit only when the step had zero execution failures |
-| `CachePolicy.STEP_COMPLETED` | Cache hit for any completed step, regardless of execution failure count |
+| `CachePolicy.ALL_SUCCEEDED` (default) | Cache hit only for a `succeeded` attempt |
+| `CachePolicy.STEP_COMPLETED` | Cache hit for a `succeeded` or `partial` attempt |
 
-Both policies block caching when infrastructure errors (dispatch or commit
-failures) occurred. The difference is whether partial-failure steps count as
-hits.
+Failed, cancelled, and skipped attempts never qualify under either policy. The
+difference is whether a `partial` attempt counts as a hit.
 
 Use `STEP_COMPLETED` when you want to skip re-running a step that mostly
 succeeded, even if a few artifacts failed.
@@ -779,13 +917,15 @@ staging or commit issues.
 
 ### Recovering from crashes
 
-By default, `PipelineManager.create` commits leftover staging files from prior
-crashed runs at pipeline initialization (`recover_staging=True`). To disable
-this:
+Pipeline startup never guesses ownership for leftover staging. First inspect
+the immutable evidence without mutation:
 
-```python
-pipeline = PipelineManager.create(..., recover_staging=False)
+```bash
+artisan store repair --delta-root runs/delta --staging-root runs/staging
 ```
+
+Replay validated incomplete plans with `--apply`. If a plan cannot be restored,
+abandon that one logical commit explicitly with `--abandon ID --reason ...`.
 
 ### Naming steps
 
@@ -865,8 +1005,10 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 Confirm your configuration works by running a small test:
 
 ```python
+from artisan.orchestration import StepStatus
+
 step = pipeline.run(operation=MyOp, inputs=..., step_runner=Runner.LOCAL)
-assert step.success
+assert step.status is StepStatus.SUCCEEDED
 print(f"Processed {step.succeeded_count} artifacts")
 ```
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from enum import StrEnum, auto
 import os
+from enum import StrEnum, auto
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -43,7 +43,9 @@ class DataTransformerConfig(OperationDefinition):
 
     # ---------- Metadata ----------
     name: ClassVar[str] = "data_transformer_config"
-    description: ClassVar[str] = "Generate execution configs for data transformation script"
+    description: ClassVar[str] = (
+        "Generate execution configs for data transformation script"
+    )
 
     # ---------- Inputs ----------
     class InputRole(StrEnum):
@@ -107,9 +109,7 @@ class DataTransformerConfig(OperationDefinition):
             d for d in inputs.input_artifacts["dataset"] if isinstance(d, DataArtifact)
         ]
         return {
-            "dataset_artifact_ids": PerArtifact(
-                [d.artifact_id for d in datasets]
-            ),
+            "dataset_artifact_ids": PerArtifact([d.artifact_id for d in datasets]),
             "dataset_stems": PerArtifact(
                 [os.path.splitext(d.original_name or "")[0] for d in datasets]
             ),
@@ -125,16 +125,18 @@ class DataTransformerConfig(OperationDefinition):
             for scale_factor in self.params.scale_factors:
                 for noise_amplitude in self.params.noise_amplitudes:
                     index = len(configs)
-                    configs.append({
-                        "index": index,
-                        "original_name": f"{stem}_config_{index}.json",
-                        "content": {
-                            "input": {"$artifact": artifact_id},
-                            "scale_factor": scale_factor,
-                            "noise_amplitude": noise_amplitude,
-                            "seed": self.params.seed,
-                        },
-                    })
+                    configs.append(
+                        {
+                            "index": index,
+                            "original_name": f"{stem}_config_{index}.json",
+                            "content": {
+                                "input": {"$artifact": artifact_id},
+                                "scale_factor": scale_factor,
+                                "noise_amplitude": noise_amplitude,
+                                "seed": self.params.seed,
+                            },
+                        }
+                    )
 
         return {"configs": configs}
 

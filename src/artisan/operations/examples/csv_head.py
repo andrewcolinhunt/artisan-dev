@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import sys
 from enum import StrEnum, auto
 from itertools import islice
 from typing import Any, ClassVar
@@ -110,9 +111,11 @@ class CsvHead(OperationDefinition):
             output_path = os.path.join(inputs.execute_dir, f"{stem}_head.csv")
             with open(output_path, "w", newline="") as f:
                 csv.writer(f).writerows(kept)
-            # stdout is the flag-op logging channel — run_command captures
+            # stdout is the execute_as_tool logging channel — run_command captures
             # it to the unit log, surfaced in the executions table
-            print(f"csv_head: wrote {stem}_head.csv ({len(kept) - 1} rows)")
+            sys.stdout.write(
+                f"csv_head: wrote {stem}_head.csv ({len(kept) - 1} rows)\n"
+            )
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build a DataArtifact per truncated CSV."""

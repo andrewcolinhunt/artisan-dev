@@ -17,9 +17,13 @@ from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import polars as pl
 import pytest
+from pydantic import BaseModel, Field
 
+from artisan.errors import ArtifactIntegrityError, PersistenceIntegrityError
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import FailurePolicy, GroupByStrategy
 from artisan.schemas.execution.curator_result import (
@@ -27,10 +31,16 @@ from artisan.schemas.execution.curator_result import (
     PassthroughResult,
 )
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_models import PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.hashing import CacheInputIdentity
 
 # =============================================================================
 # Mock Operations
@@ -153,8 +163,8 @@ class TestCreatorRejectsFilePaths:
 class TestFilePathPromotion:
     """Tests for _promote_file_paths_to_store in pipeline_manager."""
 
-    def test_all_invalid_files_returns_none(self, tmp_path):
-        """All invalid file paths should return None."""
+    def test_missing_file_fails_closed(self, tmp_path):
+        """A missing raw input aborts before promotion."""
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
         )
@@ -166,19 +176,17 @@ class TestFilePathPromotion:
             staging_root=str(tmp_path / "staging"),
             working_root=str(tmp_path / "working"),
         )
-        (tmp_path / "delta").mkdir(parents=True)
-        (tmp_path / "staging").mkdir(parents=True)
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
 
         non_existent = str(tmp_path / "does_not_exist.csv")
-        result, count = _promote_file_paths_to_store(
-            [non_existent], config, 1, "mock_ingest"
-        )
+        with pytest.raises(ArtifactIntegrityError, match="Not found"):
+            _promote_file_paths_to_store(
+                [non_existent], config, 1, "mock_ingest", "a" * 32
+            )
 
-        assert result is None
-        assert count == 0
-
-    def test_directory_path_filtered_out(self, tmp_path):
-        """Directory paths should be filtered out."""
+    def test_directory_path_fails_closed(self, tmp_path):
+        """A raw directory input is rejected rather than skipped."""
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
         )
@@ -190,18 +198,16 @@ class TestFilePathPromotion:
             staging_root=str(tmp_path / "staging"),
             working_root=str(tmp_path / "working"),
         )
-        (tmp_path / "delta").mkdir(parents=True)
-        (tmp_path / "staging").mkdir(parents=True)
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
 
         test_dir = tmp_path / "test_directory"
         test_dir.mkdir()
 
-        result, count = _promote_file_paths_to_store(
-            [str(test_dir)], config, 1, "mock_ingest"
-        )
-
-        assert result is None
-        assert count == 0
+        with pytest.raises(ArtifactIntegrityError, match="Not a file"):
+            _promote_file_paths_to_store(
+                [str(test_dir)], config, 1, "mock_ingest", "a" * 32
+            )
 
     def test_valid_files_promoted(self, tmp_path):
         """Valid file paths should be promoted to artifact IDs."""
@@ -216,14 +222,14 @@ class TestFilePathPromotion:
             staging_root=str(tmp_path / "staging"),
             working_root=str(tmp_path / "working"),
         )
-        (tmp_path / "delta").mkdir(parents=True)
-        (tmp_path / "staging").mkdir(parents=True)
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
 
         test_file = tmp_path / "test.csv"
         test_file.write_bytes(b"ATOM content")
 
-        result, count = _promote_file_paths_to_store(
-            [str(test_file)], config, 0, "mock_ingest"
+        result, count, _verified = _promote_file_paths_to_store(
+            [str(test_file)], config, 0, "mock_ingest", "a" * 32
         )
 
         assert result is not None
@@ -241,6 +247,35 @@ _ID_S1 = "a" * 32
 _ID_S2 = "b" * 32
 _ID_C1 = "c" * 32
 _ID_C2 = "d" * 32
+
+
+def _prepared(
+    inputs: dict[str, list[str]] | None,
+    group_ids: list[str] | None = None,
+) -> PreparedInputs:
+    """Build the resolved identity snapshot accepted by step executors."""
+    resolved = inputs or {}
+    artifact_types = {
+        artifact_id: (
+            ArtifactTypes.CONFIG if role == "config" else ArtifactTypes.FILE_REF
+        )
+        for role, artifact_ids in resolved.items()
+        for artifact_id in artifact_ids
+    }
+    cache_inputs = {
+        role: [
+            CacheInputIdentity(
+                role=role,
+                group_id=group_ids[position] if group_ids is not None else None,
+                position=position,
+                artifact_type=artifact_types[artifact_id],
+                artifact_id=artifact_id,
+            )
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in resolved.items()
+    }
+    return PreparedInputs(resolved, artifact_types, group_ids, cache_inputs)
 
 
 class MockMultiInputCreatorOp(OperationDefinition):
@@ -424,19 +459,15 @@ def _make_mock_backend(
 
 
 class TestCreatorStepPairing:
-    """Tests for group_inputs integration in _execute_creator_step()."""
+    """Tests for prepared grouping in _execute_creator_step()."""
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    @patch("artisan.orchestration.engine.step_executor.group_inputs")
-    def test_creator_with_group_by_calls_group_inputs(
+    def test_creator_with_group_by_uses_prepared_groups(
         self,
-        mock_group_inputs,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
-        """Creator step with group_by should call group_inputs()."""
+        """Creator dispatch preserves groups prepared before cache hashing."""
         from artisan.orchestration.engine.step_executor import (
             _execute_creator_step,
         )
@@ -455,36 +486,23 @@ class TestCreatorStepPairing:
             ],
         )
 
-        resolved = {
-            "data": [_ID_S1, _ID_S2],
-            "config": [_ID_C1, _ID_C2],
-        }
         paired = {
             "data": [_ID_S1, _ID_S2],
             "config": [_ID_C1, _ID_C2],
         }
         gids = ["gid1", "gid2"]
 
-        mock_resolve.return_value = resolved
-        mock_group_inputs.return_value = (paired, gids)
         mock_cache.return_value = None  # No cache hits
 
         _execute_creator_step(
             operation=MockMultiInputCreatorOp(),
-            inputs={"data": [_ID_S1, _ID_S2], "config": [_ID_C1, _ID_C2]},
+            inputs=_prepared(paired, gids),
             step_runner=mock_backend,
             config_overrides=None,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
-
-        # group_inputs should be called with resolved inputs and ZIP strategy
-        mock_group_inputs.assert_called_once()
-        call_args = mock_group_inputs.call_args
-        assert call_args[0][0] == resolved
-        assert call_args[0][1] == GroupByStrategy.ZIP
 
         # step_runner flow receives units_path; verify captured units
         dispatched_units = mock_handle._captured_units
@@ -494,16 +512,12 @@ class TestCreatorStepPairing:
             assert unit.group_ids is not None
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    @patch("artisan.orchestration.engine.step_executor.group_inputs")
-    def test_creator_without_group_by_skips_pairing(
+    def test_creator_without_group_by_preserves_no_groups(
         self,
-        mock_group_inputs,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
-        """Creator step without group_by should NOT call group_inputs()."""
+        """Creator dispatch preserves an ungrouped prepared snapshot."""
         from artisan.orchestration.engine.step_executor import (
             _execute_creator_step,
         )
@@ -523,22 +537,17 @@ class TestCreatorStepPairing:
         )
 
         resolved = {"data": [_ID_S1, _ID_S2]}
-        mock_resolve.return_value = resolved
         mock_cache.return_value = None
 
         _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
-            inputs={"data": [_ID_S1, _ID_S2]},
+            inputs=_prepared(resolved),
             step_runner=mock_backend,
             config_overrides=None,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
-
-        # group_inputs should NOT be called
-        mock_group_inputs.assert_not_called()
 
         # step_runner flow receives units_path; verify captured units
         dispatched_units = mock_handle._captured_units
@@ -546,12 +555,8 @@ class TestCreatorStepPairing:
             assert unit.group_ids is None
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    @patch("artisan.orchestration.engine.step_executor.group_inputs")
     def test_creator_group_ids_sliced_across_batches(
         self,
-        mock_group_inputs,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -585,8 +590,6 @@ class TestCreatorStepPairing:
             "data": [_ID_S1, _ID_S2, id_s3, id_s4],
             "config": [_ID_C1, _ID_C2, id_c3, id_c4],
         }
-        mock_resolve.return_value = resolved
-        mock_group_inputs.return_value = (resolved, ["g1", "g2", "g3", "g4"])
         mock_cache.return_value = None
 
         # Create operation with artifacts_per_unit=2
@@ -597,13 +600,12 @@ class TestCreatorStepPairing:
 
         _execute_creator_step(
             operation=op,
-            inputs=resolved,
+            inputs=_prepared(resolved, ["g1", "g2", "g3", "g4"]),
             step_runner=mock_backend,
             config_overrides=None,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         dispatched_units = mock_handle._captured_units
@@ -626,21 +628,17 @@ class TestCreatorStepPairing:
 
 
 class TestCuratorStepPairing:
-    """Tests for group_inputs integration in _execute_curator_step()."""
+    """Tests for prepared grouping in _execute_curator_step()."""
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    @patch("artisan.orchestration.engine.step_executor.group_inputs")
-    def test_curator_with_group_by_calls_group_inputs(
+    def test_curator_with_group_by_uses_prepared_groups(
         self,
-        mock_group_inputs,
-        mock_resolve,
         mock_cache,
         mock_curator_flow,
         tmp_path,
     ):
-        """Curator step with group_by should call group_inputs()."""
+        """Curator dispatch preserves groups prepared before cache hashing."""
         from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -652,18 +650,12 @@ class TestCuratorStepPairing:
             working_root=str(tmp_path / "working"),
         )
 
-        resolved = {
-            "data": [_ID_S1, _ID_S2],
-            "config": [_ID_C1, _ID_C2],
-        }
         paired = {
             "data": [_ID_S1, _ID_S2],
             "config": [_ID_C1, _ID_C2],
         }
         gids = ["gid1", "gid2"]
 
-        mock_resolve.return_value = resolved
-        mock_group_inputs.return_value = (paired, gids)
         mock_cache.return_value = None
         mock_curator_flow.return_value = StagingResult(
             success=True, artifact_ids=[_ID_S1, _ID_S2], execution_run_id="run1"
@@ -671,19 +663,12 @@ class TestCuratorStepPairing:
 
         _execute_curator_step(
             operation=MockMultiInputCuratorOp(),
-            inputs={"data": [_ID_S1, _ID_S2], "config": [_ID_C1, _ID_C2]},
+            inputs=_prepared(paired, gids),
             config_overrides=None,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
-
-        # group_inputs should be called
-        mock_group_inputs.assert_called_once()
-        call_args = mock_group_inputs.call_args
-        assert call_args[0][0] == resolved
-        assert call_args[0][1] == GroupByStrategy.ZIP
 
         # _run_curator_in_subprocess should receive a unit with group_ids set
         unit = mock_curator_flow.call_args[0][0]
@@ -691,17 +676,13 @@ class TestCuratorStepPairing:
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    @patch("artisan.orchestration.engine.step_executor.group_inputs")
-    def test_curator_without_group_by_skips_pairing(
+    def test_curator_without_group_by_preserves_no_groups(
         self,
-        mock_group_inputs,
-        mock_resolve,
         mock_cache,
         mock_curator_flow,
         tmp_path,
     ):
-        """Curator step without group_by should NOT call group_inputs()."""
+        """Curator dispatch preserves an ungrouped prepared snapshot."""
         from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -714,7 +695,6 @@ class TestCuratorStepPairing:
         )
 
         resolved = {"data": [_ID_S1, _ID_S2]}
-        mock_resolve.return_value = resolved
         mock_cache.return_value = None
         mock_curator_flow.return_value = StagingResult(
             success=True, artifact_ids=[_ID_S1, _ID_S2], execution_run_id="run1"
@@ -722,16 +702,12 @@ class TestCuratorStepPairing:
 
         _execute_curator_step(
             operation=MockNoGroupByCuratorOp(),
-            inputs={"data": [_ID_S1, _ID_S2]},
+            inputs=_prepared(resolved),
             config_overrides=None,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
-
-        # group_inputs should NOT be called
-        mock_group_inputs.assert_not_called()
 
         # _run_curator_in_subprocess should receive a unit with group_ids=None
         unit = mock_curator_flow.call_args[0][0]
@@ -739,12 +715,8 @@ class TestCuratorStepPairing:
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    @patch("artisan.orchestration.engine.step_executor.group_inputs")
     def test_curator_group_ids_set_on_execution_unit(
         self,
-        mock_group_inputs,
-        mock_resolve,
         mock_cache,
         mock_curator_flow,
         tmp_path,
@@ -761,18 +733,12 @@ class TestCuratorStepPairing:
             working_root=str(tmp_path / "working"),
         )
 
-        resolved = {
-            "data": [_ID_S1, _ID_S2],
-            "config": [_ID_C1, _ID_C2],
-        }
         paired = {
             "data": [_ID_S2, _ID_S1],  # Reordered by pairing
             "config": [_ID_C2, _ID_C1],
         }
         gids = ["gid_x", "gid_y"]
 
-        mock_resolve.return_value = resolved
-        mock_group_inputs.return_value = (paired, gids)
         mock_cache.return_value = None
         mock_curator_flow.return_value = StagingResult(
             success=True, artifact_ids=[_ID_S1, _ID_S2], execution_run_id="run1"
@@ -780,12 +746,11 @@ class TestCuratorStepPairing:
 
         _execute_curator_step(
             operation=MockMultiInputCuratorOp(),
-            inputs={"data": [_ID_S1, _ID_S2], "config": [_ID_C1, _ID_C2]},
+            inputs=_prepared(paired, gids),
             config_overrides=None,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         unit = mock_curator_flow.call_args[0][0]
@@ -809,7 +774,8 @@ class TestStepResultMetadata:
         result = StepResult(
             step_name="test",
             step_number=1,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
         )
         assert result.metadata == {}
 
@@ -821,7 +787,8 @@ class TestStepResultMetadata:
         result = StepResult(
             step_name="test",
             step_number=1,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             metadata={"timings": timings},
         )
         assert result.metadata["timings"]["total"] == 1.6
@@ -859,10 +826,8 @@ class TestStepTimingIntegration:
     """Tests that step execution produces timing metadata."""
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_creator_step_returns_timings(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -885,18 +850,16 @@ class TestStepTimingIntegration:
             ],
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
 
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
-            inputs={"data": [_ID_S1]},
+            inputs=_prepared({"data": [_ID_S1]}),
             step_runner=mock_backend,
             config_overrides=None,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert "timings" in result.metadata
@@ -905,8 +868,8 @@ class TestStepTimingIntegration:
         assert "batch_and_cache" in timings
         assert "execute" in timings
         assert "verify_staging" in timings
-        assert "commit" in timings
-        assert "compact" in timings
+        assert "commit" not in timings
+        assert "compact" not in timings
         assert "total" in timings
         # All values should be non-negative floats
         for key, value in timings.items():
@@ -920,10 +883,8 @@ class TestStepTimingIntegration:
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_curator_step_returns_timings(
         self,
-        mock_resolve,
         mock_cache,
         mock_curator_flow,
         tmp_path,
@@ -940,7 +901,6 @@ class TestStepTimingIntegration:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
         mock_curator_flow.return_value = StagingResult(
             success=True, artifact_ids=[_ID_S1, _ID_S2], execution_run_id="run1"
@@ -948,12 +908,11 @@ class TestStepTimingIntegration:
 
         result = _execute_curator_step(
             operation=MockNoGroupByCuratorOp(),
-            inputs={"data": [_ID_S1]},
+            inputs=_prepared({"data": [_ID_S1]}),
             config_overrides=None,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert "timings" in result.metadata
@@ -962,8 +921,8 @@ class TestStepTimingIntegration:
         assert "batch_and_cache" in timings
         assert "execute" in timings
         assert "verify_staging" in timings
-        assert "commit" in timings
-        assert "compact" in timings
+        assert "commit" not in timings
+        assert "compact" not in timings
         assert "total" in timings
         for key, value in timings.items():
             assert isinstance(value, float), f"{key} should be float"
@@ -983,10 +942,8 @@ class TestStepTimingIntegration:
 class TestEmptyInputHandling:
     """Tests for graceful skipping when upstream filter removes all artifacts."""
 
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_creator_step_skips_on_empty_inputs(
         self,
-        mock_resolve,
         tmp_path,
     ):
         """Creator step should skip execution when all input roles are empty."""
@@ -1004,30 +961,25 @@ class TestEmptyInputHandling:
 
         mock_backend, _mock_handle = _make_mock_backend()
 
-        mock_resolve.return_value = {"data": []}
-
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
-            inputs={"data": []},
+            inputs=_prepared({"data": []}),
             step_runner=mock_backend,
             config_overrides=None,
             step_number=2,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         mock_backend.create_lifecycle_router.assert_not_called()
-        assert result.metadata["skipped"] is True
+        assert result.status == StepStatus.SKIPPED
         assert result.metadata["skip_reason"] == "empty_inputs"
         assert result.succeeded_count == 0
         assert result.failed_count == 0
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_curator_step_skips_on_empty_inputs(
         self,
-        mock_resolve,
         mock_curator_flow,
         tmp_path,
     ):
@@ -1042,29 +994,24 @@ class TestEmptyInputHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_resolve.return_value = {"data": []}
-
         result = _execute_curator_step(
             operation=MockNoGroupByCuratorOp(),
-            inputs={"data": []},
+            inputs=_prepared({"data": []}),
             config_overrides=None,
             step_number=2,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         mock_curator_flow.assert_not_called()
-        assert result.metadata["skipped"] is True
+        assert result.status == StepStatus.SKIPPED
         assert result.metadata["skip_reason"] == "empty_inputs"
         assert result.succeeded_count == 0
         assert result.failed_count == 0
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_generative_op_not_skipped(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -1087,22 +1034,20 @@ class TestEmptyInputHandling:
             ],
         )
 
-        mock_resolve.return_value = {}
         mock_cache.return_value = None
 
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
-            inputs=None,
+            inputs=_prepared(None),
             step_runner=mock_backend,
             config_overrides=None,
             step_number=0,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         mock_handle.run.assert_called_once()
-        assert result.metadata.get("skipped") is not True
+        assert result.status == StepStatus.SUCCEEDED
 
     def test_all_inputs_empty_with_partial_roles(self):
         """_all_inputs_empty returns False when some roles have artifacts."""
@@ -1132,10 +1077,8 @@ class TestDispatchFailureHandling:
     """Tests for F14: dispatch failure resilience."""
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_creator_dispatch_failure_returns_step_result(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -1154,27 +1097,25 @@ class TestDispatchFailureHandling:
             flow_side_effect=ConnectionError("Network down"),
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
 
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
-            inputs={"data": [_ID_S1]},
+            inputs=_prepared({"data": [_ID_S1]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.succeeded_count == 0
         assert result.failed_count == 1  # 1 unit dispatched
-        assert "dispatch_error" in result.metadata
-        assert "ConnectionError" in result.metadata["dispatch_error"]
-        assert "Network down" in result.metadata["dispatch_error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "ConnectionError" in result.error
+        assert "Network down" in result.error
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     @patch(
         "artisan.orchestration.engine.step_executor._run_curator_in_subprocess",
         side_effect=ConnectionError("Network down"),
@@ -1182,7 +1123,6 @@ class TestDispatchFailureHandling:
     def test_curator_dispatch_failure_returns_step_result(
         self,
         mock_curator_flow,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -1197,34 +1137,30 @@ class TestDispatchFailureHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
 
         result = _execute_curator_step(
             operation=MockNoGroupByCuratorOp(),
-            inputs={"data": [_ID_S1]},
+            inputs=_prepared({"data": [_ID_S1]}),
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.succeeded_count == 0
         assert result.failed_count == 1
-        assert "dispatch_error" in result.metadata
-        assert "ConnectionError" in result.metadata["dispatch_error"]
-        assert "Network down" in result.metadata["dispatch_error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "ConnectionError" in result.error
+        assert "Network down" in result.error
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_dispatch_fail_fast_still_raises(
+    def test_dispatch_fail_fast_returns_failed_terminal_result(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
-        """fail_fast raises FailFastAbort out of the step (now after commit)."""
-        from artisan.orchestration.engine.results import FailFastAbort
+        """Fail-fast remains an explicit failed result after durable work."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1235,8 +1171,6 @@ class TestDispatchFailureHandling:
             working_root=str(tmp_path / "working"),
         )
 
-        # A failed unit under FAIL_FAST raises via raise_if_fail_fast after
-        # the commit phase (aggregate_results no longer raises).
         mock_backend, _mock_handle = _make_mock_backend(
             flow_return_value=[
                 UnitResult(
@@ -1245,36 +1179,29 @@ class TestDispatchFailureHandling:
             ],
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
 
-        with pytest.raises(FailFastAbort, match="fail_fast"):
-            _execute_creator_step(
-                operation=MockNoGroupByCreatorOp(),
-                inputs={"data": [_ID_S1]},
-                step_runner=mock_backend,
-                step_number=1,
-                config=config,
-                failure_policy=FailurePolicy.FAIL_FAST,
-                compact=False,
-            )
+        result = _execute_creator_step(
+            operation=MockNoGroupByCreatorOp(),
+            inputs=_prepared({"data": [_ID_S1]}),
+            step_runner=mock_backend,
+            step_number=1,
+            config=config,
+            failure_policy=FailurePolicy.FAIL_FAST,
+        )
+
+        assert result.status == StepStatus.FAILED
+        assert result.error == "boom"
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_dispatch_runtimeerror_recorded_as_dispatch_error(
+    def test_dispatch_runtimeerror_becomes_failed_result(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
-        """A plain RuntimeError from dispatch is recorded, not propagated.
-
-        Only FailFastAbort aborts the step; an incidental RuntimeError from
-        the dispatch machinery must fall through to the dispatch-error path.
-        """
+        """A plain RuntimeError from dispatch becomes a failed result."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-        from artisan.visualization.inspect import inspect_failures
 
         config = PipelineConfig(
             name="test",
@@ -1287,43 +1214,41 @@ class TestDispatchFailureHandling:
             flow_side_effect=RuntimeError("dispatch machinery exploded"),
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1, _ID_S2]}
         mock_cache.return_value = None
 
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
-            inputs={"data": [_ID_S1, _ID_S2]},
+            inputs=_prepared({"data": [_ID_S1, _ID_S2]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.succeeded_count == 0
         assert result.failed_count == 2
-        assert "dispatch_error" in result.metadata
-        assert "RuntimeError" in result.metadata["dispatch_error"]
-        assert "dispatch machinery exploded" in result.metadata["dispatch_error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "RuntimeError" in result.error
+        assert "dispatch machinery exploded" in result.error
 
-        failures = inspect_failures(config.delta_root)
+        staged = list((tmp_path / "staging").rglob("executions.parquet"))
+        assert len(staged) == 2
+        failures = pl.concat([pl.read_parquet(path) for path in staged])
         assert failures.height == 2
-        assert set(failures["operation"]) == {MockNoGroupByCreatorOp.name}
+        assert set(failures["operation_name"]) == {MockNoGroupByCreatorOp.name}
         assert all(
             "dispatch machinery exploded" in error for error in failures["error"]
         )
-        for failure_log in failures["log"]:
-            assert (tmp_path / "logs" / "failures" / failure_log).exists()
+        assert len(list((tmp_path / "logs" / "failures").rglob("*.log"))) == 2
 
 
 class TestCreatorCancellationCleanup:
     """Cancelled creator work must never survive into staging recovery."""
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_cancelled_pending_failure_record_is_discarded(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -1355,30 +1280,26 @@ class TestCreatorCancellationCleanup:
             ]
 
         mock_handle.run.side_effect = _cancel_with_failure
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
 
         result = _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
-            inputs={"data": [_ID_S1]},
+            inputs=_prepared({"data": [_ID_S1]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
             cancel_event=cancel_event,
             step_run_id="cancelled-step",
         )
 
-        assert result.metadata["cancelled"] is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
         assert not list((tmp_path / "staging").rglob("*.parquet"))
-        assert not (tmp_path / "delta" / "orchestration" / "executions").exists()
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_cleanup_removes_only_current_cancel_sentinel(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -1410,17 +1331,15 @@ class TestCreatorCancellationCleanup:
                 )
             ]
         )
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
 
         _execute_creator_step(
             operation=MockNoGroupByCreatorOp(),
-            inputs={"data": [_ID_S1]},
+            inputs=_prepared({"data": [_ID_S1]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
             step_run_id="current-step",
         )
 
@@ -1431,17 +1350,13 @@ class TestCreatorCancellationCleanup:
 class TestCommitFailureHandling:
     """Tests for F16: commit phase failure resilience."""
 
-    @patch("artisan.storage.io.commit.DeltaCommitter.commit_all_tables")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_creator_commit_failure_returns_step_result_with_error(
+    def test_creator_commit_failure_propagates(
         self,
-        mock_resolve,
         mock_cache,
-        mock_commit,
         tmp_path,
     ):
-        """Creator step captures commit error in metadata, doesn't raise."""
+        """Creator commit errors propagate for manager terminalization."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1460,24 +1375,108 @@ class TestCommitFailureHandling:
             ],
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
-        mock_commit.side_effect = OSError("Disk full")
 
-        result = _execute_creator_step(
-            operation=MockNoGroupByCreatorOp(),
-            inputs={"data": [_ID_S1]},
-            step_runner=mock_backend,
-            step_number=1,
-            config=config,
-            failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
+        def fail_persistence(*_args):
+            msg = "Disk full"
+            raise OSError(msg)
+
+        with pytest.raises(OSError, match="Disk full"):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=mock_backend,
+                step_number=1,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                persist_result=fail_persistence,
+            )
+
+
+class TestLogicalPersistenceBoundary:
+    """Worker seals and curator callbacks are mandatory persistence inputs."""
+
+    @pytest.mark.parametrize(
+        "execution_run_ids",
+        [[], ["a" * 32, "a" * 32]],
+    )
+    def test_invalid_worker_seals_fail_before_orchestrator_staging(
+        self,
+        tmp_path,
+        execution_run_ids,
+    ):
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
         )
+        runner, _handle = _make_mock_backend(
+            flow_return_value=[
+                UnitResult(
+                    success=True,
+                    error=None,
+                    item_count=1,
+                    execution_run_ids=execution_run_ids,
+                )
+            ]
+        )
+        persist = MagicMock()
 
-        assert "commit_error" in result.metadata
-        assert "Disk full" in result.metadata["commit_error"]
-        # succeeded/failed counts come from dispatch, not commit
-        assert result.succeeded_count == 1
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=None,
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse"
+            ) as stage,
+            pytest.raises(PersistenceIntegrityError, match="staging identities"),
+        ):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=runner,
+                step_number=1,
+                config=config,
+                step_run_id="b" * 32,
+                persist_result=persist,
+            )
+
+        stage.assert_not_called()
+        persist.assert_not_called()
+
+    def test_execute_step_forwards_curator_persistence_callback(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import execute_step
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        persist = MagicMock()
+        expected = MagicMock()
+
+        with patch(
+            "artisan.orchestration.engine.step_executor._execute_curator_step",
+            return_value=expected,
+        ) as curator:
+            result = execute_step(
+                MockNoGroupByCuratorOp(),
+                _prepared({"data": [_ID_S1]}),
+                StepOverrides.from_user(),
+                MagicMock(),
+                config=config,
+                persist_result=persist,
+            )
+
+        assert result is expected
+        assert curator.call_args.kwargs["persist_result"] is persist
 
 
 class TestStagingTimeoutHandling:
@@ -1485,15 +1484,13 @@ class TestStagingTimeoutHandling:
 
     @patch("artisan.orchestration.engine.step_executor.await_staging_files")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_staging_timeout_continues_to_commit(
+    def test_staging_timeout_propagates(
         self,
-        mock_resolve,
         mock_cache,
         mock_await,
         tmp_path,
     ):
-        """Staging timeout should log warning and continue, not raise."""
+        """Staging verification timeouts propagate for terminalization."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
@@ -1513,29 +1510,25 @@ class TestStagingTimeoutHandling:
             needs_staging_verification=True,
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
         mock_await.side_effect = TimeoutError("NFS cache timeout")
 
-        result = _execute_creator_step(
-            operation=MockNoGroupByCreatorOp(),
-            inputs={"data": [_ID_S1]},
-            step_runner=mock_backend,
-            step_number=1,
-            config=config,
-            failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
-        )
-
-        # Should not raise, should return result
-        assert result.succeeded_count == 1
+        with pytest.raises(TimeoutError, match="NFS cache timeout"):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=mock_backend,
+                step_number=1,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+            )
 
 
 class TestFileValidationBatch:
     """Tests for batch file validation in _promote_file_paths_to_store."""
 
-    def test_mixed_valid_invalid_files_processes_valid_only(self, tmp_path):
-        """Valid files should be promoted even when some are invalid."""
+    def test_mixed_valid_invalid_files_fail_without_partial_promotion(self, tmp_path):
+        """One invalid raw input rejects the full ordered input occurrence list."""
         from artisan.orchestration.pipeline_manager import (
             _promote_file_paths_to_store,
         )
@@ -1547,25 +1540,24 @@ class TestFileValidationBatch:
             staging_root=str(tmp_path / "staging"),
             working_root=str(tmp_path / "working"),
         )
-        (tmp_path / "delta").mkdir(parents=True)
-        (tmp_path / "staging").mkdir(parents=True)
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
 
         # One valid file, one non-existent
         valid_file = tmp_path / "valid.csv"
         valid_file.write_bytes(b"ATOM content")
         non_existent = str(tmp_path / "missing.csv")
 
-        result, count = _promote_file_paths_to_store(
-            [str(valid_file), non_existent],
-            config,
-            1,
-            "mock_ingest",
-        )
+        with pytest.raises(ArtifactIntegrityError, match="missing.csv"):
+            _promote_file_paths_to_store(
+                [str(valid_file), non_existent],
+                config,
+                1,
+                "mock_ingest",
+                "a" * 32,
+            )
 
-        # Should promote the valid file, skip the invalid one
-        assert result is not None
-        assert "file" in result
-        assert count == 1
+        assert not list((tmp_path / "staging").rglob("*.parquet"))
 
 
 # =============================================================================
@@ -1578,10 +1570,8 @@ class TestFilterStepLogging:
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_filter_log_counts_only_passthrough_role(
         self,
-        mock_resolve,
         mock_cache,
         mock_curator_flow,
         tmp_path,
@@ -1602,10 +1592,12 @@ class TestFilterStepLogging:
         # 3 passthrough artifacts, 5 metric artifacts
         passthrough_ids = [_ID_S1, _ID_S2, "c" * 32]
         metric_ids = ["d" * 32, "e" * 32, "f" * 32, "g" * 32, "h" * 32]
-        mock_resolve.return_value = {
-            "passthrough": passthrough_ids,
-            "quality_metrics": metric_ids,
-        }
+        prepared = _prepared(
+            {
+                "passthrough": passthrough_ids,
+                "quality_metrics": metric_ids,
+            }
+        )
         mock_cache.return_value = None
 
         # 2 of 3 passthrough artifacts pass the filter
@@ -1624,15 +1616,11 @@ class TestFilterStepLogging:
         with caplog.at_level(logging.INFO):
             result = _execute_curator_step(
                 operation=MockFilterOp(),
-                inputs={
-                    "passthrough": passthrough_ids,
-                    "quality_metrics": metric_ids,
-                },
+                inputs=prepared,
                 config_overrides=None,
                 step_number=11,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
             )
 
         assert result.succeeded_count == 2
@@ -1652,10 +1640,8 @@ class TestFilterStepLogging:
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_filter_log_zero_pass(
         self,
-        mock_resolve,
         mock_cache,
         mock_curator_flow,
         tmp_path,
@@ -1674,7 +1660,6 @@ class TestFilterStepLogging:
         )
 
         passthrough_ids = [_ID_S1, _ID_S2]
-        mock_resolve.return_value = {"passthrough": passthrough_ids}
         mock_cache.return_value = None
 
         # Nothing passes — artifact_ids is empty but success=True
@@ -1693,12 +1678,11 @@ class TestFilterStepLogging:
         with caplog.at_level(logging.INFO):
             result = _execute_curator_step(
                 operation=MockFilterOp(),
-                inputs={"passthrough": passthrough_ids},
+                inputs=_prepared({"passthrough": passthrough_ids}),
                 config_overrides=None,
                 step_number=5,
                 config=config,
                 failure_policy=FailurePolicy.CONTINUE,
-                compact=False,
             )
 
         assert result.succeeded_count == 0
@@ -1714,24 +1698,286 @@ class TestFilterStepLogging:
 
 
 # =============================================================================
-# Tests for step_spec_id bypass in curator execution
+# Tests for curator execution cache identity
 # =============================================================================
 
 
-class TestCuratorStepSpecId:
-    """Tests for step_spec_id fast path in _execute_curator_step."""
+class TestExecutionCacheReuseCapture:
+    """Cache hits become durable membership only for their current attempt."""
+
+    def test_curator_cache_hit_stages_validated_relation(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import _execute_curator_step
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=CacheHit(cached, "spec"),
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ) as validate,
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse",
+                return_value=True,
+            ) as stage,
+            patch(
+                "artisan.orchestration.engine.step_executor._run_curator_in_subprocess"
+            ) as execute,
+        ):
+            persist = MagicMock(side_effect=lambda result, _ids: result)
+            result = _execute_curator_step(
+                operation=MockNoGroupByCuratorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                step_run_id=current,
+                persist_result=persist,
+            )
+
+        validate.assert_called_once_with(config, current, {cached})
+        stage.assert_called_once_with(
+            config,
+            current,
+            [cached],
+            step_number=4,
+            operation_name=MockNoGroupByCuratorOp.name,
+        )
+        assert persist.call_args.args[1] == ()
+        execute.assert_not_called()
+        assert result.step_run_id == current
+
+    def test_all_cached_creator_commits_relation_without_dispatch(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        runner, _handle = _make_mock_backend()
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=CacheHit(cached, "spec"),
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ) as validate,
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse",
+                return_value=True,
+            ) as stage,
+        ):
+            persist = MagicMock(side_effect=lambda result, _ids: result)
+            result = _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=runner,
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                step_run_id=current,
+                persist_result=persist,
+            )
+
+        validate.assert_called_once_with(config, current, {cached})
+        stage.assert_called_once_with(
+            config,
+            current,
+            [cached],
+            step_number=4,
+            operation_name=MockNoGroupByCreatorOp.name,
+        )
+        assert persist.call_args.args[1] == ()
+        runner.create_lifecycle_router.assert_not_called()
+        assert result.succeeded_count == 1
+
+    def test_mixed_creator_stages_only_cache_hits(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.execution.batch_strategy import BatchStrategy
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        operation = MockNoGroupByCreatorOp().model_copy(
+            update={"batch_strategy": BatchStrategy(artifacts_per_unit=1)}
+        )
+        runner, handle = _make_mock_backend(
+            flow_return_value=[
+                UnitResult(
+                    success=True,
+                    error=None,
+                    item_count=1,
+                    execution_run_ids=["c" * 32],
+                )
+            ]
+        )
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                side_effect=[CacheHit(cached, "spec"), None],
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ) as validate,
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse",
+                return_value=True,
+            ) as stage,
+        ):
+            persist = MagicMock(side_effect=lambda result, _ids: result)
+            result = _execute_creator_step(
+                operation=operation,
+                inputs=_prepared({"data": [_ID_S1, _ID_S2]}),
+                step_runner=runner,
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                step_run_id=current,
+                persist_result=persist,
+            )
+
+        validate.assert_called_once_with(config, current, {cached})
+        assert stage.call_args.args[2] == [cached]
+        assert len(handle._captured_units) == 1
+        assert persist.call_args.args[1] == ("c" * 32,)
+        assert result.succeeded_count == 2
+
+    def test_cancelled_cache_selection_is_never_staged(self, tmp_path):
+        import threading
+
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        runner, _handle = _make_mock_backend()
+        cancelled = threading.Event()
+        cancelled.set()
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=CacheHit(cached, "spec"),
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ) as validate,
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse"
+            ) as stage,
+        ):
+            persist = MagicMock(side_effect=lambda result, _ids: result)
+            result = _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=runner,
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                cancel_event=cancelled,
+                step_run_id=current,
+                persist_result=persist,
+            )
+
+        validate.assert_called_once_with(config, current, {cached})
+        stage.assert_not_called()
+        persist.assert_not_called()
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
+        assert result.step_run_id == current
+
+    def test_cache_relation_commit_failure_blocks_success(self, tmp_path):
+        from artisan.orchestration.engine.step_executor import _execute_creator_step
+        from artisan.schemas.execution.cache_result import CacheHit
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        current = "a" * 32
+        cached = "b" * 32
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        runner, _handle = _make_mock_backend()
+
+        with (
+            patch(
+                "artisan.orchestration.engine.step_executor.check_cache_for_batch",
+                return_value=CacheHit(cached, "spec"),
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._validate_cache_reuse",
+                return_value=[cached],
+            ),
+            patch(
+                "artisan.orchestration.engine.step_executor._stage_cache_reuse",
+                return_value=True,
+            ),
+            pytest.raises(OSError, match="commit unavailable"),
+        ):
+            _execute_creator_step(
+                operation=MockNoGroupByCreatorOp(),
+                inputs=_prepared({"data": [_ID_S1]}),
+                step_runner=runner,
+                step_number=4,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+                step_run_id=current,
+                persist_result=MagicMock(side_effect=OSError("commit unavailable")),
+            )
+
+
+class TestCuratorExecutionCacheIdentity:
+    """Tests for concrete execution-cache lookup in curator execution."""
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_step_spec_id_skips_cache_check(
+    def test_concrete_inputs_drive_cache_lookup(
         self,
-        mock_resolve,
         mock_cache,
         mock_curator_flow,
         tmp_path,
     ):
-        """When step_spec_id is provided, check_cache_for_batch is not called."""
+        """Curator execution always checks its concrete execution identity."""
         from artisan.execution.recording.parquet_writer import StagingResult
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -1743,53 +1989,6 @@ class TestCuratorStepSpecId:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
-        mock_curator_flow.return_value = StagingResult(
-            success=True, artifact_ids=[_ID_S1], execution_run_id="run1"
-        )
-
-        result = _execute_curator_step(
-            operation=MockNoGroupByCuratorOp(),
-            inputs={"data": [_ID_S1]},
-            step_number=1,
-            config=config,
-            failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
-            step_spec_id="precomputed_spec_abc123",
-        )
-
-        # Cache check should NOT be called — step_spec_id fast path
-        mock_cache.assert_not_called()
-        assert result.success
-
-        # The ExecutionUnit should use the step_spec_id as its spec_id
-        call_args = mock_curator_flow.call_args
-        unit = call_args[0][0]  # first positional arg
-        assert unit.execution_spec_id == "precomputed_spec_abc123"
-
-    @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
-    @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_no_step_spec_id_uses_fallback(
-        self,
-        mock_resolve,
-        mock_cache,
-        mock_curator_flow,
-        tmp_path,
-    ):
-        """When step_spec_id is None, check_cache_for_batch is still called."""
-        from artisan.execution.recording.parquet_writer import StagingResult
-        from artisan.orchestration.engine.step_executor import _execute_curator_step
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-            working_root=str(tmp_path / "working"),
-        )
-
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
         mock_curator_flow.return_value = StagingResult(
             success=True, artifact_ids=[_ID_S1], execution_run_id="run1"
@@ -1797,16 +1996,14 @@ class TestCuratorStepSpecId:
 
         result = _execute_curator_step(
             operation=MockNoGroupByCuratorOp(),
-            inputs={"data": [_ID_S1]},
+            inputs=_prepared({"data": [_ID_S1]}),
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
-        # Fallback path: cache check SHOULD be called
         mock_cache.assert_called_once()
-        assert result.success
+        assert result.status == StepStatus.SUCCEEDED
 
 
 # =============================================================================
@@ -1897,7 +2094,11 @@ class TestCuratorSubprocessIsolation:
             name: ClassVar[str] = "notebook_curator"
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {}
-            marker: str
+
+            class Params(BaseModel):
+                marker: str = Field(description="Artifact marker.")
+
+            params: Params
 
             def execute_curator(self, inputs, step_number, artifact_store):
                 raise NotImplementedError
@@ -1911,11 +2112,13 @@ class TestCuratorSubprocessIsolation:
             return StagingResult(
                 success=True,
                 execution_run_id=f"run-{worker_id}",
-                artifact_ids=[child_unit.operation.marker],
+                artifact_ids=[child_unit.operation.params.marker],
             )
 
         unit = ExecutionUnit.model_construct(
-            operation=NotebookCurator(marker="notebook-artifact"),
+            operation=NotebookCurator(
+                params=NotebookCurator.Params(marker="notebook-artifact")
+            ),
             inputs={},
             execution_spec_id="notebook-spec",
             step_number=0,
@@ -1973,10 +2176,8 @@ class TestCuratorSubprocessIsolation:
     @patch("artisan.orchestration.engine.step_executor._format_subprocess_kill_error")
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_curator_subprocess_death_records_failure(
         self,
-        mock_resolve,
         mock_cache,
         mock_subprocess,
         mock_format_error,
@@ -1998,7 +2199,6 @@ class TestCuratorSubprocessIsolation:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1, _ID_S2]}
         mock_cache.return_value = None
         mock_subprocess.side_effect = BrokenProcessPool(
             "A process in the process pool was terminated abruptly"
@@ -2015,11 +2215,10 @@ class TestCuratorSubprocessIsolation:
 
         result = _execute_curator_step(
             operation=MockNoGroupByCuratorOp(),
-            inputs={"data": [_ID_S1, _ID_S2]},
+            inputs=_prepared({"data": [_ID_S1, _ID_S2]}),
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.failed_count == 2
@@ -2063,10 +2262,8 @@ class TestCuratorSubprocessIsolation:
 
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_regular_exception_not_caught_by_broken_executor(
         self,
-        mock_resolve,
         mock_cache,
         mock_subprocess,
         tmp_path,
@@ -2082,23 +2279,22 @@ class TestCuratorSubprocessIsolation:
             working_root=str(tmp_path / "working"),
         )
 
-        mock_resolve.return_value = {"data": [_ID_S1]}
         mock_cache.return_value = None
         mock_subprocess.side_effect = ValueError("bad input data")
 
         result = _execute_curator_step(
             operation=MockNoGroupByCuratorOp(),
-            inputs={"data": [_ID_S1]},
+            inputs=_prepared({"data": [_ID_S1]}),
             step_number=1,
             config=config,
             failure_policy=FailurePolicy.CONTINUE,
-            compact=False,
         )
 
         assert result.failed_count == 1
         assert result.succeeded_count == 0
-        assert "dispatch_error" in result.metadata
-        assert "ValueError" in result.metadata["dispatch_error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "ValueError" in result.error
 
 
 class TestCreateRuntimeEnvironmentFailureLogsRoot:
@@ -2232,7 +2428,7 @@ class TestGroupByEffectiveConfigHashing:
             "operation_name": "x",
             "step_number": 0,
             "params": {"a": 1},
-            "input_spec": {"data": ("upstream", "out")},
+            "inputs": _prepared({"data": [_ID_S1]}).cache_inputs,
         }
 
         def spec_for(strategy: GroupByStrategy | None) -> str:
@@ -2264,23 +2460,23 @@ class TestFailureRecordSynthesis:
             working_root=str(tmp_path / "working"),
         )
 
-    def test_backfills_empty_run_id_and_commit_makes_it_readable(self, tmp_path):
-        """A failed UnitResult with no run id is synthesized, committed, and read.
+    def test_backfills_empty_run_id_with_a_readable_worker_seal(self, tmp_path):
+        """A failed UnitResult with no run id receives a sealed staging record.
 
         Covers the pre-try / unimportable-op path (Mechanism B) that cannot be
         built importably: a worker returns success=False with empty
-        execution_run_ids, the orchestrator synthesizes the record, the commit
-        path lands the success=False parquet, and inspect_failures reads it.
+        execution_run_ids, the orchestrator synthesizes the record, and the
+        logical committer can use its execution ID as exact staging evidence.
         """
         from datetime import UTC, datetime
 
         from artisan.execution.models.execution_unit import ExecutionUnit
         from artisan.orchestration.engine.step_executor import (
-            _commit_and_compact,
             _create_runtime_environment,
+            _require_recorded_execution_ids,
             _synthesize_missing_failure_records,
         )
-        from artisan.visualization.inspect import inspect_failures
+        from artisan.utils.path import shard_uri
 
         config = self._config(tmp_path)
         op = MockNoGroupByCreatorOp()
@@ -2307,25 +2503,19 @@ class TestFailureRecordSynthesis:
             step_run_id=None,
         )
         assert patched[0].execution_run_ids == ["killed-" + "a" * 24]
+        assert _require_recorded_execution_ids(patched) == ["killed-" + "a" * 24]
 
-        _commit_and_compact(
-            config,
-            runtime_env,
-            0,
-            op.name,
-            {},
-            has_work=True,
-            compact=False,
+        shard = shard_uri(
+            config.staging_root,
+            patched[0].execution_run_ids[0],
+            step_number=0,
+            operation_name=op.name,
         )
-
-        failures = inspect_failures(config.delta_root)
-        rows = [r for r in failures.to_dicts() if r["operation"] == op.name]
+        rows = pl.read_parquet(f"{shard}/executions.parquet").to_dicts()
         assert len(rows) == 1
-        assert rows[0]["step"] == 0
-        assert rows[0]["code"] is None
+        assert rows[0]["origin_step_number"] == 0
+        assert rows[0]["success"] is False
         assert "pre-try boom" in rows[0]["error"]
-        log_path = tmp_path / "logs" / "failures" / rows[0]["log"]
-        assert log_path.exists()
 
     def test_skips_units_that_already_recorded(self, tmp_path):
         """A failed result that already carries a run id is left untouched."""

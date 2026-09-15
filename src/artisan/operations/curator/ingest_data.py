@@ -7,7 +7,7 @@ produces DataArtifact drafts.
 from __future__ import annotations
 
 from enum import StrEnum, auto
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from artisan.operations.curator.ingest_files import IngestFiles
 from artisan.schemas.artifact.data import DataArtifact
@@ -15,6 +15,9 @@ from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.output_spec import OutputSpec
+
+if TYPE_CHECKING:
+    from fsspec import AbstractFileSystem
 
 
 class IngestData(IngestFiles):
@@ -47,18 +50,25 @@ class IngestData(IngestFiles):
     )
 
     # ---------- Lifecycle ----------
-    def convert_file(self, file_ref: FileRefArtifact, step_number: int) -> DataArtifact:
+    def convert_file(
+        self,
+        file_ref: FileRefArtifact,
+        step_number: int,
+        *,
+        fs: AbstractFileSystem | None = None,
+    ) -> DataArtifact:
         """Convert a FileRefArtifact into a draft DataArtifact.
 
         Args:
             file_ref: The file reference to convert.
             step_number: Current pipeline step number.
+            fs: Configured filesystem for reading the file.
 
         Returns:
             A draft DataArtifact with content read from disk.
         """
 
-        content = file_ref.read_content()
+        content = file_ref.read_content(fs=fs)
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"
 
         return DataArtifact.draft(

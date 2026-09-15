@@ -17,6 +17,8 @@ The repo's console entry point (``[project.scripts]``). Subcommands:
 - ``artisan runs`` / ``artisan failures`` / ``artisan provenance`` —
   read persisted run history, failure envelopes, and provenance edges
   from a Delta root (``--delta-root`` or ``ARTISAN_DELTA_ROOT``).
+- ``artisan store repair`` — report or deliberately repair incomplete
+  logical commits.
 
 Heavy artisan imports are deferred into the command functions so
 ``--help`` and argument errors stay fast. Under ``--json``, handled
@@ -182,6 +184,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--depth", type=int, default=3, help="Maximum hops from the artifact"
     )
     provenance.set_defaults(func=_provenance)
+
+    store_parser = sub.add_parser("store", help="Persisted store commands")
+    store_sub = store_parser.add_subparsers(dest="store_command", required=True)
+    repair = store_sub.add_parser(
+        "repair", help="Report or deliberately repair logical commits"
+    )
+    _add_store_args(repair)
+    repair.add_argument("--staging-root", required=True, help="Worker staging root")
+    repair.add_argument(
+        "--storage-config",
+        type=Path,
+        help="JSON file containing a StorageConfig object",
+    )
+    repair.add_argument(
+        "--apply", action="store_true", help="Replay validated incomplete commits"
+    )
+    repair.add_argument(
+        "--abandon", metavar="LOGICAL_COMMIT_ID", help="Abandon one planned commit"
+    )
+    repair.add_argument("--reason", help="Required explanation for --abandon")
+    repair.set_defaults(func=_store_repair)
 
     return parser
 
@@ -352,14 +375,63 @@ def _provenance(args: argparse.Namespace) -> int:
     return _emit(args, payload)
 
 
+def _store_repair(args: argparse.Namespace) -> int:
+    """Report, replay, or explicitly abandon immutable commit evidence."""
+    if args.apply and args.abandon is not None:
+        sys.stderr.write("--apply and --abandon are separate actions\n")
+        return 2
+    if args.abandon is not None and not args.reason:
+        sys.stderr.write("--abandon requires --reason\n")
+        return 2
+    if args.abandon is None and args.reason is not None:
+        sys.stderr.write("--reason requires --abandon\n")
+        return 2
+
+    result: dict[str, Any] = {}
+
+    def payload() -> Any:
+        from artisan.schemas.execution.storage_config import StorageConfig
+        from artisan.storage.io.repair import repair_store
+
+        storage = (
+            StorageConfig.model_validate_json(args.storage_config.read_text())
+            if args.storage_config is not None
+            else StorageConfig()
+        )
+        report = repair_store(
+            delta_root=_require_delta_root(args),
+            staging_root=args.staging_root,
+            fs=storage.filesystem(),
+            storage_options=storage.delta_storage_options(),
+            apply=args.apply,
+            abandon=args.abandon,
+            reason=args.reason,
+        )
+        result["report"] = report
+        return report
+
+    exit_code = _emit(args, payload)
+    report = result.get("report")
+    if exit_code == 0 and report is not None and report.unresolved:
+        return 1
+    return exit_code
+
+
 def _modal_deploy(args: argparse.Namespace) -> int:
     """Resolve the op, build its app, and deploy it as a persistent Modal app."""
+    from artisan.execution.tool_endpoint._optional import MODAL_EXTRA_MESSAGE
     from artisan.execution.tool_endpoint.deploy import build_app
 
     op_cls = _resolve_op_cls(args.operation)
     if op_cls is None:
         return 1
-    app = build_app(op_cls, overlay=args.overlay)
+    try:
+        app = build_app(op_cls, overlay=args.overlay)
+    except ImportError as exc:
+        if str(exc) != MODAL_EXTRA_MESSAGE:
+            raise
+        sys.stderr.write(MODAL_EXTRA_MESSAGE + "\n")
+        return 1
     app.deploy()
     sys.stdout.write(f"Deployed artisan-tool-{op_cls.name}\n")
     return 0
@@ -391,7 +463,7 @@ def _file_shaped(inputs: dict[str, Any]) -> dict[str, list[str]]:
     A bare string is a single file (the endpoint protocol's
     one-file-per-role shape, wrapped str → [str]); lists of paths pass
     through. This is what makes ``execute_function``'s view identical
-    in-process, under the local shim, and behind the endpoint worker.
+    in-process, under the local command adapter, and behind the endpoint worker.
 
     Args:
         inputs: Parsed ``--inputs`` JSON (role → path or paths).
@@ -419,7 +491,7 @@ def _file_shaped(inputs: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _op_run(args: argparse.Namespace) -> int:
-    """Run an execute_as_tool op's ``execute_function`` — the recursion leaf of the shim.
+    """Run an execute_as_tool op's function through the command adapter.
 
     Resolves the class by ``module:Qualname`` (no registry discovery),
     rebuilds the op from the params JSON, and calls the Python body
@@ -443,13 +515,16 @@ def _op_run(args: argparse.Namespace) -> int:
         return 1
     fd, log_path = tempfile.mkstemp(prefix="artisan-op-run-", suffix=".log")
     os.close(fd)
-    result = op.execute_function(
-        ExecuteInput(
-            execute_dir=args.execute_dir or os.getcwd(),
-            inputs=normalized,
-            log_path=log_path,
+    try:
+        result = op.execute_function(
+            ExecuteInput(
+                execute_dir=args.execute_dir or os.getcwd(),
+                inputs=normalized,
+                log_path=log_path,
+            )
         )
-    )
+    finally:
+        Path(log_path).unlink(missing_ok=True)
     if result is not None:
         sys.stderr.write(
             f"{op_cls.__name__}.execute_function returned "

@@ -79,6 +79,7 @@ class OperationDefinition(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         str_strip_whitespace=True,
+        hide_input_in_errors=True,
     )
 
     _registry: ClassVar[dict[str, type[OperationDefinition]]] = {}
@@ -243,11 +244,11 @@ class OperationDefinition(BaseModel):
       whole, as shared data, to every per-artifact subprocess). Scalars
       belong in ``Params``.
     - Multi-element list values (the ``per_artifact_dispatch=False``
-      shape) run under the local shim but cannot cross the endpoint —
+      shape) run under the local command adapter but cannot cross the endpoint —
       the wire protocol carries one file per role.
     - Outputs are files written to ``execute_dir``;
       ``execute_function`` returns None (a non-None return is a runtime
-      error under the shim).
+      error under the adapter).
     - All per-run config lives in the nested ``Params`` model (enforced
       at class definition).
     - ``ExecuteInput.metadata`` and ``files_dir`` are unavailable, and
@@ -465,16 +466,13 @@ class OperationDefinition(BaseModel):
         """
         super().__pydantic_init_subclass__(**kwargs)
 
-        # Skip abstract classes (no name set)
-        if not cls.name:
+        # The empty string is the explicit marker for abstract operation bases.
+        # Other falsey values are malformed concrete declarations and must fail.
+        if cls.name == "":
             return
 
-        if not isinstance(cls.version, str) or not cls.version:
-            msg = (
-                f"{cls.__name__}.version must be a non-empty string "
-                f"(got {cls.version!r}) — it is folded verbatim into the cache key"
-            )
-            raise TypeError(msg)
+        cls._validate_registry_metadata()
+        cls._validate_parameter_shape()
 
         # Exactly one execute slot must be implemented
         has_execute_function = (
@@ -538,6 +536,8 @@ class OperationDefinition(BaseModel):
             )
             raise TypeError(msg)
 
+        cls._validate_lineage_roles()
+
         # Creator ops (custom execute or tool command) must declare explicit
         # lineage for all outputs
         is_creator = has_execute_function or has_execute_command
@@ -560,7 +560,7 @@ class OperationDefinition(BaseModel):
                 )
                 raise TypeError(msg)
 
-        validate_role_enums(cls, "operation")
+        validate_role_enums(cls)
         append_role_docs(cls)
         cls._validate_params_documented()
 
@@ -576,6 +576,89 @@ class OperationDefinition(BaseModel):
                 )
 
     @classmethod
+    def _validate_registry_metadata(cls) -> None:
+        """Validate metadata consumed by registry serialization and discovery."""
+        for field_name in ("name", "version"):
+            value = getattr(cls, field_name)
+            if not isinstance(value, str) or not value.strip():
+                msg = f"{cls.__name__}.{field_name} must be a non-empty string (got {value!r})"
+                raise TypeError(msg)
+        description: object = cls.description
+        if not isinstance(description, str):
+            msg = f"{cls.__name__}.description must be a string (got {description!r})"
+            raise TypeError(msg)
+        tags: object = cls.tags
+        if not isinstance(tags, list) or not all(
+            isinstance(tag, str) and bool(tag.strip()) for tag in tags
+        ):
+            msg = (
+                f"{cls.__name__}.tags must be a list of non-empty strings "
+                f"(got {tags!r})"
+            )
+            raise TypeError(msg)
+        examples: object = cls.examples
+        if not isinstance(examples, list) or not all(
+            isinstance(example, OperationExample) for example in examples
+        ):
+            msg = (
+                f"{cls.__name__}.examples must be a list of OperationExample instances "
+                f"(got {examples!r})"
+            )
+            raise TypeError(msg)
+        cls._validate_spec_mapping("inputs", cls.inputs, InputSpec)
+        cls._validate_spec_mapping("outputs", cls.outputs, OutputSpec)
+
+    @classmethod
+    def _validate_spec_mapping(
+        cls,
+        field_name: str,
+        value: Any,
+        spec_type: type[InputSpec] | type[OutputSpec],
+    ) -> None:
+        """Validate a role-to-spec mapping used by registry payloads."""
+        if not isinstance(value, dict) or not all(
+            isinstance(role, str) and isinstance(spec, spec_type)
+            for role, spec in value.items()
+        ):
+            msg = (
+                f"{cls.__name__}.{field_name} must be a dict mapping strings to "
+                f"{spec_type.__name__} instances (got {value!r})"
+            )
+            raise TypeError(msg)
+
+    @classmethod
+    def _validate_lineage_roles(cls) -> None:
+        """Validate each output's lineage references against declared roles."""
+        for output_role, spec in cls.outputs.items():
+            lineage = spec.infer_lineage_from
+            if lineage is None:
+                continue
+            input_refs = lineage.get("inputs")
+            if input_refs is not None:
+                unknown = [role for role in input_refs if role not in cls.inputs]
+                if unknown:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] references unknown "
+                        f"input roles {unknown}; declared roles are {list(cls.inputs)}"
+                    )
+                    raise TypeError(msg)
+            output_refs = lineage.get("outputs")
+            if output_refs is not None:
+                if output_role in output_refs:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] cannot infer "
+                        "lineage from itself"
+                    )
+                    raise TypeError(msg)
+                unknown = [role for role in output_refs if role not in cls.outputs]
+                if unknown:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] references unknown "
+                        f"output roles {unknown}; declared roles are {list(cls.outputs)}"
+                    )
+                    raise TypeError(msg)
+
+    @classmethod
     def _validate_execute_as_tool(
         cls, has_execute_function: bool, has_execute_command: bool
     ) -> None:
@@ -584,9 +667,8 @@ class OperationDefinition(BaseModel):
         The flag wraps a Python body in a framework-generated command, so
         the class must (1) live in an importable module, (2) implement
         ``execute_function`` and nothing else in the command slot, (3)
-        declare no ``ToolSpec``, and (4) keep all per-run config in the
-        nested ``Params`` model — the only payload that crosses the
-        process and wire boundaries.
+        declare no ``ToolSpec``. General subclass validation separately
+        enforces the one nested ``Params`` contract for every operation.
 
         Raises:
             TypeError: On any violation, naming the rule.
@@ -619,22 +701,74 @@ class OperationDefinition(BaseModel):
                 "the framework needs no ToolSpec for its own argv"
             )
             raise TypeError(msg)
-        extra = set(cls.model_fields) - set(OperationDefinition.model_fields)
-        if not extra <= {"params"}:
+
+    @classmethod
+    def _validate_parameter_shape(cls) -> None:
+        """Require the single nested ``Params`` operation contract.
+
+        Concrete operations either declare no per-run parameter fields, or
+        declare the pair ``class Params(BaseModel)`` and ``params: Params``.
+        The pair may be inherited unchanged, but subclasses cannot redefine
+        only one half because that would split construction from schema and
+        hashing resolution.
+
+        Raises:
+            TypeError: If the operation declares a flat field or malformed
+                ``Params`` pair.
+        """
+        extra_fields = set(cls.model_fields) - set(OperationDefinition.model_fields)
+        flat_fields = extra_fields - {"params"}
+        if flat_fields:
             msg = (
-                f"{cls.__name__} sets execute_as_tool=True but declares model "
-                f"fields {sorted(extra - {'params'})} — only the nested Params "
-                "model crosses the process boundary; move per-run config into "
-                "the nested Params model"
+                f"{cls.__name__} declares top-level model fields "
+                f"{sorted(flat_fields)}; move per-run configuration into the "
+                "nested Params model and `params` field"
             )
             raise TypeError(msg)
-        if "params" in cls.model_fields and cls.model_fields[
-            "params"
-        ].annotation is not getattr(cls, "Params", None):
+
+        annotations = cls.__dict__.get("__annotations__", {})
+        defines_field = "params" in annotations
+        defines_model = "Params" in cls.__dict__
+        inherited_pair = any(
+            "params" in base.model_fields and hasattr(base, "Params")
+            for base in cls.__mro__[1:]
+            if issubclass(base, OperationDefinition)
+        )
+        if inherited_pair and defines_field != defines_model:
+            member = "params field" if defines_field else "Params class"
             msg = (
-                f"{cls.__name__} sets execute_as_tool=True but its `params` "
-                "field is not typed as the nested Params class — the worker "
-                "and runner rebuild the op via its nested Params model"
+                f"{cls.__name__} redefines only its inherited {member}; redefine "
+                "both the nested Params class and `params` field, or inherit both"
+            )
+            raise TypeError(msg)
+
+        field = cls.model_fields.get("params")
+        params_cls = getattr(cls, "Params", None)
+        if field is None and params_cls is None:
+            return
+        if field is None:
+            msg = f"{cls.__name__} declares Params but no `params` model field"
+            raise TypeError(msg)
+        if params_cls is None:
+            msg = f"{cls.__name__} declares a `params` field but no nested Params class"
+            raise TypeError(msg)
+        if not isinstance(params_cls, type) or not issubclass(params_cls, BaseModel):
+            msg = f"{cls.__name__}.Params must subclass pydantic.BaseModel"
+            raise TypeError(msg)
+        if field.annotation is not params_cls:
+            msg = (
+                f"{cls.__name__}.params must be annotated as its exact nested "
+                "Params class"
+            )
+            raise TypeError(msg)
+        if field.is_required():
+            return
+        default = field.default
+        if type(default) is not params_cls:
+            msg = (
+                f"{cls.__name__}.params default must be an instance of its exact "
+                "nested Params class, not "
+                f"{type(default).__name__}"
             )
             raise TypeError(msg)
 
@@ -675,6 +809,11 @@ class OperationDefinition(BaseModel):
         )
 
     # ---------- Introspection (agent-facing) ----------
+    @classmethod
+    def _copy_examples(cls) -> list[OperationExample]:
+        """Return examples without exposing mutable class-level model data."""
+        return [example.model_copy(deep=True) for example in cls.examples]
+
     @classmethod
     def _kind(cls) -> Literal["creator", "curator"]:
         """Return ``"curator"`` if ``execute_curator`` is overridden, else ``"creator"``."""
@@ -726,7 +865,7 @@ class OperationDefinition(BaseModel):
                 for role, spec in cls.outputs.items()
             },
             params_schema=params_schema_for(cls),
-            examples=list(cls.examples),
+            examples=cls._copy_examples(),
             source_module=cls.__module__,
         )
 

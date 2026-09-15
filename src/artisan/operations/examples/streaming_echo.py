@@ -95,7 +95,7 @@ class StreamingEcho(OperationDefinition):
             [
                 *self.tool.parts(),
                 "-c",
-                f'for i in $(seq 1 {self.params.seconds}); do '
+                f"for i in $(seq 1 {self.params.seconds}); do "
                 f'echo "streaming_echo line $i / {self.params.seconds}"; sleep 1; done',
             ],
             cwd=inputs.execute_dir,

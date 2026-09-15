@@ -1,19 +1,17 @@
-"""Derive human-readable names for output artifacts after lineage.
+"""Derive human-readable names for draft output artifacts.
 
-After lineage edges are established via the filesystem match map,
-this module overwrites transient artifact_id-based original_names
-with human-readable names derived from input artifact names.
+Before identity finalization, this module overwrites transient
+artifact_id-based original_names with human-readable names derived
+from input artifact names.
 """
 
 from __future__ import annotations
 
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 
 
 def derive_human_names(
     output_artifacts: dict[str, list[Artifact]],
-    lineage_edges: list[SourceTargetPair],
     input_artifacts: dict[str, list[Artifact]],
     match_map: dict[str, str],
 ) -> None:
@@ -28,9 +26,7 @@ def derive_human_names(
     Modifies artifacts in place. Must be called before staging.
 
     Args:
-        output_artifacts: Role-keyed dict of finalized output artifacts.
-        lineage_edges: Provenance edges (unused currently, reserved for
-            future derivation strategies).
+        output_artifacts: Role-keyed dict of draft output artifacts.
         input_artifacts: Role-keyed dict of input artifacts with human names.
         match_map: Dict mapping output filename stem to input artifact_id.
     """
@@ -54,4 +50,4 @@ def derive_human_names(
 
             # Extract suffix: "abc123_scored" - "abc123" = "_scored"
             suffix = output_name[len(input_id) :]
-            art.original_name = f"{input_name}{suffix}"  # type: ignore[attr-defined]  # original_name only on subclasses; base `Artifact` lacks it
+            art.original_name = f"{input_name}{suffix}"

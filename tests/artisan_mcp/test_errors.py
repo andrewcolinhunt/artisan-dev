@@ -27,25 +27,25 @@ class TestEnvelopeBoundary:
         assert env["error_type"] == "config"
         assert env["recovery_hint"] == "CHECK_INPUT"
 
-    def test_store_not_found_from_missing_tables(
+    def test_incompatible_store_from_missing_manifest(
         self, make_app, invoke, tmp_path
     ) -> None:
-        # A root that exists but has no Delta tables: inspect_pipeline raises
-        # FileNotFoundError, which the boundary wraps as store_not_found.
+        # A root without the exact format-2 contract fails before table reads.
         env = invoke(
             make_app(delta_root=tmp_path),
             "artisan_get_run_status",
             {"pipeline_run_id": "run-x"},
         )
-        assert env["code"] == "store_not_found"
-        assert env["error_type"] == "io"
+        assert env["code"] == "incompatible_store"
+        assert env["error_type"] == "config"
         assert env["recovery_hint"] == "CHECK_INPUT"
-        assert env["cause"]["type"] == "FileNotFoundError"
+        assert "cause" not in env
+        assert str(tmp_path) not in str(env)
 
-    def test_diagnose_store_not_found(self, make_app, invoke, tmp_path) -> None:
+    def test_diagnose_incompatible_store(self, make_app, invoke, tmp_path) -> None:
         env = invoke(
             make_app(delta_root=tmp_path),
             "artisan_diagnose_run",
             {"pipeline_run_id": "run-x"},
         )
-        assert env["code"] == "store_not_found"
+        assert env["code"] == "incompatible_store"

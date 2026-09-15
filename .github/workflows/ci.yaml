@@ -97,3 +97,8 @@ jobs:
 
       - name: Check distribution
         run: pixi run -e dev check-dist
+
+      - name: Verify typed-package markers
+        run: |
+          python -m zipfile --list dist/*.whl | grep -q 'artisan/py.typed'
+          python -m zipfile --list dist/*.whl | grep -q 'artisan_mcp/py.typed'

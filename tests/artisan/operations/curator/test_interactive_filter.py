@@ -19,19 +19,29 @@ Tests cover:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 import pytest
+from fixtures.cache_isolation_store import build_cache_isolation_store
+from fixtures.logical_commit_store import commit_test_inputs, commit_test_step
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator.interactive_filter import (
     FilterSummary,
     InteractiveFilter,
 )
 from artisan.schemas.artifact.metric import MetricArtifact
+from artisan.schemas.enums import TablePath
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
+    EXECUTION_EDGES_SCHEMA,
+    EXECUTIONS_SCHEMA,
     STEPS_SCHEMA,
 )
 
@@ -39,19 +49,194 @@ from artisan.storage.core.table_schemas import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+_ID_REWRITES: dict[str, str] = {}
+_PENDING_INDEX: dict[Path, list[dict]] = {}
+
 
 def _write_delta(
     delta_root: Path, rel_path: str, rows: list[dict], schema: dict
 ) -> None:
-    table_path = delta_root / rel_path
-    table_path.parent.mkdir(parents=True, exist_ok=True)
-    df = pl.DataFrame(rows, schema=schema)
-    df.write_delta(str(table_path))
+    normalized = [
+        {
+            key: _ID_REWRITES.get(value, value)
+            if key.endswith("artifact_id") and isinstance(value, str)
+            else value
+            for key, value in row.items()
+        }
+        for row in rows
+    ]
+    if schema is MetricArtifact.POLARS_SCHEMA:
+        for row in normalized:
+            old_id = row["artifact_id"]
+            artifact = MetricArtifact(
+                artifact_id=None,
+                origin_step_number=row["origin_step_number"],
+                content=row["content"],
+                original_name=row["original_name"],
+                extension=row["extension"],
+                metadata=json.loads(row["metadata"]),
+            ).finalize()
+            row["artifact_id"] = artifact.artifact_id
+            _ID_REWRITES[old_id] = artifact.artifact_id
+        _rewrite_existing_ids(delta_root)
+
+    if schema is ARTIFACT_INDEX_SCHEMA:
+        _PENDING_INDEX.setdefault(delta_root, []).extend(normalized)
+        publish_test_store(str(delta_root), LocalFileSystem())
+        return
+    if schema is STEPS_SCHEMA:
+        _flush_pending_index(delta_root)
+        _write_run_membership(delta_root, normalized)
+        return
+    tables = {rel_path: pl.DataFrame(normalized, schema=schema)}
+    pending = _PENDING_INDEX.pop(delta_root, [])
+    if pending:
+        tables[TablePath.ARTIFACT_INDEX.value] = pl.DataFrame(
+            pending, schema=ARTIFACT_INDEX_SCHEMA
+        )
+    commit_test_inputs(delta_root, delta_root.parent / "staging", tables)
+
+
+def _step_snapshots(terminal_rows: list[dict]) -> list[dict]:
+    """Expand terminal fixture facts into valid format-2 state histories."""
+    snapshots: list[dict] = []
+    for terminal in terminal_rows:
+        for sequence, status in enumerate(("pending", "running", terminal["status"])):
+            row = dict(terminal)
+            row.update(
+                status=status,
+                state_sequence=sequence,
+                disposition=terminal["disposition"] if sequence == 2 else None,
+                logical_commit_id=None,
+                total_count=terminal["total_count"] if sequence == 2 else None,
+                succeeded_count=(
+                    terminal["succeeded_count"] if sequence == 2 else None
+                ),
+                failed_count=terminal["failed_count"] if sequence == 2 else None,
+                duration_seconds=(
+                    terminal["duration_seconds"] if sequence == 2 else None
+                ),
+                error=terminal["error"] if sequence == 2 else None,
+                metadata=terminal["metadata"] if sequence == 2 else None,
+            )
+            if sequence == 0:
+                row["step_spec_id"] = None
+            snapshots.append(row)
+    return snapshots
+
+
+def _rewrite_existing_ids(delta_root: Path) -> None:
+    """Apply newly concrete artifact IDs to deferred index rows."""
+    for row in _PENDING_INDEX.get(delta_root, []):
+        row["artifact_id"] = _ID_REWRITES.get(row["artifact_id"], row["artifact_id"])
+
+
+def _flush_pending_index(delta_root: Path) -> None:
+    """Commit any deferred index rows after metric IDs are finalized."""
+    pending = _PENDING_INDEX.pop(delta_root, [])
+    if pending:
+        commit_test_inputs(
+            delta_root,
+            delta_root.parent / "staging",
+            {
+                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
+                    pending, schema=ARTIFACT_INDEX_SCHEMA
+                )
+            },
+        )
+
+
+def _write_run_membership(delta_root: Path, step_rows: list[dict]) -> None:
+    """Derive direct execution/output fixtures for the auto-detected run."""
+    selected_run = max(step_rows, key=lambda row: row["timestamp"])["pipeline_run_id"]
+    selected_steps = {
+        row["step_number"]: row
+        for row in step_rows
+        if row["pipeline_run_id"] == selected_run and row["status"] == "succeeded"
+    }
+    from artisan.storage.core.committed_scan import read_committed
+
+    fs = LocalFileSystem()
+    index = read_committed(str(delta_root), TablePath.ARTIFACT_INDEX, fs=fs)
+    artifact_edges_path = delta_root / "provenance/artifact_edges"
+    artifact_edges = (
+        read_committed(str(delta_root), TablePath.ARTIFACT_EDGES, fs=fs)
+        if artifact_edges_path.exists()
+        else pl.DataFrame(schema=ARTIFACT_EDGES_SCHEMA)
+    )
+    execution_owners: dict[str, dict] = {}
+    output_edges: list[dict] = []
+    for artifact in index.iter_rows(named=True):
+        step = selected_steps.get(artifact["origin_step_number"])
+        if step is None:
+            continue
+        producers = artifact_edges.filter(
+            pl.col("target_artifact_id") == artifact["artifact_id"]
+        )["execution_run_id"].unique()
+        execution_ids = producers.to_list() or [_pad(f"direct{step['step_number']}")]
+        for execution_id in execution_ids:
+            execution_owners.setdefault(execution_id, step)
+            output_edges.append(
+                {
+                    "execution_run_id": execution_id,
+                    "direction": "output",
+                    "role": "output",
+                    "artifact_id": artifact["artifact_id"],
+                }
+            )
+
+    now = datetime.now(UTC)
+    executions = [
+        {
+            "execution_run_id": execution_id,
+            "execution_spec_id": _pad(f"spec{step['step_number']}"),
+            "step_run_id": step["step_run_id"],
+            "origin_step_number": step["step_number"],
+            "operation_name": step["step_name"],
+            "params": "{}",
+            "user_overrides": "{}",
+            "timestamp_start": now,
+            "timestamp_end": now,
+            "source_worker": 0,
+            "compute_backend": "local",
+            "success": True,
+            "error": None,
+            "error_envelope": None,
+            "tool_output": None,
+            "worker_log": None,
+            "metadata": "{}",
+        }
+        for execution_id, step in execution_owners.items()
+    ]
+    for step in step_rows:
+        step_executions = [
+            row for row in executions if row["step_run_id"] == step["step_run_id"]
+        ]
+        execution_ids = {row["execution_run_id"] for row in step_executions}
+        step_edges = [
+            row for row in output_edges if row["execution_run_id"] in execution_ids
+        ]
+        tables = {}
+        if step_executions:
+            tables[TablePath.EXECUTIONS.value] = pl.DataFrame(
+                step_executions, schema=EXECUTIONS_SCHEMA
+            )
+        if step_edges:
+            tables[TablePath.EXECUTION_EDGES.value] = pl.DataFrame(
+                step_edges, schema=EXECUTION_EDGES_SCHEMA
+            )
+        commit_test_step(
+            delta_root,
+            delta_root.parent / "staging",
+            [step],
+            tables,
+        )
 
 
 def _pad(short_id: str) -> str:
     """Pad a short ID to 32 characters."""
-    return short_id.ljust(32, "0")[:32]
+    provisional = short_id.ljust(32, "0")[:32]
+    return _ID_REWRITES.get(provisional, provisional)
 
 
 def _metric_content(values: dict) -> bytes:
@@ -176,8 +361,6 @@ def delta_root(tmp_path: Path) -> Path:
     _write_delta(root, "provenance/artifact_edges", edge_rows, ARTIFACT_EDGES_SCHEMA)
 
     # -- steps table --
-    from datetime import UTC, datetime
-
     now = datetime.now(UTC)
     steps_rows = []
     for step_num, step_name, op_class in [
@@ -192,7 +375,11 @@ def delta_root(tmp_path: Path) -> Path:
                 "pipeline_run_id": "test-run-001",
                 "step_number": step_num,
                 "step_name": step_name,
-                "status": "completed",
+                "status": "succeeded",
+                "state_sequence": 0,
+                "disposition": "executed",
+                "cancellation_status": None,
+                "logical_commit_id": None,
                 "operation_class": op_class,
                 "params_json": "{}",
                 "input_refs_json": "{}",
@@ -206,8 +393,6 @@ def delta_root(tmp_path: Path) -> Path:
                 "timestamp": now,
                 "duration_seconds": 1.0,
                 "error": None,
-                "dispatch_error": None,
-                "commit_error": None,
                 "metadata": None,
             }
         )
@@ -240,6 +425,18 @@ class TestLoad:
         assert "accuracy" in metric_cols
         assert "score" in metric_cols
 
+    def test_metric_uses_recorded_step_name(self, delta_root: Path) -> None:
+        """Metric names resolve through authoritative lifecycle state."""
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+
+        row = filt.tidy_df.filter(
+            (pl.col("artifact_id") == _pad("s0"))
+            & (pl.col("metric_name") == "confidence")
+        ).row(0, named=True)
+        assert row["step_number"] == 1
+        assert row["step_name"] == "calc_metrics"
+
     def test_load_with_step_numbers_filters_primary_artifacts(
         self, delta_root: Path
     ) -> None:
@@ -249,8 +446,10 @@ class TestLoad:
         assert filt.wide_df.height == 4
 
     def test_load_raises_on_empty_delta(self, tmp_path: Path) -> None:
-        filt = InteractiveFilter(tmp_path / "nonexistent")
-        with pytest.raises(ValueError, match="Artifact index not found"):
+        root = tmp_path / "nonexistent"
+        publish_test_store(str(root), LocalFileSystem())
+        filt = InteractiveFilter(root)
+        with pytest.raises(ValueError, match="No primary artifacts found"):
             filt.load()
 
     def test_load_raises_on_no_matching_artifacts(self, delta_root: Path) -> None:
@@ -476,7 +675,11 @@ class TestFiltering:
                     "pipeline_run_id": "run-null",
                     "step_number": 0,
                     "step_name": "ingest",
-                    "status": "completed",
+                    "status": "succeeded",
+                    "state_sequence": 0,
+                    "disposition": "executed",
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "IngestFiles",
                     "params_json": "{}",
                     "input_refs_json": "{}",
@@ -490,8 +693,6 @@ class TestFiltering:
                     "timestamp": now,
                     "duration_seconds": 0.1,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
                     "metadata": None,
                 },
                 {
@@ -500,7 +701,11 @@ class TestFiltering:
                     "pipeline_run_id": "run-null",
                     "step_number": 1,
                     "step_name": "eval",
-                    "status": "completed",
+                    "status": "succeeded",
+                    "state_sequence": 0,
+                    "disposition": "executed",
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "MetricCalc",
                     "params_json": "{}",
                     "input_refs_json": "{}",
@@ -514,8 +719,6 @@ class TestFiltering:
                     "timestamp": now,
                     "duration_seconds": 0.1,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
                     "metadata": None,
                 },
             ],
@@ -649,16 +852,19 @@ class TestCommit:
 
         result = filt.commit()
 
-        assert result.success
+        assert result.status == StepStatus.SUCCEEDED
         assert result.succeeded_count == 2
-        assert result.total_count == 4
+        assert result.total_count == 2
         assert "passthrough" in result.output_roles
 
         # Verify steps table was updated
         steps_df = pl.read_delta(str(delta_root / "orchestration/steps"))
         new_steps = steps_df.filter(pl.col("step_name") == "interactive_filter")
-        # Should have 2 rows: running + completed
-        assert new_steps.height == 2
+        assert new_steps.sort("state_sequence")["status"].to_list() == [
+            "pending",
+            "running",
+            "succeeded",
+        ]
 
         # Verify executions table was written
         exec_df = pl.read_delta(str(delta_root / "orchestration/executions"))
@@ -669,6 +875,35 @@ class TestCommit:
         # Verify execution_edges table was written
         edges_df = pl.read_delta(str(delta_root / "provenance/execution_edges"))
         assert edges_df.height > 0
+
+    def test_commit_failure_persists_failed_without_outputs(
+        self, delta_root: Path
+    ) -> None:
+        from artisan.orchestration.engine.step_tracker import StepTracker
+
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+        filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 50}])
+
+        with (
+            patch(
+                "artisan.storage.io.commit.DeltaCommitter.commit_logical",
+                side_effect=OSError("storage unavailable"),
+            ),
+            pytest.raises(OSError, match="storage unavailable"),
+        ):
+            filt.commit()
+
+        state = next(
+            state
+            for state in StepTracker(str(delta_root)).load_all_current_states()
+            if state.step_name == "interactive_filter"
+        )
+        assert state.status == StepStatus.FAILED
+        assert state.output_roles == frozenset()
+        assert state.output_types == {}
+        assert state.error is not None
+        assert "storage unavailable" in state.error
 
     def test_commit_diagnostics_v4(self, delta_root: Path) -> None:
         """Verify v4 diagnostics structure."""
@@ -707,6 +942,25 @@ class TestCommit:
         assert diag["funnel"][0]["count"] == 4
         assert "eliminated" in diag["funnel"][1]
 
+    def test_commit_resolves_step_name_in_diagnostics(self, delta_root: Path) -> None:
+        """A step-qualified criterion records its resolved numeric step."""
+        filt = InteractiveFilter(delta_root)
+        filt.load()
+        filt.set_criteria(
+            [
+                {
+                    "metric": "confidence",
+                    "operator": "gt",
+                    "value": 50,
+                    "step": "calc_metrics",
+                }
+            ]
+        )
+
+        result = filt.commit()
+
+        assert result.metadata["diagnostics"]["criteria"][0]["resolved_from_step"] == 1
+
     def test_commit_diagnostics_full_dict_golden(self, delta_root: Path) -> None:
         """Full v4 diagnostics dict is stable (multi-criterion)."""
         filt = InteractiveFilter(delta_root)
@@ -726,8 +980,16 @@ class TestCommit:
             "total_metrics_discovered": 8,
             "total_passed": 2,
             "metric_sources": [
-                {"step_number": 1, "step_name": "calc_metrics"},
-                {"step_number": 2, "step_name": "extra_metrics"},
+                {
+                    "step_number": 1,
+                    "step_name": "calc_metrics",
+                    "metric_count": 4,
+                },
+                {
+                    "step_number": 2,
+                    "step_name": "extra_metrics",
+                    "metric_count": 4,
+                },
             ],
             "criteria": [
                 {
@@ -771,7 +1033,7 @@ class TestCommit:
         """Characterization: committed executions/execution_edges rows.
 
         Pins the exact execution record and edge rows so the rerouting of
-        commit() through record_passthrough + commit_all_tables can be
+        commit() through record_passthrough + commit_logical can be
         proven byte-identical. Fields set at commit time (run/spec IDs,
         timestamps) are asserted structurally; content columns exactly.
         """
@@ -798,7 +1060,8 @@ class TestCommit:
         assert row["compute_backend"] == "local"
         assert row["success"] is True
         assert row["error"] is None
-        assert row["step_run_id"] is None
+        assert result.step_run_id is not None
+        assert row["step_run_id"] == result.step_run_id
         assert row["metadata"] == json.dumps(
             {"diagnostics": result.metadata["diagnostics"]}
         )
@@ -953,7 +1216,11 @@ class TestWideColumnDisambiguation:
                     "pipeline_run_id": "run1",
                     "step_number": 0,
                     "step_name": "ingest",
-                    "status": "completed",
+                    "status": "succeeded",
+                    "state_sequence": 0,
+                    "disposition": "executed",
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "IngestFiles",
                     "params_json": "{}",
                     "input_refs_json": "{}",
@@ -967,8 +1234,6 @@ class TestWideColumnDisambiguation:
                     "timestamp": now,
                     "duration_seconds": 0.1,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
                     "metadata": None,
                 },
                 {
@@ -977,7 +1242,11 @@ class TestWideColumnDisambiguation:
                     "pipeline_run_id": "run1",
                     "step_number": 1,
                     "step_name": "repeat",
-                    "status": "completed",
+                    "status": "succeeded",
+                    "state_sequence": 0,
+                    "disposition": "executed",
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "SomeOp",
                     "params_json": "{}",
                     "input_refs_json": "{}",
@@ -991,8 +1260,6 @@ class TestWideColumnDisambiguation:
                     "timestamp": now,
                     "duration_seconds": 0.1,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
                     "metadata": None,
                 },
                 {
@@ -1001,7 +1268,11 @@ class TestWideColumnDisambiguation:
                     "pipeline_run_id": "run1",
                     "step_number": 2,
                     "step_name": "repeat",
-                    "status": "completed",
+                    "status": "succeeded",
+                    "state_sequence": 0,
+                    "disposition": "executed",
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "SomeOp",
                     "params_json": "{}",
                     "input_refs_json": "{}",
@@ -1015,8 +1286,6 @@ class TestWideColumnDisambiguation:
                     "timestamp": now,
                     "duration_seconds": 0.1,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
                     "metadata": None,
                 },
             ],
@@ -1141,7 +1410,11 @@ class TestWideColumnDisambiguation:
                     "pipeline_run_id": "run1",
                     "step_number": 0,
                     "step_name": "ingest",
-                    "status": "completed",
+                    "status": "succeeded",
+                    "state_sequence": 0,
+                    "disposition": "executed",
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "IngestFiles",
                     "params_json": "{}",
                     "input_refs_json": "{}",
@@ -1155,8 +1428,6 @@ class TestWideColumnDisambiguation:
                     "timestamp": now,
                     "duration_seconds": 0.1,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
                     "metadata": None,
                 },
                 {
@@ -1165,7 +1436,11 @@ class TestWideColumnDisambiguation:
                     "pipeline_run_id": "run1",
                     "step_number": 1,
                     "step_name": "repeat",
-                    "status": "completed",
+                    "status": "succeeded",
+                    "state_sequence": 0,
+                    "disposition": "executed",
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "SomeOp",
                     "params_json": "{}",
                     "input_refs_json": "{}",
@@ -1179,8 +1454,6 @@ class TestWideColumnDisambiguation:
                     "timestamp": now,
                     "duration_seconds": 0.1,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
                     "metadata": None,
                 },
                 {
@@ -1189,7 +1462,11 @@ class TestWideColumnDisambiguation:
                     "pipeline_run_id": "run1",
                     "step_number": 2,
                     "step_name": "repeat",
-                    "status": "completed",
+                    "status": "succeeded",
+                    "state_sequence": 0,
+                    "disposition": "executed",
+                    "cancellation_status": None,
+                    "logical_commit_id": None,
                     "operation_class": "SomeOp",
                     "params_json": "{}",
                     "input_refs_json": "{}",
@@ -1203,8 +1480,6 @@ class TestWideColumnDisambiguation:
                     "timestamp": now,
                     "duration_seconds": 0.1,
                     "error": None,
-                    "dispatch_error": None,
-                    "commit_error": None,
                     "metadata": None,
                 },
             ],
@@ -1336,7 +1611,11 @@ def mixed_type_delta_root(tmp_path: Path) -> Path:
                 "pipeline_run_id": "run-mix",
                 "step_number": 0,
                 "step_name": "ingest",
-                "status": "completed",
+                "status": "succeeded",
+                "state_sequence": 0,
+                "disposition": "executed",
+                "cancellation_status": None,
+                "logical_commit_id": None,
                 "operation_class": "IngestFiles",
                 "params_json": "{}",
                 "input_refs_json": "{}",
@@ -1350,8 +1629,6 @@ def mixed_type_delta_root(tmp_path: Path) -> Path:
                 "timestamp": now,
                 "duration_seconds": 0.1,
                 "error": None,
-                "dispatch_error": None,
-                "commit_error": None,
                 "metadata": None,
             },
             {
@@ -1360,7 +1637,11 @@ def mixed_type_delta_root(tmp_path: Path) -> Path:
                 "pipeline_run_id": "run-mix",
                 "step_number": 1,
                 "step_name": "eval",
-                "status": "completed",
+                "status": "succeeded",
+                "state_sequence": 0,
+                "disposition": "executed",
+                "cancellation_status": None,
+                "logical_commit_id": None,
                 "operation_class": "MetricCalc",
                 "params_json": "{}",
                 "input_refs_json": "{}",
@@ -1374,8 +1655,6 @@ def mixed_type_delta_root(tmp_path: Path) -> Path:
                 "timestamp": now,
                 "duration_seconds": 0.1,
                 "error": None,
-                "dispatch_error": None,
-                "commit_error": None,
                 "metadata": None,
             },
         ],
@@ -1532,7 +1811,11 @@ class TestRunScopedStepNames:
                 "pipeline_run_id": run_id,
                 "step_number": step_number,
                 "step_name": step_name,
-                "status": "completed",
+                "status": "succeeded",
+                "state_sequence": 0,
+                "disposition": "executed",
+                "cancellation_status": None,
+                "logical_commit_id": None,
                 "operation_class": "SomeOp",
                 "params_json": "{}",
                 "input_refs_json": "{}",
@@ -1546,8 +1829,6 @@ class TestRunScopedStepNames:
                 "timestamp": ts,
                 "duration_seconds": 0.1,
                 "error": None,
-                "dispatch_error": None,
-                "commit_error": None,
                 "metadata": None,
             }
 
@@ -1592,7 +1873,21 @@ class TestRunScopedStepNames:
         assert filt._step_info["_step_names"][1] == "eval_detected"
 
         # Derived metric_sources reflect the detected run's name too.
-        assert {"step_number": 1, "step_name": "eval_detected"} in filt._metric_sources
+        assert {
+            "step_number": 1,
+            "step_name": "eval_detected",
+            "metric_count": 2,
+        } in filt._metric_sources
+
+    def test_explicit_run_uses_cached_metric_provenance_only(self, tmp_path) -> None:
+        store = build_cache_isolation_store(tmp_path)
+
+        filt = InteractiveFilter(store.root)
+        filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
+
+        assert filt.wide_df["artifact_id"].to_list() == [store.data_id]
+        assert filt.wide_df["score"].to_list() == [0.9]
+        assert store.other_data_id not in filt.wide_df["artifact_id"].to_list()
 
 
 class TestExistingFloatMetricsStillWork:

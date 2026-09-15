@@ -16,13 +16,13 @@ from artisan.schemas.artifact.file_ref import FileRefArtifact
 
 def _draft_at(path: str, content: bytes = b"hello") -> FileRefArtifact:
     """Create a finalized FileRefArtifact pointing at the given path."""
-    from artisan.utils.hashing import compute_artifact_id
+    from artisan.utils.hashing import compute_content_digest
 
     return cast(
         FileRefArtifact,
         FileRefArtifact.draft(
             path=path,
-            content_hash=compute_artifact_id(content),
+            content_hash=compute_content_digest(content),
             size_bytes=len(content),
             step_number=0,
             original_name="x",
@@ -40,7 +40,7 @@ class TestReadContentAutoInfer:
         with mem_fs.open("/test_file_ref/auto/data.bin", "wb") as f:
             f.write(b"auto-inferred")
 
-        artifact = _draft_at("memory:///test_file_ref/auto/data.bin")
+        artifact = _draft_at("memory:///test_file_ref/auto/data.bin", b"auto-inferred")
         assert artifact.read_content() == b"auto-inferred"
 
         mem_fs.rm("/test_file_ref/auto/data.bin")
@@ -53,7 +53,7 @@ class TestReadContentAutoInfer:
 
         # Path stored as a stripped key (no protocol prefix); explicit
         # fs uses the path as-is.
-        artifact = _draft_at("/test_file_ref/explicit/data.bin")
+        artifact = _draft_at("test_file_ref/explicit/data.bin", b"explicit")
         assert artifact.read_content(fs=mem_fs) == b"explicit"
 
         mem_fs.rm("/test_file_ref/explicit/data.bin")
@@ -64,7 +64,7 @@ class TestReadContentAutoInfer:
         with mem_fs.open("/test_file_ref/cached/data.bin", "wb") as f:
             f.write(b"first-read")
 
-        artifact = _draft_at("memory:///test_file_ref/cached/data.bin")
+        artifact = _draft_at("memory:///test_file_ref/cached/data.bin", b"first-read")
         assert artifact.read_content() == b"first-read"
 
         # Mutate the underlying file — cached bytes should still be returned.

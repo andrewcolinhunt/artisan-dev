@@ -24,7 +24,28 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
+
+
+def _succeeded_step(step_name: str, step_number: int) -> StepResult:
+    """Build a minimal successful terminal step for manager API tests."""
+    return StepResult(
+        step_name=step_name,
+        step_number=step_number,
+        status=StepStatus.SUCCEEDED,
+        disposition=StepDisposition.EXECUTED,
+    )
+
+
+def _failed_step(step_name: str, step_number: int) -> StepResult:
+    """Build a minimal failed terminal step for manager API tests."""
+    return StepResult(
+        step_name=step_name,
+        step_number=step_number,
+        status=StepStatus.FAILED,
+        error="test failure",
+    )
 
 
 class _ExternalRunner(LocalRunner):
@@ -88,11 +109,13 @@ class TestStepResult:
         result = StepResult(
             step_name="ingest",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
         )
         assert result.step_name == "ingest"
         assert result.step_number == 0
-        assert result.success is True
+        assert result.status == StepStatus.SUCCEEDED
+        assert result.disposition == StepDisposition.EXECUTED
         assert result.total_count == 0
         assert result.succeeded_count == 0
         assert result.failed_count == 0
@@ -104,7 +127,8 @@ class TestStepResult:
         result = StepResult(
             step_name="score",
             step_number=1,
-            success=True,
+            status=StepStatus.PARTIAL,
+            disposition=StepDisposition.EXECUTED,
             total_count=100,
             succeeded_count=95,
             failed_count=5,
@@ -122,7 +146,8 @@ class TestStepResult:
         result = StepResult(
             step_name="ingest",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             output_roles=frozenset(["data"]),
             output_types={"data": "data"},
         )
@@ -137,7 +162,8 @@ class TestStepResult:
         result = StepResult(
             step_name="ingest",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             output_roles=frozenset(["data"]),
         )
         with pytest.raises(ValueError, match="Output role 'missing' not available"):
@@ -148,7 +174,8 @@ class TestStepResult:
         result = StepResult(
             step_name="ingest",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             output_roles=frozenset(["alpha", "beta"]),
         )
         with pytest.raises(ValueError, match="Available roles: alpha, beta"):
@@ -159,7 +186,8 @@ class TestStepResult:
         no_failures = StepResult(
             step_name="test",
             step_number=0,
-            success=True,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
             failed_count=0,
         )
         assert no_failures.has_failures is False
@@ -167,14 +195,16 @@ class TestStepResult:
         with_failures = StepResult(
             step_name="test",
             step_number=0,
-            success=False,
+            status=StepStatus.FAILED,
+            error="five items failed",
+            total_count=5,
             failed_count=5,
         )
         assert with_failures.has_failures is True
 
     def test_frozen(self):
         """Test that StepResult is frozen (immutable)."""
-        result = StepResult(step_name="test", step_number=0, success=True)
+        result = _succeeded_step("test", 0)
         with pytest.raises(ValidationError):
             result.step_name = "changed"
 
@@ -189,10 +219,10 @@ class TestStepResultBuilder:
             step_number=0,
             operation_outputs={"out": "data"},
         )
-        result = builder.build()
+        result = builder.build(StepStatus.SUCCEEDED, StepDisposition.EXECUTED)
         assert result.step_name == "test"
         assert result.step_number == 0
-        assert result.success is True  # No failures
+        assert result.status == StepStatus.SUCCEEDED
         assert result.total_count == 0
         assert result.succeeded_count == 0
         assert result.failed_count == 0
@@ -207,11 +237,11 @@ class TestStepResultBuilder:
         )
         builder.add_success()
         builder.add_success(count=5)
-        result = builder.build()
+        result = builder.build(StepStatus.SUCCEEDED, StepDisposition.EXECUTED)
         assert result.total_count == 6
         assert result.succeeded_count == 6
         assert result.failed_count == 0
-        assert result.success is True
+        assert result.status == StepStatus.SUCCEEDED
 
     def test_add_failure(self):
         """Test adding failures."""
@@ -222,11 +252,11 @@ class TestStepResultBuilder:
         )
         builder.add_failure()
         builder.add_failure(count=3)
-        result = builder.build()
+        result = builder.build(StepStatus.FAILED, error="four items failed")
         assert result.total_count == 4
         assert result.succeeded_count == 0
         assert result.failed_count == 4
-        assert result.success is False
+        assert result.status == StepStatus.FAILED
 
     def test_mixed_results(self):
         """Test mixed success and failure."""
@@ -237,14 +267,14 @@ class TestStepResultBuilder:
         )
         builder.add_success(count=8)
         builder.add_failure(count=2)
-        result = builder.build()
+        result = builder.build(StepStatus.PARTIAL, StepDisposition.EXECUTED)
         assert result.total_count == 10
         assert result.succeeded_count == 8
         assert result.failed_count == 2
-        assert result.success is False  # Has failures
+        assert result.status == StepStatus.PARTIAL
 
-    def test_success_override(self):
-        """Test success_override parameter."""
+    def test_build_requires_explicit_terminal_status(self):
+        """The builder does not infer lifecycle state from item counts."""
         builder = StepResultBuilder(
             step_name="test",
             step_number=0,
@@ -252,23 +282,8 @@ class TestStepResultBuilder:
         )
         builder.add_failure()
 
-        # Without override, would be False
-        result_no_override = builder.build()
-        assert result_no_override.success is False
-
-        # With override=True
-        result_override_true = builder.build(success_override=True)
-        assert result_override_true.success is True
-
-        # Reset and test with override=False
-        builder2 = StepResultBuilder(
-            step_name="test",
-            step_number=0,
-            operation_outputs={},
-        )
-        builder2.add_success()
-        result_override_false = builder2.build(success_override=False)
-        assert result_override_false.success is False
+        with pytest.raises(TypeError, match="status"):
+            builder.build()  # type: ignore[call-arg]
 
 
 class TestPipelineConfig:
@@ -332,27 +347,46 @@ class TestPipelineConfig:
                 prefect_server=False,  # type: ignore[call-arg]
             )
 
+    def test_default_compute_provider_removed(self):
+        """The inert pipeline compute default is absent and rejected."""
+        assert "default_compute_provider" not in PipelineConfig.model_fields
+        assert "default_step_runner" in PipelineConfig.model_fields
+
+        with pytest.raises(ValidationError, match="default_compute_provider"):
+            PipelineConfig(
+                name="test",
+                delta_root="/data/delta",
+                staging_root="/data/staging",
+                default_compute_provider="modal",  # type: ignore[call-arg]
+            )
+
 
 class TestPipelineManager:
     """Tests for PipelineManager class."""
+
+    @pytest.fixture(autouse=True)
+    def _storage_roots(self, tmp_path):
+        """Use an isolated writable store for PipelineManager construction."""
+        self.delta_root = str(tmp_path / "delta")
+        self.staging_root = str(tmp_path / "staging")
 
     def test_create_factory(self):
         """Test PipelineManager.create() factory method."""
         pipeline = PipelineManager.create(
             name="test_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         assert pipeline.config.name == "test_pipeline"
-        assert pipeline.config.delta_root == "/data/delta"
+        assert pipeline.config.delta_root == self.delta_root
         assert pipeline.current_step == 0
 
     def test_create_with_string_paths(self):
         """Test that create() accepts string paths."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         assert isinstance(pipeline.config.delta_root, str)
         assert isinstance(pipeline.config.staging_root, str)
@@ -362,8 +396,8 @@ class TestPipelineManager:
         runner = _ExternalRunner()
         pipeline = PipelineManager.create(
             name="custom",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
             working_root="/tmp/work",
             failure_policy="fail_fast",
             default_step_runner=runner,
@@ -389,17 +423,38 @@ class TestPipelineManager:
         )
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             PipelineManager.resume(
-                delta_root="/data/delta",
-                staging_root="/data/staging",
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
                 prefect_server=False,  # type: ignore[call-arg]
+            )
+
+    def test_default_compute_provider_removed_from_factory_signatures(self):
+        """Factories reject the removed compute-provider default keyword."""
+        for factory in (PipelineManager.create, PipelineManager.resume):
+            parameters = inspect.signature(factory).parameters
+            assert "default_compute_provider" not in parameters
+            assert "default_step_runner" in parameters
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            PipelineManager.create(
+                name="test",
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
+                default_compute_provider="modal",  # type: ignore[call-arg]
+            )
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            PipelineManager.resume(
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
+                default_compute_provider="modal",  # type: ignore[call-arg]
             )
 
     def test_external_runner_name_requires_runtime_instance(self):
         """Core cannot reconstruct an external runner from persisted text."""
         config = PipelineConfig(
             name="external",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
             default_step_runner="external_test",
         )
 
@@ -410,9 +465,8 @@ class TestPipelineManager:
         """Core reconstructs its built-in local runner from persisted text."""
         config = PipelineConfig(
             name="local",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
-            recover_staging=False,
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
 
         pipeline = PipelineManager(config, configure_logging=False)
@@ -423,21 +477,21 @@ class TestPipelineManager:
         """Test finalize() with no steps."""
         pipeline = PipelineManager.create(
             name="empty",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         summary = pipeline.finalize()
         assert summary["pipeline_name"] == "empty"
         assert summary["total_steps"] == 0
         assert summary["steps"] == []
-        assert summary["overall_success"] is True  # No failures
+        assert summary["overall_success"] is False
 
     def test_step_increments_counter(self):
         """Test that current_step increments (without full execution)."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         # Note: This test verifies the counter increment mechanism
         # Full step execution requires additional infrastructure
@@ -450,8 +504,8 @@ class TestPipelineManager:
         """Test __repr__ returns unambiguous representation."""
         pipeline = PipelineManager.create(
             name="test_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         repr_str = repr(pipeline)
         assert "PipelineManager(" in repr_str
@@ -463,16 +517,12 @@ class TestPipelineManager:
         """Test __repr__ shows step count."""
         pipeline = PipelineManager.create(
             name="test_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         # Add mock step results
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
         repr_str = repr(pipeline)
         assert "steps=2" in repr_str
 
@@ -480,8 +530,8 @@ class TestPipelineManager:
         """Test __str__ with no steps executed."""
         pipeline = PipelineManager.create(
             name="my_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         str_output = str(pipeline)
         assert "Pipeline 'my_pipeline'" in str_output
@@ -491,15 +541,11 @@ class TestPipelineManager:
         """Test __str__ when all steps succeeded."""
         pipeline = PipelineManager.create(
             name="my_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
         str_output = str(pipeline)
         assert "2 steps" in str_output
         assert "all succeeded" in str_output
@@ -508,15 +554,11 @@ class TestPipelineManager:
         """Test __str__ when some steps failed."""
         pipeline = PipelineManager.create(
             name="my_pipeline",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=False)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_failed_step("Score", 1))
         str_output = str(pipeline)
         assert "2 steps" in str_output
         assert "1/2 succeeded" in str_output
@@ -525,8 +567,8 @@ class TestPipelineManager:
         """Test __len__ with no steps."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         assert len(pipeline) == 0
 
@@ -534,29 +576,23 @@ class TestPipelineManager:
         """Test __len__ with steps."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Filter", step_number=2, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+        pipeline._step_results.append(_succeeded_step("Filter", 2))
         assert len(pipeline) == 3
 
     def test_iter(self):
         """Test __iter__ iterates over step results."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        step0 = StepResult(step_name="Ingest", step_number=0, success=True)
-        step1 = StepResult(step_name="Score", step_number=1, success=True)
+        step0 = _succeeded_step("Ingest", 0)
+        step1 = _succeeded_step("Score", 1)
         pipeline._step_results.append(step0)
         pipeline._step_results.append(step1)
 
@@ -570,15 +606,11 @@ class TestPipelineManager:
         """Test __iter__ works in for loop."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
 
         names = []
         for step in pipeline:
@@ -589,15 +621,11 @@ class TestPipelineManager:
         """Test __getitem__ with single index."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
 
         first = pipeline[0]
         assert isinstance(first, StepResult)
@@ -613,18 +641,12 @@ class TestPipelineManager:
         """Test __getitem__ with slice."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Filter", step_number=2, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+        pipeline._step_results.append(_succeeded_step("Filter", 2))
 
         last_two = pipeline[-2:]
         assert isinstance(last_two, list)
@@ -636,12 +658,10 @@ class TestPipelineManager:
         """Test __getitem__ raises IndexError for invalid index."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
 
         with pytest.raises(IndexError):
             _ = pipeline[5]
@@ -650,8 +670,8 @@ class TestPipelineManager:
         """Test __bool__ returns False for empty pipeline."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
         assert not pipeline
         assert bool(pipeline) is False
@@ -660,15 +680,11 @@ class TestPipelineManager:
         """Test __bool__ returns True when all steps succeeded."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
         assert pipeline
         assert bool(pipeline) is True
 
@@ -676,15 +692,11 @@ class TestPipelineManager:
         """Test __bool__ returns False when any step failed."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=False)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_failed_step("Score", 1))
         assert not pipeline
         assert bool(pipeline) is False
 
@@ -692,15 +704,11 @@ class TestPipelineManager:
         """Test __contains__ returns True for existing step name."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
-        pipeline._step_results.append(
-            StepResult(step_name="Score", step_number=1, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
 
         assert "Ingest" in pipeline
         assert "Score" in pipeline
@@ -709,12 +717,10 @@ class TestPipelineManager:
         """Test __contains__ returns False for missing step name."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root="/data/delta",
-            staging_root="/data/staging",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
         )
-        pipeline._step_results.append(
-            StepResult(step_name="Ingest", step_number=0, success=True)
-        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
 
         assert "NonExistent" not in pipeline
         assert "Filter" not in pipeline

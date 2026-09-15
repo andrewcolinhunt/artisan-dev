@@ -13,6 +13,22 @@ layer extensible without framework modifications.
 
 ---
 
+## The store format is explicit
+
+Every supported Delta root contains `_artisan/store.json` with the exact format
+contract:
+
+```json
+{"store_format":2,"artifact_identity":1,"cache_identity":2}
+```
+
+Writers publish this manifest only after initializing an empty root. Readers
+validate it before opening framework state. A missing, malformed, older, newer,
+or partially matching manifest fails closed. This clean release boundary avoids
+silently reading rows under the wrong identity or cache semantics.
+
+---
+
 ## The problem storage solves
 
 Computational pipelines on HPC clusters face a specific set of storage
@@ -81,8 +97,11 @@ distinct purpose:
 
 ```
 delta_root/
+├── _artisan/
+│   └── store.json          Exact store and identity format contract
 ├── artifacts/              Content and metadata for every artifact
 │   ├── index/              Type and origin lookup (artifact_id → type)
+│   ├── locations/          Verified artifact identity → URI mappings
 │   ├── metrics/            Metric values (built-in)
 │   ├── configs/            Execution configuration snapshots (built-in)
 │   ├── data/               Generic tabular data (built-in)
@@ -95,6 +114,7 @@ delta_root/
 │   └── execution_edges/    Input/output edges per execution
 └── orchestration/          Execution history and step state
     ├── executions/         Operation execution log
+    ├── cache_reuse/        Current step → reused execution links
     └── steps/              Step-level state transitions
 ```
 
@@ -124,9 +144,11 @@ Not all tables are partitioned. The choice depends on access patterns:
 |-------|-------------------------------------|--------|
 | Artifact content tables | Yes | Queries are step-scoped |
 | `artifacts/index` | No | Small table, cross-step lookups |
+| `artifacts/locations` | No | One artifact can have several verified URIs |
 | `provenance/artifact_edges` | No | Graph traversal crosses steps |
 | `provenance/execution_edges` | No | Joined with executions by run ID |
 | `orchestration/executions` | Yes | Queries are step-scoped |
+| `orchestration/cache_reuse` | No | Small relation joined by current step-run ID |
 | `orchestration/steps` | No | Few rows, written directly by orchestrator |
 
 ### The artifact index
@@ -139,6 +161,12 @@ which type-specific table contains the actual data.
 The index is small (one row per artifact, no content bytes) and must support
 fast lookups across all steps. It also powers bulk queries like loading type
 maps and step maps for provenance graph rendering.
+
+External locations form a separate global relation keyed by `(artifact_id,
+uri)`. Content tables keep digest and size descriptors but do not own paths.
+This separation lets verified external bytes move or gain a replica without
+changing the artifact ID, and prevents first-writer location loss during
+deduplication.
 
 ### The provenance store
 
@@ -344,15 +372,15 @@ column the dedup check requires.
 
 ## Crash recovery
 
-If the orchestrator crashes after workers have staged their files but before
-commit completes, the staged Parquet files remain on disk. The `recover_staged`
-method detects leftover staging files by probing for `executions.parquet` files,
-then runs the standard commit path over them.
+If the orchestrator crashes during persistence, the immutable commit plan,
+control row, staged files, and any partial table effects remain as evidence.
+Rows owned by that plan stay invisible until its completion marker is written.
 
-Because commit uses content-addressed deduplication, recovery is idempotent. If
-some tables were already committed before the crash, those rows are skipped
-during recovery. The result is always the same as if the original commit had
-succeeded.
+Inspect the store explicitly with `artisan store repair --delta-root ...
+--staging-root ...`. Report mode never mutates the roots. `--apply` replays only
+validated plans through the normal idempotent commit path; explicit
+`--abandon ID --reason ...` records a one-way operator decision without
+deleting evidence.
 
 ---
 
@@ -394,8 +422,17 @@ repeatedly during provenance queries and result analysis.
 The `executions` table doubles as the cache store. Before dispatching work,
 the orchestrator computes a deterministic cache key from content-addressed
 artifact IDs and checks this table for a prior successful execution. A hit
-skips dispatch, staging, and commit entirely. There is no separate cache
-service, no TTL management, and no manual invalidation.
+skips worker dispatch. It does not create another execution or copy artifact
+rows. Instead, the orchestrator commits one row to `cache_reuse` linking the
+current step attempt to each existing execution whose result it accepted.
+
+That two-column relation keeps pipeline runs isolated even when they share
+step numbers or artifacts. A run-scoped reader starts from the run's own step
+IDs, unions directly owned executions with the linked cached executions, and
+then follows their execution edges to outputs. `origin_step_number` remains
+the artifact's original production location; it is not used to reconstruct
+which later runs reused the artifact. There is no cache service, TTL, or
+manual invalidation.
 
 For the full two-level caching mechanism (step-level and execution-level), see
 [Execution Flow](execution-flow.md#two-level-caching).
@@ -429,6 +466,8 @@ For hands-on examples of querying pipeline results, see the
 | Sharded staging directories | Prevents single-directory performance degradation |
 | Sentinel file pattern | Enables reliable completion detection over NFS |
 | Registry-driven tables | Domain layers extend storage without framework changes |
+| Exact store manifest | Prevents cross-version identity and cache misreads |
+| Separate artifact locations | Keeps external availability independent of identity |
 | Ordered table commits | Maintains referential integrity without multi-table transactions |
 | Partition by step number | Enables fast predicate pushdown for step-scoped queries |
 | Separate provenance store | Keeps graph queries independent of artifact content |

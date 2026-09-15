@@ -22,6 +22,7 @@ import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 
 
@@ -77,92 +78,71 @@ class PipelineTimings:
 
         Raises:
             FileNotFoundError: If steps table doesn't exist.
-            ValueError: If no completed steps found.
+            ValueError: If no usable terminal steps are found.
         """
         if fs is None:
             from fsspec.implementations.local import LocalFileSystem
 
             fs = LocalFileSystem()
+        assert_store_format(delta_root, fs, storage_options)
         steps_path = uri_join(delta_root, TablePath.STEPS)
         if not fs.exists(steps_path):
             msg = f"steps table not found at {steps_path}"
             raise FileNotFoundError(msg)
 
-        # Read completed steps
-        scanner = pl.scan_delta(steps_path, storage_options=storage_options).filter(
-            pl.col("status") == "completed"
-        )
-        if pipeline_run_id is not None:
-            scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
+        from artisan.orchestration.engine.step_tracker import StepTracker
+        from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
-        steps_df = (
-            scanner.sort("step_number")
-            .select(
-                "pipeline_run_id",
-                "step_number",
-                "step_name",
-                "duration_seconds",
-                "metadata",
-            )
-            .collect()
-        )
-
-        if steps_df.is_empty():
-            msg = "No completed steps found"
+        states = StepTracker(
+            delta_root,
+            storage_options=storage_options,
+            fs=fs,
+        ).load_current_states(pipeline_run_id)
+        states = [
+            state
+            for state in states
+            if state.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+        ]
+        if not states:
+            msg = "No usable terminal steps found"
             raise ValueError(msg)
+        run_id = states[0].pipeline_run_id
 
-        # Resolve pipeline_run_id from first row if not provided
-        run_id = pipeline_run_id or steps_df["pipeline_run_id"][0]
+        from artisan.storage.core.run_scope import load_execution_membership
 
-        # Filter to only this pipeline run
-        if pipeline_run_id is None:
-            steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
-
-        # Read executions if available
-        exec_path = uri_join(delta_root, TablePath.EXECUTIONS)
-        exec_df = None
-        if fs.exists(exec_path):
-            exec_scanner = pl.scan_delta(
-                exec_path, storage_options=storage_options
-            ).filter(
-                pl.col("success") == True  # noqa: E712
-            )
-            exec_df = (
-                exec_scanner.sort("origin_step_number")
-                .select(
-                    "execution_run_id",
-                    "origin_step_number",
-                    "operation_name",
-                    "metadata",
-                )
-                .collect()
-            )
+        exec_df = load_execution_membership(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            pipeline_run_id=run_id,
+        ).filter(pl.col("success") & ~pl.col("cache_hit"))
 
         # Build structured data
         steps = []
-        for row in steps_df.iter_rows(named=True):
-            step_timings = _parse_timings(row["metadata"])
-            step_num = row["step_number"]
+        for state in states:
+            step_timings = state.metadata.get("timings", {})
+            step_num = state.step_number
 
             # Gather executions for this step
             executions = []
-            if exec_df is not None:
-                step_execs = exec_df.filter(pl.col("origin_step_number") == step_num)
-                for exec_row in step_execs.iter_rows(named=True):
-                    exec_timings = _parse_timings(exec_row["metadata"])
-                    executions.append(
-                        {
-                            "execution_run_id": exec_row["execution_run_id"],
-                            "operation_name": exec_row["operation_name"],
-                            "timings": exec_timings or {},
-                        }
-                    )
+            step_execs = exec_df.filter(
+                pl.col("current_step_run_id") == state.step_run_id
+            )
+            for exec_row in step_execs.iter_rows(named=True):
+                exec_timings = _parse_timings(exec_row["metadata"])
+                executions.append(
+                    {
+                        "execution_run_id": exec_row["execution_run_id"],
+                        "operation_name": exec_row["operation_name"],
+                        "timings": exec_timings or {},
+                    }
+                )
 
             steps.append(
                 {
                     "step_number": step_num,
-                    "step_name": row["step_name"],
-                    "duration_seconds": row["duration_seconds"],
+                    "step_name": state.step_name,
+                    "duration_seconds": state.duration_seconds,
                     "timings": step_timings or {},
                     "executions": executions,
                 }

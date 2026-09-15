@@ -1,7 +1,7 @@
 """Recorded-fixture tests for compute_step_spec_id.
 
-These hashes are recorded values from a known-good `main` snapshot
-(post-PipelineManager-refactor, 2026-04-25). Any commit that changes
+These hashes are recorded values from the approved release-format v2 cache
+identity (2026-09-14). Any commit that changes
 the hashing semantics — adding fields to the payload, changing
 canonicalization, reordering concatenation — will flip these digests
 and fail CI. That failure is the signal: "this commit invalidates
@@ -19,15 +19,28 @@ golden-value safety net.
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from artisan.operations.examples.data_transformer import DataTransformer
 from artisan.orchestration.engine.step_executor import instantiate_operation
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.utils.hashing import (
+    CacheInputIdentity,
     compute_execution_spec_id,
     compute_step_spec_id,
     effective_config_payload,
 )
+
+
+def _cache_inputs(
+    inputs: dict[str, tuple[str, str]],
+) -> dict[str, list[CacheInputIdentity]]:
+    """Build one concrete typed cache occurrence per input role."""
+    return {
+        role: [CacheInputIdentity(role, None, 0, artifact_type, artifact_id)]
+        for role, (artifact_id, artifact_type) in inputs.items()
+    }
+
 
 # ---------------------------------------------------------------------------
 # Step spec hashes
@@ -39,14 +52,14 @@ RECORDED_STEP_HASHES = [
             "operation_name": "data_transformer",
             "step_number": 1,
             "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
-            "input_spec": {"dataset": ("upstream_id_aaa", "merged")},
+            "inputs": _cache_inputs({"dataset": ("upstream_id_aaa", "data")}),
             "config_overrides": {
                 "environment": "docker",
                 "tool": None,
                 "compute": "local",
             },
         },
-        "b28c80f0c143c748f3ba6c75734e2e70",
+        "b9969508c50b7f3c8d6a6a37bce8f0e4",
         id="env=docker,compute=local",
     ),
     pytest.param(
@@ -54,10 +67,10 @@ RECORDED_STEP_HASHES = [
             "operation_name": "data_transformer",
             "step_number": 0,
             "params": None,
-            "input_spec": {},
+            "inputs": {},
             "config_overrides": None,
         },
-        "6789d36b4441e0301bcf02cc083b5d8d",
+        "ae808e0163a20f1a2cf4400ea501f5fd",
         id="bare-step",
     ),
     pytest.param(
@@ -65,10 +78,10 @@ RECORDED_STEP_HASHES = [
             "operation_name": "metric_calculator",
             "step_number": 2,
             "params": {"window": 10},
-            "input_spec": {"data": ("step1_aaa", "out")},
+            "inputs": _cache_inputs({"data": ("step1_aaa", "data")}),
             "config_overrides": None,
         },
-        "117a386a46450088322d2efabae23ce3",
+        "b34554a41102f2a96d099f80e8ff4ba9",
         id="step1-no-config",
     ),
     pytest.param(
@@ -76,14 +89,14 @@ RECORDED_STEP_HASHES = [
             "operation_name": "merge_op",
             "step_number": 3,
             "params": None,
-            "input_spec": {"a": ("up_a", "out"), "b": ("up_b", "out")},
+            "inputs": _cache_inputs({"a": ("up_a", "data"), "b": ("up_b", "data")}),
             "config_overrides": {
                 "environment": "local",
                 "tool": None,
                 "compute": "modal",
             },
         },
-        "1b132a36413f810ca164295b317cf482",
+        "9d0076257a4ef86e2b24922e87bd7f38",
         id="multi-input",
     ),
 ]
@@ -110,14 +123,14 @@ def test_step_spec_id_input_order_independent() -> None:
         operation_name="x",
         step_number=0,
         params=None,
-        input_spec={"a": ("u1", "out"), "b": ("u2", "out")},
+        inputs=_cache_inputs({"a": ("u1", "out"), "b": ("u2", "out")}),
         config_overrides=None,
     )
     spec_b = compute_step_spec_id(
         operation_name="x",
         step_number=0,
         params=None,
-        input_spec={"b": ("u2", "out"), "a": ("u1", "out")},
+        inputs=_cache_inputs({"b": ("u2", "out"), "a": ("u1", "out")}),
         config_overrides=None,
     )
     assert spec_a == spec_b
@@ -149,11 +162,11 @@ _MERGE_SPEC_KWARGS = {
     "operation_name": "data_transformer",
     "step_number": 1,
     "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
-    "input_spec": {"dataset": ("upstream_id_aaa", "merged")},
+    "inputs": _cache_inputs({"dataset": ("upstream_id_aaa", "data")}),
 }
 _MERGE_EXEC_KWARGS = {
     "operation_name": "data_transformer",
-    "inputs": {"dataset": ["artifact_aaa"]},
+    "inputs": _cache_inputs({"dataset": ("artifact_aaa", "data")}),
     "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
 }
 
@@ -163,22 +176,11 @@ RECORDED_MERGE_HASHES = [
         {
             "environment": None,
             "tool": None,
-            "compute_provider": "slurm",
-            "compute_resources": None,
-        },
-        "e8ffc89a4c6e3dcbd453a2289636aa4d",
-        "1b0b8d8cc28344004835459d4c2cc0cf",
-        id="compute_provider_slurm",
-    ),
-    pytest.param(
-        {
-            "environment": None,
-            "tool": None,
             "compute_provider": None,
             "compute_resources": None,
         },
-        "74cd33084726624724a745986e98f9c0",
-        "1a2e551df5665411620c078c6fa15af2",
+        "a71c54e23f6b903ccf8396a6ad192b9d",
+        "97b9639aa4889a963a12c99035c687c5",
         id="defaults_only",
     ),
     pytest.param(
@@ -188,8 +190,8 @@ RECORDED_MERGE_HASHES = [
             "compute_provider": None,
             "compute_resources": {"gpu": "A100", "memory_gb": 32},
         },
-        "88f661bb66400588388ab1f6968ce06d",
-        "43a232f4b8d1ffc8c84845b2370c4c4d",
+        "948d7c73e739a4a32d394daca41e9172",
+        "fe93e1db1df7a182b4c43150dd8aa608",
         id="compute_resources_split",
     ),
 ]
@@ -201,6 +203,19 @@ def _effective_payload(merge_kwargs: dict) -> dict:
         _PINNED_OP, StepOverrides.from_user(**merge_kwargs)
     )
     return effective_config_payload(instance)
+
+
+def test_invalid_selector_fails_before_hashing() -> None:
+    """Invalid selectors are no longer accepted as recorded cache inputs."""
+    with pytest.raises(ValidationError, match="Unknown compute provider"):
+        _effective_payload(
+            {
+                "environment": None,
+                "tool": None,
+                "compute_provider": "slurm",
+                "compute_resources": None,
+            }
+        )
 
 
 @pytest.mark.parametrize(

@@ -78,7 +78,6 @@ class TestInput:
         out_ref = OutputReference(source_step=0, role="data")
         ctx = _make_ctx(MagicMock(), input_refs={"data": out_ref})
         ref = ctx.input("data")
-        assert ref.source is None
         assert ref.output_reference is out_ref
         assert ref.role == "data"
 
@@ -110,13 +109,13 @@ class TestOutput:
     def test_output_records_output_reference(self):
         out_ref = OutputReference(source_step=1, role="result")
         ctx = _make_ctx(MagicMock())
-        ref = CompositeRef(source=None, output_reference=out_ref, role="result")
+        ref = CompositeRef(output_reference=out_ref, role="result")
         ctx.output("result", ref)
         assert ctx.get_output_map()["result"] is out_ref
 
     def test_output_missing_output_reference_raises(self):
         ctx = _make_ctx(MagicMock())
-        ref = CompositeRef(source=None, output_reference=None, role="result")
+        ref = CompositeRef(output_reference=None, role="result")
         with pytest.raises(ValueError, match="has no OutputReference"):
             ctx.output("result", ref)
 
@@ -156,6 +155,30 @@ class TestForwarding:
         ctx = _make_ctx(pipeline, step_defaults={"environment": "docker"})
         ctx.run(DataGenerator, environment="pixi")
         assert pipeline.submit.call_args.kwargs["environment"] == "pixi"
+
+    def test_explicit_patch_wins_wholesale_over_composite_default(self):
+        pipeline = MagicMock()
+        ctx = _make_ctx(
+            pipeline,
+            step_defaults={
+                "runner_resources": {"cpus": 7, "memory_gb": 32},
+            },
+        )
+
+        ctx.run(DataGenerator, runner_resources={"cpus": 2})
+
+        assert pipeline.submit.call_args.kwargs["runner_resources"] == {"cpus": 2}
+
+    def test_explicit_empty_patch_wins_over_composite_default(self):
+        pipeline = MagicMock()
+        ctx = _make_ctx(
+            pipeline,
+            step_defaults={"runner_resources": {"cpus": 7}},
+        )
+
+        ctx.run(DataGenerator, runner_resources={})
+
+        assert pipeline.submit.call_args.kwargs["runner_resources"] == {}
 
     def test_unset_knob_with_no_default_is_none(self):
         pipeline = MagicMock()

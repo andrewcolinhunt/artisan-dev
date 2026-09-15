@@ -1,11 +1,13 @@
 # Pipeline Configuration
 
 Every setting that governs a pipeline run as a whole — where results are
-stored, how failures are handled, which compute backend runs each step — must
-be decided once and then respected by every worker, whether that worker runs
-in the same process or on a remote cluster node. `PipelineConfig` is the single
-object that holds those decisions. Understanding what it captures, and why it
-is immutable, tells you where run-wide behavior is set and why it cannot change
+stored, how failures are handled, and which step runner workers use by default
+— must be decided once and then respected by every worker, whether that worker
+runs in the same process or on a remote cluster node. `PipelineConfig` is the
+single object that holds those decisions. Compute routing is not run-wide: an
+operation declares its compute provider, and a step can override it for one
+invocation. Understanding what the pipeline config captures, and why it is
+immutable, tells you where run-wide behavior is set and why it cannot change
 partway through a run.
 
 This page explains what belongs in the pipeline configuration, why the model
@@ -29,12 +31,13 @@ Artisan-managed external files live (`files_root`), and the backend `storage`
 configuration for local, S3, or GCS. Worker sandboxes use `working_root`, which
 is always local.
 
-**Execution defaults.** The default step runner and compute provider that steps
-inherit unless a step overrides them — for example the local runner, an
-external SLURM runner, or a Modal compute target.
+**Execution defaults.** The default step runner that steps inherit unless a
+step overrides it — for example the local runner or an external SLURM runner.
+Compute providers belong to operation configuration and explicit step
+overrides, not `PipelineConfig`.
 
 **Policies.** How the pipeline reacts to a failed step (`failure_policy`) and
-when a completed step counts as a cache hit (`cache_policy`).
+which usable terminal step counts as a cache hit (`cache_policy`).
 
 **Recovery and debugging.** Flags to recover leftover staging files from a
 crashed run, bypass the cache, or keep staging directories and worker sandboxes

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -12,9 +12,7 @@ from artisan.execution.compute.invoke import invoke_op_work
 from artisan.operations.examples import WaitTool
 from artisan.schemas import ExecuteInput, PostprocessInput
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None, reason="bash not on PATH"
-)
+pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 
 
 class TestWaitTool:
@@ -59,7 +57,9 @@ class TestWaitTool:
                 self.materialized_path = path
 
         class _Pre:
-            input_artifacts = {"dataset": [_Artifact("/a.csv"), _Artifact("/b.csv")]}
+            input_artifacts: ClassVar = {
+                "dataset": [_Artifact("/a.csv"), _Artifact("/b.csv")]
+            }
 
         prepared = WaitTool().preprocess(_Pre())
         assert isinstance(prepared["dataset"], PerArtifact)

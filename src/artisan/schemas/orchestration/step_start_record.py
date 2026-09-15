@@ -6,17 +6,17 @@ from pydantic import BaseModel
 
 
 class StepStartRecord(BaseModel):
-    """Metadata for a step's initial 'running' row in the steps table.
+    """Metadata for a step's initial pending snapshot in the steps table.
 
     Attributes:
         step_run_id: Unique ID for this step execution attempt.
-        step_spec_id: Deterministic ID for cache lookup.
+        step_spec_id: Deterministic ID for cache lookup, once inputs resolve.
         step_number: Sequential pipeline step index.
         step_name: Human-readable step label.
         operation_class: Fully qualified operation class name.
         params_json: JSON-encoded operation parameters.
         input_refs_json: JSON-encoded input references.
-        compute_backend: Stable runner/provider name.
+        compute_backend: Resolved step-runner name.
         compute_options_json: JSON-encoded execution options and pipeline runner
             metadata.
         output_roles_json: JSON-encoded output role names.
@@ -24,7 +24,7 @@ class StepStartRecord(BaseModel):
     """
 
     step_run_id: str
-    step_spec_id: str
+    step_spec_id: str | None = None
     step_number: int
     step_name: str
     operation_class: str

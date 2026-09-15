@@ -13,11 +13,15 @@ from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
+    ARTIFACT_LOCATIONS_SCHEMA,
+    CACHE_REUSE_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
     FRAMEWORK_SCHEMAS,
     NON_PARTITIONED_TABLES,
     create_empty_dataframe,
+    get_physical_schema,
+    get_physical_schema_for_path,
     get_schema,
 )
 
@@ -31,17 +35,15 @@ class TestArtifactSchemaDefinitions:
     """Tests for artifact model schemas (owned by models via POLARS_SCHEMA)."""
 
     def test_file_refs_has_required_columns(self):
-        """file_refs has all columns from v3 design."""
+        """file_refs stores content descriptors but no locator."""
         required = {
             "artifact_id",
             "origin_step_number",
             "content_hash",
-            "path",
             "size_bytes",
             "metadata",
             "original_name",
             "extension",
-            "external_path",
         }
         assert required == set(FILE_REFS_SCHEMA.keys())
 
@@ -50,7 +52,7 @@ class TestArtifactSchemaDefinitions:
         assert "content" not in FILE_REFS_SCHEMA
 
     def test_data_has_required_columns(self):
-        """data has all columns from v3 design."""
+        """data content rows do not persist source paths."""
         required = {
             "artifact_id",
             "origin_step_number",
@@ -61,7 +63,6 @@ class TestArtifactSchemaDefinitions:
             "columns",
             "row_count",
             "metadata",
-            "external_path",
         }
         assert required == set(DATA_SCHEMA.keys())
 
@@ -70,7 +71,7 @@ class TestArtifactSchemaDefinitions:
         assert DATA_SCHEMA["content"] == pl.Binary
 
     def test_metrics_has_required_columns(self):
-        """metrics has all columns from v3 design."""
+        """metrics content rows do not persist source paths."""
         required = {
             "artifact_id",
             "origin_step_number",
@@ -78,7 +79,6 @@ class TestArtifactSchemaDefinitions:
             "original_name",
             "extension",
             "metadata",
-            "external_path",
         }
         assert required == set(METRICS_SCHEMA.keys())
 
@@ -138,11 +138,25 @@ class TestFrameworkSchemaDefinitions:
         assert TablePath.EXECUTION_EDGES in NON_PARTITIONED_TABLES
         assert TablePath.ARTIFACT_INDEX in NON_PARTITIONED_TABLES
         assert TablePath.ARTIFACT_EDGES in NON_PARTITIONED_TABLES
+        assert TablePath.CACHE_REUSE in NON_PARTITIONED_TABLES
+
+    def test_cache_reuse_has_exact_domain_columns(self):
+        assert {
+            "current_step_run_id": pl.String,
+            "cached_execution_run_id": pl.String,
+        } == CACHE_REUSE_SCHEMA
 
     def test_artifact_index_has_required_columns(self):
         """artifact_index has all columns from v3 design."""
         required = {"artifact_id", "artifact_type", "origin_step_number", "metadata"}
         assert required == set(ARTIFACT_INDEX_SCHEMA.keys())
+
+    def test_artifact_locations_has_exact_domain_columns(self):
+        assert {
+            "artifact_id": pl.String,
+            "uri": pl.String,
+        } == ARTIFACT_LOCATIONS_SCHEMA
+        assert TablePath.ARTIFACT_LOCATIONS in NON_PARTITIONED_TABLES
 
     def test_framework_schemas_have_metadata_column(self):
         """Most framework tables have a metadata column.
@@ -152,6 +166,9 @@ class TestFrameworkSchemaDefinitions:
         tables_without_metadata = {
             TablePath.ARTIFACT_EDGES,
             TablePath.EXECUTION_EDGES,
+            TablePath.ARTIFACT_LOCATIONS,
+            TablePath.CACHE_REUSE,
+            TablePath.LOGICAL_COMMITS,
         }
         for table_name, schema in FRAMEWORK_SCHEMAS.items():
             if table_name in tables_without_metadata:
@@ -210,6 +227,9 @@ class TestSchemaRegistry:
         tables_without_metadata = {
             TablePath.ARTIFACT_EDGES,
             TablePath.EXECUTION_EDGES,
+            TablePath.ARTIFACT_LOCATIONS,
+            TablePath.CACHE_REUSE,
+            TablePath.LOGICAL_COMMITS,
         }
         for table_path in TablePath:
             schema = get_schema(table_path)
@@ -241,6 +261,30 @@ class TestCreateEmptyDataframe:
             assert len(df.columns) > 0  # Has columns
 
 
+def test_physical_ownership_is_central_and_domain_schemas_remain_ownerless():
+    """D5 metadata exists only at the physical persistence boundary."""
+    for table in (
+        TablePath.ARTIFACT_INDEX,
+        TablePath.ARTIFACT_LOCATIONS,
+        TablePath.EXECUTIONS,
+        TablePath.EXECUTION_EDGES,
+        TablePath.ARTIFACT_EDGES,
+        TablePath.STEPS,
+    ):
+        assert "logical_commit_id" not in get_schema(table)
+        assert get_physical_schema(table)["logical_commit_id"] == pl.String
+    assert list(get_physical_schema(TablePath.CACHE_REUSE)) == [
+        "current_step_run_id",
+        "cached_execution_run_id",
+    ]
+    for type_def in ArtifactTypeDef.get_all().values():
+        assert "logical_commit_id" not in type_def.polars_schema()
+        assert (
+            get_physical_schema_for_path(type_def.table_path)["logical_commit_id"]
+            == pl.String
+        )
+
+
 class TestDataFrameCreation:
     """Tests for creating DataFrames from schemas."""
 
@@ -256,10 +300,9 @@ class TestDataFrameCreation:
             "columns": ['["col_a","col_b"]'],
             "row_count": [1],
             "metadata": ["{}"],
-            "external_path": [None],
         }
         df = pl.DataFrame(data, schema=DATA_SCHEMA)
-        assert df.shape == (1, 10)
+        assert df.shape == (1, 9)
 
     def test_create_executions_dataframe_lightweight(self):
         """Create executions DataFrame (lightweight, no inputs/outputs)."""

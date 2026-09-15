@@ -7,15 +7,29 @@ translate lazy step-output references into sorted artifact ID lists.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.storage.core.committed_scan import scan_committed
+from artisan.utils.hashing import CacheInputIdentity
 from artisan.utils.path import uri_join
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedInputs:
+    """One resolved, verified, grouped input snapshot used by both caches."""
+
+    inputs: dict[str, list[str]]
+    artifact_types: dict[str, str]
+    group_ids: list[str] | None
+    cache_inputs: dict[str, list[CacheInputIdentity]]
 
 
 def resolve_output_reference(
@@ -49,6 +63,29 @@ def resolve_output_reference(
         >>> ids = resolve_output_reference(ref, "/data/delta", fs)
         >>> # Returns: ["abc123...", "def456...", "ghi789..."] (sorted)
     """
+    from artisan.storage.core.store_format import assert_store_format
+
+    assert_store_format(delta_root, fs, storage_options)
+    if step_run_id is not None:
+        from artisan.storage.core.run_scope import load_accepted_outputs
+
+        outputs = load_accepted_outputs(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            step_run_id=step_run_id,
+            role=ref.role,
+        ).filter(pl.col("current_step_number") == ref.source_step)
+        if outputs.is_empty():
+            logger.warning(
+                "Step %d produced no accepted outputs for role '%s' — downstream "
+                "step will receive empty inputs.",
+                ref.source_step,
+                ref.role,
+            )
+            return []
+        return sorted(set(outputs["artifact_id"].to_list()))
+
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
     execution_edges_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
 
@@ -61,12 +98,15 @@ def resolve_output_reference(
 
     # Query successful executions for the source step
     query = (
-        pl.scan_delta(executions_path, storage_options=storage_options)
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTIONS,
+            fs=fs,
+            storage_options=storage_options,
+        )
         .filter(pl.col("origin_step_number") == ref.source_step)
         .filter(pl.col("success") == True)  # noqa: E712
     )
-    if step_run_id:
-        query = query.filter(pl.col("step_run_id") == step_run_id)
     records_result = query.select("execution_run_id").collect()
 
     if records_result.is_empty():
@@ -88,7 +128,12 @@ def resolve_output_reference(
         return []
 
     provenance_result = (
-        pl.scan_delta(execution_edges_path, storage_options=storage_options)
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTION_EDGES,
+            fs=fs,
+            storage_options=storage_options,
+        )
         .filter(pl.col("execution_run_id").is_in(execution_run_ids))
         .filter(pl.col("direction") == "output")
         .filter(pl.col("role") == ref.role)
@@ -124,7 +169,7 @@ def resolve_inputs(
     Handles multiple input formats:
     - dict[str, OutputReference]: Resolve each reference
     - dict[str, list[str]]: Pass through (already artifact IDs)
-    - list[OutputReference]: For runtime-defined inputs (MergeOp), auto-generate role names
+    - list[OutputReference]: For runtime-defined inputs, auto-generate role names
     - None: Return empty dict (generative operations)
 
     Note: Raw file paths (list[str] of paths) are NOT handled here.
@@ -157,7 +202,7 @@ def resolve_inputs(
         )
         # Returns: {"data": ["abc123...", "def456...", ...]}
 
-        # List of OutputReferences (for MergeOp) - flattened to single role
+        # List of OutputReferences - flattened to a single role
         resolved = resolve_inputs(
             [OutputReference(source_step=1, role="out"), OutputReference(source_step=2, role="out")],
             delta_root,
@@ -203,7 +248,7 @@ def resolve_inputs(
                         f"Expected 32-character hex string."
                     )
                     raise ValueError(msg)
-            resolved[role] = sorted(value)  # Sort for determinism
+            resolved[role] = list(value)
         else:
             msg = (  # type: ignore[unreachable]  # runtime defense against bad input types
                 f"Invalid input type for role '{role}': {type(value).__name__}. "
@@ -212,6 +257,94 @@ def resolve_inputs(
             raise TypeError(msg)
 
     return resolved
+
+
+def prepare_inputs(
+    inputs: dict[str, OutputReference | list[str]] | list[OutputReference] | None,
+    delta_root: str,
+    fs: AbstractFileSystem,
+    *,
+    group_by: object = None,
+    step_run_ids: dict[int, str] | None = None,
+    storage_options: dict[str, str] | None = None,
+    files_root: str | None = None,
+    already_verified: set[str] | None = None,
+) -> PreparedInputs:
+    """Resolve, type, verify, group, and encode concrete operation inputs."""
+    from artisan.execution.inputs.grouping import group_inputs
+    from artisan.schemas.enums import GroupByStrategy
+    from artisan.storage.core.artifact_store import ArtifactStore
+
+    resolved = resolve_inputs(
+        inputs,
+        delta_root,
+        fs,
+        step_run_ids=step_run_ids,
+        storage_options=storage_options,
+    )
+    store = ArtifactStore(
+        delta_root,
+        fs=fs,
+        storage_options=storage_options,
+        files_root=files_root,
+    )
+    ordered_ids = [artifact_id for ids in resolved.values() for artifact_id in ids]
+    type_map = store.load_type_map(ordered_ids)
+    missing = [
+        artifact_id for artifact_id in ordered_ids if artifact_id not in type_map
+    ]
+    if missing:
+        msg = f"Input artifact IDs are missing from the index: {missing!r}"
+        raise ArtifactIntegrityError(msg)
+
+    verified = already_verified or set()
+    ids_by_type: dict[str, list[str]] = {}
+    for artifact_id in ordered_ids:
+        if artifact_id not in verified:
+            ids_by_type.setdefault(type_map[artifact_id], []).append(artifact_id)
+    for artifact_type, artifact_ids in ids_by_type.items():
+        model = store.get_artifacts_by_type(artifact_ids, artifact_type)
+        if len(model) != len(set(artifact_ids)):
+            missing_content = sorted(set(artifact_ids) - set(model))
+            msg = f"Input artifacts are missing content rows: {missing_content!r}"
+            raise ArtifactIntegrityError(msg)
+
+    if group_by is not None:
+        if not isinstance(group_by, GroupByStrategy):
+            msg = f"Invalid group_by value: {group_by!r}"
+            raise TypeError(msg)
+        aligned, group_ids = group_inputs(
+            resolved,
+            group_by,
+            store,
+            artifact_types=type_map,
+        )
+    else:
+        aligned, group_ids = resolved, None
+
+    cache_inputs = _build_cache_inputs(aligned, type_map, group_ids)
+    return PreparedInputs(aligned, type_map, group_ids, cache_inputs)
+
+
+def _build_cache_inputs(
+    inputs: dict[str, list[str]],
+    artifact_types: dict[str, str],
+    group_ids: list[str] | None,
+) -> dict[str, list[CacheInputIdentity]]:
+    """Build ordered role-local cache occurrences for prepared inputs."""
+    return {
+        role: [
+            CacheInputIdentity(
+                role=role,
+                group_id=group_ids[position] if group_ids is not None else None,
+                position=position,
+                artifact_type=artifact_types[artifact_id],
+                artifact_id=artifact_id,
+            )
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in inputs.items()
+    }
 
 
 def _resolve_list_inputs(

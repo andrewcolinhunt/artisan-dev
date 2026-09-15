@@ -19,6 +19,7 @@ from artisan.schemas.operation_config.compute_resources import ComputeResources
 
 if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
+    from artisan.operations.base.operation_definition import OperationDefinition
     from artisan.orchestration.pipeline_manager import PipelineManager
     from artisan.orchestration.runners import RunnerBase
     from artisan.orchestration.step_future import StepFuture
@@ -87,14 +88,13 @@ class CompositeContext:
             msg = f"Unknown input role '{role}'. Available: {available}"
             raise ValueError(msg)
         return CompositeRef(
-            source=None,
             output_reference=self._input_refs[role],
             role=role,
         )
 
     def run(
         self,
-        operation: type,
+        operation: type[OperationDefinition] | type[CompositeDefinition],
         inputs: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         runner_resources: dict[str, Any] | None = None,
@@ -328,7 +328,6 @@ class _NestedHandle(CompositeStepHandle):
             raise ValueError(msg)
         out_ref = self._nested_result.output(role)
         return CompositeRef(
-            source=None,
             output_reference=out_ref,
             role=role,
         )

@@ -10,14 +10,14 @@ import pytest
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 def _draft(external_path: str = "/tmp/test.bin") -> LargeFileArtifact:
     """Create a standard draft for reuse across tests."""
     data = b"test binary content"
     return LargeFileArtifact.draft(
-        content_hash=compute_artifact_id(data),
+        content_hash=compute_content_digest(data),
         size_bytes=len(data),
         step_number=1,
         external_path=external_path,
@@ -70,13 +70,13 @@ class TestFinalize:
 
     def test_different_content_different_id(self) -> None:
         art_a = LargeFileArtifact.draft(
-            content_hash=compute_artifact_id(b"content_a"),
+            content_hash=compute_content_digest(b"content_a"),
             size_bytes=9,
             step_number=0,
             external_path="/tmp/same.bin",
         )
         art_b = LargeFileArtifact.draft(
-            content_hash=compute_artifact_id(b"content_b"),
+            content_hash=compute_content_digest(b"content_b"),
             size_bytes=9,
             step_number=0,
             external_path="/tmp/same.bin",
@@ -85,13 +85,13 @@ class TestFinalize:
         art_b.finalize()
         assert art_a.artifact_id != art_b.artifact_id
 
-    def test_same_content_different_path_different_id(self) -> None:
-        """Same content at different external_paths produces distinct IDs."""
+    def test_same_content_different_path_same_id(self) -> None:
+        """Relocating identical content preserves its ID."""
         art_a = _draft(external_path="/tmp/worker_0/file.bin")
         art_b = _draft(external_path="/tmp/worker_1/file.bin")
         art_a.finalize()
         art_b.finalize()
-        assert art_a.artifact_id != art_b.artifact_id
+        assert art_a.artifact_id == art_b.artifact_id
 
 
 class TestSerialization:
@@ -107,7 +107,7 @@ class TestSerialization:
         assert restored.size_bytes == art.size_bytes
         assert restored.original_name == art.original_name
         assert restored.extension == art.extension
-        assert restored.external_path == art.external_path
+        assert restored.external_path is None
         assert restored.origin_step_number == art.origin_step_number
 
     def test_to_row_includes_all_schema_keys(self) -> None:
@@ -126,7 +126,7 @@ class TestMaterialize:
         source.write_bytes(data)
 
         art = LargeFileArtifact.draft(
-            content_hash=compute_artifact_id(data),
+            content_hash=compute_content_digest(data),
             size_bytes=len(data),
             step_number=0,
             external_path=str(source),
@@ -147,7 +147,7 @@ class TestMaterialize:
         source.write_bytes(b"data")
 
         art = LargeFileArtifact.draft(
-            content_hash=compute_artifact_id(b"data"),
+            content_hash=compute_content_digest(b"data"),
             size_bytes=4,
             step_number=0,
             external_path=str(source),
@@ -185,7 +185,7 @@ class TestMaterializeAutoInferFs:
         src.write_bytes(b"local-bytes")
 
         art = LargeFileArtifact.draft(
-            content_hash=compute_artifact_id(b"local-bytes"),
+            content_hash=compute_content_digest(b"local-bytes"),
             size_bytes=len(b"local-bytes"),
             step_number=0,
             external_path=str(src),
@@ -208,7 +208,7 @@ class TestMaterializeAutoInferFs:
             f.write(b"memory-bytes")
 
         art = LargeFileArtifact.draft(
-            content_hash=compute_artifact_id(b"memory-bytes"),
+            content_hash=compute_content_digest(b"memory-bytes"),
             size_bytes=len(b"memory-bytes"),
             step_number=0,
             external_path="memory:///test_large_file/auto/blob.bin",

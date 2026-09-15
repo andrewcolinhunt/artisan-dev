@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import BaseModel, Field
 
 from artisan.execution.compute.invoke import invoke_op_work, tool_command_inputs
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -36,10 +37,18 @@ class _EchoTool(OperationDefinition):
     }
 
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
-    message: str = "hello"
+
+    class Params(BaseModel):
+        message: str = Field(default="hello", description="Message to echo.")
+
+    params: Params = Params()
 
     def execute_command(self, inputs: dict[str, Any]) -> list[str]:
-        return [*self.tool.parts(), "-c", f'echo "{self.message}" | tee marker.txt']
+        return [
+            *self.tool.parts(),
+            "-c",
+            f'echo "{self.params.message}" | tee marker.txt',
+        ]
 
 
 class _FunctionOp(OperationDefinition):
@@ -101,7 +110,7 @@ class TestInvokeCommandOp:
 
     def test_runs_tool_and_returns_none(self, tmp_path):
         """The tool runs in execute_dir with the unit log captured."""
-        op = _EchoTool(message="hi")
+        op = _EchoTool(params=_EchoTool.Params(message="hi"))
         result = invoke_op_work(
             op,
             ExecuteInput(
@@ -133,7 +142,7 @@ class TestInvokeCommandOp:
         log_path = str(tmp_path / "tool_output.log")
         for message in ("first", "second"):
             invoke_op_work(
-                _EchoTool(message=message),
+                _EchoTool(params=_EchoTool.Params(message=message)),
                 ExecuteInput(execute_dir=str(tmp_path), log_path=log_path),
             )
         log = (tmp_path / "tool_output.log").read_text()

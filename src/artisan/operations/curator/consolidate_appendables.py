@@ -88,7 +88,7 @@ class ConsolidateAppendables(OperationDefinition):
             msg = "files_root required for ConsolidateAppendables"
             raise ValueError(msg)
 
-        fs = artifact_store._fs
+        fs = artifact_store.filesystem
         record_ids = inputs["records"]["artifact_id"].to_list()
         # get_artifacts_by_type returns dict[str, Artifact]; "appendable" is the
         # requested type, so the values are AppendableArtifact instances.

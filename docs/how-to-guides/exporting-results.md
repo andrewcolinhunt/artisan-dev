@@ -133,7 +133,7 @@ execution_edges = pl.read_delta(str(delta_root / "provenance/execution_edges"))
 You can also use the `TablePath` enum to avoid hardcoding path strings:
 
 ```python
-from artisan.schemas.enums import TablePath
+from artisan.schemas import TablePath
 
 steps = pl.read_delta(str(delta_root / TablePath.STEPS))
 ```
@@ -155,7 +155,7 @@ file_refs = pl.read_delta(str(delta_root / "artifacts/file_refs"))
 To look up the table path for a given type programmatically:
 
 ```python
-from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas import ArtifactTypeDef
 
 path = ArtifactTypeDef.get_table_path("data")  # "artifacts/data"
 ```
@@ -166,7 +166,7 @@ path = ArtifactTypeDef.get_table_path("data")  # "artifacts/data"
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| `FileNotFoundError` from inspect helpers | No completed steps at `delta_root` | Verify the pipeline ran and the path is correct |
+| `FileNotFoundError` from inspect helpers | No steps table at `delta_root` | Verify the pipeline ran and the path is correct |
 | `inspect_data` raises `ValueError` | `content` is `None` (not hydrated) | The `DataArtifact` was created without CSV content |
 | `inspect_data` raises `ValueError` with "No matching data artifacts found" | Name does not match any `original_name` in the data table | Check the error message for available names |
 | `inspect_metrics` returns empty DataFrame | No metric artifacts at that step | Use `inspect_step` to check what artifact types exist |
@@ -183,7 +183,7 @@ Confirm you can read pipeline outputs:
 from artisan.visualization import inspect_pipeline, inspect_metrics
 
 df = inspect_pipeline(delta_root)
-assert len(df) > 0, "No completed steps found"
+assert len(df) > 0, "No step attempts found"
 
 metrics = inspect_metrics(delta_root)
 assert len(metrics) > 0, "No metrics found"

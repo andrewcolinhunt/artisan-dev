@@ -8,6 +8,27 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from artisan.orchestration.engine.inputs import PreparedInputs
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
+from artisan.utils.hashing import CacheInputIdentity
+
+
+def _prepared(inputs: dict[str, list[str]]) -> PreparedInputs:
+    """Build a typed prepared-input snapshot for signal-path tests."""
+    types = {
+        artifact_id: "metric"
+        for artifact_ids in inputs.values()
+        for artifact_id in artifact_ids
+    }
+    cache_inputs = {
+        role: [
+            CacheInputIdentity(role, None, position, types[artifact_id], artifact_id)
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in inputs.items()
+    }
+    return PreparedInputs(inputs, types, None, cache_inputs)
+
 
 class TestCreatorBrokenProcessPool:
     """Fix 3: BrokenProcessPool in creator dispatch produces failed StepResult."""
@@ -16,7 +37,6 @@ class TestCreatorBrokenProcessPool:
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.utils.hashing.compute_execution_spec_id")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     @patch("artisan.orchestration.engine.step_executor.get_batch_config")
     @patch(
         "artisan.orchestration.engine.step_executor.generate_execution_unit_batches",
@@ -25,7 +45,6 @@ class TestCreatorBrokenProcessPool:
         self,
         mock_batches,
         mock_batch_config,
-        mock_resolve,
         mock_spec_id,
         mock_cache,
         mock_eu_cls,
@@ -37,12 +56,10 @@ class TestCreatorBrokenProcessPool:
         mock_op.name = "test_op"
         mock_op.outputs = {}
         mock_op.group_by = None
-        mock_resolve.return_value = {"data": ["id1", "id2"]}
-
-        # Each batch yields (inputs_dict, group_ids)
+        # Each batch yields inputs, group IDs, and the sliced cache identities.
         mock_batches.return_value = [
-            ({"data": ["id1"]}, None),
-            ({"data": ["id2"]}, None),
+            ({"data": ["id1"]}, None, _prepared({"data": ["id1"]}).cache_inputs),
+            ({"data": ["id2"]}, None, _prepared({"data": ["id2"]}).cache_inputs),
         ]
         mock_spec_id.return_value = "spec-123"
         mock_cache.return_value = None  # No cache hit
@@ -62,13 +79,13 @@ class TestCreatorBrokenProcessPool:
 
         result = _execute_creator_step(
             operation=mock_op,
-            inputs={"data": ["id1", "id2"]},
+            inputs=_prepared({"data": ["id1", "id2"]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,
         )
 
-        assert result.success is False
+        assert result.status == StepStatus.FAILED
         assert result.failed_count == 2
 
 
@@ -80,10 +97,8 @@ class TestCuratorCancelAwareMessage:
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_cancel_message_logged_when_event_set(
         self,
-        mock_resolve,
         mock_eu_cls,
         mock_run_sub,
         mock_create_rt,
@@ -98,13 +113,14 @@ class TestCuratorCancelAwareMessage:
         mock_op.name = "filter"
         mock_op.outputs = {}
         mock_op.group_by = None
-        mock_resolve.return_value = {"passthrough": ["id1"]}
+        mock_op.params = None
 
         mock_unit = MagicMock()
         mock_unit.execution_spec_id = "spec-123-456789012345678901"
         mock_unit.inputs = {"passthrough": ["id1"]}
         mock_unit.operation = mock_op
         mock_unit.step_number = 1
+        mock_unit.get_batch_size.return_value = 1
         mock_eu_cls.return_value = mock_unit
 
         mock_record_failure.return_value = MagicMock(success=False, error="killed")
@@ -124,11 +140,11 @@ class TestCuratorCancelAwareMessage:
 
         _execute_curator_step(
             operation=mock_op,
-            inputs={"passthrough": ["id1"]},
+            inputs=_prepared({"passthrough": ["id1"]}),
             step_number=1,
             config=config,
             cancel_event=event,
-            step_spec_id="test-spec-id",
+            skip_cache=True,
         )
 
         # Verify the cancellation message was logged (not OOM)
@@ -141,10 +157,8 @@ class TestCuratorCancelAwareMessage:
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_oom_message_logged_when_no_cancel(
         self,
-        mock_resolve,
         mock_eu_cls,
         mock_run_sub,
         mock_create_rt,
@@ -159,13 +173,14 @@ class TestCuratorCancelAwareMessage:
         mock_op.name = "filter"
         mock_op.outputs = {}
         mock_op.group_by = None
-        mock_resolve.return_value = {"passthrough": ["id1"]}
+        mock_op.params = None
 
         mock_unit = MagicMock()
         mock_unit.execution_spec_id = "spec-123-456789012345678901"
         mock_unit.inputs = {"passthrough": ["id1"]}
         mock_unit.operation = mock_op
         mock_unit.step_number = 1
+        mock_unit.get_batch_size.return_value = 1
         mock_eu_cls.return_value = mock_unit
 
         mock_run_sub.side_effect = BrokenProcessPool("killed")
@@ -176,11 +191,11 @@ class TestCuratorCancelAwareMessage:
 
         _execute_curator_step(
             operation=mock_op,
-            inputs={"passthrough": ["id1"]},
+            inputs=_prepared({"passthrough": ["id1"]}),
             step_number=1,
             config=config,
             cancel_event=None,
-            step_spec_id="test-spec-id",
+            skip_cache=True,
         )
 
         assert any("OOM" in record.message for record in caplog.records), (

@@ -9,6 +9,7 @@ import pytest
 
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 
 
@@ -16,7 +17,8 @@ def _make_result(step_number: int = 0) -> StepResult:
     return StepResult(
         step_name="TestOp",
         step_number=step_number,
-        success=True,
+        status=StepStatus.SUCCEEDED,
+        disposition=StepDisposition.EXECUTED,
         total_count=5,
         succeeded_count=5,
         failed_count=0,
@@ -31,6 +33,7 @@ def _make_future(
     output_roles: frozenset[str] | None = None,
     output_types: dict[str, str | None] | None = None,
     cf_future: Future | None = None,
+    status: StepStatus = StepStatus.PENDING,
 ) -> StepFuture:
     if output_roles is None:
         output_roles = frozenset(["data", "metrics"])
@@ -44,6 +47,7 @@ def _make_future(
         output_roles=output_roles,
         output_types=output_types,
         future=cf_future,
+        status_reader=lambda: status,
     )
 
 
@@ -122,31 +126,31 @@ class TestStatus:
     """Tests for StepFuture.status property."""
 
     def test_status_running(self):
-        """'running' before completion."""
+        """Durable running state is returned before closure completion."""
         cf = Future()
-        future = _make_future(cf_future=cf)
-        assert future.status == "running"
+        future = _make_future(cf_future=cf, status=StepStatus.RUNNING)
+        assert future.status == StepStatus.RUNNING
 
-    def test_status_completed(self):
-        """'completed' after set_result."""
+    def test_status_succeeded(self):
+        """Durable succeeded state is returned after terminalization."""
         cf = Future()
         cf.set_result(_make_result())
-        future = _make_future(cf_future=cf)
-        assert future.status == "completed"
+        future = _make_future(cf_future=cf, status=StepStatus.SUCCEEDED)
+        assert future.status == StepStatus.SUCCEEDED
 
-    def test_status_failed(self):
-        """'failed' after set_exception."""
+    def test_python_exception_does_not_derive_status(self):
+        """Raw closure state cannot override the durable lifecycle reader."""
         cf = Future()
         cf.set_exception(RuntimeError("boom"))
-        future = _make_future(cf_future=cf)
-        assert future.status == "failed"
+        future = _make_future(cf_future=cf, status=StepStatus.RUNNING)
+        assert future.status == StepStatus.RUNNING
 
-    def test_status_cancelled(self):
-        """'cancelled' when executor cancellation prevents execution."""
+    def test_python_cancellation_does_not_fabricate_terminal_status(self):
+        """Executor cancellation alone is not durable cancellation proof."""
         cf = Future()
         cf.cancel()
-        future = _make_future(cf_future=cf)
-        assert future.status == "cancelled"
+        future = _make_future(cf_future=cf, status=StepStatus.PENDING)
+        assert future.status == StepStatus.PENDING
 
 
 class TestResult:

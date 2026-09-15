@@ -53,9 +53,7 @@ class TestStreamingEcho:
             "artisan.operations.examples.streaming_echo.run_command"
         ) as mock_run:
             op.execute_function(
-                ExecuteInput(
-                    inputs={}, execute_dir=execute_dir, log_path=log_path
-                )
+                ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path)
             )
 
         mock_run.assert_called_once()
@@ -73,9 +71,7 @@ class TestStreamingEcho:
 
         with patch("artisan.operations.examples.streaming_echo.run_command"):
             mem = op.execute_function(
-                ExecuteInput(
-                    inputs={}, execute_dir=execute_dir, log_path=log_path
-                )
+                ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path)
             )
 
         files, _ = _postprocess(op, execute_dir, mem, tmp_path)
@@ -87,9 +83,7 @@ class TestStreamingEcho:
 
         with patch("artisan.operations.examples.streaming_echo.run_command"):
             op.execute_function(
-                ExecuteInput(
-                    inputs={}, execute_dir=execute_dir, log_path=log_path
-                )
+                ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path)
             )
 
         marker = os.path.join(execute_dir, "streaming_echo_marker.csv")
@@ -105,9 +99,7 @@ class TestStreamingEcho:
 
         with patch("artisan.operations.examples.streaming_echo.run_command"):
             mem = op.execute_function(
-                ExecuteInput(
-                    inputs={}, execute_dir=execute_dir, log_path=log_path
-                )
+                ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path)
             )
 
         _, post_result = _postprocess(op, execute_dir, mem, tmp_path)
@@ -120,9 +112,7 @@ class TestStreamingEcho:
 
         with patch("artisan.operations.examples.streaming_echo.run_command"):
             mem = op.execute_function(
-                ExecuteInput(
-                    inputs={}, execute_dir=execute_dir, log_path=log_path
-                )
+                ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path)
             )
 
         _, post_result = _postprocess(op, execute_dir, mem, tmp_path)
@@ -144,6 +134,8 @@ def test_real_bash_streams_to_log_path(tmp_path: Path):
     assertion.
     """
     op, execute_dir, log_path = _setup(tmp_path, seconds=1)
-    op.execute_function(ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path))
+    op.execute_function(
+        ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path)
+    )
     contents = Path(log_path).read_text()
     assert "streaming_echo line 1 / 1" in contents

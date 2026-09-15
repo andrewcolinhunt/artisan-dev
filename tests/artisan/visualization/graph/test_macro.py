@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import graphviz
-import polars as pl
 import pytest
+from fixtures.logical_commit_store import commit_test_step
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
-from artisan.storage.core.table_schemas import STEPS_SCHEMA
 from artisan.visualization.graph import build_macro_graph, render_macro_graph
 from artisan.visualization.graph.macro import _parse_input_refs
 
@@ -21,11 +23,15 @@ from artisan.visualization.graph.macro import _parse_input_refs
 
 def _write_steps(delta_root: Path, rows: list[dict]) -> None:
     """Write steps rows to a Delta table under *delta_root*."""
+    publish_test_store(str(delta_root), LocalFileSystem())
     defaults = {
         "step_run_id": "run_0",
         "step_spec_id": "spec_0",
         "pipeline_run_id": "pipe_0",
-        "status": "completed",
+        "status": "succeeded",
+        "state_sequence": 2,
+        "disposition": "executed",
+        "cancellation_status": None,
         "operation_class": "test.Op",
         "params_json": "{}",
         "input_refs_json": "null",
@@ -36,16 +42,34 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
         "total_count": 1,
         "succeeded_count": 1,
         "failed_count": 0,
-        "timestamp": None,
+        "timestamp": datetime(2026, 1, 1, tzinfo=UTC),
         "duration_seconds": 0.1,
         "error": None,
-        "dispatch_error": None,
-        "commit_error": None,
         "metadata": "{}",
     }
-    full_rows = [{**defaults, **r} for r in rows]
-    df = pl.DataFrame(full_rows, schema=STEPS_SCHEMA)
-    df.write_delta(str(delta_root / "orchestration/steps"), mode="overwrite")
+    terminals = []
+    for index, row in enumerate(rows):
+        terminal = {
+            **defaults,
+            "timestamp": defaults["timestamp"] + timedelta(seconds=index),
+            **row,
+        }
+        if "step_run_id" not in row:
+            terminal["step_run_id"] = (
+                f"{terminal['pipeline_run_id']}:{terminal['step_number']}"
+            )
+        if "step_spec_id" not in row:
+            terminal["step_spec_id"] = (
+                f"{terminal['pipeline_run_id']}:spec:{terminal['step_number']}"
+            )
+        terminals.append(terminal)
+    for terminal in terminals:
+        commit_test_step(
+            delta_root,
+            delta_root.parent / "staging",
+            [terminal],
+            {},
+        )
 
 
 # =============================================================================
@@ -58,6 +82,7 @@ def empty_delta_root(tmp_path: Path) -> Path:
     """Empty Delta Lake root directory (no tables)."""
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
+    publish_test_store(str(delta_root), LocalFileSystem())
     return delta_root
 
 
@@ -374,6 +399,48 @@ class TestBuildMacroGraph:
         source = graph.source
         assert "_anchor_exec_" in source
         assert "style=invis" in source
+
+    def test_pipeline_run_id_excludes_other_runs(self, tmp_path: Path) -> None:
+        """Run-scoped graphs filter before deduplicating shared step numbers."""
+        delta_root = tmp_path / "delta"
+        delta_root.mkdir()
+        _write_steps(
+            delta_root,
+            [
+                {
+                    "pipeline_run_id": "pipe-a",
+                    "step_number": 0,
+                    "step_name": "RunAIngest",
+                },
+                {
+                    "pipeline_run_id": "pipe-a",
+                    "step_number": 1,
+                    "step_name": "RunATransform",
+                },
+                {
+                    "pipeline_run_id": "pipe-b",
+                    "step_number": 0,
+                    "step_name": "RunBIngest",
+                },
+                {
+                    "pipeline_run_id": "pipe-b",
+                    "step_number": 1,
+                    "step_name": "RunBTransform",
+                },
+            ],
+        )
+
+        run_a = build_macro_graph(delta_root, pipeline_run_id="pipe-a").source
+        run_b = build_macro_graph(delta_root, pipeline_run_id="pipe-b").source
+
+        assert "RunAIngest" in run_a
+        assert "RunATransform" in run_a
+        assert "RunBIngest" not in run_a
+        assert "RunBTransform" not in run_a
+        assert "RunBIngest" in run_b
+        assert "RunBTransform" in run_b
+        assert "RunAIngest" not in run_b
+        assert "RunATransform" not in run_b
 
 
 class TestPassthroughStyling:

@@ -19,15 +19,36 @@ import pytest
 
 from artisan.execution.inputs.grouping import (
     compute_group_id,
-    group_inputs,
     match_inputs_to_primary,
     validate_stem_match_uniqueness,
+)
+from artisan.execution.inputs.grouping import (
+    group_inputs as _group_inputs,
 )
 from artisan.schemas.enums import GroupByStrategy
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def group_inputs(
+    inputs: dict[str, list[str]],
+    strategy: GroupByStrategy,
+    artifact_store: Mock | None = None,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Call the typed grouping contract with deterministic test types."""
+    artifact_types = {
+        artifact_id: f"{role}_type"
+        for role, artifact_ids in inputs.items()
+        for artifact_id in artifact_ids
+    }
+    return _group_inputs(
+        inputs,
+        strategy,
+        artifact_store,
+        artifact_types=artifact_types,
+    )
 
 
 def _provenance_map_to_edges(
@@ -274,37 +295,38 @@ class TestComputeGroupId:
 
     def test_deterministic_for_same_inputs(self):
         """Same artifact IDs produce the same group_id."""
-        ids = ["artifact_abc", "artifact_def"]
-        assert compute_group_id(ids) == compute_group_id(ids)
+        artifacts = {"data": ("data", "artifact_abc")}
+        assert compute_group_id(artifacts) == compute_group_id(artifacts)
 
     def test_order_independent(self):
         """Sorted internally, so order of IDs does not matter."""
-        ids_a = ["artifact_abc", "artifact_def"]
-        ids_b = ["artifact_def", "artifact_abc"]
-        assert compute_group_id(ids_a) == compute_group_id(ids_b)
+        artifacts_a = {
+            "data": ("data", "artifact_abc"),
+            "config": ("config", "artifact_def"),
+        }
+        artifacts_b = {
+            "config": ("config", "artifact_def"),
+            "data": ("data", "artifact_abc"),
+        }
+        assert compute_group_id(artifacts_a) == compute_group_id(artifacts_b)
 
     def test_different_inputs_produce_different_ids(self):
         """Different artifact IDs produce different group_ids."""
-        ids_a = ["artifact_abc", "artifact_def"]
-        ids_b = ["artifact_abc", "artifact_xyz"]
-        assert compute_group_id(ids_a) != compute_group_id(ids_b)
+        artifacts_a = {"data": ("data", "artifact_abc")}
+        artifacts_b = {"data": ("data", "artifact_xyz")}
+        assert compute_group_id(artifacts_a) != compute_group_id(artifacts_b)
 
     def test_produces_32_char_hex(self):
         """xxh3_128 produces a 32-character hex string."""
-        result = compute_group_id(["a", "b"])
+        result = compute_group_id({"data": ("data", "a")})
         assert len(result) == 32
         assert all(c in "0123456789abcdef" for c in result)
 
-    def test_same_ids_different_role_order_same_group_id(self):
-        """group_id is based on artifact IDs only, not role association.
-
-        When group_inputs() collects IDs per index, the role order
-        may differ. compute_group_id sorts, so the result is the same.
-        """
-        # Simulating two roles with different orderings
-        ids = ["id_role_a", "id_role_b"]
-        ids_reversed = ["id_role_b", "id_role_a"]
-        assert compute_group_id(ids) == compute_group_id(ids_reversed)
+    def test_role_swap_changes_group_id(self):
+        """Role assignment is part of group identity."""
+        artifacts = {"left": ("data", "a"), "right": ("config", "b")}
+        swapped = {"left": ("config", "b"), "right": ("data", "a")}
+        assert compute_group_id(artifacts) != compute_group_id(swapped)
 
 
 # ---------------------------------------------------------------------------
@@ -782,7 +804,7 @@ class TestGroupIdRoleOrderIndependence:
         inputs = {"a": ["x"], "b": ["y"]}
         _, group_ids = group_inputs(inputs, GroupByStrategy.CROSS_PRODUCT)
 
-        expected_id = compute_group_id(["x", "y"])
+        expected_id = compute_group_id({"a": ("a_type", "x"), "b": ("b_type", "y")})
         assert group_ids[0] == expected_id
 
 

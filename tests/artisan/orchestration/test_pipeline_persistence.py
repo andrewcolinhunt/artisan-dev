@@ -6,14 +6,16 @@ import json
 import os
 from enum import StrEnum, auto
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import polars as pl
 from pydantic import BaseModel
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -84,12 +86,25 @@ def _mock_execute_step(**kwargs):
     from artisan.orchestration.engine.step_executor import build_step_result
     from artisan.schemas.enums import FailurePolicy
 
-    return build_step_result(
-        operation=kwargs["operation_class"],
+    result = build_step_result(
+        operation=kwargs["operation"],
         step_number=kwargs["step_number"],
         succeeded_count=5,
         failed_count=0,
         failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
+        step_run_id=kwargs["step_run_id"],
+    )
+    return kwargs["persist_result"](result, ())
+
+
+def _mock_prepared_inputs(inputs, *_args, **_kwargs) -> PreparedInputs:
+    """Keep output-reference inputs concrete in mocked execution tests."""
+    resolved = {} if inputs is None else {"data": ["a" * 32]}
+    return PreparedInputs(
+        inputs=resolved,
+        artifact_types={},
+        group_ids=None,
+        cache_inputs={},
     )
 
 
@@ -112,18 +127,20 @@ class TestPersistence:
         steps_path = str(tmp_path / "delta" / "orchestration/steps")
         assert os.path.exists(steps_path)
         df = pl.read_delta(steps_path)
-        # Should have running + completed rows
-        assert len(df) == 2
+        # Every attempt persists pending, running, then one terminal snapshot.
+        assert len(df) == 3
         statuses = set(df["status"].to_list())
-        assert "running" in statuses
-        assert "completed" in statuses
+        assert statuses == {"pending", "running", "succeeded"}
+        assert df.sort("state_sequence")["state_sequence"].to_list() == [0, 1, 2]
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_mock_execute_step,
     )
     def test_run_cache_hit(self, mock_exec, tmp_path):
-        """Second run with same params skips execution."""
+        """A whole-step hit is recorded under a fresh current-run identity."""
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
@@ -138,20 +155,34 @@ class TestPersistence:
         p2 = PipelineManager.create(
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
+        p2._step_tracker.check_cache = MagicMock(
+            return_value=_WholeStepCacheHit(
+                result=first_result,
+                source_step_run_id=first_result.step_run_id,
+                execution_run_ids=(),
+            )
+        )
         result = p2.run(IngestMockOp, inputs=None)
+
         # execute_step NOT called again
         assert mock_exec.call_count == 1
         assert result.step_name == "Ingest"
-        assert result.success is True
-        assert result.step_run_id == first_result.step_run_id
+        assert result.status == StepStatus.SUCCEEDED
+        assert result.disposition == StepDisposition.CACHE_HIT
+        assert result.step_run_id != first_result.step_run_id
+        assert len(result.step_run_id) == 32
 
         rows = pl.read_delta(delta / "orchestration" / "steps").filter(
             pl.col("pipeline_run_id") == p2.config.pipeline_run_id
         )
-        assert rows.height == 1
-        row = rows.row(0, named=True)
-        assert row["status"] == "completed"
-        assert row["step_run_id"] == first_result.step_run_id
+        assert rows.height == 3
+        assert set(rows["step_run_id"].to_list()) == {result.step_run_id}
+        row = rows.filter(pl.col("status") == StepStatus.SUCCEEDED.value).row(
+            0, named=True
+        )
+        assert row["status"] == StepStatus.SUCCEEDED.value
+        assert row["disposition"] == StepDisposition.CACHE_HIT.value
+        assert row["step_run_id"] == result.step_run_id
         assert row["total_count"] == 5
         assert json.loads(row["output_roles_json"]) == ["file"]
         assert row["compute_backend"] == "local"
@@ -160,11 +191,19 @@ class TestPersistence:
         assert options["pipeline_default_local_runner"] == {"default_max_workers": 4}
 
     @patch(
+        "artisan.orchestration.pipeline_manager.prepare_inputs",
+        side_effect=_mock_prepared_inputs,
+    )
+    @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_mock_execute_step,
     )
-    def test_upstream_change_invalidates(self, mock_exec, tmp_path):
-        """Changed upstream params cause downstream re-execution."""
+    def test_upstream_change_without_output_change_reuses_downstream(
+        self, mock_exec, mock_prepare, tmp_path
+    ):
+        """Changed upstream params do not invalidate identical concrete inputs."""
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
@@ -173,7 +212,7 @@ class TestPersistence:
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
         step0 = p1.run(IngestMockOp, inputs=None)
-        p1.run(MockOp, inputs={"data": step0.output("file")})
+        downstream_source = p1.run(MockOp, inputs={"data": step0.output("file")})
         assert mock_exec.call_count == 2
 
         # Second run with different params on step 0
@@ -181,9 +220,20 @@ class TestPersistence:
             name="test", delta_root=str(delta), staging_root=str(staging)
         )
         step0b = p2.run(IngestMockOp, inputs=None, params={"seed": 99})
-        p2.run(MockOp, inputs={"data": step0b.output("file")})
-        # Step 0 should re-execute (different params), step 1 also (upstream changed)
-        assert mock_exec.call_count == 4
+        cached_execution = "c" * 32
+        p2._step_tracker.check_cache = MagicMock(
+            return_value=_WholeStepCacheHit(
+                result=downstream_source,
+                source_step_run_id=downstream_source.step_run_id,
+                execution_run_ids=(cached_execution,),
+            )
+        )
+        with patch.object(p2, "_commit_whole_step_reuse"):
+            downstream_current = p2.run(MockOp, inputs={"data": step0b.output("file")})
+        # Step 0 re-executes, but the mocked run still exposes the same empty
+        # concrete output snapshot, so the content-addressed downstream key is stable.
+        assert mock_exec.call_count == 3
+        assert downstream_current.step_run_id != downstream_source.step_run_id
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",

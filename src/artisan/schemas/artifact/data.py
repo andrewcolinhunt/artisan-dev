@@ -39,7 +39,6 @@ class DataArtifact(Artifact):
         "columns": pl.String,
         "row_count": pl.Int32,
         "metadata": pl.String,
-        "external_path": pl.String,
     }
 
     artifact_type: str = Field(default="data", frozen=True)
@@ -96,6 +95,20 @@ class DataArtifact(Artifact):
             f.write(self.content)
         self.materialized_path = path
         return path
+
+    def _validate_identity_descriptors(self) -> None:
+        """Ensure stored CSV descriptors agree with embedded content."""
+        if self.content is None:
+            return
+        columns, row_count = _parse_csv_metadata(self.content)
+        expected = (len(self.content), columns, row_count)
+        actual = (self.size_bytes, self.columns, self.row_count)
+        if actual != expected:
+            msg = (
+                "DataArtifact descriptors do not match content: "
+                f"expected size/columns/rows {expected!r}, got {actual!r}"
+            )
+            raise ValueError(msg)
 
     @classmethod
     def draft(

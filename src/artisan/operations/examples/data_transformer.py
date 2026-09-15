@@ -5,16 +5,16 @@ from __future__ import annotations
 import csv
 import os
 import random
-from enum import StrEnum, auto
+from enum import StrEnum
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
+from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas import ArtifactResult
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -125,7 +125,8 @@ class DataTransformer(OperationDefinition):
 
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:
-            raise ValueError("No dataset input provided")
+            msg = "No dataset input provided"
+            raise ValueError(msg)
 
         if isinstance(dataset_input, str):
             input_files = [dataset_input]
@@ -138,7 +139,8 @@ class DataTransformer(OperationDefinition):
 
         for input_path in input_files:
             if not os.path.exists(input_path):
-                raise FileNotFoundError(f"Input file not found: {input_path}")
+                msg = f"Input file not found: {input_path}"
+                raise FileNotFoundError(msg)
 
             with open(input_path) as f:
                 reader = csv.DictReader(f)

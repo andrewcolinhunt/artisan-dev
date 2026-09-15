@@ -36,7 +36,6 @@ def test_public_surface_end_to_end(pipeline_env: dict[str, str]) -> None:
     pipeline = PipelineManager.create(
         name="public_smoke",
         default_step_runner=Runner.LOCAL,
-        default_compute_provider="local",
         **pipeline_env,
     )
     assert isinstance(pipeline.config, PipelineConfig)

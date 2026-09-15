@@ -7,7 +7,11 @@ from enum import StrEnum, auto
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import pytest
+from pydantic import BaseModel, Field, ValidationError
+
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.orchestration.engine.step_executor import (
     _cancelled_result,
     execute_step,
@@ -15,21 +19,45 @@ from artisan.orchestration.engine.step_executor import (
 )
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
     ModalComputeConfig,
 )
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus, StepStatus
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.hashing import CacheInputIdentity
+
+
+def _prepared(inputs: dict[str, list[str]]) -> PreparedInputs:
+    """Build a typed prepared-input snapshot for executor unit tests."""
+    artifact_types = {
+        artifact_id: ArtifactTypes.FILE_REF
+        for artifact_ids in inputs.values()
+        for artifact_id in artifact_ids
+    }
+    cache_inputs = {
+        role: [
+            CacheInputIdentity(
+                role, None, position, artifact_types[artifact_id], artifact_id
+            )
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in inputs.items()
+    }
+    return PreparedInputs(inputs, artifact_types, None, cache_inputs)
 
 
 class TestExecuteStepPassesCancelEvent:
-    """execute_step should forward cancel_event to creator/curator paths."""
+    """execute_step uses and forwards the already-prepared operation."""
 
     @patch(
         "artisan.orchestration.engine.step_executor.effective_config_payload",
@@ -40,26 +68,27 @@ class TestExecuteStepPassesCancelEvent:
         "artisan.orchestration.engine.step_executor.is_curator_operation",
         return_value=False,
     )
-    @patch("artisan.orchestration.engine.step_executor.instantiate_operation")
     def test_passes_cancel_event_to_creator(
-        self, mock_instantiate, mock_is_curator, mock_creator, mock_config_payload
+        self, mock_is_curator, mock_creator, mock_config_payload
     ):
         mock_op = MagicMock()
         mock_op.name = "test"
-        mock_instantiate.return_value = mock_op
         mock_creator.return_value = MagicMock()
+        config = MagicMock(failure_policy=FailurePolicy.CONTINUE, skip_cache=False)
 
         event = threading.Event()
         execute_step(
-            operation_class=MagicMock(),
-            inputs=None,
+            operation=mock_op,
+            inputs=_prepared({}),
             ov=StepOverrides(),
             step_runner=MagicMock(),
+            config=config,
             cancel_event=event,
         )
 
         _, kwargs = mock_creator.call_args
         assert kwargs["cancel_event"] is event
+        assert kwargs["operation"] is mock_op
 
     @patch(
         "artisan.orchestration.engine.step_executor.effective_config_payload",
@@ -70,40 +99,38 @@ class TestExecuteStepPassesCancelEvent:
         "artisan.orchestration.engine.step_executor.is_curator_operation",
         return_value=True,
     )
-    @patch("artisan.orchestration.engine.step_executor.instantiate_operation")
     def test_passes_cancel_event_to_curator(
-        self, mock_instantiate, mock_is_curator, mock_curator, mock_config_payload
+        self, mock_is_curator, mock_curator, mock_config_payload
     ):
         mock_op = MagicMock()
         mock_op.name = "test"
-        mock_instantiate.return_value = mock_op
         mock_curator.return_value = MagicMock()
+        config = MagicMock(failure_policy=FailurePolicy.CONTINUE, skip_cache=False)
 
         event = threading.Event()
         execute_step(
-            operation_class=MagicMock(),
-            inputs=None,
+            operation=mock_op,
+            inputs=_prepared({}),
             ov=StepOverrides(),
             step_runner=MagicMock(),
+            config=config,
             cancel_event=event,
         )
 
         _, kwargs = mock_curator.call_args
         assert kwargs["cancel_event"] is event
+        assert kwargs["operation"] is mock_op
 
 
 class TestCreatorCancelChecks:
     """_execute_creator_step returns cancelled result when event is set."""
 
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     @patch("artisan.orchestration.engine.step_executor.get_batch_config")
     @patch(
         "artisan.orchestration.engine.step_executor.generate_execution_unit_batches",
         return_value=[],
     )
-    def test_cancel_before_execute_phase(
-        self, mock_batches, mock_batch_config, mock_resolve
-    ):
+    def test_cancel_before_execute_phase(self, mock_batches, mock_batch_config):
         """Cancel event set before PHASE 2 should return cancelled result."""
         from artisan.orchestration.engine.step_executor import _execute_creator_step
 
@@ -111,7 +138,6 @@ class TestCreatorCancelChecks:
         mock_op.name = "test_op"
         mock_op.outputs = {}
         mock_op.group_by = None
-        mock_resolve.return_value = {"data": ["id1"]}
 
         event = threading.Event()
         event.set()  # Pre-set = cancelled
@@ -122,17 +148,17 @@ class TestCreatorCancelChecks:
 
         result = _execute_creator_step(
             operation=mock_op,
-            inputs={"data": ["id1"]},
+            inputs=_prepared({"data": ["id1"]}),
             step_runner=MagicMock(),
             step_number=1,
             config=config,
             cancel_event=event,
         )
 
-        assert result.metadata.get("cancelled") is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
 
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_cancel_before_execute_phase_curator(self, mock_resolve):
+    def test_cancel_before_execute_phase_curator(self):
         """Cancel event set before execute should return cancelled result for curator."""
         from artisan.orchestration.engine.step_executor import _execute_curator_step
 
@@ -140,7 +166,7 @@ class TestCreatorCancelChecks:
         mock_op.name = "filter"
         mock_op.outputs = {}
         mock_op.group_by = None
-        mock_resolve.return_value = {"data": ["id1"]}
+        mock_op.params = None
 
         event = threading.Event()
         event.set()
@@ -150,26 +176,28 @@ class TestCreatorCancelChecks:
 
         result = _execute_curator_step(
             operation=mock_op,
-            inputs={"data": ["id1"]},
+            inputs=_prepared({"data": ["id1"]}),
             step_number=1,
             config=config,
             cancel_event=event,
-            step_spec_id="test-spec-id",
+            skip_cache=True,
         )
 
-        assert result.metadata.get("cancelled") is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
 
 
 class TestCancelledResult:
     """Tests for the _cancelled_result helper."""
 
-    def test_cancelled_result_has_metadata(self):
+    def test_cancelled_result_has_explicit_state(self):
         mock_op = MagicMock()
         mock_op.name = "test"
         mock_op.outputs = {}
 
         result = _cancelled_result(mock_op, 1, FailurePolicy.CONTINUE)
-        assert result.metadata["cancelled"] is True
+        assert result.status == StepStatus.CANCELLED
+        assert result.cancellation_status == CancellationStatus.CONFIRMED
         assert result.succeeded_count == 0
         assert result.failed_count == 0
 
@@ -233,6 +261,68 @@ class _SimpleToolOp(OperationDefinition):
         return [*self.tool.parts(), "-c", "true"]
 
 
+class _ConfiguredToolOp(_SimpleToolOp):
+    """Tool op with non-schema defaults for recursive patch tests."""
+
+    runner_resources: RunnerResources = RunnerResources(
+        cpus=8,
+        memory_gb=32,
+        extra={"scheduler": {"queue": "cpu", "account": "research"}},
+    )
+    batch_strategy: BatchStrategy = BatchStrategy(
+        artifacts_per_unit=4,
+        max_workers=8,
+    )
+    environments: Environments = Environments(
+        active="docker",
+        docker=DockerEnvironmentSpec(
+            image="old:v1",
+            gpu=True,
+            binds=[("/host", "/container")],
+            env={"KEEP": "yes", "CHANGE": "old"},
+        ),
+    )
+    tool: ToolSpec = ToolSpec(
+        executable="bash",
+        interpreter="env",
+        subcommand="old",
+    )
+    compute_provider: ComputeProvider = ComputeProvider(
+        active="modal",
+        modal=ModalComputeConfig(
+            retries=5,
+            secrets=["old"],
+            env={"KEEP": "yes", "CHANGE": "old"},
+        ),
+    )
+    compute_resources: ComputeResources = ComputeResources(
+        gpu="A100",
+        memory_gb=32,
+    )
+
+
+class _DefaultParamsOp(_SimpleCreatorOp):
+    """Operation with defaulted nested parameters."""
+
+    name: ClassVar[str] = "default_params_instantiation_test"
+
+    class Params(BaseModel):
+        count: int = Field(default=3, description="Number of items.")
+
+    params: Params = Params()
+
+
+class _RequiredParamsOp(_SimpleCreatorOp):
+    """Operation with required nested parameters."""
+
+    name: ClassVar[str] = "required_params_instantiation_test"
+
+    class Params(BaseModel):
+        count: int = Field(description="Number of items.")
+
+    params: Params
+
+
 def _make_mock_backend(flow_return_value=None):
     """Create a mock step_runner whose lifecycle router captures dispatched units."""
     mock_backend = MagicMock()
@@ -258,10 +348,8 @@ class TestComputeRoutingSelection:
     """
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_modal_tool_op_uses_runner_dispatch(
         self,
-        mock_resolve,
         mock_cache,
         tmp_path,
     ):
@@ -282,7 +370,6 @@ class TestComputeRoutingSelection:
             ),
         )
 
-        mock_resolve.return_value = {"data": [_ID]}
         mock_cache.return_value = None
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -295,11 +382,10 @@ class TestComputeRoutingSelection:
 
         _execute_creator_step(
             operation=op,
-            inputs={"data": [_ID]},
+            inputs=_prepared({"data": [_ID]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,
-            compact=False,
         )
 
         mock_backend.validate_operation.assert_called_once_with(op)
@@ -308,10 +394,8 @@ class TestComputeRoutingSelection:
 
     @patch("artisan.orchestration.engine.step_executor.persist_worker_logs")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     def test_local_compute_uses_backend_dispatch(
         self,
-        mock_resolve,
         mock_cache,
         mock_persist_worker_logs,
         tmp_path,
@@ -329,7 +413,6 @@ class TestComputeRoutingSelection:
 
         op = _SimpleCreatorOp()  # default: compute_provider.active="local"
 
-        mock_resolve.return_value = {"data": [_ID]}
         mock_cache.return_value = None
 
         mock_backend, mock_handle = _make_mock_backend(
@@ -342,11 +425,10 @@ class TestComputeRoutingSelection:
 
         _execute_creator_step(
             operation=op,
-            inputs={"data": [_ID]},
+            inputs=_prepared({"data": [_ID]}),
             step_runner=mock_backend,
             step_number=1,
             config=config,
-            compact=False,
         )
 
         mock_backend.create_lifecycle_router.assert_called_once()
@@ -356,6 +438,40 @@ class TestComputeRoutingSelection:
         mock_persist_worker_logs.assert_called_once()
         assert "fs" in mock_persist_worker_logs.call_args.kwargs
         mock_backend.capture_logs.assert_not_called()
+
+
+class TestInstantiateOperationParams:
+    def test_default_params_apply_when_override_is_none(self) -> None:
+        operation = instantiate_operation(_DefaultParamsOp, StepOverrides(params=None))
+
+        assert operation.params == _DefaultParamsOp.Params(count=3)
+
+    def test_empty_params_mapping_uses_nested_defaults(self) -> None:
+        operation = instantiate_operation(_DefaultParamsOp, StepOverrides(params={}))
+
+        assert operation.params == _DefaultParamsOp.Params(count=3)
+
+    def test_user_params_are_nested_and_validated(self) -> None:
+        operation = instantiate_operation(
+            _DefaultParamsOp,
+            StepOverrides(params={"count": 7}),
+        )
+
+        assert operation.params == _DefaultParamsOp.Params(count=7)
+
+    @pytest.mark.parametrize("params", [None, {}])
+    def test_required_params_reject_missing_value(
+        self, params: dict[str, object] | None
+    ) -> None:
+        with pytest.raises(ValidationError):
+            instantiate_operation(_RequiredParamsOp, StepOverrides(params=params))
+
+    def test_parameterless_operation_rejects_nonempty_params(self) -> None:
+        with pytest.raises(ValueError, match="declares no Params"):
+            instantiate_operation(
+                _SimpleCreatorOp,
+                StepOverrides(params={"count": 1}),
+            )
 
 
 class TestInstantiateOperationComputeOverrides:
@@ -397,12 +513,32 @@ class TestInstantiateOperationComputeOverrides:
         assert result.compute_provider.modal.min_containers == 4
 
     def test_instantiate_operation_compute_string_override(self):
-        """String compute_provider override selects the active provider."""
+        """String selector uses the configured target on the operation."""
+
+        class _ConfiguredModalOp(_SimpleToolOp):
+            compute_provider: ComputeProvider = ComputeProvider(
+                modal=ModalComputeConfig()
+            )
+
         op = instantiate_operation(
-            _SimpleCreatorOp,
+            _ConfiguredModalOp,
             StepOverrides.from_user(compute_provider="modal"),
         )
         assert op.compute_provider.active == "modal"
+
+    def test_unknown_string_selector_is_validated(self):
+        with pytest.raises(ValidationError, match="Unknown compute provider"):
+            instantiate_operation(
+                _SimpleCreatorOp,
+                StepOverrides.from_user(compute_provider="slurm"),
+            )
+
+    def test_unconfigured_string_selector_is_rejected(self):
+        with pytest.raises(ValueError, match="not configured"):
+            instantiate_operation(
+                _SimpleCreatorOp,
+                StepOverrides.from_user(compute_provider="modal"),
+            )
 
     def test_instantiate_operation_compute_dict_passes_isinstance_check(self):
         """Reproduces the bug: compute_provider.current() must return a ModalComputeConfig."""
@@ -445,3 +581,162 @@ class TestInstantiateOperationEnvironmentOverrides:
         )
         assert result.environments.docker.image == "new:v2"
         assert result.environments.docker.gpu is True
+
+    def test_instantiate_operation_environment_string_override(self):
+        class _DockerOp(_SimpleCreatorOp):
+            environments: Environments = Environments(
+                docker=DockerEnvironmentSpec(image="image:v1")
+            )
+
+        result = instantiate_operation(
+            _DockerOp,
+            StepOverrides.from_user(environment="docker"),
+        )
+
+        assert result.environments.active == "docker"
+        assert result.environments.current().image == "image:v1"
+
+    def test_unconfigured_environment_selector_is_rejected(self):
+        with pytest.raises(ValueError, match="not configured"):
+            instantiate_operation(
+                _SimpleCreatorOp,
+                StepOverrides.from_user(environment={"active": "docker"}),
+            )
+
+
+class TestInstantiateOperationRecursivePatches:
+    """Every target model follows the same recursive replacement rule."""
+
+    def test_recursive_updates_preserve_untouched_siblings(self) -> None:
+        operation = instantiate_operation(
+            _ConfiguredToolOp,
+            StepOverrides.from_user(
+                runner_resources={
+                    "cpus": 2,
+                    "extra": {"scheduler": {"queue": "gpu"}},
+                },
+                batch_strategy={"max_workers": 3},
+                environment={"docker": {"env": {"CHANGE": "new"}}},
+                tool={"subcommand": "new"},
+                compute_provider={"modal": {"env": {"CHANGE": "new"}}},
+                compute_resources={"memory_gb": 64},
+            ),
+        )
+
+        assert operation.runner_resources.cpus == 2
+        assert operation.runner_resources.memory_gb == 32
+        assert operation.runner_resources.extra == {
+            "scheduler": {"queue": "gpu", "account": "research"}
+        }
+        assert operation.batch_strategy.artifacts_per_unit == 4
+        assert operation.batch_strategy.max_workers == 3
+        assert operation.environments.docker.env == {
+            "KEEP": "yes",
+            "CHANGE": "new",
+        }
+        assert operation.environments.docker.image == "old:v1"
+        assert operation.tool == ToolSpec(
+            executable="bash", interpreter="env", subcommand="new"
+        )
+        assert operation.compute_provider.modal.env == {
+            "KEEP": "yes",
+            "CHANGE": "new",
+        }
+        assert operation.compute_provider.modal.retries == 5
+        assert operation.compute_resources == ComputeResources(gpu="A100", memory_gb=64)
+
+    def test_nested_empty_mappings_replace_inherited_mappings(self) -> None:
+        operation = instantiate_operation(
+            _ConfiguredToolOp,
+            StepOverrides.from_user(
+                runner_resources={"extra": {}},
+                environment={"docker": {"env": {}}},
+                compute_provider={"modal": {"env": {}}},
+            ),
+        )
+
+        assert operation.runner_resources.extra == {}
+        assert operation.environments.docker.env == {}
+        assert operation.compute_provider.modal.env == {}
+
+    def test_scalars_lists_and_none_replace_inherited_values(self) -> None:
+        operation = instantiate_operation(
+            _ConfiguredToolOp,
+            StepOverrides.from_user(
+                batch_strategy={"max_workers": None},
+                environment={"docker": {"binds": [], "gpu": False}},
+                tool={"subcommand": None},
+                compute_provider={"modal": {"secrets": []}},
+                compute_resources={"gpu": None},
+            ),
+        )
+
+        assert operation.batch_strategy.max_workers is None
+        assert operation.environments.docker.binds == []
+        assert operation.environments.docker.gpu is False
+        assert operation.tool.subcommand is None
+        assert operation.compute_provider.modal.secrets == []
+        assert operation.compute_resources.gpu is None
+        assert operation.compute_resources.memory_gb == 32
+
+    def test_empty_root_tool_patch_is_noop_without_declared_tool(self) -> None:
+        operation = instantiate_operation(
+            _SimpleCreatorOp,
+            StepOverrides.from_user(tool={}),
+        )
+
+        assert operation.tool is None
+
+
+class TestInstantiateOperationValidatedMappingOverrides:
+    @pytest.mark.parametrize(
+        ("operation_class", "overrides"),
+        [
+            (_SimpleCreatorOp, {"runner_resources": {"cpus": 0}}),
+            (_SimpleCreatorOp, {"batch_strategy": {"artifacts_per_unit": 0}}),
+            (
+                _SimpleCreatorOp,
+                {"environment": {"local": {"unknown": True}}},
+            ),
+            (
+                _SimpleCreatorOp,
+                {"compute_provider": {"modal": {"min_container": 2}}},
+            ),
+            (_SimpleCreatorOp, {"compute_resources": {"cpu": 0}}),
+            (_SimpleToolOp, {"tool": {"executable": None}}),
+        ],
+    )
+    def test_invalid_mapping_patch_is_revalidated(
+        self,
+        operation_class: type[OperationDefinition],
+        overrides: dict[str, object],
+    ) -> None:
+        with pytest.raises(ValidationError):
+            instantiate_operation(
+                operation_class,
+                StepOverrides.from_user(**overrides),  # type: ignore[arg-type]
+            )
+
+    def test_valid_mapping_patches_preserve_unset_defaults(self) -> None:
+        operation = instantiate_operation(
+            _SimpleCreatorOp,
+            StepOverrides.from_user(
+                runner_resources={"cpus": 2},
+                batch_strategy={"max_workers": 3},
+            ),
+        )
+
+        assert operation.runner_resources == RunnerResources(cpus=2)
+        assert operation.batch_strategy == BatchStrategy(max_workers=3)
+
+    def test_valid_tool_patch_preserves_executable(self) -> None:
+        operation = instantiate_operation(
+            _SimpleToolOp,
+            StepOverrides.from_user(tool={"subcommand": "run"}),
+        )
+
+        assert operation.tool == ToolSpec(
+            executable="bash",
+            interpreter=None,
+            subcommand="run",
+        )

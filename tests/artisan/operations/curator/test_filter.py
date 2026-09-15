@@ -670,7 +670,7 @@ class TestFilterDiagnosticsMetadata:
             "total_metrics_discovered": 4,
             "total_passed": 1,
             "metric_sources": [
-                {"step_number": 2, "step_name": "metric_calc", "metric_count": 0}
+                {"step_number": 2, "step_name": "metric_calc", "metric_count": 4}
             ],
             "criteria": [
                 {
@@ -736,7 +736,7 @@ class TestFilterDiagnosticsMetadata:
             "total_metrics_discovered": 4,
             "total_passed": 1,
             "metric_sources": [
-                {"step_number": 2, "step_name": "metric_calc", "metric_count": 0}
+                {"step_number": 2, "step_name": "metric_calc", "metric_count": 4}
             ],
             "criteria": [
                 {
@@ -1012,6 +1012,7 @@ class TestStepDisambiguation:
 
         assert result.success
         assert pt_id in result.passthrough["passthrough"]
+        assert result.metadata["diagnostics"]["criteria"][0]["resolved_from_step"] == 1
 
     def test_step_name_not_found_returns_empty(self):
         """Non-existent step name -> no metrics found, fails criteria."""
@@ -1260,6 +1261,12 @@ class TestFilterChunkedEvaluation:
         """Custom chunk_size via Params."""
         op = Filter(params=Filter.Params(chunk_size=50))
         assert op.params.chunk_size == 50
+
+    @pytest.mark.parametrize("chunk_size", [0, -1])
+    def test_chunk_size_must_be_positive(self, chunk_size: int) -> None:
+        """Zero and negative chunk sizes fail during parameter validation."""
+        with pytest.raises(ValueError, match="greater than 0"):
+            Filter.Params(chunk_size=chunk_size)
 
     def test_chunk_boundary_correct_results(self):
         """5 artifacts with chunk_size=2 gives same results as unchunked."""

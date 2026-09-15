@@ -2,8 +2,8 @@
 
 Sits between ``traversal.py`` (pure DataFrame joins over pre-loaded
 edges) and ``visualization/graph/`` (rendering): it loads edges from the
-store and walks them, but emits plain edge data for the caller — the CLI
-``provenance`` command and the future MCP provenance tool — to shape.
+store and walks them, but emits plain edge data for the CLI ``provenance``
+command and MCP provenance tool to shape.
 """
 
 from __future__ import annotations

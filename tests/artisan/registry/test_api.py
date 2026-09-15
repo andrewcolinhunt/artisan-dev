@@ -109,6 +109,26 @@ class TestExamples:
         result = examples("data_transformer")
         assert result == []
 
+    def test_returns_deep_copies_of_mutable_example_data(self) -> None:
+        result = examples("_test_docstring_only_op")
+
+        result[0].params["alpha"] = 99
+        result[0].inputs["dataset"] = "different_step"
+
+        fresh = examples("_test_docstring_only_op")
+        assert fresh[0].params == {"alpha": 2}
+        assert fresh[0].inputs == {"dataset": "upstream_step"}
+
+    def test_describe_returns_deep_copies_of_mutable_example_data(self) -> None:
+        metadata = describe("_test_docstring_only_op")
+
+        metadata.examples[0].params["alpha"] = 99
+        metadata.examples[0].inputs["dataset"] = "different_step"
+
+        fresh = describe("_test_docstring_only_op")
+        assert fresh.examples[0].params == {"alpha": 2}
+        assert fresh.examples[0].inputs == {"dataset": "upstream_step"}
+
     def test_unknown_operation_raises_artisan_error(self) -> None:
         with pytest.raises(ArtisanError) as exc_info:
             examples("does_not_exist")

@@ -6,7 +6,7 @@ how units are distributed to workers, and the parallelism cap.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BatchStrategy(BaseModel):
@@ -28,9 +28,11 @@ class BatchStrategy(BaseModel):
             labels. Resolved from the operation name if None.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     artifacts_per_unit: int = Field(1, ge=1)
-    max_artifacts_per_unit: int | None = None
+    max_artifacts_per_unit: int | None = Field(default=None, ge=1)
     units_per_worker: int = Field(1, ge=1)
-    max_workers: int | None = None
-    estimated_seconds: float | None = None
+    max_workers: int | None = Field(default=None, ge=1)
+    estimated_seconds: float | None = Field(default=None, gt=0)
     job_name: str | None = None

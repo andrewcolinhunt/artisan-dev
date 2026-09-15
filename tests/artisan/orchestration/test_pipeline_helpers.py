@@ -36,14 +36,14 @@ class TestGenerateStepRunId:
 
     def test_length(self):
         """32-char hex string."""
-        step_run_id = _generate_step_run_id("spec_abc123")
+        step_run_id = _generate_step_run_id()
         assert len(step_run_id) == 32
         assert re.match(r"^[0-9a-f]{32}$", step_run_id)
 
-    def test_different_specs_different_ids(self):
-        """Different spec_ids produce different run_ids."""
-        id1 = _generate_step_run_id("spec_a")
-        id2 = _generate_step_run_id("spec_b")
+    def test_consecutive_calls_produce_different_ids(self):
+        """Each attempt receives a distinct run ID."""
+        id1 = _generate_step_run_id()
+        id2 = _generate_step_run_id()
         assert id1 != id2
 
 
@@ -143,98 +143,3 @@ class TestExtractNameFromRunId:
             _extract_name_from_run_id("example_pipeline_20260214_103000_a1b2c3d4")
             == "example_pipeline"
         )
-
-
-class TestBuildInputSpec:
-    """Tests for PipelineManager._build_input_spec."""
-
-    def test_output_refs(self):
-        """Dict OutputReferences mapped to upstream spec_ids."""
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root="/tmp/delta",
-            staging_root="/tmp/staging",
-        )
-        pm = PipelineManager(config)
-        pm._step_spec_ids[0] = "upstream_spec_abc"
-
-        inputs = {"data": OutputReference(source_step=0, role="data")}
-        spec = pm._build_input_spec(inputs)
-        assert spec == {"data": ("upstream_spec_abc", "data")}
-
-    def test_file_paths(self):
-        """File paths produce _file_paths key with hash."""
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root="/tmp/delta",
-            staging_root="/tmp/staging",
-        )
-        pm = PipelineManager(config)
-
-        inputs = ["/data/b.dat", "/data/a.dat"]
-        spec = pm._build_input_spec(inputs)
-        assert "_file_paths" in spec
-        assert len(spec["_file_paths"][0]) == 32  # hash
-
-        # Order independent
-        inputs2 = ["/data/a.dat", "/data/b.dat"]
-        spec2 = pm._build_input_spec(inputs2)
-        assert spec["_file_paths"] == spec2["_file_paths"]
-
-    def test_merged_streams(self):
-        """List of OutputReferences produce _merged_streams key."""
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root="/tmp/delta",
-            staging_root="/tmp/staging",
-        )
-        pm = PipelineManager(config)
-        pm._step_spec_ids[0] = "spec_a"
-        pm._step_spec_ids[1] = "spec_b"
-
-        inputs = [
-            OutputReference(source_step=0, role="data"),
-            OutputReference(source_step=1, role="data"),
-        ]
-        spec = pm._build_input_spec(inputs)
-        assert "_merged_streams" in spec
-
-    def test_none_inputs(self):
-        """None returns empty dict."""
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root="/tmp/delta",
-            staging_root="/tmp/staging",
-        )
-        pm = PipelineManager(config)
-        assert pm._build_input_spec(None) == {}
-
-    def test_literal_ids(self):
-        """Dict with literal artifact ID lists."""
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root="/tmp/delta",
-            staging_root="/tmp/staging",
-        )
-        pm = PipelineManager(config)
-
-        inputs = {"data": ["artifact_id_1", "artifact_id_2"]}
-        spec = pm._build_input_spec(inputs)
-        assert "data" in spec
-        assert len(spec["data"][0]) == 32  # hash
-        assert spec["data"][1] == ""  # empty role for literals

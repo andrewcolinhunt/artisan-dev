@@ -19,18 +19,19 @@ written by ``execution/recording/parquet_writer.py``.
 
 from __future__ import annotations
 
-import logging
 import posixpath
+import re
 import uuid
+from types import TracebackType
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.storage.core.table_schemas import CACHE_REUSE_SCHEMA
 from artisan.utils.path import step_dir_name
 
-logger = logging.getLogger(__name__)
-
 _RESERVED_STAGING_DIRS = frozenset({"_dispatch"})
+_HEX_ID = re.compile(r"[0-9a-f]{32}")
 
 
 class StagingArea:
@@ -97,8 +98,8 @@ class StagingArea:
         if df.is_empty():
             return parquet_uri
 
-        # Append by concat if we already staged this table
-        # rechunk=True ensures contiguous memory (default changed in Polars v0.20.26)
+        # Append by concat if we already staged this table. rechunk=True keeps
+        # the concatenated buffers contiguous.
         if table_name in self._staged_tables and self._fs.exists(parquet_uri):
             with self._fs.open(parquet_uri, "rb") as f:
                 existing = pl.read_parquet(f)
@@ -154,7 +155,12 @@ class StagingArea:
         """Enter the staging context."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Exit the staging context, preserving files for debugging on error."""
         if exc_type is None:
             # No exception - cleanup is typically handled by orchestrator
@@ -194,6 +200,97 @@ class StagingManager:
             and not posixpath.basename(e.rstrip("/")).startswith(".")
             and posixpath.basename(e.rstrip("/")) not in _RESERVED_STAGING_DIRS
         ]
+
+    def stage_cache_reuse(
+        self,
+        current_step_run_id: str,
+        cached_execution_run_ids: set[str] | list[str],
+        *,
+        step_number: int,
+        operation_name: str,
+    ) -> str | None:
+        """Stage sorted, deduplicated cache-reuse pairs for one step attempt.
+
+        Args:
+            current_step_run_id: Current run-owned logical step identifier.
+            cached_execution_run_ids: Existing execution identifiers accepted
+                from cache.
+            step_number: Current logical step number.
+            operation_name: Current operation name used in the staging path.
+
+        Returns:
+            Staged Parquet URI, or None when no execution IDs were supplied.
+
+        Raises:
+            ValueError: If either identifier is not lowercase 32-character hex.
+        """
+        execution_ids = sorted(set(cached_execution_run_ids))
+        if not execution_ids:
+            return None
+        _require_hex_id(current_step_run_id, "current_step_run_id")
+        for execution_id in execution_ids:
+            _require_hex_id(execution_id, "cached_execution_run_id")
+
+        df = pl.DataFrame(
+            {
+                "current_step_run_id": [current_step_run_id] * len(execution_ids),
+                "cached_execution_run_id": execution_ids,
+            },
+            schema=CACHE_REUSE_SCHEMA,
+        )
+        step_dir = step_dir_name(step_number, operation_name)
+        orchestrator_dir = (
+            f"{self.staging_dir}/{step_dir}/_orchestrator/{current_step_run_id}"
+            "/step_result"
+        )
+        self._fs.makedirs(orchestrator_dir, exist_ok=True)
+        parquet_uri = f"{orchestrator_dir}/cache_reuse.parquet"
+        if self._fs.exists(parquet_uri):
+            with self._fs.open(parquet_uri, "rb") as stream:
+                existing = pl.read_parquet(stream)
+            df = pl.concat([existing, df], rechunk=True).unique(
+                subset=list(CACHE_REUSE_SCHEMA), maintain_order=True
+            )
+        with self._fs.open(parquet_uri, "wb") as stream:
+            df.write_parquet(stream, compression="zstd")
+        return parquet_uri
+
+    def stage_orchestrator_dataframe(
+        self,
+        df: pl.DataFrame,
+        table_path: str,
+        *,
+        commit_kind: str,
+        step_run_id: str,
+        step_number: int,
+        operation_name: str,
+    ) -> str | None:
+        """Stage one ownerless table inside the exact logical-commit directory."""
+        if commit_kind not in {"step_result", "input_registration"}:
+            msg = f"Unknown logical commit kind {commit_kind!r}"
+            raise ValueError(msg)
+        if df.is_empty():
+            return None
+        if "logical_commit_id" in df.columns:
+            msg = "Staged rows must not carry logical_commit_id"
+            raise ValueError(msg)
+        orchestrator_dir = (
+            f"{self.staging_dir}/{step_dir_name(step_number, operation_name)}"
+            f"/_orchestrator/{step_run_id}/{commit_kind}"
+        )
+        self._fs.makedirs(orchestrator_dir, exist_ok=True)
+        table_name = table_path.rsplit("/", 1)[-1]
+        parquet_uri = f"{orchestrator_dir}/{table_name}.parquet"
+        if self._fs.exists(parquet_uri):
+            with self._fs.open(parquet_uri, "rb") as stream:
+                existing = pl.read_parquet(stream)
+            if not existing.equals(df, null_equal=True):
+                msg = f"Conflicting staged retry for {table_path}"
+                raise ValueError(msg)
+            return parquet_uri
+        with self._fs.open(parquet_uri, "wb") as stream:
+            df.write_parquet(stream, compression="zstd")
+        return parquet_uri
 
     def get_staged_files_for_table(
         self,
@@ -245,7 +342,7 @@ class StagingManager:
     ) -> pl.DataFrame | None:
         """Read and concatenate all staged Parquet files for a table.
 
-        Corrupted files are logged and skipped rather than raising.
+        Any unreadable file raises; discovery never turns corruption into absence.
 
         Args:
             table_name: Delta table name to collect files for.
@@ -265,19 +362,19 @@ class StagingManager:
 
         dfs = []
         for uri in files:
-            try:
-                with self._fs.open(uri, "rb") as f:
-                    dfs.append(pl.read_parquet(f))
-            except Exception as exc:
-                logger.warning(
-                    "Skipping corrupted staging file %s: %s: %s",
-                    uri,
-                    type(exc).__name__,
-                    exc,
-                )
-        if not dfs:
-            return None
+            with self._fs.open(uri, "rb") as f:
+                dfs.append(pl.read_parquet(f))
         return pl.concat(dfs, rechunk=True)
+
+    def cleanup_plan(self, relative_paths: list[str]) -> None:
+        """Delete only staging directories named by a completed plan."""
+        directories = {
+            posixpath.dirname(relative_path) for relative_path in relative_paths
+        }
+        for relative_dir in sorted(directories, reverse=True):
+            directory = f"{self.staging_dir}/{relative_dir}"
+            if self._fs.exists(directory):
+                self._fs.rm(directory, recursive=True)
 
     def cleanup_batch(self, batch_id: str) -> None:
         """Remove a batch's staging directory.
@@ -310,3 +407,10 @@ class StagingManager:
         """Remove every batch directory under the staging root."""
         for batch_id in self.list_batch_ids():
             self.cleanup_batch(batch_id)
+
+
+def _require_hex_id(value: str, field: str) -> None:
+    """Require the occurrence-ID representation shared by reuse relations."""
+    if _HEX_ID.fullmatch(value) is None:
+        msg = f"{field} must be a 32-character lowercase hexadecimal ID"
+        raise ValueError(msg)

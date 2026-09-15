@@ -36,7 +36,6 @@ class MetricArtifact(JsonContentMixin, Artifact):
         "original_name": pl.String,
         "extension": pl.String,
         "metadata": pl.String,
-        "external_path": pl.String,
     }
 
     artifact_type: str = Field(
@@ -98,6 +97,9 @@ class MetricArtifact(JsonContentMixin, Artifact):
             original_name: Filename for lineage inference (extensions stripped).
             step_number: Pipeline step number.
             metadata: Optional metadata dict.
+
+        Returns:
+            Draft MetricArtifact containing the encoded metric values.
         """
         encoded = json.dumps(content, sort_keys=True).encode("utf-8")
         return cls(

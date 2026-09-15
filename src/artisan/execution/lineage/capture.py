@@ -6,6 +6,7 @@ pair each output artifact with its source input artifact.
 
 from __future__ import annotations
 
+from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
@@ -20,7 +21,7 @@ def capture_lineage_metadata(
     group_by: GroupByStrategy | None = None,
     group_ids: list[str] | None = None,
     filesystem_match_map: dict[str, str] | None = None,
-    output_pair_map: dict[str, int] | None = None,
+    output_pair_map: dict[str, list[int]] | None = None,
 ) -> dict[str, list[LineageMapping]]:
     """Capture lineage metadata from infer_lineage_from configuration.
 
@@ -41,25 +42,29 @@ def capture_lineage_metadata(
         filesystem_match_map: Optional dict mapping output filename stems
             to input artifact_ids. When an output stem has an entry,
             the mapped input_id is used directly instead of stem matching.
-        output_pair_map: Optional ``basename -> pair_index`` map built by
+        output_pair_map: Optional ``basename -> ordered pair indices`` map built by
             the executor when ``per_artifact_dispatch=True``. When set,
-            grouped lineage uses ``pair_index`` directly to resolve
+            grouped lineage uses the matching occurrence's ``pair_index`` to resolve
             primary and co-input edges, bypassing the
             ``primary_id_to_idx`` lookup that would otherwise collapse
             repeated-primary CROSS_PRODUCT batches. Drafts without an
-            entry (e.g. memory-only outputs) fall back to the legacy
-            stem-match path.
+            entry (e.g. memory-only outputs) use the stem-match fallback.
 
     Returns:
         Dict mapping output role to list of LineageMapping entries.
         Each LineageMapping carries an optional group_id for co-input edges.
 
     Raises:
+        ValueError: If grouped inputs or group IDs are incomplete or invalid.
         RuntimeError: If an output artifact referenced by an
             output-to-output lineage config has no ``artifact_id``.
             Lineage capture requires finalized artifacts.
     """
+    if group_by is not None:
+        _validate_grouped_inputs(input_artifacts, group_ids)
+
     result: dict[str, list[LineageMapping]] = {}
+    output_name_occurrences: dict[str, int] = {}
 
     for role, artifacts in output_artifacts.items():
         spec = output_specs.get(role)
@@ -125,6 +130,8 @@ def capture_lineage_metadata(
             original_name = getattr(artifact, "original_name", None)
             if original_name is None:
                 continue
+            occurrence = output_name_occurrences.get(original_name, 0)
+            output_name_occurrences[original_name] = occurrence + 1
 
             # Direct pair-index path: when a per-output pair index is
             # available (grouped + filesystem-output +
@@ -137,9 +144,9 @@ def capture_lineage_metadata(
             if (
                 group_by is not None
                 and output_pair_map is not None
-                and original_name in output_pair_map
+                and occurrence < len(output_pair_map.get(original_name, []))
             ):
-                pair_idx = output_pair_map[original_name]
+                pair_idx = output_pair_map[original_name][occurrence]
 
             if pair_idx is not None and pair_idx < len(primary_artifacts):
                 primary_artifact = primary_artifacts[pair_idx]
@@ -177,7 +184,7 @@ def capture_lineage_metadata(
                     )
                 continue
 
-            # Legacy path: stem-match the output to an input candidate,
+            # Fallback path: stem-match the output to an input candidate,
             # then look up the pair index via ``primary_id_to_idx``.
             # Used for ungrouped ops, the curator path (no
             # output_pair_map), and memory-only outputs that have no
@@ -199,21 +206,21 @@ def capture_lineage_metadata(
             matched_id, matched_src_role = matched
 
             matched_idx = primary_id_to_idx.get(matched_id)
-            legacy_group_id: str | None = None
+            fallback_group_id: str | None = None
             if (
                 group_by is not None
                 and matched_idx is not None
                 and group_ids is not None
                 and matched_idx < len(group_ids)
             ):
-                legacy_group_id = group_ids[matched_idx]
+                fallback_group_id = group_ids[matched_idx]
 
             role_mappings.append(
                 LineageMapping(
                     draft_original_name=original_name,
                     source_artifact_id=matched_id,
                     source_role=matched_src_role,
-                    group_id=legacy_group_id,
+                    group_id=fallback_group_id,
                 )
             )
 
@@ -229,13 +236,37 @@ def capture_lineage_metadata(
                                     draft_original_name=original_name,
                                     source_artifact_id=co_artifact.artifact_id,
                                     source_role=co_role,
-                                    group_id=legacy_group_id,
+                                    group_id=fallback_group_id,
                                 )
                             )
 
         result[role] = role_mappings
 
     return result
+
+
+def _validate_grouped_inputs(
+    input_artifacts: dict[str, list[Artifact]], group_ids: list[str] | None
+) -> None:
+    """Reject incomplete grouped inputs and malformed per-pair IDs."""
+    role_lengths = {role: len(artifacts) for role, artifacts in input_artifacts.items()}
+    if len(set(role_lengths.values())) > 1:
+        msg = f"Grouped lineage requires equal input lengths, got: {role_lengths}"
+        raise ValueError(msg)
+
+    expected_count = next(iter(role_lengths.values()), 0)
+    if group_ids is None or len(group_ids) != expected_count:
+        actual_count = None if group_ids is None else len(group_ids)
+        msg = (
+            "Grouped lineage requires one group_id per input pair: "
+            f"expected {expected_count}, got {actual_count}"
+        )
+        raise ValueError(msg)
+
+    invalid = [group_id for group_id in group_ids if not is_hex_id(group_id)]
+    if invalid:
+        msg = f"Grouped lineage received invalid group_id values: {invalid!r}"
+        raise ValueError(msg)
 
 
 def _match_outputs_to_candidates(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import os
 from pathlib import Path
 
 from conftest import run_operation_lifecycle
@@ -29,7 +28,9 @@ class TestDataTransformer:
     def test_scale_only(self, tmp_path: Path):
         path = _write_input(tmp_path, rows=3, seed=1)
         op = DataTransformer(
-            params=DataTransformer.Params(scale_factor=2.0, noise_amplitude=0.0, seed=42)
+            params=DataTransformer.Params(
+                scale_factor=2.0, noise_amplitude=0.0, seed=42
+            )
         )
         result = run_operation_lifecycle(
             op, inputs={"dataset": path}, output_dir=tmp_path / "output"
@@ -46,14 +47,16 @@ class TestDataTransformer:
             fh.write(out_content)
         transformed = _read_csv(out_path)
 
-        for orig, trans in zip(originals, transformed):
+        for orig, trans in zip(originals, transformed, strict=True):
             assert float(trans["x"]) == round(float(orig["x"]) * 2.0, 4)
             assert float(trans["score"]) == round(float(orig["score"]) * 2.0, 4)
 
     def test_noise_only(self, tmp_path: Path):
         path = _write_input(tmp_path, rows=3, seed=1)
         op = DataTransformer(
-            params=DataTransformer.Params(scale_factor=1.0, noise_amplitude=0.5, seed=42)
+            params=DataTransformer.Params(
+                scale_factor=1.0, noise_amplitude=0.5, seed=42
+            )
         )
         result = run_operation_lifecycle(
             op, inputs={"dataset": path}, output_dir=tmp_path / "output"
@@ -65,14 +68,16 @@ class TestDataTransformer:
             fh.write(result.artifacts["dataset"][0].content)
         transformed = _read_csv(out_path)
 
-        for orig, trans in zip(originals, transformed):
+        for orig, trans in zip(originals, transformed, strict=True):
             diff = abs(float(trans["x"]) - float(orig["x"]))
             assert diff <= 0.5001  # noise within amplitude
 
     def test_variants(self, tmp_path: Path):
         path = _write_input(tmp_path, rows=2, seed=1)
         op = DataTransformer(
-            params=DataTransformer.Params(scale_factor=1.0, noise_amplitude=0.1, variants=3, seed=42)
+            params=DataTransformer.Params(
+                scale_factor=1.0, noise_amplitude=0.1, variants=3, seed=42
+            )
         )
         result = run_operation_lifecycle(
             op, inputs={"dataset": path}, output_dir=tmp_path / "output"
@@ -114,7 +119,9 @@ class TestDataTransformer:
     def test_identity_transform(self, tmp_path: Path):
         path = _write_input(tmp_path, rows=3, seed=1)
         op = DataTransformer(
-            params=DataTransformer.Params(scale_factor=1.0, noise_amplitude=0.0, seed=42)
+            params=DataTransformer.Params(
+                scale_factor=1.0, noise_amplitude=0.0, seed=42
+            )
         )
         result = run_operation_lifecycle(
             op, inputs={"dataset": path}, output_dir=tmp_path / "output"
@@ -126,7 +133,7 @@ class TestDataTransformer:
             fh.write(result.artifacts["dataset"][0].content)
         transformed = _read_csv(out_path)
 
-        for orig, trans in zip(originals, transformed):
+        for orig, trans in zip(originals, transformed, strict=True):
             assert float(trans["x"]) == float(orig["x"])
             assert float(trans["score"]) == float(orig["score"])
 

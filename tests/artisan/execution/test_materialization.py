@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import ANY, MagicMock
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
 
 from artisan.execution.inputs.materialization import _is_remote, materialize_inputs
+from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.specs.input_spec import InputSpec
@@ -30,6 +34,7 @@ class TestMaterializeAsForwarded:
         artifact = MagicMock(spec=Artifact)
         artifact.is_hydrated = True
         artifact.artifact_id = "a" * 32
+        artifact.EXTERNALLY_BACKED = False
         artifact.materialize_to.return_value = str(tmp_path / "out.csv")
 
         specs = {"data": InputSpec(materialize=True, materialize_as=".csv")}
@@ -51,6 +56,7 @@ class TestMaterializeAsForwarded:
         artifact = MagicMock(spec=Artifact)
         artifact.is_hydrated = True
         artifact.artifact_id = "b" * 32
+        artifact.EXTERNALLY_BACKED = False
         artifact.materialize_to.return_value = str(tmp_path / "out.json")
 
         specs = {"metric": InputSpec(materialize=True)}
@@ -78,6 +84,7 @@ class TestMaterializeAsForwarded:
         ref_artifact = MagicMock(spec=Artifact)
         ref_artifact.is_hydrated = True
         ref_artifact.artifact_id = "c" * 32
+        ref_artifact.EXTERNALLY_BACKED = False
         ref_artifact.materialize_to.return_value = str(tmp_path / "ref.dat")
 
         mock_store = MagicMock()
@@ -96,6 +103,37 @@ class TestMaterializeAsForwarded:
         )
         assert config.artifact_id in materialized_ids
         assert "c" * 32 in materialized_ids
+
+    def test_missing_config_reference_fails_before_materialization(
+        self, tmp_path: Path
+    ) -> None:
+        """A missing fixed reference fails before any input is written."""
+        from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+
+        config = ExecutionConfigArtifact.draft(
+            content={"input": {"$artifact": "c" * 32}},
+            original_name="config.json",
+            step_number=1,
+        ).finalize()
+        ordinary = MagicMock(spec=Artifact)
+        ordinary.is_hydrated = True
+        ordinary.artifact_id = "a" * 32
+        ordinary.EXTERNALLY_BACKED = False
+        store = MagicMock()
+        store.get_artifact.return_value = None
+
+        with pytest.raises(ValueError, match="Referenced artifact"):
+            materialize_inputs(
+                {"data": [ordinary], "config": [config]},
+                {
+                    "data": InputSpec(materialize=True),
+                    "config": InputSpec(materialize=True),
+                },
+                str(tmp_path),
+                store,
+            )
+
+        ordinary.materialize_to.assert_not_called()
 
 
 class TestIsRemote:
@@ -128,23 +166,75 @@ class TestEndpointRoutedSkip:
         ).finalize()
 
     def test_cloud_input_skipped_when_endpoint_routed(self, tmp_path: Path):
-        # a real cloud LargeFileArtifact: the skip must not touch the
-        # network (materialize_to is never reached) and writes no file
+        # Direct-URI transport verifies the current source without materializing it.
         art = self._cloud_large_file()
         specs = {"weights": InputSpec(artifact_type="large_file")}
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
 
-        _, materialized_ids = materialize_inputs(
-            {"weights": [art]},
-            specs,
-            str(tmp_path),
-            MagicMock(),
-            endpoint_routed=True,
-        )
+        with patch.object(LargeFileArtifact, "verify_external_content") as verify:
+            _, materialized_ids = materialize_inputs(
+                {"weights": [art]},
+                specs,
+                str(output_dir),
+                MagicMock(),
+                endpoint_routed=True,
+            )
 
+        verify.assert_called_once_with(fs=ANY)
         assert art.materialized_path == "s3://bucket/weights/model.bin"
-        assert list(tmp_path.iterdir()) == []  # nothing downloaded
+        assert list(output_dir.iterdir()) == []  # nothing downloaded
         # no local file entered the filesystem-passthrough match map
         assert art.artifact_id not in materialized_ids
+
+    def test_remote_file_ref_skipped_when_endpoint_routed(self, tmp_path: Path):
+        art = FileRefArtifact.draft(
+            path="s3://bucket/inputs/source.bin",
+            content_hash="a" * 32,
+            size_bytes=4,
+            step_number=0,
+            original_name="source",
+            extension=".bin",
+        ).finalize()
+
+        with patch.object(FileRefArtifact, "verify_external_content") as verify:
+            _, materialized_ids = materialize_inputs(
+                {"source": [art]},
+                {"source": InputSpec(artifact_type="file_ref")},
+                str(tmp_path),
+                MagicMock(),
+                endpoint_routed=True,
+            )
+
+        verify.assert_called_once_with(fs=ANY)
+        assert art.materialized_path == "s3://bucket/inputs/source.bin"
+        assert art.artifact_id not in materialized_ids
+
+    def test_appendable_record_materializes_when_endpoint_routed(self, tmp_path: Path):
+        art = AppendableArtifact.draft(
+            record_id="record-1",
+            content_hash="a" * 32,
+            size_bytes=4,
+            step_number=0,
+            external_path="s3://bucket/shared/records.jsonl",
+        ).finalize()
+        materialized = str(tmp_path / "record.json")
+
+        with patch.object(
+            AppendableArtifact,
+            "materialize_to",
+            return_value=materialized,
+        ) as write:
+            _, materialized_ids = materialize_inputs(
+                {"record": [art]},
+                {"record": InputSpec(artifact_type="appendable")},
+                str(tmp_path),
+                MagicMock(),
+                endpoint_routed=True,
+            )
+
+        write.assert_called_once_with(str(tmp_path), format=None, fs=ANY)
+        assert art.artifact_id in materialized_ids
 
     def test_cloud_input_downloads_by_default(self, tmp_path: Path):
         # endpoint_routed defaults False — the cloud input materializes
@@ -153,6 +243,8 @@ class TestEndpointRoutedSkip:
         art.is_hydrated = True
         art.artifact_id = "a" * 32
         art.external_path = "s3://bucket/weights/model.bin"
+        art.EXTERNALLY_BACKED = True
+        art.LOCATOR_FIELDS = frozenset({"external_path"})
         art.materialize_to.return_value = str(tmp_path / "model.bin")
         specs = {"weights": InputSpec(materialize=True)}
 
@@ -168,6 +260,8 @@ class TestEndpointRoutedSkip:
         art.is_hydrated = True
         art.artifact_id = "a" * 32
         art.external_path = "s3://bucket/weights/model.bin"
+        art.EXTERNALLY_BACKED = True
+        art.LOCATOR_FIELDS = frozenset({"external_path"})
         art.materialize_to.return_value = str(tmp_path / "model.bin")
         specs = {"weights": InputSpec(materialize=True)}
 
@@ -191,6 +285,8 @@ class TestEndpointRoutedSkip:
         art.is_hydrated = True
         art.artifact_id = "b" * 32
         art.external_path = str(tmp_path / "src.bin")
+        art.EXTERNALLY_BACKED = True
+        art.LOCATOR_FIELDS = frozenset({"external_path"})
         art.materialize_to.return_value = str(tmp_path / "src.bin")
         specs = {"weights": InputSpec(materialize=True)}
 

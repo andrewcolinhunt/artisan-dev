@@ -15,7 +15,7 @@ from artisan.operations.curator.consolidate_appendables import (
 )
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.utils.hashing import compute_artifact_id
+from artisan.utils.hashing import compute_content_digest
 
 
 @pytest.fixture(
@@ -56,7 +56,7 @@ def _make_appendable_artifact(
     line = json.dumps({"record_id": record_id, "values": {"x": 1.0}}, sort_keys=True)
     art = AppendableArtifact.draft(
         record_id=record_id,
-        content_hash=compute_artifact_id(line.encode()),
+        content_hash=compute_content_digest(line.encode()),
         size_bytes=len(line.encode()),
         step_number=step_number,
         external_path=external_path,
@@ -82,6 +82,7 @@ def _mock_store_with_appendables(
     store = MagicMock()
     store.files_root = files_root
     store._fs = fs
+    store.filesystem = fs
     store.get_artifacts_by_type.return_value = artifacts
     return store
 
@@ -169,8 +170,8 @@ class TestConsolidateBasicExecution:
 
         assert len(result.artifacts["records"]) == 2
 
-    def test_new_artifact_ids(self, backend_fs) -> None:
-        """Consolidated artifacts get new IDs because external_path changed."""
+    def test_artifact_identity_survives_relocation(self, backend_fs) -> None:
+        """Relocating identical external bytes preserves artifact identity."""
         fs, _storage, root = backend_fs
         worker = f"{root}/worker.jsonl"
         _write_jsonl(fs, worker, [{"record_id": "rec_0", "values": {}}])
@@ -189,7 +190,7 @@ class TestConsolidateBasicExecution:
         # Finalize the draft to get an ID, then compare
         draft = result.artifacts["records"][0]
         draft.finalize()
-        assert draft.artifact_id != art.artifact_id
+        assert draft.artifact_id == art.artifact_id
 
 
 class TestConsolidateErrorHandling:
@@ -263,6 +264,7 @@ class TestConsolidateAppendablesBackendParametrized:
         store = MagicMock()
         store.files_root = files_root
         store._fs = fs
+        store.filesystem = fs
         store.get_artifacts_by_type.return_value = artifacts
 
         op = ConsolidateAppendables()

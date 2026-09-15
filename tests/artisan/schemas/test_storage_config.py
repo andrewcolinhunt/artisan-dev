@@ -111,3 +111,7 @@ class TestStorageConfigSerialization:
         assert restored == config
         assert restored.protocol == "gcs"
         assert restored.options == {"project": "my-project"}
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValidationError, match="protcol"):
+            StorageConfig(protcol="s3")

@@ -49,7 +49,7 @@ Returns a Polars DataFrame with one row per step:
 |--------|-------------|
 | `step` | Step number |
 | `operation` | Step name |
-| `status` | `ok`, `skipped`, `cancelled`, `failed` |
+| `status` | `pending`, `running`, `succeeded`, `partial`, `failed`, `cancelled`, or `skipped` |
 | `produced` | Artifact summary (e.g., `"5 data, 5 metric"` or `"3 passed"` for filters) |
 | `duration` | Wall-clock time (e.g., `"2.3s"`) |
 
@@ -318,6 +318,11 @@ timings.plot_steps(step_numbers=[0, 2, 4])  # Subset of steps
 timings.plot_execution_stats()  # Stacked bar chart of mean execution timings
 ```
 
+When `pipeline_run_id` is set, execution timing includes only work actually
+performed for that run. Cached outputs remain visible to provenance and result
+inspection, but the source execution's historical duration is not counted as
+time spent executing in the current run.
+
 ---
 
 ## Common patterns
@@ -410,7 +415,7 @@ paths = render_micro_graph_steps(delta_root, output_dir=Path("frames/"))
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| `FileNotFoundError` from inspect helpers | No completed steps in `delta_root` | Verify the pipeline ran and the path is correct |
+| `FileNotFoundError` from inspect helpers | No steps table in `delta_root` | Verify the pipeline ran and the path is correct |
 | Empty provenance map | No artifact edges committed | Check that operations set `infer_lineage_from` on their outputs |
 | Orphan artifacts (no parent edges) | Stem matching found 0 or >1 candidates | Ensure output filenames preserve the input filename stem. See [stem matching](../concepts/provenance-system.md) |
 | `inspect_metrics` returns empty DataFrame | No metric artifacts at that step | Use `inspect_step` to check what artifact types exist |
@@ -430,7 +435,7 @@ from artisan.storage import ArtifactStore
 
 # Should return a non-empty DataFrame with one row per step
 df = inspect_pipeline(delta_root)
-assert len(df) > 0, "No completed steps found"
+assert len(df) > 0, "No step attempts found"
 
 # Should contain entries linking source and target artifacts
 store = ArtifactStore(delta_root)

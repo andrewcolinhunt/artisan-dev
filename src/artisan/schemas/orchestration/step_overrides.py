@@ -3,8 +3,9 @@
 ``StepOverrides`` bundles the thirteen per-step override knobs that
 ``PipelineManager.run``/``submit`` accept into one frozen record. It is
 constructed once at the public API boundary via ``from_user`` (which
-coerces typed-or-dict inputs to canonical dict-or-str form) and threaded
-by reference through validation, spec-id hashing, and dispatch.
+normalizes typed models and mappings to detached patch dictionaries) and
+threaded by reference through validation, operation preparation, persistence,
+and dispatch.
 
 Two ``ClassVar`` tuples classify every field as either a *cache field* or a
 *runtime field*. A cache field is an override knob whose effect reaches the
@@ -20,8 +21,9 @@ config-hash field.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, overload
 
 from pydantic import BaseModel
 
@@ -41,23 +43,40 @@ if TYPE_CHECKING:
     from artisan.orchestration.runners.base import RunnerBase
 
 
-def _coerce(
+@overload
+def _normalize_patch(
+    value: dict[str, Any] | BaseModel | None,
+    model_cls: type[BaseModel],
+    *,
+    allow_str: Literal[False] = False,
+) -> dict[str, Any] | None: ...
+
+
+@overload
+def _normalize_patch(
+    value: str | dict[str, Any] | BaseModel | None,
+    model_cls: type[BaseModel],
+    *,
+    allow_str: Literal[True],
+) -> str | dict[str, Any] | None: ...
+
+
+def _normalize_patch(
     value: str | dict[str, Any] | BaseModel | None,
     model_cls: type[BaseModel],
     *,
     allow_str: bool = False,
 ) -> str | dict[str, Any] | None:
-    """Normalize a typed-or-dict override to canonical dict-or-str form.
+    """Normalize a typed model or mapping to a detached patch.
 
-    A typed Pydantic model is dumped to a dict via
-    ``model_dump(exclude_defaults=True)`` so downstream hashing and
-    override application see a single shape; a raw dict passes through
-    unchanged.
+    Typed models contribute only fields the caller explicitly supplied.
+    Mapping inputs retain every present key. Both forms are deep-copied so
+    later caller mutation cannot change preparation or persisted metadata.
 
     Args:
         value: A ``model_cls`` instance, a dict, ``None``, or (when
             ``allow_str``) a bare string active-provider selector.
-        model_cls: The Pydantic model whose instances are dumped to dicts.
+        model_cls: The Pydantic model whose instances are normalized.
         allow_str: Whether a bare string passes through unchanged (the
             active-provider selector form used by environment /
             compute_provider).
@@ -70,17 +89,21 @@ def _coerce(
     if allow_str and isinstance(value, str):
         return value
     if isinstance(value, model_cls):
-        return value.model_dump(exclude_defaults=True)
-    return value
+        return deepcopy(value.model_dump(mode="python", exclude_unset=True))
+    if isinstance(value, dict):
+        return deepcopy(value)
+    msg = f"Expected {model_cls.__name__} or dict, got {type(value).__name__}"
+    raise TypeError(msg)
 
 
 @dataclass(frozen=True)
 class StepOverrides:
-    """Per-step user overrides, coerced to canonical dict-or-str form.
+    """Per-step user overrides normalized to detached patch dictionaries.
 
     Constructed once at the public API boundary via ``from_user``; threaded
-    by reference through validation, hashing, and dispatch. Frozen so an
-    override set cannot mutate mid-flight.
+    by reference through validation, preparation, persistence, and dispatch.
+    Frozen so fields cannot be reassigned; nested patch data is framework-owned
+    because ``from_user`` detaches it from caller containers.
 
     Attributes:
         params: User-provided parameter overrides.
@@ -157,23 +180,25 @@ class StepOverrides:
     ) -> StepOverrides:
         """Build a ``StepOverrides`` from raw public-API keyword arguments.
 
-        Coerces the six typed-or-dict knobs to canonical dict-or-str form so
-        every downstream consumer sees a single shape. ``step_runner`` is
-        left untouched (it is resolved to a runner instance later), and the
-        scalar knobs pass through unchanged.
+        Normalizes the six typed-or-dict knobs to detached patches. Typed
+        models use field presence, not comparisons with schema defaults, so
+        explicit default-valued fields and explicit ``None`` values survive.
+        ``step_runner`` is left untouched, and scalar knobs pass through.
 
         Returns:
             A frozen ``StepOverrides`` with all overrides coerced.
         """
         return cls(
-            params=params,
+            params=deepcopy(params),
             step_runner=step_runner,
-            runner_resources=_coerce(runner_resources, RunnerResources),
-            batch_strategy=_coerce(batch_strategy, BatchStrategy),
-            environment=_coerce(environment, Environments, allow_str=True),
-            tool=_coerce(tool, ToolSpec),
-            compute_provider=_coerce(compute_provider, ComputeProvider, allow_str=True),
-            compute_resources=_coerce(compute_resources, ComputeResources),
+            runner_resources=_normalize_patch(runner_resources, RunnerResources),
+            batch_strategy=_normalize_patch(batch_strategy, BatchStrategy),
+            environment=_normalize_patch(environment, Environments, allow_str=True),
+            tool=_normalize_patch(tool, ToolSpec),
+            compute_provider=_normalize_patch(
+                compute_provider, ComputeProvider, allow_str=True
+            ),
+            compute_resources=_normalize_patch(compute_resources, ComputeResources),
             failure_policy=failure_policy,
             group_by=group_by,
             compact=compact,
