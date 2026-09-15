@@ -59,6 +59,8 @@ _ENV_FILES = (
 )
 
 R2_SECRET_NAME = "r2-artisan"
+INTEGRATION_OUTPUT_PREFIX = "integration"
+TUTORIAL_OUTPUT_PREFIX = "artisan-tutorial"
 POLL_DEADLINE_S = 900  # first call pulls the worker image — minutes, not seconds
 
 
@@ -82,7 +84,8 @@ def _output_policy(r2: dict[str, str]) -> ToolEndpointDataPolicy:
     """Return the policy shared by the deployed worker and SDK client."""
     return ToolEndpointDataPolicy(
         output_allowlist=(
-            f"s3://{r2['bucket']}/integration",
+            f"s3://{r2['bucket']}/{INTEGRATION_OUTPUT_PREFIX}",
+            f"s3://{r2['bucket']}/{TUTORIAL_OUTPUT_PREFIX}",
             r2["endpoint"],
         ),
     )
@@ -175,7 +178,7 @@ def test_prefix_mode_via_artisan_client(
     )
     from artisan.schemas.specs.input_models import ExecuteInput
 
-    run_prefix = f"integration/endpoint-{uuid.uuid4().hex[:8]}"
+    run_prefix = f"{INTEGRATION_OUTPUT_PREFIX}/endpoint-{uuid.uuid4().hex[:8]}"
     op = WaitTool(
         params=WaitTool.Params(seconds=2),
         compute_provider=ComputeProvider(
