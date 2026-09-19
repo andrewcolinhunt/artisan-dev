@@ -13,7 +13,6 @@ from typing import Any
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.compute.routing import create_execute_router
 from artisan.execution.context.builder import build_execution_context
-from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.commands import (
     capture_commands,
@@ -54,12 +53,7 @@ class _PostprocessFailure(Exception):
 
 
 class _UploadFailure(_PostprocessFailure):
-    """Raised when fs.put / shutil.move fails inside _upload_files_to_root.
-
-    Subclass of _PostprocessFailure so the existing
-    ``except (_PostprocessFailure, _ExecuteFailure)`` clause catches it
-    and records the failure through ``record_execution_failure``.
-    """
+    """Report output relocation failure through postprocess error recording."""
 
 
 class _ExecuteFailure(Exception):
@@ -95,14 +89,13 @@ def run_creator_lifecycle(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
     execution_run_id: str | None = None,
-    sources: dict[str, ArtifactSource] | None = None,
     execute_router: ExecuteRouter | None = None,
 ) -> LifecycleResult:
     """Run one operation through setup → preprocess → execute → postprocess → lineage.
 
-    This is the inner lifecycle extracted from run_creator_flow(). It raises
-    on any failure — the caller is responsible for error recording and sandbox
-    cleanup.
+    Raise on failure so the caller can record it. Successful execution removes
+    the sandbox unless ``preserve_working`` is set; failures leave it available
+    for inspection.
 
     Internally delegates to ``prep_unit()`` (setup + preprocess) and
     ``post_unit()`` (postprocess + lineage). Prep splits per artifact
@@ -113,9 +106,6 @@ def run_creator_lifecycle(
         unit: Execution unit specifying the operation and its inputs.
         runtime_env: Paths and runner configuration for this run.
         execution_run_id: Pre-generated run ID. Generated if None.
-        sources: Optional pre-resolved artifact sources keyed by role.
-            When provided, hydrate from sources instead of unit.inputs.
-            Used by the composite executor for in-memory artifact passing.
         execute_router: Optional pre-created router for execute-phase dispatch.
             When None, created from the operation's compute_provider config.
 
@@ -128,9 +118,7 @@ def run_creator_lifecycle(
     """
     from artisan.execution.executors.creator_phases import post_unit, prep_unit
 
-    prepped = prep_unit(
-        unit, runtime_env, execution_run_id=execution_run_id, sources=sources
-    )
+    prepped = prep_unit(unit, runtime_env, execution_run_id=execution_run_id)
 
     # --- execute phase ---
     with phase_timer("execute", prepped.timings):
@@ -205,7 +193,7 @@ def _cancel_check(
     The lifecycle router writes the sentinel on the staging filesystem
     when the pipeline cancel event fires; execute routers whose calls
     outlive the orchestrator's threads poll this probe. None when the
-    unit carries no ``step_run_id`` (composite-internal lifecycles) or
+    unit carries no ``step_run_id`` or
     no staging root is configured.
     """
     if step_run_id is None or runtime_env.staging_root is None:
@@ -220,7 +208,17 @@ def run_creator_flow(
     runtime_env: RuntimeEnvironment,
     execute_router: ExecuteRouter | None = None,
 ) -> StagingResult:
-    """Capture command evidence throughout the creator lifecycle."""
+    """Execute a creator and stage its result with command and replay evidence.
+
+    Args:
+        unit: Configured operation and concrete input batch.
+        runtime_env: Resolved worker identity, runtime paths and storage.
+        execute_router: Optional router for the execute phase.
+
+    Returns:
+        Staged success or failure, or an unstaged failure when setup or
+        cancellation prevents recording.
+    """
     with (
         capture_commands(unit.operation) as commands,
         capture_replay(unit, runtime_env),
@@ -236,27 +234,11 @@ def _run_creator_flow(
     runtime_env: RuntimeEnvironment,
     execute_router: ExecuteRouter | None = None,
 ) -> StagingResult:
-    """Execute a creator operation through ordered execution phases.
-
-    Phases: setup, preprocess, execute, postprocess, lineage, record.
-    Failures at any phase are caught and staged as error records.
-
-    Args:
-        unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and runner configuration for this run.
-        execute_router: Shared router for compute_provider dispatch. When provided,
-            the lifecycle skips creating its own router. When ``None``,
-            each invocation creates a router from the operation's config.
-
-    Returns:
-        StagingResult indicating success or failure with staged paths.
-    """
-    from artisan.execution.executors.creator_phases import _extract_inputs
-
+    """Run lifecycle phases and record success, failure or cancellation."""
     timings: dict[str, Any] = {}
     timestamp_start = datetime.now(UTC)
     operation = unit.operation
-    original_inputs = _extract_inputs(unit)
+    original_inputs = unit.get_input_artifact_ids()
     user_overrides = unit.user_overrides
 
     execution_run_id = generate_execution_run_id(
@@ -323,12 +305,8 @@ def _run_creator_flow(
         )
     except (_PostprocessFailure, _ExecuteFailure) as exc:
         # Lifecycle failures with clean error messages
-        if isinstance(exc, _ExecuteFailure):
-            error = str(exc)
-            tool_output = exc.tool_output
-        else:
-            error = str(exc)
-            tool_output = None
+        tool_output = exc.tool_output if isinstance(exc, _ExecuteFailure) else None
+        error = str(exc)
         execution_context = _build_execution_context(
             execution_run_id,
             unit,

@@ -34,7 +34,7 @@ def build_execution_context(
             creator's preprocess/execute/postprocess phases. None for
             curators, which operate on in-memory DataFrames.
         step_run_id: Identifier of the owning pipeline step run, or None
-            for composite-internal lifecycles.
+            for a standalone execution.
 
     Returns:
         The assembled ExecutionContext for the operation.

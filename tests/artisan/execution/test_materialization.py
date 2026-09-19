@@ -13,17 +13,7 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
-from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.specs.input_spec import InputSpec
-
-
-def _make_metric(artifact_id: str = "a" * 32) -> MetricArtifact:
-    """Create a hydrated MetricArtifact for testing."""
-    return MetricArtifact.draft(
-        content={"score": 0.5},
-        original_name="test.json",
-        step_number=1,
-    ).finalize()
 
 
 class TestMaterializeAsForwarded:
@@ -345,3 +335,102 @@ class TestEndpointRoutedSkip:
         assert config.artifact_id in materialized_ids
         assert config.materialized_path is not None
         assert Path(config.materialized_path).exists()
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_endpoint_config_references_fail_before_input_side_effects(
+    tmp_path: Path, remote: bool
+) -> None:
+    from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+
+    ref = FileRefArtifact.draft(
+        path="s3://bucket/input.bin" if remote else str(tmp_path / "input.bin"),
+        content_hash="a" * 32,
+        size_bytes=4,
+        step_number=0,
+    ).finalize()
+    config = ExecutionConfigArtifact.draft(
+        {"input": {"$artifact": ref.artifact_id}}, "config.json", 1
+    ).finalize()
+    ordinary = MagicMock(spec=Artifact)
+    ordinary.is_hydrated = True
+    ordinary.artifact_id = "b" * 32
+    ordinary.EXTERNALLY_BACKED = False
+    store = MagicMock()
+    store.get_artifact.return_value = ref
+
+    before = set(tmp_path.iterdir())
+    with (
+        patch.object(FileRefArtifact, "verify_external_content") as verify,
+        pytest.raises(ValueError, match="Endpoint.*artifact references"),
+    ):
+        materialize_inputs(
+            {"data": [ordinary], "config": [config]},
+            {"data": InputSpec(), "config": InputSpec()},
+            str(tmp_path),
+            store,
+            endpoint_routed=True,
+        )
+
+    store.get_artifact.assert_not_called()
+    verify.assert_not_called()
+    ordinary.materialize_to.assert_not_called()
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_non_materialized_endpoint_config_keeps_references(tmp_path: Path) -> None:
+    from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+
+    config = ExecutionConfigArtifact.draft(
+        {"input": {"$artifact": "a" * 32}}, "config.json", 1
+    ).finalize()
+    store = MagicMock()
+    before = set(tmp_path.iterdir())
+    _, materialized = materialize_inputs(
+        {"config": [config]},
+        {"config": InputSpec(materialize=False)},
+        str(tmp_path),
+        store,
+        endpoint_routed=True,
+    )
+    assert materialized == set()
+    assert config.materialized_path is None
+    store.get_artifact.assert_not_called()
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_local_config_substitutes_materialized_reference(tmp_path: Path) -> None:
+    import json
+
+    from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+
+    artifact = DataArtifact.draft(b"value\n1\n", "input.csv", 0).finalize()
+    config = ExecutionConfigArtifact.draft(
+        {"input": {"$artifact": artifact.artifact_id}}, "config.json", 1
+    ).finalize()
+    store = MagicMock()
+    store.get_artifact.return_value = artifact
+    _, materialized = materialize_inputs(
+        {"config": [config]}, {"config": InputSpec()}, str(tmp_path), store
+    )
+    assert materialized == {artifact.artifact_id, config.artifact_id}
+    assert json.loads(Path(config.materialized_path).read_text()) == {
+        "input": artifact.materialized_path
+    }
+    assert Path(artifact.materialized_path).read_bytes() == b"value\n1\n"
+
+
+def test_embedded_artifact_materializes_without_origin_metadata(
+    tmp_path: Path,
+) -> None:
+    artifact = DataArtifact.draft(b"value\n1\n", "input.csv", 0)
+    artifact.origin_step_number = None
+    artifact.finalize()
+    shell = DataArtifact(artifact_id="a" * 32)
+    assert artifact.origin_step_number is None
+    _, materialized = materialize_inputs(
+        {"data": [artifact, shell]}, {"data": InputSpec()}, str(tmp_path), MagicMock()
+    )
+    assert materialized == {artifact.artifact_id}
+    assert Path(artifact.materialized_path).read_bytes() == b"value\n1\n"
+    assert shell.materialized_path is None

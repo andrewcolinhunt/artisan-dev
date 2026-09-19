@@ -23,10 +23,6 @@ from artisan.schemas.execution.curator_result import PassthroughResult
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 _MOCK_MODULE = "artisan.execution.executors.curator"
 _PARQUET_MODULE = "artisan.execution.recording.parquet_writer"
 
@@ -62,14 +58,6 @@ def test_curator_records_runtime_worker_identity(
     assert row["source_worker"] == -7
     assert row["execution_run_id"] == result.execution_run_id
     assert row["success"] is (failure is None)
-
-
-# =============================================================================
-# Tests for _handle_passthrough_result artifact_ids
-# =============================================================================
-
-
-_PARQUET_MODULE = "artisan.execution.recording.parquet_writer"
 
 
 class TestPassthroughResultArtifactIds:

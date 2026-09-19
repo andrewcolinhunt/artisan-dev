@@ -33,12 +33,17 @@ def instantiate_inputs(
         artifact_store: Store for loading and hydrating artifacts.
         input_specs: Role-keyed input specs controlling hydration behavior.
         default_hydrate: Fallback hydration flag when a role has no spec.
+        recorded_associated: Replay associations to load exactly as captured.
+            None resolves live descendants; an empty list resolves none.
 
     Returns:
         Tuple of (artifacts_by_role, associated_map) where associated_map
         keys are ``(primary_artifact_id, associated_type)`` tuples.
+
+    Raises:
+        ValueError: If an input ID is malformed or an input/recorded association
+            cannot be loaded.
     """
-    # Bulk-resolve artifact types (1 delta scan instead of N)
     all_ids = [aid for ids in inputs.values() for aid in ids]
     for role, artifact_ids in inputs.items():
         for artifact_id in artifact_ids:
@@ -55,7 +60,6 @@ def instantiate_inputs(
         msg = f"Input artifact IDs not found in the artifact store: {missing_ids}"
         raise ValueError(msg)
 
-    # Pre-load hydrated artifacts in bulk by type
     hydrated_ids_by_type: dict[str, list[str]] = {}
     for role, artifact_ids in inputs.items():
         spec = input_specs.get(role)
@@ -70,7 +74,6 @@ def instantiate_inputs(
     for atype, ids in hydrated_ids_by_type.items():
         hydrated_cache.update(artifact_store.get_artifacts_by_type(ids, atype))
 
-    # Pre-build non-hydrated artifacts in bulk (no store calls needed)
     non_hydrated_cache: dict[str, Artifact] = {}
     non_hydrated_ids_by_type: dict[str, list[str]] = {}
     for role, artifact_ids in inputs.items():
@@ -87,7 +90,6 @@ def instantiate_inputs(
         for aid in ids:
             non_hydrated_cache[aid] = model_cls(artifact_id=aid, artifact_type=atype)
 
-    # Iterate — all lookups are dict hits
     result: dict[str, list[Artifact]] = {}
     for role, artifact_ids in inputs.items():
         spec = input_specs.get(role)

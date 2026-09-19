@@ -298,7 +298,7 @@ class TestStepSpecIdWithDefaults:
     def test_different_defaults_produce_different_spec_id(self):
         """step_spec_id changes when operation defaults change, even with params=None.
 
-        This validates the Phase 3 fix: step_spec_id uses full instantiated
+        The step identity uses full instantiated
         params (defaults + overrides), not just user overrides.
         """
         instance_v1 = instantiate_operation(_OpV1, StepOverrides.from_user())

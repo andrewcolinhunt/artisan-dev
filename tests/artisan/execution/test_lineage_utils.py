@@ -1,6 +1,4 @@
-"""Tests for lineage_utils module.
-
-Reference: v4 design - Phase 4 lineage utilities.
+"""Tests for lineage capture and edge construction.
 
 Tests cover:
 - capture_lineage_metadata() with various configurations
@@ -31,10 +29,6 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
 from artisan.schemas.specs.output_spec import OutputSpec
-
-# =============================================================================
-# Test Fixtures
-# =============================================================================
 
 
 @pytest.fixture
@@ -131,11 +125,6 @@ def draft_output_design_10():
     )
 
 
-# =============================================================================
-# Test _build_stem_index + _match_by_stem_indexed - Stem Matching Algorithm
-# =============================================================================
-
-
 def _match(
     output_name: str, candidates: list[tuple[str, str, str]]
 ) -> tuple[str, str] | None:
@@ -196,7 +185,6 @@ class TestMatchByStemIndexed:
     def test_digit_boundary_protection_design_1_not_matches_design_10(self):
         """design_1 should NOT match design_10 (digit boundary protection).
 
-        This is the CRITICAL test - verifies the digit boundary protection.
         design_10 starts with 'design_1' but we should NOT match because
         a digit follows immediately after 'design_1'.
         """
@@ -343,11 +331,6 @@ class TestDigitBoundaryProtectionComprehensive:
         assert result == ("id_1", "data")
 
 
-# =============================================================================
-# Test _build_candidates_from_inputs
-# =============================================================================
-
-
 class TestBuildCandidatesFromInputs:
     """Tests for _build_candidates_from_inputs helper."""
 
@@ -357,7 +340,7 @@ class TestBuildCandidatesFromInputs:
         candidates = _build_candidates_from_inputs(input_artifacts, ["data"])
 
         assert len(candidates) == 1
-        assert candidates[0][0] == "sample_001"  # Stem only (no extension)
+        assert candidates[0][0] == "sample_001"
         assert candidates[0][1] == finalized_input_artifact.artifact_id
         assert candidates[0][2] == "data"
 
@@ -376,8 +359,8 @@ class TestBuildCandidatesFromInputs:
         assert len(candidates) == 2
         names = [c[0] for c in candidates]
         roles = [c[2] for c in candidates]
-        assert "sample_001" in names  # Stem only
-        assert "sample_002" in names  # Stem only
+        assert "sample_001" in names
+        assert "sample_002" in names
         assert "role_a" in roles
         assert "role_b" in roles
 
@@ -396,11 +379,6 @@ class TestBuildCandidatesFromInputs:
         assert len(candidates) == 0
 
 
-# =============================================================================
-# Test _build_candidates_from_outputs
-# =============================================================================
-
-
 class TestBuildCandidatesFromOutputs:
     """Tests for _build_candidates_from_outputs helper."""
 
@@ -410,7 +388,7 @@ class TestBuildCandidatesFromOutputs:
         candidates = _build_candidates_from_outputs(output_artifacts, ["data"])
 
         assert len(candidates) == 1
-        assert candidates[0][0] == "sample_001"  # Stem only
+        assert candidates[0][0] == "sample_001"
         assert candidates[0][1] == finalized_input_artifact.artifact_id
         assert candidates[0][2] == "data"
 
@@ -421,11 +399,6 @@ class TestBuildCandidatesFromOutputs:
             _build_candidates_from_outputs(output_artifacts, ["data"])
         assert "no artifact_id" in str(exc_info.value)
         assert "data" in str(exc_info.value)
-
-
-# =============================================================================
-# Test capture_lineage_metadata - Explicit Input Matching
-# =============================================================================
 
 
 class TestCaptureLineageMetadataExplicitMatching:
@@ -450,9 +423,7 @@ class TestCaptureLineageMetadataExplicitMatching:
 
         assert "processed" in lineage
         assert len(lineage["processed"]) == 1
-        assert (
-            lineage["processed"][0].draft_original_name == "sample_001_processed"
-        )  # Stem
+        assert lineage["processed"][0].draft_original_name == "sample_001_processed"
         assert (
             lineage["processed"][0].source_artifact_id
             == finalized_input_artifact.artifact_id
@@ -486,8 +457,8 @@ class TestCaptureLineageMetadataExplicitMatching:
 
         assert len(lineage["processed"]) == 2
         mapped_names = {m.draft_original_name for m in lineage["processed"]}
-        assert "sample_001_processed" in mapped_names  # Stem only
-        assert "sample_002_processed" in mapped_names  # Stem only
+        assert "sample_001_processed" in mapped_names
+        assert "sample_002_processed" in mapped_names
 
     def test_no_match_for_unrelated_names(self, finalized_input_artifact):
         """Output with unrelated name should not have lineage."""
@@ -518,7 +489,7 @@ class TestCaptureLineageMetadataExplicitMatching:
         """Roles not in output_specs should be skipped."""
         input_artifacts = {"data": [finalized_input_artifact]}
         output_artifacts = {"unknown_role": [draft_output_artifact]}
-        output_specs = {}  # No specs
+        output_specs = {}
 
         lineage = capture_lineage_metadata(
             output_artifacts, input_artifacts, output_specs
@@ -543,13 +514,7 @@ class TestCaptureLineageMetadataExplicitMatching:
             output_artifacts, input_artifacts, output_specs
         )
 
-        # None config now skips the role
         assert "processed" not in lineage
-
-
-# =============================================================================
-# Test capture_lineage_metadata - Explicit Input Roles
-# =============================================================================
 
 
 class TestCaptureLineageMetadataExplicitInputs:
@@ -586,11 +551,6 @@ class TestCaptureLineageMetadataExplicitInputs:
         assert lineage["processed"][0].source_role == "data"
 
 
-# =============================================================================
-# Test capture_lineage_metadata - Orphan Outputs
-# =============================================================================
-
-
 class TestCaptureLineageMetadataOrphanOutputs:
     """Tests for capture_lineage_metadata with orphan (generative) outputs."""
 
@@ -608,11 +568,6 @@ class TestCaptureLineageMetadataOrphanOutputs:
 
         assert "generated" in lineage
         assert lineage["generated"] == []  # Empty list, not None
-
-
-# =============================================================================
-# Test capture_lineage_metadata - Output->Output Edges
-# =============================================================================
 
 
 class TestCaptureLineageMetadataOutputToOutput:
@@ -656,11 +611,6 @@ class TestCaptureLineageMetadataOutputToOutput:
         assert lineage["energy"][0].source_artifact_id == output_artifact.artifact_id
         # Source role should be 'processed' (the output role), not 'input'
         assert lineage["energy"][0].source_role == "processed"
-
-
-# =============================================================================
-# Test capture_lineage_metadata - Digit Boundary in Full Flow
-# =============================================================================
 
 
 class TestCaptureLineageMetadataDigitBoundary:
@@ -722,11 +672,6 @@ class TestCaptureLineageMetadataDigitBoundary:
         )
 
 
-# =============================================================================
-# Test build_edges - Basic Conversion
-# =============================================================================
-
-
 class TestBuildEdgesBasicConversion:
     """Tests for build_edges basic conversion from LineageMapping to edges."""
 
@@ -740,7 +685,7 @@ class TestBuildEdgesBasicConversion:
         lineage = {
             "processed": [
                 LineageMapping(
-                    draft_original_name="sample_001_processed",  # Stem only
+                    draft_original_name="sample_001_processed",
                     source_artifact_id=finalized_input_artifact.artifact_id,
                     source_role="data",
                 )
@@ -770,12 +715,12 @@ class TestBuildEdgesBasicConversion:
         lineage = {
             "processed": [
                 LineageMapping(
-                    draft_original_name="sample_001_processed",  # Stem only
+                    draft_original_name="sample_001_processed",
                     source_artifact_id=finalized_input_artifact.artifact_id,
                     source_role="data",
                 ),
                 LineageMapping(
-                    draft_original_name="sample_002_processed",  # Stem only
+                    draft_original_name="sample_002_processed",
                     source_artifact_id=finalized_input_artifact_2.artifact_id,
                     source_role="data",
                 ),
@@ -806,11 +751,6 @@ class TestBuildEdgesBasicConversion:
         edges = build_edges(lineage, finalized_artifacts)
 
         assert len(edges) == 0
-
-
-# =============================================================================
-# Test build_edges - Source Reference Resolution
-# =============================================================================
 
 
 class TestBuildEdgesDraftReferenceResolution:
@@ -849,7 +789,7 @@ class TestBuildEdgesDraftReferenceResolution:
             "processed": [],
             "energy": [
                 LineageMapping(
-                    draft_original_name="sample_001_processed_energy",  # Stem only
+                    draft_original_name="sample_001_processed_energy",
                     source_artifact_id=finalized_structure.artifact_id,
                     source_role="processed",
                 )
@@ -867,11 +807,6 @@ class TestBuildEdgesDraftReferenceResolution:
         assert energy_edges[0].source == finalized_structure.artifact_id
         assert energy_edges[0].target == finalized_metric.artifact_id
         assert energy_edges[0].source_role == "processed"
-
-
-# =============================================================================
-# Test build_edges - source_original_name resolution
-# =============================================================================
 
 
 class TestBuildEdgesSourceOriginalName:
@@ -979,13 +914,8 @@ class TestBuildEdgesSourceOriginalName:
         assert edges[0].source != same_name_in_structures.artifact_id
 
 
-# =============================================================================
-# Test source_role Tracking (Design Doc Verification)
-# =============================================================================
-
-
 class TestSourceRoleTracking:
-    """Tests verifying correct source_role tracking per design doc.
+    """Tests for source-role preservation in lineage edges.
 
     These tests ensure that source_role correctly captures the actual
     role of the source artifact rather than hardcoding "input".
@@ -1087,11 +1017,6 @@ class TestSourceRoleTracking:
         assert len(edges) == 1
         assert edges[0].source_role == "processed"  # Output role, not "input"
         assert edges[0].target_role == "energy"
-
-
-# =============================================================================
-# Test build_edges - Per-Role Edge Resolution
-# =============================================================================
 
 
 class TestBuildEdgesPerRoleResolution:
@@ -1220,7 +1145,7 @@ class TestBuildEdgesPerRoleResolution:
     def test_single_role_regression(
         self, finalized_input_artifact, draft_output_artifact
     ):
-        """Single role should work identically to before (regression test)."""
+        """Resolve the source and target IDs for one output role."""
         finalized_output = draft_output_artifact.finalize()
 
         lineage = {
@@ -1272,11 +1197,6 @@ class TestBuildEdgesPerRoleResolution:
 
         # No edges: "sample_001" is in "data" role, not "other" role
         assert len(edges) == 0
-
-
-# =============================================================================
-# Test capture_lineage_metadata - Multi-Role Co-Input Edges (group_by)
-# =============================================================================
 
 
 def _make_config(name: str, step: int = 0) -> ExecutionConfigArtifact:
@@ -1628,7 +1548,7 @@ class TestCaptureLineageMultiRoleCoInputs:
 
 
 class TestCaptureLineageOutputPairMap:
-    """Tests for capture_lineage_metadata with ``output_pair_map`` (Bug A)."""
+    """Tests for occurrence-aligned lineage from ``output_pair_map``."""
 
     def test_cross_product_lineage_repeated_primary(self):
         """Each output's pair index resolves via ``output_pair_map``, bypassing
@@ -1737,14 +1657,10 @@ class TestCaptureLineageOutputPairMap:
             (secondaries[1].artifact_id, outputs[1].artifact_id),
         ]
 
-    def test_missing_basename_falls_back_to_legacy_path(self):
-        """Drafts not in ``output_pair_map`` (e.g. memory-only outputs) fall
-        back to stem-match + ``primary_id_to_idx`` — the legacy clobber
-        persists here, documented as op-author responsibility."""
+    def test_missing_basename_uses_stem_matching(self):
+        """Use stem matching when an output has no recorded dispatch occurrence."""
         primary_a = _make_metric_from_name("primary_a")
         primary_b = _make_metric_from_name("primary_b")
-        # Two distinct primaries — clobber doesn't manifest, so the
-        # legacy path still produces a correct edge.
         output = MetricArtifact.draft(
             content={"output": 0},
             original_name="primary_a_out.json",

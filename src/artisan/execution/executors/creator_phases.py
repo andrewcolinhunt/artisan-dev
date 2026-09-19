@@ -40,7 +40,6 @@ from artisan.execution.lineage.validation import (
     validate_lineage_completeness,
     validate_lineage_integrity,
 )
-from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.recorder import _read_tool_output
 from artisan.execution.recording.replay_snapshot import current_replay_builder
@@ -54,17 +53,11 @@ from artisan.schemas.specs.input_models import (
     PostprocessInput,
     PreprocessInput,
 )
-from artisan.schemas.specs.input_spec import InputSpec
 from artisan.utils.filename import strip_extensions
 from artisan.utils.path import shard_uri
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# PreppedUnit — bridge state between prep and post phases
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -77,9 +70,7 @@ class PreppedUnit:
     Attributes:
         unit: Original execution unit.
         execution_run_id: Generated run ID for this execution.
-        timestamp_start: When execution began.
         sandbox_path: Root sandbox directory path.
-        execute_dir: Base execute directory (contains artifact sub-dirs).
         postprocess_dir: Postprocess directory from sandbox.
         log_path: Tool output log file path.
         files_dir: File reference output directory (or None).
@@ -87,19 +78,16 @@ class PreppedUnit:
         input_artifacts: Hydrated input artifacts keyed by role.
         associated: Associated artifacts from multi-role inputs.
         materialized_artifact_ids: IDs of materialized input artifacts.
-        execution_context: Pre-built context for recording.
         timings: Phase timings accumulated during prep.
-        artifact_execute_inputs: Per-artifact ExecuteInputs, one per
-            artifact index. Length equals batch size.
+        artifact_execute_inputs: One input per dispatch slot, or a single
+            input for generative and monolithic execution.
         artifact_execute_dirs: Per-artifact execute sub-directory
             paths, positionally aligned with artifact_execute_inputs.
     """
 
     unit: ExecutionUnit
     execution_run_id: str
-    timestamp_start: datetime
     sandbox_path: str
-    execute_dir: str
     postprocess_dir: str
     log_path: str
     files_dir: str | None
@@ -107,22 +95,15 @@ class PreppedUnit:
     input_artifacts: dict[str, list[Artifact]]
     associated: dict[tuple[str, str], list[Artifact]]
     materialized_artifact_ids: set[str]
-    execution_context: Any
     timings: dict[str, Any] = field(default_factory=dict)
     artifact_execute_inputs: list[ExecuteInput] = field(default_factory=list)
     artifact_execute_dirs: list[str] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
-# prep_unit — setup + preprocess + per-artifact splitting
-# ---------------------------------------------------------------------------
 
 
 def prep_unit(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
     execution_run_id: str | None = None,
-    sources: dict[str, ArtifactSource] | None = None,
 ) -> PreppedUnit:
     """Run setup, preprocess, and per-artifact splitting.
 
@@ -135,7 +116,6 @@ def prep_unit(
         unit: Execution unit specifying the operation and its inputs.
         runtime_env: Paths and runtime configuration.
         execution_run_id: Pre-generated run ID. Generated if None.
-        sources: Optional pre-resolved artifact sources.
 
     Returns:
         PreppedUnit with ExecuteInputs ready for dispatch.
@@ -146,7 +126,7 @@ def prep_unit(
     timings: dict[str, Any] = {}
     operation = unit.operation
     operation_class = type(operation)
-    original_inputs = _extract_inputs(unit)
+    original_inputs = unit.get_input_artifact_ids()
     _validate_operation_outputs(operation_class)
 
     timestamp_start = datetime.now(UTC)
@@ -210,26 +190,17 @@ def prep_unit(
         input_specs = getattr(operation_class, "inputs", {})
         default_hydrate = getattr(operation_class, "hydrate_inputs", True)
 
-        if sources is not None:
-            input_artifacts: dict[str, list[Artifact]] = {}
-            for role, source in sources.items():
-                spec = input_specs.get(role, InputSpec())
-                input_artifacts[role] = source.hydrate(
-                    artifact_store, spec, default_hydrate
-                )
-            associated: dict[tuple[str, str], list[Artifact]] = {}
-        else:
-            input_artifacts, associated = instantiate_inputs(
-                original_inputs,
-                artifact_store,
-                input_specs,
-                default_hydrate,
-                recorded_associated=(
-                    unit.replay_snapshot.associated
-                    if unit.replay_of_execution_run_id and unit.replay_snapshot
-                    else None
-                ),
-            )
+        input_artifacts, associated = instantiate_inputs(
+            original_inputs,
+            artifact_store,
+            input_specs,
+            default_hydrate,
+            recorded_associated=(
+                unit.replay_snapshot.associated
+                if unit.replay_of_execution_run_id and unit.replay_snapshot
+                else None
+            ),
+        )
         if replay_builder is not None:
             replay_builder.record_associated(associated)
         input_artifacts, materialized_artifact_ids = materialize_inputs(
@@ -275,14 +246,7 @@ def prep_unit(
             )
         )
     else:
-        # Composite-internal units carry artifacts via `sources`, not
-        # `unit.inputs` — fall back to the hydrated artifact count so
-        # per-artifact splitting works on both paths.
-        batch_size = (
-            unit.get_batch_size()
-            or (len(next(iter(input_artifacts.values()))) if input_artifacts else 0)
-            or 1
-        )
+        batch_size = unit.get_batch_size() or 1
         for i in range(batch_size):
             artifact_exec_dir = os.path.join(execute_dir, f"artifact_{i}")
             os.makedirs(artifact_exec_dir, exist_ok=True)
@@ -307,9 +271,7 @@ def prep_unit(
     return PreppedUnit(
         unit=unit,
         execution_run_id=execution_run_id,
-        timestamp_start=timestamp_start,
         sandbox_path=sandbox_path_str,
-        execute_dir=execute_dir,
         postprocess_dir=postprocess_dir,
         log_path=log_path,
         files_dir=files_dir,
@@ -317,16 +279,10 @@ def prep_unit(
         input_artifacts=input_artifacts,
         associated=associated,
         materialized_artifact_ids=materialized_artifact_ids,
-        execution_context=execution_context,
         timings=timings,
         artifact_execute_inputs=artifact_execute_inputs,
         artifact_execute_dirs=artifact_execute_dirs,
     )
-
-
-# ---------------------------------------------------------------------------
-# post_unit — postprocess + lineage + name derivation + cleanup
-# ---------------------------------------------------------------------------
 
 
 def post_unit(
@@ -344,7 +300,7 @@ def post_unit(
         prepped: State captured by ``prep_unit()``.
         raw_results: One raw result per artifact from execute.
             Exceptions at a given index represent execute failures.
-        runtime_env: For sandbox cleanup decision.
+        runtime_env: Output storage, integrity verification and sandbox cleanup.
 
     Returns:
         LifecycleResult with artifacts, edges, and timings.
@@ -408,15 +364,6 @@ def post_unit(
             for role, artifacts in finalized_artifacts.items()
         }
 
-        # Upload local files_dir bytes to runtime_env.files_root and
-        # rewrite external_path on each finalized artifact. Runs inside
-        # the postprocess phase_timer, so any _UploadFailure surfaces
-        # as a postprocess failure (it subclasses _PostprocessFailure)
-        # and the existing except (_PostprocessFailure, _ExecuteFailure)
-        # clause in creator.py records it. Because the exception
-        # propagates out of post_unit before the sandbox-cleanup block
-        # at the end of post_unit, the local files survive automatically
-        # for recovery — no explicit preservation code.
         _upload_files_to_root(
             finalized_artifacts,
             files_dir=prepped.files_dir,
@@ -489,7 +436,6 @@ def post_unit(
     # recorder persists it to the executions table on success.
     tool_output = _read_tool_output(prepped.log_path)
 
-    # Clean up sandbox
     if not runtime_env.preserve_working and os.path.exists(prepped.sandbox_path):
         shutil.rmtree(prepped.sandbox_path, ignore_errors=True)
 
@@ -500,11 +446,6 @@ def post_unit(
         tool_output=tool_output,
         timings=timings,
     )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _external_integrity_metadata(
@@ -537,45 +478,12 @@ def _upload_files_to_root(
     operation_name: str,
     sandbox_path: str,
 ) -> None:
-    """Relocate local ``files_dir`` bytes to ``runtime_env.files_root``.
+    """Relocate files owned by ``files_dir`` and update artifact locators.
 
-    Walks every finalized external artifact whose locator points
-    inside the unit's local ``files_dir`` and moves (local) or
-    uploads (cloud) the underlying file to its canonical sharded
-    destination under ``files_root``, then rewrites the locator in place.
-
-    Multiple artifacts may share one source file (e.g.
-    ``AppendableGenerator`` emits N ``AppendableArtifact`` instances
-    backed by one JSONL). A ``moved`` dict keyed on source path
-    deduplicates so each file moves / uploads at most once; every
-    artifact still gets its ``external_path`` rewritten.
-
-    Artifacts whose ``external_path`` is already a cloud URI or
-    lives outside ``files_dir`` are left untouched.
-
-    ``Artifact`` is not frozen (see ``model_config`` in
-    ``schemas/artifact/base.py``), so rewrites are direct attribute
-    assignments.
-
-    Args:
-        finalized_artifacts: Output of ``finalize_artifacts`` — dict
-            of role -> list of finalized Artifact instances.
-        files_dir: Unit's local sandbox files directory, or None
-            when no operation in this unit produces file outputs.
-        runtime_env: Runtime environment carrying ``files_root`` and
-            the storage runtime.
-        execution_run_id: Per-execution ID used to compute the
-            sharded destination under ``files_root``.
-        step_number: Pipeline step number for sharding.
-        operation_name: Operation name for sharding.
-        sandbox_path: Unit sandbox path; included in the failure
-            log so recovery is possible when an upload fails.
-
-    Raises:
-        _UploadFailure: When ``shutil.move`` or ``fs.put`` raises.
-            As a subclass of ``_PostprocessFailure`` this propagates
-            out of ``post_unit`` before the sandbox cleanup runs,
-            preserving the local files automatically.
+    Move local outputs or upload cloud outputs to the execution's shard under
+    ``files_root``. Shared source files move once; existing external locators
+    outside ``files_dir`` are unchanged. Failure raises ``_UploadFailure`` before
+    sandbox cleanup, leaving remaining local bytes available for recovery.
     """
     if files_dir is None or runtime_env.files_root is None:
         return
@@ -598,8 +506,6 @@ def _upload_files_to_root(
         # No-op on most object stores (prefixes are implicit).
         fs.makedirs(target_shard, exist_ok=True)
 
-    # Source local path -> destination URI/path. Dedups the
-    # AppendableGenerator shared-file case.
     moved: dict[str, str] = {}
 
     for artifact_list in finalized_artifacts.values():
@@ -638,7 +544,6 @@ def _upload_files_to_root(
                 moved[ext_path] = destination
 
             destination = moved[ext_path]
-            # Direct mutation: Artifact is not frozen (model_config, base.py).
             setattr(artifact, locator_field, destination)
             # Local: shutil.move relocated the bytes; point at the
             # new path. Cloud: sandbox still has the bytes until the
@@ -765,13 +670,6 @@ def _reassemble_results(
         return merged, file_outputs, output_pair_map
 
     return successes, file_outputs, output_pair_map
-
-
-def _extract_inputs(unit: ExecutionUnit) -> dict[str, list[str]]:
-    """Copy input artifact IDs from the execution unit."""
-    if not unit.inputs:
-        return {}
-    return {role: list(ids) for role, ids in unit.inputs.items()}
 
 
 def _extract_artifacts_from_input(

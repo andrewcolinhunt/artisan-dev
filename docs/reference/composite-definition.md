@@ -284,7 +284,6 @@ internal operations.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `source` | `ArtifactSource \| None` | Currently unused (always `None`); retained for the frozen dataclass shape |
 | `output_reference` | `OutputReference \| None` | Pipeline reference to the producing step's output |
 | `role` | `str` | Output role name this ref points to |
 
