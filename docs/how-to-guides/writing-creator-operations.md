@@ -24,7 +24,13 @@ from pathlib import Path
 from typing import ClassVar
 
 from artisan.operations.base import OperationDefinition
-from artisan.schemas import ArtifactResult, DataArtifact, ExecuteInput, OutputSpec, PostprocessInput
+from artisan.schemas import (
+    ArtifactResult,
+    DataArtifact,
+    ExecuteInput,
+    OutputSpec,
+    PostprocessInput,
+)
 
 
 class HelloGenerator(OperationDefinition):

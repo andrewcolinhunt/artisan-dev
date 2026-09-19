@@ -278,7 +278,7 @@ must include every permitted S3 path-segment prefix or HTTP capability
 origin before deployment:
 
 ```python
-data_policy=ToolEndpointDataPolicy(
+data_policy = ToolEndpointDataPolicy(
     input_allowlist=(
         "s3://your-bucket/reference-data",
         "https://downloads.example.com",
@@ -364,6 +364,7 @@ class FoldComplex(OperationDefinition):
         ),
     )
     ...
+
 
 # Redeploy after defining or changing the policy:
 # artisan modal deploy fold_complex
@@ -644,13 +645,13 @@ replace the inherited value:
 
 ```python
 # Preserve every existing variable except MODE.
-environment={
+environment = {
     "active": "docker",
     "docker": {"env": {"MODE": "production"}},
 }
 
 # Clear the inherited env mapping.
-environment={"active": "docker", "docker": {"env": {}}}
+environment = {"active": "docker", "docker": {"env": {}}}
 ```
 
 An empty root patch such as `runner_resources={}` supplies no fields and is a
@@ -871,9 +872,7 @@ Omitting the argument or passing `None` inherits the default.
 `run_composite()` and `submit_composite()` set defaults for their children:
 
 ```python
-pipeline.run_composite(
-    MyComposite, inputs=..., cache_policy=CachePolicy.STEP_COMPLETED
-)
+pipeline.run_composite(MyComposite, inputs=..., cache_policy=CachePolicy.STEP_COMPLETED)
 
 # Inside compose(), require complete success for this child:
 ctx.run(MyOp, inputs=..., cache_policy=CachePolicy.ALL_SUCCEEDED)
@@ -1066,7 +1065,9 @@ from artisan.visualization import inspect_commands
 
 recording = inspect_commands(delta_root, execution_run_id)
 for command in recording["commands"]:
-    print(command["invocation"], command["sequence"], command["argv"], command["outcome"])
+    print(
+        command["invocation"], command["sequence"], command["argv"], command["outcome"]
+    )
 ```
 
 `requested_argv` contains the requested arguments; `argv` includes the actual
