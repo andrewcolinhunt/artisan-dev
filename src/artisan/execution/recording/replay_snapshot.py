@@ -391,7 +391,7 @@ def capture_replay(
 
 
 def verify_replay_worker(unit: ExecutionUnit) -> None:
-    """Check selected code inside the normal worker failure-recording boundary."""
+    """Verify selected replay code, then enable DEBUG logging in its worker."""
     snapshot = unit.replay_snapshot
     if snapshot is None or snapshot.diagnostic is None:
         return

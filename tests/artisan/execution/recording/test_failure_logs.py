@@ -5,11 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from artisan.execution.recording.recorder import _write_failure_log
 from artisan.utils.log_paths import failure_log_relative_path
 
 START = datetime(2026, 9, 19, 1, 2, 3, tzinfo=UTC)
-
-from artisan.execution.recording.recorder import _write_failure_log
 
 
 class TestWriteFailureLog:
@@ -81,7 +80,6 @@ class TestWriteFailureLog:
 
     def test_none_root_noop(self) -> None:
         """No file created when failure_logs_root is None."""
-        # Should not raise
         _write_failure_log(
             timestamp_start=START,
             failure_logs_root=None,
@@ -112,9 +110,9 @@ class TestWriteFailureLog:
             compute_backend="slurm",
             error="Error B",
         )
-        step_dir = tmp_path / "20260919"
-        assert step_dir.is_dir()
-        log_files = list(step_dir.glob("*.log"))
+        date_dir = tmp_path / "20260919"
+        assert date_dir.is_dir()
+        log_files = list(date_dir.glob("*.log"))
         assert len(log_files) == 2
 
     def test_header_fields(self, tmp_path: Path) -> None:

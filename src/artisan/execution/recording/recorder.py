@@ -61,15 +61,7 @@ def error_envelope_dict(exc: BaseException) -> dict[str, Any] | None:
 
 
 def _read_tool_output(log_path: str | None) -> str | None:
-    """Read tool output from a log file.
-
-    Args:
-        log_path: Path to the tool output log file.
-
-    Returns:
-        File content as string, or None if path is None or file doesn't exist.
-        Truncated to last 500K chars if longer.
-    """
+    """Read up to the last 500K log characters, or None if absent or unreadable."""
     if log_path is None or not os.path.exists(log_path):
         return None
     try:
@@ -150,6 +142,9 @@ def record_execution_success(
         inputs: Original input artifact IDs keyed by role.
         timestamp_end: Wall-clock end time of the execution.
         command_recording: Explicit framework-owned subprocess evidence.
+        replay_snapshot: Immutable replay evidence captured for this execution.
+        replay_of_execution_run_id: Source execution ID for a diagnostic replay,
+            or None for an ordinary execution.
         params: Serialized operation parameters.
         result_metadata: Arbitrary metadata to persist with the execution record.
         user_overrides: User-provided parameter overrides before default merge.
@@ -249,6 +244,9 @@ def record_passthrough(
         inputs: Original input artifact IDs keyed by role.
         timestamp_end: Wall-clock end time of the execution.
         command_recording: Explicit framework-owned subprocess evidence.
+        replay_snapshot: Immutable replay evidence captured for this execution.
+        replay_of_execution_run_id: Source execution ID for a diagnostic replay,
+            or None for an ordinary execution.
         params: Serialized operation parameters.
         result_metadata: Arbitrary metadata to persist with the execution record.
         user_overrides: User-provided parameter overrides before default merge.
@@ -400,6 +398,9 @@ def record_execution_failure(
         inputs: Original input artifact IDs keyed by role.
         timestamp_end: Wall-clock end time of the execution.
         command_recording: Explicit framework-owned subprocess evidence.
+        replay_snapshot: Immutable replay evidence captured for this execution.
+        replay_of_execution_run_id: Source execution ID for a diagnostic replay,
+            or None for an ordinary execution.
         params: Serialized operation parameters.
         user_overrides: User-provided parameter overrides before default merge.
         tool_output: Captured tool stdout/stderr.

@@ -67,14 +67,16 @@ def _create_staging_path(
 
 @dataclass
 class StagingResult:
-    """Outcome of staging an execution run's outputs to disk.
+    """Describe an execution outcome and its locally or remotely staged outputs.
 
     Attributes:
         success: Whether the execution completed without error.
         error: Error message when ``success`` is False.
         staging_path: Directory containing the staged Parquet files.
         execution_run_id: Unique identifier for this execution run.
-        artifact_ids: IDs of artifacts produced (empty on failure).
+        artifact_ids: New or passed-through output IDs (empty on failure).
+        cancellation_acknowledgement: Evidence of a worker cancellation request,
+            if one was made.
     """
 
     success: bool

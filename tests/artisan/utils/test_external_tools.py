@@ -170,12 +170,7 @@ class TestExternalToolError:
 
 
 class TestExternalToolErrorEnvelope:
-    """The re-parented ExternalToolError carries a compute envelope.
-
-    ``__str__`` and the five fields are unchanged (asserted above); these
-    pin the added structure: ``OP_EXECUTE_FAILED`` / ``compute``, and the
-    recovery hint keyed on the timeout sentinel.
-    """
+    """Verify compute error envelopes and recovery hints for tool failures."""
 
     def test_is_artisan_error(self):
         from artisan.errors import ArtisanError
@@ -270,7 +265,7 @@ class TestProcessCleanup:
             "artisan.utils.external_tools.os.getpgid",
             side_effect=ProcessLookupError,
         ):
-            _kill_process_group(mock_proc)  # should not raise
+            _kill_process_group(mock_proc)
 
 
 class TestRunCommand:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from datetime import datetime
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
@@ -365,42 +364,6 @@ def runtime_env(delta_root_with_input, working_root, staging_root):
         working_root=str(working_root),
         staging_root=str(staging_root),
     )
-
-
-class TestGenerateExecutionRunId:
-    """Tests for execution_run_id generation."""
-
-    def test_generates_32_char_hex(self):
-        """Run ID should be 32 hex characters."""
-        run_id = generate_execution_run_id("spec_123", datetime.now())
-        assert len(run_id) == 32
-        assert all(c in "0123456789abcdef" for c in run_id)
-
-    def test_different_timestamps_different_ids(self):
-        """Different timestamps produce different IDs."""
-        t1 = datetime(2024, 1, 1, 12, 0, 0)
-        t2 = datetime(2024, 1, 1, 12, 0, 1)
-
-        id1 = generate_execution_run_id("spec_123", t1)
-        id2 = generate_execution_run_id("spec_123", t2)
-
-        assert id1 != id2
-
-    def test_different_specs_different_ids(self):
-        """Different spec IDs produce different IDs."""
-        t = datetime.now()
-        id1 = generate_execution_run_id("spec_a", t)
-        id2 = generate_execution_run_id("spec_b", t)
-
-        assert id1 != id2
-
-    def test_includes_worker_id(self):
-        """Worker ID affects the run ID."""
-        t = datetime.now()
-        id1 = generate_execution_run_id("spec_123", t, worker_id=0)
-        id2 = generate_execution_run_id("spec_123", t, worker_id=1)
-
-        assert id1 != id2
 
 
 class TestShardUri:

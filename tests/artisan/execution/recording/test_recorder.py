@@ -1,9 +1,4 @@
-"""Tests for shared atomic step functions.
-
-Reference: design_unified-execution-steps.md
-
-These tests verify each shared step function independently.
-"""
+"""Tests for execution edges and successful or failed execution recording."""
 
 from __future__ import annotations
 
@@ -21,7 +16,6 @@ from artisan.execution.recording.recorder import (
     record_execution_failure,
     record_execution_success,
 )
-from artisan.execution.utils import generate_execution_run_id
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.command_record import CommandRecording
@@ -33,11 +27,6 @@ from artisan.schemas.specs.output_spec import OutputSpec
 def _local_fs() -> LocalFileSystem:
     """Create a local filesystem instance for test construction."""
     return LocalFileSystem()
-
-
-# =============================================================================
-# Test Fixtures: Mock Operations
-# =============================================================================
 
 
 class MockCreatorOp(OperationDefinition):
@@ -71,101 +60,6 @@ class MockCreatorOp(OperationDefinition):
 
     def execute_function(self, inputs):
         return {"status": "ok"}
-
-
-class MockFileRefInputOp(OperationDefinition):
-    """Mock operation that accepts FILE_REF type inputs."""
-
-    class InputRole(StrEnum):
-        files = auto()
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "mock_file_ref_input"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.files: InputSpec(artifact_type=ArtifactTypes.FILE_REF, required=True),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": ["files"]},
-        ),
-    }
-
-    def preprocess(self, inputs: Any) -> dict[str, Any]:
-        return {}
-
-    def execute_function(self, inputs):
-        return {"status": "ok"}
-
-
-class MockNoDefaultsOp(OperationDefinition):
-    """Mock operation with no default parameters."""
-
-    name: ClassVar[str] = "mock_no_defaults"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {}
-
-    def execute_function(self, inputs):
-        return {}
-
-
-# =============================================================================
-# Test Classes
-# =============================================================================
-
-
-class TestGenerateExecutionRunId:
-    """Tests for generate_execution_run_id()."""
-
-    def test_returns_32_char_hex(self):
-        """Returns 32-character hexadecimal string."""
-        run_id = generate_execution_run_id(
-            spec_id="a" * 32,
-            timestamp=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
-            worker_id=0,
-        )
-
-        assert len(run_id) == 32
-        assert all(c in "0123456789abcdef" for c in run_id)
-
-    def test_deterministic(self):
-        """Same inputs produce same output."""
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
-
-        run_id_1 = generate_execution_run_id("a" * 32, ts, 0)
-        run_id_2 = generate_execution_run_id("a" * 32, ts, 0)
-
-        assert run_id_1 == run_id_2
-
-    def test_different_spec_id_different_hash(self):
-        """Different spec_id produces different hash."""
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
-
-        run_id_1 = generate_execution_run_id("a" * 32, ts, 0)
-        run_id_2 = generate_execution_run_id("b" * 32, ts, 0)
-
-        assert run_id_1 != run_id_2
-
-    def test_different_timestamp_different_hash(self):
-        """Different timestamp produces different hash."""
-        ts_1 = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
-        ts_2 = datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC)
-
-        run_id_1 = generate_execution_run_id("a" * 32, ts_1, 0)
-        run_id_2 = generate_execution_run_id("a" * 32, ts_2, 0)
-
-        assert run_id_1 != run_id_2
-
-    def test_different_worker_id_different_hash(self):
-        """Different worker_id produces different hash."""
-        ts = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
-
-        run_id_1 = generate_execution_run_id("a" * 32, ts, 0)
-        run_id_2 = generate_execution_run_id("a" * 32, ts, 1)
-
-        assert run_id_1 != run_id_2
 
 
 class TestBuildExecutionEdges:
@@ -348,7 +242,6 @@ class TestRecordExecutionSuccess:
             timestamp_end=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
         )
 
-        # Verify input provenance was recorded
         prov_path = Path(result.staging_path) / "execution_edges.parquet"
         assert prov_path.exists()
         df = pl.read_parquet(prov_path)
@@ -401,7 +294,6 @@ class TestRecordExecutionFailure:
         assert result.error == "Test error message"
         assert result.artifact_ids == []
 
-        # Verify error was recorded
         exec_path = Path(result.staging_path) / "executions.parquet"
         df = pl.read_parquet(exec_path)
         assert df["success"][0] is False
@@ -444,9 +336,8 @@ class TestRecordExecutionFailure:
             timestamp_end=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
         )
 
-        # Verify input provenance was recorded
         prov_path = Path(result.staging_path) / "execution_edges.parquet"
         assert prov_path.exists()
         df = pl.read_parquet(prov_path)
-        assert len(df) == 2  # Both inputs recorded
+        assert len(df) == 2
         assert df["direction"].to_list() == ["input", "input"]

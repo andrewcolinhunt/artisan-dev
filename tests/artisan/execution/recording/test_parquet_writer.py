@@ -1,8 +1,4 @@
-"""Tests for staging module.
-
-Reference: design_provenance_phase3_execution.md
-Reference: design_provenance_phase4_storage.md
-"""
+"""Tests for staged artifact, edge, and execution Parquet files."""
 
 from __future__ import annotations
 
@@ -26,7 +22,6 @@ from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.utils.json import artisan_json_default as _json_default
 
 
 @pytest.fixture
@@ -79,24 +74,20 @@ class TestSyncStagingToNfs:
 
     def test_syncs_files_and_directory(self, tmp_path):
         """Verify fsync is called on files and directory without error."""
-        # Create test files
         (tmp_path / "test1.parquet").write_bytes(b"data1")
         (tmp_path / "test2.parquet").write_bytes(b"data2")
 
-        # Should not raise - just verify it runs without error
         _sync_staging_to_nfs(tmp_path)
 
     def test_empty_directory(self, tmp_path):
         """Verify handles empty directory (just syncs directory)."""
-        _sync_staging_to_nfs(tmp_path)  # Should not raise
+        _sync_staging_to_nfs(tmp_path)
 
     def test_skips_subdirectories(self, tmp_path):
         """Verify only syncs files, not subdirectories."""
-        # Create a file and a subdirectory
         (tmp_path / "test.parquet").write_bytes(b"data")
         (tmp_path / "subdir").mkdir()
 
-        # Should not raise - subdirectory is skipped
         _sync_staging_to_nfs(tmp_path)
 
 
@@ -220,7 +211,6 @@ class TestMetadataSerialization:
         df = pl.read_parquet(tmp_path / "metrics.parquet")
         assert len(df) == 1
 
-        # Verify metadata was serialized correctly
         stored_metadata = json.loads(df["metadata"][0])
         assert stored_metadata == {"chain": "A", "resolution": 2.5}
 
@@ -278,11 +268,7 @@ class TestMetadataSerialization:
 
 
 class TestMetricOriginalNameStaging:
-    """Tests for MetricArtifact.original_name staging.
-
-    Verifies that original_name is correctly written to Parquet during staging.
-    This was a bug fix - original_name existed in memory but wasn't persisted.
-    """
+    """Verify that metric original names survive staging."""
 
     def test_stage_metrics_preserves_original_name(self, tmp_path):
         """Verify metric original_name is staged to Parquet."""
@@ -301,11 +287,11 @@ class TestMetricOriginalNameStaging:
         assert df["original_name"][0] == "sample_001_metrics"  # Stem only
 
 
-class TestStageBatchStrategys:
-    """Tests for _stage_configs function."""
+class TestStageExecutionConfigArtifacts:
+    """Test type-based staging of execution configuration artifacts."""
 
-    def test_stage_configs_writes_parquet(self, tmp_path):
-        """_stage_configs writes parquet file with correct data."""
+    def test_stage_execution_configs_writes_parquet(self, tmp_path):
+        """Write execution configuration artifacts to configs.parquet."""
         fs = LocalFileSystem()
         artifact = ExecutionConfigArtifact.draft(
             content={"contig": "40-150", "length": "175-275"},
@@ -316,11 +302,9 @@ class TestStageBatchStrategys:
         artifacts = {"config": [artifact]}
         _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
-        # Verify file exists
         parquet_path = tmp_path / "configs.parquet"
         assert parquet_path.exists()
 
-        # Verify content
         df = pl.read_parquet(parquet_path)
         assert df.shape[0] == 1
         assert df["artifact_id"][0] == artifact.artifact_id
@@ -338,11 +322,10 @@ class TestStageBatchStrategys:
         artifacts = {"metric": [metric]}
         _stage_artifacts_by_type(artifacts, str(tmp_path), fs)
 
-        # Metric should be written to metrics.parquet, not configs.parquet
         assert (tmp_path / "metrics.parquet").exists()
         assert not (tmp_path / "configs.parquet").exists()
 
-    def test_stage_configs_preserves_metadata(self, tmp_path):
+    def test_stage_execution_configs_preserves_metadata(self, tmp_path):
         """Verify execution config metadata is serialized correctly."""
         fs = LocalFileSystem()
         artifact = ExecutionConfigArtifact.draft(
@@ -359,8 +342,8 @@ class TestStageBatchStrategys:
         stored_metadata = json.loads(df["metadata"][0])
         assert stored_metadata == {"tool": "tool_c", "version": "1.0"}
 
-    def test_stage_configs_multiple_artifacts(self, tmp_path):
-        """_stage_configs handles multiple artifacts from different roles."""
+    def test_stage_execution_configs_multiple_artifacts(self, tmp_path):
+        """Stage execution configurations from multiple output roles."""
         fs = LocalFileSystem()
         artifact1 = ExecutionConfigArtifact.draft(
             content={"contig": "40-150"},
@@ -551,48 +534,6 @@ class TestToolOutputColumns:
         df = pl.read_parquet(tmp_path / "executions.parquet")
         assert df["tool_output"][0] is None
         assert df["worker_log"][0] is None
-
-
-class TestJsonDefault:
-    """Tests for _json_default fallback handler."""
-
-    def test_set_to_sorted_list(self):
-        assert _json_default({"c", "a", "b"}) == ["a", "b", "c"]
-
-    def test_empty_set(self):
-        assert _json_default(set()) == []
-
-    def test_path_to_string(self):
-        from pathlib import Path
-
-        assert _json_default(Path("/tmp/test.dat")) == "/tmp/test.dat"
-
-    def test_unsupported_type_raises(self):
-        with pytest.raises(TypeError, match="object"):
-            _json_default(object())
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("local"),
-        pytest.param("s3", marks=pytest.mark.s3),
-    ]
-)
-def backend_fs(request, tmp_path):
-    """Yield ``(fs, uri_prefix)`` for both local and s3 backends.
-
-    Inlined here because ``tests/artisan/execution/`` does not share the
-    storage-layer ``backend_fs`` fixture. The ``s3`` param carries the
-    ``s3`` resource marker so ``test-unit`` stays MinIO-free. ``s3_fs``
-    is resolved lazily via ``request.getfixturevalue`` so the local-only
-    run never instantiates MinIO via testcontainers (which leaks a
-    Docker UNIX socket on session teardown when the daemon isn't
-    reachable).
-    """
-    if request.param == "local":
-        return LocalFileSystem(), str(tmp_path)
-    fs, _, uri_prefix = request.getfixturevalue("s3_fs")
-    return fs, uri_prefix
 
 
 class TestParquetWriterBackendParametrized:
