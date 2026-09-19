@@ -29,6 +29,8 @@ Task-oriented instructions for common Artisan framework operations. Each guide f
 
 ## Results
 
+- [Connect an MCP Client](connecting-mcp.md) -- Discover operations and inspect
+  runs and failure logs through the read-only MCP server
 - [Inspecting Provenance](inspecting-provenance.md) -- Query lineage and trace
   artifact history
 - [Exporting Results](exporting-results.md) -- Extract data from Delta tables
