@@ -9,164 +9,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `compute_resources` kwarg on `submit_composite` / `run_composite` and
-  on `ExpandedCompositeContext.run` / `_run_nested_composite`, plus
-  `compute_provider`, `skip_cache`, `failure_policy`, and `compact`
-  forwarding through the expanded composite path. Per-`ctx.run()`
-  overrides for these kwargs now match the collapsed-mode surface.
-- Typed-config acceptance on every override kwarg of `submit` / `run` /
-  `submit_composite` / `run_composite`. Each kwarg accepts
-  `dict | TypedModel | None` (plus `str` for the active-selector forms
-  on `environment` and `compute_provider`); a single set of `_coerce_*`
-  helpers normalizes typed models to dicts at the boundary, so the
-  downstream pipeline consumes dicts unchanged.
-- `_validate_compute_provider`, `_validate_compute_resources`, and
-  `_reject_inactive_provider_config` validators on the public surface.
-  Passing `environment={"docker": {...}}` (or a `compute_provider` dict)
-  without the matching `active=` selector now raises `ValueError` at
-  call time, closing a silent misconfiguration case.
-- `tests/artisan/schemas/operation_config/test_compute_resources.py`
-  (field validation, unknown-key rejection, round-trip) and end-to-end
-  hash-stability fixtures that flow through `_merge_config_overrides`
-  rather than calling the hashing primitive directly.
+- Structured command evidence for local and endpoint executions, including actual
+  wrapped argument lists, execution order, outcomes, redaction, and subprocess
+  launch timing. Commands can be inspected without parsing tool output.
+- Single-execution debug replay with fresh attempt identities, verbose output,
+  preserved diagnostics, and explicit limits when reconstruction is unavailable.
+- Per-step and composite `cache_policy` overrides with documented inheritance.
+- Run-scoped through-N ingestion and an artifact-writing skill.
+- MCP setup guidance and real stdio-client checks for development and installed
+  release packages.
+- Explicit offline repair of interrupted logical commits.
 
 ### Changed
 
-- **BREAKING — Prefect orchestration removed.** Artisan now sequences and
-  dispatches work through its native local process runner, with no Prefect
-  server or runtime dependency. The `prefect_server` pipeline argument and
-  built-in SLURM runner names are removed; install `artisan-submitit` and pass
-  a `SlurmRunner()` or `SlurmIntraRunner()` instance for SLURM execution.
-- **BREAKING — third-party runner lifecycle contract updated.** Import provider
-  types from `artisan.orchestration.runner_api`. `LifecycleRouter.dispatch()` is
-  now the concrete state-transition template; providers implement `_dispatch()`
-  and `cancel()`. Routers return one ordered `UnitResult` per submitted unit and
-  attach captured stdout/stderr to `UnitResult.worker_log`. The former
-  `RunnerBase.capture_logs()` hook has been removed.
-- Resuming a historical scheduler pipeline now requires its provider runner
-  instance through `default_step_runner`. For example, pass a configured
-  `SlurmRunner()` to `PipelineManager.resume()`. Every legacy history that
-  predates persisted pipeline-default metadata requires an explicit default,
-  because even all-local effective rows cannot prove the historical default.
-- Cancellation finalization cancels queued pipeline futures, terminates the
-  exact process-pool workers owned by the local runner, and waits for running
-  runner collection and pipeline work to settle before `finalize()` returns.
-  It discards records and artifacts staged by the cancelled step and protects
-  per-step cancellation sentinels from normal cleanup and staged recovery.
-  Cancellation is retried through idempotent runner hooks until work settles.
-  Provider/bootstrap failures now synthesize one inspectable execution failure
-  record per affected unit and count every affected artifact. Partial local
-  process-pool submission preserves completed prefix batches and fails only the
-  unsent suffix.
-- **`GroupByStrategy.LINEAGE` contract narrowed to directed ancestry.**
-  `match_by_ancestry` now requires a directed path from candidate back
-  to target, not just a shared ancestor. This eliminates a
-  sibling-collision nondeterminism bug where multiple targets sharing
-  one upstream ancestor produced run-to-run-varying pair assignments.
-  The known production user of LINEAGE pairing (single-anchor 1:N where
-  the anchor is upstream of each item) is unaffected because the anchor
-  is in each item's directed ancestry. Pipelines that depended on
-  sibling-shared-ancestor pairing — none known — will see candidates
-  dropped with WARNING-level logs ("LINEAGE matching: candidate %s...
-  from role '%s' has no directed path to any target"). The matcher
-  additionally raises `RuntimeError` when a candidate has multiple
-  targets at the same hop depth on different branches; previously this
-  case silently picked an arbitrary target. `IngestPipelineStep`
-  re-rooting becomes an optional cleanup (no longer needed as a
-  workaround for matcher ambiguity).
-- **BREAKING — Skill renames:** The artisan plugin's skill names are inverted
-  to noun-first for tab-completion grouping. `write-operation` →
-  `operation-write`, `write-composite` → `composite-write`, `write-pipeline`
-  → `pipeline-write`. Any downstream invocations of `/write-operation`,
-  `/write-composite`, `/write-pipeline` (or their `/artisan:` namespaced
-  forms) must be updated to the new names. No aliases are kept.
-- **Cache invalidation event:** `_merge_config_overrides` now emits
-  `"compute_resources"` as a fourth payload key alongside `"environment"`,
-  `"tool"`, and `"compute_provider"`. Two runs that differ only by
-  `compute_resources` (e.g. A100 vs H100) previously cached to the
-  same `step_spec_id` and silently reused each other's artifacts; they
-  now hash distinctly. Any cached step dispatched with non-default
-  `compute_resources` will miss after this change.
-- `ComputeResources` schema now uses `extra="forbid"` so unknown keys
-  raise `ValidationError`.
-- Restructured tutorials with numeric prefixes (`01-` … `09-`) on
-  every top-level category, split the 13-flat `execution/` dir into
-  five peer categories (`03-caching/`, `04-batching/`,
-  `05-errors-and-control/`, `06-storage/`, `07-compute-backends/`),
-  and updated every inbound link in `docs/concepts/`,
-  `docs/how-to-guides/`, `docs/getting-started/`,
-  `docs/contributing/`, `docs/reference/`, peer notebooks, and demo
-  scripts. Disk order now matches the teaching arc; the sidebar
-  mirrors disk one-to-one (no synthetic groupings). Fixes seven
-  occurrences of the broken
-  `pipeline-design/06-composable-operations.ipynb` link (the file is
-  `06-composites.ipynb`) and drops three references to the
-  non-existent `01-run-vs-submit.ipynb`. Use `git log --follow` for
-  history on moved files.
-- Vocabulary sweep: completes the `backend` → `step runner` /
-  `BackendBase` → `RunnerBase` rename across `docs/concepts/`,
-  `docs/reference/`, `docs/contributing/`, `docs/how-to-guides/`, and
-  the execution tutorial notebooks. The kwargs `resources` /
-  `execution` / `compute` are renamed to `runner_resources` /
-  `batch_strategy` / `compute_provider` in the corresponding doc
-  examples (the source had already migrated). The `Compute` class is
-  renamed to `ComputeProvider` in code samples. `pipeline.expand()`
-  references in docs are replaced with
-  `pipeline.submit_composite(..., expand=True)`.
-- Renamed pytest marker `slow` to `integration` across `pyproject.toml`,
-  pixi tasks, all 17 files in `tests/integration/`, and contributor docs.
-  The new name describes the requirement (real infrastructure and end-to-end
-  execution) rather than a speed adjective. Select with `pytest -m integration`;
-  deselect with `pytest -m 'not integration'`.
-- Tightened pre-commit hook scope: per-hook excludes for blacken-docs (4
-  files with intentional pseudo-code), check-yaml / prettier
-  (`recipe/meta.yaml` Jinja template), name-tests-test
-  (`tests/fixtures/csv.py` helper), and end-of-file-fixer /
-  trailing-whitespace (Delta Lake fixture stores under
-  `docs/tutorials/*/runs/`). Dropped Markdown from prettier's scope —
-  contributors hand-format MyST; Python in Markdown fences stays
-  covered by blacken-docs. Added codespell ignore for structural-biology
-  token `SER`. Added `explicit_package_bases` / `namespace_packages` to
-  mypy config so it can run past the duplicate-`conftest` issue. No
-  behavior changes.
-- Bumped pixi's `ruff` pin from `==0.6.2` to `==0.13.2` to match the
-  pre-commit gate's `ruff-pre-commit` rev, then applied `ruff format`
-  tree-wide (5 files touched). Previously `pixi run -e dev fmt` and
-  the pre-commit gate could disagree on formatting; they now run the
-  same ruff version.
-- Resolved 532 `ruff check` violations: 184 via autofix (EM101/EM102
-  message hoisting, SIM117 with-statement merges), the remainder via
-  real fixes (undefined `OperationDefinition` type hint in local
-  backend, `os.environ.get` default type, two `assert False` →
-  `pytest.fail`, three loop-variable renames, en-dash → hyphen in
-  one docstring) plus documented `[tool.ruff.lint.ignore]` and
-  `[tool.ruff.lint.per-file-ignores]` entries covering G004,
-  PLW0603, and the protocol-conformance `ARG` / pytest-style rules
-  in tests.
-- Mypy strict-mode now passes on `src/artisan/**`. Added
-  `[[tool.mypy.overrides]]` relaxing `tests/**` (ignore_errors) and
-  silencing third-party untyped imports (fsspec, graphviz,
-  cloudpickle, ipywidgets, matplotlib, modal,
-  IPython). Cleared ~290 real type errors in src via an 8-agent
-  parallel dispatch plus coordinator residuals — primarily type
-  annotations, narrowing casts, and specific-code `type: ignore`
-  comments. No runtime behavior changes. `pixi run -e dev mypy
-  src/artisan tests` and `pre-commit run mypy --all-files` now
-  exit 0. Tests under `tests/**` remain parsed by mypy but
-  errors are not reported — functional regression gate stays
-  pytest; tightening tests back toward strict is deferred to a
-  future phase.
-- `pixi run -e dev setup` now auto-installs pre-commit hooks
-  (reinstates the block removed in `c79990d` once the backlog was
-  cleared). A new `pre-commit` CI job runs
-  `pixi run -e dev pre-commit run --all-files` on every push/PR, so
-  regressions on any hook (ruff, mypy, blacken-docs, codespell, ...)
-  now block merge. Default-env `pixi run setup` still skips the hook
-  install — pre-commit is a dev-feature dep.
+- **Breaking: store format 3.** The release uses typed artifact identity,
+  independent artifact locations, current-run cache-reuse relations,
+  completion-gated logical commits, and canonical command/replay evidence.
+  Existing stores must use a new Delta root; there is no migration or
+  compatibility reader. Artifact identity is version 1 and cache identity is
+  version 2.
+- **Breaking: public imports and operation parameters.** Use the documented
+  package facades; the root package no longer re-exports implementation types.
+  Operations declare a nested `Params` model and its `params` field. Flat
+  operation parameters and retired compatibility APIs have been removed.
+- **Breaking: orchestration and runner contracts.** Native local execution
+  replaces Prefect. SLURM runners come from `artisan-submitit`; pass a configured
+  provider instance and use `artisan.orchestration.runner_api` for provider
+  implementations. Routers settle one ordered `UnitResult` per submitted unit
+  and attach worker logs there. Resuming an external-runner pipeline requires
+  its configured provider instance.
+- **Breaking: compute ownership.** The unused pipeline-wide
+  `default_compute_provider` setting is removed. Operations declare compute
+  configuration and steps/composites can override it explicitly.
+- **Breaking: ingest selection.** `IngestPipelineStep` requires a source run and
+  selects that run's accepted outputs. Through-N mode unions outputs through
+  the inclusive boundary. Ingest reads the source again on every invocation;
+  operations can declare when their inputs/configuration are insufficient for
+  safe cache reuse.
+- **Breaking: log layout.** Pipeline sessions and failure logs have sortable,
+  unique paths. Readers use the same canonical layout as writers; old paths
+  have no fallback.
+- Mapping and typed configuration overrides share one validated recursive patch
+  contract. Explicit defaults and null values retain their meaning, and hashing
+  uses the same prepared configuration that execution consumes.
+- Artifact identity separates types and semantic content from storage locations.
+  Ordered input occurrences enter cache identities; loading external artifacts
+  verifies their bytes before use.
+- Step history uses explicit terminal states, guarded transitions, partial
+  outcomes, and confirmed/rejected/indeterminate cancellation evidence. Cache
+  hits have their own current-run attempt and preserve source execution links.
+- Endpoint data policies enforce URI, credential, archive, and output-sink trust
+  boundaries. Discovered Modal credentials are never forwarded to custom URLs.
+- Worker identity is resolved once into an immutable worker runtime.
+- Setup, contributor hooks, and notebook-kernel registration are explicit tasks.
+- Authoring skills use noun-first names: `operation-write`, `composite-write`,
+  `pipeline-write`, and `artifact-write`; old skill names have no aliases.
+- Tutorial paths follow the numbered learning sequence and published examples
+  use the supported API.
 
-### Removed
+### Fixed
 
-- Unused `fast` pytest marker (never applied to any test).
+- Directed-ancestry lineage pairing no longer accepts sibling-only matches and
+  fails clearly on ambiguous equal-distance candidates.
+- Cancellation and provider/bootstrap failures settle affected units without
+  discarding completed results or hiding execution failures.
+- Pipeline logs remain isolated across managers and release their file handlers
+  on finalization. Timing distinguishes subprocess creation from tool runtime.
+- Streaming subprocesses close their output pipes on completion and interruption.
+  Failure and cancellation diagnostics redact known credential values.
+- CLI model results preserve JSON arrays and values instead of Python object
+  representations.
+- Run-scoped inspection, provenance, and MCP readers preserve cached membership
+  and reject incomplete or inconsistent committed storage evidence.
+- Identical artifacts produced or imported at later steps deduplicate while
+  retaining their first committed origin.
+- Loaded artifact payloads count as hydrated without optional origin metadata;
+  decoded values cannot mutate finalized content under an existing identity.
+- Nested composite waits include descendants and share one timeout across all
+  owned steps. Filters preserve each criterion's selected metric source.
+- Endpoint output-delivery errors distinguish unavailable dependencies and
+  unsupported signing from transient transfer failures.
+- External artifact I/O supports local and object-store backends consistently;
+  staged artifact effects deduplicate by their natural identities.
+- Optional dependencies load lazily, MCP surfaces are bounded, and packaged
+  examples and documentation reflect the current release contracts.
 
 ## [0.1.2a5] - 2026-04-06
 
