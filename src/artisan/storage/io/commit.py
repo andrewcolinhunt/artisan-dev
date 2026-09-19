@@ -453,7 +453,7 @@ class DeltaCommitter:
         """Fault-injection seam exercised by crash-recovery tests."""
 
     def initialize_tables(self) -> None:
-        """Create the exact format-2 table set and publish its manifest last."""
+        """Create the exact release table set and publish its manifest last."""
         publish_manifest = prepare_store_initialization(
             self.delta_base_path,
             self._fs,

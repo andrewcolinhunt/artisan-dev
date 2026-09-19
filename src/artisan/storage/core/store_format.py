@@ -16,7 +16,7 @@ from artisan.storage.core.table_schemas import get_physical_schema_for_path
 from artisan.utils.path import uri_join
 
 STORE_MANIFEST = {
-    "store_format": 2,
+    "store_format": 3,
     "artifact_identity": 1,
     "cache_identity": 2,
 }
@@ -91,7 +91,7 @@ def _assert_table_schemas(
     fs: AbstractFileSystem,
     storage_options: dict[str, str],
 ) -> None:
-    """Require every coordinated format-2 table with its exact schema."""
+    """Require every coordinated release table with its exact schema."""
     for table in _known_table_paths():
         table_path = uri_join(delta_root, table)
         if not fs.exists(table_path):

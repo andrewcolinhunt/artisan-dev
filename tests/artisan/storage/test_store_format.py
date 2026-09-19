@@ -1,4 +1,4 @@
-"""Tests for the coordinated format-2 store boundary."""
+"""Tests for the coordinated release store boundary."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def test_initialize_empty_root_publishes_manifest_last(tmp_path) -> None:
     assert_store_format(root, fs)
 
 
-def test_format_2_manifest_without_cache_reuse_table_fails(tmp_path) -> None:
+def test_current_manifest_without_cache_reuse_table_fails(tmp_path) -> None:
     fs = LocalFileSystem()
     root = str(tmp_path / "delta")
     publish_store_manifest(root, fs)
@@ -91,7 +91,7 @@ def test_wrong_cache_reuse_schema_fails(tmp_path) -> None:
     [
         None,
         "not-json",
-        json.dumps({"store_format": 3, "artifact_identity": 1, "cache_identity": 2}),
+        json.dumps({"store_format": 2, "artifact_identity": 1, "cache_identity": 2}),
         json.dumps({"store_format": 2}),
     ],
 )
@@ -116,3 +116,19 @@ def test_nonempty_legacy_root_cannot_be_initialized(tmp_path) -> None:
 
     with pytest.raises(IncompatibleStoreError, match="not empty"):
         prepare_store_initialization(root, fs)
+
+
+def test_previous_manifest_rejected_even_with_current_tables(tmp_path) -> None:
+    fs = LocalFileSystem()
+    root = str(tmp_path / "delta")
+    DeltaCommitter(
+        root,
+        StagingManager(str(tmp_path / "staging"), fs),
+        fs=fs,
+    ).initialize_tables()
+    previous_manifest = {**STORE_MANIFEST, "store_format": 2}
+    with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "w") as stream:
+        json.dump(previous_manifest, stream)
+
+    with pytest.raises(IncompatibleStoreError, match="found .*store_format.*2"):
+        assert_store_format(root, fs)

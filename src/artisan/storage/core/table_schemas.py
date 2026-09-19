@@ -50,6 +50,9 @@ EXECUTIONS_SCHEMA = {
     "error_envelope": pl.String,  # JSON - structured ArtisanError envelope (nullable)
     "tool_output": pl.String,  # Captured stdout+stderr from external command
     "worker_log": pl.String,  # Provider-captured worker stdout+stderr
+    "command_recording": pl.String,  # JSON - typed command evidence and gaps
+    "replay_snapshot": pl.String,  # JSON - typed execution reconstruction evidence
+    "replay_of_execution_run_id": pl.String,  # Diagnostic source; null for normal work
     "metadata": pl.String,  # JSON - additional data
 }
 
@@ -134,6 +137,7 @@ STEPS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "step_run_id": pl.String,
     "step_spec_id": pl.String,
     "pipeline_run_id": pl.String,
+    "replay_of_execution_run_id": pl.String,
     "step_number": pl.Int32,
     "step_name": pl.String,
     "status": pl.String,
