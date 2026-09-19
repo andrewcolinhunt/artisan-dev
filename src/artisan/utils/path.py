@@ -89,7 +89,7 @@ def find_project_root() -> Path:
         RuntimeError: If none of the strategies find a valid root.
     """
     # Strategy 1: walk up from caller dir
-    p = get_caller_dir()
+    p = get_caller_dir(stack_level=2)
     while p != p.parent:
         if (p / "pyproject.toml").exists():
             return p

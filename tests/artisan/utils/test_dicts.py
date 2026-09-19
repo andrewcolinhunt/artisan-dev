@@ -6,25 +6,19 @@ from artisan.utils.dicts import flatten_dict
 
 
 class TestFlattenDict:
-    """Tests for flatten_dict."""
-
     def test_flat_input_passthrough(self) -> None:
-        """Already-flat dict is returned unchanged."""
         d = {"a": 1, "b": 2.0, "c": "hello"}
         assert flatten_dict(d) == d
 
     def test_single_nesting(self) -> None:
-        """Single level of nesting produces dot-separated keys."""
         d = {"a": {"b": 1, "c": 2}}
         assert flatten_dict(d) == {"a.b": 1, "a.c": 2}
 
     def test_deep_nesting(self) -> None:
-        """Multiple nesting levels produce multi-dot keys."""
         d = {"a": {"b": {"c": {"d": 42}}}}
         assert flatten_dict(d) == {"a.b.c.d": 42}
 
     def test_empty_dict(self) -> None:
-        """Empty dict returns empty dict."""
         assert flatten_dict({}) == {}
 
     def test_type_preservation(self) -> None:
@@ -40,7 +34,6 @@ class TestFlattenDict:
         assert result["none"] is None
 
     def test_mixed_nesting(self) -> None:
-        """Mix of flat and nested keys."""
         d = {"flat": 1, "nested": {"a": 2, "b": {"c": 3}}, "also_flat": 4}
         assert flatten_dict(d) == {
             "flat": 1,
@@ -50,7 +43,6 @@ class TestFlattenDict:
         }
 
     def test_custom_separator(self) -> None:
-        """Custom separator is used instead of dot."""
         d = {"a": {"b": 1}}
         assert flatten_dict(d, separator="/") == {"a/b": 1}
 

@@ -1,9 +1,8 @@
 """Artifact tools: query_artifacts, get_step_result.
 
-Both return artifact references (ids, types, index metadata) — never
-payloads. ``get_step_result`` resolves the step name to its number via the
-steps table (``inspect_step`` and the index are keyed by number) and groups
-the step's refs.
+Return references, never payloads. Run-scoped queries use accepted current-step
+output membership, including cached and passthrough outputs; origin metadata
+identifies where each artifact was first created.
 """
 
 from __future__ import annotations
@@ -31,11 +30,12 @@ def register(mcp: FastMCP) -> None:
         """Find artifacts by type or run to get ids for provenance walks.
 
         Returns a page of artifact references — artifact_id, artifact_type,
-        origin_step_number, current_step_number, and index metadata — filtered by artifact_type
-        and/or pipeline_run_id (AND-ed), with has_more and next_cursor. Pages
-        are capped at 100 items.
-        References only: never artifact content. Use the returned
-        artifact_id with artisan_get_provenance_graph to walk lineage.
+        origin_step_number, current_step_number, and index metadata — filtered
+        by artifact_type and/or pipeline_run_id (AND-ed), with has_more and
+        next_cursor. Pages are capped at 100 items. Run-scoped results reflect
+        accepted outputs, including cached and passthrough artifacts; their
+        current step can differ from their origin. References only, never
+        content. Use an artifact_id with artisan_get_provenance_graph.
         """
         config = ctx.lifespan_context["config"]
 
@@ -56,15 +56,15 @@ def register(mcp: FastMCP) -> None:
     async def artisan_get_step_result(
         ctx: Context, pipeline_run_id: str, step_name: str
     ) -> dict[str, Any]:
-        """Get the artifacts one step produced, grouped by artifact type.
+        """Get one step's accepted output references, grouped by artifact type.
 
-        Resolves the step name to its current number within the run, then returns
-        that step's artifact references grouped by artifact_type
-        (artifact_id, origin_step_number, metadata). References only, never
-        payloads — feed an artifact_id to artisan_get_provenance_graph to
-        trace lineage. Grouping is by type rather than input role: the
-        artifact index carries type, not role. An unknown step name yields
-        an empty result.
+        Resolves the step name within the run and includes accepted direct,
+        cached, and passthrough outputs. Each reference carries artifact_id,
+        origin_step_number, current_step_number, and metadata: the current
+        step can differ from the artifact's origin. References only, never
+        payloads. Feed an artifact_id to artisan_get_provenance_graph to trace
+        lineage. Results are grouped by artifact_type, not role. An unknown
+        step name yields an empty result.
         """
         config = ctx.lifespan_context["config"]
 

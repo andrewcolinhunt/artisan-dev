@@ -1,8 +1,7 @@
 """Error-envelope round-trips through the MCP wire.
 
-Every fallible tool returns ``ArtisanError.to_dict()`` on failure rather
-than raising, so the client receives a structured envelope, not a tool
-error.
+Handled core failures return structured error envelopes. Invalid arguments
+rejected by the MCP input schema return tool errors.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ class TestEnvelopeBoundary:
     def test_incompatible_store_from_missing_manifest(
         self, make_app, invoke, tmp_path
     ) -> None:
-        # A root without the exact format-2 contract fails before table reads.
+        # A root without a supported store manifest fails before table reads.
         env = invoke(
             make_app(delta_root=tmp_path),
             "artisan_get_run_status",

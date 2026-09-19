@@ -1,24 +1,8 @@
 """Artisan command-line interface.
 
-The repo's console entry point (``[project.scripts]``). Subcommands:
-
-- ``artisan modal deploy <op>`` — deploy a tool op's Modal endpoint.
-- ``artisan op image <op>`` — print the container image ref an op runs
-  in (``--json`` for the full container view). Modal-free: external
-  harnesses resolve "which image runs op X" from the op's config.
-- ``artisan op run <module:Qualname>`` — run an ``execute_as_tool``
-  op's Python body. The framework-generated command: ``run_command``
-  spawns it locally, the endpoint worker spawns it in containers, and
-  RL harnesses invoke it directly via ``docker run``.
-- ``artisan docker build <op>`` — build the op's image from its
-  conventional Dockerfile, tagged with the ref the config declares.
-- ``artisan op list`` / ``artisan op describe <op>`` — registry
-  discovery for agents and humans (``--json`` for machine output).
-- ``artisan runs`` / ``artisan failures`` / ``artisan provenance`` —
-  read persisted run history, failure envelopes, and provenance edges
-  from a Delta root (``--delta-root`` or ``ARTISAN_DELTA_ROOT``).
-- ``artisan store repair`` — report or deliberately repair incomplete
-  logical commits.
+Expose operation discovery and execution, container builds, endpoint deployment,
+store inspection, diagnostic execution replay, and logical-commit repair.
+Use ``artisan --help`` and subcommand help for available commands and flags.
 
 Heavy artisan imports are deferred into the command functions so
 ``--help`` and argument errors stay fast. Under ``--json``, handled
@@ -227,7 +211,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_store_args(parser: argparse.ArgumentParser) -> None:
-    """Add the shared flags for commands that read a Delta root."""
+    """Add shared store-location and JSON-output flags."""
     parser.add_argument(
         "--delta-root",
         default=None,
