@@ -30,8 +30,6 @@ Follow this structure. Adjust imports, steps, and wiring to match the request.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from artisan.operations.curator import Filter, Merge
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
@@ -39,8 +37,8 @@ from artisan.orchestration import PipelineManager
 
 def main() -> None:
     """Run the pipeline."""
-    delta_root = Path("output/delta")
-    staging_root = Path("output/staging")
+    delta_root = "output/delta"
+    staging_root = "output/staging"
 
     pipeline = PipelineManager.create(
         name="my_pipeline",
@@ -49,14 +47,12 @@ def main() -> None:
     )
     output = pipeline.output
 
-    # -- Generate --
     pipeline.run(
         DataGenerator,
         name="generate",
         params={"count": 4, "seed": 42},
     )
 
-    # -- Transform --
     pipeline.run(
         DataTransformer,
         name="transform",
@@ -64,7 +60,6 @@ def main() -> None:
         params={"scale_factor": 2.0},
     )
 
-    # -- Score --
     pipeline.run(
         MetricCalculator,
         name="score",
@@ -84,7 +79,8 @@ if __name__ == "__main__":
 ## run() / submit() API
 
 Both methods accept identical parameters. `run()` blocks and returns
-`StepResult`. `submit()` returns `StepFuture` immediately.
+`StepResult`. `submit()` prepares the step synchronously, including waiting for
+its inputs, then returns a `StepFuture` for background execution.
 
 ```python
 result = pipeline.run(
@@ -130,7 +126,8 @@ step.
 ## run_composite() / submit_composite() API
 
 Runs a composite — each internal `ctx.run()` becomes its own pipeline step.
-`run_composite()` blocks; `submit_composite()` returns immediately. Accepts
+`run_composite()` waits for the composite's child steps; `submit_composite()`
+expands and submits the graph, then returns a `CompositeResult`. Accepts
 `CompositeDefinition` subclasses only (passing a composite to `run`/`submit`
 raises `TypeError`).
 
@@ -303,7 +300,7 @@ disambiguate collisions:
 ```python
 params={"criteria": [
     {"metric": "distribution.median", "operator": "gt", "value": 0.5},
-    {"metric": "quality.score", "step": "quality_check", "operator": "gte", "value": 0.8},
+    {"metric": "quality.score", "step": "quality_check", "operator": "ge", "value": 0.8},
 ]}
 ```
 
@@ -313,7 +310,7 @@ Operations with multiple input roles use `group_by` to pair artifacts:
 
 ```python
 # On the operation class:
-# group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+# group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
 pipeline.run(MyMultiInputOp, name="process", inputs={
     "dataset": output("generate", "datasets"),
@@ -347,9 +344,23 @@ Name a reusable multi-operation sequence, then run it with `run_composite`.
 Each internal operation becomes its own pipeline step with full provenance:
 
 ```python
+from enum import StrEnum
+from typing import ClassVar
+
+from artisan.composites import CompositeContext, CompositeDefinition
+from artisan.schemas import InputSpec, OutputSpec
+
+
 class TransformAndScore(CompositeDefinition):
     name = "transform_and_score"
     description = "Transform data then compute metrics"
+
+    class InputRole(StrEnum):
+        DATA = "data"
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        "data": InputSpec(artifact_type="data", required=True),
+    }
 
     class OutputRole(StrEnum):
         METRICS = "metrics"
@@ -404,10 +415,10 @@ summary = pipeline.finalize()
 | Parameter | Type | Default | Purpose |
 |---|---|---|---|
 | `name` | `str` | *(required)* | Pipeline name |
-| `delta_root` | `Path \| str` | *(required)* | Delta Lake storage path |
-| `staging_root` | `Path \| str` | *(required)* | Temporary worker output path |
-| `working_root` | `Path \| str \| None` | `$TMPDIR` | Sandbox for execution |
-| `files_root` | `Path \| str \| None` | Derived beside `delta_root` | Artisan-managed external files |
+| `delta_root` | `str` | *(required)* | Delta Lake storage URI |
+| `staging_root` | `str` | *(required)* | Temporary worker output URI |
+| `working_root` | `str \| None` | `$TMPDIR` | Sandbox for execution |
+| `files_root` | `str \| None` | Derived beside `delta_root` | Artisan-managed external files URI |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | Default for all steps |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | Default whole-step cache policy |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Built-in local runner or external provider instance |
@@ -423,8 +434,8 @@ summary = pipeline.finalize()
 ```python
 {
     "metric": "field.name",       # Dot-path into metric content
-    "operator": "gt",             # gt, lt, gte, lte, eq, ne, between
-    "value": 0.5,                 # Threshold (scalar or [low, high] for between)
+    "operator": "gt",             # gt, ge, lt, le, eq, ne
+    "value": 0.5,                 # Numeric, string, or Boolean comparison value
     "step": "step_name",          # Optional: disambiguate metric source
     "step_number": 3,             # Optional: alternative to step name
 }
@@ -478,8 +489,9 @@ pipeline = PipelineManager.resume(
   operations, not creators
 - **Role names must match** the operation's `InputRole`/`OutputRole` enum values
   exactly
-- **Content-addressed cache** — change `name` or `delta_root` to force re-run
-  after code changes
+- **Force a re-run** — pass `skip_cache=True`. Step names do not change cache
+  identity. Increment the operation's `version` when its computational
+  behavior changes so future runs use the new identity.
 - **Skipped steps are not cached** — steps that receive empty inputs skip
   gracefully and re-evaluate on next run
 - **Filter points to data, not metrics** — the `passthrough` input wires to the

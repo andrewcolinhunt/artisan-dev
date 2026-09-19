@@ -1,18 +1,13 @@
-# .readthedocs.yaml
-# Jupyter Book 2.x / MyST configuration
-
-# Required
 version: 2
 
-# Set the OS and Python version
 build:
   os: ubuntu-24.04
   tools:
     python: "3.12"
     nodejs: "20" # Required for Jupyter Book 2.x / MyST
   commands:
-    - curl -fsSL https://pixi.sh/install.sh | bash
-    - $HOME/.pixi/bin/pixi install --environment docs
-    - $HOME/.pixi/bin/pixi run -e docs docs-build
+    - curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.66.0 bash
+    - $HOME/.pixi/bin/pixi install --locked --environment docs
+    - $HOME/.pixi/bin/pixi run --locked -e docs docs-build
     - mkdir -p _readthedocs/html
     - cp -r docs/_build/html/* _readthedocs/html/
