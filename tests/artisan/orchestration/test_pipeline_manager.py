@@ -48,7 +48,7 @@ from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.enums import GroupByStrategy, TablePath
+from artisan.schemas.enums import CachePolicy, GroupByStrategy, TablePath
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
@@ -637,6 +637,72 @@ class TestResilientPredecessorWaiting:
 
         # Should NOT raise
         pipeline._wait_for_predecessors(inputs)
+
+
+@pytest.mark.parametrize("default", list(CachePolicy))
+@pytest.mark.parametrize("override", [None, *CachePolicy])
+@pytest.mark.parametrize(
+    "outcome", ["executed", "preparation_failed", "skipped", "cancelled"]
+)
+def test_cache_policy_audited_from_pending_through_terminal(
+    tmp_path: Path, default: CachePolicy, override: CachePolicy | None, outcome: str
+) -> None:
+    pipeline = PipelineManager.create(
+        name="policy_audit",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        cache_policy=default,
+    )
+    inputs = {"data": [] if outcome == "skipped" else [_INPUT_ID]}
+    expected_status = {
+        "executed": StepStatus.SUCCEEDED,
+        "preparation_failed": StepStatus.FAILED,
+        "skipped": StepStatus.SKIPPED,
+        "cancelled": StepStatus.CANCELLED,
+    }[outcome]
+    if outcome == "cancelled":
+        pipeline.cancel()
+
+    def execute(**kwargs: Any) -> StepResult:
+        result = StepResult(
+            step_name="mock_op",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+            step_run_id=kwargs["step_run_id"],
+            output_roles=frozenset({"output"}),
+            output_types={"output": "data"},
+        )
+        return kwargs["persist_result"](result, ())
+
+    import artisan.orchestration.pipeline_manager as manager_module
+
+    prepare = manager_module.prepare_inputs
+    with (
+        patch.object(manager_module, "execute_step", side_effect=execute),
+        patch.object(
+            manager_module,
+            "prepare_inputs",
+            side_effect=(
+                RuntimeError("preparation failed")
+                if outcome == "preparation_failed"
+                else prepare
+            ),
+        ),
+    ):
+        result = pipeline.run(
+            _MockOp, inputs=inputs, cache_policy=override, compact=False
+        )
+    pipeline.finalize()
+    assert result.status is expected_status
+    rows = pl.read_delta(tmp_path / "delta" / "orchestration" / "steps").filter(
+        pl.col("step_run_id") == result.step_run_id
+    )
+    assert {"pending", expected_status.value} <= set(rows["status"])
+    expected_policy = override if override is not None else default
+    assert {
+        json.loads(value)["cache_policy"] for value in rows["compute_options_json"]
+    } == {expected_policy.value}
 
 
 class TestEmptyInputsHandling:

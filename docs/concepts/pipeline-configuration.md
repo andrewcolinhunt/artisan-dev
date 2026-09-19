@@ -37,7 +37,13 @@ Compute providers belong to operation configuration and explicit step
 overrides, not `PipelineConfig`.
 
 **Policies.** How the pipeline reacts to a failed step (`failure_policy`) and
-which usable terminal step counts as a cache hit (`cache_policy`).
+the default for which usable terminal step counts as a cache hit (`cache_policy`).
+An individual step can override the cache policy, inheriting first from the
+nearest explicit composite default. Policy controls acceptance of prior
+results without changing computation identity. Resume retains accepted steps
+and uses its configured policy only for new submissions. See
+[Set cache policy](../how-to-guides/configuring-execution.md#set-cache-policy)
+for overrides and the distinction between whole-step and execution reuse.
 
 **Recovery and debugging.** Flags to recover leftover staging files from a
 crashed run, bypass the cache, or keep staging directories and worker sandboxes

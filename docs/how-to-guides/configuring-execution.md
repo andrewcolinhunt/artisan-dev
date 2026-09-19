@@ -585,6 +585,7 @@ it overrides depends on the setting:
 |---------|----------------|-------------------|
 | `step_runner` | `PipelineManager.create(default_step_runner=...)` | Step `step_runner` |
 | `failure_policy` | `PipelineManager.create(failure_policy=...)` | Step `failure_policy` |
+| `cache_policy` | Nearest composite default, then pipeline `cache_policy` | Step `cache_policy` |
 | `compute_provider` | Operation class | Step `compute_provider` |
 | `runner_resources`, `batch_strategy`, `environment`, `tool`, `compute_resources` | Operation class | Matching step keyword |
 | `group_by` | Operation class | Step `group_by` |
@@ -828,13 +829,18 @@ Failures are always recorded for diagnosis.
 
 ## Set cache policy
 
-Cache policy controls which previously usable terminal step qualifies as a
-cache hit on re-run (for example, when resuming a pipeline):
+Cache policy controls which previous terminal step qualifies as a whole-step
+cache hit. Set a pipeline default, then override individual steps as needed:
 
 ```python
 from artisan.schemas import CachePolicy
 
-pipeline = PipelineManager.create(..., cache_policy=CachePolicy.STEP_COMPLETED)
+pipeline = PipelineManager.create(..., cache_policy=CachePolicy.ALL_SUCCEEDED)
+pipeline.run(
+    operation=MyOp,
+    inputs=...,
+    cache_policy=CachePolicy.STEP_COMPLETED,
+)
 ```
 
 | Policy | Behavior |
@@ -846,7 +852,61 @@ Failed, cancelled, and skipped attempts never qualify under either policy. The
 difference is whether a `partial` attempt counts as a hit.
 
 Use `STEP_COMPLETED` when you want to skip re-running a step that mostly
-succeeded, even if a few artifacts failed.
+succeeded, even if a few artifacts failed. `submit()` accepts the same argument.
+Pass a `CachePolicy` member; strings such as `"step_completed"` are rejected.
+Omitting the argument or passing `None` inherits the default.
+
+### Inherit policy through composites
+
+`run_composite()` and `submit_composite()` set defaults for their children:
+
+```python
+pipeline.run_composite(
+    MyComposite, inputs=..., cache_policy=CachePolicy.STEP_COMPLETED
+)
+
+# Inside compose(), require complete success for this child:
+ctx.run(MyOp, inputs=..., cache_policy=CachePolicy.ALL_SUCCEEDED)
+
+# Set a different default for an entire nested subtree:
+ctx.run(InnerComposite, inputs=..., cache_policy=CachePolicy.ALL_SUCCEEDED)
+```
+
+A leaf uses its explicit policy, then the nearest explicit enclosing composite
+policy, then the pipeline default. `None` continues that inheritance through
+nested composites. A deeper child can override either enum value again.
+
+### Retry unsuccessful execution units
+
+Whole-step caching and individual execution caching are separate. Suppose a
+step had three independent units, with two successes and one failure:
+
+- `STEP_COMPLETED` accepts the partial step without executing any units. The
+  result remains `partial`, including its failure count and error; downstream
+  steps receive its successful outputs.
+- `ALL_SUCCEEDED` rejects that partial whole-step hit, reuses the two successful
+  units, and retries the failed unit. Neither policy reuses a failed unit as a
+  successful execution.
+
+The current consumer's policy selects the newest eligible prior step. The
+source's policy does not restrict reuse. Changing policy preserves artifact
+IDs, step spec IDs, and execution spec IDs.
+
+### Bypass caching and resume
+
+Step `skip_cache=True` or pipeline `skip_cache=True` bypasses both cache layers.
+A child's explicit `skip_cache=False` can replace a composite default of
+`True`, but cannot disable pipeline-wide bypass. An operation declaring
+`cacheable=False` also bypasses both layers regardless of policy or skip flags.
+Diagnostic replay attempts are excluded from ordinary cache candidates under
+both policies.
+
+Each new attempt records its resolved policy, including cache hits, preparation
+failures, skips, and cancellations. `PipelineManager.resume(cache_policy=...)`
+sets the default for subsequent submissions. Previously accepted steps retain
+their outcomes and recorded policies, including partial cache hits. Omitting
+the resume argument uses `ALL_SUCCEEDED` for new steps; it does not recover a
+pipeline default from prior child policies.
 
 ---
 

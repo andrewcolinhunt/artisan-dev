@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from artisan.composites.base.results import CompositeStepHandle
 from artisan.schemas.composites.composite_ref import CompositeRef
-from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 
@@ -107,6 +107,7 @@ class CompositeContext:
         skip_cache: bool | None = None,
         failure_policy: FailurePolicy | None = None,
         compact: bool | None = None,
+        cache_policy: CachePolicy | None = None,
     ) -> CompositeStepHandle:
         """Submit an operation or nested composite as a child pipeline step.
 
@@ -128,6 +129,8 @@ class CompositeContext:
             skip_cache: Bypass cache. Defaults from composite level, else False.
             failure_policy: Failure policy. Defaults from composite level.
             compact: Run Delta compaction. Defaults from composite level, else True.
+            cache_policy: Whole-step cache policy. None inherits the nearest
+                composite default, then the pipeline default.
 
         Returns:
             CompositeStepHandle wrapping the child step's StepFuture.
@@ -153,6 +156,8 @@ class CompositeContext:
             compute_provider = defaults.get("compute_provider")
         if failure_policy is None:
             failure_policy = defaults.get("failure_policy")
+        if cache_policy is None:
+            cache_policy = defaults.get("cache_policy")
         if skip_cache is None:
             skip_cache = defaults.get("skip_cache", False)
         if compact is None:
@@ -179,6 +184,7 @@ class CompositeContext:
                 skip_cache,
                 failure_policy,
                 compact,
+                cache_policy,
             )
 
         future = self._pipeline.submit(
@@ -193,6 +199,7 @@ class CompositeContext:
             tool=tool,
             compute_provider=compute_provider,
             failure_policy=failure_policy,
+            cache_policy=cache_policy,
             compact=compact,
             skip_cache=skip_cache,
             name=step_name,
@@ -275,6 +282,7 @@ class CompositeContext:
         skip_cache: bool,
         failure_policy: FailurePolicy | None,
         compact: bool,
+        cache_policy: CachePolicy | None,
     ) -> CompositeStepHandle:
         """Recursively expand a nested composite.
 
@@ -297,6 +305,7 @@ class CompositeContext:
             compute_resources=compute_resources,
             compute_provider=compute_provider,
             failure_policy=failure_policy,
+            cache_policy=cache_policy,
             compact=compact,
             skip_cache=skip_cache,
         )

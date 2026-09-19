@@ -16,11 +16,12 @@ Three layers:
 from __future__ import annotations
 
 from dataclasses import fields
+from enum import StrEnum
 
 import pytest
 
 from artisan.operations.examples.data_transformer import DataTransformer
-from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.enums import CachePolicy, GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
@@ -277,3 +278,30 @@ def test_cache_fields_correspond_to_hashed_instance_fields() -> None:
     hashed = set(payload.keys()) - {"version"}
     assert hashed == expected
     assert "version" in payload
+
+
+@pytest.mark.parametrize("policy", [None, *CachePolicy])
+def test_cache_policy_is_runtime_only(policy: CachePolicy | None) -> None:
+    from artisan.orchestration.engine.step_executor import instantiate_operation
+
+    overrides = StepOverrides.from_user(cache_policy=policy)
+    assert overrides.cache_policy is policy
+    assert StepOverrides.from_user().cache_policy is None
+    assert "cache_policy" in StepOverrides._RUNTIME_FIELDS
+    operation = instantiate_operation(DataTransformer, overrides)
+    assert effective_config_payload(operation) == effective_config_payload(
+        DataTransformer()
+    )
+    assert "cache_policy" not in type(operation).model_fields
+
+
+class _ForeignPolicy(StrEnum):
+    STEP_COMPLETED = "step_completed"
+
+
+@pytest.mark.parametrize(
+    "policy", ["step_completed", 1, False, _ForeignPolicy.STEP_COMPLETED]
+)
+def test_cache_policy_rejects_non_enum_values(policy: object) -> None:
+    with pytest.raises(TypeError, match="cache_policy.*ALL_SUCCEEDED.*STEP_COMPLETED"):
+        StepOverrides.from_user(cache_policy=policy)  # type: ignore[arg-type]

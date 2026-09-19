@@ -41,6 +41,41 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
 
+@pytest.mark.parametrize(
+    "method", ["run", "submit", "run_composite", "submit_composite"]
+)
+@pytest.mark.parametrize("policy", ["step_completed", 1, False])
+def test_invalid_cache_policy_allocates_no_work(tmp_path, method, policy) -> None:
+    from artisan.composites import CompositeContext, CompositeDefinition
+    from artisan.orchestration import PipelineManager
+
+    composed = MagicMock()
+
+    class EmptyComposite(CompositeDefinition):
+        name = "empty_cache_policy_validation"
+
+        def compose(self, ctx: CompositeContext) -> None:
+            composed()
+
+    pipeline = PipelineManager.create(
+        name="validation",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+    )
+    target = EmptyComposite if "composite" in method else MockOpWithParams
+    with pytest.raises(TypeError, match="cache_policy"):
+        getattr(pipeline, method)(target, cache_policy=policy)
+    assert pipeline.current_step == 0
+    assert pipeline._step_start_records == {}
+    assert pipeline._active_futures == {}
+    assert (
+        pipeline._step_tracker.load_current_states(pipeline.config.pipeline_run_id)
+        == []
+    )
+    composed.assert_not_called()
+    pipeline.finalize()
+
+
 class MockOpWithParams(OperationDefinition):
     """Operation with a params sub-model."""
 

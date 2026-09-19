@@ -30,7 +30,7 @@ import pytest
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.enums import CachePolicy, GroupByStrategy
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -90,6 +90,7 @@ def test_submit_signature_advertises_all_override_kwargs() -> None:
         "params",
         "name",
         "failure_policy",
+        "cache_policy",
         "compact",
         "skip_cache",
     }
@@ -111,6 +112,23 @@ def test_run_kwargs_match_submit() -> None:
         f"In submit but not run: {submit_kwargs - run_kwargs}. "
         f"In run but not submit: {run_kwargs - submit_kwargs}"
     )
+
+
+@pytest.mark.parametrize("policy", list(CachePolicy))
+def test_cache_policy_reaches_whole_step_lookup(tmp_path, policy: CachePolicy) -> None:
+    pipeline = _make_pipeline(tmp_path)
+    with (
+        patch.object(
+            pipeline._step_tracker, "check_cache", return_value=None
+        ) as lookup,
+        patch(
+            "artisan.orchestration.pipeline_manager.execute_step",
+            side_effect=RuntimeError("test"),
+        ),
+    ):
+        pipeline.run(_StubOp, cache_policy=policy)
+    pipeline.finalize()
+    assert lookup.call_args.args[1] is policy
 
 
 def test_submit_composite_kwargs_match_submit_plus_composite_only() -> None:
