@@ -237,6 +237,16 @@ def _reject_unplanned_complete_rows(
             continue
         if owned.is_empty():
             continue
+        if _is_global_artifact_table(table_path) and "origin_step_number" in owned:
+            invalid_origin = owned.filter(
+                pl.col("origin_step_number").is_null()
+                | (pl.col("origin_step_number") != plan.step_number)
+            )
+            if not invalid_origin.is_empty():
+                msg = (
+                    f"Artifact origin disagrees with owning commit {logical_commit_id}"
+                )
+                raise StoreIntegrityError(msg)
         table = plan.table(table_path)
         if table is None:
             msg = f"Complete commit {logical_commit_id} has unplanned {table_path} rows"

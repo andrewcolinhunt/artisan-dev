@@ -357,6 +357,13 @@ def commit_plan_path(
     )
 
 
+def comparable_effect_rows(table_path: str, frame: pl.DataFrame) -> pl.DataFrame:
+    """Separate reusable artifact values from their first commit's origin."""
+    if _is_global_artifact_table(table_path) and "origin_step_number" in frame.columns:
+        return frame.drop("origin_step_number")
+    return frame
+
+
 def canonical_table_plan_key(
     logical_commit_id: str,
     table_path: str,
@@ -365,7 +372,7 @@ def canonical_table_plan_key(
     """Hash a table's canonical ownerless planned rows."""
     natural_key = get_natural_key(table_path)
     effect = _planned_effect_rows(table_path, frame, natural_key)
-    rows = _canonical_rows(effect, natural_key)
+    rows = _canonical_rows(comparable_effect_rows(table_path, effect), natural_key)
     return compute_content_digest(
         canonical_json_bytes(
             {
