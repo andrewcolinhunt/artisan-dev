@@ -14,7 +14,6 @@ import sysconfig
 import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -128,7 +127,6 @@ async def _session(
                     async with ClientSession(
                         read,
                         write,
-                        read_timeout_seconds=timedelta(seconds=30),
                         message_handler=handle_message,
                     ) as session:
                         await session.initialize()
@@ -147,19 +145,21 @@ async def _call(
     session: ClientSession, name: str, arguments: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Require a structured response without MCP-level tool failure."""
-    response = await session.call_tool(name, arguments or {})
-    assert response.isError is False, response
-    assert isinstance(response.structuredContent, dict), response
-    return response.structuredContent
+    response = (await session.call_tool(name, arguments or {})).model_dump(
+        mode="json", by_alias=True
+    )
+    assert response["isError"] is False, response
+    assert isinstance(response["structuredContent"], dict), response
+    return response["structuredContent"]
 
 
 async def _catalog(session: ClientSession) -> dict[str, Any]:
     """Verify the exact read-only surface and successful example discovery."""
-    tools = (await session.list_tools()).tools
-    assert {tool.name for tool in tools} == _READ_TOOLS
+    tools = (await session.list_tools()).model_dump(mode="json", by_alias=True)["tools"]
+    assert {tool["name"] for tool in tools} == _READ_TOOLS
     for tool in tools:
-        assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is True
+        assert tool["annotations"] is not None
+        assert tool["annotations"]["readOnlyHint"] is True
     capabilities = await _call(session, "artisan_capabilities")
     assert capabilities["read_only"] is True
     assert capabilities["delta_root"] is None
