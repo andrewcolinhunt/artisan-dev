@@ -30,10 +30,6 @@ from artisan.visualization.graph._styles import (
     render_graph,
 )
 
-# =============================================================================
-# Data Loading
-# =============================================================================
-
 
 def _scan_or_empty(
     delta_root: str,
@@ -129,39 +125,25 @@ def _load_artifact_labels(
             continue
 
         if "original_name" in schema:
-            df = (
-                scan_committed(
-                    delta_root,
-                    typedef.table_path,
-                    fs=fs,
-                    storage_options=storage_options,
-                )
-                .select(["artifact_id", "original_name"])
-                .collect()
-            )
-            for row in df.iter_rows(named=True):
-                name = row["original_name"]
-                if name:
-                    labels[row["artifact_id"]] = os.path.splitext(
-                        os.path.basename(name)
-                    )[0]
+            name_column = "original_name"
         elif "path" in schema:
-            df = (
-                scan_committed(
-                    delta_root,
-                    typedef.table_path,
-                    fs=fs,
-                    storage_options=storage_options,
-                )
-                .select(["artifact_id", "path"])
-                .collect()
+            name_column = "path"
+        else:
+            continue
+        df = (
+            scan_committed(
+                delta_root,
+                typedef.table_path,
+                fs=fs,
+                storage_options=storage_options,
             )
-            for row in df.iter_rows(named=True):
-                path = row["path"]
-                if path:
-                    labels[row["artifact_id"]] = os.path.splitext(
-                        os.path.basename(path)
-                    )[0]
+            .select(["artifact_id", name_column])
+            .collect()
+        )
+        for row in df.iter_rows(named=True):
+            name = row[name_column]
+            if name:
+                labels[row["artifact_id"]] = os.path.splitext(os.path.basename(name))[0]
 
     return labels
 
@@ -206,11 +188,6 @@ def _load_artifact_edges(
     )
 
 
-# =============================================================================
-# Label Generation
-# =============================================================================
-
-
 def _build_artifact_labels(
     artifact_index: pl.DataFrame,
     name_labels: dict[str, str],
@@ -221,11 +198,6 @@ def _build_artifact_labels(
         artifact_id = row["artifact_id"]
         labels[artifact_id] = name_labels.get(artifact_id, artifact_id[:8])
     return labels
-
-
-# =============================================================================
-# Graph Building
-# =============================================================================
 
 
 def build_micro_graph(
@@ -240,7 +212,7 @@ def build_micro_graph(
 
     Creates a unified visualization showing:
     - Execution nodes (operations) as rectangles
-    - Artifact nodes (data, files, metrics) with type-specific shapes
+    - Artifact nodes (data, files, metrics) with type-specific colors
     - Execution provenance edges (artifact ↔ execution)
     - Lineage edges (artifact → artifact) in orange
 
@@ -253,13 +225,13 @@ def build_micro_graph(
             Useful for step-by-step visualization of pipeline execution.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
-        pipeline_run_id: Optional exact run to project. Reused executions get
-            a distinct participation node at every current logical step.
+        pipeline_run_id: Exact run to project, or all origin steps if None.
+            Reused executions get a distinct participation node at every
+            current logical step in a run-scoped graph.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    # Load all data
     executions = _load_executions(delta_root, storage_options=storage_options, fs=fs)
     artifact_index = _load_artifact_index(
         delta_root, storage_options=storage_options, fs=fs
@@ -320,9 +292,7 @@ def build_micro_graph(
             & pl.col("target_artifact_id").is_in(included_artifact_ids)
         )
 
-    # Filter by max_step if provided
     if max_step is not None:
-        # Filter executions to steps <= max_step
         executions = executions.filter(pl.col("origin_step_number") <= max_step)
 
         # A run-scoped graph uses current participation for the step boundary;
@@ -341,29 +311,24 @@ def build_micro_graph(
             )
         included_artifact_ids = set(artifact_index["artifact_id"].to_list())
 
-        # Filter execution provenance to only edges where both endpoints are included
         exec_edges = exec_edges.filter(
             pl.col("artifact_id").is_in(included_artifact_ids)
         )
 
-        # Filter artifact provenance to only edges where both endpoints are included
         artifact_edges = artifact_edges.filter(
             pl.col("source_artifact_id").is_in(included_artifact_ids)
             & pl.col("target_artifact_id").is_in(included_artifact_ids)
         )
 
-    # Build label mappings
     artifact_labels = _build_artifact_labels(artifact_index, name_labels)
 
     graph = graphviz.Digraph("provenance", format="svg")
     apply_default_layout(graph)
 
-    # Build execution step lookup
     exec_step_lookup: dict[str, int] = {}
     for row in executions.iter_rows(named=True):
         exec_step_lookup[row["execution_run_id"]] = row["origin_step_number"]
 
-    # Track which steps have outputs (for creating output columns)
     steps_with_outputs: set[int] = set()
     for row in exec_edges.iter_rows(named=True):
         if row["direction"] == "output":
@@ -371,11 +336,9 @@ def build_micro_graph(
             step = exec_step_lookup.get(exec_id, 0)
             steps_with_outputs.add(step)
 
-    # Group nodes by step for ranking
     exec_by_step: dict[int, list[str]] = {}
     artifacts_by_step: dict[int, list[str]] = {}
 
-    # Add execution nodes
     for row in executions.iter_rows(named=True):
         exec_id = row["execution_run_id"]
         op_name = row["operation_name"]
@@ -416,16 +379,13 @@ def build_micro_graph(
             artifacts_by_step[step] = []
         artifacts_by_step[step].append(f"art_{artifact_id}")
 
-    # ==========================================================================
     # Strict column ordering using anchor nodes and rank constraints
     # Column order: exec_0 -> art_0 -> exec_1 -> art_1 -> exec_2 -> art_2 -> ...
     # Always create art_N column for any step N that has outputs (even passthroughs)
-    # ==========================================================================
     all_steps = sorted(
         set(exec_by_step.keys()) | set(artifacts_by_step.keys()) | steps_with_outputs
     )
 
-    # Create invisible anchor nodes for each column
     anchor_nodes: list[str] = []
     for step in all_steps:
         if step in exec_by_step:
@@ -434,7 +394,6 @@ def build_micro_graph(
         if step in artifacts_by_step or step in steps_with_outputs:
             anchor_nodes.append(f"_anchor_art_{step}")
 
-    # Add anchor nodes (invisible)
     for anchor in anchor_nodes:
         graph.node(anchor, label="", width="0", height="0", style="invis")
 
@@ -445,7 +404,6 @@ def build_micro_graph(
     # Group nodes into columns using rank=same with anchors
     # Anchors must be in the rank=same subgraph to enforce column ordering
     for step in all_steps:
-        # Executions column for this step
         step_execs = exec_by_step.get(step, [])
         if step_execs:
             with graph.subgraph() as s:
@@ -454,8 +412,6 @@ def build_micro_graph(
                 for node_id in step_execs:
                     s.node(node_id)
 
-        # Artifacts column for this step (outputs of this step)
-        # Create column if step has artifacts OR has outputs (for passthrough steps)
         step_artifacts = artifacts_by_step.get(step, [])
         if step_artifacts or step in steps_with_outputs:
             with graph.subgraph() as s:
@@ -464,7 +420,6 @@ def build_micro_graph(
                 for node_id in step_artifacts:
                     s.node(node_id)
 
-    # Add execution provenance edges (artifact ↔ execution)
     # Use artifact origin step for column position (artifacts stay in origin columns)
     for row in exec_edges.iter_rows(named=True):
         exec_id = row["execution_run_id"]
@@ -504,7 +459,6 @@ def build_micro_graph(
         else:
             graph.edge(exec_node, art_node, dir="both", arrowtail="dot")
 
-    # Add artifact lineage edges (artifact -> artifact) in orange
     for row in artifact_edges.iter_rows(named=True):
         source_id = row["source_artifact_id"]
         target_id = row["target_artifact_id"]
@@ -576,16 +530,17 @@ def get_max_step_number(
     *,
     pipeline_run_id: str | None = None,
 ) -> int | None:
-    """Return the highest step number present in the executions table.
+    """Return the highest origin or run-scoped logical execution step.
 
     Args:
         delta_root: Path to Delta Lake root directory.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
-        pipeline_run_id: Optional exact run to inspect.
+        pipeline_run_id: Exact run whose current execution positions to
+            inspect. None uses origin steps across all executions.
 
     Returns:
-        Maximum step number, or None if no executions exist.
+        Maximum step number, or None if the selected scope has no executions.
     """
     if pipeline_run_id is None:
         executions = _load_executions(

@@ -34,7 +34,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
 
-    # Create executions
     exec_data = {
         "execution_run_id": ["exec_1", "exec_2"],
         "execution_spec_id": ["spec_1", "spec_2"],
@@ -55,7 +54,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     }
     exec_df = executions_df(**exec_data)
 
-    # Create artifact_index
     artifact_data = {
         "artifact_id": ["art_ext_1", "art_inter_1", "art_metric_1"],
         "artifact_type": ["file_ref", "metric", "metric"],
@@ -64,7 +62,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     }
     artifact_df = pl.DataFrame(artifact_data, schema=ARTIFACT_INDEX_SCHEMA)
 
-    # Create metrics (intermediate + final)
     metric_data = {
         "artifact_id": ["art_inter_1", "art_metric_1"],
         "origin_step_number": [1, 2],
@@ -75,7 +72,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     }
     metric_df = pl.DataFrame(metric_data, schema=MetricArtifact.POLARS_SCHEMA)
 
-    # Create file_refs
     ext_data = {
         "artifact_id": ["art_ext_1"],
         "origin_step_number": [0],
@@ -87,7 +83,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     }
     ext_df = pl.DataFrame(ext_data, schema=FileRefArtifact.POLARS_SCHEMA)
 
-    # Create execution_edges
     exec_prov_data = {
         "execution_run_id": ["exec_1", "exec_1", "exec_2", "exec_2"],
         "direction": ["input", "output", "input", "output"],
@@ -96,7 +91,6 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     }
     exec_prov_df = pl.DataFrame(exec_prov_data, schema=EXECUTION_EDGES_SCHEMA)
 
-    # Create artifact_edges
     art_prov_data = {
         "execution_run_id": ["exec_1", "exec_2"],
         "source_artifact_id": ["art_ext_1", "art_inter_1"],
@@ -174,7 +168,6 @@ class TestBuildMicroGraph:
         """Empty delta root produces a graph with no nodes/edges."""
         graph = build_micro_graph(empty_delta_root)
         assert isinstance(graph, graphviz.Digraph)
-        # Graph source should have minimal content (just header)
         source = graph.source
         assert "digraph" in source
 
@@ -221,7 +214,6 @@ class TestBuildMicroGraph:
         graph = build_micro_graph(delta_root_with_data)
         source = graph.source
 
-        # Should have edges (arrow notation in DOT format)
         assert "->" in source
 
     def test_graph_has_lineage_edges_in_orange(
@@ -255,9 +247,7 @@ class TestBuildMicroGraph:
 
     def test_accepts_path_or_string(self, delta_root_with_data: Path) -> None:
         """Function accepts both Path and string delta_root."""
-        # Test with Path
         graph1 = build_micro_graph(delta_root_with_data)
-        # Test with string
         graph2 = build_micro_graph(str(delta_root_with_data))
 
         assert isinstance(graph1, graphviz.Digraph)
@@ -401,7 +391,6 @@ class TestMaxStepFiltering:
         graph = build_micro_graph(delta_root_with_data, max_step=None)
         source = graph.source
 
-        # Should have all executions
         assert "(1) data_parser" in source
         assert "(2) metric_calc" in source
 
@@ -410,9 +399,7 @@ class TestMaxStepFiltering:
         graph = build_micro_graph(delta_root_with_data, max_step=1)
         source = graph.source
 
-        # Step 1 should be included
         assert "(1) data_parser" in source
-        # Step 2 should be excluded
         assert "(2) metric_calc" not in source
 
     def test_max_step_filters_artifacts(self, delta_root_with_data: Path) -> None:
@@ -424,7 +411,6 @@ class TestMaxStepFiltering:
         assert "sample" in source  # External file from step 0
         assert "parsed_result" in source  # Intermediate metric from step 1
 
-        # Step 2 execution and artifacts should be excluded
         assert "metric_calc" not in source
         assert "art_metric_1" not in source
 
@@ -458,7 +444,6 @@ class TestMaxStepFiltering:
         # Step 0 artifact (external file) should be included
         assert "sample" in source
 
-        # Step 1+ executions should not be included
         assert "data_parser" not in source
         assert "metric_calc" not in source
 

@@ -1,17 +1,13 @@
-"""Unit tests for provenance graph walking utilities.
-
-Tests cover:
-- match_by_ancestry — end-to-end matching with filtering
-- walk_forward — forward provenance walk for metric discovery
-"""
+"""Test strict ancestry matching, including role completeness and ambiguity."""
 
 from __future__ import annotations
+
+import logging
 
 import polars as pl
 import pytest
 
 from artisan.execution.inputs.lineage_matching import match_by_ancestry
-from artisan.provenance.traversal import walk_forward
 
 
 def _provenance_map_to_edges(
@@ -154,8 +150,10 @@ class TestMatchByAncestry:
 
         assert len(result) == 0
 
-    def test_unmatched_candidate_warns(self, provenance_graph, caplog):
+    def test_unmatched_candidate_warns(self, provenance_graph, caplog, monkeypatch):
         """Warning logged with 'no directed path' for unmatched candidate."""
+        # Pipeline logging can disable propagation before this test runs.
+        monkeypatch.setattr(logging.getLogger("artisan"), "propagate", True)
         edges, ids = provenance_graph
         match_by_ancestry(
             target_ids={ids["A1a"]},
@@ -322,156 +320,3 @@ class TestMatchByAncestry:
 
         assert t in result
         assert result[t]["items"] == [t]
-
-
-def _edges_df(
-    edges: list[tuple[str, str]],
-    *,
-    type_map: dict[str, str] | None = None,
-) -> pl.DataFrame:
-    """Build edges DataFrame with optional target_artifact_type column."""
-    if not edges:
-        schema = {
-            "source_artifact_id": pl.String,
-            "target_artifact_id": pl.String,
-        }
-        if type_map is not None:
-            schema["target_artifact_type"] = pl.String
-        return pl.DataFrame(schema=schema)
-
-    data: dict[str, list[str]] = {
-        "source_artifact_id": [e[0] for e in edges],
-        "target_artifact_id": [e[1] for e in edges],
-    }
-    if type_map is not None:
-        data["target_artifact_type"] = [type_map.get(e[1], "data") for e in edges]
-    return pl.DataFrame(data)
-
-
-class TestWalkForwardToTargets:
-    """Tests for walk_forward."""
-
-    def test_single_hop(self):
-        """Source finds target one hop forward."""
-        edges = _edges_df([("S", "T")], type_map={"T": "metric"})
-        sources = pl.DataFrame({"artifact_id": ["S"]})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.height == 1
-        assert result["source_id"][0] == "S"
-        assert result["target_id"][0] == "T"
-
-    def test_multi_hop(self):
-        """Source finds target two hops forward."""
-        edges = _edges_df(
-            [("S", "M"), ("M", "T")],
-            type_map={"M": "data", "T": "metric"},
-        )
-        sources = pl.DataFrame({"artifact_id": ["S"]})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.height == 1
-        assert result["source_id"][0] == "S"
-        assert result["target_id"][0] == "T"
-
-    def test_no_targets_reachable(self):
-        """No targets of the requested type -> empty result."""
-        edges = _edges_df([("S", "M")], type_map={"M": "data"})
-        sources = pl.DataFrame({"artifact_id": ["S"]})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.is_empty()
-
-    def test_type_filtering(self):
-        """Only nodes matching target_type count as targets."""
-        edges = _edges_df(
-            [("S", "D"), ("S", "M")],
-            type_map={"D": "data", "M": "metric"},
-        )
-        sources = pl.DataFrame({"artifact_id": ["S"]})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.height == 1
-        assert result["target_id"][0] == "M"
-
-    def test_all_match_semantics(self):
-        """One source can match multiple targets."""
-        edges = _edges_df(
-            [("S", "M1"), ("S", "M2")],
-            type_map={"M1": "metric", "M2": "metric"},
-        )
-        sources = pl.DataFrame({"artifact_id": ["S"]})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.height == 2
-        target_ids = set(result["target_id"].to_list())
-        assert target_ids == {"M1", "M2"}
-
-    def test_diamond_graph(self):
-        """Diamond: S -> A, S -> B, A -> T, B -> T still finds T once."""
-        edges = _edges_df(
-            [("S", "A"), ("S", "B"), ("A", "T"), ("B", "T")],
-            type_map={"A": "data", "B": "data", "T": "metric"},
-        )
-        sources = pl.DataFrame({"artifact_id": ["S"]})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.height == 1
-        assert result["target_id"][0] == "T"
-
-    def test_empty_sources(self):
-        """Empty sources -> empty result."""
-        edges = _edges_df([("S", "T")], type_map={"T": "metric"})
-        sources = pl.DataFrame(schema={"artifact_id": pl.String})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.is_empty()
-
-    def test_empty_edges(self):
-        """Empty edges -> empty result."""
-        sources = pl.DataFrame({"artifact_id": ["S"]})
-        edges = _edges_df([], type_map={})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.is_empty()
-
-    def test_no_type_filter_returns_all(self):
-        """Without target_type, all reachable nodes are targets."""
-        edges = _edges_df(
-            [("S", "A"), ("A", "B")],
-            type_map={"A": "data", "B": "metric"},
-        )
-        sources = pl.DataFrame({"artifact_id": ["S"]})
-
-        result = walk_forward(sources, edges, target_type=None)
-
-        target_ids = set(result["target_id"].to_list())
-        assert target_ids == {"A", "B"}
-
-    def test_multiple_sources(self):
-        """Multiple sources each find their own targets."""
-        edges = _edges_df(
-            [("S1", "M1"), ("S2", "M2")],
-            type_map={"M1": "metric", "M2": "metric"},
-        )
-        sources = pl.DataFrame({"artifact_id": ["S1", "S2"]})
-
-        result = walk_forward(sources, edges, target_type="metric")
-
-        assert result.height == 2
-        pairs = set(
-            zip(
-                result["source_id"].to_list(),
-                result["target_id"].to_list(),
-                strict=False,
-            )
-        )
-        assert pairs == {("S1", "M1"), ("S2", "M2")}

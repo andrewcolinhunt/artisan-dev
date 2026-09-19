@@ -190,7 +190,7 @@ class TestDiagnoseRun:
         assert {"source_artifact_id": A, "target_artifact_id": B} in diag.upstream_edges
 
     def test_missing_executions_raises(self, tmp_path) -> None:
-        """A root without a format-2 contract fails before inspection."""
+        """A root without the current-format contract fails before inspection."""
         with pytest.raises(IncompatibleStoreError):
             diagnose_run(str(tmp_path), "run-1")
 

@@ -30,7 +30,6 @@ def delta_root_with_steps(tmp_path: Path, monkeypatch) -> Path:
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
 
-    # Create executions with 3 steps
     exec_data = {
         "execution_run_id": ["exec_0", "exec_1", "exec_2"],
         "execution_spec_id": ["spec_0", "spec_1", "spec_2"],
@@ -51,7 +50,6 @@ def delta_root_with_steps(tmp_path: Path, monkeypatch) -> Path:
     }
     exec_df = executions_df(**exec_data)
 
-    # Create artifact_index
     artifact_data = {
         "artifact_id": ["art_0", "art_1", "art_2"],
         "artifact_type": ["file_ref", "data", "metric"],
@@ -112,7 +110,6 @@ class TestDisplayProvenanceStepper:
 
         display_provenance_stepper(delta_root_with_steps, output_dir=output_dir)
 
-        # Should have created step images
         assert output_dir.exists()
         svg_files = list(output_dir.glob("step_*.svg"))
         assert len(svg_files) == 3  # Steps 0, 1, 2
@@ -136,9 +133,7 @@ class TestDisplayProvenanceStepper:
 
         widget = display_provenance_stepper(empty_delta_root)
 
-        # Should still return a VBox
         assert isinstance(widget, ipywidgets.VBox)
-        # First child should be a label with message
         assert len(widget.children) == 1
         assert isinstance(widget.children[0], ipywidgets.Label)
         assert "No pipeline" in widget.children[0].value
@@ -149,7 +144,6 @@ class TestDisplayProvenanceStepper:
 
         widget = display_provenance_stepper(delta_root_with_steps)
 
-        # Find slider in widget tree
         slider = None
         for child in widget.children:
             if isinstance(child, ipywidgets.HBox):

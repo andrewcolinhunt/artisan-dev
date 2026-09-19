@@ -22,7 +22,6 @@ from artisan.storage.core.table_schemas import (
     EXECUTION_EDGES_SCHEMA,
     EXECUTIONS_SCHEMA,
 )
-from artisan.utils.dicts import flatten_dict as _flatten_dict
 from artisan.utils.log_paths import failure_log_relative_path
 from artisan.visualization.inspect import (
     _build_details,
@@ -238,67 +237,6 @@ def _step_row(
         "error": "step failed" if status == "failed" else None,
         "metadata": "{}",
     }
-
-
-def _step_history(terminal: dict) -> list[dict]:
-    """Expand one logical row into its guarded lifecycle snapshots."""
-    pending = {
-        **terminal,
-        "step_spec_id": None,
-        "status": "pending",
-        "state_sequence": 0,
-        "disposition": None,
-        "cancellation_status": None,
-        "logical_commit_id": None,
-        "total_count": None,
-        "succeeded_count": None,
-        "failed_count": None,
-        "duration_seconds": None,
-        "error": None,
-        "metadata": None,
-    }
-    status = terminal["status"]
-    if status == "pending":
-        return [pending]
-    if status == "skipped":
-        skipped = {
-            **terminal,
-            "state_sequence": 1,
-            "disposition": None,
-            "cancellation_status": None,
-            "total_count": 0,
-            "succeeded_count": 0,
-            "failed_count": 0,
-            "duration_seconds": None,
-            "error": None,
-            "output_roles_json": "[]",
-            "output_types_json": "{}",
-        }
-        return [pending, skipped]
-    if status == "cancelled":
-        requested = {**pending, "state_sequence": 1, "cancellation_status": "requested"}
-        confirmed = {
-            **requested,
-            "state_sequence": 2,
-            "cancellation_status": "confirmed",
-        }
-        cancelled = {
-            **terminal,
-            "state_sequence": 3,
-            "disposition": None,
-            "cancellation_status": "confirmed",
-            "total_count": 0,
-            "succeeded_count": 0,
-            "failed_count": 0,
-            "duration_seconds": None,
-            "output_roles_json": "[]",
-            "output_types_json": "{}",
-        }
-        return [pending, requested, confirmed, cancelled]
-    running = {**pending, "status": "running", "state_sequence": 1}
-    if status == "running":
-        return [pending, running]
-    return [pending, running, terminal]
 
 
 # ======================================================================
@@ -1036,11 +974,6 @@ def test_inspect_data_not_found(tmp_path: Path) -> None:
 
 
 # ======================================================================
-# _flatten_dict tests
-# ======================================================================
-
-
-# ======================================================================
 # _build_details tests
 # ======================================================================
 
@@ -1079,19 +1012,6 @@ def test_build_details_config_params() -> None:
 
 def test_build_details_unknown_type() -> None:
     assert _build_details("unknown", {}) == "-"
-
-
-def test_flatten_dict_simple() -> None:
-    assert _flatten_dict({"a": 1, "b": 2}) == {"a": 1, "b": 2}
-
-
-def test_flatten_dict_nested() -> None:
-    assert _flatten_dict({"a": {"b": 1}}) == {"a.b": 1}
-
-
-def test_flatten_dict_deeply_nested() -> None:
-    result = _flatten_dict({"a": {"b": {"c": 3}}})
-    assert result == {"a.b.c": 3}
 
 
 # ======================================================================
