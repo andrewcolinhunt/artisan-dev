@@ -154,7 +154,7 @@ class CommandRecorder:
             return redact_values(text, tuple(self._values))
 
     def sanitize_data(self, value: Any) -> Any:
-        """Sanitize string leaves without changing structured diagnostic shape."""
+        """Sanitize diagnostic scalar leaves while retaining container structure."""
         if isinstance(value, str):
             return self.sanitize(value)
         if isinstance(value, (bool, int, float)):

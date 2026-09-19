@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import polars as pl
-import pytest
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
@@ -24,8 +23,6 @@ from artisan.schemas.execution.replay import ReplaySnapshot
 
 def _make_execution_context(tmp_path: Path) -> MagicMock:
     """Create a mock ExecutionContext with required attributes."""
-    from fsspec.implementations.local import LocalFileSystem
-
     staging_dir = tmp_path / "staging"
     staging_dir.mkdir(parents=True, exist_ok=True)
     ctx = MagicMock()
@@ -257,14 +254,7 @@ class TestRecordExecutionFailureEnvelope:
 
 
 class TestPassthroughStagedRowsGolden:
-    """Characterization: staged rows for the curator passthrough path.
-
-    Pins the exact executions / execution_edges / artifact_edges rows that
-    the passthrough recording produces, so the delegation refactor
-    (``_handle_passthrough_result`` -> ``record_passthrough``) can be proven
-    byte-identical. Exercises ``_handle_passthrough_result`` (the stable
-    entry that survives the refactor) and reads the staged Parquet back.
-    """
+    """Pin execution and provenance rows staged by curator passthrough handling."""
 
     def _run(self, tmp_path: Path):
         from artisan.execution.executors.curator import _handle_passthrough_result
@@ -399,28 +389,6 @@ class TestPassthroughStagedRowsGolden:
                 "step_boundary": True,
             }
         ]
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("local"),
-        pytest.param("s3", marks=pytest.mark.s3),
-    ]
-)
-def backend_fs(request, tmp_path):
-    """Yield ``(fs, uri_prefix)`` for both local and s3 backends.
-
-    Inlined here because ``tests/artisan/execution/`` does not share the
-    storage-layer ``backend_fs`` fixture. ``s3_fs`` is resolved lazily
-    via ``request.getfixturevalue`` so the local-only run never
-    instantiates MinIO via testcontainers (which leaks a Docker UNIX
-    socket on session teardown when the daemon isn't reachable). S3
-    params skip cleanly when MinIO is unavailable.
-    """
-    if request.param == "local":
-        return LocalFileSystem(), str(tmp_path)
-    fs, _, uri_prefix = request.getfixturevalue("s3_fs")
-    return fs, uri_prefix
 
 
 class TestStagingRecorderBackendParametrized:

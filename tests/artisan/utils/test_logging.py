@@ -77,9 +77,9 @@ def test_configure_logging_suppresses_noise():
 
 
 def test_configure_logging_no_suppress():
-    """With suppress_noise=False, noisy loggers should be untouched."""
+    """Disabling suppression sets noisy loggers to INFO."""
     for name in _NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(logging.INFO)
+        logging.getLogger(name).setLevel(logging.ERROR)
 
     configure_logging(suppress_noise=False)
 
@@ -105,7 +105,6 @@ def test_configure_logging_custom_loggers():
     assert len(artisan_logger.handlers) == 1
     assert len(myapp_logger.handlers) == 1
 
-    # Cleanup
     myapp_logger.handlers.clear()
     myapp_logger.setLevel(logging.WARNING)
     myapp_logger.propagate = True

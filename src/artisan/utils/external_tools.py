@@ -108,11 +108,6 @@ class _CommandObservation:
         return self.attempt
 
 
-# =============================================================================
-# COMMAND DATACLASS
-# =============================================================================
-
-
 @dataclass
 class Command:
     """Command in both list and string formats.
@@ -127,11 +122,6 @@ class Command:
 
     def __str__(self) -> str:
         return self.string
-
-
-# =============================================================================
-# EXCEPTION
-# =============================================================================
 
 
 class ExternalToolError(ArtisanError):
@@ -186,11 +176,6 @@ class ExternalToolError(ArtisanError):
             tail = "\n".join(self.stdout.splitlines()[-20:])
             parts.append(f"--- stdout (last 20 lines) ---\n{tail}")
         return "\n".join(parts)
-
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
 
 
 def to_cli_value(value: Any) -> str:
@@ -252,11 +237,6 @@ def format_args(params: dict[str, Any]) -> list[str]:
     return result
 
 
-# =============================================================================
-# PROCESS CLEANUP
-# =============================================================================
-
-
 def _kill_process_group(process: subprocess.Popen[str], timeout: float = 3.0) -> None:
     """Kill a subprocess and its entire process group.
 
@@ -277,11 +257,6 @@ def _kill_process_group(process: subprocess.Popen[str], timeout: float = 3.0) ->
             process.wait()
     except ProcessLookupError:
         pass
-
-
-# =============================================================================
-# COMMAND EXECUTION
-# =============================================================================
 
 
 def run_command(
@@ -352,30 +327,10 @@ def _run_with_streaming(
     env: dict[str, str] | None = None,
     observation: _CommandObservation | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run command with real-time output streaming.
+    """Stream merged stdout/stderr to stdout, an optional log, and the result.
 
-    Each child stdout line is written to three sinks:
-
-    - ``log_path`` (when set): the recoverable file. The Modal compute
-      router ferries this back post-execute and the recorder reads it
-      into the parquet ``tool_output`` column.
-    - ``sys.stdout``: live emission. Visible on the operator's terminal
-      locally, on Modal's dashboard remotely (the parent process's
-      stdout *is* the container's stdout, which Modal captures), and
-      in the Jupyter cell in notebooks. Note: child-side buffering is
-      the child's concern — set ``PYTHONUNBUFFERED=1`` (or equivalent)
-      on Python tools that block-buffer stdout when piped.
-    - Accumulator: returned in ``CompletedProcess.stdout``.
-
-    Args:
-        cmd: Command to execute.
-        cwd: Working directory.
-        log_path: Optional file to write output.
-        log_mode: Open mode for ``log_path`` (``"w"`` or ``"a"``).
-        env: Environment variables.
-
-    Returns:
-        CompletedProcess with accumulated stdout.
+    Child-side buffering still applies; Python tools can set PYTHONUNBUFFERED
+    when immediate output is required. The observer records launch and outcome.
     """
     from contextlib import nullcontext, suppress
 
@@ -447,27 +402,10 @@ def _run_captured(
     env: dict[str, str] | None = None,
     observation: _CommandObservation | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run command with captured output and process group cleanup.
+    """Capture stdout/stderr separately and clean up the process group on error.
 
-    Parameter order mirrors :func:`_run_with_streaming` so
-    :func:`run_command` can dispatch positionally to either path.
-
-    When ``log_path`` is set, captured stdout is written to it after
-    the process completes. Stderr stays on the returned
-    ``CompletedProcess`` and surfaces via
-    :attr:`ExternalToolError.stderr` on non-zero exit; it is not written
-    to ``log_path`` (asymmetric with streaming mode, which merges via
-    ``stderr=subprocess.STDOUT``).
-
-    Args:
-        cmd: Command to execute.
-        cwd: Working directory.
-        log_path: Optional file to write captured stdout.
-        log_mode: Open mode for ``log_path`` (``"w"`` or ``"a"``).
-        env: Environment variables.
-
-    Returns:
-        CompletedProcess with captured stdout and stderr.
+    Write only stdout to the optional log after exit. Stderr remains in the
+    result and failure diagnostics. The observer records launch and outcome.
     """
     attempt = observation.begin() if observation else None
     try:

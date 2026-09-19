@@ -95,14 +95,13 @@ def configure_logging(
 ) -> None:
     """Configure logging for artisan execution.
 
-    Sets up named loggers with a :class:`_ConsoleHandler` that renders
-    colored output via Rich.  Idempotent — safe to call multiple times
-    (e.g. in Jupyter cells that are re-executed).
+    Preserve existing handlers; otherwise install a Rich console handler.
+    Repeated calls update levels without adding duplicate handlers.
 
     Args:
         level: Log level for the configured loggers. Defaults to ``"INFO"``.
-        suppress_noise: If True, suppress noisy third-party loggers such as
-            HTTP client chatter.
+        suppress_noise: Set noisy third-party loggers to CRITICAL when True,
+            or INFO when False.
         loggers: Root logger names to configure. Defaults to ``("artisan",)``.
     """
     for logger_name in loggers:
