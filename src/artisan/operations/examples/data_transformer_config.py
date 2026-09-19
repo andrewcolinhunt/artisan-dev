@@ -41,13 +41,11 @@ class DataTransformerConfig(OperationDefinition):
         config (config) -- Generated execution configs
     """
 
-    # ---------- Metadata ----------
     name: ClassVar[str] = "data_transformer_config"
     description: ClassVar[str] = (
         "Generate execution configs for data transformation script"
     )
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATASET = "dataset"
 
@@ -60,7 +58,6 @@ class DataTransformerConfig(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         config = auto()
 
@@ -72,7 +69,6 @@ class DataTransformerConfig(OperationDefinition):
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Algorithm parameters for DataTransformerConfig."""
 
@@ -91,18 +87,14 @@ class DataTransformerConfig(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Resources ----------
     runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
     batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_config")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 
-    # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract per-dataset info as parallel lists (one entry per artifact)."""
         datasets: list[DataArtifact] = [

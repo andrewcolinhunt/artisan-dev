@@ -24,32 +24,20 @@ from artisan.utils.external_tools import run_command
 class StreamingEcho(OperationDefinition):
     """Echo numbered lines via ``run_command(stream_output=True)``.
 
-    Demonstrates the canonical pattern for wrapping external CLI tools
-    with live tool-output streaming: each child stdout line flows
-    through ``_run_with_streaming`` → ``sys.stdout.write`` → the parent
-    process's stdout. On the operator's terminal, in Jupyter cells,
-    and on Modal's dashboard for remote-dispatched runs, lines arrive
-    in real time as they're emitted (not in a burst at the end).
+    Demonstrates local Python execution that wraps an external CLI tool.
+    Each child stdout line reaches the parent terminal or Jupyter cell as
+    it is emitted. This Python operation does not support Modal dispatch;
+    use command operations such as WaitTool or CsvHead for remote execution.
 
-    Uses ``bash`` rather than ``python`` so child-side stdout doesn't
-    block-buffer when piped — the streaming property is observable
-    without setting ``PYTHONUNBUFFERED=1``. Each line is also written
-    to ``log_path`` and surfaces in the parquet ``tool_output`` column
-    after the run.
-
-    Useful for: visually verifying live dashboard streaming on Modal,
-    smoke-testing the streaming code path, and tutorials demonstrating
-    the ``stream_output=True`` pattern.
+    Bash avoids child-side stdout buffering when piped. Each line is also
+    written to ``log_path`` and captured in the execution's ``tool_output``.
     """
 
-    # ---------- Metadata ----------
     name = "streaming_echo"
     description = "Echo numbered lines via run_command for streaming demos"
 
-    # ---------- Inputs ----------
     inputs: ClassVar[dict[str, Any]] = {}
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         output = auto()
 
@@ -61,7 +49,6 @@ class StreamingEcho(OperationDefinition):
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Parameters for StreamingEcho."""
 
@@ -73,20 +60,14 @@ class StreamingEcho(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Tool ----------
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
 
-    # ---------- Environments ----------
     environments: Environments = Environments(local=LocalEnvironmentSpec())
 
-    # ---------- Compute ----------
-    # overlay deliberately on: example ops exercise in-development artisan,
-    # and the integration suite deploys them from the working branch
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(local_python_sources=["artisan"])
     )
 
-    # ---------- Lifecycle ----------
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Run a bash echo loop, streaming each line to the parent's stdout."""
         env = self.environments.current()

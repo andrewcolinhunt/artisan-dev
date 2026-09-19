@@ -1,4 +1,4 @@
-"""Transform that sleeps per artifact to demonstrate parallel dispatch timing."""
+"""Transform that sleeps per artifact to demonstrate local dispatch timing."""
 
 from __future__ import annotations
 
@@ -27,10 +27,10 @@ from artisan.schemas.specs.output_spec import OutputSpec
 class SlowTransformer(OperationDefinition):
     """Sleep per artifact, then write a timing marker.
 
-    Simulates a compute-heavy operation where each artifact takes a
-    fixed duration. With per-artifact dispatch on Modal, N artifacts
-    execute in parallel (~duration total). Without it, they execute
-    sequentially (~N * duration total).
+    Simulates a fixed-duration task using local Python execution. Per-artifact
+    dispatch makes one call per artifact; SequentialSlowTransformer handles
+    the batch in one call. Use the command operation WaitTool to demonstrate
+    remote Modal execution.
 
     Input Roles:
         dataset (data) -- Input dataset (content is ignored)

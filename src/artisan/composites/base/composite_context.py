@@ -8,7 +8,6 @@ ordinary step machinery.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 from artisan.composites.base.results import CompositeStepHandle
@@ -25,8 +24,6 @@ if TYPE_CHECKING:
     from artisan.orchestration.step_future import StepFuture
     from artisan.schemas.orchestration.output_reference import OutputReference
     from artisan.schemas.specs.output_spec import OutputSpec
-
-logger = logging.getLogger(__name__)
 
 
 class CompositeContext:
@@ -64,11 +61,7 @@ class CompositeContext:
         self._step_name_prefix = step_name_prefix
         self._step_defaults = step_defaults
         self._output_map: dict[str, OutputReference] = {}
-        # Captured futures for each child step submitted via this context.
-        # Top-level run_composite() drains these via .wait(). Nested
-        # composites do NOT need to drain themselves — each child still calls
-        # self._pipeline.submit(...), so the parent pipeline's _active_futures
-        # owns them.
+        # Flatten descendants so wait() shares one deadline across owned steps.
         self._child_futures: list[StepFuture] = []
 
     def input(self, role: str) -> CompositeRef:
@@ -237,7 +230,7 @@ class CompositeContext:
         return dict(self._output_map)
 
     def get_child_futures(self) -> list[StepFuture]:
-        """Return the StepFutures for every child step submitted via this context."""
+        """Return futures for direct children and nested descendants."""
         return list(self._child_futures)
 
     def get_output_types(self) -> dict[str, str | None]:
@@ -310,6 +303,7 @@ class CompositeContext:
             skip_cache=skip_cache,
         )
         assert isinstance(result, CompositeResult)
+        self._child_futures.extend(result._child_futures)
 
         return _NestedHandle(
             nested_result=result,

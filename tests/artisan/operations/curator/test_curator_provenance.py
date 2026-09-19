@@ -1,18 +1,10 @@
-"""Tests for curator operations provenance behavior.
+"""Check passthrough curators' static output and lineage declarations.
 
-This module verifies that curator operations (Merge, Filter) have the
-correct provenance behavior as documented in design_provenance_phase5_operations.md.
-
-Summary of expected behavior:
-- Merge: No provenance edges - passthrough semantics (artifacts unchanged)
-- Filter: No provenance edges - selection semantics (artifacts unchanged)
-
-Reference: design_provenance_phase5_operations.md "Curator Operations Provenance"
+These assertions do not inspect runtime edges. Passthrough execution records
+input/output edges even when no new artifact-lineage edges are declared.
 """
 
 from __future__ import annotations
-
-import pytest
 
 from artisan.operations.curator.filter import Filter
 from artisan.operations.curator.merge import Merge
@@ -20,11 +12,7 @@ from artisan.schemas.artifact.types import ArtifactTypes
 
 
 class TestMergeProvenance:
-    """Tests for Merge operation provenance behavior.
-
-    Merge is a routing/passthrough operation that creates NO provenance edges.
-    Artifacts pass through unchanged and retain their original provenance.
-    """
+    """Check Merge's passthrough output declarations."""
 
     def test_output_is_any_type(self):
         """Test that Merge uses ArtifactTypes.ANY (accepts any concrete type).
@@ -38,19 +26,14 @@ class TestMergeProvenance:
     def test_no_infer_lineage_from(self):
         """Test that Merge does not declare lineage.
 
-        Merge is a routing operation - artifacts pass through unchanged
-        and retain their original provenance. No new edges are created.
+        The output spec requests no automatic artifact-lineage inference.
         """
         spec = Merge.outputs["merged"]
         assert spec.infer_lineage_from is None
 
 
 class TestFilterProvenance:
-    """Tests for Filter operation provenance behavior.
-
-    Filter is a selection operation that creates NO provenance edges.
-    Selected artifacts pass through unchanged and retain their original provenance.
-    """
+    """Check Filter's passthrough input and output declarations."""
 
     def test_output_is_any_type(self):
         """Test that Filter uses ArtifactTypes.ANY (accepts any concrete type).
@@ -64,8 +47,7 @@ class TestFilterProvenance:
     def test_no_infer_lineage_from(self):
         """Test that Filter does not declare lineage.
 
-        Filter is a selection operation - artifacts pass through unchanged
-        and retain their original provenance. No new edges are created.
+        The output spec requests no automatic artifact-lineage inference.
         """
         spec = Filter.outputs["passthrough"]
         assert spec.infer_lineage_from is None
@@ -75,36 +57,3 @@ class TestFilterProvenance:
         assert Filter.runtime_defined_inputs is False
         assert "passthrough" in Filter.inputs
         assert len(Filter.inputs) == 1
-
-
-class TestCuratorOperationsSummary:
-    """Summary tests for curator operations provenance patterns."""
-
-    @pytest.mark.parametrize(
-        ("op_class", "output_role", "expected_type", "expects_edges"),
-        [
-            (Merge, "merged", ArtifactTypes.ANY, False),
-            (Filter, "passthrough", ArtifactTypes.ANY, False),
-        ],
-    )
-    def test_artifact_type_indicates_provenance_pattern(
-        self, op_class, output_role, expected_type, expects_edges
-    ):
-        """Test that artifact_type indicates the provenance pattern.
-
-        - ArtifactTypes.ANY (passthrough): No provenance edges created
-        """
-        spec = op_class.outputs[output_role]
-        assert spec.artifact_type == expected_type
-
-    @pytest.mark.parametrize(
-        ("op_class", "output_role"),
-        [
-            (Merge, "merged"),
-            (Filter, "passthrough"),
-        ],
-    )
-    def test_passthrough_curator_outputs_use_any_type(self, op_class, output_role):
-        """Test that passthrough curator operations use ArtifactTypes.ANY."""
-        spec = op_class.outputs[output_role]
-        assert spec.artifact_type == ArtifactTypes.ANY

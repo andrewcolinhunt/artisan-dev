@@ -77,10 +77,8 @@ class CompositeResult:
     Attributes:
         _output_map: Composite output role to OutputReference.
         _output_types: Composite output role to artifact type.
-        _child_futures: StepFutures of the composite's child steps. For
-            nested composites this is empty — the children register on the
-            parent pipeline's _active_futures, so the top-level wait() drains
-            them transitively.
+        _child_futures: Futures for direct children and nested descendants,
+            excluding unrelated steps in the parent pipeline.
     """
 
     def __init__(
@@ -117,7 +115,7 @@ class CompositeResult:
         return self._output_map[role]
 
     def wait(self, *, timeout: float | None = None) -> CompositeResult:
-        """Block until every child step completes.
+        """Block until every direct child and nested descendant completes.
 
         Args:
             timeout: Optional total deadline in seconds. If None, waits

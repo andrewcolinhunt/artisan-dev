@@ -29,8 +29,8 @@ from artisan.utils.hashing import compute_content_digest
 class LargeFileGenerator(OperationDefinition):
     """Generate large binary files stored externally.
 
-    Produces deterministic pseudo-random binary files of a specified
-    size. Each file becomes a separate LargeFileArtifact with
+    Produces pseudo-random binary files of a specified size, reproducible
+    when an explicit seed is supplied. Each file becomes a LargeFileArtifact with
     external_path pointing to the file in files_root.
 
     Output Roles:
@@ -74,7 +74,7 @@ class LargeFileGenerator(OperationDefinition):
     )
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Generate deterministic binary files in files_dir."""
+        """Generate binary files in files_dir, reproducible with an explicit seed."""
         if inputs.files_dir is None:
             msg = "files_dir required for LargeFileGenerator"
             raise ValueError(msg)

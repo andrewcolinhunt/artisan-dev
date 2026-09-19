@@ -8,9 +8,10 @@ their None-sentinel semantics.
 
 from __future__ import annotations
 
+from concurrent.futures import Future
 from enum import StrEnum
 from typing import ClassVar
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,9 +19,12 @@ from artisan.composites.base.composite_context import CompositeContext, _NestedH
 from artisan.composites.base.composite_definition import CompositeDefinition
 from artisan.composites.base.results import CompositeResult
 from artisan.operations.examples.data_generator import DataGenerator
+from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.composites.composite_ref import CompositeRef
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
+from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -315,3 +319,117 @@ class TestNestedComposite:
         ctx = _make_ctx(pipeline, step_defaults={"environment": "docker"})
         ctx.run(InnerComposite, inputs={"data": ctx.input("data")})
         assert pipeline.submit_composite.call_args.kwargs["environment"] == "docker"
+
+
+def _step_future(number: int) -> tuple[StepFuture, Future[StepResult]]:
+    pending: Future[StepResult] = Future()
+    return StepFuture(
+        step_number=number,
+        step_name=f"child_{number}",
+        output_roles=frozenset(),
+        output_types={},
+        future=pending,
+        status_reader=lambda: StepStatus.PENDING,
+    ), pending
+
+
+def _result_from_context(ctx: CompositeContext) -> CompositeResult:
+    return CompositeResult({}, {}, child_futures=ctx.get_child_futures())
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+def test_wait_includes_nested_only_descendants(depth: int) -> None:
+    child, pending = _step_future(0)
+    result = CompositeResult({}, {}, child_futures=[child])
+    for _ in range(depth):
+        pipeline = MagicMock()
+        pipeline.submit_composite.return_value = result
+        ctx = _make_ctx(pipeline)
+        ctx.run(InnerComposite)
+        result = _result_from_context(ctx)
+
+    with pytest.raises(TimeoutError):
+        result.wait(timeout=0.001)
+    assert not child.done
+    pending.set_result(
+        StepResult(
+            step_name="child",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+    )
+    assert result.wait() is result
+
+
+def test_wait_propagates_nested_child_exception() -> None:
+    child, pending = _step_future(0)
+    pending.set_exception(RuntimeError("nested child failed"))
+    pipeline = MagicMock()
+    pipeline.submit_composite.return_value = CompositeResult(
+        {}, {}, child_futures=[child]
+    )
+    ctx = _make_ctx(pipeline)
+    ctx.run(InnerComposite)
+    with pytest.raises(RuntimeError, match="nested child failed"):
+        _result_from_context(ctx).wait()
+
+
+def test_wait_includes_siblings_without_draining_unrelated_steps() -> None:
+    sibling, sibling_pending = _step_future(0)
+    nested, nested_pending = _step_future(1)
+    unrelated, _ = _step_future(2)
+    sibling_pending.set_result(
+        StepResult(
+            step_name="sibling",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+    )
+    pipeline = MagicMock()
+    pipeline.submit.return_value = sibling
+    pipeline.submit_composite.return_value = CompositeResult(
+        {}, {}, child_futures=[nested]
+    )
+    pipeline._active_futures = [sibling, nested, unrelated]
+    ctx = _make_ctx(pipeline)
+    ctx.run(DataGenerator)
+    ctx.run(InnerComposite)
+    result = _result_from_context(ctx)
+    assert ctx.get_child_futures() == [sibling, nested]
+    with pytest.raises(TimeoutError):
+        result.wait(timeout=0.001)
+    nested_pending.set_result(
+        StepResult(
+            step_name="nested",
+            step_number=1,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+    )
+    assert result.wait() is result
+    assert not unrelated.done
+
+
+def test_wait_shares_deadline_across_sibling_and_nested_steps() -> None:
+    sibling, first_nested, second_nested = [MagicMock(done=False) for _ in range(3)]
+    pipeline = MagicMock()
+    pipeline.submit.return_value = sibling
+    pipeline.submit_composite.return_value = CompositeResult(
+        {}, {}, child_futures=[first_nested, second_nested]
+    )
+    ctx = _make_ctx(pipeline)
+    ctx.run(DataGenerator)
+    ctx.run(InnerComposite)
+    with (
+        patch(
+            "artisan.composites.base.results.time.monotonic",
+            side_effect=[10, 10.2, 10.8, 11.1],
+        ),
+        pytest.raises(TimeoutError),
+    ):
+        _result_from_context(ctx).wait(timeout=1)
+    sibling.result.assert_called_once_with(timeout=pytest.approx(0.8))
+    first_nested.result.assert_called_once_with(timeout=pytest.approx(0.2))
+    second_nested.result.assert_not_called()

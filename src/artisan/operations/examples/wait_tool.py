@@ -39,11 +39,9 @@ class WaitTool(OperationDefinition):
     computation.
     """
 
-    # ---------- Metadata ----------
     name = "wait_tool"
     description = "Count up once per second (live in Modal logs), then emit a marker"
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         dataset = auto()
 
@@ -55,7 +53,6 @@ class WaitTool(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         output = auto()
 
@@ -67,7 +64,6 @@ class WaitTool(OperationDefinition):
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Parameters for WaitTool."""
 
@@ -81,17 +77,14 @@ class WaitTool(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Tool ----------
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
 
-    # ---------- Compute ----------
     # overlay deliberately on: example ops exercise in-development artisan,
     # and the integration suite deploys them from the working branch
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(local_python_sources=["artisan"])
     )
 
-    # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """One materialized path per artifact — sliced per endpoint call."""
         return {

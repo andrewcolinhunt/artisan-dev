@@ -150,10 +150,6 @@ class TestDeclareLineageNAME:
         """Three parents and three children whose stems match → 3 edges."""
         parents = [_id(c) for c in "abc"]
         children = [_id(c) for c in "xyz"]
-        # Map parent IDs to names "a.dat", "b.dat", "c.dat"
-        # and child IDs to names "a_out.dat", "b_out.dat", "c_out.dat".
-        # _match_by_name uses strip_extensions; the stems will not match
-        # ("a" vs "a_out"). Use identical stems with different extensions.
         names = {
             parents[0]: "a.json",
             parents[1]: "b.json",
