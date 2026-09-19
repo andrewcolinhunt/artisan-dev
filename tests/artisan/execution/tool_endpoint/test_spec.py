@@ -144,11 +144,6 @@ class TestEndpointSpec:
         assert spec.params_schema["additionalProperties"] is False
 
 
-# Every deployable command op with a modal config: the two example ops plus
-# the endpoint fixtures. DocstringParamsTool is the one whose descriptions
-# live *only* in the docstring, so the drift assertion below actually bites
-# if the endpoint plane stops routing through params_schema_for (a
-# Field-description op would pass either way).
 _DEPLOYABLE = [WaitTool, CsvHead, GpuTool, PlainTool, FlagTool, DocstringParamsTool]
 
 
@@ -160,9 +155,8 @@ class TestParamsSchemaSingleSource:
         assert endpoint_spec(op_cls).params_schema == params_schema_for(op_cls)
 
     def test_docstring_only_descriptions_are_served(self):
-        # the teeth: params_schema_for merges the Attributes: description
-        # that model_json_schema alone would omit — proving the endpoint
-        # plane serves the *merged* schema, not the raw one
+        # Canonical schema generation merges docstring-only descriptions
+        # that Pydantic's model_json_schema would omit.
         schema = endpoint_spec(DocstringParamsTool).params_schema
         assert (
             schema["properties"]["threshold"]["description"]

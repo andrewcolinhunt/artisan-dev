@@ -70,13 +70,13 @@ class ToolRequest(BaseModel):
 
 
 class StoredOutputs(BaseModel):
-    """Object-store pointer to a completed run's output tarball.
+    """Point to an ordinary-output or diagnostic archive in object storage.
 
     Control-plane data: rides the manifest while the bytes stay in the
     store. In prefix mode ``presigned_url`` is minted worker-side at
-    completion with a 7-day expiry — the SigV4 maximum, matching Modal's
-    result retention, so the URL never goes stale while the result is
-    alive. In capability mode (caller-supplied presigned PUT) it is None:
+    completion requesting a 7-day expiry, matching Modal's result retention.
+    Credentials or store policy can shorten its usable lifetime. In
+    capability mode (caller-supplied presigned PUT) it is None:
     the caller owns the destination and fetches with its own credentials;
     ``uri`` is the PUT URL stripped of its query.
     """
@@ -128,7 +128,7 @@ class WorkerResult(BaseModel):
 
     @model_validator(mode="after")
     def _one_data_plane(self) -> WorkerResult:
-        """Outputs ride exactly one plane — inline tar XOR stored pointer."""
+        """Allow at most one output plane and require one for complete diagnostics."""
         if self.output_tar is not None and self.manifest.stored is not None:
             msg = "WorkerResult carries both an inline tar and a stored pointer"
             raise ValueError(msg)
@@ -147,8 +147,8 @@ class SchemaResponse(BaseModel):
     """``GET /schema`` response: the endpoint's request contract.
 
     ``params_schema`` is the same dict the ``/submit`` validator enforces;
-    a parameter-less op serves the empty-``Params`` object schema (any JSON
-    object satisfies it). ``inputs`` maps each input role to
+    a parameterless op accepts only an empty object, rejecting extra keys.
+    ``inputs`` maps each input role to
     ``{"required": bool, "description": str}``.
     """
 

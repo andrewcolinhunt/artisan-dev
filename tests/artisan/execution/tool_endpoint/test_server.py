@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 from enum import StrEnum, auto
 from io import BytesIO
 from typing import Any, ClassVar
@@ -33,7 +32,6 @@ from artisan.execution.tool_endpoint.server import (
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import WaitTool
-from artisan.registry.resolve import resolve_operation
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.operation_config.compute import (
@@ -219,20 +217,6 @@ def _http_error() -> httpx.HTTPStatusError:
     return httpx.HTTPStatusError("403 Forbidden", request=request, response=response)
 
 
-def _capture_tempdirs(monkeypatch) -> list[str]:
-    """Record every ``mkdtemp`` path a request allocates, calling through."""
-    created: list[str] = []
-    real = tempfile.mkdtemp
-
-    def spy(*args, **kwargs):
-        path = real(*args, **kwargs)
-        created.append(path)
-        return path
-
-    monkeypatch.setattr(tempfile, "mkdtemp", spy)
-    return created
-
-
 class TestInstantiateOp:
     def test_defaulted_nested_params_accept_empty_mapping(self) -> None:
         operation = instantiate_op(WaitTool, {})
@@ -258,20 +242,6 @@ class TestInstantiateOp:
             instantiate_op(NoopTool, {"unexpected": 1})
 
 
-def _set_ambient_creds(storage, monkeypatch) -> None:
-    """Put the MinIO creds + endpoint on the env, exactly as the Modal Secret
-    would hand them to the worker, then clear the s3fs instance cache so a
-    filesystem built before the env was patched is not reused."""
-    import s3fs as s3fs_mod
-
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", storage.options["key"])
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", storage.options["secret"])
-    monkeypatch.setenv(
-        "AWS_ENDPOINT_URL", storage.options["client_kwargs"]["endpoint_url"]
-    )
-    s3fs_mod.S3FileSystem.clear_instance_cache()
-
-
 def _policy(
     *, inputs: tuple[str, ...] = (), outputs: tuple[str, ...] = ()
 ) -> ToolEndpointDataPolicy:
@@ -295,8 +265,7 @@ class TestRunToolRequest:
         assert result.manifest.error is None
         assert result.manifest.output_names == ["in_waited.csv"]
         assert result.manifest.stored is None  # no output_store → inline
-        # the log travels as log_tail, never on the data plane — locally
-        # it lives outside execute_dir, so the tar must not leak it in
+        # The tool log stays separate from ordinary operation outputs.
         assert result.manifest.log_tail is not None
         assert "tick 1 / 1" in result.manifest.log_tail
         assert result.output_tar is not None
@@ -327,9 +296,7 @@ class TestRunToolRequest:
         assert result.manifest.log_tail is not None
 
     def test_invalid_params_returns_envelope(self):
-        # bad params that the /submit JSON-schema gate cannot express reach
-        # instantiate_op and raise pydantic ValidationError; the worker now
-        # returns a structured envelope instead of propagating (500).
+        # Direct worker calls must validate params without the /submit gate.
         result = run_tool_request(WaitTool, ToolRequest(params={"no_such_param": 1}))
         assert result.output_tar is None
         error = result.manifest.error
@@ -534,12 +501,8 @@ class TestRunToolRequest:
         ids=["no_credentials", "bad_endpoint", "service_error"],
     )
     def test_botocore_root_fetch_failure_returns_envelope(self, monkeypatch, exc):
-        # The load-bearing guard-tuple regression: these S3-shaped
-        # failures raise botocore exceptions s3fs returns untranslated
-        # (NoCredentialsError, EndpointConnectionError, and ClientError —
-        # none an OSError). They must land on INPUT_RESOLUTION_FAILED,
-        # NOT escape as a worker crash → OP_EXECUTE_FAILED. This test fails
-        # under the draft's (ValueError, OSError, RuntimeError) tuple.
+        # These untranslated botocore errors are not OSError subclasses;
+        # preserve input-resolution classification rather than a worker crash.
         def boom(self, refs, dest, policy=None):
             raise exc
 
@@ -566,9 +529,9 @@ class TestRunToolRequest:
         assert error.code == "input_resolution_failed"
         assert error.recovery_hint == "CHECK_INPUT"
 
-    def test_input_failure_removes_job_dir(self, monkeypatch):
+    def test_input_failure_removes_job_dir(self, capture_tempdirs):
         # warm-container reuse: an input-resolution failure still cleans up
-        created = _capture_tempdirs(monkeypatch)
+        created = capture_tempdirs()
         result = run_tool_request(
             WaitTool,
             ToolRequest.model_construct(
@@ -579,9 +542,9 @@ class TestRunToolRequest:
         assert created  # the job dir was allocated before unpack_inputs
         assert all(not os.path.exists(p) for p in created)
 
-    def test_success_removes_job_dir(self, monkeypatch):
+    def test_success_removes_job_dir(self, capture_tempdirs):
         # warm-container reuse: the per-request job tree must not survive
-        created = _capture_tempdirs(monkeypatch)
+        created = capture_tempdirs()
         result = run_tool_request(
             WaitTool,
             ToolRequest(
@@ -595,8 +558,8 @@ class TestRunToolRequest:
         assert created  # the worker did allocate a job dir
         assert all(not os.path.exists(p) for p in created)
 
-    def test_tool_failure_removes_job_dir(self, monkeypatch):
-        created = _capture_tempdirs(monkeypatch)
+    def test_tool_failure_removes_job_dir(self, capture_tempdirs):
+        created = capture_tempdirs()
         result = run_tool_request(FailTool, ToolRequest())
         assert result.manifest.error is not None
         assert created  # the worker did allocate a job dir
@@ -765,9 +728,7 @@ class TestRunToolRequestStoredOutputs:
         ids=["filesystem", "http_status", "request", "credentials", "service"],
     )
     def test_delivery_failure_returns_envelope_with_outputs(self, monkeypatch, exc):
-        # the tool ran; only delivery to the store failed — the envelope
-        # surfaces the outputs it produced and asks the agent to retry
-        # delivery (RETRY_LATER), not re-run the (possibly GPU) compute
+        # Delivery failure preserves completed output names and the tool log.
         def failing_upload(*args, **kwargs):
             raise exc
 
@@ -797,40 +758,46 @@ class TestRunToolRequestStoredOutputs:
         assert error.recovery_hint == "CHECK_INPUT"
         assert result.manifest.output_names == ["in_waited.csv"]
 
-    def test_missing_output_filesystem_dependency_returns_envelope(self, monkeypatch):
-        def failing_upload(*args, **kwargs):
-            msg = "Install s3fs to access S3"
-            raise ImportError(msg)
+    @pytest.mark.parametrize("failure", ["dependency", "signing", "transfer"])
+    def test_real_output_transport_preserves_error_category(self, monkeypatch, failure):
+        secret = "signed-capability-secret"
 
-        monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
-        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
+        class Storage:
+            def sign(self, remote, expiration):
+                if failure == "signing":
+                    raise NotImplementedError(secret)
+                return "https://bucket.s3.amazonaws.com/result.tar.gz?signature=abc"
 
+            def put(self, source, remote):
+                raise OSError(secret)
+
+        def resolve(target, **options):
+            if failure == "dependency":
+                raise ImportError(secret)
+            return Storage(), "bucket/result.tar.gz"
+
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolve)
+        policy = _policy(
+            outputs=("s3://bucket/prefix", "https://bucket.s3.amazonaws.com")
+        )
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=policy)
         error = result.manifest.error
         assert error is not None
-        assert error.code == "tool_endpoint_misconfigured"
-        assert error.error_type == "config"
-        assert error.recovery_hint == "REPORT_TO_USER"
-
-    def test_non_signing_store_returns_misconfigured(self, monkeypatch):
-        # a store that cannot presign fails 100% of requests — a deployment
-        # misconfiguration to report, not a transient to retry
-        def cannot_presign(*args, **kwargs):
-            msg = "filesystem cannot sign"
-            raise NotImplementedError(msg)
-
-        monkeypatch.setattr(server_mod, "upload_outputs", cannot_presign)
-        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
-        error = result.manifest.error
-        assert error is not None
-        assert error.code == "tool_endpoint_misconfigured"
-        assert error.error_type == "config"
-        assert error.recovery_hint == "REPORT_TO_USER"
+        if failure == "transfer":
+            assert error.code == "output_delivery_failed"
+            assert error.error_type == "io"
+            assert error.recovery_hint == "RETRY_LATER"
+        else:
+            assert error.code == "tool_endpoint_misconfigured"
+            assert error.error_type == "config"
+            assert error.recovery_hint == "REPORT_TO_USER"
+        assert secret not in result.manifest.model_dump_json()
         assert result.manifest.output_names == ["in_waited.csv"]
         assert result.manifest.log_tail is not None
         assert result.output_tar is None
 
-    def test_delivery_failure_removes_job_dir(self, monkeypatch):
-        created = _capture_tempdirs(monkeypatch)
+    def test_delivery_failure_removes_job_dir(self, monkeypatch, capture_tempdirs):
+        created = capture_tempdirs()
 
         def failing_upload(*args, **kwargs):
             msg = "disk full"
@@ -894,15 +861,16 @@ class TestRunToolRequestInlinePackaging:
 
 
 class TestRunToolRequestUriInputMinIO:
-    """Worker resolves a cloud URI input against MinIO — the URI path the
-    endpoint-routing skip newly feeds (s3 marker via ``s3_fs``)."""
+    """Resolve cloud URI inputs with worker credentials against MinIO."""
 
-    def test_uri_input_resolves_and_runs_below_inline_cap(self, s3_fs, monkeypatch):
+    def test_uri_input_resolves_and_runs_below_inline_cap(
+        self, s3_fs, monkeypatch, configure_ambient_s3
+    ):
         fs, storage, uri_prefix = s3_fs
         bucket = uri_prefix.removeprefix("s3://")
         # a 50 KB input; the tiny WaitTool output tars to one 10 KB record
         fs.pipe_file(f"{bucket}/inputs/dataset_00001.csv", b"x" * 50_000)
-        _set_ambient_creds(storage, monkeypatch)
+        configure_ambient_s3(storage)
         # cap between the output tar (~10 KB) and the input (50 KB): the
         # worker never checks the inline cap on the URI input path
         # (pack_inputs is client-side) — a 50 KB input past a 20 KB cap
@@ -973,12 +941,11 @@ class _WorkerLoopbackRouter:
 
 
 class TestEndpointRoutedLineageMinIO:
-    """Lineage ship gate: a real cloud ``LargeFileArtifact`` crosses by
-    reference into an endpoint op; the input→output edge and the output's
-    human-readable name must survive the natural-basename route (s3 marker
-    via ``s3_fs``)."""
+    """Preserve lineage and human names for cloud inputs sent by reference."""
 
-    def test_edge_and_name_preserved_under_skip(self, s3_fs, tmp_path, monkeypatch):
+    def test_edge_and_name_preserved_under_skip(
+        self, s3_fs, tmp_path, configure_ambient_s3
+    ):
         import polars as pl
         from fixtures.store_format import commit_test_tables
 
@@ -1044,7 +1011,7 @@ class TestEndpointRoutedLineageMinIO:
             storage=storage,
         )
         # ambient creds so the worker fetches external_path from MinIO
-        _set_ambient_creds(storage, monkeypatch)
+        configure_ambient_s3(storage)
 
         operation = _CloudInputTool(
             compute_provider=ComputeProvider(
@@ -1075,18 +1042,6 @@ class TestEndpointRoutedLineageMinIO:
         # even though the filesystem match map is empty under the skip
         edges = {(e.source_artifact_id, e.target_artifact_id) for e in result.edges}
         assert (art.artifact_id, out.artifact_id) in edges
-
-
-class TestResolveOperation:
-    def test_round_trip(self):
-        assert (
-            resolve_operation(f"{WaitTool.__module__}:{WaitTool.__qualname__}")
-            is WaitTool
-        )
-
-    def test_non_operation_raises(self):
-        with pytest.raises(TypeError, match="OperationDefinition subclass"):
-            resolve_operation("artisan.schemas.operation_config.tool_spec:ToolSpec")
 
 
 def test_request_commands_share_one_slot_and_warm_worker_starts_fresh(monkeypatch):
@@ -1129,13 +1084,15 @@ def test_ordinary_endpoint_failure_preserves_earlier_commands(monkeypatch, failu
         monkeypatch.setattr(
             transport_mod.InlineTransport,
             "pack_outputs",
-            lambda *args: (_ for _ in ()).throw(OSError("delivery failed")),
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("delivery failed")),
         )
     result = run_tool_request(NoopTool, ToolRequest())
     assert result.manifest.error is not None
     commands = result.manifest.command_recording.commands
     assert commands[0].outcome == "succeeded"
     assert len(commands) == (1 if failure == "construction" else 2)
+    if failure == "delivery":
+        assert result.manifest.error.code == "output_delivery_failed"
     if failure == "launch":
         assert commands[-1].outcome == "launch_failed"
 

@@ -58,7 +58,7 @@ class EndpointTransportError(RuntimeError):
 
 
 class InlineTransport:
-    """v1 inputs as inline bytes or authorized URIs; outputs as a tar."""
+    """Transfer file inputs as inline bytes or authorized URIs, outputs as a tar."""
 
     def pack_inputs(
         self,
@@ -309,6 +309,8 @@ def upload_outputs(
 
     Raises:
         ValueError: When an archive budget is exceeded.
+        ImportError: When the output filesystem dependency is unavailable.
+        NotImplementedError: When the output filesystem cannot transfer or sign.
         EndpointTransportError: When transfer or signing fails.
     """
     data_policy = policy or ToolEndpointDataPolicy()
@@ -341,6 +343,12 @@ def upload_outputs(
             presigned = str(fs.sign(remote, expiration=PRESIGN_EXPIRY_SECONDS))
             data_policy.authorize_output(presigned)
             fs.put(spool, remote)
+        except ImportError:
+            msg = "output transport is unavailable"
+            raise ImportError(msg) from None
+        except NotImplementedError:
+            msg = "output transport is unavailable"
+            raise NotImplementedError(msg) from None
         except Exception as exc:
             msg = f"output transfer failed for {final_target.safe_display}"
             raise EndpointTransportError(msg) from exc

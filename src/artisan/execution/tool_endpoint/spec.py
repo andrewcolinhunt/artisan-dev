@@ -58,9 +58,8 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
         The deploy spec read from class-level field defaults, including the
         op's ``Params`` JSON schema (from the registry's canonical
         ``params_schema_for`` builder — the same schema the registry/MCP
-        plane serves) for boundary validation. A parameter-less op gets the
-        empty-``Params`` shape ``{"type": "object", "title": "Params",
-        "properties": {}}``, not ``{}``.
+        plane serves) for boundary validation. A parameterless operation's
+        schema accepts only an empty object and rejects extra keys.
 
     Raises:
         ValueError: If the op is not a command op (ToolSpec +

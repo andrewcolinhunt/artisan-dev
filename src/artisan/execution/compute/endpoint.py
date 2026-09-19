@@ -35,8 +35,8 @@ class EndpointExecuteRouter(ExecuteRouter):
     Args:
         cancel_check: Returns True once the orchestrator has requested
             cancellation (a staging-FS existence check built by the
-            lifecycle). None disables soft cancel (composite-internal
-            lifecycles, which carry no step_run_id).
+            lifecycle for the current step attempt). None disables the
+            cancellation watcher.
         max_concurrent_calls: Client-side fan-out cap. Artifacts beyond
             the cap queue in the executor; results stay positionally
             aligned.
