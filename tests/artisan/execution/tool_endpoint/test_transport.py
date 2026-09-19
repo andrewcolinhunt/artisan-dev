@@ -233,7 +233,10 @@ class TestUnpackInputs:
         [
             ("s3://bucket/a%20b/item.bin", "bucket/a b/item.bin"),
             ("s3://bucket/a%23b/item.bin", "bucket/a#b/item.bin"),
-            ("s3://bucket/caf%C3%A9/item.bin", "bucket/café/item.bin"),
+            (
+                "s3://bucket/caf%C3%A9/item.bin",  # codespell:ignore caf
+                "bucket/café/item.bin",
+            ),
             ("s3://bucket/a%2520b/item.bin", "bucket/a%20b/item.bin"),
             ("s3://bucket/percent%25key/item.bin", "bucket/percent%key/item.bin"),
         ],
@@ -1136,7 +1139,7 @@ class TestUnpackInputsMinIO:
         [
             ("inputs/space key.bin", "inputs/space%20key.bin"),
             ("inputs/hash#key.bin", "inputs/hash%23key.bin"),
-            ("inputs/café.bin", "inputs/caf%C3%A9.bin"),
+            ("inputs/café.bin", "inputs/caf%C3%A9.bin"),  # codespell:ignore caf
             ("inputs/literal%20.bin", "inputs/literal%2520.bin"),
         ],
     )

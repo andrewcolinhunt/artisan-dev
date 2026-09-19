@@ -66,8 +66,12 @@ class TestToolEndpointDataPolicy:
         policy = ToolEndpointDataPolicy(input_allowlist=("s3://BÜCKET/a b",))
 
         assert policy.input_allowlist == ("s3://xn--bcket-kva/a%20b",)
-        target = policy.authorize_input("S3://BÜCKET/a%20b/caf%C3%A9")
-        assert target.transport_target == "s3://xn--bcket-kva/a%20b/caf%C3%A9"
+        target = policy.authorize_input(
+            "S3://BÜCKET/a%20b/caf%C3%A9"  # codespell:ignore caf
+        )
+        assert target.transport_target == (
+            "s3://xn--bcket-kva/a%20b/caf%C3%A9"  # codespell:ignore caf
+        )
 
     @pytest.mark.parametrize(
         "uri",
