@@ -17,6 +17,7 @@ from artisan.execution.tool_endpoint.protocol import (
     ToolRequest,
     WorkerResult,
 )
+from artisan.schemas.execution.command_record import CommandRecording
 
 
 class TestInputRef:
@@ -94,7 +95,9 @@ class TestToolRequest:
 
 class TestToolManifest:
     def test_defaults(self):
-        manifest = ToolManifest()
+        manifest = ToolManifest(
+            command_recording=CommandRecording.empty(),
+        )
         assert manifest.output_names == []
         assert manifest.stored is None
         assert manifest.log_tail is None
@@ -102,6 +105,7 @@ class TestToolManifest:
 
     def test_stored_round_trip(self):
         manifest = ToolManifest(
+            command_recording=CommandRecording.empty(),
             output_names=["a.txt"],
             stored=StoredOutputs(
                 uri="s3://bucket/prefix/my_op/abc123.tar.gz",
@@ -114,7 +118,9 @@ class TestToolManifest:
         # caller-supplied presigned PUT: the caller owns the destination
         stored = StoredOutputs(uri="https://bucket.s3.amazonaws.com/run42.tar.gz")
         assert stored.presigned_url is None
-        manifest = ToolManifest(stored=stored)
+        manifest = ToolManifest(
+            command_recording=CommandRecording.empty(), stored=stored
+        )
         assert ToolManifest(**manifest.model_dump()) == manifest
 
     def test_error_envelope_round_trip(self):
@@ -124,7 +130,9 @@ class TestToolManifest:
             error_type="compute",
             operation_name="wait_tool",
         ).envelope
-        manifest = ToolManifest(error=envelope)
+        manifest = ToolManifest(
+            command_recording=CommandRecording.empty(), error=envelope
+        )
         restored = ToolManifest(**manifest.model_dump())
         assert restored.error is not None
         assert restored.error.code == "op_execute_failed"
@@ -135,25 +143,38 @@ class TestToolManifest:
 class TestWorkerResult:
     def test_round_trip_with_tar(self):
         result = WorkerResult(
-            manifest=ToolManifest(output_names=["a.txt"]), output_tar=b"tarbytes"
+            manifest=ToolManifest(
+                command_recording=CommandRecording.empty(), output_names=["a.txt"]
+            ),
+            output_tar=b"tarbytes",
         )
         restored = WorkerResult(**result.model_dump())
         assert restored == result
 
     def test_failure_has_no_tar(self):
-        result = WorkerResult(manifest=ToolManifest())
+        result = WorkerResult(
+            manifest=ToolManifest(
+                command_recording=CommandRecording.empty(),
+            )
+        )
         assert result.output_tar is None
 
     def test_stored_alone_accepted(self):
         result = WorkerResult(
-            manifest=ToolManifest(stored=StoredOutputs(uri="s3://b/k.tar.gz"))
+            manifest=ToolManifest(
+                command_recording=CommandRecording.empty(),
+                stored=StoredOutputs(uri="s3://b/k.tar.gz"),
+            )
         )
         assert result.output_tar is None
 
     def test_rejects_tar_and_stored_together(self):
         with pytest.raises(ValidationError, match="both an inline tar"):
             WorkerResult(
-                manifest=ToolManifest(stored=StoredOutputs(uri="s3://b/k.tar.gz")),
+                manifest=ToolManifest(
+                    command_recording=CommandRecording.empty(),
+                    stored=StoredOutputs(uri="s3://b/k.tar.gz"),
+                ),
                 output_tar=b"tarbytes",
             )
 

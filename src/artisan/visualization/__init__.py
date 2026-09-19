@@ -12,6 +12,7 @@ from artisan.visualization.graph import (
     render_micro_graph_steps,
 )
 from artisan.visualization.inspect import (
+    inspect_commands,
     inspect_data,
     inspect_failures,
     inspect_metrics,
@@ -26,6 +27,7 @@ __all__ = [
     "build_micro_graph",
     "display_provenance_stepper",
     "get_max_step_number",
+    "inspect_commands",
     "inspect_data",
     "inspect_failures",
     "inspect_metrics",

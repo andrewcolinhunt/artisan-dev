@@ -16,7 +16,7 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, NoReturn
 
@@ -24,6 +24,12 @@ import httpx
 from pydantic import ValidationError
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+from artisan.execution.recording.commands import (
+    capture_commands,
+    current_recorder,
+    invocation_scope,
+    sanitize_diagnostic,
+)
 from artisan.execution.tool_endpoint._optional import import_modal
 from artisan.execution.tool_endpoint.protocol import (
     CancelResponse,
@@ -34,6 +40,11 @@ from artisan.execution.tool_endpoint.protocol import (
 from artisan.execution.tool_endpoint.transport import (
     EndpointTransportError,
     InlineTransport,
+)
+from artisan.schemas.execution.command_record import (
+    CommandRecording,
+    MissingReason,
+    check_recording_size,
 )
 from artisan.schemas.operation_config.compute import ModalComputeConfig
 from artisan.schemas.operation_config.endpoint_policy import _normalize_http_root
@@ -82,6 +93,30 @@ def cancel_scope(event: threading.Event) -> Iterator[None]:
 
 
 def call_endpoint(
+    operation: Any, inputs: ExecuteInput
+) -> CancellationAcknowledgement | None:
+    """Run one remote invocation with scoped, validated diagnostic evidence."""
+    scope = capture_commands(operation) if current_recorder() is None else nullcontext()
+    with scope:
+        return _call_endpoint(operation, inputs)
+
+
+class _RecordingError(ArtisanError):
+    """A fixed, input-free endpoint evidence protocol failure."""
+
+    def __init__(self, op_name: str, reason: MissingReason) -> None:
+        self.reason = reason
+        super().__init__(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message="endpoint command recording is missing or invalid; redeploy the endpoint",
+            error_type="config",
+            operation_name=op_name,
+            field="manifest.command_recording",
+            recovery_hint="CHECK_INPUT",
+        )
+
+
+def _call_endpoint(
     operation: Any, inputs: ExecuteInput
 ) -> CancellationAcknowledgement | None:
     """Run a tool op's execute on its deployed endpoint.
@@ -147,54 +182,86 @@ def call_endpoint(
         }
         if output_store is not None:
             data["output_store"] = output_store
-        response = client.post("/submit", data=data, files=multipart or None)
-        _check(response, operation.name)
-        call_id = str(response.json()["call_id"])
+        with invocation_scope(operation) as invocation:
+            received = False
+            try:
+                response = client.post("/submit", data=data, files=multipart or None)
+                _check(response, operation.name)
+                call_id = str(response.json()["call_id"])
 
-        manifest, cancellation = _poll(
-            client,
-            call_id,
-            cfg.poll_interval,
-            operation.name,
-        )
-        if manifest.log_tail and inputs.log_path:
-            _append_log(inputs.log_path, manifest.log_tail)
-        if manifest.error is not None:
-            _raise_from_envelope(manifest.error, operation.name)
-        if manifest.stored is not None:
-            if manifest.stored.presigned_url is None:
-                # capability-mode pointer — unreachable via this client
-                # (the config validator rejects PUT URLs); fail with the
-                # contract, not a TypeError inside httpx
-                raise ArtisanError(
-                    code=ErrorCode.OP_EXECUTE_FAILED,
-                    message="stored outputs carry no presigned URL to fetch",
-                    error_type="compute",
-                    operation_name=operation.name,
+                manifest, cancellation = _poll(
+                    client,
+                    call_id,
+                    cfg.poll_interval,
+                    operation.name,
                 )
-            try:
-                cfg.data_policy.authorize_output(manifest.stored.uri)
-                cfg.data_policy.authorize_output(manifest.stored.presigned_url)
-            except ValueError as exc:
-                raise _config_error(operation.name, str(exc)) from exc
-            try:
-                transport.download_outputs(
-                    manifest.stored.presigned_url,
-                    inputs.execute_dir,
-                    policy=cfg.data_policy,
-                )
-            except (EndpointTransportError, OSError, ValueError) as exc:
-                raise ArtisanError(
-                    code=ErrorCode.OP_EXECUTE_FAILED,
-                    message=str(exc),
-                    error_type="compute",
-                    operation_name=operation.name,
-                ) from exc
-        elif manifest.output_names:
-            download = client.get("/download", params={"call_id": call_id})
-            _check(download, operation.name)
-            transport.unpack_outputs(download.content, inputs.execute_dir)
-        return cancellation
+                recorder = current_recorder()
+                assert recorder is not None
+                assert invocation is not None
+                try:
+                    recorder.merge(manifest.command_recording, invocation)
+                except (TypeError, ValueError):
+                    raise _RecordingError(operation.name, "invalid_recording") from None
+                received = True
+                if manifest.log_tail and inputs.log_path:
+                    _append_log(inputs.log_path, sanitize_diagnostic(manifest.log_tail))
+                if manifest.error is not None:
+                    _raise_from_envelope(
+                        ArtisanErrorEnvelope.model_validate(
+                            sanitize_diagnostic(manifest.error.model_dump())
+                        ),
+                        operation.name,
+                    )
+                if manifest.stored is not None:
+                    if manifest.stored.presigned_url is None:
+                        # capability-mode pointer — unreachable via this client
+                        # (the config validator rejects PUT URLs); fail with the
+                        # contract, not a TypeError inside httpx
+                        raise ArtisanError(
+                            code=ErrorCode.OP_EXECUTE_FAILED,
+                            message="stored outputs carry no presigned URL to fetch",
+                            error_type="compute",
+                            operation_name=operation.name,
+                        )
+                    try:
+                        cfg.data_policy.authorize_output(manifest.stored.uri)
+                        cfg.data_policy.authorize_output(manifest.stored.presigned_url)
+                    except ValueError as exc:
+                        raise _config_error(operation.name, str(exc)) from exc
+                    try:
+                        transport.download_outputs(
+                            manifest.stored.presigned_url,
+                            inputs.execute_dir,
+                            policy=cfg.data_policy,
+                        )
+                    except (EndpointTransportError, OSError, ValueError) as exc:
+                        raise ArtisanError(
+                            code=ErrorCode.OP_EXECUTE_FAILED,
+                            message=str(exc),
+                            error_type="compute",
+                            operation_name=operation.name,
+                        ) from exc
+                elif manifest.output_names:
+                    download = client.get("/download", params={"call_id": call_id})
+                    _check(download, operation.name)
+                    transport.unpack_outputs(download.content, inputs.execute_dir)
+                return cancellation
+            except BaseException as exc:
+                if not received:
+                    recorder = current_recorder()
+                    assert recorder is not None
+                    assert invocation is not None
+                    reason: MissingReason = (
+                        exc.reason
+                        if isinstance(exc, _RecordingError)
+                        else "cancelled"
+                        if isinstance(
+                            exc, (EndpointCancellationError, KeyboardInterrupt)
+                        )
+                        else "transport_failure"
+                    )
+                    recorder.missing(invocation, reason)
+                raise
 
 
 def _poll(
@@ -245,7 +312,7 @@ def _poll(
                 continue
         response = client.get("/result", params={"call_id": call_id})
         _check(response, op_name)
-        result = ResultResponse(**response.json())
+        result = _decode_result(response.json(), op_name)
         if result.status == "pending":
             time.sleep(interval)
             continue
@@ -267,6 +334,30 @@ def _poll(
                 operation_name=op_name,
             )
         return result.manifest, cancellation
+
+
+def _decode_result(payload: Any, op_name: str) -> ResultResponse:
+    """Size-check untrusted evidence before nested validation; never echo input."""
+    manifest = payload.get("manifest") if isinstance(payload, dict) else None
+    if (
+        isinstance(payload, dict)
+        and payload.get("status") in {"done", "failed"}
+        and manifest is None
+    ):
+        raise _RecordingError(op_name, "missing_recording")
+    if isinstance(manifest, dict):
+        if "command_recording" not in manifest:
+            raise _RecordingError(op_name, "missing_recording")
+        try:
+            raw = manifest["command_recording"]
+            check_recording_size(raw)
+            CommandRecording.model_validate(raw)
+        except (TypeError, ValueError, RecursionError):
+            raise _RecordingError(op_name, "invalid_recording") from None
+    try:
+        return ResultResponse.model_validate(payload)
+    except (TypeError, ValueError):
+        raise _RecordingError(op_name, "invalid_recording") from None
 
 
 def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:

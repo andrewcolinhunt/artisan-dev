@@ -21,6 +21,7 @@ from artisan.schemas.artifact.external import validate_persistable_uri
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
 from artisan.utils.json import artisan_json_default
@@ -123,6 +124,7 @@ def _stage_execution(
     worker_id: int,
     params: dict[str, Any] | None,
     compute_backend: str,
+    command_recording: CommandRecording,
     shared_filesystem: bool = False,
     result_metadata: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
@@ -134,6 +136,7 @@ def _stage_execution(
     """Stage execution record and edges, optionally flushing to NFS."""
     _stage_execution_edges(execution_edges, staging_path, fs)
     _write_execution_record(
+        command_recording=command_recording,
         execution_run_id=execution_run_id,
         execution_spec_id=execution_spec_id,
         operation_name=operation_name,
@@ -280,6 +283,7 @@ def _write_execution_record(
     worker_id: int,
     staging_path: str,
     fs: AbstractFileSystem,
+    command_recording: CommandRecording,
     params: dict[str, Any] | None = None,
     compute_backend: str = "local",
     result_metadata: dict[str, Any] | None = None,
@@ -305,6 +309,9 @@ def _write_execution_record(
         "source_worker": worker_id,
         "success": success,
         "error": error,
+        "command_recording": CommandRecording.model_validate(
+            command_recording.model_dump()
+        ).model_dump_json(),
         "error_envelope": (
             json.dumps(error_envelope, default=artisan_json_default)
             if error_envelope is not None

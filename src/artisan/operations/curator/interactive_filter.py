@@ -31,6 +31,7 @@ from artisan.provenance.traversal import walk_forward
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
@@ -687,6 +688,7 @@ class InteractiveFilter:
             step_run_id=step_run_id,
         )
         record_passthrough(
+            command_recording=CommandRecording.empty(),
             execution_context=execution_context,
             passthrough={"passthrough": filtered},
             lineage_edges=None,

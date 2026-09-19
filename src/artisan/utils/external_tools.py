@@ -10,14 +10,103 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
 import sys
+from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Literal
+from time import perf_counter
+from typing import Any, Literal, Protocol
 
 from artisan.errors import ArtisanError, ErrorCode
+
+
+def redact_values(text: str, sensitive_values: tuple[str, ...]) -> str:
+    """Replace known nonempty values in a diagnostic copy, longest first."""
+    values = sorted(set(sensitive_values) - {""}, key=len, reverse=True)
+    if not values:
+        return text
+    return re.sub("|".join(re.escape(value) for value in values), "<redacted>", text)
+
+
+@dataclass
+class CommandAttempt:
+    """One subprocess boundary shared by command evidence and launch timing."""
+
+    command: list[str]
+    sanitize: Callable[[str], str]
+    on_finish: Callable[[str, int | None, float | None], None] | None = None
+    launch_seconds: float | None = None
+
+    def finish(self, outcome: str, returncode: int | None) -> None:
+        """Publish a final outcome before any post-exit output I/O."""
+        if self.on_finish is not None:
+            self.on_finish(outcome, returncode, self.launch_seconds)
+            self.on_finish = None
+
+
+class CommandObserver(Protocol):
+    """Utility-owned interface; implementations may live in higher layers."""
+
+    def prepare(
+        self,
+        environment: Any,
+        requested: list[str],
+        sensitive_values: tuple[str, ...],
+    ) -> None:
+        """Register diagnostic redactions without claiming a launch attempt."""
+        ...
+
+    def begin(
+        self,
+        environment: Any,
+        requested: list[str],
+        argv: list[str],
+        cwd: str | None,
+        sensitive_values: tuple[str, ...],
+    ) -> CommandAttempt:
+        """Observe immediately before attempting process creation."""
+        ...
+
+
+command_observer: ContextVar[CommandObserver | None] = ContextVar(
+    "artisan_command_observer", default=None
+)
+
+
+@dataclass
+class _CommandObservation:
+    environment: Any
+    requested: list[str]
+    argv: list[str]
+    cwd: str | None
+    sensitive_values: tuple[str, ...]
+    attempt: CommandAttempt | None = None
+
+    def begin(self) -> CommandAttempt:
+        observer = command_observer.get()
+        if observer is not None:
+            self.attempt = observer.begin(
+                self.environment,
+                self.requested,
+                self.argv,
+                self.cwd,
+                self.sensitive_values,
+            )
+        else:
+
+            def sanitize(text: str) -> str:
+                return redact_values(text, self.sensitive_values)
+
+            self.attempt = CommandAttempt(
+                command=[sanitize(arg) for arg in self.argv],
+                sanitize=sanitize,
+            )
+        return self.attempt
+
 
 # =============================================================================
 # COMMAND DATACLASS
@@ -202,6 +291,8 @@ def run_command(
     stream_output: bool = False,
     log_path: str | None = None,
     log_mode: Literal["w", "a"] = "w",
+    *,
+    sensitive_values: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     """Execute a command in the given environment.
 
@@ -216,6 +307,7 @@ def run_command(
         log_path: If provided, write output to this file.
         log_mode: Open mode for ``log_path`` — ``"w"`` truncates (default),
             ``"a"`` appends so sequential calls sharing one log accumulate.
+        sensitive_values: Opaque values to remove from diagnostic copies only.
 
     Returns:
         CompletedProcess with captured stdout/stderr.
@@ -223,22 +315,30 @@ def run_command(
     Raises:
         ExternalToolError: On non-zero exit.
     """
+    observer = command_observer.get()
+    if observer is not None:
+        observer.prepare(environment, cmd, sensitive_values)
     wrapped = environment.wrap_command(cmd, cwd)
     full_cmd = Command(parts=wrapped, string=shlex.join(wrapped))
     env = environment.prepare_env()
 
+    observation = _CommandObservation(environment, cmd, wrapped, cwd, sensitive_values)
     if stream_output:
-        result = _run_with_streaming(full_cmd, cwd, log_path, log_mode, env)
+        result = _run_with_streaming(
+            full_cmd, cwd, log_path, log_mode, env, observation
+        )
     else:
-        result = _run_captured(full_cmd, cwd, log_path, log_mode, env)
+        result = _run_captured(full_cmd, cwd, log_path, log_mode, env, observation)
 
     if result.returncode != 0:
+        attempt = observation.attempt
+        assert attempt is not None
         raise ExternalToolError(
             message=f"Command failed with exit code {result.returncode}",
-            command=full_cmd.parts,
+            command=attempt.command,
             return_code=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
+            stdout=attempt.sanitize(result.stdout),
+            stderr=attempt.sanitize(result.stderr),
             runtime=environment,
         )
     return result
@@ -250,6 +350,7 @@ def _run_with_streaming(
     log_path: str | None,
     log_mode: Literal["w", "a"] = "w",
     env: dict[str, str] | None = None,
+    observation: _CommandObservation | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run command with real-time output streaming.
 
@@ -281,16 +382,26 @@ def _run_with_streaming(
     log_context = open(log_path, log_mode) if log_path else nullcontext()  # noqa: SIM115 — conditional; held via `with log_context` below
 
     with log_context as log_file:
-        process = subprocess.Popen(
-            cmd.parts,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=env,
-            process_group=0,
-        )
+        attempt = observation.begin() if observation else None
+        try:
+            launch_start = perf_counter()
+            process = subprocess.Popen(
+                cmd.parts,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+                process_group=0,
+            )
+            launch_seconds = perf_counter() - launch_start
+            if attempt:
+                attempt.launch_seconds = launch_seconds
+        except BaseException:
+            if attempt:
+                attempt.finish("launch_failed", None)
+            raise
 
         stdout_lines: list[str] = []
 
@@ -308,8 +419,12 @@ def _run_with_streaming(
                 stdout_lines.append(line)
 
             returncode = process.wait()
+            if attempt:
+                attempt.finish("succeeded" if returncode == 0 else "failed", returncode)
         except BaseException:
             _kill_process_group(process)
+            if attempt:
+                attempt.finish("interrupted", process.returncode)
             raise
 
         return subprocess.CompletedProcess(
@@ -326,6 +441,7 @@ def _run_captured(
     log_path: str | None,
     log_mode: Literal["w", "a"] = "w",
     env: dict[str, str] | None = None,
+    observation: _CommandObservation | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run command with captured output and process group cleanup.
 
@@ -349,19 +465,36 @@ def _run_captured(
     Returns:
         CompletedProcess with captured stdout and stderr.
     """
-    process = subprocess.Popen(
-        cmd.parts,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-        process_group=0,
-    )
+    attempt = observation.begin() if observation else None
+    try:
+        launch_start = perf_counter()
+        process = subprocess.Popen(
+            cmd.parts,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            process_group=0,
+        )
+        launch_seconds = perf_counter() - launch_start
+        if attempt:
+            attempt.launch_seconds = launch_seconds
+    except BaseException:
+        if attempt:
+            attempt.finish("launch_failed", None)
+        raise
     try:
         stdout, stderr = process.communicate()
+        if attempt:
+            attempt.finish(
+                "succeeded" if process.returncode == 0 else "failed",
+                process.returncode,
+            )
     except BaseException:
         _kill_process_group(process)
+        if attempt:
+            attempt.finish("interrupted", process.returncode)
         raise
 
     if log_path:

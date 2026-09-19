@@ -391,7 +391,9 @@ original error and the staging error are combined into a single message.
 **Failure logs.** Every failed execution writes a human-readable log file
 containing the run ID, operation name, step number, step runner, timestamp, full
 traceback, and (when available) tool output. These live in
-`logs/failures/step_{N}_{op_name}/` alongside the Delta tables.
+`logs/failures/YYYYMMDD/YYYYMMDDTHHMMSSffffffZ_executionID.log` alongside
+local Delta tables, named by the source execution's UTC start time. Cloud stores
+keep these files under the local working root.
 
 The `failure_policy` controls what happens when some batches fail within a step:
 

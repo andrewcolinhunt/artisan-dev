@@ -1091,3 +1091,99 @@ class TestResolveOp:
     def test_non_operation_raises(self):
         with pytest.raises(TypeError, match="not an OperationDefinition"):
             resolve_op("artisan.schemas.operation_config.tool_spec", "ToolSpec")
+
+
+def test_request_commands_share_one_slot_and_warm_worker_starts_fresh(monkeypatch):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def command(self, inputs):
+        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        return [sys.executable, "-c", "pass"]
+
+    monkeypatch.setattr(NoopTool, "execute_command", command)
+    for _ in range(2):
+        result = run_tool_request(NoopTool, ToolRequest())
+        assert result.manifest.error is None
+        commands = result.manifest.command_recording.commands
+        assert [(c.invocation, c.sequence) for c in commands] == [(0, 0), (0, 1)]
+        assert all(c.location == "endpoint" for c in commands)
+        assert all(c.environment.type == "LocalEnvironmentSpec" for c in commands)
+        assert commands[-1].tool.executable == "bash"
+
+
+@pytest.mark.parametrize("failure", ["construction", "launch", "delivery"])
+def test_ordinary_endpoint_failure_preserves_earlier_commands(monkeypatch, failure):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def command(self, inputs):
+        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        if failure == "construction":
+            msg = "command construction failed"
+            raise RuntimeError(msg)
+        return (
+            ["/no-such-executable"]
+            if failure == "launch"
+            else [sys.executable, "-c", "pass"]
+        )
+
+    monkeypatch.setattr(NoopTool, "execute_command", command)
+    if failure == "delivery":
+        monkeypatch.setattr(
+            transport_mod.InlineTransport,
+            "pack_outputs",
+            lambda *args: (_ for _ in ()).throw(OSError("delivery failed")),
+        )
+    result = run_tool_request(NoopTool, ToolRequest())
+    assert result.manifest.error is not None
+    commands = result.manifest.command_recording.commands
+    assert commands[0].outcome == "succeeded"
+    assert len(commands) == (1 if failure == "construction" else 2)
+    if failure == "launch":
+        assert commands[-1].outcome == "launch_failed"
+
+
+def test_preflight_failure_returns_explicit_complete_empty_recording():
+    from artisan.schemas.execution.command_record import CommandRecording
+
+    result = run_tool_request(
+        NoopTool, ToolRequest(output_store="s3://not-authorized/output")
+    )
+    assert result.manifest.error is not None
+    assert result.manifest.command_recording == CommandRecording.empty()
+
+
+def test_request_scope_captures_helper_before_parameter_construction_failure(
+    monkeypatch,
+):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def instantiate(*args):
+        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        msg = "custom operation construction failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(server_mod, "instantiate_op", instantiate)
+    result = run_tool_request(NoopTool, ToolRequest())
+    assert result.manifest.error is not None
+    assert len(result.manifest.command_recording.commands) == 1
+    assert result.manifest.command_recording.commands[0].outcome == "succeeded"
+
+
+def test_python_endpoint_failure_keeps_helper_evidence(monkeypatch):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def execute(*args):
+        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        msg = "Python body failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(NoopTool, "is_command_op", lambda self: False)
+    monkeypatch.setattr(NoopTool, "execute_function", execute)
+    result = run_tool_request(NoopTool, ToolRequest())
+    assert result.manifest.error is not None
+    assert len(result.manifest.command_recording.commands) == 1
+    assert result.manifest.command_recording.commands[0].outcome == "succeeded"

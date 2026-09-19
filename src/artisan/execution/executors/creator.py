@@ -15,6 +15,11 @@ from artisan.execution.compute.routing import create_execute_router
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.execution.recording.commands import (
+    capture_commands,
+    command_snapshot,
+    sanitize_diagnostic,
+)
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import (
     _read_tool_output,
@@ -138,7 +143,7 @@ def run_creator_lifecycle(
                 prepped.sandbox_path,
             )
         except Exception as exc:
-            error = format_error(exc)
+            error = sanitize_diagnostic(format_error(exc))
             if hasattr(exc, "stdout") and exc.stdout:
                 tail = "\n".join(exc.stdout.splitlines()[-30:])
                 error += f"\n--- tool stdout (last 30 lines) ---\n{tail}"
@@ -210,6 +215,16 @@ def run_creator_flow(
     runtime_env: RuntimeEnvironment,
     execute_router: ExecuteRouter | None = None,
 ) -> StagingResult:
+    """Capture command evidence throughout the creator lifecycle."""
+    with capture_commands(unit.operation):
+        return _run_creator_flow(unit, runtime_env, execute_router)
+
+
+def _run_creator_flow(
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+    execute_router: ExecuteRouter | None = None,
+) -> StagingResult:
     """Execute a creator operation through ordered execution phases.
 
     Phases: setup, preprocess, execute, postprocess, lineage, record.
@@ -265,6 +280,7 @@ def run_creator_flow(
         # --- record phase ---
         with phase_timer("record", timings):
             staging_result = record_execution_success(
+                command_recording=command_snapshot(),
                 execution_context=execution_context,
                 artifacts=lifecycle_result.artifacts,
                 lineage_edges=lifecycle_result.edges,
@@ -306,6 +322,7 @@ def run_creator_flow(
         )
         params_dict = serialize_params(operation)
         staging_result = record_execution_failure(
+            command_recording=command_snapshot(),
             execution_context=execution_context,
             error=error,
             inputs=original_inputs,
@@ -317,7 +334,7 @@ def run_creator_flow(
             error_envelope=error_envelope_dict(exc),
         )
     except Exception as exc:
-        error = format_error(exc)
+        error = sanitize_diagnostic(format_error(exc))
         execution_context = _try_build_execution_context(
             execution_run_id,
             unit,
@@ -336,6 +353,7 @@ def run_creator_flow(
         else:
             params_dict = serialize_params(operation)
             staging_result = record_execution_failure(
+                command_recording=command_snapshot(),
                 execution_context=execution_context,
                 error=error,
                 inputs=original_inputs,

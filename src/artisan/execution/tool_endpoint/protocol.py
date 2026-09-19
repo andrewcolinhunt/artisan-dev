@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from artisan.errors import ArtisanErrorEnvelope
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
 
@@ -89,6 +90,7 @@ class StoredOutputs(BaseModel):
 class ToolManifest(BaseModel):
     """Control payload for a completed tool run — small, always JSON."""
 
+    command_recording: CommandRecording
     output_names: list[str] = Field(default_factory=list)
     stored: StoredOutputs | None = None
     log_tail: str | None = None

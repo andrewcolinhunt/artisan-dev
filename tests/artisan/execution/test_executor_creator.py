@@ -1147,3 +1147,71 @@ class TestSandboxPathComputation:
         step_dirs = [d for d in working_root.iterdir() if d.is_dir()]
         assert len(step_dirs) == 1
         assert step_dirs[0].name.startswith("1_")
+
+
+@pytest.mark.parametrize("failure", [None, "execute", "postprocess"])
+def test_creator_records_commands_before_later_failures(
+    runtime_env, monkeypatch, failure
+):
+    import sys
+
+    from artisan.schemas.execution.command_record import CommandRecording
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def execute(self, inputs):
+        for _ in range(2):
+            run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        if failure == "execute":
+            msg = "later execution failed"
+            raise RuntimeError(msg)
+        return {"score": 0.95, "confidence": 0.87}
+
+    monkeypatch.setattr(MetricOutputTestOp, "execute_function", execute)
+    if failure == "postprocess":
+        monkeypatch.setattr(
+            MetricOutputTestOp,
+            "postprocess",
+            lambda *args: (_ for _ in ()).throw(RuntimeError("postprocess failed")),
+        )
+    result = run_creator_flow(
+        ExecutionUnit(operation=MetricOutputTestOp(), inputs={}, step_number=0),
+        runtime_env,
+    )
+    assert result.success is (failure is None)
+    row = pl.read_parquet(Path(result.staging_path) / "executions.parquet").row(
+        0, named=True
+    )
+    recording = CommandRecording.model_validate_json(row["command_recording"])
+    assert [(c.invocation, c.sequence) for c in recording.commands] == [(0, 0), (0, 1)]
+    assert all(c.outcome == "succeeded" for c in recording.commands)
+
+
+def test_failed_launch_error_and_chained_traceback_are_redacted(
+    runtime_env, monkeypatch
+):
+    from artisan.schemas.execution.command_record import CommandRecording
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def execute(self, inputs):
+        run_command(
+            LocalEnvironmentSpec(),
+            ["/missing/opaque-credential"],
+            sensitive_values=("opaque-credential",),
+        )
+
+    monkeypatch.setattr(MetricOutputTestOp, "execute_function", execute)
+    result = run_creator_flow(
+        ExecutionUnit(operation=MetricOutputTestOp(), inputs={}, step_number=0),
+        runtime_env,
+    )
+    assert result.success is False
+    row = pl.read_parquet(Path(result.staging_path) / "executions.parquet").row(
+        0, named=True
+    )
+    assert "opaque-credential" not in row["error"]
+    assert "opaque-credential" not in result.error
+    recording = CommandRecording.model_validate_json(row["command_recording"])
+    assert recording.commands[0].outcome == "launch_failed"
+    assert recording.commands[0].argv == ["/missing/<redacted>"]

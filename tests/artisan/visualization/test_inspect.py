@@ -23,6 +23,7 @@ from artisan.storage.core.table_schemas import (
     EXECUTIONS_SCHEMA,
 )
 from artisan.utils.dicts import flatten_dict as _flatten_dict
+from artisan.utils.log_paths import failure_log_relative_path
 from artisan.visualization.inspect import (
     _build_details,
     inspect_data,
@@ -153,6 +154,9 @@ def _write_executions(delta_root: Path, df: pl.DataFrame) -> None:
         )
         step_number = int(row["origin_step_number"])
         row["step_run_id"] = step_run_id
+        row["timestamp_start"] = row["timestamp_start"] or datetime(
+            2026, 1, 1, tzinfo=UTC
+        )
         terminal = _step_row(
             step_number=step_number,
             step_name=str(row["operation_name"]),
@@ -567,6 +571,7 @@ def test_inspect_failures_structured(tmp_path: Path) -> None:
         "step",
         "operation",
         "execution_run_id",
+        "timestamp_start",
         "code",
         "recovery_hint",
         "field",
@@ -582,7 +587,7 @@ def test_inspect_failures_structured(tmp_path: Path) -> None:
     assert row["field"] == "params.scale"
     assert row["suggestions"] == ["scale_factor"]
     assert row["error"] == "boom traceback"
-    assert row["log"] == "step_1_transform/run_fail.log"
+    assert row["log"] == failure_log_relative_path("run_fail", row["timestamp_start"])
 
 
 def test_inspect_failures_unstructured_degrades(tmp_path: Path) -> None:
@@ -607,7 +612,7 @@ def test_inspect_failures_unstructured_degrades(tmp_path: Path) -> None:
     assert row["field"] is None
     assert row["suggestions"] is None
     assert row["error"] == "ValueError: bad"
-    assert row["log"] == "step_2_transform/run_plain.log"
+    assert row["log"] == failure_log_relative_path("run_plain", row["timestamp_start"])
 
 
 def test_inspect_failures_only_failed_rows(tmp_path: Path) -> None:
@@ -649,6 +654,7 @@ def test_inspect_failures_empty_when_no_failures(tmp_path: Path) -> None:
         "step",
         "operation",
         "execution_run_id",
+        "timestamp_start",
         "code",
         "recovery_hint",
         "field",
@@ -696,6 +702,7 @@ def test_inspect_failures_steps_but_no_executions_returns_empty(tmp_path: Path) 
         "step",
         "operation",
         "execution_run_id",
+        "timestamp_start",
         "code",
         "recovery_hint",
         "field",
@@ -1286,5 +1293,99 @@ def test_inspect_failures_uses_current_step_and_source_log_path(tmp_path: Path) 
     assert failures.select("step", "operation", "log").row(0) == (
         6,
         "source_failure",
-        f"step_1_source_failure/{failure_id}.log",
+        failure_log_relative_path(failure_id, datetime(2026, 1, 1, tzinfo=UTC)),
     )
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_inspect_commands_reads_exact_committed_execution(tmp_path, success):
+    from artisan.schemas.execution.command_record import CommandRecording
+    from artisan.visualization import inspect_commands
+
+    delta_root = tmp_path / "delta"
+    recording = CommandRecording.empty() if success else CommandRecording.unavailable()
+    _write_executions(
+        delta_root,
+        pl.DataFrame(
+            [
+                {
+                    "execution_run_id": "inspect-commands-run",
+                    "execution_spec_id": "commands-spec",
+                    "origin_step_number": 0,
+                    "success": success,
+                    "command_recording": recording.model_dump_json(),
+                }
+            ],
+            schema=EXECUTIONS_SCHEMA,
+        ),
+    )
+    assert (
+        inspect_commands(str(delta_root), "inspect-commands-run")
+        == recording.model_dump()
+    )
+    with pytest.raises(FileNotFoundError):
+        inspect_commands(str(delta_root), "missing")
+
+
+@pytest.mark.parametrize("raw", [None, "{}", '{"status":"complete"}', "not-json"])
+def test_inspect_commands_rejects_malformed_canonical_evidence(tmp_path, raw):
+    from artisan.errors import StoreIntegrityError
+    from artisan.visualization import inspect_commands
+
+    delta_root = tmp_path / "delta"
+    _write_executions(
+        delta_root,
+        pl.DataFrame(
+            [
+                {
+                    "execution_run_id": "broken-recording",
+                    "execution_spec_id": "commands-spec",
+                    "origin_step_number": 0,
+                    "success": True,
+                    "command_recording": raw,
+                }
+            ],
+            schema=EXECUTIONS_SCHEMA,
+        ),
+    )
+    with pytest.raises(StoreIntegrityError, match="canonical command recording"):
+        inspect_commands(str(delta_root), "broken-recording")
+
+
+def test_inspect_commands_does_not_read_uncommitted_staging(tmp_path):
+    from artisan.schemas.execution.command_record import CommandRecording
+    from artisan.visualization import inspect_commands
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    executions_df(
+        execution_run_id=["uncommitted"],
+        command_recording=[CommandRecording.empty().model_dump_json()],
+    ).write_parquet(staging / "executions.parquet")
+    with pytest.raises(FileNotFoundError):
+        inspect_commands(str(tmp_path / "delta"), "uncommitted")
+
+
+def test_inspect_failures_orders_source_times_and_id_ties(tmp_path: Path) -> None:
+    from datetime import timedelta
+
+    start = datetime(2026, 9, 19, tzinfo=UTC)
+    root = tmp_path / "delta"
+    _write_executions(
+        root,
+        executions_df(
+            execution_run_id=["z", "a", "newer", "older"],
+            origin_step_number=[0, 1, 2, 3],
+            operation_name=["op"] * 4,
+            success=[False] * 4,
+            timestamp_start=[
+                start,
+                start,
+                start + timedelta(seconds=1),
+                start - timedelta(seconds=1),
+            ],
+        ),
+    )
+    report = inspect_failures(root)
+    assert report["execution_run_id"].to_list() == ["older", "a", "z", "newer"]
+    assert report.schema["timestamp_start"] == pl.Datetime("us", "UTC")

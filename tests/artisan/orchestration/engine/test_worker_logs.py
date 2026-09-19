@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ from artisan.orchestration.engine.worker_logs import (
     persist_worker_logs,
 )
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.utils.log_paths import failure_log_relative_path
 
 
 def _result(**overrides: object) -> UnitResult:
@@ -70,9 +72,13 @@ class TestPersistWorkerLogs:
         pl.DataFrame({"execution_run_id": [run_id]}).write_parquet(
             staging_dir / "executions.parquet"
         )
-        failure_dir = tmp_path / "failures" / "1_op"
+        failure_dir = tmp_path / "failures" / "20260919"
         failure_dir.mkdir(parents=True)
-        failure_log = failure_dir / f"{run_id}.log"
+        failure_log = (
+            tmp_path
+            / "failures"
+            / failure_log_relative_path(run_id, datetime(2026, 9, 19, tzinfo=UTC))
+        )
         failure_log.write_text("operation error")
         results = [
             _result(
@@ -150,3 +156,21 @@ class TestFindStagingDir:
             )
             is None
         )
+
+
+def test_worker_logs_do_not_cross_append_same_step_and_operation(
+    tmp_path: Path,
+) -> None:
+    from artisan.orchestration.engine.worker_logs import _append_worker_log
+
+    paths = [
+        tmp_path / failure_log_relative_path(run_id, datetime(2026, 9, 19, tzinfo=UTC))
+        for run_id in ("one", "two")
+    ]
+    paths[0].parent.mkdir(parents=True)
+    for path in paths:
+        path.write_text("original")
+    _append_worker_log(str(tmp_path), "one", "worker one")
+    _append_worker_log(str(tmp_path), "missing", "missing worker")
+    assert "worker one" in paths[0].read_text()
+    assert paths[1].read_text() == "original"

@@ -21,7 +21,9 @@ from typing import Any
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.path import uri_join
 
@@ -135,6 +137,10 @@ class PipelineTimings:
                         "execution_run_id": exec_row["execution_run_id"],
                         "operation_name": exec_row["operation_name"],
                         "timings": exec_timings or {},
+                        "command_recording": _validate_command_recording(
+                            exec_row.get("command_recording"),
+                            exec_row["execution_run_id"],
+                        ).model_dump(mode="json"),
                     }
                 )
 
@@ -200,6 +206,43 @@ class PipelineTimings:
                     row[phase] = value
             rows.append(row)
         return pl.DataFrame(rows)
+
+    def command_timings(self, step_number: int) -> pl.DataFrame:
+        """Return observed Popen durations and explicit missing-evidence markers.
+
+        Launch time is already included in execution phases; do not add it to
+        stacked phase totals. Like execution_timings, stored timing selection
+        includes only fresh successful executions from usable terminal steps.
+        Failed attempts remain available through inspect_commands.
+
+        Args:
+            step_number: Step whose selected executions should be flattened.
+
+        Returns:
+            Typed frame ordered by invocation and command sequence within each
+            execution, preserving availability reasons and both omission counts.
+
+        Raises:
+            ValueError: The step does not exist.
+            StoreIntegrityError: Canonical command evidence is missing or invalid.
+        """
+        step = self._find_step(step_number)
+        rows: list[dict[str, Any]] = []
+        for execution in step["executions"]:
+            recording = _validate_command_recording(
+                execution.get("command_recording"), execution["execution_run_id"]
+            )
+            common = {
+                "step_number": step_number,
+                "execution_run_id": execution["execution_run_id"],
+                "operation_name": execution["operation_name"],
+                "recording_status": recording.status,
+                "omitted_commands": recording.omitted_commands,
+                "omitted_missing_invocations": recording.omitted_missing_invocations,
+                "unavailable_reason": recording.unavailable_reason,
+            }
+            rows.extend(common | entry for entry in _command_timing_entries(recording))
+        return pl.DataFrame(rows, schema=_COMMAND_TIMINGS_SCHEMA)
 
     def execution_stats(self, step_number: int) -> pl.DataFrame:
         """Summary statistics for execution-level phase timings of a step.
@@ -390,6 +433,66 @@ class PipelineTimings:
 # ======================================================================
 # Module-level helpers
 # ======================================================================
+
+
+_COMMAND_TIMINGS_SCHEMA = {
+    "step_number": pl.Int32,
+    "execution_run_id": pl.String,
+    "operation_name": pl.String,
+    "recording_status": pl.String,
+    "omitted_commands": pl.Int64,
+    "omitted_missing_invocations": pl.Int64,
+    "unavailable_reason": pl.String,
+    "entry_type": pl.String,
+    "invocation": pl.Int64,
+    "sequence": pl.Int64,
+    "missing_reason": pl.String,
+    "location": pl.String,
+    "outcome": pl.String,
+    "launch_seconds": pl.Float64,
+}
+
+
+def _validate_command_recording(value: Any, execution_run_id: str) -> CommandRecording:
+    """Use the canonical model without exposing malformed diagnostic contents."""
+    try:
+        if isinstance(value, str):
+            return CommandRecording.model_validate_json(value)
+        return CommandRecording.model_validate(value)
+    except (ValueError, TypeError):
+        msg = f"Invalid canonical command recording for execution {execution_run_id!r}"
+        raise StoreIntegrityError(msg) from None
+
+
+def _command_timing_entries(recording: CommandRecording) -> list[dict[str, Any]]:
+    """Flatten commands and availability markers without copying command text."""
+    entries = [
+        {
+            "entry_type": "command",
+            "invocation": command.invocation,
+            "sequence": command.sequence,
+            "location": command.location,
+            "outcome": command.outcome,
+            "launch_seconds": command.launch_seconds,
+        }
+        for command in recording.commands
+    ]
+    entries.extend(
+        {
+            "entry_type": "missing_invocation",
+            "invocation": marker.invocation,
+            "missing_reason": marker.reason,
+        }
+        for marker in recording.missing_invocations
+    )
+    entries.sort(
+        key=lambda row: (
+            row["invocation"],
+            row["entry_type"] != "command",
+            row.get("sequence", 0),
+        )
+    )
+    return entries or [{"entry_type": "empty_recording"}]
 
 
 def _parse_timings(metadata_json: str | None) -> dict[str, Any] | None:

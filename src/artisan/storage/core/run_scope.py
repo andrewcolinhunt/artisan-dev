@@ -31,6 +31,7 @@ _MEMBERSHIP_SCHEMA: dict[str, Any] = {
     "error": pl.String,
     "error_envelope": pl.String,
     "metadata": pl.String,
+    "command_recording": pl.String,
 }
 
 _OUTPUT_SCHEMA: dict[str, Any] = {
@@ -97,6 +98,7 @@ def load_execution_membership(
         "error",
         "error_envelope",
         "metadata",
+        "command_recording",
     ]
     direct = (
         attempts.join(
@@ -369,6 +371,7 @@ def _read_executions(
         "error",
         "error_envelope",
         "metadata",
+        "command_recording",
     )
 
 

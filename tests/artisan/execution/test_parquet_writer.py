@@ -24,6 +24,7 @@ from artisan.execution.recording.parquet_writer import (
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.utils.json import artisan_json_default as _json_default
 
 
@@ -402,7 +403,7 @@ class TestStageExecutionRecord:
         }
         if result_metadata is not None:
             kwargs["result_metadata"] = result_metadata
-        _write_execution_record(**kwargs)
+        _write_execution_record(command_recording=CommandRecording.empty(), **kwargs)
         return pl.read_parquet(tmp_path / "executions.parquet")
 
     def test_default_metadata_is_empty_json(self, tmp_path):
@@ -426,6 +427,7 @@ class TestStageExecutionRecord:
         """Sets in user_overrides are serialized as sorted lists."""
         fs = LocalFileSystem()
         _write_execution_record(
+            command_recording=CommandRecording.empty(),
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="tool_a",
@@ -449,6 +451,7 @@ class TestStageExecutionRecord:
 
         fs = LocalFileSystem()
         _write_execution_record(
+            command_recording=CommandRecording.empty(),
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="ingest",
@@ -474,6 +477,7 @@ class TestToolOutputColumns:
         """tool_output value persisted in executions.parquet."""
         fs = LocalFileSystem()
         _write_execution_record(
+            command_recording=CommandRecording.empty(),
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="tool_a",
@@ -494,6 +498,7 @@ class TestToolOutputColumns:
         """worker_log value persisted in executions.parquet."""
         fs = LocalFileSystem()
         _write_execution_record(
+            command_recording=CommandRecording.empty(),
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="tool_a",
@@ -514,6 +519,7 @@ class TestToolOutputColumns:
         """Columns are null when not provided."""
         fs = LocalFileSystem()
         _write_execution_record(
+            command_recording=CommandRecording.empty(),
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="tool_a",

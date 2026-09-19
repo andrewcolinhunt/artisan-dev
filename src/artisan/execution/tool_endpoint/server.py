@@ -26,6 +26,13 @@ from artisan.errors import (
     RecoveryHint,
 )
 from artisan.execution.compute.invoke import invoke_op_work
+from artisan.execution.recording.commands import (
+    capture_commands,
+    command_snapshot,
+    current_recorder,
+    invocation_scope,
+    sanitize_diagnostic,
+)
 from artisan.execution.tool_endpoint.protocol import (
     ToolManifest,
     ToolRequest,
@@ -46,7 +53,6 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.specs.input_models import ExecuteInput
-from artisan.utils.external_tools import ExternalToolError
 
 _INPUT_RESOLUTION_ERRORS: tuple[type[BaseException], ...] = (
     ValueError,
@@ -92,6 +98,25 @@ def resolve_op(module: str, qualname: str) -> type[OperationDefinition]:
 
 
 def run_tool_request(
+    op_cls: type[OperationDefinition],
+    request: ToolRequest,
+    data_policy: ToolEndpointDataPolicy | None = None,
+) -> WorkerResult:
+    """Capture fresh request-wide command evidence across all ordinary outcomes."""
+    with capture_commands(location="endpoint"), invocation_scope():
+        try:
+            return _run_tool_request(op_cls, request, data_policy)
+        except Exception as exc:
+            return _error_result(
+                op_cls.name,
+                ErrorCode.OP_EXECUTE_FAILED,
+                str(exc),
+                "compute",
+                "REPORT_TO_USER",
+            )
+
+
+def _run_tool_request(
     op_cls: type[OperationDefinition],
     request: ToolRequest,
     data_policy: ToolEndpointDataPolicy | None = None,
@@ -142,6 +167,9 @@ def run_tool_request(
 
     try:
         op = instantiate_op(op_cls, request.params)
+        recorder = current_recorder()
+        assert recorder is not None
+        recorder.add_operation(op)
     except ValidationError:
         # bad params the /submit JSON-schema gate could not express (no-Params
         # ops, custom validators); the agent can fix its own call. Runs before
@@ -239,7 +267,7 @@ def run_tool_request(
                 environment=LocalEnvironmentSpec(),
                 stream_output=True,
             )
-        except (ExternalToolError, OSError) as exc:
+        except Exception as exc:
             return _error_result(
                 op_cls.name,
                 ErrorCode.OP_EXECUTE_FAILED,
@@ -311,7 +339,10 @@ def run_tool_request(
 
         return WorkerResult(
             manifest=ToolManifest(
-                output_names=names, stored=stored, log_tail=_log_tail(log_path)
+                command_recording=command_snapshot(),
+                output_names=names,
+                stored=stored,
+                log_tail=_log_tail(log_path),
             ),
             output_tar=output_tar,
         )
@@ -417,15 +448,16 @@ def _error_result(
     """
     return WorkerResult(
         manifest=ToolManifest(
+            command_recording=command_snapshot(),
             error=ArtisanError(
                 code=code,
-                message=message,
+                message=sanitize_diagnostic(message),
                 error_type=error_type,
                 operation_name=op_name,
                 recovery_hint=recovery_hint,
             ).envelope,
             output_names=output_names or [],
-            log_tail=log_tail,
+            log_tail=sanitize_diagnostic(log_tail),
         )
     )
 
@@ -439,7 +471,7 @@ def _log_tail(log_path: str) -> str | None:
     try:
         with open(log_path, "rb") as f:
             f.seek(max(0, size - MAX_TOOL_OUTPUT_BYTES))
-            return f.read().decode("utf-8", errors="replace")
+            return sanitize_diagnostic(f.read().decode("utf-8", errors="replace"))
     except OSError:
         return None
 

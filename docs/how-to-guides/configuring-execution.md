@@ -1046,6 +1046,74 @@ pipeline.run(operation=MyOp, inputs=..., compact=False)
 
 ---
 
+## Inspect commands from an execution
+
+After an execution commits, read the commands it attempted:
+
+```python
+from artisan.visualization import inspect_commands
+
+recording = inspect_commands(delta_root, execution_run_id)
+for command in recording["commands"]:
+    print(command["invocation"], command["sequence"], command["argv"], command["outcome"])
+```
+
+`requested_argv` contains the requested arguments; `argv` includes the actual
+Local, Pixi, Docker, or Apptainer wrapper. Each record includes the worker's
+working directory, declared tool, environment identity, outcome, and exit code.
+Python-only executions have a complete, empty command list.
+
+Read `invocation` as input dispatch order and `sequence` as command order within
+that invocation. Endpoint calls can run concurrently; their positions do not
+represent a shared clock or completion order. Recording covers `run_command`
+and Artisan's invocation helpers, including preprocessing and postprocessing.
+Direct `subprocess` calls and user-created threads without propagated context
+are outside this capture scope.
+
+### Check whether evidence is complete
+
+Check `status` before interpreting an empty list. `missing_invocations` explains
+transport failures, cancellation, and missing or invalid endpoint evidence.
+`unavailable_reason="worker_evidence_unavailable"` means the orchestrator had no
+worker evidence when it synthesized a failure. Neither case proves that the
+worker launched no command. Endpoints without recording support require redeployment.
+
+The entire recording is capped at 1 MiB. When it reaches that limit, Artisan
+keeps an ordered prefix and reports `omitted_commands` and
+`omitted_missing_invocations`; later, shorter entries do not skip the cutoff.
+Omissions make the recording partial. Inspection reads committed execution
+rows; it never reconstructs missing evidence from logs.
+
+### Supply credentials safely
+
+Prefer environment variables or recognizable credential flags such as `--token`
+and `--password`. For opaque values, pass `sensitive_values` to `run_command`:
+
+```python
+from artisan.utils import run_command
+
+result = run_command(
+    environment,
+    ["tool", "--custom-option", credential],
+    cwd=work_dir,
+    sensitive_values=(credential,),
+)
+```
+
+Recording removes explicit environment values, inherited credential values,
+recognized credential arguments, and URL capabilities from diagnostic copies.
+`redacted_fields` identifies affected fields; `required_environment` lists known
+variable names that may require fresh credentials. Subprocess arguments and
+successful return values keep their original values. Raw tool output files and
+live stdout are not secret-filtered; arbitrary unknown positional secrets cannot
+be inferred reliably.
+
+Use this evidence to diagnose a run. Stored arguments can contain placeholders,
+and worker paths can disappear; command recording is not an executable replay
+script. Execution replay reconstructs an operation separately.
+
+---
+
 ## Common pitfalls
 
 | Problem | Cause | Fix |

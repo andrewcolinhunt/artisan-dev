@@ -334,3 +334,227 @@ class TestPipelineTimingsFromDelta:
         timings = PipelineTimings.from_delta(store.root)
 
         assert timings.data["pipeline_run_id"] == store.other_run
+
+
+def _timing_command(invocation=0, sequence=0, **changes):
+    """Build explicit canonical subprocess evidence for timing assertions."""
+    return {
+        "invocation": invocation,
+        "sequence": sequence,
+        "location": "local",
+        "requested_argv": ["tool"],
+        "argv": ["tool"],
+        "cwd": "/tmp",
+        "tool": None,
+        "environment": {
+            "type": "LocalEnvironmentSpec",
+            "identity": {},
+            "variable_names": [],
+        },
+        "outcome": "succeeded",
+        "returncode": 0,
+        "redacted_fields": [],
+        "required_environment": [],
+        "launch_seconds": 0.123456789,
+    } | changes
+
+
+def _timing_recording(**changes):
+    from artisan.schemas.execution.command_record import CommandRecording
+
+    return CommandRecording.empty().model_dump(mode="json") | changes
+
+
+def _command_timings_data(*recordings):
+    return {
+        "steps": [
+            {
+                "step_number": 0,
+                "step_name": "op",
+                "duration_seconds": 3.0,
+                "timings": {"execute": 3.0},
+                "executions": [
+                    {
+                        "execution_run_id": f"execution-{index}",
+                        "operation_name": "op",
+                        "timings": {"execute": 1.0},
+                        "command_recording": recording,
+                    }
+                    for index, recording in enumerate(recordings)
+                ],
+            }
+        ]
+    }
+
+
+def test_command_timings_preserves_typed_order_and_partial_evidence():
+    import polars as pl
+
+    recording = _timing_recording(
+        status="partial",
+        commands=[
+            _timing_command(),
+            _timing_command(1, 0, location="endpoint"),
+            _timing_command(
+                1,
+                1,
+                location="endpoint",
+                outcome="launch_failed",
+                returncode=None,
+                launch_seconds=None,
+            ),
+        ],
+        missing_invocations=[
+            {"invocation": 1, "reason": "transport_failure"},
+            {"invocation": 2, "reason": "cancelled"},
+        ],
+        omitted_commands=3,
+        omitted_missing_invocations=4,
+    )
+    timing = PipelineTimings(_command_timings_data(recording))
+    frame = timing.command_timings(0)
+    assert frame.schema == {
+        "step_number": pl.Int32,
+        "execution_run_id": pl.String,
+        "operation_name": pl.String,
+        "recording_status": pl.String,
+        "omitted_commands": pl.Int64,
+        "omitted_missing_invocations": pl.Int64,
+        "unavailable_reason": pl.String,
+        "entry_type": pl.String,
+        "invocation": pl.Int64,
+        "sequence": pl.Int64,
+        "missing_reason": pl.String,
+        "location": pl.String,
+        "outcome": pl.String,
+        "launch_seconds": pl.Float64,
+    }
+    assert frame.select("entry_type", "invocation", "sequence").rows() == [
+        ("command", 0, 0),
+        ("command", 1, 0),
+        ("command", 1, 1),
+        ("missing_invocation", 1, None),
+        ("missing_invocation", 2, None),
+    ]
+    assert frame["launch_seconds"].to_list() == [
+        0.123456789,
+        0.123456789,
+        None,
+        None,
+        None,
+    ]
+    assert frame["missing_reason"].to_list() == [
+        None,
+        None,
+        None,
+        "transport_failure",
+        "cancelled",
+    ]
+    assert frame["omitted_commands"].to_list() == [3] * 5
+    assert frame["omitted_missing_invocations"].to_list() == [4] * 5
+    assert "argv" not in frame.columns
+    assert timing.execution_stats(0)["phase"].to_list() == ["execute"]
+    assert timing.step_timings()["execute"].to_list() == [3.0]
+    assert (
+        PipelineTimings(_command_timings_data()).command_timings(0).schema
+        == frame.schema
+    )
+
+
+def test_command_timings_distinguishes_empty_omitted_and_unavailable():
+    from artisan.schemas.execution.command_record import CommandRecording
+
+    frames = PipelineTimings(
+        _command_timings_data(
+            _timing_recording(),
+            _timing_recording(
+                status="partial", omitted_commands=4, omitted_missing_invocations=2
+            ),
+            CommandRecording.unavailable().model_dump(mode="json"),
+            _timing_recording(
+                status="unavailable",
+                missing_invocations=[{"invocation": 0, "reason": "missing_recording"}],
+            ),
+        )
+    ).command_timings(0)
+    assert frames["entry_type"].to_list() == ["empty_recording"] * 3 + [
+        "missing_invocation"
+    ]
+    assert frames["recording_status"].to_list() == [
+        "complete",
+        "partial",
+        "unavailable",
+        "unavailable",
+    ]
+    assert frames["unavailable_reason"].to_list() == [
+        None,
+        None,
+        "worker_evidence_unavailable",
+        None,
+    ]
+    assert frames["launch_seconds"].null_count() == 4
+    assert frames["invocation"].to_list() == [None, None, None, 0]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        None,
+        {},
+        "sensitive malformed JSON",
+        _timing_recording(commands=[_timing_command(launch_seconds=float("nan"))]),
+        _timing_recording(commands=[_timing_command(launch_seconds=float("inf"))]),
+        _timing_recording(commands=[_timing_command(launch_seconds=-1.0)]),
+        _timing_recording(commands=[_timing_command(launch_seconds="1.0")]),
+        _timing_recording(omitted_commands="1"),
+        _timing_recording(status="unavailable"),
+    ],
+)
+def test_command_timings_rejects_invalid_evidence_without_leaking_json(invalid):
+    from artisan.errors import StoreIntegrityError
+
+    timing = PipelineTimings(_command_timings_data(invalid))
+    with pytest.raises(StoreIntegrityError, match="execution-0") as error:
+        timing.command_timings(0)
+    assert "sensitive" not in str(error.value)
+
+
+def test_command_timings_requires_raw_evidence_and_valid_step():
+    from artisan.errors import StoreIntegrityError
+
+    data = _command_timings_data(_timing_recording())
+    data["steps"][0]["executions"][0].pop("command_recording")
+    with pytest.raises(StoreIntegrityError):
+        PipelineTimings(data).command_timings(0)
+    with pytest.raises(ValueError, match="Step 99 not found"):
+        PipelineTimings(data).command_timings(99)
+
+
+def test_command_timings_from_delta_retains_only_selected_fresh_evidence(tmp_path):
+    store = build_cache_isolation_store(tmp_path)
+    timing = PipelineTimings.from_delta(store.root, pipeline_run_id=store.current_run)
+    assert timing.command_timings(0)["execution_run_id"].to_list() == [
+        store.current_data_execution
+    ]
+    assert timing.command_timings(0)["entry_type"].to_list() == ["empty_recording"]
+    assert timing.command_timings(5).is_empty()
+
+
+@pytest.mark.parametrize("invalid", [None, "not-json", "{}"])
+def test_from_delta_rejects_invalid_canonical_recording(tmp_path, monkeypatch, invalid):
+    import polars as pl
+
+    from artisan.errors import StoreIntegrityError
+    from artisan.storage.core import run_scope
+
+    store = build_cache_isolation_store(tmp_path)
+    original = run_scope.load_execution_membership
+
+    def invalid_evidence(*args, **kwargs):
+        return original(*args, **kwargs).with_columns(
+            pl.lit(invalid, dtype=pl.String).alias("command_recording")
+        )
+
+    monkeypatch.setattr(run_scope, "load_execution_membership", invalid_evidence)
+    with pytest.raises(StoreIntegrityError, match=store.current_data_execution):
+        PipelineTimings.from_delta(store.root, pipeline_run_id=store.current_run)
