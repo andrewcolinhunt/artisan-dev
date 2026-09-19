@@ -304,7 +304,11 @@ class StepTracker:
         eligible = {StepStatus.SUCCEEDED}
         if cache_policy == CachePolicy.STEP_COMPLETED:
             eligible.add(StepStatus.PARTIAL)
-        states = [state for state in states if state.status in eligible]
+        states = [
+            state
+            for state in states
+            if state.status in eligible and state.replay_of_execution_run_id is None
+        ]
         if not states:
             return None
         state = max(states, key=lambda candidate: candidate.timestamp)
@@ -486,6 +490,7 @@ class StepTracker:
             raise PersistenceIntegrityError(msg)
         owner_fields = (
             "pipeline_run_id",
+            "replay_of_execution_run_id",
             "step_number",
             "step_name",
             "operation_class",
@@ -556,6 +561,7 @@ class StepTracker:
         """Build the common physical snapshot shape."""
         return {
             "step_run_id": record.step_run_id,
+            "replay_of_execution_run_id": record.replay_of_execution_run_id,
             "step_spec_id": record.step_spec_id,
             "pipeline_run_id": self._pipeline_run_id,
             "step_number": record.step_number,
@@ -659,6 +665,7 @@ class StepTracker:
             state.status == StepStatus.PENDING
             and state.state_sequence == 0
             and state.step_run_id == record.step_run_id
+            and state.replay_of_execution_run_id == record.replay_of_execution_run_id
             and state.step_spec_id == record.step_spec_id
             and state.step_number == record.step_number
             and state.step_name == record.step_name
@@ -724,6 +731,7 @@ class StepTracker:
         return StepState(
             pipeline_run_id=row["pipeline_run_id"],
             step_run_id=row["step_run_id"],
+            replay_of_execution_run_id=row["replay_of_execution_run_id"],
             step_number=row["step_number"],
             step_name=row["step_name"],
             step_spec_id=row["step_spec_id"],
@@ -752,6 +760,7 @@ class StepTracker:
         """Serialize a state for the next immutable snapshot."""
         return {
             "step_run_id": state.step_run_id,
+            "replay_of_execution_run_id": state.replay_of_execution_run_id,
             "step_spec_id": state.step_spec_id,
             "pipeline_run_id": state.pipeline_run_id,
             "step_number": state.step_number,

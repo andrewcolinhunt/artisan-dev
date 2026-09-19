@@ -26,6 +26,7 @@ from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -202,7 +203,11 @@ class TestRunCreatorFlowRouterForwarding:
             timings={},
         )
 
-        unit = MagicMock()
+        unit = MagicMock(
+            replay_snapshot=ReplaySnapshot.unavailable("mock_unit"),
+            replay_of_execution_run_id=None,
+            replay_sensitive_values=(),
+        )
         unit.operation = _SimpleOp()
         unit.user_overrides = None
         runtime_env = MagicMock()
@@ -223,7 +228,11 @@ class TestRunCreatorFlowRouterForwarding:
             timings={},
         )
 
-        unit = MagicMock()
+        unit = MagicMock(
+            replay_snapshot=ReplaySnapshot.unavailable("mock_unit"),
+            replay_of_execution_run_id=None,
+            replay_sensitive_values=(),
+        )
         unit.operation = _SimpleOp()
         unit.user_overrides = None
         runtime_env = MagicMock()

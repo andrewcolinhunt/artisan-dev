@@ -30,8 +30,11 @@ from artisan.execution.executors.curator import (
     run_curator_flow,
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.execution.recording.commands import capture_commands
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import record_execution_failure
+from artisan.execution.recording.replay_snapshot import build_replay_snapshot
+from artisan.execution.utils import generate_execution_run_id
 from artisan.operations.base._param_docs import _params_class
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.batching import (
@@ -51,6 +54,7 @@ from artisan.orchestration.runners.base import RunnerBase
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import RemoteObservation, ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -661,9 +665,61 @@ def execute_step(
     )
 
 
+def execute_prepared_unit(
+    unit: ExecutionUnit,
+    runtime: RuntimeEnvironment,
+    runner: RunnerBase,
+    config: PipelineConfig,
+    cancel_event: threading.Event,
+    persist_result: Callable[[StepResult, tuple[str, ...]], StepResult],
+) -> StepResult:
+    """Dispatch precisely one configured unit without preparation or cache lookup."""
+    kwargs: dict[str, Any] = {
+        "operation": unit.operation,
+        "inputs": None,
+        "step_number": unit.step_number,
+        "config": config,
+        "failure_policy": config.failure_policy,
+        "user_overrides": unit.user_overrides,
+        "cancel_event": cancel_event,
+        "skip_cache": True,
+        "step_run_id": unit.step_run_id,
+        "persist_result": persist_result,
+        "prepared_unit": unit,
+        "prepared_runtime": runtime,
+    }
+    if is_curator_operation(unit.operation):
+        return _execute_curator_step(**kwargs)
+    return _execute_creator_step(step_runner=runner, **kwargs)
+
+
+def _synthetic_replay_snapshot(unit: ExecutionUnit) -> ReplaySnapshot:
+    """Keep driver evidence while admitting that lost remote work is unknown."""
+    snapshot = unit.replay_snapshot or ReplaySnapshot.unavailable(
+        "worker_evidence_unavailable"
+    )
+    if unit.operation.compute_provider.active != "local":
+        snapshot = snapshot.model_copy(
+            update={
+                "remote_identity": [
+                    RemoteObservation(dispatch_index=0, status="unavailable")
+                ]
+            }
+        )
+    if snapshot.diagnostic is not None:
+        snapshot = snapshot.model_copy(
+            update={
+                "diagnostic": snapshot.diagnostic.model_copy(
+                    update={"status": "unavailable"}
+                )
+            }
+        )
+    return snapshot
+
+
 def _execute_curator_step(
     operation: OperationDefinition,
-    inputs: PreparedInputs,
+    inputs: PreparedInputs | None,
     config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
@@ -674,6 +730,8 @@ def _execute_curator_step(
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
     persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
+    prepared_unit: ExecutionUnit | None = None,
+    prepared_runtime: RuntimeEnvironment | None = None,
 ) -> StepResult:
     """Execute a curator operation locally in an isolated subprocess.
 
@@ -701,107 +759,117 @@ def _execute_curator_step(
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
 
-    # --- resolve_inputs phase ---
-    with phase_timer("resolve_inputs", timings):
-        paired_inputs = inputs.inputs
-        group_ids = inputs.group_ids
-        total_artifacts = sum(len(ids) for ids in paired_inputs.values())
-        if total_artifacts > 0:
-            logger.debug(
-                "Step %d (%s): resolved %d input artifacts",
-                step_number,
-                operation.name,
-                total_artifacts,
-            )
-
-        skip_result = _skip_for_empty_inputs(
-            operation,
-            paired_inputs,
-            step_number,
-            failure_policy,
-            step_run_id=step_run_id,
-        )
-        if skip_result is not None:
-            return skip_result
-
-    # --- batch_and_cache phase ---
-    with phase_timer("batch_and_cache", timings):
-        merged_params = serialize_params(operation)
-        from artisan.utils.hashing import compute_execution_spec_id
-
-        spec_id = compute_execution_spec_id(
-            operation_name=operation.name,
-            inputs=inputs.cache_inputs,
-            params=merged_params,
-            config_overrides=config_overrides,
-        )
-        if not skip_cache:
-            cache_result = check_cache_for_batch(
-                spec_id,
-                config.delta_root,
-                config=config,
-            )
-            if cache_result is not None:
-                logger.info(
-                    "Step %d (%s) CACHED — skipping execution",
+    if prepared_unit is None:
+        assert inputs is not None
+        # --- resolve_inputs phase ---
+        with phase_timer("resolve_inputs", timings):
+            paired_inputs = inputs.inputs
+            group_ids = inputs.group_ids
+            total_artifacts = sum(len(ids) for ids in paired_inputs.values())
+            if total_artifacts > 0:
+                logger.debug(
+                    "Step %d (%s): resolved %d input artifacts",
                     step_number,
                     operation.name,
+                    total_artifacts,
                 )
-                cached_count = sum(len(ids) for ids in paired_inputs.values()) or 1
-                validated_reuse = _validate_cache_reuse(
-                    config,
-                    step_run_id,
-                    {cache_result.execution_run_id},
+
+            skip_result = _skip_for_empty_inputs(
+                operation,
+                paired_inputs,
+                step_number,
+                failure_policy,
+                step_run_id=step_run_id,
+            )
+            if skip_result is not None:
+                return skip_result
+
+        # --- batch_and_cache phase ---
+        with phase_timer("batch_and_cache", timings):
+            merged_params = serialize_params(operation)
+            from artisan.utils.hashing import compute_execution_spec_id
+
+            spec_id = compute_execution_spec_id(
+                operation_name=operation.name,
+                inputs=inputs.cache_inputs,
+                params=merged_params,
+                config_overrides=config_overrides,
+            )
+            if not skip_cache:
+                cache_result = check_cache_for_batch(
+                    spec_id,
+                    config.delta_root,
+                    config=config,
                 )
-                if cancel_event is not None and cancel_event.is_set():
-                    return _cancelled_result(
-                        operation,
+                if cache_result is not None:
+                    logger.info(
+                        "Step %d (%s) CACHED — skipping execution",
                         step_number,
-                        failure_policy,
+                        operation.name,
+                    )
+                    cached_count = sum(len(ids) for ids in paired_inputs.values()) or 1
+                    validated_reuse = _validate_cache_reuse(
+                        config,
+                        step_run_id,
+                        {cache_result.execution_run_id},
+                    )
+                    if cancel_event is not None and cancel_event.is_set():
+                        return _cancelled_result(
+                            operation,
+                            step_number,
+                            failure_policy,
+                            step_run_id=step_run_id,
+                        )
+                    _stage_cache_reuse(
+                        config,
+                        step_run_id,
+                        validated_reuse,
+                        step_number=step_number,
+                        operation_name=operation.name,
+                    )
+                    _finalize_timings(timings, total_start, step_number, "Curator")
+                    result = build_step_result(
+                        operation=operation,
+                        step_number=step_number,
+                        succeeded_count=cached_count,
+                        failed_count=0,
+                        failure_policy=failure_policy,
+                        disposition=StepDisposition.CACHE_HIT,
+                        metadata={"timings": timings},
                         step_run_id=step_run_id,
                     )
-                _stage_cache_reuse(
-                    config,
-                    step_run_id,
-                    validated_reuse,
-                    step_number=step_number,
-                    operation_name=operation.name,
-                )
-                _finalize_timings(timings, total_start, step_number, "Curator")
-                result = build_step_result(
-                    operation=operation,
-                    step_number=step_number,
-                    succeeded_count=cached_count,
-                    failed_count=0,
-                    failure_policy=failure_policy,
-                    disposition=StepDisposition.CACHE_HIT,
-                    metadata={"timings": timings},
-                    step_run_id=step_run_id,
-                )
-                return _persist_result(result, [], persist_result)
+                    return _persist_result(result, [], persist_result)
 
-    # --- cancel check: before execute ---
-    if cancel_event is not None and cancel_event.is_set():
-        return _cancelled_result(
-            operation, step_number, failure_policy, step_run_id=step_run_id
+        # --- cancel check: before execute ---
+        if cancel_event is not None and cancel_event.is_set():
+            return _cancelled_result(
+                operation, step_number, failure_policy, step_run_id=step_run_id
+            )
+
+        # Create single ExecutionUnit with all inputs
+        unit = ExecutionUnit(
+            operation=operation,
+            inputs=paired_inputs,
+            execution_spec_id=spec_id,
+            step_number=step_number,
+            group_ids=group_ids,
+            user_overrides=user_overrides,
+            step_run_id=step_run_id,
         )
 
-    # Create single ExecutionUnit with all inputs
-    unit = ExecutionUnit(
-        operation=operation,
-        inputs=paired_inputs,
-        execution_spec_id=spec_id,
-        step_number=step_number,
-        group_ids=group_ids,
-        user_overrides=user_overrides,
-        step_run_id=step_run_id,
-    )
+        unit.replay_snapshot = build_replay_snapshot(
+            unit, _create_runtime_environment(config, operation), inputs.cache_inputs
+        )
+
+    else:
+        unit = prepared_unit
+        paired_inputs = unit.inputs
 
     # --- execute phase ---
     dispatch_error: str | None = None
     with phase_timer("execute", timings):
         # Create RuntimeEnvironment
-        runtime_env = _create_runtime_environment(config, operation)
+        runtime_env = prepared_runtime or _create_runtime_environment(config, operation)
 
         # Capture before subprocess spawn — needed for failure record on kill
         timestamp_start = datetime.now(UTC)
@@ -997,10 +1065,12 @@ def _synthesize_failure_record(
         step_run_id: Owning step run id, or None for composite-internal steps.
 
     Returns:
-        The synthetic ``killed-<spec>`` execution run id, or ``""`` if
+        The fresh synthetic execution run id, or ``""`` if
         synthesis itself failed.
     """
-    synthetic_run_id = f"killed-{unit.execution_spec_id[:24]}"
+    synthetic_run_id = generate_execution_run_id(
+        unit.execution_spec_id, datetime.now(UTC), worker_id=0
+    )
     try:
         execution_context = build_execution_context(
             execution_run_id=synthetic_run_id,
@@ -1011,16 +1081,22 @@ def _synthesize_failure_record(
             operation=unit.operation,
             step_run_id=step_run_id,
         )
-        record_execution_failure(
-            command_recording=CommandRecording.unavailable(),
-            execution_context=execution_context,
-            error=error,
-            inputs=unit.inputs,
-            timestamp_end=datetime.now(UTC),
-            params=serialize_params(unit.operation),
-            user_overrides=user_overrides,
-            failure_logs_root=runtime_env.failure_logs_root,
-        )
+        with capture_commands(unit.operation) as commands:
+            commands.add_environment(
+                {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
+            )
+            record_execution_failure(
+                command_recording=CommandRecording.unavailable(),
+                replay_snapshot=_synthetic_replay_snapshot(unit),
+                replay_of_execution_run_id=unit.replay_of_execution_run_id,
+                execution_context=execution_context,
+                error=error,
+                inputs=unit.inputs,
+                timestamp_end=datetime.now(UTC),
+                params=serialize_params(unit.operation),
+                user_overrides=user_overrides,
+                failure_logs_root=runtime_env.failure_logs_root,
+            )
     except Exception:
         logger.exception(
             "Failed to synthesize failure record for unit %s",
@@ -1141,7 +1217,7 @@ def _discard_cancelled_staging(
 
 def _execute_creator_step(
     operation: OperationDefinition,
-    inputs: PreparedInputs,
+    inputs: PreparedInputs | None,
     step_runner: RunnerBase,
     config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
@@ -1153,6 +1229,8 @@ def _execute_creator_step(
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
     persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
+    prepared_unit: ExecutionUnit | None = None,
+    prepared_runtime: RuntimeEnvironment | None = None,
 ) -> StepResult:
     """Execute a creator operation step through its lifecycle runner.
 
@@ -1178,120 +1256,134 @@ def _execute_creator_step(
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
 
-    # =========================================================================
-    # PHASE 1: DISPATCH
-    # =========================================================================
+    if prepared_unit is None:
+        assert inputs is not None
+        # =========================================================================
+        # PHASE 1: DISPATCH
+        # =========================================================================
 
-    # --- resolve_inputs phase ---
-    with phase_timer("resolve_inputs", timings):
-        paired_inputs = inputs.inputs
-        group_ids = inputs.group_ids
+        # --- resolve_inputs phase ---
+        with phase_timer("resolve_inputs", timings):
+            paired_inputs = inputs.inputs
+            group_ids = inputs.group_ids
 
-        skip_result = _skip_for_empty_inputs(
-            operation,
-            paired_inputs,
-            step_number,
-            failure_policy,
-            step_run_id=step_run_id,
-        )
-        if skip_result is not None:
-            return skip_result
+            skip_result = _skip_for_empty_inputs(
+                operation,
+                paired_inputs,
+                step_number,
+                failure_policy,
+                step_run_id=step_run_id,
+            )
+            if skip_result is not None:
+                return skip_result
 
-        total_artifacts = sum(len(ids) for ids in paired_inputs.values())
+            total_artifacts = sum(len(ids) for ids in paired_inputs.values())
+            logger.debug(
+                "Step %d (%s): resolved %d input artifacts",
+                step_number,
+                operation.name,
+                total_artifacts,
+            )
+
+        # --- batch_and_cache phase ---
+        with phase_timer("batch_and_cache", timings):
+            # Get batch configuration from the instance
+            batch_config = get_batch_config(operation)
+
+            merged_params = serialize_params(operation)
+
+            # Import lazily to avoid package import cycles during module initialization.
+            from artisan.utils.hashing import compute_execution_spec_id
+
+            # Generate ExecutionUnit batches (Level 1)
+            execution_unit_batches = generate_execution_unit_batches(
+                paired_inputs,
+                batch_config,
+                group_ids=group_ids,
+                cache_inputs=inputs.cache_inputs,
+            )
+
+            # Create ExecutionUnits with cache checking
+            units_to_dispatch: list[ExecutionUnit] = []
+            cached_count = 0
+            cached_units = 0
+            cached_execution_run_ids: set[str] = set()
+
+            for (
+                execution_unit_inputs,
+                batch_group_ids,
+                execution_cache_inputs,
+            ) in execution_unit_batches:
+                # Compute spec_id for cache lookup
+                spec_id = compute_execution_spec_id(
+                    operation_name=operation.name,
+                    inputs=execution_cache_inputs,
+                    params=merged_params,
+                    config_overrides=config_overrides,
+                )
+
+                # Cache lookup
+                cache_result = (
+                    None
+                    if skip_cache
+                    else check_cache_for_batch(
+                        spec_id, config.delta_root, config=config
+                    )
+                )
+
+                if cache_result is not None:
+                    # Cache hit - skip this unit
+                    cached_count += (
+                        sum(len(ids) for ids in execution_unit_inputs.values()) or 1
+                    )
+                    cached_units += 1
+                    cached_execution_run_ids.add(cache_result.execution_run_id)
+                    continue
+
+                # Cache miss - create ExecutionUnit with operation instance
+                unit = ExecutionUnit(
+                    operation=operation,
+                    inputs=execution_unit_inputs,
+                    execution_spec_id=spec_id,
+                    step_number=step_number,
+                    group_ids=batch_group_ids,
+                    user_overrides=user_overrides,
+                    step_run_id=step_run_id,
+                )
+                unit.replay_snapshot = build_replay_snapshot(
+                    unit,
+                    _create_runtime_environment(config, operation, step_runner),
+                    execution_cache_inputs,
+                )
+                units_to_dispatch.append(unit)
+
+            validated_reuse = _validate_cache_reuse(
+                config,
+                step_run_id,
+                cached_execution_run_ids,
+            )
+
+        total_units = len(units_to_dispatch) + cached_units
         logger.debug(
-            "Step %d (%s): resolved %d input artifacts",
+            "Step %d (%s): %d artifacts -> %d execution units",
             step_number,
             operation.name,
             total_artifacts,
+            total_units,
         )
+        if cached_units > 0:
+            logger.debug(
+                "Step %d (%s): %d units cached, %d to dispatch",
+                step_number,
+                operation.name,
+                cached_units,
+                len(units_to_dispatch),
+            )
 
-    # --- batch_and_cache phase ---
-    with phase_timer("batch_and_cache", timings):
-        # Get batch configuration from the instance
-        batch_config = get_batch_config(operation)
-
-        merged_params = serialize_params(operation)
-
-        # Import lazily to avoid package import cycles during module initialization.
-        from artisan.utils.hashing import compute_execution_spec_id
-
-        # Generate ExecutionUnit batches (Level 1)
-        execution_unit_batches = generate_execution_unit_batches(
-            paired_inputs,
-            batch_config,
-            group_ids=group_ids,
-            cache_inputs=inputs.cache_inputs,
-        )
-
-        # Create ExecutionUnits with cache checking
-        units_to_dispatch: list[ExecutionUnit] = []
+    else:
+        units_to_dispatch = [prepared_unit]
         cached_count = 0
-        cached_units = 0
-        cached_execution_run_ids: set[str] = set()
-
-        for (
-            execution_unit_inputs,
-            batch_group_ids,
-            execution_cache_inputs,
-        ) in execution_unit_batches:
-            # Compute spec_id for cache lookup
-            spec_id = compute_execution_spec_id(
-                operation_name=operation.name,
-                inputs=execution_cache_inputs,
-                params=merged_params,
-                config_overrides=config_overrides,
-            )
-
-            # Cache lookup
-            cache_result = (
-                None
-                if skip_cache
-                else check_cache_for_batch(spec_id, config.delta_root, config=config)
-            )
-
-            if cache_result is not None:
-                # Cache hit - skip this unit
-                cached_count += (
-                    sum(len(ids) for ids in execution_unit_inputs.values()) or 1
-                )
-                cached_units += 1
-                cached_execution_run_ids.add(cache_result.execution_run_id)
-                continue
-
-            # Cache miss - create ExecutionUnit with operation instance
-            unit = ExecutionUnit(
-                operation=operation,
-                inputs=execution_unit_inputs,
-                execution_spec_id=spec_id,
-                step_number=step_number,
-                group_ids=batch_group_ids,
-                user_overrides=user_overrides,
-                step_run_id=step_run_id,
-            )
-            units_to_dispatch.append(unit)
-
-        validated_reuse = _validate_cache_reuse(
-            config,
-            step_run_id,
-            cached_execution_run_ids,
-        )
-
-    total_units = len(units_to_dispatch) + cached_units
-    logger.debug(
-        "Step %d (%s): %d artifacts -> %d execution units",
-        step_number,
-        operation.name,
-        total_artifacts,
-        total_units,
-    )
-    if cached_units > 0:
-        logger.debug(
-            "Step %d (%s): %d units cached, %d to dispatch",
-            step_number,
-            operation.name,
-            cached_units,
-            len(units_to_dispatch),
-        )
+        validated_reuse = []
 
     # =========================================================================
     # PHASE 2: EXECUTE
@@ -1310,7 +1402,9 @@ def _execute_creator_step(
         dispatch_error: str | None = None
         with phase_timer("execute", timings):
             # Create RuntimeEnvironment with step_runner traits
-            runtime_env = _create_runtime_environment(config, operation, step_runner)
+            runtime_env = prepared_runtime or _create_runtime_environment(
+                config, operation, step_runner
+            )
 
             succeeded = 0
             failed = 0

@@ -18,7 +18,7 @@ from artisan.execution.tool_endpoint.protocol import (
     ToolRequest,
     WorkerResult,
 )
-from artisan.execution.tool_endpoint.server import resolve_op, run_tool_request
+from artisan.execution.tool_endpoint.server import run_tool_request
 from artisan.execution.tool_endpoint.transport import (
     MAX_INLINE_BYTES,
     InlineTransport,
@@ -36,6 +36,5 @@ __all__ = [
     "WorkerResult",
     "call_endpoint",
     "cancel_scope",
-    "resolve_op",
     "run_tool_request",
 ]

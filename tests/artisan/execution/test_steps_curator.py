@@ -20,6 +20,7 @@ from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.curator.merge import Merge
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import PassthroughResult
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 
 # =============================================================================
@@ -97,6 +98,8 @@ class TestPassthroughResultArtifactIds:
 
         staging_result = _handle_passthrough_result(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             result=result,
             operation=operation,
             execution_context=ctx,
@@ -130,6 +133,8 @@ class TestPassthroughResultArtifactIds:
 
         staging_result = _handle_passthrough_result(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             result=result,
             operation=operation,
             execution_context=ctx,
@@ -163,6 +168,8 @@ class TestPassthroughResultArtifactIds:
 
         staging_result = _handle_passthrough_result(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             result=result,
             operation=operation,
             execution_context=ctx,

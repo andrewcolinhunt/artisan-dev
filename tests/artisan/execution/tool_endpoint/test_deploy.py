@@ -186,7 +186,7 @@ class TestBakedPolicyBoundary:
 
         with (
             patch(
-                "artisan.execution.tool_endpoint.server.resolve_op",
+                "artisan.registry.resolve.resolve_operation",
                 return_value=GpuTool,
             ),
             patch(
@@ -668,6 +668,66 @@ class TestRetainedResultRoutes:
         response = client.get("/download", params={"call_id": "fc-1"})
         assert response.status_code == 200
         assert response.content == b"tarbytes"
+
+    def test_diagnostic_download_streams_separate_plane(self, client, monkeypatch):
+        self._retain(
+            monkeypatch,
+            {
+                "manifest": {
+                    "stored": None,
+                    "debug_capture": {"status": "complete", "stored": None},
+                },
+                "output_tar": b"outputs",
+                "debug_tar": b"diagnostics",
+            },
+        )
+        response = client.get(
+            "/download", params={"call_id": "fc-1", "plane": "diagnostics"}
+        )
+        assert response.status_code == 200
+        assert response.content == b"diagnostics"
+        assert client.get("/download", params={"call_id": "fc-1"}).content == b"outputs"
+
+    def test_diagnostic_download_redirects_its_own_pointer(self, client, monkeypatch):
+        self._retain(
+            monkeypatch,
+            {
+                "manifest": {
+                    "stored": None,
+                    "debug_capture": {"status": "complete", "stored": self.STORED},
+                },
+                "output_tar": b"outputs",
+                "debug_tar": None,
+            },
+        )
+        response = client.get(
+            "/download",
+            params={"call_id": "fc-1", "plane": "diagnostics"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 307
+        assert response.headers["location"] == self.STORED["presigned_url"]
+
+    @pytest.mark.parametrize("status", ["failed", "unavailable"])
+    def test_incomplete_capture_is_not_downloadable(self, client, monkeypatch, status):
+        self._retain(
+            monkeypatch,
+            {"manifest": {"debug_capture": {"status": status}}, "debug_tar": None},
+        )
+        assert (
+            client.get(
+                "/download", params={"call_id": "fc-1", "plane": "diagnostics"}
+            ).status_code
+            == 404
+        )
+
+    def test_download_rejects_unknown_plane(self, client):
+        assert (
+            client.get(
+                "/download", params={"call_id": "fc-1", "plane": "anything"}
+            ).status_code
+            == 422
+        )
 
 
 class TestCancellationRoute:

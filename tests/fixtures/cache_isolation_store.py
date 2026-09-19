@@ -13,6 +13,7 @@ from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
@@ -283,6 +284,10 @@ def _execution(
         "worker_log": None,
         "metadata": json.dumps({"timings": {"total": timing}}),
         "command_recording": CommandRecording.empty().model_dump_json(),
+        "replay_snapshot": ReplaySnapshot.unavailable(
+            "cache_fixture"
+        ).model_dump_json(),
+        "replay_of_execution_run_id": None,
     }
 
 

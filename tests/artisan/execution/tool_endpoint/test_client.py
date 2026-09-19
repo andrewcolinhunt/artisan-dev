@@ -20,6 +20,7 @@ from artisan.execution.tool_endpoint.client import (
 from artisan.execution.tool_endpoint.protocol import StoredOutputs, ToolManifest
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.operations.examples import WaitTool
+from artisan.registry.resolve import operation_identity
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
@@ -83,6 +84,8 @@ class TestCallEndpointHappyPath:
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})
         manifest = ToolManifest(
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
             command_recording=CommandRecording.empty(),
             output_names=["out.txt"],
             log_tail="ran fine\n",
@@ -121,6 +124,8 @@ class TestCallEndpointHappyPath:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -166,6 +171,8 @@ class TestCallEndpointHappyPath:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -187,6 +194,8 @@ class TestCallEndpointHappyPath:
 
 class TestStoredOutputs:
     _MANIFEST = ToolManifest(
+        operation_identity=operation_identity(WaitTool),
+        debug_capture=None,
         command_recording=CommandRecording.empty(),
         output_names=["out.txt"],
         stored=StoredOutputs(
@@ -202,6 +211,8 @@ class TestStoredOutputs:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -220,6 +231,8 @@ class TestStoredOutputs:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -260,6 +273,8 @@ class TestStoredOutputs:
 
     def test_stored_without_presigned_url_fails_fast(self, mock_http, tmp_path):
         manifest = ToolManifest(
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
             command_recording=CommandRecording.empty(),
             output_names=["out.txt"],
             stored=StoredOutputs(uri="https://their-bucket/run.tar.gz"),
@@ -278,6 +293,8 @@ class TestStoredOutputs:
     ):
         uri = "https://attacker.example/get?signature=fake-secret"
         manifest = ToolManifest(
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
             command_recording=CommandRecording.empty(),
             stored=StoredOutputs(
                 uri="s3://bucket/prefix/wait_tool/archive.tar.gz",
@@ -342,6 +359,8 @@ class TestCallEndpointFailures:
             operation_name="wait_tool",
         ).envelope
         manifest = ToolManifest(
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
             command_recording=CommandRecording.empty(),
             error=envelope,
             log_tail="boom\n",
@@ -378,7 +397,10 @@ class TestCallEndpointFailures:
             recovery_hint="CHECK_INPUT",
         ).envelope
         manifest = ToolManifest(
-            command_recording=CommandRecording.empty(), error=envelope
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
+            command_recording=CommandRecording.empty(),
+            error=envelope,
         )
         client.get.return_value = _response(
             {"status": "failed", "manifest": manifest.model_dump()}
@@ -412,7 +434,10 @@ class TestCallEndpointFailures:
             recovery_hint="CHECK_INPUT",
         ).envelope
         manifest = ToolManifest(
-            command_recording=CommandRecording.empty(), error=envelope
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
+            command_recording=CommandRecording.empty(),
+            error=envelope,
         )
         client.get.return_value = _response(
             {"status": "failed", "manifest": manifest.model_dump()}
@@ -440,6 +465,8 @@ class TestCallEndpointFailures:
             recovery_hint="RETRY_LATER",
         ).envelope
         manifest = ToolManifest(
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
             command_recording=CommandRecording.empty(),
             error=envelope,
             output_names=["out.txt"],
@@ -528,7 +555,10 @@ class TestCallEndpointFailures:
         else:
             client.post.return_value = _response({"call_id": "fc-1"})
             manifest = ToolManifest(
-                command_recording=CommandRecording.empty(), output_names=["out.txt"]
+                operation_identity=operation_identity(WaitTool),
+                debug_capture=None,
+                command_recording=CommandRecording.empty(),
+                output_names=["out.txt"],
             )
             client.get.side_effect = [
                 _response({"status": "done", "manifest": manifest.model_dump()}),
@@ -714,6 +744,8 @@ class TestCancellation:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -775,6 +807,8 @@ class TestTokenDiscovery:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -844,6 +878,8 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -867,6 +903,8 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -893,6 +931,8 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -918,6 +958,8 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -1007,6 +1049,8 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                 ).model_dump(),
             }
@@ -1074,6 +1118,8 @@ def test_remote_evidence_precedes_errors_and_redacts_parent_secrets(
         else None
     )
     manifest = ToolManifest(
+        operation_identity=operation_identity(WaitTool),
+        debug_capture=None,
         command_recording=remote_recording,
         output_names=["out.txt"],
         error=error,
@@ -1175,3 +1221,49 @@ def test_confirmed_cancellation_records_only_missing_remote_evidence(
     ):
         call_endpoint(_op(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
     assert recorder.snapshot().missing_invocations[0].reason == "cancelled"
+
+
+@pytest.mark.parametrize("status", ["unknown", "confirmed", "rejected"])
+def test_cancellation_messages_redact_known_secrets_and_capabilities(
+    mock_http, tmp_path, status
+):
+    from artisan.execution.recording.commands import capture_commands
+
+    client = _client_of(mock_http)
+    client.post.side_effect = [
+        _response({"call_id": "fc-cancel"}),
+        _response(
+            {
+                "call_id": "fc-cancel",
+                "status": status,
+                "message": "fake-review-secret https://host/path?sig=capability",
+            }
+        ),
+    ]
+    client.get.return_value = _response(
+        {
+            "status": "done",
+            "manifest": ToolManifest(
+                command_recording=CommandRecording.empty(),
+                operation_identity=operation_identity(WaitTool),
+                debug_capture=None,
+            ).model_dump(),
+        }
+    )
+    event = threading.Event()
+    event.set()
+    operation = _op(env={"FOO": "fake-review-secret"})
+    with capture_commands(operation), cancel_scope(event):
+        if status == "rejected":
+            acknowledgement = call_endpoint(
+                operation, ExecuteInput(inputs={}, execute_dir=str(tmp_path))
+            )
+        else:
+            with pytest.raises(EndpointCancellationError) as caught:
+                call_endpoint(
+                    operation, ExecuteInput(inputs={}, execute_dir=str(tmp_path))
+                )
+            acknowledgement = caught.value.acknowledgement
+    assert acknowledgement.status.value == status
+    assert "fake-review-secret" not in acknowledgement.message
+    assert "capability" not in acknowledgement.message

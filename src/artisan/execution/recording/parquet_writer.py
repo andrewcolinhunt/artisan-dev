@@ -22,6 +22,7 @@ from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
 from artisan.utils.json import artisan_json_default
@@ -125,6 +126,8 @@ def _stage_execution(
     params: dict[str, Any] | None,
     compute_backend: str,
     command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     shared_filesystem: bool = False,
     result_metadata: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
@@ -137,6 +140,8 @@ def _stage_execution(
     _stage_execution_edges(execution_edges, staging_path, fs)
     _write_execution_record(
         command_recording=command_recording,
+        replay_snapshot=replay_snapshot,
+        replay_of_execution_run_id=replay_of_execution_run_id,
         execution_run_id=execution_run_id,
         execution_spec_id=execution_spec_id,
         operation_name=operation_name,
@@ -252,7 +257,7 @@ def _stage_artifact_edges(
             for edge in artifact_edges
         ],
         schema=ARTIFACT_EDGES_SCHEMA,
-    )
+    ).unique(maintain_order=True)
     with fs.open(f"{staging_path}/artifact_edges.parquet", "wb") as f:
         df.write_parquet(f, compression="zstd")
 
@@ -284,6 +289,8 @@ def _write_execution_record(
     staging_path: str,
     fs: AbstractFileSystem,
     command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     params: dict[str, Any] | None = None,
     compute_backend: str = "local",
     result_metadata: dict[str, Any] | None = None,
@@ -294,7 +301,19 @@ def _write_execution_record(
     error_envelope: dict[str, Any] | None = None,
 ) -> None:
     """Serialize one execution record row to ``executions.parquet``."""
+    from artisan.execution.recording.commands import sanitize_diagnostic
+
+    if replay_of_execution_run_id is not None:
+        params = sanitize_diagnostic(params)
+        user_overrides = sanitize_diagnostic(user_overrides)
+        result_metadata = sanitize_diagnostic(result_metadata)
+        error = sanitize_diagnostic(error)
+        error_envelope = sanitize_diagnostic(error_envelope)
     row = {
+        "replay_snapshot": ReplaySnapshot.model_validate_json(
+            replay_snapshot.model_dump_json()
+        ).model_dump_json(),
+        "replay_of_execution_run_id": replay_of_execution_run_id,
         "execution_run_id": execution_run_id,
         "execution_spec_id": execution_spec_id,
         "step_run_id": step_run_id,

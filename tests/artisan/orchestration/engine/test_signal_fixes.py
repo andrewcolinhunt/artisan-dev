@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from artisan.orchestration.engine.inputs import PreparedInputs
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.utils.hashing import CacheInputIdentity
 
@@ -34,6 +35,10 @@ class TestCreatorBrokenProcessPool:
     """Fix 3: BrokenProcessPool in creator dispatch produces failed StepResult."""
 
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
+    @patch(
+        "artisan.orchestration.engine.step_executor.build_replay_snapshot",
+        new=lambda *args, **kwargs: ReplaySnapshot.unavailable("mock_unit"),
+    )
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.utils.hashing.compute_execution_spec_id")
@@ -96,6 +101,10 @@ class TestCuratorCancelAwareMessage:
     @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
+    @patch(
+        "artisan.orchestration.engine.step_executor.build_replay_snapshot",
+        new=lambda *args, **kwargs: ReplaySnapshot.unavailable("mock_unit"),
+    )
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
     def test_cancel_message_logged_when_event_set(
         self,
@@ -156,6 +165,10 @@ class TestCuratorCancelAwareMessage:
     @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
+    @patch(
+        "artisan.orchestration.engine.step_executor.build_replay_snapshot",
+        new=lambda *args, **kwargs: ReplaySnapshot.unavailable("mock_unit"),
+    )
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
     def test_oom_message_logged_when_no_cancel(
         self,

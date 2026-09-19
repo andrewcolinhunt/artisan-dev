@@ -28,12 +28,12 @@ from artisan.execution.tool_endpoint.protocol import (
 )
 from artisan.execution.tool_endpoint.server import (
     instantiate_op,
-    resolve_op,
     run_tool_request,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import WaitTool
+from artisan.registry.resolve import resolve_operation
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.operation_config.compute import (
@@ -47,14 +47,7 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import compute_content_digest
 
-# The worker streams tool output (stream_output=True); the filters swallow
-# a pre-existing pipe-cleanup quirk in _run_with_streaming (Popen.stdout
-# closed by GC, not explicitly) — benign, same as test_streaming_echo.
-pytestmark = [
-    pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH"),
-    pytest.mark.filterwarnings("ignore::ResourceWarning"),
-    pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning"),
-]
+pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 
 
 def test_tool_endpoint_imports_without_botocore() -> None:
@@ -860,7 +853,7 @@ class TestRunToolRequestInlinePackaging:
         ],
     )
     def test_packaging_failure_returns_envelope(self, monkeypatch, exc, recovery_hint):
-        def failing_pack(self, src, names):
+        def failing_pack(self, src, names, *, max_bytes=None):
             raise exc
 
         monkeypatch.setattr(server_mod.InlineTransport, "pack_outputs", failing_pack)
@@ -1084,13 +1077,16 @@ class TestEndpointRoutedLineageMinIO:
         assert (art.artifact_id, out.artifact_id) in edges
 
 
-class TestResolveOp:
+class TestResolveOperation:
     def test_round_trip(self):
-        assert resolve_op(WaitTool.__module__, WaitTool.__qualname__) is WaitTool
+        assert (
+            resolve_operation(f"{WaitTool.__module__}:{WaitTool.__qualname__}")
+            is WaitTool
+        )
 
     def test_non_operation_raises(self):
-        with pytest.raises(TypeError, match="not an OperationDefinition"):
-            resolve_op("artisan.schemas.operation_config.tool_spec", "ToolSpec")
+        with pytest.raises(TypeError, match="OperationDefinition subclass"):
+            resolve_operation("artisan.schemas.operation_config.tool_spec:ToolSpec")
 
 
 def test_request_commands_share_one_slot_and_warm_worker_starts_fresh(monkeypatch):

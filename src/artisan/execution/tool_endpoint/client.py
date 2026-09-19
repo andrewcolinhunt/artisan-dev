@@ -7,6 +7,10 @@ to ``log_path``. Stored outputs (``output_store`` configured) are fetched
 from the object store via the manifest's presigned URL instead of
 ``/download``. The caller exposes pipeline cancellation to the poll loop
 via ``cancel_scope``.
+
+Replay checks endpoint capability and code identity before submission, then
+retrieves diagnostics into a separate artifact directory before raising any
+compute or output-delivery failure.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, NoReturn
 
 import httpx
@@ -30,11 +35,13 @@ from artisan.execution.recording.commands import (
     invocation_scope,
     sanitize_diagnostic,
 )
+from artisan.execution.recording.replay_snapshot import current_replay_builder
 from artisan.execution.tool_endpoint._optional import import_modal
 from artisan.execution.tool_endpoint.protocol import (
     CancelResponse,
     InputRef,
     ResultResponse,
+    SchemaResponse,
     ToolManifest,
 )
 from artisan.execution.tool_endpoint.transport import (
@@ -46,6 +53,7 @@ from artisan.schemas.execution.command_record import (
     MissingReason,
     check_recording_size,
 )
+from artisan.schemas.execution.replay import OperationIdentity, RemoteObservation
 from artisan.schemas.operation_config.compute import ModalComputeConfig
 from artisan.schemas.operation_config.endpoint_policy import _normalize_http_root
 from artisan.schemas.orchestration.step_lifecycle import (
@@ -72,6 +80,57 @@ _HTTP_TIMEOUT = 120.0
 _cancel_event: ContextVar[threading.Event | None] = ContextVar(
     "tool_endpoint_cancel", default=None
 )
+_dispatch_context: ContextVar[tuple[int, str] | None] = ContextVar(
+    "endpoint_dispatch",
+    default=None,
+)
+
+
+@contextmanager
+def endpoint_dispatch(index: int, sandbox_root: str) -> Iterator[None]:
+    """Bind stable ownership of one artifact's diagnostic files and evidence."""
+    token = _dispatch_context.set((index, sandbox_root))
+    try:
+        yield
+    finally:
+        _dispatch_context.reset(token)
+
+
+@dataclass
+class _RemoteCall:
+    """Transient state used to distinguish preflight failure from transport loss."""
+
+    index: int
+    sandbox_root: str
+    debug: bool
+    submitted: bool = False
+    identity: OperationIdentity | None = None
+    diagnostic_status: str | None = None
+    diagnostic_error: str | None = None
+
+    def record(self) -> None:
+        """Persist only code identity and sanitized diagnostic-delivery status."""
+        builder = current_replay_builder()
+        if builder is None:
+            return
+        status = (
+            "observed"
+            if self.identity
+            else "unavailable"
+            if self.submitted
+            else "not_started"
+        )
+        builder.record_remote(
+            RemoteObservation.model_validate(
+                {
+                    "dispatch_index": self.index,
+                    "status": status,
+                    "identity": self.identity,
+                    "diagnostic_status": self.diagnostic_status,
+                    "diagnostic_error": sanitize_diagnostic(self.diagnostic_error),
+                }
+            )
+        )
 
 
 class EndpointCancellationError(RuntimeError):
@@ -98,7 +157,20 @@ def call_endpoint(
     """Run one remote invocation with scoped, validated diagnostic evidence."""
     scope = capture_commands(operation) if current_recorder() is None else nullcontext()
     with scope:
-        return _call_endpoint(operation, inputs)
+        builder = current_replay_builder()
+        debug = builder is not None and builder.snapshot.diagnostic is not None
+        index, root = _dispatch_context.get() or (
+            0,
+            os.path.dirname(inputs.execute_dir),
+        )
+        state = _RemoteCall(index, root, debug)
+        try:
+            return _call_endpoint(operation, inputs, state)
+        finally:
+            if debug and state.diagnostic_status is None:
+                state.diagnostic_status = "unavailable"
+                state.diagnostic_error = "remote diagnostics were not received"
+            state.record()
 
 
 class _RecordingError(ArtisanError):
@@ -117,7 +189,9 @@ class _RecordingError(ArtisanError):
 
 
 def _call_endpoint(
-    operation: Any, inputs: ExecuteInput
+    operation: Any,
+    inputs: ExecuteInput,
+    state: _RemoteCall,
 ) -> CancellationAcknowledgement | None:
     """Run a tool op's execute on its deployed endpoint.
 
@@ -174,6 +248,7 @@ def _call_endpoint(
         timeout=_HTTP_TIMEOUT,
         follow_redirects=False,
     ) as client:
+        accepted_identity = _replay_handshake(client, operation.name, state)
         data = {
             "params": operation.params_json(),
             "input_uris": json.dumps(uris),
@@ -182,9 +257,12 @@ def _call_endpoint(
         }
         if output_store is not None:
             data["output_store"] = output_store
+        if state.debug:
+            data["debug_capture"] = "true"
         with invocation_scope(operation) as invocation:
             received = False
             try:
+                state.submitted = True
                 response = client.post("/submit", data=data, files=multipart or None)
                 _check(response, operation.name)
                 call_id = str(response.json()["call_id"])
@@ -195,6 +273,11 @@ def _call_endpoint(
                     cfg.poll_interval,
                     operation.name,
                 )
+                state.identity = manifest.operation_identity
+                if state.debug:
+                    _receive_diagnostics(
+                        client, call_id, manifest, cfg, transport, state
+                    )
                 recorder = current_recorder()
                 assert recorder is not None
                 assert invocation is not None
@@ -205,6 +288,14 @@ def _call_endpoint(
                 received = True
                 if manifest.log_tail and inputs.log_path:
                     _append_log(inputs.log_path, sanitize_diagnostic(manifest.log_tail))
+                if (
+                    accepted_identity is not None
+                    and state.identity != accepted_identity
+                ):
+                    raise _config_error(
+                        operation.name,
+                        "endpoint worker identity changed after the replay handshake",
+                    )
                 if manifest.error is not None:
                     _raise_from_envelope(
                         ArtisanErrorEnvelope.model_validate(
@@ -264,6 +355,113 @@ def _call_endpoint(
                 raise
 
 
+def _replay_handshake(
+    client: httpx.Client,
+    op_name: str,
+    state: _RemoteCall,
+) -> OperationIdentity | None:
+    """Require compatible remote code and debug support before remote submission."""
+    if not state.debug:
+        return None
+    response = client.get("/schema")
+    _check(response, op_name)
+    try:
+        schema = SchemaResponse.model_validate(response.json())
+    except (TypeError, ValueError):
+        raise _config_error(
+            op_name, "endpoint replay protocol is incompatible; redeploy the endpoint"
+        ) from None
+    if not schema.debug_capture_supported:
+        raise _config_error(op_name, "endpoint does not support diagnostic capture")
+    builder = current_replay_builder()
+    assert builder is not None
+    assert builder.snapshot.diagnostic is not None
+    diagnostic = builder.snapshot.diagnostic
+    if schema.operation_identity != diagnostic.selected_identity:
+        raise _config_error(
+            op_name, "endpoint operation identity differs from selected replay code"
+        )
+    source = next(
+        (
+            entry
+            for entry in diagnostic.source_remote_identity
+            if entry.dispatch_index == state.index
+        ),
+        None,
+    )
+    if not diagnostic.allow_code_change:
+        if source is None or source.status == "unavailable":
+            raise _config_error(
+                op_name,
+                "source endpoint identity is unavailable; allow_code_change is required",
+            )
+        if source.status == "observed" and source.identity != schema.operation_identity:
+            raise _config_error(
+                op_name,
+                "endpoint operation identity changed since the source execution",
+            )
+    return schema.operation_identity
+
+
+def _receive_diagnostics(
+    client: httpx.Client,
+    call_id: str,
+    manifest: ToolManifest,
+    cfg: ModalComputeConfig,
+    transport: InlineTransport,
+    state: _RemoteCall,
+) -> None:
+    """Retrieve the independent evidence plane without masking compute outcome."""
+    capture = manifest.debug_capture
+    if capture is None or capture.status != "complete":
+        state.diagnostic_status = (
+            "unavailable"
+            if capture is None or capture.status == "unavailable"
+            else "incomplete"
+        )
+        state.diagnostic_error = (
+            capture.error
+            if capture is not None
+            else "endpoint omitted requested diagnostics"
+        )
+        return
+    destination = os.path.join(
+        state.sandbox_root, "remote-debug", f"artifact_{state.index}"
+    )
+    try:
+        if capture.stored is not None:
+            cfg.data_policy.authorize_output(capture.stored.uri)
+            if capture.stored.presigned_url is None:
+                msg = "diagnostic archive has no retrievable capability"
+                raise ValueError(msg)
+            transport.download_outputs(
+                capture.stored.presigned_url,
+                destination,
+                policy=cfg.data_policy,
+                prefixes=("inputs/", "outputs/"),
+            )
+        else:
+            response = client.get(
+                "/download", params={"call_id": call_id, "plane": "diagnostics"}
+            )
+            _check(response, manifest.operation_identity.name)
+            transport.unpack_outputs(
+                response.content, destination, prefixes=("inputs/", "outputs/")
+            )
+        received = sorted(
+            os.path.relpath(os.path.join(root, name), destination)
+            for root, _dirs, files in os.walk(destination)
+            for name in files
+        )
+        if received != sorted(capture.entries):
+            msg = "diagnostic archive does not match its entry manifest"
+            raise ValueError(msg)
+        state.diagnostic_status = "complete"
+    except Exception as exc:
+        state.diagnostic_status = "incomplete"
+        state.diagnostic_error = f"diagnostic delivery failed: {type(exc).__name__}"
+
+
 def _poll(
     client: httpx.Client, call_id: str, interval: float, op_name: str
 ) -> tuple[ToolManifest, CancellationAcknowledgement | None]:
@@ -281,7 +479,7 @@ def _poll(
             except Exception as exc:
                 acknowledgement = CancellationAcknowledgement(
                     CancellationStatus.UNKNOWN,
-                    (
+                    sanitize_diagnostic(
                         f"Could not validate cancellation outcome for call "
                         f"{call_id}: {type(exc).__name__}"
                     ),
@@ -290,7 +488,7 @@ def _poll(
             if cancelled.call_id != call_id:
                 acknowledgement = CancellationAcknowledgement(
                     CancellationStatus.UNKNOWN,
-                    (
+                    sanitize_diagnostic(
                         f"Cancellation response named {cancelled.call_id!r}; "
                         f"expected {call_id!r}"
                     ),
@@ -298,7 +496,7 @@ def _poll(
                 raise EndpointCancellationError(acknowledgement)
             acknowledgement = CancellationAcknowledgement(
                 cancelled.status,
-                cancelled.message,
+                sanitize_diagnostic(cancelled.message),
             )
             if acknowledgement.status in {
                 CancellationStatus.CONFIRMED,
@@ -319,7 +517,7 @@ def _poll(
         if result.status == "expired":
             raise ArtisanError(
                 code=ErrorCode.OP_EXECUTE_FAILED,
-                message=(
+                message=sanitize_diagnostic(
                     f"result for call {call_id} expired — Modal retains results 7 days"
                 ),
                 error_type="compute",
@@ -357,7 +555,10 @@ def _decode_result(payload: Any, op_name: str) -> ResultResponse:
     try:
         return ResultResponse.model_validate(payload)
     except (TypeError, ValueError):
-        raise _RecordingError(op_name, "invalid_recording") from None
+        raise _config_error(
+            op_name,
+            "endpoint execution evidence protocol is incompatible; redeploy the endpoint",
+        ) from None
 
 
 def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:

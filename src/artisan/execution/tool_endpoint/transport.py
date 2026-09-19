@@ -176,12 +176,15 @@ class InlineTransport:
             paths[ref.name] = local
         return paths
 
-    def pack_outputs(self, src: str, names: list[str]) -> bytes:
+    def pack_outputs(
+        self, src: str, names: list[str], *, max_bytes: int | None = None
+    ) -> bytes:
         """Tar the named output files (paths relative to ``src``).
 
         Args:
             src: Directory holding the output files.
             names: Output paths relative to ``src``.
+            max_bytes: Remaining shared inline-result budget, when smaller.
 
         Returns:
             The tar payload as bytes.
@@ -192,14 +195,23 @@ class InlineTransport:
         """
         _preflight_archive(src, names)
         buf = io.BytesIO()
-        writer = _BoundedWriter(buf, MAX_INLINE_BYTES, _inline_output_limit_message())
+        limit = min(MAX_INLINE_BYTES, MAX_ARCHIVE_BYTES)
+        if max_bytes is not None:
+            limit = min(limit, max_bytes)
+        writer = _BoundedWriter(buf, limit, _inline_output_limit_message())
         budget = _ArchiveBudget()
         with tarfile.open(fileobj=writer, mode="w") as tar:
             for name in names:
                 tar.add(os.path.join(src, name), arcname=name, filter=budget)
         return buf.getvalue()
 
-    def unpack_outputs(self, payload: bytes | BinaryIO, dest: str) -> None:
+    def unpack_outputs(
+        self,
+        payload: bytes | BinaryIO,
+        dest: str,
+        *,
+        prefixes: tuple[str, ...] | None = None,
+    ) -> None:
         """Extract a seekable output tar into ``dest`` within archive budgets.
 
         Extraction retains ``tarfile``'s ``data`` filter after validating every
@@ -212,9 +224,20 @@ class InlineTransport:
         fileobj.seek(0)
         with tarfile.open(fileobj=fileobj, mode="r:*") as tar:
             members = _bounded_members(tar)
+            if prefixes is not None and any(
+                not member.name.startswith(prefixes) for member in members
+            ):
+                msg = "Diagnostic archive contains an unexpected prefix"
+                raise ValueError(msg)
             tar.extractall(dest, members=members, filter="data")
 
-    def unpack_output_stream(self, chunks: Iterable[bytes], dest: str) -> None:
+    def unpack_output_stream(
+        self,
+        chunks: Iterable[bytes],
+        dest: str,
+        *,
+        prefixes: tuple[str, ...] | None = None,
+    ) -> None:
         """Spool bounded archive chunks to disk, then extract into ``dest``."""
         spool_dir = tempfile.mkdtemp(prefix="artisan-tool-download-")
         spool = os.path.join(spool_dir, "out.tar")
@@ -226,7 +249,7 @@ class InlineTransport:
                 for chunk in chunks:
                     writer.write(chunk)
             with open(spool, "rb") as payload:
-                self.unpack_outputs(payload, dest)
+                self.unpack_outputs(payload, dest, prefixes=prefixes)
         finally:
             shutil.rmtree(spool_dir, ignore_errors=True)
 
@@ -235,6 +258,8 @@ class InlineTransport:
         uri: str,
         dest: str,
         policy: ToolEndpointDataPolicy | None = None,
+        *,
+        prefixes: tuple[str, ...] | None = None,
     ) -> None:
         """Authorize, fetch, and extract a stored output capability."""
         target = (policy or ToolEndpointDataPolicy()).authorize_output(uri)
@@ -248,7 +273,7 @@ class InlineTransport:
             ):
                 _check_http_response(response, "output download", target)
                 self.unpack_output_stream(
-                    response.iter_bytes(chunk_size=1024 * 1024), dest
+                    response.iter_bytes(chunk_size=1024 * 1024), dest, prefixes=prefixes
                 )
         except (ArtifactIntegrityError, EndpointTransportError, ValueError):
             raise
@@ -330,11 +355,20 @@ class _ArchiveBudget:
     def __init__(self) -> None:
         self.members = 0
         self.expanded_bytes = 0
+        self.names: set[str] = set()
 
     def __call__(self, member: tarfile.TarInfo) -> tarfile.TarInfo:
         self.members += 1
         if self.members > MAX_ARCHIVE_MEMBERS:
             msg = f"Archive exceeds {MAX_ARCHIVE_MEMBERS} members"
+            raise ValueError(msg)
+        _validate_archive_name(member.name)
+        if member.name in self.names:
+            msg = "Archive contains duplicate member names"
+            raise ValueError(msg)
+        self.names.add(member.name)
+        if not member.isfile() and not member.isdir():
+            msg = "Archive contains a link or special file"
             raise ValueError(msg)
         if member.isfile():
             self.expanded_bytes += member.size
@@ -366,17 +400,39 @@ class _BoundedWriter:
 
 def _preflight_archive(src: str, names: list[str]) -> None:
     """Reject oversized source sets before opening an output archive."""
+    if os.path.islink(src):
+        msg = "Archive root is a symbolic link"
+        raise ValueError(msg)
     if len(names) > MAX_ARCHIVE_MEMBERS:
         msg = f"Archive exceeds {MAX_ARCHIVE_MEMBERS} members"
         raise ValueError(msg)
     expanded = 0
     for name in names:
+        _validate_archive_name(name)
         path = os.path.join(src, name)
+        current = src
+        for part in name.split("/"):
+            current = os.path.join(current, part)
+            if os.path.islink(current):
+                msg = "Archive contains a symbolic link"
+                raise ValueError(msg)
         if os.path.isfile(path):
             expanded += os.path.getsize(path)
             if expanded > MAX_EXPANDED_BYTES:
                 msg = f"Archive expands beyond {MAX_EXPANDED_BYTES >> 20} MB"
                 raise ValueError(msg)
+
+
+def _validate_archive_name(name: str) -> None:
+    """Reject paths whose extraction could leave their archive root."""
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or any(part in {"", ".", ".."} for part in name.split("/"))
+    ):
+        msg = "Archive contains an unsafe relative path"
+        raise ValueError(msg)
 
 
 def _check_archive_size(fileobj: BinaryIO) -> None:

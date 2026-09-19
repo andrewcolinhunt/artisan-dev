@@ -12,12 +12,14 @@ from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.executors.creator import _ExecuteFailure
+from artisan.execution.recording.commands import capture_commands
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import (
     error_envelope_dict,
     record_execution_failure,
 )
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import ReplaySnapshot
 
 
 def _make_execution_context(tmp_path: Path) -> MagicMock:
@@ -47,6 +49,8 @@ class TestRecordExecutionFailure:
         ctx = _make_execution_context(tmp_path)
         result = record_execution_failure(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_context=ctx,
             error="something broke",
             inputs={},
@@ -60,6 +64,8 @@ class TestRecordExecutionFailure:
         ctx = _make_execution_context(tmp_path)
         result = record_execution_failure(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_context=ctx,
             error="ValueError: bad input",
             inputs={},
@@ -72,12 +78,48 @@ class TestRecordExecutionFailure:
         ctx = _make_execution_context(tmp_path)
         result = record_execution_failure(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_context=ctx,
             error="err",
             inputs={},
             timestamp_end=datetime.now(UTC),
         )
         assert result.execution_run_id == "a" * 32
+
+    def test_double_fault_redacts_both_errors(self, tmp_path, caplog):
+        """Failed persistence cannot bypass the execution's diagnostic redactor."""
+        ctx = _make_execution_context(tmp_path)
+        secret = "recorder-double-fault-secret"
+        with (
+            capture_commands() as commands,
+            patch(
+                "artisan.execution.recording.parquet_writer._create_staging_path",
+                side_effect=OSError(f"storage rejected {secret}"),
+            ),
+            caplog.at_level("ERROR", logger="artisan"),
+        ):
+            commands.add_environment({"TOKEN": secret})
+            result = record_execution_failure(
+                command_recording=commands.snapshot(),
+                replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+                replay_of_execution_run_id=None,
+                execution_context=ctx,
+                error=f"original operation failed with {secret}",
+                inputs={},
+                timestamp_end=datetime.now(UTC),
+            )
+
+        assert result.success is False
+        assert result.execution_run_id == ctx.execution_run_id
+        assert result.staging_path is None
+        assert result.error is not None
+        assert "original operation failed" in result.error
+        assert "OSError: storage rejected" in result.error
+        assert result.error.count("<redacted>") == 2
+        assert secret not in result.error
+        assert secret not in caplog.text
+        assert "Double-fault" in caplog.text
 
     def test_double_fault_returns_combined_error(self, tmp_path):
         """If staging itself fails, return a combined error (no raise)."""
@@ -89,6 +131,8 @@ class TestRecordExecutionFailure:
         ):
             result = record_execution_failure(
                 command_recording=CommandRecording.empty(),
+                replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+                replay_of_execution_run_id=None,
                 execution_context=ctx,
                 error="original error",
                 inputs={},
@@ -110,6 +154,8 @@ class TestRecordExecutionFailure:
         ):
             result = record_execution_failure(
                 command_recording=CommandRecording.empty(),
+                replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+                replay_of_execution_run_id=None,
                 execution_context=ctx,
                 error="original",
                 inputs={},
@@ -173,6 +219,8 @@ class TestRecordExecutionFailureEnvelope:
 
         result = record_execution_failure(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_context=ctx,
             error="tool crashed",
             inputs={},
@@ -196,6 +244,8 @@ class TestRecordExecutionFailureEnvelope:
 
         result = record_execution_failure(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_context=ctx,
             error="unstructured",
             inputs={},
@@ -257,6 +307,8 @@ class TestPassthroughStagedRowsGolden:
 
         _handle_passthrough_result(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             result=result,
             operation=Filter(),
             execution_context=ctx,
@@ -299,7 +351,15 @@ class TestPassthroughStagedRowsGolden:
                 '"omitted_commands":0,"omitted_missing_invocations":0,'
                 '"unavailable_reason":null}'
             ),
-            "replay_snapshot": None,
+            "replay_snapshot": (
+                '{"status":"unavailable",'
+                '"unavailable_reason":"direct_recorder_fixture",'
+                '"operation":null,"inputs":{},"group_ids":null,'
+                '"associated":[],"associated_complete":false,"source":null,'
+                '"required_replacements":[],"remote_identity":[],'
+                '"read_semantics":"explicit_inputs_and_current_committed_store",'
+                '"diagnostic":null}'
+            ),
             "replay_of_execution_run_id": None,
             "metadata": '{"k": "v"}',
         }
@@ -387,6 +447,8 @@ class TestStagingRecorderBackendParametrized:
 
         result = record_execution_failure(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_context=ctx,
             error="smoke failure",
             inputs={},

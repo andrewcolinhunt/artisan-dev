@@ -22,6 +22,7 @@ from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import ReplaySnapshot
 
 if TYPE_CHECKING:
     from artisan.schemas.execution.execution_context import ExecutionContext
@@ -122,7 +123,8 @@ def build_execution_edges(
             )
     if not parts:
         return pl.DataFrame(schema=_schema)
-    return pl.concat(parts)
+    # Edges are relations; occurrence order and repetition live in replay inputs.
+    return pl.concat(parts).unique(maintain_order=True)
 
 
 def record_execution_success(
@@ -132,6 +134,8 @@ def record_execution_success(
     inputs: dict[str, list[str]],
     timestamp_end: datetime,
     command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     params: dict[str, Any] | None = None,
     result_metadata: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
@@ -187,6 +191,8 @@ def record_execution_success(
     )
     _stage_execution(
         command_recording=command_recording,
+        replay_snapshot=replay_snapshot,
+        replay_of_execution_run_id=replay_of_execution_run_id,
         execution_run_id=execution_context.execution_run_id,
         execution_spec_id=execution_context.execution_spec_id,
         operation_name=execution_context.operation_name,
@@ -222,6 +228,8 @@ def record_passthrough(
     inputs: dict[str, list[str]],
     timestamp_end: datetime,
     command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     params: dict[str, Any] | None = None,
     result_metadata: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
@@ -278,6 +286,8 @@ def record_passthrough(
     )
     _stage_execution(
         command_recording=command_recording,
+        replay_snapshot=replay_snapshot,
+        replay_of_execution_run_id=replay_of_execution_run_id,
         execution_run_id=execution_context.execution_run_id,
         execution_spec_id=execution_context.execution_spec_id,
         operation_name=execution_context.operation_name,
@@ -371,6 +381,8 @@ def record_execution_failure(
     inputs: dict[str, list[str]],
     timestamp_end: datetime,
     command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     params: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
     tool_output: str | None = None,
@@ -422,6 +434,8 @@ def record_execution_failure(
         )
         _stage_execution(
             command_recording=command_recording,
+            replay_snapshot=replay_snapshot,
+            replay_of_execution_run_id=replay_of_execution_run_id,
             execution_run_id=execution_context.execution_run_id,
             execution_spec_id=execution_context.execution_spec_id,
             operation_name=execution_context.operation_name,
@@ -464,6 +478,7 @@ def record_execution_failure(
             f"{error} | Additionally, staging the failure record failed: "
             f"{type(staging_exc).__name__}: {staging_exc}"
         )
+        combined = sanitize_diagnostic(combined)
         logger.error("Double-fault in record_execution_failure: %s", combined)
         return StagingResult(
             success=False,

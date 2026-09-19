@@ -32,6 +32,7 @@ from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
@@ -689,6 +690,8 @@ class InteractiveFilter:
         )
         record_passthrough(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("manual_interactive_commit"),
+            replay_of_execution_run_id=None,
             execution_context=execution_context,
             passthrough={"passthrough": filtered},
             lineage_edges=None,

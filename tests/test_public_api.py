@@ -51,6 +51,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "OutputReference",
         "PipelineConfig",
         "PipelineManager",
+        "ReplayResult",
         "Runner",
         "RunnerBase",
         "StepDisposition",
@@ -58,6 +59,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "StepResult",
         "StepStatus",
         "list_runs",
+        "replay_execution",
     ),
     "artisan.orchestration.runner_api": (
         "BatchStrategy",

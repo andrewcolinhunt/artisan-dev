@@ -117,6 +117,7 @@ project:
         - title: Configuration
           children:
             - file: how-to-guides/configuring-execution.md
+            - file: how-to-guides/debugging-executions.md
             - file: how-to-guides/configuring-s3.md
             - file: how-to-guides/op-container-images.md
         - title: Results

@@ -185,6 +185,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     provenance.set_defaults(func=_provenance)
 
+    execution = sub.add_parser("execution", help="Execution diagnostics")
+    execution_sub = execution.add_subparsers(dest="execution_command", required=True)
+    replay = execution_sub.add_parser(
+        "replay", help="Replay one committed execution unit"
+    )
+    replay.add_argument("execution_run_id")
+    _add_store_args(replay)
+    replay.add_argument("--debug-root", required=True)
+    replay.add_argument("--staging-root")
+    replay.add_argument("--files-root")
+    replay.add_argument("--local-runner", action="store_true")
+    replay.add_argument(
+        "--supply", action="append", default=[], metavar="POINTER=ENV_NAME"
+    )
+    replay.add_argument("--allow-code-change", action="store_true")
+    replay.set_defaults(func=_execution_replay)
+
     store_parser = sub.add_parser("store", help="Persisted store commands")
     store_sub = store_parser.add_subparsers(dest="store_command", required=True)
     repair = store_sub.add_parser(
@@ -285,9 +302,9 @@ def _render(payload: Any, *, json_mode: bool) -> str:
         if isinstance(payload, pl.DataFrame):
             data: Any = {"items": payload.to_dicts()}
         elif isinstance(payload, BaseModel):
-            data = payload.model_dump()
+            data = payload.model_dump(mode="json")
         else:
-            data = {"items": [item.model_dump() for item in payload]}
+            data = {"items": [item.model_dump(mode="json") for item in payload]}
         return json.dumps(data, default=str)
     if isinstance(payload, pl.DataFrame):
         return str(payload)
@@ -373,6 +390,78 @@ def _provenance(args: argparse.Namespace) -> int:
         )
 
     return _emit(args, payload)
+
+
+def _execution_replay(args: argparse.Namespace) -> int:
+    """Emit the durable replay outcome while reserving stdout for its JSON."""
+    from urllib.parse import urlsplit
+
+    from artisan.errors import ArtisanError, ErrorCode
+    from artisan.orchestration import replay_execution
+    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+    from artisan.schemas.execution.storage_config import StorageConfig
+    from artisan.schemas.orchestration.step_lifecycle import StepStatus
+
+    outcome = None
+
+    def payload() -> Any:
+        nonlocal outcome
+        root = _require_delta_root(args)
+        protocol = urlsplit(root).scheme or "file"
+        if protocol != "file" and (not args.staging_root or not args.files_root):
+            raise ArtisanError(
+                code=ErrorCode.REPLAY_CONFIGURATION_INVALID,
+                message="Cloud replay requires --staging-root and --files-root",
+                error_type="config",
+            )
+        replacements = {}
+        for supplied in args.supply:
+            pointer, separator, variable = supplied.partition("=")
+            if (
+                not separator
+                or not pointer.startswith("/")
+                or not variable
+                or pointer in replacements
+            ):
+                raise ArtisanError(
+                    code=ErrorCode.REPLAY_CONFIGURATION_INVALID,
+                    message="--supply requires unique POINTER=ENV_NAME entries",
+                    error_type="config",
+                )
+            replacements[pointer] = variable
+        debug = Path(args.debug_root).resolve()
+        runtime = RuntimeEnvironment(  # type: ignore[call-arg]  # Pydantic runtime defaults
+            delta_root=root,
+            staging_root=args.staging_root or str(debug / "staging"),
+            files_root=args.files_root or str(debug / "files"),
+            working_root=str(debug / "work"),
+            failure_logs_root=str(debug / "logs"),
+            storage=StorageConfig(protocol=protocol),
+        )
+        sys.stdout.flush()
+        saved_stdout = os.dup(1)
+        try:
+            os.dup2(2, 1)
+            outcome = replay_execution(
+                args.execution_run_id,
+                runtime=runtime,
+                step_runner="local" if args.local_runner else None,
+                replacement_env=replacements,
+                allow_code_change=args.allow_code_change,
+            )
+        finally:
+            sys.stdout.flush()
+            os.dup2(saved_stdout, 1)
+            os.close(saved_stdout)
+        return outcome
+
+    code = _emit(args, payload)
+    if code == 0 and outcome is not None:
+        return int(
+            outcome.step_result.status != StepStatus.SUCCEEDED
+            or outcome.diagnostic_status != "complete"
+        )
+    return code
 
 
 def _store_repair(args: argparse.Namespace) -> int:
@@ -499,7 +588,8 @@ def _op_run(args: argparse.Namespace) -> int:
     pollutes output collection; logging that matters goes to stdout,
     which the parent ``run_command`` captures to the unit log.
     """
-    from artisan.execution.tool_endpoint.server import instantiate_op, resolve_op
+    from artisan.execution.tool_endpoint.server import instantiate_op
+    from artisan.registry.resolve import resolve_operation
     from artisan.schemas.specs.input_models import ExecuteInput
 
     module, sep, qualname = args.target.partition(":")
@@ -507,7 +597,7 @@ def _op_run(args: argparse.Namespace) -> int:
         sys.stderr.write(f"target {args.target!r} is not module:Qualname\n")
         return 1
     try:
-        op_cls = resolve_op(module, qualname)
+        op_cls = resolve_operation(f"{module}:{qualname}")
         normalized = _file_shaped(json.loads(args.inputs))
         op = instantiate_op(op_cls, json.loads(args.params))
     except (ImportError, AttributeError, TypeError, ValueError) as exc:

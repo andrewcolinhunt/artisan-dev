@@ -43,6 +43,7 @@ from artisan.execution.lineage.validation import (
 from artisan.execution.models.artifact_source import ArtifactSource
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.recorder import _read_tool_output
+from artisan.execution.recording.replay_snapshot import current_replay_builder
 from artisan.execution.transport.log_constants import TOOL_OUTPUT_FILENAME
 from artisan.execution.utils import finalize_artifacts, generate_execution_run_id
 from artisan.operations.base.per_artifact import PerArtifact
@@ -174,6 +175,9 @@ def prep_unit(
         sandbox_path_str, preprocess_dir, execute_dir, postprocess_dir = create_sandbox(
             sandbox_path_str
         )
+        replay_builder = current_replay_builder()
+        if replay_builder is not None:
+            replay_builder.record_sandbox(sandbox_path_str)
 
         log_path = os.path.join(sandbox_path_str, TOOL_OUTPUT_FILENAME)
         materialized_dir = os.path.join(sandbox_path_str, "materialized_inputs")
@@ -220,7 +224,14 @@ def prep_unit(
                 artifact_store,
                 input_specs,
                 default_hydrate,
+                recorded_associated=(
+                    unit.replay_snapshot.associated
+                    if unit.replay_of_execution_run_id and unit.replay_snapshot
+                    else None
+                ),
             )
+        if replay_builder is not None:
+            replay_builder.record_associated(associated)
         input_artifacts, materialized_artifact_ids = materialize_inputs(
             input_artifacts,
             input_specs,

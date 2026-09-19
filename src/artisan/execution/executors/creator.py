@@ -27,6 +27,11 @@ from artisan.execution.recording.recorder import (
     record_execution_failure,
     record_execution_success,
 )
+from artisan.execution.recording.replay_snapshot import (
+    capture_replay,
+    replay_recording_fields,
+    verify_replay_worker,
+)
 from artisan.execution.tool_endpoint.client import EndpointCancellationError
 from artisan.execution.utils import generate_execution_run_id
 from artisan.schemas.artifact.base import Artifact
@@ -216,7 +221,13 @@ def run_creator_flow(
     execute_router: ExecuteRouter | None = None,
 ) -> StagingResult:
     """Capture command evidence throughout the creator lifecycle."""
-    with capture_commands(unit.operation):
+    with (
+        capture_commands(unit.operation) as commands,
+        capture_replay(unit, runtime_env),
+    ):
+        commands.add_environment(
+            {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
+        )
         return _run_creator_flow(unit, runtime_env, execute_router)
 
 
@@ -258,6 +269,7 @@ def _run_creator_flow(
     execution_context = None
     params_dict = None
     try:
+        verify_replay_worker(unit)
         # Run the lifecycle (setup → lineage)
         lifecycle_result = run_creator_lifecycle(
             unit,
@@ -280,6 +292,7 @@ def _run_creator_flow(
         # --- record phase ---
         with phase_timer("record", timings):
             staging_result = record_execution_success(
+                **replay_recording_fields(),
                 command_recording=command_snapshot(),
                 execution_context=execution_context,
                 artifacts=lifecycle_result.artifacts,
@@ -300,10 +313,13 @@ def _run_creator_flow(
     except EndpointCancellationError as exc:
         staging_result = StagingResult(
             success=False,
-            error=str(exc),
+            error=sanitize_diagnostic(str(exc)),
             execution_run_id=execution_run_id,
             artifact_ids=[],
-            cancellation_acknowledgement=exc.acknowledgement,
+            cancellation_acknowledgement=replace(
+                exc.acknowledgement,
+                message=sanitize_diagnostic(exc.acknowledgement.message),
+            ),
         )
     except (_PostprocessFailure, _ExecuteFailure) as exc:
         # Lifecycle failures with clean error messages
@@ -322,6 +338,7 @@ def _run_creator_flow(
         )
         params_dict = serialize_params(operation)
         staging_result = record_execution_failure(
+            **replay_recording_fields(),
             command_recording=command_snapshot(),
             execution_context=execution_context,
             error=error,
@@ -353,6 +370,7 @@ def _run_creator_flow(
         else:
             params_dict = serialize_params(operation)
             staging_result = record_execution_failure(
+                **replay_recording_fields(),
                 command_recording=command_snapshot(),
                 execution_context=execution_context,
                 error=error,
@@ -421,8 +439,10 @@ def _try_build_execution_context(
         )
     except ValueError:
         return None
-    except Exception:
-        logger.exception(
-            "Unexpected failure building execution context for %s", execution_run_id
+    except Exception as exc:
+        logger.error(
+            "Unexpected failure building execution context for %s: %s",
+            execution_run_id,
+            sanitize_diagnostic(format_error(exc)),
         )
         return None

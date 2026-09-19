@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas.execution.replay import ReplayAssociation
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
@@ -18,6 +19,8 @@ def instantiate_inputs(
     artifact_store: ArtifactStore,
     input_specs: dict[str, InputSpec],
     default_hydrate: bool = True,
+    *,
+    recorded_associated: list[ReplayAssociation] | None = None,
 ) -> tuple[dict[str, list[Artifact]], dict[tuple[str, str], list[Artifact]]]:
     """Instantiate all input artifacts from storage using bulk queries.
 
@@ -108,8 +111,23 @@ def instantiate_inputs(
 
         result[role] = artifacts
 
+    if recorded_associated is not None:
+        associated = {}
+        for capture in recorded_associated:
+            artifacts = []
+            for artifact_id in capture.artifact_ids:
+                artifact = artifact_store.get_artifact(
+                    artifact_id, artifact_type=capture.artifact_type
+                )
+                if artifact is None:
+                    msg = f"Recorded associated artifact {artifact_id} is missing"
+                    raise ValueError(msg)
+                artifacts.append(artifact)
+            associated[(capture.primary_id, capture.artifact_type)] = artifacts
+        return result, associated
+
     # Resolve associated artifacts via provenance
-    associated: dict[tuple[str, str], list[Artifact]] = {}
+    associated = {}
     for role, artifacts in result.items():
         spec = input_specs.get(role)
         if spec is None or not spec.with_associated:
@@ -119,7 +137,7 @@ def instantiate_inputs(
             continue
         for assoc_type in spec.with_associated:
             assoc_map = artifact_store.get_associated(primary_ids, assoc_type)
-            for primary_id, assoc_artifacts in assoc_map.items():
-                associated[(primary_id, assoc_type)] = assoc_artifacts
+            for primary_id in primary_ids:
+                associated[(primary_id, assoc_type)] = assoc_map.get(primary_id, [])
 
     return result, associated

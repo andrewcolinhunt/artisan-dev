@@ -25,6 +25,7 @@ from artisan.execution.tool_endpoint._optional import import_modal
 from artisan.execution.tool_endpoint.spec import endpoint_spec
 from artisan.execution.tool_endpoint.transport import MAX_INLINE_BYTES
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.registry.resolve import operation_identity
 
 ENDPOINT_PYTHON_VERSION = "3.12"
 
@@ -92,6 +93,7 @@ def build_app(
     input_roles = spec.input_roles
     data_policy = spec.data_policy
     max_inline_bytes = MAX_INLINE_BYTES
+    deployed_identity = operation_identity(op_cls).model_dump(mode="json")
 
     # ``modal`` is intentionally loaded through an Any-typed lazy boundary.
     @app.function(**worker_kwargs)  # type: ignore[misc]
@@ -99,14 +101,14 @@ def build_app(
     def worker(request: dict[str, Any]) -> dict[str, Any]:
         from artisan.execution.tool_endpoint.protocol import ToolRequest
         from artisan.execution.tool_endpoint.server import (
-            resolve_op,
             run_tool_request,
         )
+        from artisan.registry.resolve import resolve_operation
         from artisan.schemas.operation_config.endpoint_policy import (
             ToolEndpointDataPolicy,
         )
 
-        resolved = resolve_op(op_module, op_qualname)
+        resolved = resolve_operation(f"{op_module}:{op_qualname}")
         policy = ToolEndpointDataPolicy.model_validate(data_policy)
         return run_tool_request(
             resolved,
@@ -127,6 +129,7 @@ def build_app(
         import builtins
         import io
         import json
+        from typing import Literal
 
         import jsonschema
         import modal as modal_rt
@@ -272,6 +275,8 @@ def build_app(
             """
             return {
                 "operation": op_name,
+                "operation_identity": deployed_identity,
+                "debug_capture_supported": True,
                 "description": op_description,
                 "params_schema": params_schema,
                 "inputs": input_roles,
@@ -284,6 +289,7 @@ def build_app(
             input_filenames: str = Form("{}"),
             input_integrity: str = Form("{}"),
             output_store: str = Form(""),
+            debug_capture: bool = Form(False),
             files: list[UploadFile] = File(default=[]),  # noqa: B008 — FastAPI DI idiom
         ) -> dict[str, str]:
             """Submit a tool job: params JSON + input files (multipart).
@@ -333,6 +339,7 @@ def build_app(
                     "params": parsed,
                     "inputs": refs,
                     "output_store": output_store or None,
+                    "debug_capture": debug_capture,
                 }
             )
             return {"call_id": call.object_id}
@@ -365,12 +372,25 @@ def build_app(
             return {"status": status, "manifest": manifest}
 
         @web.get("/download")
-        def download(call_id: str) -> Any:
-            """Stream the output tar, or redirect to its presigned store URL."""
+        def download(
+            call_id: str, plane: Literal["outputs", "diagnostics"] = "outputs"
+        ) -> Any:
+            """Stream one retained archive plane or redirect to its authorized URI."""
             raw = _retained(call_id)
             if isinstance(raw, str):
                 raise HTTPException(status_code=404, detail="no output tar for call")
-            stored = (raw.get("manifest") or {}).get("stored")
+            manifest = raw.get("manifest") or {}
+            if plane == "diagnostics":
+                capture = manifest.get("debug_capture") or {}
+                if capture.get("status") != "complete":
+                    raise HTTPException(
+                        status_code=404, detail="no diagnostic tar for call"
+                    )
+                stored = capture.get("stored")
+                payload = raw.get("debug_tar")
+            else:
+                stored = manifest.get("stored")
+                payload = raw.get("output_tar")
             if stored is not None:
                 if stored.get("presigned_url") is None:
                     raise HTTPException(
@@ -379,10 +399,10 @@ def build_app(
                         "destination; fetch them there",
                     )
                 return RedirectResponse(stored["presigned_url"], status_code=307)
-            if raw.get("output_tar") is None:
+            if payload is None:
                 raise HTTPException(status_code=404, detail="no output tar for call")
             return StreamingResponse(
-                io.BytesIO(raw["output_tar"]), media_type="application/x-tar"
+                io.BytesIO(payload), media_type="application/x-tar"
             )
 
         @web.post("/cancel")

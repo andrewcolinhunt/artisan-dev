@@ -39,6 +39,11 @@ from artisan.execution.recording.recorder import (
     record_execution_success,
     record_passthrough,
 )
+from artisan.execution.recording.replay_snapshot import (
+    capture_replay,
+    replay_recording_fields,
+    verify_replay_worker,
+)
 from artisan.execution.utils import (
     finalize_artifacts,
     generate_execution_run_id,
@@ -54,6 +59,7 @@ from artisan.schemas.execution.curator_result import (
     PassthroughResult,
 )
 from artisan.schemas.execution.execution_context import ExecutionContext
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
@@ -135,6 +141,8 @@ def _handle_artifact_result(
     input_artifacts: dict[str, list[Artifact]],
     timestamp_end: datetime,
     command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     user_overrides: dict[str, Any] | None = None,
 ) -> StagingResult:
     """Finalize, validate, and stage new artifacts from a curator result."""
@@ -193,6 +201,8 @@ def _handle_artifact_result(
 
     params_dict = serialize_params(operation)
     return record_execution_success(
+        replay_snapshot=replay_snapshot,
+        replay_of_execution_run_id=replay_of_execution_run_id,
         command_recording=command_recording,
         execution_context=execution_context,
         artifacts=dict(finalized),
@@ -212,6 +222,8 @@ def _handle_passthrough_result(
     inputs: dict[str, Any],
     timestamp_end: datetime,
     command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     user_overrides: dict[str, Any] | None = None,
 ) -> StagingResult:
     """Validate and stage a passthrough result (no new artifacts created).
@@ -222,6 +234,8 @@ def _handle_passthrough_result(
     """
     validate_passthrough_result(result, operation.outputs)
     return record_passthrough(
+        replay_snapshot=replay_snapshot,
+        replay_of_execution_run_id=replay_of_execution_run_id,
         command_recording=command_recording,
         execution_context=execution_context,
         passthrough=result.passthrough,
@@ -238,7 +252,13 @@ def run_curator_flow(
     unit: ExecutionUnit, runtime_env: RuntimeEnvironment
 ) -> StagingResult:
     """Capture command evidence throughout the curator lifecycle."""
-    with capture_commands(unit.operation):
+    with (
+        capture_commands(unit.operation) as commands,
+        capture_replay(unit, runtime_env),
+    ):
+        commands.add_environment(
+            {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
+        )
         return _run_curator_flow(unit, runtime_env)
 
 
@@ -282,6 +302,7 @@ def _run_curator_flow(
                 step_run_id=unit.step_run_id,
             )
             artifact_store = execution_context.artifact_store
+            verify_replay_worker(unit)
 
             # Build DataFrames with artifact_id column per role
             input_dfs = {
@@ -298,6 +319,7 @@ def _run_curator_flow(
                 )
             except Exception as exc:
                 return record_execution_failure(
+                    **replay_recording_fields(),
                     command_recording=command_snapshot(),
                     execution_context=execution_context,
                     error=format_error(exc),
@@ -314,6 +336,7 @@ def _run_curator_flow(
             timestamp_end = datetime.now(UTC)
             if not result.success:
                 staging_result = record_execution_failure(
+                    **replay_recording_fields(),
                     command_recording=command_snapshot(),
                     execution_context=execution_context,
                     error=result.error or "Unknown error",
@@ -341,6 +364,7 @@ def _run_curator_flow(
                             inputs, output_specs, artifact_store
                         )
                         staging_result = _handle_artifact_result(
+                            **replay_recording_fields(),
                             command_recording=command_snapshot(),
                             result=result_with_metadata,
                             operation=operation,
@@ -354,6 +378,7 @@ def _run_curator_flow(
                         )
                     case PassthroughResult():
                         staging_result = _handle_passthrough_result(
+                            **replay_recording_fields(),
                             command_recording=command_snapshot(),
                             result=result_with_metadata,
                             operation=operation,
@@ -370,6 +395,7 @@ def _run_curator_flow(
                             f"Expected ArtifactResult or PassthroughResult."
                         )
                         staging_result = record_execution_failure(
+                            **replay_recording_fields(),
                             command_recording=command_snapshot(),
                             execution_context=execution_context,
                             error=error,
@@ -391,6 +417,7 @@ def _run_curator_flow(
                 artifact_ids=[],
             )
         staging_result = record_execution_failure(
+            **replay_recording_fields(),
             command_recording=command_snapshot(),
             execution_context=execution_context,
             error=error,

@@ -11,7 +11,11 @@ from typing import Any
 
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.recording.commands import invocation_scope, reserve_invocations
-from artisan.execution.tool_endpoint.client import call_endpoint, cancel_scope
+from artisan.execution.tool_endpoint.client import (
+    call_endpoint,
+    cancel_scope,
+    endpoint_dispatch,
+)
 from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
 from artisan.schemas.specs.input_models import ExecuteInput
 
@@ -59,14 +63,26 @@ class EndpointExecuteRouter(ExecuteRouter):
         with self._watch_cancel():
             if len(execute_inputs) <= 1:
                 return [
-                    self._call_one(operation, ei, slot)
-                    for ei, slot in zip(execute_inputs, slots, strict=True)
+                    self._call_one(operation, ei, slot, index, sandbox_root)
+                    for index, (ei, slot) in enumerate(
+                        zip(execute_inputs, slots, strict=True)
+                    )
                 ]
             workers = min(self._max_concurrent_calls, len(execute_inputs))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = [
-                    pool.submit(copy_context().run, self._call_one, operation, ei, slot)
-                    for ei, slot in zip(execute_inputs, slots, strict=True)
+                    pool.submit(
+                        copy_context().run,
+                        self._call_one,
+                        operation,
+                        ei,
+                        slot,
+                        index,
+                        sandbox_root,
+                    )
+                    for index, (ei, slot) in enumerate(
+                        zip(execute_inputs, slots, strict=True)
+                    )
                 ]
                 return [f.result() for f in futures]
 
@@ -92,10 +108,19 @@ class EndpointExecuteRouter(ExecuteRouter):
             stop.set()
 
     def _call_one(
-        self, operation: Any, execute_input: ExecuteInput, slot: int | None = None
+        self,
+        operation: Any,
+        execute_input: ExecuteInput,
+        slot: int | None = None,
+        index: int = 0,
+        sandbox_root: str = "",
     ) -> Any:
         try:
-            with cancel_scope(self._cancel), invocation_scope(operation, slot):
+            with (
+                cancel_scope(self._cancel),
+                invocation_scope(operation, slot),
+                endpoint_dispatch(index, sandbox_root),
+            ):
                 acknowledgement = call_endpoint(operation, execute_input)
                 if acknowledgement is not None:
                     with self._acknowledgement_lock:
