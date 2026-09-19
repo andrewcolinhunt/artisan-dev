@@ -196,14 +196,14 @@ docs = { features = ["docs"], solve-group = "default" }
 # TASKS
 # =============================================================================
 [tool.pixi.tasks]
-# One-time fixups. Contributors run `pixi run --locked setup` after cloning
-# (or `pixi run --locked -e dev setup` to also install pre-commit hooks).
-# Body lives in scripts/setup.sh so it has a real shell; idempotent.
+# Prepare Graphviz in the selected environment after installation; safe to rerun.
+# Git hooks and Jupyter kernel registration are separate tasks below.
 setup = "bash scripts/setup.sh"
 
 install-kernel = "python -m ipykernel install --user --name=artisan --display-name='Artisan'"
 
 [tool.pixi.feature.dev.tasks]
+install-hooks = "pre-commit install"
 test = "pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 2 && pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/"  # Unit sequential + integration parallel + s3 parallel + tutorial notebooks
 test-seq = "pytest -m 'not notebook and not modal'"  # Fully sequential (for debugging test interactions)
 test-unit = "pytest -m 'not integration and not notebook and not modal and not s3'"  # Run only unit tests (no external services)

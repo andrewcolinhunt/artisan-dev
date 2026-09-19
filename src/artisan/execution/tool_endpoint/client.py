@@ -52,7 +52,8 @@ _ENV_HINT = (
     "Tokens) and put it in a .env file at the repo root:\n"
     "  MODAL_PROXY_TOKEN_ID=wk-...\n"
     "  MODAL_PROXY_TOKEN_SECRET=ws-...\n"
-    "(see .env.example; env vars of the same names also work)"
+    "(replace the placeholders with your tokens; env vars of the same names "
+    "also work)"
 )
 
 _HTTP_TIMEOUT = 120.0

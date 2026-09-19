@@ -21,7 +21,9 @@ class OutputSpec(BaseModel):
             Use ArtifactTypes.ANY for outputs that accept any concrete type
             (e.g., passthrough/routing operations like Filter, Merge).
         description: Human-readable description.
-        required: Whether output is expected. Warns if missing (doesn't fail).
+        required: Whether the output role must be present with a nonempty
+            artifact list. Execution validation fails if it is missing or
+            empty. This does not specify an output count per input.
         infer_lineage_from: Declares which artifacts this output derives from.
             Three patterns supported:
             - {"inputs": ["role"]}: Explicit input role(s) as parent

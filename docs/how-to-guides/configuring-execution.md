@@ -224,13 +224,12 @@ reconfigure an already-deployed endpoint.
 ### Authentication
 
 The deployed endpoint requires Modal proxy-auth tokens (dashboard →
-*Proxy Auth Tokens*). Recommended setup — a gitignored `.env` at the repo
-root, copied from the committed template:
+*Proxy Auth Tokens*). Create or edit the gitignored `.env` file at the repo
+root with these keys, replacing the placeholders with your own tokens:
 
-```bash
-cp .env.example .env
-# MODAL_PROXY_TOKEN_ID=wk-...
-# MODAL_PROXY_TOKEN_SECRET=ws-...
+```dotenv
+MODAL_PROXY_TOKEN_ID=wk-...
+MODAL_PROXY_TOKEN_SECRET=ws-...
 ```
 
 Discovery order: process environment variables first (CI injects secrets

@@ -57,8 +57,8 @@ to the closest Artisan equivalents.
 | Nextflow **process** / Snakemake **rule** / Airflow **operator** / Prefect **task** | `OperationDefinition` — a computation with declared inputs and outputs |
 | Nextflow **workflow** / Snakemake **Snakefile** / Airflow **DAG** / Prefect **flow** | `PipelineManager` — step sequencer with automatic caching and provenance |
 | Nextflow `publishDir` / Snakemake output files | Delta Lake commit — artifacts are stored as table rows, not scattered files |
-| Nextflow `-resume` / Snakemake timestamp check / Prefect `cache_key_fn` | Content-addressed cache — automatic, no flags or per-task configuration |
-| Nextflow `work/` directory | Staging directory → atomic Delta Lake commit |
+| Nextflow `-resume` / Snakemake timestamp check / Prefect `cache_key_fn` | Content-addressed cache — automatic by default, configurable with `CachePolicy` |
+| Nextflow `work/` directory | Staging directory → logical commit; Artisan readers expose rows after completion |
 | Airflow XCom | Artifact — content-addressed, typed, and queryable |
 | Nextflow **operator chain** / Snakemake **rule dependencies** | `CompositeDefinition` — compose multiple operations into a reusable unit that expands into real pipeline steps |
 
@@ -68,8 +68,9 @@ to the closest Artisan equivalents.
 
 ### vs. Nextflow
 
-Nextflow is the closest peer. Both target HPC, both wrap external tools, both
-support SLURM natively, and both have content-based caching.
+Nextflow is the closest peer. Both target HPC, wrap external tools, and have
+content-based caching. Artisan core supplies local execution; the optional
+[`artisan-submitit` provider](#comparison-prefect-relationship) supplies SLURM.
 
 **Where Nextflow is stronger:**
 
@@ -124,7 +125,7 @@ a different problem.
 
 - No infrastructure to deploy or maintain
 - Automatic content-addressed caching (Airflow re-runs by default)
-- Native HPC/SLURM support
+- HPC/SLURM support through the optional `artisan-submitit` provider
 - Built-in per-artifact provenance (Airflow requires external OpenLineage)
 - Designed for batch computation, not scheduled job orchestration
 
@@ -146,7 +147,7 @@ fit and how they can be composed.
 
 - Typed, immutable, content-addressed artifact data model
 - Automatic provenance tracking at the artifact level, not only task level
-- Deterministic content-addressed caching without per-task configuration
+- Deterministic content-addressed caching, automatic by default and configurable
 - Operation model (preprocess/execute/postprocess) for wrapping external tools
 - Delta Lake storage with ACID commits and direct queryability
 - Staging-commit pattern for safe concurrent writes from thousands of workers
@@ -193,7 +194,7 @@ Core ships a local runner. Optional providers implement the same public API:
 | Creator vs. curator placement | Artisan (`PipelineManager` keeps curators local) |
 | Composite expansion into pipeline steps | Artisan (`PipelineManager`) |
 | Lineage capture, staging | Artisan (execution layer) |
-| Atomic commit to Delta Lake | Artisan (orchestration layer) |
+| Logical commit and completion-gated visibility | Artisan (orchestration and storage layers) |
 | Durable run observability | Artisan step status, execution records, logs, inspection, and timing |
 
 Workers run the same execution code regardless of step runner. Custom runners

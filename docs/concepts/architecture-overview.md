@@ -24,7 +24,7 @@ You write:   "Run this operation on these datasets"
                       │
 Framework handles:    resolve + verify + group inputs → check cache → dispatch
                       → materialize inputs → run operation → capture lineage
-                      → stage results → commit atomically to Delta Lake
+                      → stage results → complete a logical Delta Lake commit
 ```
 
 This separation is the organizing principle behind the architecture. Everything
@@ -80,7 +80,7 @@ else. Each layer is independently testable and replaceable.
 | Operations | Schemas | Pure computation with declared inputs and outputs |
 | Storage | Schemas | Delta Lake tables, content-addressed persistence, cache |
 | Execution | Operations, Schemas, Storage | Worker-side lifecycle, sandboxing, lineage, staging |
-| Orchestration | Everything below | Step sequencing, caching, dispatch, atomic commit |
+| Orchestration | Everything below | Step sequencing, caching, dispatch, logical commit |
 
 ---
 
@@ -116,7 +116,9 @@ artifact IDs, parameters, and cache key. `RuntimeEnvironment` specifies
   mechanism while keeping operations, execution logic, and storage identical.
 - **No shared mutable state.** Workers never write to Delta Lake directly.
   Thousands of concurrent workers would cause write conflicts. Instead, they
-  stage Parquet files, and the orchestrator commits them atomically.
+  stage Parquet files, and the orchestrator writes the tables and marks the
+  logical commit complete. Artisan readers expose those rows only after
+  completion.
 
 ### Step runners
 
@@ -153,8 +155,8 @@ cleanly isolated.
   │  DISPATCH            │  │  EXECUTE              │  │  COMMIT                │
   │                      │  │                       │  │                        │
   │  1. Resolve refs     │  │  1. Create sandbox    │  │  1. Collect staging    │
-  │  2. Compute cache key│──│  2. Materialize inputs│──│  2. Atomic Delta write │
-  │  3. Check cache      │  │  3. Preprocess        │  │  3. Deduplicate        │
+  │  2. Compute cache key│──│  2. Materialize inputs│──│  2. Write table effects│
+  │  3. Check cache      │  │  3. Preprocess        │  │  3. Complete commit    │
   │  4. Batch + dispatch │  │  4. Execute operation │  │  4. Return StepResult  │
   │                      │  │  5. Postprocess       │  │                        │
   │                      │  │  6. Capture lineage   │  │                        │
@@ -167,8 +169,10 @@ IDs, validates their stored type and content, applies grouping, computes cache
 keys from the same prepared snapshot, and dispatches work to workers.
 **Execute** (workers) creates an isolated sandbox, materializes inputs to disk,
 runs the operation lifecycle, captures lineage, and stages results as Parquet
-files. **Commit** (orchestrator) collects staged files and writes them
-atomically to Delta Lake.
+files. **Commit** (orchestrator) verifies staged files, writes table effects in
+dependency order, and marks the logical commit complete last. Each Delta table
+write is atomic; Artisan's completion filter coordinates visibility across the
+tables. Reading raw Delta tables bypasses that filter.
 
 For the full phase-by-phase breakdown, see [Execution Flow](execution-flow.md).
 
@@ -220,8 +224,9 @@ computation, `postprocess` constructs output artifacts. Each phase runs in its
 own sandbox directory.
 
 **Curators** perform lightweight metadata manipulation (filtering, merging,
-ingesting). They run a single `execute_curator` method in-memory, with no
-sandboxing or worker dispatch.
+ingesting). They run a single `execute_curator` method in an isolated local
+subprocess. They skip creator sandbox phases and configurable creator-runner
+dispatch.
 
 The framework detects the type automatically: if a class overrides
 `execute_curator()`, it is a curator. Otherwise, it is a creator.
@@ -251,24 +256,26 @@ multi-input pairing.
 For lineage declaration, filename matching, and co-input edges, see
 [Provenance System](provenance-system.md).
 
-### Storage: Delta Lake for everything
+### Storage: Delta Lake and artifact locations
 
-All persistent state — artifacts, provenance edges, execution records — lives
-in Delta Lake tables backed by Parquet files on the local filesystem. No
-external database, no connection strings, no services to keep alive.
+Artifact-type tables hold typed content and metadata. Framework tables track
+artifact identities and locations, executions and provenance, run membership,
+cache reuse, and logical commit completion. External artifact bytes remain at
+their recorded locations rather than being embedded in table rows.
 
-Delta Lake provides ACID transactions (atomic commits, no partial corruption),
-time travel (reproduce any historical state), and queryability (Polars, DuckDB,
-any Delta-compatible tool).
+Tables use Parquet files on a local filesystem or configured object storage.
+Local pipelines need no database service. Delta Lake provides atomic
+transactions and version history for each individual table. A logical Artisan
+commit spans several table writes; supported Artisan readers expose its rows
+only after completion. Raw per-table time travel does not by itself reconstruct
+a complete historical pipeline or its external files.
 
 The storage layer is split into three concerns:
 
 - **Core** — `ArtifactStore` and `ProvenanceStore` for reading artifacts and
-  provenance edges. Table schemas define the Polars column layouts for the
-  five framework tables (executions, execution_edges, artifact_edges,
-  artifact_index, steps).
+  provenance edges, with shared completion filtering and table schemas.
 - **Cache** — deterministic cache lookup using step specification hashes.
-- **I/O** — staging, staging verification, and atomic commit to Delta Lake.
+- **I/O** — staging, verification, and coordinated logical commits to Delta Lake.
 
 For table layout, partitioning, and the staging-commit pattern, see
 [Storage and Delta Lake](storage-and-delta-lake.md).

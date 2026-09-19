@@ -41,24 +41,28 @@ accessible as dataframes. No log parsing, no directory archaeology.
 
 ## Quick Start
 
-**Prerequisites:** Python 3.12+, [Pixi](https://pixi.sh)
+**Prerequisites:** [Pixi 0.66.0](https://pixi.sh), Linux (x86_64 or aarch64) or
+macOS (Apple Silicon). Pixi supplies Python 3.12 and the other dependencies.
 
 ```bash
 # Install Pixi (if needed)
-curl -fsSL https://pixi.sh/install.sh | bash
+curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.66.0 bash
+# Restart your terminal if Pixi was newly installed.
 
 # Clone and install
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
 
 pixi install --locked
+pixi run --locked setup
 
 # Verify
 pixi run --locked python -c "import artisan; print('Artisan installed successfully')"
 ```
 
-→ **[Getting Started guide](docs/getting-started/index.md)** for detailed setup,
-your first pipeline, and the mental model behind the framework.
+→ **[Installation](docs/getting-started/installation.md)** for Graphviz verification
+and notebook setup; **[Getting Started guide](docs/getting-started/index.md)** for
+your first pipeline and the mental model behind the framework.
 
 ---
 
@@ -112,9 +116,21 @@ Pixi manages three environments, all sharing a single dependency solve:
 
 | Environment | Activate with | Purpose |
 | ----------- | ------------- | ------- |
-| `default` | `pixi run …` | Core runtime — everything needed to run pipelines |
-| `dev` | `pixi run -e dev …` | Testing, linting, formatting, notebooks |
-| `docs` | `pixi run -e docs …` | Documentation building (Jupyter Book 2) |
+| `default` | `pixi run --locked …` | Core runtime — everything needed to run pipelines |
+| `dev` | `pixi run --locked -e dev …` | Testing, linting, formatting, notebooks, read-only MCP server |
+| `docs` | `pixi run --locked -e docs …` | Documentation building (Jupyter Book 2) |
+
+Prepare the dev environment and explicitly install the repository's Git hooks:
+
+```bash
+pixi install --locked -e dev
+pixi run --locked -e dev setup
+pixi run --locked -e dev install-hooks
+```
+
+`setup` prepares Graphviz in the selected environment. To use that environment
+in notebooks, run `pixi run --locked -e dev install-kernel` separately. Kernel
+registration sets the **Artisan** kernel to the environment that ran the task.
 
 ### Pixi locked mode
 
