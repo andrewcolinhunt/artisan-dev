@@ -91,22 +91,20 @@ class LargeFileArtifact(Artifact):
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Copy the file from external_path to the target directory.
 
-        Uses artifact_id as the output filename.
+        Use artifact_id as the output filename and verify digest and size
+        while streaming the file.
 
         Args:
             directory: Target directory for the output file.
             fs: Optional fsspec filesystem for reading source from cloud.
-                When None, infers fs from ``self.external_path`` via
-                ``fsspec.core.url_to_fs``. ``shutil.copy2`` is used only
-                when the resolved fs is the local filesystem (preserves
-                metadata for local-to-local copies); otherwise ``fs.get``
-                is used.
+                When None, infer the filesystem from ``self.external_path``.
 
         Returns:
             Path to the copied file.
 
         Raises:
             ValueError: If external_path is not set.
+            ArtifactIntegrityError: If the file's digest or size differs.
         """
         if self.external_path is None:
             msg = "Cannot materialize: external_path not set"

@@ -1,8 +1,8 @@
 """Pydantic shapes for the registry's agent-facing payload.
 
 Two-tier disclosure: ``OperationSummary`` for list views, ``OperationMetadata``
-(which inherits the summary fields) for full describe payloads. All shapes
-carry ``schema_version`` so the MCP layer can branch on schema upgrades.
+(which inherits the summary fields) for full describe payloads. These two
+payloads carry ``schema_version`` for consumers handling schema upgrades.
 """
 
 from __future__ import annotations
@@ -50,8 +50,8 @@ class InputSpecMetadata(BaseModel):
         artifact_type: Expected artifact type string.
         required: Whether the input is required.
         description: Human-readable description from the spec.
-        materialize: True when the op receives a file path; False when it
-            receives the artifact content directly.
+        materialize: Whether input artifacts have content written to disk and
+            their ``materialized_path`` set. Both modes pass Artifact models.
     """
 
     artifact_type: str
@@ -68,7 +68,8 @@ class OutputSpecMetadata(BaseModel):
 
     Attributes:
         artifact_type: Artifact type this output produces.
-        required: Whether output is expected (warns if missing, doesn't fail).
+        required: Whether the output role must contain artifacts. A missing or
+            empty required output fails execution validation.
         description: Human-readable description from the spec.
     """
 

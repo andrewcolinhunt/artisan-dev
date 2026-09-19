@@ -69,12 +69,12 @@ class TestCompute:
 
 
 class TestModalComputeConfig:
-    """ModalComputeConfig now carries Modal-specific non-hardware fields only.
+    """ModalComputeConfig carries Modal-specific non-hardware fields.
 
     Hardware fields (gpu, memory_gb, timeout) live on ComputeResources.
     """
 
-    def test_required_image(self):
+    def test_explicit_image(self):
         config = ModalComputeConfig(image="my-registry/my-image:latest")
         assert config.image == "my-registry/my-image:latest"
 

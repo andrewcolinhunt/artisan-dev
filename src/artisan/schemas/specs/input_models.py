@@ -44,7 +44,8 @@ class _InputArtifactsMixin:
         positionally aligned after framework pairing. This method yields
         one dict per index: {"data": artifact_i, "config": artifact_j}.
 
-        Single-input operations should not use this method.
+        A single role yields one-key dictionaries. All role lists must have
+        equal lengths; independent streams of unequal lengths cannot be grouped.
         """
         roles = list(self.input_artifacts.keys())
         if not roles:
@@ -86,7 +87,7 @@ class ExecuteInput:
 
     Attributes:
         execute_dir: Directory for writing output files.
-            All files written here will be captured as artifacts.
+            Files are made available to postprocess, which returns artifact drafts.
         inputs: Prepared inputs from preprocess.
             Keys may differ from original roles after transformation.
         log_path: Path where external tool output should be written.

@@ -25,14 +25,10 @@ class TestGroupByStrategy:
 
 
 class TestCacheValidationReason:
-    """Tests for CacheValidationReason enum.
-
-    Reference: v3 design - simplified cache validation based on execution_spec_id.
-    """
+    """Tests for cache miss reasons."""
 
     def test_reasons_defined(self):
-        """Verify all cache validation reasons from v3 design."""
-        # Cache miss reasons
+        """Verify the persisted cache miss reason values."""
         assert (
             CacheValidationReason.NO_PREVIOUS_EXECUTION.value == "no_previous_execution"
         )
@@ -44,10 +40,7 @@ class TestCacheValidationReason:
 
 
 class TestTablePath:
-    """Tests for TablePath enum.
-
-    Reference: Phase 2 storage layer design.
-    """
+    """Tests for framework table paths."""
 
     def test_tables_defined(self):
         """Verify all framework Delta Lake table paths."""

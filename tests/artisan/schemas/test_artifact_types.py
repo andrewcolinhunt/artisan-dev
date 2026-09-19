@@ -10,7 +10,7 @@ from artisan.schemas.artifact.types import ArtifactTypes
 
 
 class TestBuiltinTypes:
-    """Built-in types are plain strings with correct values."""
+    """Built-in types compare equal to their string values."""
 
     def test_data_is_string(self) -> None:
         assert ArtifactTypes.DATA == "data"
@@ -26,7 +26,7 @@ class TestBuiltinTypes:
 
     def test_string_equality_both_directions(self) -> None:
         assert ArtifactTypes.DATA == "data"
-        assert ArtifactTypes.DATA == "data"
+        assert "data" == ArtifactTypes.DATA  # noqa: SIM300 -- Test the reverse comparison.
 
 
 class TestMembership:

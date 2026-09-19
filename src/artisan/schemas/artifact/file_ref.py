@@ -27,8 +27,8 @@ class FileRefArtifact(Artifact):
 
     Unlike content-embedding artifacts (DataArtifact, MetricArtifact),
     this stores a pointer to the file rather than its bytes. The
-    ``content_hash`` links back to the output artifact that produced
-    the file.
+    ``content_hash`` verifies the raw file bytes. It differs from the artifact
+    ID, which also includes the artifact type and semantic metadata.
     """
 
     POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
@@ -50,7 +50,7 @@ class FileRefArtifact(Artifact):
     )
     content_hash: str | None = Field(
         default=None,
-        description="xxh3_128 hash of file bytes (links to output artifact). "
+        description="xxh3_128 integrity digest of the raw file bytes. "
         "None for ID-only artifacts.",
     )
     path: str | None = Field(

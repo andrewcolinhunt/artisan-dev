@@ -21,8 +21,9 @@ class InputSpec(BaseModel):
             or a concrete type string.
         required: Whether this input is required. Default True.
         description: Documentation for this input.
-        materialize: If True (default), write artifact to disk and pass Path.
-            If False, pass artifact content directly in memory.
+        materialize: If True (default), write content to disk and set the input
+            artifact's ``materialized_path``. If False, skip file creation.
+            Both modes pass Artifact models; ``hydrate`` controls loaded content.
 
     Examples:
         # Required data input (default: materialized to disk)
@@ -51,7 +52,7 @@ class InputSpec(BaseModel):
     artifact_type: str = ArtifactTypes.ANY
     required: bool = True
     description: str = ""
-    materialize: bool = True  # If False, pass content directly in memory
+    materialize: bool = True
 
     # Hydration control
     hydrate: bool = True

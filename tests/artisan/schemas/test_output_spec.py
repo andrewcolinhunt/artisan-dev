@@ -10,16 +10,16 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 
 class TestOutputSpec:
-    """Tests for OutputSpec dataclass."""
+    """Tests for the OutputSpec model."""
 
     def test_create_data_output(self):
-        """Create OutputSpec for data output with default filename matching."""
+        """Create a data output without an explicit lineage declaration."""
         spec = OutputSpec(
             artifact_type=ArtifactTypes.DATA,
             description="Processed data files",
         )
         assert spec.artifact_type == ArtifactTypes.DATA
-        assert spec.infer_lineage_from is None  # Default filename matching
+        assert spec.infer_lineage_from is None
 
     def test_default_values(self):
         """Test default values."""
@@ -56,7 +56,7 @@ class TestInferLineageFrom:
     """Tests for infer_lineage_from field validation."""
 
     def test_infer_lineage_from_none(self):
-        """Test OutputSpec with default lineage (filename matching)."""
+        """Allow an absent lineage declaration at the schema level."""
         spec = OutputSpec(
             artifact_type=ArtifactTypes.DATA,
         )

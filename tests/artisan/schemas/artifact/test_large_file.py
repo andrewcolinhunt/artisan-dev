@@ -173,14 +173,9 @@ class TestMaterialize:
 
 
 class TestMaterializeAutoInferFs:
-    """When fs=None, _materialize_content infers fs from external_path.
+    """Materialize verified bytes using the filesystem inferred from the URI."""
 
-    Local paths take the shutil.copy2 fast-path (preserves metadata).
-    Cloud paths fall through to fs.get on the resolved fs.
-    """
-
-    def test_materialize_local_uses_shutil_copy(self, tmp_path: Path) -> None:
-        """Bare local path → resolve_fs returns LocalFileSystem → shutil.copy2."""
+    def test_materialize_local_file(self, tmp_path: Path) -> None:
         src = tmp_path / "src.bin"
         src.write_bytes(b"local-bytes")
 
@@ -199,8 +194,7 @@ class TestMaterializeAutoInferFs:
         assert os.path.basename(dest).endswith(".bin")
         assert (out / os.path.basename(dest)).read_bytes() == b"local-bytes"
 
-    def test_materialize_memory_fs_uses_fs_get(self, tmp_path: Path) -> None:
-        """memory:// path → resolve_fs returns MemoryFileSystem → fs.get."""
+    def test_materialize_memory_uri(self, tmp_path: Path) -> None:
         import fsspec
 
         mem_fs = fsspec.filesystem("memory")

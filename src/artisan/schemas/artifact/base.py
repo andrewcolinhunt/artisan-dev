@@ -19,8 +19,6 @@ from artisan.utils.hashing import canonical_json_bytes, compute_artifact_id
 class Artifact(BaseModel):
     """Base class for all artifact types.
 
-    All artifacts share these common fields, which map to Delta Lake table columns.
-
     Artifacts support a draft/finalize pattern:
     - Draft: artifact_id=None, mutable, created via Subclass.draft()
     - Finalized: artifact_id set, semantically immutable, via artifact.finalize()
@@ -53,10 +51,9 @@ class Artifact(BaseModel):
         default=None,
         ge=0,
         description="Pipeline step where this artifact was originally produced. "
-        "None for ID-only artifacts.",
+        "None when no pipeline origin has been assigned.",
     )
 
-    # Class variable: default hydration behavior
     _default_hydrate: ClassVar[bool] = True
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -122,12 +119,11 @@ class Artifact(BaseModel):
 
     @property
     def is_hydrated(self) -> bool:
-        """True if this artifact has been fully hydrated (not ID-only).
+        """Return whether semantic content or external descriptors are loaded.
 
-        ID-only artifacts have only artifact_id and artifact_type populated,
-        with all other fields as None.
+        Origin metadata and external file locations do not determine hydration.
         """
-        return self.origin_step_number is not None
+        return self._identity_payload() is not None
 
     def materialize_to(
         self, directory: str, *, format: str | None = None, fs: Any = None
@@ -214,10 +210,11 @@ class Artifact(BaseModel):
         return self
 
     def _identity_payload(self) -> bytes | None:
-        """Return the bytes to hash for ``artifact_id``.
+        """Return identity bytes from loaded fields, without external I/O.
 
         Default: returns ``self.content`` if present. Subclasses without
-        a ``content`` field (e.g. FileRefArtifact) should override.
+        a ``content`` field (e.g. FileRefArtifact) should override. Return None
+        when the content or descriptors needed for identity are not loaded.
         """
         return getattr(self, "content", None)
 

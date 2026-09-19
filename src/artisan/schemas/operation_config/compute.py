@@ -53,9 +53,8 @@ class ModalComputeConfig(ComputeConfig):
             Set to match expected batch parallelism to eliminate
             cold starts. 0 means scale-to-zero (Modal default).
         max_containers: Upper bound on concurrent containers. None uses
-            Modal's workspace-level default. Set when fanning out via
-            ``experimental_spawn_map()`` to avoid spawning one
-            container per input on large batches.
+            Modal's workspace-level default. Limits server concurrency when
+            multiple endpoint calls run in parallel.
         scaledown_window: Seconds a container idles before shutdown.
             None uses Modal's default (60s). Max 1200s.
         image_registry_secret: Name of a Modal Secret (created via

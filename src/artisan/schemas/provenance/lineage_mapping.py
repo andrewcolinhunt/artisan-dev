@@ -28,8 +28,8 @@ class LineageMapping(BaseModel):
         draft_original_name: original_name of the draft artifact being created.
             Must match an artifact in ArtifactResult.artifacts.
         source_artifact_id: artifact_id of the source (parent) artifact.
-            Must be a valid 32-character hex string. Mutually exclusive
-            with ``source_original_name``.
+            Validated as exactly 32 characters; generated IDs are hexadecimal.
+            Mutually exclusive with ``source_original_name``.
         source_original_name: original_name of the source (parent) artifact,
             for referencing co-produced outputs whose IDs are not yet
             assigned. Resolved against finalized outputs in
@@ -45,7 +45,7 @@ class LineageMapping(BaseModel):
         # Input source: known artifact_id
         LineageMapping(
             draft_original_name="sample_001_processed.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwxyz",
+            source_artifact_id="0123456789abcdef0123456789abcdef",
             source_role="data",
         )
 

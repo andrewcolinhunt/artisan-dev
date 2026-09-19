@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from artisan.schemas import ExecuteInput, PostprocessInput, PreprocessInput
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.metric import MetricArtifact
 
 
@@ -186,146 +188,68 @@ def _make_artifact(name: str) -> MetricArtifact:
     )
 
 
-class TestPreprocessInputGrouped:
-    """Tests for PreprocessInput.grouped() method."""
+_GroupedInputFactory = Callable[
+    [dict[str, list[Artifact]]], PreprocessInput | PostprocessInput
+]
 
-    def test_grouped_two_roles(self, tmp_path: Path):
-        """Yields correct dicts for 2-role inputs."""
+
+@pytest.fixture(params=["preprocess", "postprocess"])
+def grouped_input(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> _GroupedInputFactory:
+    def make_input(
+        artifacts: dict[str, list[Artifact]],
+    ) -> PreprocessInput | PostprocessInput:
+        if request.param == "preprocess":
+            return PreprocessInput(
+                preprocess_dir=str(tmp_path), input_artifacts=artifacts
+            )
+        return PostprocessInput(
+            step_number=1,
+            postprocess_dir=str(tmp_path),
+            input_artifacts=artifacts,
+        )
+
+    return make_input
+
+
+class TestGroupedInputs:
+    def test_two_roles(self, grouped_input: _GroupedInputFactory) -> None:
         s1, s2 = _make_artifact("s1.dat"), _make_artifact("s2.dat")
         c1, c2 = _make_artifact("c1.json"), _make_artifact("c2.json")
 
-        inp = PreprocessInput(
-            preprocess_dir=str(tmp_path),
-            input_artifacts={"data": [s1, s2], "config": [c1, c2]},
-        )
-        groups = list(inp.grouped())
-        assert len(groups) == 2
-        assert groups[0] == {"data": s1, "config": c1}
-        assert groups[1] == {"data": s2, "config": c2}
+        groups = list(grouped_input({"data": [s1, s2], "config": [c1, c2]}).grouped())
 
-    def test_grouped_three_roles(self, tmp_path: Path):
-        """Yields correct dicts for 3-role inputs."""
+        assert groups == [{"data": s1, "config": c1}, {"data": s2, "config": c2}]
+
+    def test_three_roles(self, grouped_input: _GroupedInputFactory) -> None:
         s1 = _make_artifact("s1.dat")
         c1 = _make_artifact("c1.json")
         m1 = _make_artifact("m1.json")
 
-        inp = PreprocessInput(
-            preprocess_dir=str(tmp_path),
-            input_artifacts={
-                "data": [s1],
-                "config": [c1],
-                "metric": [m1],
-            },
+        groups = list(
+            grouped_input({"data": [s1], "config": [c1], "metric": [m1]}).grouped()
         )
-        groups = list(inp.grouped())
-        assert len(groups) == 1
-        assert groups[0] == {"data": s1, "config": c1, "metric": m1}
 
-    def test_grouped_mismatched_lengths(self, tmp_path: Path):
-        """Raises ValueError on mismatched list lengths (strict zip)."""
+        assert groups == [{"data": s1, "config": c1, "metric": m1}]
+
+    def test_mismatched_lengths(self, grouped_input: _GroupedInputFactory) -> None:
         s1, s2 = _make_artifact("s1.dat"), _make_artifact("s2.dat")
         c1 = _make_artifact("c1.json")
 
-        inp = PreprocessInput(
-            preprocess_dir=str(tmp_path),
-            input_artifacts={"data": [s1, s2], "config": [c1]},
-        )
         with pytest.raises(ValueError, match="zip"):
-            list(inp.grouped())
+            list(grouped_input({"data": [s1, s2], "config": [c1]}).grouped())
 
-    def test_grouped_empty_inputs(self, tmp_path: Path):
-        """Yields nothing when input_artifacts is empty."""
-        inp = PreprocessInput(preprocess_dir=str(tmp_path), input_artifacts={})
-        groups = list(inp.grouped())
-        assert groups == []
+    def test_empty_inputs(self, grouped_input: _GroupedInputFactory) -> None:
+        assert list(grouped_input({}).grouped()) == []
 
-    def test_grouped_single_role(self, tmp_path: Path):
-        """Yields single-key dicts for a single role."""
+    def test_single_role(self, grouped_input: _GroupedInputFactory) -> None:
         s1, s2 = _make_artifact("s1.dat"), _make_artifact("s2.dat")
 
-        inp = PreprocessInput(
-            preprocess_dir=str(tmp_path),
-            input_artifacts={"data": [s1, s2]},
-        )
-        groups = list(inp.grouped())
-        assert len(groups) == 2
-        assert groups[0] == {"data": s1}
-        assert groups[1] == {"data": s2}
-
-
-class TestPostprocessInputGrouped:
-    """Tests for PostprocessInput.grouped() method."""
-
-    def test_grouped_two_roles(self, tmp_path: Path):
-        """Yields correct dicts for 2-role inputs."""
-        s1, s2 = _make_artifact("s1.dat"), _make_artifact("s2.dat")
-        c1, c2 = _make_artifact("c1.json"), _make_artifact("c2.json")
-
-        inp = PostprocessInput(
-            step_number=1,
-            postprocess_dir=str(tmp_path),
-            input_artifacts={"data": [s1, s2], "config": [c1, c2]},
-        )
-        groups = list(inp.grouped())
-        assert len(groups) == 2
-        assert groups[0] == {"data": s1, "config": c1}
-        assert groups[1] == {"data": s2, "config": c2}
-
-    def test_grouped_three_roles(self, tmp_path: Path):
-        """Yields correct dicts for 3-role inputs."""
-        s1 = _make_artifact("s1.dat")
-        c1 = _make_artifact("c1.json")
-        m1 = _make_artifact("m1.json")
-
-        inp = PostprocessInput(
-            step_number=1,
-            postprocess_dir=str(tmp_path),
-            input_artifacts={
-                "data": [s1],
-                "config": [c1],
-                "metric": [m1],
-            },
-        )
-        groups = list(inp.grouped())
-        assert len(groups) == 1
-        assert groups[0] == {"data": s1, "config": c1, "metric": m1}
-
-    def test_grouped_mismatched_lengths(self, tmp_path: Path):
-        """Raises ValueError on mismatched list lengths (strict zip)."""
-        s1, s2 = _make_artifact("s1.dat"), _make_artifact("s2.dat")
-        c1 = _make_artifact("c1.json")
-
-        inp = PostprocessInput(
-            step_number=1,
-            postprocess_dir=str(tmp_path),
-            input_artifacts={"data": [s1, s2], "config": [c1]},
-        )
-        with pytest.raises(ValueError, match="zip"):
-            list(inp.grouped())
-
-    def test_grouped_empty_inputs(self, tmp_path: Path):
-        """Yields nothing when input_artifacts is empty."""
-        inp = PostprocessInput(
-            step_number=1,
-            postprocess_dir=str(tmp_path),
-            input_artifacts={},
-        )
-        groups = list(inp.grouped())
-        assert groups == []
-
-    def test_grouped_single_role(self, tmp_path: Path):
-        """Yields single-key dicts for a single role."""
-        s1, s2 = _make_artifact("s1.dat"), _make_artifact("s2.dat")
-
-        inp = PostprocessInput(
-            step_number=1,
-            postprocess_dir=str(tmp_path),
-            input_artifacts={"data": [s1, s2]},
-        )
-        groups = list(inp.grouped())
-        assert len(groups) == 2
-        assert groups[0] == {"data": s1}
-        assert groups[1] == {"data": s2}
+        assert list(grouped_input({"data": [s1, s2]}).grouped()) == [
+            {"data": s1},
+            {"data": s2},
+        ]
 
 
 class TestInputSpecMaterialize:

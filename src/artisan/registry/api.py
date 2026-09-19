@@ -66,18 +66,7 @@ def describe(name: str) -> OperationMetadata:
             populated from the registry's name set when ``name`` is not
             registered.
     """
-    cls = OperationDefinition._registry.get(name)
-    if cls is None:
-        registered = set(OperationDefinition._registry.keys())
-        raise ArtisanError(
-            code=ErrorCode.UNKNOWN_OPERATION,
-            error_type="validation",
-            message=f"Unknown operation: {name!r}",
-            field="name",
-            suggestions=suggest(name, registered),
-            recovery_hint="CHECK_INPUT",
-        )
-    return cls.to_metadata()
+    return _lookup_operation(name).to_metadata()
 
 
 def examples(name: str) -> list[OperationExample]:
@@ -93,6 +82,11 @@ def examples(name: str) -> list[OperationExample]:
         ArtisanError: With ``code=UNKNOWN_OPERATION`` when ``name`` is not
             registered.
     """
+    return _lookup_operation(name)._copy_examples()
+
+
+def _lookup_operation(name: str) -> type[OperationDefinition]:
+    """Resolve a registry name or raise the shared agent-facing error."""
     cls = OperationDefinition._registry.get(name)
     if cls is None:
         registered = set(OperationDefinition._registry.keys())
@@ -104,4 +98,4 @@ def examples(name: str) -> list[OperationExample]:
             suggestions=suggest(name, registered),
             recovery_hint="CHECK_INPUT",
         )
-    return cls._copy_examples()
+    return cls
