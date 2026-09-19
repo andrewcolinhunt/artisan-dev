@@ -7,10 +7,12 @@ Tests cover:
 
 from __future__ import annotations
 
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
+from artisan.execution.lineage.enrich import build_artifact_edges_from_store
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 
 
 class TestBuildArtifactEdgesFromDict:
@@ -301,3 +303,87 @@ class TestBuildConfigReferenceEdges:
 
         assert edges == []
         mock_artifact_store.provenance.load_type_map.assert_not_called()
+
+
+class TestBuildArtifactEdgesFromStore:
+    """Tests for build_artifact_edges_from_store helper."""
+
+    def test_enriches_source_target_pairs(self):
+        """Test that SourceTargetPairs are enriched to ArtifactProvenance."""
+        mock_store = MagicMock()
+        mock_store.provenance.load_type_map.return_value = {
+            "s" * 32: ArtifactTypes.METRIC,
+            "t" * 32: ArtifactTypes.METRIC,
+        }
+
+        pairs = [
+            SourceTargetPair(
+                source="s" * 32,
+                target="t" * 32,
+                source_role="input",
+                target_role="energy",
+            )
+        ]
+
+        result = build_artifact_edges_from_store(
+            source_target_pairs=pairs,
+            execution_run_id="e" * 32,
+            artifact_store=mock_store,
+        )
+
+        assert len(result) == 1
+        prov = result[0]
+        assert prov.execution_run_id == "e" * 32
+        assert prov.source_artifact_id == "s" * 32
+        assert prov.target_artifact_id == "t" * 32
+        assert prov.source_artifact_type == "metric"
+        assert prov.target_artifact_type == "metric"
+        assert prov.source_role == "input"
+        assert prov.target_role == "energy"
+
+    def test_enriches_multiple_pairs(self):
+        """Test that multiple SourceTargetPairs are enriched."""
+        mock_store = MagicMock()
+        mock_store.provenance.load_type_map.return_value = {
+            "a" * 32: ArtifactTypes.METRIC,
+            "b" * 32: ArtifactTypes.METRIC,
+            "c" * 32: ArtifactTypes.METRIC,
+        }
+
+        pairs = [
+            SourceTargetPair(
+                source="a" * 32,
+                target="b" * 32,
+                source_role="input",
+                target_role="output",
+            ),
+            SourceTargetPair(
+                source="b" * 32,
+                target="c" * 32,
+                source_role="input",
+                target_role="energy",
+            ),
+        ]
+
+        result = build_artifact_edges_from_store(
+            source_target_pairs=pairs,
+            execution_run_id="e" * 32,
+            artifact_store=mock_store,
+        )
+
+        assert len(result) == 2
+        assert result[0].source_artifact_id == "a" * 32
+        assert result[1].target_artifact_type == "metric"
+
+    def test_empty_pairs_returns_empty_list(self):
+        """Test that empty pairs returns empty list."""
+        mock_store = MagicMock()
+
+        result = build_artifact_edges_from_store(
+            source_target_pairs=[],
+            execution_run_id="e" * 32,
+            artifact_store=mock_store,
+        )
+
+        assert result == []
+        mock_store.provenance.load_type_map.assert_not_called()

@@ -263,13 +263,20 @@ class TestValidateParams:
         with pytest.raises(ValueError, match="Unknown params.*flavor"):
             _validate_params(Merge, {"flavor": "vanilla"})
 
+    def test_valid_params_accepted(self):
+        _validate_params(MockOpWithParams, {"count": 5})
+
+    def test_unknown_param_raises(self):
+        with pytest.raises(ValueError, match="Unknown params.*gamma"):
+            _validate_params(MockOpWithParams, {"gamma": 99})
+
 
 class TestValidateResources:
     """Tests for resource validation."""
 
     def test_valid_resources(self):
         """Valid resource keys should not raise."""
-        _validate_resources({"memory_gb": 32, "gpus": 1})
+        _validate_resources({"cpus": 4, "memory_gb": 32, "gpus": 1})
 
     def test_unknown_resource_raises(self):
         """Unknown resource key should raise with valid keys listed."""
@@ -423,6 +430,10 @@ class TestValidateRequiredInputs:
         """Non-dict inputs (list, None) should skip validation."""
         _validate_required_inputs(MockCuratorOp, None)
         _validate_required_inputs(MockCuratorOp, [MagicMock()])
+
+    def test_missing_required_raises(self):
+        with pytest.raises(ValueError, match="Missing required input.*dataset"):
+            _validate_required_inputs(MockOpWithOptionalInput, {"reference": "val"})
 
 
 class TestValidateInputTypes:

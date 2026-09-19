@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationStatus,
     StepDisposition,
@@ -149,3 +150,193 @@ def test_builder_hides_outputs_for_unusable_terminal_state() -> None:
 
     assert result.output_roles == frozenset()
     assert result.output_types == {}
+
+
+class TestStepResult:
+    """Tests for StepResult schema model."""
+
+    def test_create_minimal(self):
+        """Test minimal StepResult creation."""
+        result = StepResult(
+            step_name="ingest",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+        assert result.step_name == "ingest"
+        assert result.step_number == 0
+        assert result.status == StepStatus.SUCCEEDED
+        assert result.disposition == StepDisposition.EXECUTED
+        assert result.total_count == 0
+        assert result.succeeded_count == 0
+        assert result.failed_count == 0
+        assert result.output_roles == frozenset()
+        assert result.output_types == {}
+
+    def test_create_full(self):
+        """Test StepResult with all fields."""
+        result = StepResult(
+            step_name="score",
+            step_number=1,
+            status=StepStatus.PARTIAL,
+            disposition=StepDisposition.EXECUTED,
+            total_count=100,
+            succeeded_count=95,
+            failed_count=5,
+            output_roles=frozenset(["data", "metrics"]),
+            output_types={"data": "data", "metrics": "metric"},
+        )
+        assert result.total_count == 100
+        assert result.succeeded_count == 95
+        assert result.failed_count == 5
+        assert "data" in result.output_roles
+        assert "metrics" in result.output_roles
+
+    def test_output_returns_reference(self):
+        """Test that output() returns an OutputReference."""
+        result = StepResult(
+            step_name="ingest",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+            output_roles=frozenset(["data"]),
+            output_types={"data": "data"},
+        )
+        ref = result.output("data")
+        assert isinstance(ref, OutputReference)
+        assert ref.source_step == 0
+        assert ref.role == "data"
+        assert ref.artifact_type == "data"
+
+    def test_output_missing_role_raises(self):
+        """Test that output() raises ValueError for missing role."""
+        result = StepResult(
+            step_name="ingest",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+            output_roles=frozenset(["data"]),
+        )
+        with pytest.raises(ValueError, match="Output role 'missing' not available"):
+            result.output("missing")
+
+    def test_output_error_message_includes_available(self):
+        """Test that error message includes available roles."""
+        result = StepResult(
+            step_name="ingest",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+            output_roles=frozenset(["alpha", "beta"]),
+        )
+        with pytest.raises(ValueError, match="Available roles: alpha, beta"):
+            result.output("gamma")
+
+    def test_has_failures_property(self):
+        """Test has_failures property."""
+        no_failures = StepResult(
+            step_name="test",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+            failed_count=0,
+        )
+        assert no_failures.has_failures is False
+
+        with_failures = StepResult(
+            step_name="test",
+            step_number=0,
+            status=StepStatus.FAILED,
+            error="five items failed",
+            total_count=5,
+            failed_count=5,
+        )
+        assert with_failures.has_failures is True
+
+    def test_frozen(self):
+        """Test that StepResult is frozen (immutable)."""
+        result = StepResult(
+            step_name="test",
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+        with pytest.raises(ValidationError):
+            result.step_name = "changed"
+
+
+class TestStepResultBuilder:
+    """Tests for StepResultBuilder."""
+
+    def test_build_empty(self):
+        """Test building with no items."""
+        builder = StepResultBuilder(
+            step_name="test",
+            step_number=0,
+            operation_outputs={"out": "data"},
+        )
+        result = builder.build(StepStatus.SUCCEEDED, StepDisposition.EXECUTED)
+        assert result.step_name == "test"
+        assert result.step_number == 0
+        assert result.status == StepStatus.SUCCEEDED
+        assert result.total_count == 0
+        assert result.succeeded_count == 0
+        assert result.failed_count == 0
+        assert result.output_roles == frozenset(["out"])
+
+    def test_add_success(self):
+        """Test adding successes."""
+        builder = StepResultBuilder(
+            step_name="test",
+            step_number=0,
+            operation_outputs={},
+        )
+        builder.add_success()
+        builder.add_success(count=5)
+        result = builder.build(StepStatus.SUCCEEDED, StepDisposition.EXECUTED)
+        assert result.total_count == 6
+        assert result.succeeded_count == 6
+        assert result.failed_count == 0
+        assert result.status == StepStatus.SUCCEEDED
+
+    def test_add_failure(self):
+        """Test adding failures."""
+        builder = StepResultBuilder(
+            step_name="test",
+            step_number=0,
+            operation_outputs={},
+        )
+        builder.add_failure()
+        builder.add_failure(count=3)
+        result = builder.build(StepStatus.FAILED, error="four items failed")
+        assert result.total_count == 4
+        assert result.succeeded_count == 0
+        assert result.failed_count == 4
+        assert result.status == StepStatus.FAILED
+
+    def test_mixed_results(self):
+        """Test mixed success and failure."""
+        builder = StepResultBuilder(
+            step_name="test",
+            step_number=0,
+            operation_outputs={},
+        )
+        builder.add_success(count=8)
+        builder.add_failure(count=2)
+        result = builder.build(StepStatus.PARTIAL, StepDisposition.EXECUTED)
+        assert result.total_count == 10
+        assert result.succeeded_count == 8
+        assert result.failed_count == 2
+        assert result.status == StepStatus.PARTIAL
+
+    def test_build_requires_explicit_terminal_status(self):
+        """The builder does not infer lifecycle state from item counts."""
+        builder = StepResultBuilder(
+            step_name="test",
+            step_number=0,
+            operation_outputs={},
+        )
+        builder.add_failure()
+
+        with pytest.raises(TypeError, match="status"):
+            builder.build()  # type: ignore[call-arg]
