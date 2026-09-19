@@ -43,11 +43,9 @@ class DataTransformerScript(OperationDefinition):
     and invokes the script via ``run_command()``.
     """
 
-    # ---------- Metadata ----------
     name: ClassVar[str] = "data_transformer_script"
     description: ClassVar[str] = "Execute data transformation script"
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATASET = "dataset"
         config = auto()
@@ -65,7 +63,6 @@ class DataTransformerScript(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         DATASET = "dataset"
 
@@ -77,34 +74,27 @@ class DataTransformerScript(OperationDefinition):
         ),
     }
 
-    # ---------- Behavior ----------
     group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
-    # ---------- Tool ----------
     tool: ToolSpec = ToolSpec(executable=str(SCRIPT_PATH), interpreter="python")
 
-    # ---------- Environments ----------
     environments: Environments = Environments(
         local=LocalEnvironmentSpec(),
         docker=DockerEnvironmentSpec(image="my-registry/transformer:latest"),
     )
 
-    # ---------- Resources ----------
     runner_resources: RunnerResources = RunnerResources(  # type: ignore[call-arg]  # pydantic defaults
         cpus=1,
         memory_gb=4,
         time_limit="00:30:00",
     )
 
-    # ---------- Execution ----------
     batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_script")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 
-    # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized config paths from paired inputs."""
         prepared_inputs: list[dict[str, Any]] = []

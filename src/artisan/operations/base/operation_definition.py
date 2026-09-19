@@ -95,18 +95,11 @@ class OperationDefinition(BaseModel):
     # ---------- Metadata ----------
     name: ClassVar[str] = ""
     version: ClassVar[str] = "1"
-    """Execute-behavior version, folded into the cache key.
+    """Behavior version included in execution cache keys.
 
-    Bump when ``execute`` produces different output for identical inputs and
-    config — a new algorithm, a changed hard-coded default, a dependency
-    upgrade that moves numbers. A bump invalidates only this op's cached
-    results (its ``version`` is one component of every spec id it produces).
-
-    This is the author's explicit lever for the code-identity hole: the cache
-    cannot see edits to an ``execute`` body, and hashing op source was
-    rejected (every unrelated edit would thrash the dev-loop cache). Leaving
-    ``version`` unchanged across a behavior change is a correctness bug the
-    author owns."""
+    Bump when identical inputs and configuration can produce different outputs,
+    including changes to execution, preprocessing, postprocessing, or dependencies.
+    """
     description: ClassVar[str] = ""
     examples: ClassVar[list[OperationExample]] = []
     """Author-declared usage examples. Surfaced by ``artisan.registry.examples(name)``."""
@@ -118,9 +111,7 @@ class OperationDefinition(BaseModel):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     """Input specification for this operation.
 
-    Defines what inputs the operation accepts.
-    Required - operations without inputs will fail validation.
-    Empty dict {} is valid for generative operations (no inputs).
+    Defaults to an empty mapping, valid for generative operations with no inputs.
 
     Example:
         inputs: ClassVar[dict[str, InputSpec]] = {
@@ -133,9 +124,7 @@ class OperationDefinition(BaseModel):
     outputs: ClassVar[dict[str, OutputSpec]] = {}
     """Output specification for this operation.
 
-    Defines what outputs the operation produces and their types.
-    Required - operations without outputs will fail validation.
-    Empty dict {} is valid for operations that only have side effects.
+    Defaults to an empty mapping, valid for operations that only have side effects.
 
     Example:
         outputs: ClassVar[dict[str, OutputSpec]] = {
@@ -209,12 +198,11 @@ class OperationDefinition(BaseModel):
     any class-level default.
 
     Notes:
-        - **CROSS_PRODUCT output collisions.** Outputs are content-addressed by
-          ``xxh3_128`` of their bytes. CROSS_PRODUCT operation authors MUST
-          ensure each ``(input_pair → output)`` produces output bytes that
-          depend on **all** inputs in the pair; otherwise outputs from distinct
-          pairs collide to a single ``artifact_id`` and only one row survives
-          commit.
+        - **CROSS_PRODUCT output collisions.** Artifact IDs hash typed semantic
+          identity, excluding locator paths and origin steps. When each input
+          pair must produce a distinct artifact, its semantic content must
+          depend on all inputs; identical semantic artifacts share one stored
+          ``artifact_id`` even when they come from different pairs.
         - **CROSS_PRODUCT lineage automatic recovery.** Lineage capture
           recovers pair indices from the per-slot execute directory layout
           when ``per_artifact_dispatch=True`` (the default) **and** every
@@ -306,9 +294,10 @@ class OperationDefinition(BaseModel):
             Dict of prepared inputs forwarded to the execute phase.
 
         Example:
+            >>> from artisan.operations.base.per_artifact import PerArtifact
             >>> def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
             ...     return {
-            ...         role: [a.materialized_path for a in artifacts]
+            ...         role: PerArtifact([a.materialized_path for a in artifacts])
             ...         for role, artifacts in inputs.input_artifacts.items()
             ...     }
         """
@@ -460,7 +449,6 @@ class OperationDefinition(BaseModel):
         Returns:
             ArtifactResult containing draft artifacts keyed by output role.
         """
-        # Default: success with no memory outputs
         return ArtifactResult(success=True)
 
     # ---------- Validation ----------
@@ -904,8 +892,9 @@ class OperationDefinition(BaseModel):
 def _inputs_json(op_name: str, inputs: dict[str, Any]) -> str:
     """Serialize prepared inputs for the ``artisan op run`` argv.
 
-    The local mirror of the endpoint client's wire-side enforcement
-    (``_file_inputs``): values must be JSON-serializable file paths.
+    This checks JSON serialization for the local execute-as-tool command.
+    Shared or multi-item lists remain intact. Remote endpoint file transport
+    separately enforces one file per input role.
 
     Args:
         op_name: Operation name for the error message.
@@ -916,7 +905,7 @@ def _inputs_json(op_name: str, inputs: dict[str, Any]) -> str:
 
     Raises:
         TypeError: When a value is not JSON-serializable; names the
-            offending role and restates the file-paths contract.
+            offending role.
     """
     for role, value in inputs.items():
         try:
@@ -924,9 +913,7 @@ def _inputs_json(op_name: str, inputs: dict[str, Any]) -> str:
         except TypeError as exc:
             msg = (
                 f"prepared input {role!r} of {op_name} is not "
-                "JSON-serializable — execute_as_tool ops ship file paths "
-                "only; derive scalars in Params or read them in "
-                "execute_function"
+                "JSON-serializable for execute_as_tool"
             )
             raise TypeError(msg) from exc
     return json.dumps(inputs)

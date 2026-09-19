@@ -11,6 +11,11 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+from fixtures.store_format import publish_test_store
+from fsspec import AbstractFileSystem
+from fsspec.implementations.local import LocalFileSystem
+
 from artisan.schemas import (
     ArtifactResult,
     ExecuteInput,
@@ -22,13 +27,9 @@ from artisan.schemas.artifact.data import (
     DataArtifact,  # noqa: F401 (registers DataTypeDef)
 )
 from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas.execution.storage_config import StorageConfig
 
-__all__ = [
-    "run_inmemory_operation_lifecycle",
-    "run_inmemory_operation_lifecycle_with_exception",
-    "run_operation_lifecycle",
-    "run_operation_lifecycle_with_exception",
-]
+__all__ = ["run_operation_lifecycle"]
 
 
 def _create_mock_artifact(
@@ -164,129 +165,36 @@ def run_operation_lifecycle(
     return operation.postprocess(postprocess_input)
 
 
-def run_operation_lifecycle_with_exception(
-    operation,
-    inputs: dict[str, Any],
-    output_dir: Path,
-    preprocess_dir: Path | None = None,
-    postprocess_dir: Path | None = None,
-) -> ArtifactResult:
-    """Run lifecycle catching execute exceptions (matching executor behavior)."""
-    _output_dir_str, preprocess_dir_str, postprocess_dir_str, execute_dir_str = (
-        _setup_dirs(output_dir, preprocess_dir, postprocess_dir)
-    )
-
-    input_artifacts = _resolve_input_artifacts(inputs, operation)
-
-    preprocess_input = PreprocessInput(
-        input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir_str,
-    )
-    prepared_inputs = operation.preprocess(preprocess_input)
-
-    execute_input = ExecuteInput(
-        inputs=prepared_inputs,
-        execute_dir=execute_dir_str,
-    )
-    try:
-        raw_result = operation.execute_function(execute_input)
-    except Exception as e:
-        return ArtifactResult(success=False, error=str(e))
-
-    new_files = [
-        p
-        for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
-        if os.path.isfile(p)
+@pytest.fixture(
+    params=[
+        pytest.param("local"),
+        pytest.param("s3", marks=pytest.mark.s3),
     ]
+)
+def backend_env(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> tuple[AbstractFileSystem, StorageConfig, str, str, str]:
+    """Return (fs, storage, delta_root, files_root, working_root).
 
-    postprocess_input = PostprocessInput(
-        file_outputs=new_files,
-        memory_outputs=raw_result,
-        input_artifacts=input_artifacts,
-        step_number=1,
-        postprocess_dir=postprocess_dir_str,
-    )
-    return operation.postprocess(postprocess_input)
-
-
-def run_inmemory_operation_lifecycle(
-    operation,
-    input_artifacts: dict[str, list[Artifact]],
-    output_dir: Path,
-    preprocess_dir: Path | None = None,
-    postprocess_dir: Path | None = None,
-) -> ArtifactResult:
-    """Run lifecycle for in-memory operations (materialize=False)."""
-    _output_dir_str, preprocess_dir_str, postprocess_dir_str, execute_dir_str = (
-        _setup_dirs(output_dir, preprocess_dir, postprocess_dir)
-    )
-
-    preprocess_input = PreprocessInput(
-        input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir_str,
-    )
-    prepared_inputs = operation.preprocess(preprocess_input)
-
-    execute_input = ExecuteInput(
-        inputs=prepared_inputs,
-        execute_dir=execute_dir_str,
-    )
-    raw_result = operation.execute_function(execute_input)
-
-    new_files = [
-        p
-        for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
-        if os.path.isfile(p)
-    ]
-
-    postprocess_input = PostprocessInput(
-        file_outputs=new_files,
-        memory_outputs=raw_result,
-        input_artifacts=input_artifacts,
-        step_number=1,
-        postprocess_dir=postprocess_dir_str,
-    )
-    return operation.postprocess(postprocess_input)
-
-
-def run_inmemory_operation_lifecycle_with_exception(
-    operation,
-    input_artifacts: dict[str, list[Artifact]],
-    output_dir: Path,
-    preprocess_dir: Path | None = None,
-    postprocess_dir: Path | None = None,
-) -> ArtifactResult:
-    """Run in-memory lifecycle catching execute exceptions."""
-    _output_dir_str, preprocess_dir_str, postprocess_dir_str, execute_dir_str = (
-        _setup_dirs(output_dir, preprocess_dir, postprocess_dir)
-    )
-
-    preprocess_input = PreprocessInput(
-        input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir_str,
-    )
-    prepared_inputs = operation.preprocess(preprocess_input)
-
-    execute_input = ExecuteInput(
-        inputs=prepared_inputs,
-        execute_dir=execute_dir_str,
-    )
-    try:
-        raw_result = operation.execute_function(execute_input)
-    except Exception as e:
-        return ArtifactResult(success=False, error=str(e))
-
-    new_files = [
-        p
-        for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
-        if os.path.isfile(p)
-    ]
-
-    postprocess_input = PostprocessInput(
-        file_outputs=new_files,
-        memory_outputs=raw_result,
-        input_artifacts=input_artifacts,
-        step_number=1,
-        postprocess_dir=postprocess_dir_str,
-    )
-    return operation.postprocess(postprocess_input)
+    Resolve the S3 fixture only for S3 cases so local tests need no service.
+    """
+    working = tmp_path / "working"
+    working.mkdir()
+    if request.param == "local":
+        files_root = tmp_path / "files_root"
+        files_root.mkdir()
+        fs = LocalFileSystem()
+        storage = StorageConfig(protocol="file")
+        delta_root = str(tmp_path / "delta")
+        publish_test_store(delta_root, fs, storage.delta_storage_options())
+        return (
+            fs,
+            storage,
+            delta_root,
+            str(files_root),
+            str(working),
+        )
+    fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
+    delta_root = f"{uri_prefix}/delta"
+    publish_test_store(delta_root, fs, storage.delta_storage_options())
+    return fs, storage, delta_root, f"{uri_prefix}/files", str(working)

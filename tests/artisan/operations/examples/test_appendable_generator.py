@@ -7,17 +7,14 @@ import os
 from pathlib import Path
 
 import pytest
-from fixtures.store_format import publish_test_store
-from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.executors.creator import run_creator_lifecycle
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.examples.appendable_generator import AppendableGenerator
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
-from artisan.utils.hashing import compute_content_digest
+from artisan.utils.hashing import compute_content_digest, digest_utf8
 
 
 def _run(
@@ -159,56 +156,11 @@ class TestNumFiles:
         assert len(ids) == 10
 
 
-# ---------------------------------------------------------------------------
-# Parametrized [local, s3] lifecycle smoke — regression guard for the
-# shared-file dedup case in PR 7's _upload_files_to_root.
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("local"),
-        pytest.param("s3", marks=pytest.mark.s3),
-    ]
-)
-def backend_env(request, tmp_path):
-    """Yield ``(fs, storage, files_root, working_root)`` for both backends.
-
-    ``s3_fs`` is resolved lazily via ``request.getfixturevalue`` so the
-    local-only run never instantiates MinIO via testcontainers (which
-    leaks a Docker UNIX socket on session teardown when the daemon
-    isn't reachable).
-    """
-    working = tmp_path / "working"
-    working.mkdir()
-    if request.param == "local":
-        files_root = tmp_path / "files_root"
-        files_root.mkdir()
-        fs = LocalFileSystem()
-        storage = StorageConfig(protocol="file")
-        delta_root = str(tmp_path / "delta")
-        publish_test_store(delta_root, fs, storage.delta_storage_options())
-        return (
-            fs,
-            storage,
-            delta_root,
-            str(files_root),
-            str(working),
-        )
-    fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
-    delta_root = f"{uri_prefix}/delta"
-    publish_test_store(delta_root, fs, storage.delta_storage_options())
-    return fs, storage, delta_root, f"{uri_prefix}/files", str(working)
-
-
 class TestAppendableGeneratorLifecycle:
     """Creator lifecycle for AppendableGenerator on both backends.
 
-    Multiple ``AppendableArtifact`` records share a single JSONL file
-    (``appendable_generator.py:109-119``). The upload helper dedups
-    by source path: one ``shutil.move`` / ``fs.put``, N rewrites of
-    ``external_path`` to the same destination. This test asserts that
-    invariant still holds after the lifecycle runs.
+    Multiple records sharing one JSONL file must retain the same external
+    path after the file is uploaded once.
     """
 
     def test_shared_external_path_preserved_after_upload(
@@ -230,7 +182,7 @@ class TestAppendableGeneratorLifecycle:
                 )
             ),
             inputs={},
-            execution_spec_id="apg_smoke_" + "0" * 22,
+            execution_spec_id=digest_utf8("appendable-generator-lifecycle"),
             step_number=4,
         )
 

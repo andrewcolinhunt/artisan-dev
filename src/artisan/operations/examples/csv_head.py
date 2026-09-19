@@ -43,12 +43,10 @@ class CsvHead(OperationDefinition):
     config in the nested ``Params`` model.
     """
 
-    # ---------- Metadata ----------
     name = "csv_head"
     description = "Truncate CSV datasets to their first N rows"
     execute_as_tool: ClassVar[bool] = True
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         dataset = auto()
 
@@ -60,7 +58,6 @@ class CsvHead(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         dataset = auto()
 
@@ -72,7 +69,6 @@ class CsvHead(OperationDefinition):
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Parameters for CsvHead."""
 
@@ -86,7 +82,6 @@ class CsvHead(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(
             # example ops exercise in-development artisan — overlay it live
@@ -94,7 +89,6 @@ class CsvHead(OperationDefinition):
         ),
     )
 
-    # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """One materialized path per artifact, sliced per dispatch."""
         return {

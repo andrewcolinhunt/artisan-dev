@@ -234,11 +234,6 @@ class DeclareLineage(OperationDefinition):
         return [(m[_SOURCE_ROLE], m[_TARGET_ROLE]) for m in matched]
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers (kept private; reused only by DeclareLineage itself)
-# ---------------------------------------------------------------------------
-
-
 def _extract_ids(inputs: dict[str, pl.DataFrame], *, role: str) -> list[str]:
     """Return the artifact_id column for the named input role."""
     if role not in inputs:

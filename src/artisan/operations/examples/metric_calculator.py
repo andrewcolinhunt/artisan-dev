@@ -43,11 +43,9 @@ class MetricCalculator(OperationDefinition):
         metrics (metric) -- Computed metric values (nested dict)
     """
 
-    # ---------- Metadata ----------
     name = "metric_calculator"
     description = "Calculate distribution statistics from CSV datasets"
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATASET = "dataset"
 
@@ -59,7 +57,6 @@ class MetricCalculator(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         metrics = auto()
 
@@ -71,20 +68,16 @@ class MetricCalculator(OperationDefinition):
         ),
     }
 
-    # ---------- Resources ----------
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
     batch_strategy: BatchStrategy = BatchStrategy(
         job_name="metric_calculator", artifacts_per_unit=10000
     )  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 
-    # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths from input artifacts."""
         return {

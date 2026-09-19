@@ -6,17 +6,14 @@ import os
 from pathlib import Path
 
 import pytest
-from fixtures.store_format import publish_test_store
-from fsspec.implementations.local import LocalFileSystem
 
 from artisan.execution.executors.creator import run_creator_lifecycle
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.examples.large_file_generator import LargeFileGenerator
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
-from artisan.utils.hashing import compute_content_digest
+from artisan.utils.hashing import compute_content_digest, digest_utf8
 
 
 def _run(
@@ -106,50 +103,6 @@ class TestLargeFileGenerator:
         assert raw["files"][0]["content_hash"] == expected
 
 
-# ---------------------------------------------------------------------------
-# Parametrized [local, s3] lifecycle smoke — exercises the framework
-# upload step from PR 7 (files-root-cloud-uploads).
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(
-    params=[
-        pytest.param("local"),
-        pytest.param("s3", marks=pytest.mark.s3),
-    ]
-)
-def backend_env(request, tmp_path):
-    """Yield ``(fs, storage, files_root, working_root)`` for both backends.
-
-    Inline here because ``tests/artisan/operations/examples/`` does not
-    share the storage-layer ``backend_fs`` fixture. ``s3_fs`` is
-    resolved lazily via ``request.getfixturevalue`` so the local-only
-    run never instantiates MinIO via testcontainers — that path leaks
-    a Docker UNIX socket on session teardown when the daemon isn't
-    reachable. The s3 param skips cleanly when MinIO is unavailable.
-    """
-    working = tmp_path / "working"
-    working.mkdir()
-    if request.param == "local":
-        files_root = tmp_path / "files_root"
-        files_root.mkdir()
-        fs = LocalFileSystem()
-        storage = StorageConfig(protocol="file")
-        delta_root = str(tmp_path / "delta")
-        publish_test_store(delta_root, fs, storage.delta_storage_options())
-        return (
-            fs,
-            storage,
-            delta_root,
-            str(files_root),
-            str(working),
-        )
-    fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
-    delta_root = f"{uri_prefix}/delta"
-    publish_test_store(delta_root, fs, storage.delta_storage_options())
-    return fs, storage, delta_root, f"{uri_prefix}/files", str(working)
-
-
 class TestLargeFileGeneratorLifecycle:
     """End-to-end creator lifecycle for LargeFileGenerator on both backends.
 
@@ -176,7 +129,7 @@ class TestLargeFileGeneratorLifecycle:
                 params=LargeFileGenerator.Params(count=2, file_size_bytes=256, seed=0)
             ),
             inputs={},
-            execution_spec_id="lfg_smoke_" + "0" * 22,
+            execution_spec_id=digest_utf8("large-file-generator-lifecycle"),
             step_number=3,
         )
 

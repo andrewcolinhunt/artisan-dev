@@ -41,11 +41,9 @@ class DataTransformer(OperationDefinition):
         dataset (data) -- Transformed CSV dataset file(s)
     """
 
-    # ---------- Metadata ----------
     name = "data_transformer"
     description = "Transform CSV datasets by scaling and adding noise"
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATASET = "dataset"
 
@@ -57,7 +55,6 @@ class DataTransformer(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         DATASET = "dataset"
 
@@ -69,7 +66,6 @@ class DataTransformer(OperationDefinition):
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Algorithm parameters for DataTransformer."""
 
@@ -99,18 +95,14 @@ class DataTransformer(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Resources ----------
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
     batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 
-    # ---------- Lifecycle ----------
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths from input artifacts."""
         return {

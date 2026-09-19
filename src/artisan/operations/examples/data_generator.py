@@ -31,14 +31,11 @@ class DataGenerator(OperationDefinition):
         datasets (data) -- Generated CSV dataset files
     """
 
-    # ---------- Metadata ----------
     name = "data_generator"
     description = "Generate CSV datasets with random numeric data"
 
-    # ---------- Inputs ----------
     inputs: ClassVar[dict[str, Any]] = {}
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         datasets = auto()
 
@@ -50,7 +47,6 @@ class DataGenerator(OperationDefinition):
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Algorithm parameters for DataGenerator."""
 
@@ -71,20 +67,16 @@ class DataGenerator(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Resources ----------
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
     batch_strategy: BatchStrategy = BatchStrategy(  # type: ignore[call-arg]  # pydantic defaults
         units_per_worker=100, job_name="data_generator"
     )
 
-    # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 
-    # ---------- Lifecycle ----------
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write CSV files with columns id, x, y, z, score to execute_dir."""
         output_dir = inputs.execute_dir

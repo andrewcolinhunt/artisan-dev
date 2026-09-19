@@ -25,18 +25,7 @@ from artisan.utils.hashing import compute_content_digest
     ]
 )
 def backend_fs(request, tmp_path):
-    """Yield ``(fs, StorageConfig, uri_prefix)`` for both backends.
-
-    Module-level so ``TestConsolidateBasicExecution`` and
-    ``TestConsolidateAppendablesBackendParametrized`` share the same
-    parametrization. Inlined here because this test file lives outside
-    ``tests/artisan/storage/`` (where the shared fixture is defined);
-    ``s3_fs`` (from the root ``tests/conftest.py``) is resolved lazily
-    via ``request.getfixturevalue`` only on the ``s3`` branch so the
-    ``local`` runs (under ``test-unit``) don't boot MinIO via
-    testcontainers — that path leaks a Docker UNIX socket on session
-    teardown when the daemon isn't reachable.
-    """
+    """Return the backend and root; resolve S3 only for S3-marked cases."""
     if request.param == "local":
         return LocalFileSystem(), StorageConfig(), str(tmp_path)
     return request.getfixturevalue("s3_fs")
@@ -194,11 +183,7 @@ class TestConsolidateBasicExecution:
 
 
 class TestConsolidateErrorHandling:
-    """Tests for error conditions.
-
-    Stays local-only (no step_runner parametrization) — ``test_raises_without_files_root``
-    asserts only a ``ValueError`` without touching the filesystem.
-    """
+    """Check invalid configuration without filesystem access."""
 
     def test_raises_without_files_root(self) -> None:
         store = MagicMock()
@@ -233,12 +218,7 @@ class TestConsolidateClassAttributes:
 
 
 class TestConsolidateAppendablesBackendParametrized:
-    """Smoke test: consolidate JSONL workers into a combined file on each step_runner.
-
-    Kept as a higher-level end-to-end smoke alongside the promoted
-    ``TestConsolidateBasicExecution`` class, which now covers the same
-    backends at a finer granularity.
-    """
+    """Consolidate worker files using each storage backend."""
 
     def test_consolidates_worker_jsonl_files(self, backend_fs) -> None:
         """Two worker JSONL files concatenate into one combined.jsonl."""

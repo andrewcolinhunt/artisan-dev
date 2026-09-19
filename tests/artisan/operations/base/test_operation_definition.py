@@ -10,7 +10,6 @@ import pytest
 from pydantic import BaseModel, Field, ValidationError
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import (
@@ -49,8 +48,8 @@ class SimpleOperation(OperationDefinition):
 
     params: Params = Params()
 
-    def execute_function(self, inputs: dict[str, Any], output_dir):
-        return ArtifactResult(success=True, metadata={"count": self.params.count})
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
+        return {"count": self.params.count}
 
 
 class PositionalOperation(OperationDefinition):
@@ -76,8 +75,8 @@ class PositionalOperation(OperationDefinition):
 
     params: Params
 
-    def execute_function(self, inputs: dict[str, Any], output_dir):
-        return ArtifactResult(success=True)
+    def execute_function(self, inputs: ExecuteInput) -> None:
+        return None
 
 
 class ShellTool(OperationDefinition):
@@ -553,20 +552,19 @@ class TestOperationDefinitionExecute:
     """Tests for execute method."""
 
     def test_should_execute_successfully(self, tmp_path):
-        """Should execute and return ArtifactResult."""
+        """Execute with the lifecycle input model and return memory outputs."""
         op = SimpleOperation(params=SimpleOperation.Params(count=5))
-        result = op.execute_function(inputs={}, output_dir=tmp_path)
+        result = op.execute_function(ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
 
-        assert result.success is True
-        assert result.metadata["count"] == 5
+        assert result["count"] == 5
 
     def test_should_access_params_via_self(self, tmp_path):
         """Should be able to access params via self in execute."""
         op = SimpleOperation(params=SimpleOperation.Params(count=10, label="test"))
-        result = op.execute_function(inputs={}, output_dir=tmp_path)
+        result = op.execute_function(ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
 
         # The implementation accesses self.params.count.
-        assert result.metadata["count"] == 10
+        assert result["count"] == 10
 
 
 class TestOperationDefinitionModelDump:
@@ -702,7 +700,7 @@ class TestRoleEnumValidation:
                     ),
                 }
 
-                def execute_function(self, inputs, output_dir):
+                def execute_function(self, inputs: ExecuteInput) -> None:
                     pass
 
     def test_missing_input_role_raises_type_error(self):
@@ -727,7 +725,7 @@ class TestRoleEnumValidation:
                 def preprocess(self, inputs):
                     return {}
 
-                def execute_function(self, inputs, output_dir):
+                def execute_function(self, inputs: ExecuteInput) -> None:
                     pass
 
     def test_mismatched_output_role_raises_type_error(self):
@@ -747,7 +745,7 @@ class TestRoleEnumValidation:
                     ),
                 }
 
-                def execute_function(self, inputs, output_dir):
+                def execute_function(self, inputs: ExecuteInput) -> None:
                     pass
 
     def test_mismatched_input_role_raises_type_error(self):
@@ -775,7 +773,7 @@ class TestRoleEnumValidation:
                 def preprocess(self, inputs):
                     return {}
 
-                def execute_function(self, inputs, output_dir):
+                def execute_function(self, inputs: ExecuteInput) -> None:
                     pass
 
     def test_inherited_roles_pass_validation(self):

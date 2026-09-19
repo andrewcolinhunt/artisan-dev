@@ -121,18 +121,8 @@ class TestStreamingEcho:
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
-@pytest.mark.filterwarnings("ignore::ResourceWarning")
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
 def test_real_bash_streams_to_log_path(tmp_path: Path):
-    """End-to-end: bash actually emits the lines into ``log_path``.
-
-    Drives the full ``run_command(stream_output=True)`` path with a real
-    subprocess. ``seconds=1`` keeps wall-clock under two seconds. The
-    ResourceWarning filter swallows a pre-existing pipe-cleanup quirk
-    in ``_run_with_streaming`` (Popen.stdout closed by GC, not
-    explicitly) — the warning is benign and unrelated to this test's
-    assertion.
-    """
+    """Stream real bash output into the tool log without leaking its pipe."""
     op, execute_dir, log_path = _setup(tmp_path, seconds=1)
     op.execute_function(
         ExecuteInput(inputs={}, execute_dir=execute_dir, log_path=log_path)

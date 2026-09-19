@@ -27,9 +27,8 @@ class ConsolidateAppendables(OperationDefinition):
 
     Reads AppendableArtifacts from multiple worker files, concatenates
     all JSONL content into one combined file, and produces new artifacts
-    pointing to the combined path. Because external_path feeds the
-    content-addressed artifact_id, consolidated artifacts get new
-    artifact_ids.
+    pointing to the combined path. Relocation preserves semantic identity,
+    so finalized artifacts retain their original artifact IDs.
 
     Input Roles:
         records (appendable) -- Per-worker appendable artifacts
@@ -99,13 +98,11 @@ class ConsolidateAppendables(OperationDefinition):
             if isinstance(art, AppendableArtifact)
         }
 
-        # Find distinct worker files
         worker_files: set[str] = set()
         for art in artifacts.values():
             if art.external_path:
                 worker_files.add(art.external_path)
 
-        # Concatenate into combined file
         combined_uri = f"{artifact_store.files_root}/{step_number}/combined.jsonl"
         combined_dir = f"{artifact_store.files_root}/{step_number}"
         fs.makedirs(combined_dir, exist_ok=True)
@@ -114,7 +111,6 @@ class ConsolidateAppendables(OperationDefinition):
                 with fs.open(worker_file, "r") as f:
                     out.write(f.read())
 
-        # Create new artifacts pointing to combined file
         drafts: list[AppendableArtifact] = []
         for art in artifacts.values():
             assert art.record_id is not None, "finalized appendable has record_id"

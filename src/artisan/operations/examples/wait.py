@@ -25,14 +25,11 @@ class Wait(OperationDefinition):
     without performing real computation.
     """
 
-    # ---------- Metadata ----------
     name = "wait"
     description = "Wait a specified duration then produce a marker file"
 
-    # ---------- Inputs ----------
     inputs: ClassVar[dict[str, Any]] = {}
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         output = auto()
 
@@ -44,7 +41,6 @@ class Wait(OperationDefinition):
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Parameters for Wait."""
 
@@ -56,12 +52,10 @@ class Wait(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 
-    # ---------- Lifecycle ----------
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Sleep for the configured duration."""
         output_dir = inputs.execute_dir
