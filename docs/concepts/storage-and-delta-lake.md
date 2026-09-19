@@ -346,9 +346,10 @@ than creating inconsistencies.
 
 ## Deduplication during commit
 
-Content addressing enables automatic deduplication at commit time. Before
-writing staged artifacts to a Delta Lake table, the committer checks which
-artifact IDs already exist in the table and drops duplicates via an anti-join.
+Content addressing enables automatic deduplication at commit time. The
+committer compares rows with the same artifact ID and reuses matching content
+from completed commits. Different content or semantic metadata under the same
+ID is an integrity error.
 
 This means:
 
@@ -357,16 +358,16 @@ This means:
 - Deduplication requires no configuration — it is a structural consequence of
   content-addressed identity
 
-The deduplication check is a single Polars scan of the existing table's
-`artifact_id` column, joined against the incoming staged data. The cost is
-proportional to the number of existing artifacts, not the total data volume,
-because only the ID column is read.
+The content row and artifact index retain the first committed
+`origin_step_number`, even when later steps produce or import the same artifact.
+That origin is checked against its owning commit. Current-run membership comes
+from execution and cache-reuse relations, so reusing an artifact does not move
+its original row.
 
-Deduplication applies to tables with an `artifact_id` column (content tables
-and the artifact index). It does not apply to the provenance edge tables:
-artifact edges are keyed by `source_artifact_id`/`target_artifact_id` and
-execution edges by execution run ID, so neither carries the `artifact_id`
-column the dedup check requires.
+Content tables and the artifact index deduplicate by artifact ID. Locations
+deduplicate by `(artifact_id, uri)`, preserving additional verified locations.
+Provenance edges retain their execution-scoped keys so separate executions
+remain distinguishable.
 
 ---
 

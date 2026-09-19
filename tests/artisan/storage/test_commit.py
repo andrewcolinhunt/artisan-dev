@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import polars as pl
 import pytest
+from deltalake import DeltaTable
 from fixtures.execution_records import executions_df
 from fixtures.store_format import publish_test_store
 
@@ -53,18 +54,19 @@ def _stage_registration(
     committer: DeltaCommitter,
     *,
     step_run_id: str = STEP_ID,
+    step_number: int = 0,
     content: bytes = b'{"score": 0.5}',
 ) -> CommitPlan:
     staging = committer.staging_manager
     kwargs = {
         "step_run_id": step_run_id,
-        "step_number": 0,
+        "step_number": step_number,
         "operation_name": "ingest",
     }
     metric = pl.DataFrame(
         {
             "artifact_id": [ARTIFACT_ID],
-            "origin_step_number": [0],
+            "origin_step_number": [step_number],
             "content": [content],
             "original_name": ["metric.json"],
             "extension": [".json"],
@@ -76,7 +78,7 @@ def _stage_registration(
         {
             "artifact_id": [ARTIFACT_ID],
             "artifact_type": ["metric"],
-            "origin_step_number": [0],
+            "origin_step_number": [step_number],
             "metadata": ["{}"],
         },
         schema=ARTIFACT_INDEX_SCHEMA,
@@ -553,22 +555,26 @@ def test_cleanup_failure_does_not_revoke_completed_visibility(
     )
 
 
-def test_exact_complete_global_artifact_satisfies_later_plan(commit_env):
+@pytest.mark.parametrize("later_step", [0, 7])
+def test_exact_complete_global_artifact_satisfies_later_plan(commit_env, later_step):
     committer, fs, options, delta_root, _ = commit_env
     first = _stage_registration(committer, step_run_id="b" * 32)
     committer.commit_logical(first)
-    second = _stage_registration(committer, step_run_id="c" * 32)
+    second = _stage_registration(
+        committer, step_run_id="c" * 32, step_number=later_step
+    )
 
     assert committer.commit_logical(second) == {}
-    assert (
-        pl.scan_delta(
-            f"{delta_root}/artifacts/metrics",
-            storage_options=options,
+    for table in ("artifacts/metrics", TablePath.ARTIFACT_INDEX.value):
+        rows = read_committed(delta_root, table, fs=fs, storage_options=options)
+        assert rows.height == 1
+        assert rows["origin_step_number"].to_list() == [0]
+        owners = (
+            pl.scan_delta(f"{delta_root}/{table}", storage_options=options)
+            .select("logical_commit_id")
+            .collect()
         )
-        .collect()
-        .height
-        == 1
-    )
+        assert owners["logical_commit_id"].to_list() == [first.logical_commit_id]
     assert read_logical_commits(
         delta_root,
         fs=fs,
@@ -583,6 +589,7 @@ def test_conflicting_global_artifact_stops_before_later_tables(commit_env):
     second = _stage_registration(
         committer,
         step_run_id="c" * 32,
+        step_number=7,
         content=b'{"score": 0.9}',
     )
 
@@ -607,6 +614,18 @@ def test_conflicting_global_artifact_stops_before_later_tables(commit_env):
         .height
         == 1
     )
+
+
+@pytest.mark.parametrize("table_path", ["artifacts/metrics", "artifacts/index"])
+def test_committed_reader_rejects_modified_artifact_origin(commit_env, table_path):
+    committer, fs, options, delta_root, _ = commit_env
+    committer.commit_logical(_stage_registration(committer))
+    DeltaTable(f"{delta_root}/{table_path}", storage_options=options).update(
+        updates={"origin_step_number": "7"},
+    )
+
+    with pytest.raises(StoreIntegrityError):
+        read_committed(delta_root, table_path, fs=fs, storage_options=options)
 
 
 def test_control_string_encoding_supports_conditional_completion(commit_env):

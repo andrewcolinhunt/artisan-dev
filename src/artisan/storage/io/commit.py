@@ -34,6 +34,7 @@ from artisan.storage.io.commit_plan import (
     CommitPlan,
     PlannedTable,
     canonical_table_plan_key,
+    comparable_effect_rows,
     read_commit_plan,
     verify_plan_files,
 )
@@ -326,6 +327,7 @@ class DeltaCommitter:
     ) -> None:
         if keyed.is_empty():
             return
+        expected = comparable_effect_rows(table_path, expected)
         columns = expected.columns
         ownerless = keyed.select(columns).unique(maintain_order=True)
         intended = expected.join(
