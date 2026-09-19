@@ -38,14 +38,11 @@ class DataGeneratorWithMetrics(OperationDefinition):
         metrics (metric) -- Statistics derived from co-produced datasets
     """
 
-    # ---------- Metadata ----------
     name = "data_generator_with_metrics"
     description = "Generate datasets with co-produced statistics"
 
-    # ---------- Inputs ----------
     inputs: ClassVar[dict[str, Any]] = {}
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         datasets = auto()
         metrics = auto()
@@ -63,7 +60,6 @@ class DataGeneratorWithMetrics(OperationDefinition):
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Algorithm parameters for DataGeneratorWithMetrics."""
 
@@ -84,22 +80,18 @@ class DataGeneratorWithMetrics(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Resources ----------
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
     batch_strategy: BatchStrategy = BatchStrategy(
         artifacts_per_unit=100,
         units_per_worker=1,
         job_name="data_generator_with_metrics",
     )
 
-    # ---------- Compute ----------
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
 
-    # ---------- Lifecycle ----------
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write CSV datasets and compute per-file summary statistics."""
         output_dir = inputs.execute_dir
