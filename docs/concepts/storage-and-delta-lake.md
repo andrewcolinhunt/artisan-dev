@@ -19,7 +19,7 @@ Every supported Delta root contains `_artisan/store.json` with the exact format
 contract:
 
 ```json
-{"store_format":2,"artifact_identity":1,"cache_identity":2}
+{"store_format":3,"artifact_identity":1,"cache_identity":2}
 ```
 
 Writers publish this manifest only after initializing an empty root. Readers

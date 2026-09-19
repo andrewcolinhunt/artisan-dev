@@ -47,7 +47,7 @@ def read_committed(
         return read_logical_commits(delta_root, fs=fs, storage_options=options)
     path = uri_join(delta_root, table_path)
     if not fs.exists(path):
-        msg = f"Missing format-2 table {table_path!r}"
+        msg = f"Missing required table {table_path!r}"
         raise StoreIntegrityError(msg)
     try:
         physical = pl.scan_delta(path, storage_options=options).collect()

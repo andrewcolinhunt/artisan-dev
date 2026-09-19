@@ -285,6 +285,9 @@ class TestPassthroughStagedRowsGolden:
             "error_envelope": None,
             "tool_output": None,
             "worker_log": None,
+            "command_recording": None,
+            "replay_snapshot": None,
+            "replay_of_execution_run_id": None,
             "metadata": '{"k": "v"}',
         }
 

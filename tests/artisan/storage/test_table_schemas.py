@@ -105,6 +105,9 @@ class TestFrameworkSchemaDefinitions:
             "error_envelope",
             "tool_output",
             "worker_log",
+            "command_recording",
+            "replay_snapshot",
+            "replay_of_execution_run_id",
             "metadata",
         }
         assert required == set(EXECUTIONS_SCHEMA.keys())
@@ -325,10 +328,13 @@ class TestDataFrameCreation:
             "error_envelope": [None],
             "tool_output": [None],
             "worker_log": [None],
+            "command_recording": [None],
+            "replay_snapshot": [None],
+            "replay_of_execution_run_id": [None],
             "metadata": ["{}"],
         }
         df = pl.DataFrame(data, schema=EXECUTIONS_SCHEMA)
-        assert df.shape == (1, 17)  # 17 columns, no inputs/outputs
+        assert df.shape == (1, len(EXECUTIONS_SCHEMA))
 
     def test_create_execution_edges_dataframe(self):
         """Create execution_edges DataFrame with input/output edges."""
