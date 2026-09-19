@@ -2502,8 +2502,13 @@ class TestFailureRecordSynthesis:
             None,
             step_run_id=None,
         )
-        assert patched[0].execution_run_ids == ["killed-" + "a" * 24]
-        assert _require_recorded_execution_ids(patched) == ["killed-" + "a" * 24]
+        assert len(patched[0].execution_run_ids[0]) == 32
+        int(patched[0].execution_run_ids[0], 16)
+        assert _require_recorded_execution_ids(patched) == patched[0].execution_run_ids
+        repeated = _synthesize_missing_failure_records(
+            [unit], [result], runtime_env, datetime.now(UTC), None, step_run_id=None
+        )
+        assert repeated[0].execution_run_ids != patched[0].execution_run_ids
 
         shard = shard_uri(
             config.staging_root,

@@ -25,6 +25,7 @@ from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.utils.json import artisan_json_default as _json_default
 
 
@@ -403,7 +404,12 @@ class TestStageExecutionRecord:
         }
         if result_metadata is not None:
             kwargs["result_metadata"] = result_metadata
-        _write_execution_record(command_recording=CommandRecording.empty(), **kwargs)
+        _write_execution_record(
+            command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
+            **kwargs,
+        )
         return pl.read_parquet(tmp_path / "executions.parquet")
 
     def test_default_metadata_is_empty_json(self, tmp_path):
@@ -428,6 +434,8 @@ class TestStageExecutionRecord:
         fs = LocalFileSystem()
         _write_execution_record(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="tool_a",
@@ -452,6 +460,8 @@ class TestStageExecutionRecord:
         fs = LocalFileSystem()
         _write_execution_record(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="ingest",
@@ -478,6 +488,8 @@ class TestToolOutputColumns:
         fs = LocalFileSystem()
         _write_execution_record(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="tool_a",
@@ -499,6 +511,8 @@ class TestToolOutputColumns:
         fs = LocalFileSystem()
         _write_execution_record(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="tool_a",
@@ -520,6 +534,8 @@ class TestToolOutputColumns:
         fs = LocalFileSystem()
         _write_execution_record(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             execution_run_id="e" * 32,
             execution_spec_id="s" * 32,
             operation_name="tool_a",

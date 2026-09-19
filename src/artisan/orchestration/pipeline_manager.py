@@ -27,9 +27,12 @@ import polars as pl
 
 from artisan.errors import PersistenceIntegrityError
 from artisan.execution.executors.curator import is_curator_operation
+from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.execution.recording.commands import CommandRecorder
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
 from artisan.orchestration.engine.step_executor import (
+    execute_prepared_unit,
     execute_step,
     instantiate_operation,
 )
@@ -40,6 +43,7 @@ from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy, TablePath
 from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.compute_resources import ComputeResources
@@ -1695,6 +1699,139 @@ class PipelineManager:
     # =========================================================================
     # Step execution: run() and submit()
     # =========================================================================
+
+    @_with_log_context
+    def _run_prepared_unit(
+        self,
+        unit: ExecutionUnit,
+        runtime: RuntimeEnvironment,
+        *,
+        redactor: CommandRecorder,
+    ) -> StepResult:
+        """Run one diagnostic unit through ordinary dispatch and logical commit."""
+        snapshot = unit.replay_snapshot
+        if snapshot is None or snapshot.diagnostic is None or snapshot.source is None:
+            msg = "Prepared diagnostic unit requires replay evidence"
+            raise ValueError(msg)
+        operation = unit.operation
+        step_number = unit.step_number
+        step_run_id = _generate_step_run_id()
+        unit = unit.model_copy(update={"step_run_id": step_run_id})
+        unit.replay_snapshot = snapshot.model_copy(
+            update={
+                "source": snapshot.source.model_copy(
+                    update={
+                        "step_run_id": step_run_id,
+                        "pipeline_run_id": self._config.pipeline_run_id,
+                    }
+                ),
+            }
+        )
+        spec = compute_step_spec_id(
+            operation.name,
+            step_number,
+            serialize_params(operation),
+            snapshot.inputs,
+            effective_config_payload(operation),
+        )
+        record = self._build_step_start_record(
+            type(operation),
+            unit.inputs,
+            StepOverrides.from_user(
+                params=serialize_params(operation), skip_cache=True, compact=False
+            ),
+            step_name=operation.name,
+            step_number=step_number,
+            step_spec_id=spec,
+            step_run_id=step_run_id,
+            resolved_runner=self._default_step_runner,
+        )
+        record = record.model_copy(
+            update={
+                "replay_of_execution_run_id": unit.replay_of_execution_run_id,
+                "params_json": json.dumps(
+                    redactor.sanitize_data(json.loads(record.params_json))
+                ),
+                "compute_options_json": json.dumps(
+                    redactor.sanitize_data(json.loads(record.compute_options_json))
+                ),
+            }
+        )
+        self._step_start_records[step_number] = record
+        self._step_run_ids[step_number] = step_run_id
+        self._step_spec_ids[step_number] = spec
+        self._step_status_readers[step_number] = _StepStatusReader(StepStatus.PENDING)
+        self._step_tracker.create_attempt(record)
+        self._step_tracker.transition(
+            step_run_id, StepStatus.PENDING, StepStatus.RUNNING
+        )
+        self._step_status_readers[step_number].set(StepStatus.RUNNING)
+        self._register_step(operation.name, step_number, operation.outputs)
+        self._current_step = step_number + 1
+        self._install_signal_handlers()
+        started = time.perf_counter()
+
+        def persist(result: StepResult, execution_ids: tuple[str, ...]) -> StepResult:
+            clean = result.model_copy(
+                update={
+                    "error": redactor.sanitize_data(result.error),
+                    "metadata": redactor.sanitize_data(result.metadata),
+                }
+            )
+            return self._commit_execution_result(
+                clean,
+                execution_ids,
+                step_name=operation.name,
+                step_spec_id=spec,
+                operation_name=operation.name,
+                attempt_started_at=started,
+            )
+
+        result = execute_prepared_unit(
+            unit,
+            runtime,
+            self._default_step_runner,
+            self._config,
+            self._cancel_event,
+            persist,
+        )
+        if result.status == StepStatus.CANCELLED:
+            return self._cancel_step(
+                operation.name,
+                operation.outputs,
+                step_run_id,
+                StepStatus.RUNNING,
+                register=False,
+            )
+        if result.cancellation_status == CancellationStatus.UNKNOWN:
+            return self._persist_unknown_cancellation(result, spec)
+        self._step_status_readers[step_number].set(result.status)
+        self._step_results.append(result)
+        self._named_steps.setdefault(result.step_name, []).append(result)
+        return result
+
+    def _persist_unknown_cancellation(
+        self, result: StepResult, spec: str
+    ) -> StepResult:
+        """Preserve cancellation uncertainty without sealing discarded worker data."""
+        step_run_id = result.step_run_id
+        assert step_run_id is not None
+        for status in (CancellationStatus.REQUESTED, CancellationStatus.UNKNOWN):
+            self._step_tracker.record_cancellation(
+                step_run_id,
+                StepStatus.RUNNING,
+                CancellationAcknowledgement(status, result.error),
+            )
+        self._step_tracker.transition(
+            step_run_id,
+            StepStatus.RUNNING,
+            StepStatus.FAILED,
+            step_spec_id=spec,
+            result=result,
+        )
+        self._step_status_readers[result.step_number].set(result.status)
+        self._step_results.append(result)
+        return result
 
     def run(
         self,

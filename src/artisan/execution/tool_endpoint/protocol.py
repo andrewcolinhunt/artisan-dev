@@ -1,13 +1,9 @@
-"""Wire models for the tool-endpoint protocol.
+"""Wire models for endpoint control, outputs, and optional diagnostic archives.
 
-Control payloads (manifest, status) stay small; bulk files ride the
-transport data plane (``transport.py``). Inline mode: the worker's return
-value **is** that plane — ``WorkerResult`` wraps the control manifest plus
-the inline output tar, bounded by Modal's 100 MB function-call limit;
-``/result`` returns the manifest only and ``/download`` streams the tar from
-the same retained ``FunctionCall`` result. Stored mode (the request names an
-``output_store``): the bytes go to the object store and the manifest carries
-a ``StoredOutputs`` pointer instead — the result is pure control.
+``WorkerResult`` holds the control manifest and independent inline archives.
+Control plus both archives share one result-direction byte budget. Each archive
+may instead use a ``StoredOutputs`` pointer; ``/download`` selects its plane.
+Diagnostic files never become ordinary operation outputs.
 """
 
 from __future__ import annotations
@@ -18,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from artisan.errors import ArtisanErrorEnvelope
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import OperationIdentity
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
 
@@ -69,6 +66,7 @@ class ToolRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[InputRef] = Field(default_factory=list)
     output_store: str | None = None
+    debug_capture: bool = False
 
 
 class StoredOutputs(BaseModel):
@@ -87,10 +85,34 @@ class StoredOutputs(BaseModel):
     presigned_url: str | None = None
 
 
+class DebugCaptureManifest(BaseModel):
+    """Separate, opt-in delivery of job-owned diagnostic files."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["complete", "unavailable", "failed"]
+    entries: list[str] = Field(default_factory=list)
+    stored: StoredOutputs | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_delivery(self) -> DebugCaptureManifest:
+        """Failed captures cannot advertise a delivered archive."""
+        if self.status != "complete" and (self.stored is not None or self.entries):
+            msg = "Incomplete diagnostic capture cannot carry files"
+            raise ValueError(msg)
+        if self.status == "complete" and self.error is not None:
+            msg = "Complete diagnostic capture cannot carry an error"
+            raise ValueError(msg)
+        return self
+
+
 class ToolManifest(BaseModel):
     """Control payload for a completed tool run — small, always JSON."""
 
     command_recording: CommandRecording
+    operation_identity: OperationIdentity
+    debug_capture: DebugCaptureManifest | None
     output_names: list[str] = Field(default_factory=list)
     stored: StoredOutputs | None = None
     log_tail: str | None = None
@@ -98,16 +120,25 @@ class ToolManifest(BaseModel):
 
 
 class WorkerResult(BaseModel):
-    """The worker's return value: the manifest plus the inline data plane."""
+    """The worker's return value: control and independent inline byte planes."""
 
     manifest: ToolManifest
     output_tar: bytes | None = None
+    debug_tar: bytes | None = None
 
     @model_validator(mode="after")
     def _one_data_plane(self) -> WorkerResult:
         """Outputs ride exactly one plane — inline tar XOR stored pointer."""
         if self.output_tar is not None and self.manifest.stored is not None:
             msg = "WorkerResult carries both an inline tar and a stored pointer"
+            raise ValueError(msg)
+        capture = self.manifest.debug_capture
+        if capture is not None and capture.status == "complete":
+            if (self.debug_tar is None) == (capture.stored is None):
+                msg = "Complete diagnostic capture requires exactly one plane"
+                raise ValueError(msg)
+        elif self.debug_tar is not None:
+            msg = "Diagnostic bytes require a complete capture manifest"
             raise ValueError(msg)
         return self
 
@@ -122,6 +153,8 @@ class SchemaResponse(BaseModel):
     """
 
     operation: str
+    operation_identity: OperationIdentity
+    debug_capture_supported: bool
     description: str = ""
     params_schema: dict[str, Any] = Field(default_factory=dict)
     inputs: dict[str, dict[str, Any]] = Field(default_factory=dict)

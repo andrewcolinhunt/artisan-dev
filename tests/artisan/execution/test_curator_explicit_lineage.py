@@ -14,6 +14,7 @@ from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.execution_context import ExecutionContext
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -117,6 +118,8 @@ class TestCuratorHonorsExplicitLineage:
         ) as mock_capture:
             _handle_artifact_result(
                 command_recording=CommandRecording.empty(),
+                replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+                replay_of_execution_run_id=None,
                 result=result,
                 operation=_TestOp(),
                 artifact_store=MagicMock(),
@@ -167,6 +170,8 @@ class TestCuratorFallsBackToStemInference:
 
         _handle_artifact_result(
             command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
             result=result,
             operation=_TestOp(),
             artifact_store=MagicMock(),

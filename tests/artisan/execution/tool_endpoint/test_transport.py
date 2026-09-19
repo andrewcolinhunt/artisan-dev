@@ -454,7 +454,7 @@ class TestOutputs:
             payload_file.write_text("evil")
             tar.add(str(payload_file), arcname="../escape.txt")
         dest = tmp_path / "dest"
-        with pytest.raises(tarfile.TarError):
+        with pytest.raises(ValueError, match="unsafe relative path"):
             InlineTransport().unpack_outputs(buf.getvalue(), str(dest))
         shutil.rmtree(dest, ignore_errors=True)
 
@@ -466,6 +466,32 @@ class TestOutputs:
 
         with pytest.raises(ValueError, match="expands beyond"):
             InlineTransport().pack_outputs(str(src), ["big.bin"])
+
+    @pytest.mark.parametrize("second_type", [tarfile.REGTYPE, tarfile.DIRTYPE])
+    def test_unpack_rejects_duplicate_members_before_extracting(
+        self, tmp_path: Path, second_type: bytes
+    ):
+        payload = BytesIO()
+        with tarfile.open(fileobj=payload, mode="w") as archive:
+            first = tarfile.TarInfo("out.txt")
+            first.size = 5
+            archive.addfile(first, BytesIO(b"first"))
+            duplicate = tarfile.TarInfo("out.txt")
+            duplicate.type = second_type
+            duplicate.size = 6 if second_type == tarfile.REGTYPE else 0
+            archive.addfile(duplicate, BytesIO(b"second"))
+        dest = tmp_path / "dest"
+
+        with pytest.raises(ValueError, match="duplicate member names"):
+            InlineTransport().unpack_outputs(payload.getvalue(), str(dest))
+
+        assert list(dest.iterdir()) == []
+
+    def test_pack_rejects_duplicate_members(self, tmp_path: Path):
+        (tmp_path / "out.txt").write_text("content")
+
+        with pytest.raises(ValueError, match="duplicate member names"):
+            InlineTransport().pack_outputs(str(tmp_path), ["out.txt", "out.txt"])
 
     def test_pack_member_limit_is_preflighted(self, tmp_path: Path, monkeypatch):
         src = tmp_path / "outputs"

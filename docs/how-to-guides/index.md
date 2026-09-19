@@ -22,6 +22,8 @@ Task-oriented instructions for common Artisan framework operations. Each guide f
 
 - [Configuring Execution](configuring-execution.md) -- Resource allocation,
   batching, and runner configuration
+- [Debug a Recorded Execution](debugging-executions.md) -- Replay one unit and
+  retain diagnostic evidence
 - [Op Container Images](op-container-images.md) -- Build, resolve, and pin
   the image an operation runs in, for Modal and external harnesses
 - [Configuring S3-Compatible Storage](configuring-s3.md) -- Point Delta

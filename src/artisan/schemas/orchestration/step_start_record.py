@@ -24,6 +24,7 @@ class StepStartRecord(BaseModel):
     """
 
     step_run_id: str
+    replay_of_execution_run_id: str | None = None
     step_spec_id: str | None = None
     step_number: int
     step_name: str

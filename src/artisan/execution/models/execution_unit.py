@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.execution.replay import ReplaySnapshot
 
 
 class ExecutionUnit(BaseModel):
@@ -52,6 +53,11 @@ class ExecutionUnit(BaseModel):
     step_run_id: str | None = Field(
         default=None,
         description="Step run ID for output isolation scoping",
+    )
+    replay_snapshot: ReplaySnapshot | None = Field(default=None, repr=False)
+    replay_of_execution_run_id: str | None = None
+    replay_sensitive_values: tuple[str, ...] = Field(
+        default=(), exclude=True, repr=False
     )
 
     @model_validator(mode="after")

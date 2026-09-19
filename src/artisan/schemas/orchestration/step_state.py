@@ -25,6 +25,7 @@ class StepState(BaseModel):
     step_run_id: str = ""
     step_number: int
     step_name: str
+    replay_of_execution_run_id: str | None = None
     step_spec_id: str | None
     status: StepStatus
     state_sequence: int

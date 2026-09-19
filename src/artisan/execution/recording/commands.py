@@ -82,6 +82,24 @@ class CommandRecorder:
                     self._values.add(value)
                     self._environment[name] = value
 
+    def add_sensitive_data(self, value: Any) -> None:
+        """Register decoded replacement leaves without creating environment hints."""
+        if isinstance(value, dict):
+            for item in value.values():
+                self.add_sensitive_data(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                self.add_sensitive_data(item)
+        elif value is not None:
+            with self._lock:
+                self._values.add(value if isinstance(value, str) else json.dumps(value))
+
+    @property
+    def sensitive_values(self) -> tuple[str, ...]:
+        """Return a transient copy for propagation to this execution's worker."""
+        with self._lock:
+            return tuple(self._values)
+
     def add_operation(self, operation: Any) -> None:
         """Register explicit selected environment and endpoint credentials."""
         if operation is None:
@@ -139,6 +157,10 @@ class CommandRecorder:
         """Sanitize string leaves without changing structured diagnostic shape."""
         if isinstance(value, str):
             return self.sanitize(value)
+        if isinstance(value, (bool, int, float)):
+            with self._lock:
+                if json.dumps(value) in self._values:
+                    return "<redacted>"
         if isinstance(value, list):
             return [self.sanitize_data(item) for item in value]
         if isinstance(value, dict):

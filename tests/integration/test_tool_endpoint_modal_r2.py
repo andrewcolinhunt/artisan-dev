@@ -254,6 +254,7 @@ def test_capability_mode_external_consumer(
                     "params": json.dumps({"seconds": 1}),
                     "input_filenames": json.dumps({"dataset": "in.csv"}),
                     "output_store": put_url,
+                    "debug_capture": "true",
                 },
                 files=[("files", ("dataset", b"a,b\n1,2\n"))],
             )
@@ -279,6 +280,22 @@ def test_capability_mode_external_consumer(
                 "/download", params={"call_id": call_id}, follow_redirects=False
             )
             assert download.status_code == 409
+            capture = body["manifest"]["debug_capture"]
+            assert capture["status"] == "complete"
+            assert capture["stored"] is None
+            diagnostic = client.get(
+                "/download",
+                params={"call_id": call_id, "plane": "diagnostics"},
+            )
+            assert diagnostic.status_code == 200
+            InlineTransport().unpack_outputs(
+                diagnostic.content,
+                str(tmp_path / "diagnostics"),
+                prefixes=("inputs/", "outputs/"),
+            )
+            assert (tmp_path / "diagnostics/inputs/dataset/in.csv").exists()
+            assert (tmp_path / "diagnostics/outputs/in_waited.csv").exists()
+            assert (tmp_path / "diagnostics/outputs/tool_output.log").exists()
 
         # fetch from our own bucket with our own credentials
         payload = s3.get_object(Bucket=r2["bucket"], Key=key)["Body"].read()

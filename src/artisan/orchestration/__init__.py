@@ -30,11 +30,13 @@ Example:
 from __future__ import annotations
 
 from artisan.orchestration.pipeline_manager import PipelineManager
+from artisan.orchestration.replay import replay_execution
 from artisan.orchestration.run_history import list_runs
 from artisan.orchestration.runners import Runner, RunnerBase
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.replay_result import ReplayResult
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationStatus,
     StepDisposition,
@@ -47,6 +49,7 @@ __all__ = [
     "OutputReference",
     "PipelineConfig",
     "PipelineManager",
+    "ReplayResult",
     "Runner",
     "RunnerBase",
     "StepDisposition",
@@ -54,4 +57,5 @@ __all__ = [
     "StepResult",
     "StepStatus",
     "list_runs",
+    "replay_execution",
 ]

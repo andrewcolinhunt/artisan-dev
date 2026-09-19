@@ -59,6 +59,7 @@ def cache_lookup(
             storage_options=storage_options,
         )
         .filter(pl.col("execution_spec_id") == execution_spec_id)
+        .filter(pl.col("replay_of_execution_run_id").is_null())
         .filter(pl.col("success") == True)  # noqa: E712
         .sort("timestamp_start", descending=True)  # Most recent first
         .limit(1)
@@ -75,6 +76,7 @@ def cache_lookup(
                 storage_options=storage_options,
             )
             .filter(pl.col("execution_spec_id") == execution_spec_id)
+            .filter(pl.col("replay_of_execution_run_id").is_null())
             .limit(1)
             .collect()
         )

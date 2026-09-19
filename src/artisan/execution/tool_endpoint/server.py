@@ -7,12 +7,10 @@ and return the manifest + output tar. No Modal imports — locally testable.
 
 from __future__ import annotations
 
-import importlib
 import os
 import shutil
 import tarfile
 import tempfile
-from functools import reduce
 from typing import Any
 
 import httpx
@@ -33,7 +31,9 @@ from artisan.execution.recording.commands import (
     invocation_scope,
     sanitize_diagnostic,
 )
+from artisan.execution.tool_endpoint import transport as transport_module
 from artisan.execution.tool_endpoint.protocol import (
+    DebugCaptureManifest,
     ToolManifest,
     ToolRequest,
     WorkerResult,
@@ -50,6 +50,7 @@ from artisan.execution.transport.log_constants import (
 )
 from artisan.operations.base._param_docs import _params_class
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.registry.resolve import operation_identity
 from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.specs.input_models import ExecuteInput
@@ -77,26 +78,6 @@ else:
     _OUTPUT_BOUNDARY_ERRORS += (BotoCoreError, ClientError)
 
 
-def resolve_op(module: str, qualname: str) -> type[OperationDefinition]:
-    """Import and return the operation class deployed with this endpoint.
-
-    Args:
-        module: Dotted module path (``op_cls.__module__``).
-        qualname: Class qualname within the module (``op_cls.__qualname__``).
-
-    Returns:
-        The OperationDefinition subclass.
-
-    Raises:
-        TypeError: If the resolved object is not an OperationDefinition.
-    """
-    obj: Any = reduce(getattr, qualname.split("."), importlib.import_module(module))
-    if not (isinstance(obj, type) and issubclass(obj, OperationDefinition)):
-        msg = f"{module}:{qualname} is not an OperationDefinition"
-        raise TypeError(msg)
-    return obj
-
-
 def run_tool_request(
     op_cls: type[OperationDefinition],
     request: ToolRequest,
@@ -105,15 +86,22 @@ def run_tool_request(
     """Capture fresh request-wide command evidence across all ordinary outcomes."""
     with capture_commands(location="endpoint"), invocation_scope():
         try:
-            return _run_tool_request(op_cls, request, data_policy)
+            result = _run_tool_request(op_cls, request, data_policy)
         except Exception as exc:
-            return _error_result(
-                op_cls.name,
+            result = _error_result(
+                op_cls,
                 ErrorCode.OP_EXECUTE_FAILED,
                 str(exc),
                 "compute",
                 "REPORT_TO_USER",
             )
+
+        if request.debug_capture and result.manifest.debug_capture is None:
+            result.manifest.debug_capture = DebugCaptureManifest(
+                status="unavailable",
+                error="tool workspace was not created",
+            )
+        return _bound_result(result, op_cls)
 
 
 def _run_tool_request(
@@ -132,11 +120,9 @@ def _run_tool_request(
     output-delivery failures each return a structured error envelope on the
     manifest (stable ``code`` + ``recovery_hint``) rather than raising.
 
-    Inputs and outputs live in separate dirs so the tar never sweeps input
-    files. The tool log is excluded from the manifest and tar — locally the
-    log lives at the sandbox level, not in ``execute_dir``, so shipping it
-    in the tar would leak it into ``file_outputs``; the client receives the
-    tail via the manifest and appends it to the unit log instead.
+    Normal outputs exclude inputs and the tool log so they cannot leak into
+    postprocess. Opt-in diagnostics preserve both job directories, including
+    the full log, in a separate archive before cleanup on every outcome.
 
     Args:
         op_cls: The deployed operation class.
@@ -155,13 +141,13 @@ def _run_tool_request(
         )
     except (TypeError, ValueError):
         return _error_result(
-            op_cls.name,
+            op_cls,
             ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
             "endpoint deployment data policy is invalid",
             "config",
             "REPORT_TO_USER",
         )
-    denied = _preflight_request(op_cls.name, request, policy)
+    denied = _preflight_request(op_cls, request, policy)
     if denied is not None:
         return denied
 
@@ -175,7 +161,7 @@ def _run_tool_request(
         # ops, custom validators); the agent can fix its own call. Runs before
         # the job dir exists, so no cleanup is owed here.
         return _error_result(
-            op_cls.name,
+            op_cls,
             ErrorCode.PARAM_TYPE_MISMATCH,
             "tool parameters failed validation",
             "validation",
@@ -186,175 +172,333 @@ def _run_tool_request(
         job_root = tempfile.mkdtemp(prefix=f"artisan-tool-{op_cls.name}-")
     except OSError:
         return _error_result(
-            op_cls.name,
+            op_cls,
             ErrorCode.OP_EXECUTE_FAILED,
             "could not create tool workspace",
             "io",
             "RETRY_LATER",
         )
-    # Modal reuses warm containers across requests; the job tree must not
-    # outlive the call or per-request temp dirs accumulate in the container.
     try:
-        inputs_dir = os.path.join(job_root, "inputs")
-        outputs_dir = os.path.join(job_root, "outputs")
         try:
-            os.makedirs(outputs_dir)
-        except OSError:
-            return _error_result(
-                op_cls.name,
-                ErrorCode.OP_EXECUTE_FAILED,
-                "could not create tool output directory",
-                "io",
-                "RETRY_LATER",
-            )
-
-        transport = InlineTransport()
-        try:
-            inputs = transport.unpack_inputs(
-                request.inputs,
-                inputs_dir,
-                policy=policy,
-            )
-        except ArtifactIntegrityError as exc:
-            return _error_result(
-                op_cls.name,
-                ErrorCode.ARTIFACT_INTEGRITY_FAILED,
-                str(exc),
-                "io",
-                "CHECK_INPUT",
-            )
-        except ImportError:
-            return _error_result(
-                op_cls.name,
-                ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-                "input filesystem dependency is unavailable",
-                "config",
-                "REPORT_TO_USER",
-            )
-        except EndpointTransportError as exc:
-            return _error_result(
-                op_cls.name,
-                ErrorCode.INPUT_RESOLUTION_FAILED,
-                str(exc),
-                "io",
-                "CHECK_INPUT",
-            )
-        except _INPUT_RESOLUTION_ERRORS:
-            # malformed ref; a URI that would not resolve (missing object,
-            # denied read — s3fs maps these to FileNotFoundError/
-            # PermissionError); or a botocore root s3fs returns untranslated
-            # (NoCredentialsError, EndpointConnectionError — the R2 bad-creds
-            # / bad-endpoint modes, both BotoCoreError, neither an OSError).
-            # The caller supplied the ref/Secret and can correct it. Fetch
-            # precedes compute, so nothing partial exists.
-            return _error_result(
-                op_cls.name,
-                ErrorCode.INPUT_RESOLUTION_FAILED,
-                "could not resolve tool input",
-                "io",
-                "CHECK_INPUT",
-            )
-
-        log_path = os.path.join(outputs_dir, TOOL_OUTPUT_FILENAME)
-        try:
-            # The shared primitive — the same invocation as the local execute
-            # router, so the two sides cannot drift. The container is the
-            # environment; stream so tool progress (ticks, progress bars) is
-            # visible live on container stdout (the Modal dashboard log).
-            invoke_op_work(
-                op,
-                ExecuteInput(execute_dir=outputs_dir, inputs=inputs, log_path=log_path),
-                environment=LocalEnvironmentSpec(),
-                stream_output=True,
-            )
+            result = _execute_job(op, request, policy, job_root)
         except Exception as exc:
-            return _error_result(
-                op_cls.name,
+            result = _error_result(
+                op_cls,
                 ErrorCode.OP_EXECUTE_FAILED,
                 str(exc),
                 "compute",
                 "REPORT_TO_USER",
-                log_tail=_log_tail(log_path),
             )
-
-        names: list[str] = []
-        try:
-            names = _list_outputs(outputs_dir)
-            stored = None
-            if request.output_store and names:
-                stored = upload_outputs(
-                    outputs_dir,
-                    names,
-                    request.output_store,
-                    op_cls.name,
-                    policy=policy,
-                )
-            output_tar = (
-                None
-                if stored is not None
-                else transport.pack_outputs(outputs_dir, names)
-            )
-        except (ImportError, NotImplementedError):
-            return _error_result(
-                op_cls.name,
-                ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-                "tool output transport is unavailable",
-                "config",
-                "REPORT_TO_USER",
-                output_names=names,
-                log_tail=_log_tail(log_path),
-            )
-        except ValueError:
-            return _error_result(
-                op_cls.name,
-                ErrorCode.OUTPUT_DELIVERY_FAILED,
-                "tool output transport rejected the result",
-                "io",
-                "CHECK_INPUT",
-                output_names=names,
-                log_tail=_log_tail(log_path),
-            )
-        except EndpointTransportError as exc:
-            return _error_result(
-                op_cls.name,
-                ErrorCode.OUTPUT_DELIVERY_FAILED,
-                str(exc),
-                "io",
-                "RETRY_LATER",
-                output_names=names,
-                log_tail=_log_tail(log_path),
-            )
-        except _OUTPUT_BOUNDARY_ERRORS:
-            # Compute completed; preserve its output names and log while making
-            # the delivery failure explicit to the caller.
-            return _error_result(
-                op_cls.name,
-                ErrorCode.OUTPUT_DELIVERY_FAILED,
-                "tool output transport failed",
-                "io",
-                "RETRY_LATER",
-                output_names=names,
-                log_tail=_log_tail(log_path),
-            )
-
-        return WorkerResult(
-            manifest=ToolManifest(
-                command_recording=command_snapshot(),
-                output_names=names,
-                stored=stored,
-                log_tail=_log_tail(log_path),
-            ),
-            output_tar=output_tar,
-        )
+        if request.debug_capture:
+            result = _capture_debug(result, request, policy, job_root)
+        return result
     finally:
-        # Result values (tar bytes, log tail, stored pointer) are fully
-        # evaluated before finally runs; ignore_errors keeps cleanup from
-        # masking the real exception or altering the returned manifest.
         shutil.rmtree(job_root, ignore_errors=True)
 
 
+def _execute_job(
+    op: OperationDefinition,
+    request: ToolRequest,
+    policy: ToolEndpointDataPolicy,
+    job_root: str,
+) -> WorkerResult:
+    """Execute and deliver outputs; the caller captures every workspace outcome."""
+    op_cls = type(op)
+    inputs_dir = os.path.join(job_root, "inputs")
+    outputs_dir = os.path.join(job_root, "outputs")
+    try:
+        os.makedirs(outputs_dir)
+    except OSError:
+        return _error_result(
+            op_cls,
+            ErrorCode.OP_EXECUTE_FAILED,
+            "could not create tool output directory",
+            "io",
+            "RETRY_LATER",
+        )
+
+    transport = InlineTransport()
+    try:
+        inputs = transport.unpack_inputs(
+            request.inputs,
+            inputs_dir,
+            policy=policy,
+        )
+    except ArtifactIntegrityError as exc:
+        return _error_result(
+            op_cls,
+            ErrorCode.ARTIFACT_INTEGRITY_FAILED,
+            str(exc),
+            "io",
+            "CHECK_INPUT",
+        )
+    except ImportError:
+        return _error_result(
+            op_cls,
+            ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            "input filesystem dependency is unavailable",
+            "config",
+            "REPORT_TO_USER",
+        )
+    except EndpointTransportError as exc:
+        return _error_result(
+            op_cls,
+            ErrorCode.INPUT_RESOLUTION_FAILED,
+            str(exc),
+            "io",
+            "CHECK_INPUT",
+        )
+    except _INPUT_RESOLUTION_ERRORS:
+        # malformed ref; a URI that would not resolve (missing object,
+        # denied read — s3fs maps these to FileNotFoundError/
+        # PermissionError); or a botocore root s3fs returns untranslated
+        # (NoCredentialsError, EndpointConnectionError — the R2 bad-creds
+        # / bad-endpoint modes, both BotoCoreError, neither an OSError).
+        # Earlier inputs may already exist; the final capture retains them.
+        return _error_result(
+            op_cls,
+            ErrorCode.INPUT_RESOLUTION_FAILED,
+            "could not resolve tool input",
+            "io",
+            "CHECK_INPUT",
+        )
+
+    log_path = os.path.join(outputs_dir, TOOL_OUTPUT_FILENAME)
+    try:
+        # The shared primitive — the same invocation as the local execute
+        # router, so the two sides cannot drift. The container is the
+        # environment; stream so tool progress (ticks, progress bars) is
+        # visible live on container stdout (the Modal dashboard log).
+        invoke_op_work(
+            op,
+            ExecuteInput(execute_dir=outputs_dir, inputs=inputs, log_path=log_path),
+            environment=LocalEnvironmentSpec(),
+            stream_output=True,
+        )
+    except Exception as exc:
+        return _error_result(
+            op_cls,
+            ErrorCode.OP_EXECUTE_FAILED,
+            str(exc),
+            "compute",
+            "REPORT_TO_USER",
+            log_tail=_log_tail(log_path),
+        )
+
+    names: list[str] = []
+    try:
+        names = _list_outputs(outputs_dir)
+        stored = None
+        if request.output_store and names:
+            stored = upload_outputs(
+                outputs_dir,
+                names,
+                request.output_store,
+                op_cls.name,
+                policy=policy,
+            )
+        manifest = ToolManifest(
+            operation_identity=operation_identity(op_cls),
+            debug_capture=None,
+            command_recording=command_snapshot(),
+            output_names=names,
+            stored=stored,
+            log_tail=_log_tail(log_path),
+        )
+        if request.debug_capture:
+            manifest.debug_capture = DebugCaptureManifest(
+                status="failed",
+                error="diagnostic capture failed",
+            )
+        output_tar = (
+            None
+            if stored is not None
+            else transport.pack_outputs(
+                outputs_dir,
+                names,
+                max_bytes=transport_module.MAX_INLINE_BYTES - _control_size(manifest),
+            )
+        )
+    except (ImportError, NotImplementedError):
+        return _error_result(
+            op_cls,
+            ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            "tool output transport is unavailable",
+            "config",
+            "REPORT_TO_USER",
+            output_names=names,
+            log_tail=_log_tail(log_path),
+        )
+    except ValueError:
+        return _error_result(
+            op_cls,
+            ErrorCode.OUTPUT_DELIVERY_FAILED,
+            "tool output transport rejected the result",
+            "io",
+            "CHECK_INPUT",
+            output_names=names,
+            log_tail=_log_tail(log_path),
+        )
+    except EndpointTransportError as exc:
+        return _error_result(
+            op_cls,
+            ErrorCode.OUTPUT_DELIVERY_FAILED,
+            str(exc),
+            "io",
+            "RETRY_LATER",
+            output_names=names,
+            log_tail=_log_tail(log_path),
+        )
+    except _OUTPUT_BOUNDARY_ERRORS:
+        # Compute completed; preserve its output names and log while making
+        # the delivery failure explicit to the caller.
+        return _error_result(
+            op_cls,
+            ErrorCode.OUTPUT_DELIVERY_FAILED,
+            "tool output transport failed",
+            "io",
+            "RETRY_LATER",
+            output_names=names,
+            log_tail=_log_tail(log_path),
+        )
+
+    return WorkerResult(manifest=manifest, output_tar=output_tar)
+
+
+def _control_size(manifest: ToolManifest) -> int:
+    """Count the compact UTF-8 control payload in the shared result budget."""
+    return len(manifest.model_dump_json().encode("utf-8"))
+
+
+def _bound_result(
+    result: WorkerResult, op_cls: type[OperationDefinition]
+) -> WorkerResult:
+    """Keep control and both byte planes inside the shared result budget."""
+    size = (
+        _control_size(result.manifest)
+        + len(result.output_tar or b"")
+        + len(result.debug_tar or b"")
+    )
+    if size > transport_module.MAX_INLINE_BYTES:
+        if result.manifest.debug_capture is not None:
+            result.debug_tar = None
+            result.manifest.debug_capture = DebugCaptureManifest(
+                status="failed",
+                error="diagnostic capture failed",
+            )
+            size = _control_size(result.manifest) + len(result.output_tar or b"")
+            if size <= transport_module.MAX_INLINE_BYTES:
+                return result
+        failure = _error_result(
+            op_cls,
+            ErrorCode.OUTPUT_DELIVERY_FAILED,
+            "tool result exceeds the aggregate inline byte limit",
+            "io",
+            "CHECK_INPUT",
+        )
+        if result.manifest.error is not None:
+            failure.manifest.error = result.manifest.error
+        if result.manifest.debug_capture is not None:
+            failure.manifest.debug_capture = DebugCaptureManifest(
+                status="failed",
+                error="diagnostic result exceeds the inline byte limit",
+            )
+        _fit_error_control(failure.manifest)
+        return failure
+    return result
+
+
+def _fit_error_control(manifest: ToolManifest) -> None:
+    """Fit an error message without losing its code or returning oversized control."""
+    error = manifest.error
+    assert error is not None
+    if _control_size(manifest) <= transport_module.MAX_INLINE_BYTES:
+        return
+    message = error.message
+    marker = " [truncated]"
+    manifest.error = error.model_copy(update={"message": marker})
+    if _control_size(manifest) > transport_module.MAX_INLINE_BYTES:
+        msg = "required endpoint control evidence exceeds the inline byte limit"
+        raise EndpointTransportError(msg)
+    low, high = 0, len(message)
+    while low < high:
+        midpoint = (low + high + 1) // 2
+        manifest.error = error.model_copy(
+            update={"message": message[:midpoint] + marker}
+        )
+        if _control_size(manifest) <= transport_module.MAX_INLINE_BYTES:
+            low = midpoint
+        else:
+            high = midpoint - 1
+    manifest.error = error.model_copy(update={"message": message[:low] + marker})
+
+
+def _capture_debug(
+    result: WorkerResult,
+    request: ToolRequest,
+    policy: ToolEndpointDataPolicy,
+    job_root: str,
+) -> WorkerResult:
+    """Capture job-owned files before cleanup, preserving the primary outcome."""
+    try:
+        names = _diagnostic_names(job_root)
+        capture = DebugCaptureManifest(status="complete", entries=names)
+        result.manifest.debug_capture = capture
+        if request.output_store and request.output_store.startswith("s3://"):
+            capture.stored = upload_outputs(
+                job_root,
+                names,
+                request.output_store,
+                result.manifest.operation_identity.name,
+                policy=policy,
+            )
+        else:
+            remaining = (
+                transport_module.MAX_INLINE_BYTES
+                - _control_size(result.manifest)
+                - len(result.output_tar or b"")
+            )
+            result.debug_tar = InlineTransport().pack_outputs(
+                job_root,
+                names,
+                max_bytes=remaining,
+            )
+    except Exception:
+        result.debug_tar = None
+        result.manifest.debug_capture = DebugCaptureManifest(
+            status="failed",
+            error="diagnostic capture failed",
+        )
+    return result
+
+
+def _diagnostic_names(job_root: str) -> list[str]:
+    """List only inputs and outputs, rejecting even links inside the job tree."""
+    names: list[str] = []
+
+    def fail(error: OSError) -> None:
+        raise error
+
+    for prefix in ("inputs", "outputs"):
+        directory = os.path.join(job_root, prefix)
+        if os.path.islink(directory):
+            msg = "Diagnostic directory is a symbolic link"
+            raise ValueError(msg)
+        for root, dirs, files in os.walk(directory, onerror=fail):
+            for name in [*dirs, *files]:
+                if os.path.islink(os.path.join(root, name)):
+                    msg = "Diagnostic archive contains a symbolic link"
+                    raise ValueError(msg)
+            for name in files:
+                if len(names) >= MAX_ARCHIVE_MEMBERS:
+                    msg = "Diagnostic archive exceeds the member limit"
+                    raise ValueError(msg)
+                names.append(os.path.relpath(os.path.join(root, name), job_root))
+    return sorted(names)
+
+
 def _preflight_request(
-    op_name: str,
+    op_cls: type[OperationDefinition],
     request: ToolRequest,
     policy: ToolEndpointDataPolicy,
 ) -> WorkerResult | None:
@@ -364,7 +508,7 @@ def _preflight_request(
             continue
         if ref.content_digest is None or ref.size_bytes is None:
             return _error_result(
-                op_name,
+                op_cls,
                 ErrorCode.INPUT_RESOLUTION_FAILED,
                 "remote input lacks its complete-file integrity contract",
                 "validation",
@@ -374,7 +518,7 @@ def _preflight_request(
             policy.authorize_input(ref.uri)
         except ValueError as exc:
             return _error_result(
-                op_name,
+                op_cls,
                 ErrorCode.INPUT_RESOLUTION_FAILED,
                 str(exc),
                 "validation",
@@ -385,7 +529,7 @@ def _preflight_request(
             policy.authorize_output(request.output_store)
         except ValueError as exc:
             return _error_result(
-                op_name,
+                op_cls,
                 ErrorCode.OUTPUT_DELIVERY_FAILED,
                 str(exc),
                 "validation",
@@ -421,7 +565,7 @@ def instantiate_op(
 
 
 def _error_result(
-    op_name: str,
+    op_cls: type[OperationDefinition],
     code: str,
     message: str,
     error_type: ErrorType,
@@ -433,7 +577,7 @@ def _error_result(
     """Return a WorkerResult carrying an error envelope on the manifest.
 
     Args:
-        op_name: The deployed op's name, stamped on the envelope.
+        op_cls: The actual worker operation class.
         code: Stable ``ErrorCode`` identifier.
         message: Human-readable summary (the underlying exception's text).
         error_type: Coarse envelope category.
@@ -448,12 +592,14 @@ def _error_result(
     """
     return WorkerResult(
         manifest=ToolManifest(
+            operation_identity=operation_identity(op_cls),
+            debug_capture=None,
             command_recording=command_snapshot(),
             error=ArtisanError(
                 code=code,
                 message=sanitize_diagnostic(message),
                 error_type=error_type,
-                operation_name=op_name,
+                operation_name=op_cls.name,
                 recovery_hint=recovery_hint,
             ).envelope,
             output_names=output_names or [],

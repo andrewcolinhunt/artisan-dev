@@ -17,6 +17,8 @@ from artisan.execution.tool_endpoint.protocol import (
     ToolRequest,
     WorkerResult,
 )
+from artisan.operations.examples import WaitTool
+from artisan.registry.resolve import operation_identity
 from artisan.schemas.execution.command_record import CommandRecording
 
 
@@ -75,7 +77,12 @@ class TestToolRequest:
         assert ToolRequest(**request.model_dump()) == request
 
     def test_deployment_policy_is_not_a_wire_field(self):
-        assert set(ToolRequest.model_fields) == {"params", "inputs", "output_store"}
+        assert set(ToolRequest.model_fields) == {
+            "params",
+            "inputs",
+            "output_store",
+            "debug_capture",
+        }
         schema = ToolRequest.model_json_schema()
         assert "data_policy" not in schema["properties"]
         assert "input_allowlist" not in schema["properties"]
@@ -96,6 +103,8 @@ class TestToolRequest:
 class TestToolManifest:
     def test_defaults(self):
         manifest = ToolManifest(
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
             command_recording=CommandRecording.empty(),
         )
         assert manifest.output_names == []
@@ -105,6 +114,8 @@ class TestToolManifest:
 
     def test_stored_round_trip(self):
         manifest = ToolManifest(
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
             command_recording=CommandRecording.empty(),
             output_names=["a.txt"],
             stored=StoredOutputs(
@@ -119,7 +130,10 @@ class TestToolManifest:
         stored = StoredOutputs(uri="https://bucket.s3.amazonaws.com/run42.tar.gz")
         assert stored.presigned_url is None
         manifest = ToolManifest(
-            command_recording=CommandRecording.empty(), stored=stored
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
+            command_recording=CommandRecording.empty(),
+            stored=stored,
         )
         assert ToolManifest(**manifest.model_dump()) == manifest
 
@@ -131,7 +145,10 @@ class TestToolManifest:
             operation_name="wait_tool",
         ).envelope
         manifest = ToolManifest(
-            command_recording=CommandRecording.empty(), error=envelope
+            operation_identity=operation_identity(WaitTool),
+            debug_capture=None,
+            command_recording=CommandRecording.empty(),
+            error=envelope,
         )
         restored = ToolManifest(**manifest.model_dump())
         assert restored.error is not None
@@ -144,7 +161,10 @@ class TestWorkerResult:
     def test_round_trip_with_tar(self):
         result = WorkerResult(
             manifest=ToolManifest(
-                command_recording=CommandRecording.empty(), output_names=["a.txt"]
+                operation_identity=operation_identity(WaitTool),
+                debug_capture=None,
+                command_recording=CommandRecording.empty(),
+                output_names=["a.txt"],
             ),
             output_tar=b"tarbytes",
         )
@@ -154,6 +174,8 @@ class TestWorkerResult:
     def test_failure_has_no_tar(self):
         result = WorkerResult(
             manifest=ToolManifest(
+                operation_identity=operation_identity(WaitTool),
+                debug_capture=None,
                 command_recording=CommandRecording.empty(),
             )
         )
@@ -162,6 +184,8 @@ class TestWorkerResult:
     def test_stored_alone_accepted(self):
         result = WorkerResult(
             manifest=ToolManifest(
+                operation_identity=operation_identity(WaitTool),
+                debug_capture=None,
                 command_recording=CommandRecording.empty(),
                 stored=StoredOutputs(uri="s3://b/k.tar.gz"),
             )
@@ -172,6 +196,8 @@ class TestWorkerResult:
         with pytest.raises(ValidationError, match="both an inline tar"):
             WorkerResult(
                 manifest=ToolManifest(
+                    operation_identity=operation_identity(WaitTool),
+                    debug_capture=None,
                     command_recording=CommandRecording.empty(),
                     stored=StoredOutputs(uri="s3://b/k.tar.gz"),
                 ),
@@ -191,7 +217,11 @@ class TestResponses:
         assert response.status.value == status
 
     def test_schema_response_defaults(self):
-        response = SchemaResponse(operation="wait_tool")
+        response = SchemaResponse(
+            operation="wait_tool",
+            operation_identity=operation_identity(WaitTool),
+            debug_capture_supported=True,
+        )
         assert response.description == ""
         assert response.params_schema == {}
         assert response.inputs == {}

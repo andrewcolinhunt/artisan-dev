@@ -167,6 +167,14 @@ class ErrorCode:
     TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
+    # validation — single-execution replay preflight
+    REPLAY_EXECUTION_NOT_FOUND = "replay_execution_not_found"
+    REPLAY_EVIDENCE_UNAVAILABLE = "replay_evidence_unavailable"
+    REPLAY_DEPENDENCY_UNAVAILABLE = "replay_dependency_unavailable"
+    REPLAY_CODE_CHANGED = "replay_code_changed"
+    REPLAY_REPLACEMENT_REQUIRED = "replay_replacement_required"
+    REPLAY_CONFIGURATION_INVALID = "replay_configuration_invalid"
+
     # config/io — machine-readable store APIs
     DELTA_ROOT_UNSET = "delta_root_unset"
     STORE_NOT_FOUND = "store_not_found"
