@@ -1,6 +1,6 @@
 """Tests for submit-time validation of overrides.
 
-Verifies that unknown keys in params, resources, execution, command,
+Verifies that unknown keys in params, runner resources, batching, tool configuration,
 and input roles are caught immediately at submit() time with helpful
 error messages.
 """
@@ -12,10 +12,6 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
-
-# =============================================================================
-# Mock Operations
-# =============================================================================
 from pydantic import BaseModel
 
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -143,7 +139,7 @@ class MockCreatorOp(OperationDefinition):
 
 
 class MockCuratorOp(OperationDefinition):
-    """Curator op (no command field)."""
+    """Curator operation without a tool specification."""
 
     class InputRole(StrEnum):
         data = auto()
@@ -242,11 +238,6 @@ class MockOpWithAnyInput(OperationDefinition):
         return ArtifactResult(success=True)
 
 
-# =============================================================================
-# Tests for _validate_params
-# =============================================================================
-
-
 class TestValidateParams:
     """Tests for param validation."""
 
@@ -273,11 +264,6 @@ class TestValidateParams:
             _validate_params(Merge, {"flavor": "vanilla"})
 
 
-# =============================================================================
-# Tests for _validate_resources
-# =============================================================================
-
-
 class TestValidateResources:
     """Tests for resource validation."""
 
@@ -296,11 +282,6 @@ class TestValidateResources:
             _validate_resources({"bogus": True})
 
 
-# =============================================================================
-# Tests for _validate_execution
-# =============================================================================
-
-
 class TestValidateExecution:
     """Tests for execution validation."""
 
@@ -312,11 +293,6 @@ class TestValidateExecution:
         """Unknown execution key should raise ValueError."""
         with pytest.raises(ValueError, match="Unknown execution keys.*batch_size"):
             _validate_execution({"batch_size": 10})
-
-
-# =============================================================================
-# Tests for _validate_environment
-# =============================================================================
 
 
 class TestValidateEnvironment:
@@ -350,11 +326,6 @@ class TestValidateEnvironment:
         _validate_environment(MockCreatorOp, {})
 
 
-# =============================================================================
-# Tests for _validate_tool
-# =============================================================================
-
-
 class TestValidateTool:
     """Tests for tool validation."""
 
@@ -375,11 +346,6 @@ class TestValidateTool:
     def test_empty_tool_accepted(self):
         """Empty tool dict should not raise."""
         _validate_tool(MockCreatorOp, {})
-
-
-# =============================================================================
-# Tests for _validate_input_roles
-# =============================================================================
 
 
 class TestValidateInputRoles:
@@ -408,11 +374,6 @@ class TestValidateInputRoles:
         _validate_input_roles(MockCuratorOp, [MagicMock()])
 
 
-# =============================================================================
-# Tests for no-overrides case
-# =============================================================================
-
-
 class TestNoOverrides:
     """Tests for the no-overrides case."""
 
@@ -430,11 +391,6 @@ class TestNoOverrides:
         assert instance.params.count == 1
         assert instance.runner_resources.cpus == 1
         assert instance.batch_strategy.artifacts_per_unit == 1
-
-
-# =============================================================================
-# Tests for _validate_required_inputs
-# =============================================================================
 
 
 class TestValidateRequiredInputs:
@@ -467,11 +423,6 @@ class TestValidateRequiredInputs:
         """Non-dict inputs (list, None) should skip validation."""
         _validate_required_inputs(MockCuratorOp, None)
         _validate_required_inputs(MockCuratorOp, [MagicMock()])
-
-
-# =============================================================================
-# Tests for _validate_input_types
-# =============================================================================
 
 
 class TestValidateInputTypes:

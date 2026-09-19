@@ -197,7 +197,6 @@ def _seed_valid_input_artifact(tmp_path: Path) -> None:
     _seed_input_artifact(tmp_path / "delta")
 
 
-# Minimal mock operation for testing
 class _MockOp(OperationDefinition):
     class InputRole(StrEnum):
         data = auto()
@@ -266,7 +265,7 @@ class _ExternalRunner(LocalRunner):
 
 
 def _make_pipeline(tmp_path) -> PipelineManager:
-    """Create a minimal PipelineManager without Prefect."""
+    """Create an isolated manager backed by the test persistence contracts."""
     _seed_input_artifact(tmp_path / "delta")
     config = PipelineConfig(
         name="test",
@@ -277,6 +276,15 @@ def _make_pipeline(tmp_path) -> PipelineManager:
     pipeline = PipelineManager(config)
     _configure_pipeline_test_doubles(pipeline)
     return pipeline
+
+
+def _recorded_step_spec(pipeline: PipelineManager, step_number: int) -> str:
+    """Read the concrete cache identity from the authoritative attempt."""
+    state = pipeline._step_tracker.current_state(pipeline._step_run_ids[step_number])
+    assert state.status is StepStatus.SUCCEEDED
+    assert isinstance(state.step_spec_id, str)
+    assert state.step_spec_id
+    return state.step_spec_id
 
 
 class TestDefaultRunnerRetention:
@@ -346,9 +354,6 @@ class TestPreparedOperationSnapshot:
     def test_reset_forms_share_record_and_hash_but_change_effective_identity(
         self, mock_tracker_cls, mock_execute, tmp_path
     ) -> None:
-        tracker = MagicMock()
-        tracker.check_cache.return_value = None
-        mock_tracker_cls.return_value = tracker
         mock_execute.return_value = StepResult(
             step_name=_ComputeDefaultsOp.name,
             step_number=0,
@@ -360,6 +365,9 @@ class TestPreparedOperationSnapshot:
             path: Path,
             override: ComputeResources | dict[str, Any] | None = None,
         ) -> tuple[str, dict[str, Any]]:
+            tracker = MagicMock()
+            tracker.check_cache.return_value = None
+            mock_tracker_cls.return_value = tracker
             pipeline = _make_pipeline(path)
             kwargs = {} if override is None else {"compute_resources": override}
             pipeline.run(
@@ -369,7 +377,7 @@ class TestPreparedOperationSnapshot:
             )
             options = json.loads(pipeline._step_start_records[0].compute_options_json)
             pipeline.finalize()
-            return pipeline._step_spec_ids[0], options
+            return _recorded_step_spec(pipeline, 0), options
 
         base_id, _ = _submit(tmp_path / "base")
         mapping_id, mapping_record = _submit(tmp_path / "mapping", {"gpu": None})
@@ -425,7 +433,7 @@ class TestPreparedOperationSnapshot:
 
 
 class TestRunReturnsFailedStepResult:
-    """Tests for F22: _run() returns StepResult instead of raising."""
+    """Tests for _run() returns StepResult instead of raising."""
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
@@ -482,7 +490,7 @@ class TestRunReturnsFailedStepResult:
 
 
 class TestResilientFinalize:
-    """Tests for F23: finalize() survives failed futures."""
+    """Tests for finalize() survives failed futures."""
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_finalize_survives_failed_future(self, mock_tracker_cls, tmp_path):
@@ -498,7 +506,6 @@ class TestResilientFinalize:
         mock_step_future.result.side_effect = RuntimeError("step exploded")
         pipeline._active_futures[0] = mock_step_future
 
-        # finalize should NOT raise
         summary = pipeline.finalize()
 
         assert "pipeline_name" in summary
@@ -619,7 +626,7 @@ class TestPipelineCleanup:
 
 
 class TestResilientPredecessorWaiting:
-    """Tests for F24: _wait_for_predecessors() survives failed predecessors."""
+    """Tests for _wait_for_predecessors() survives failed predecessors."""
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_predecessor_failure_does_not_raise(self, mock_tracker_cls, tmp_path):
@@ -635,7 +642,6 @@ class TestResilientPredecessorWaiting:
 
         inputs = {"data": OutputReference(source_step=0, role="data")}
 
-        # Should NOT raise
         pipeline._wait_for_predecessors(inputs)
 
 
@@ -975,7 +981,7 @@ class TestPipelineOutputByName:
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_unknown_role_raises(self, mock_tracker_cls, mock_execute, tmp_path):
-        """pipeline.output() with invalid role delegates to StepResult.output()."""
+        """pipeline.output() rejects roles outside the declaration registry."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
         mock_tracker_cls.return_value = mock_tracker
@@ -1242,7 +1248,7 @@ class TestPipelineOutputByName:
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_named_steps_preserves_all_entries(
+    def test_named_outputs_preserve_all_step_occurrences(
         self, mock_tracker_cls, mock_execute, tmp_path
     ):
         """After 3 steps with same name, all 3 are retrievable via step_number."""
@@ -1287,8 +1293,8 @@ class TestCancellation:
         assert pipeline._cancel_event.is_set()
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_submit_skips_steps_when_cancelled(self, mock_tracker_cls, tmp_path):
-        """submit() should skip steps when cancel event is set."""
+    def test_submit_cancels_steps_when_cancelled(self, mock_tracker_cls, tmp_path):
+        """submit() persists cancellation when its event is already set."""
         mock_tracker = MagicMock()
         mock_tracker.check_cache.return_value = None
         mock_tracker_cls.return_value = mock_tracker
@@ -1552,7 +1558,7 @@ class TestCancellation:
 
         pipeline._active_futures[0] = future
 
-        # Fire cancel after a short delay so finalize's polling loop exits
+        # Release the blocked future after cancellation so finalization can join.
         def _cancel_later():
             time.sleep(0.5)
             pipeline.cancel()
@@ -1693,7 +1699,7 @@ class TestStepRegistry:
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_output_after_cancellation(self, mock_tracker_cls, tmp_path):
-        """output() works for steps skipped due to cancellation."""
+        """The declaration registry remains available after cancellation."""
         mock_tracker_cls.return_value = MagicMock()
 
         pipeline = _make_pipeline(tmp_path)
@@ -1744,11 +1750,6 @@ class TestStepRegistry:
 
         with pytest.raises(ValueError, match="Output role 'bad' not available"):
             pipeline.output("foo", "bad")
-
-
-# =============================================================================
-# Module-level helper functions
-# =============================================================================
 
 
 class TestGenerateRunId:
@@ -1885,11 +1886,6 @@ class TestIsFilePathInput:
 
     def test_non_string_list(self):
         assert _is_file_path_input([123]) is False
-
-
-# =============================================================================
-# Validation helpers
-# =============================================================================
 
 
 class _ParamsOp(OperationDefinition):
@@ -2063,11 +2059,6 @@ class TestValidateInputTypes:
 
     def test_non_dict_is_noop(self):
         _validate_input_types(_MultiInputOp, ["list"])
-
-
-# =============================================================================
-# PipelineManager dunder methods and properties
-# =============================================================================
 
 
 class TestPipelineManagerDunderMethods:
@@ -2258,11 +2249,6 @@ class TestPipelineManagerDunderMethods:
         assert pipeline.current_step == 0
 
 
-# =============================================================================
-# Internal helper methods
-# =============================================================================
-
-
 class TestBuildOutputTypes:
     """Tests for PipelineManager._build_output_types."""
 
@@ -2347,7 +2333,7 @@ class TestSkipStep:
         pipeline._skip_step("my_step", outputs, "reason", "a" * 32)
         assert len(pipeline._step_results) == 1
         assert "my_step" in pipeline._step_registry
-        assert "my_step" in pipeline._named_steps
+        assert pipeline.output("my_step", "output").source_step == 0
 
 
 class TestWholeStepCacheReuse:
@@ -2393,7 +2379,6 @@ class TestWholeStepCacheReuse:
         ):
             future = pipeline._try_cached_step(
                 _MockOp,
-                {"data": [_INPUT_ID]},
                 StepOverrides.from_user(),
                 step_spec_id="spec",
                 step_number=0,
@@ -2466,7 +2451,6 @@ class TestWholeStepCacheReuse:
         ):
             future = pipeline._try_cached_step(
                 _MockOp,
-                {"data": [_INPUT_ID]},
                 StepOverrides.from_user(),
                 step_spec_id="spec",
                 step_number=0,
@@ -2523,7 +2507,6 @@ class TestWholeStepCacheReuse:
         ):
             pipeline._try_cached_step(
                 _MockOp,
-                {"data": [_INPUT_ID]},
                 StepOverrides.from_user(),
                 step_spec_id="spec",
                 step_number=0,
@@ -2599,7 +2582,6 @@ class TestWholeStepCacheReuse:
         with patch.object(pipeline, "_commit_whole_step_reuse", return_value=None):
             future = pipeline._try_cached_step(
                 _MockOp,
-                {"data": [_INPUT_ID]},
                 StepOverrides.from_user(),
                 step_spec_id="spec",
                 step_number=0,
@@ -2619,11 +2601,6 @@ class TestWholeStepCacheReuse:
             StepStatus.RUNNING,
             StepStatus.CANCELLED,
         )
-
-
-# =============================================================================
-# Signal handling
-# =============================================================================
 
 
 class TestSignalHandling:
@@ -2673,11 +2650,6 @@ class TestSignalHandling:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         pipeline._restore_signal_handlers()
-
-
-# =============================================================================
-# Validate operation overrides (static method)
-# =============================================================================
 
 
 class TestValidateOperationOverrides:
@@ -2757,11 +2729,6 @@ class TestValidateOperationOverrides:
         )
 
 
-# =============================================================================
-# CheckEarlyExit
-# =============================================================================
-
-
 class TestCheckEarlyExit:
     """Tests for PipelineManager._check_early_exit."""
 
@@ -2786,7 +2753,7 @@ class TestCheckEarlyExit:
         assert result.result().metadata["skip_reason"] == "pipeline_stopped"
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_returns_skipped_when_cancelled(self, mock_tracker_cls, tmp_path):
+    def test_returns_cancelled_when_cancelled(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         pipeline._cancel_event.set()
@@ -2796,11 +2763,6 @@ class TestCheckEarlyExit:
         assert result is not None
         assert result.status == StepStatus.CANCELLED
         assert result.result().cancellation_status == CancellationStatus.CONFIRMED
-
-
-# =============================================================================
-# FilesRoot threading
-# =============================================================================
 
 
 class TestFilesRootThreading:
@@ -2912,7 +2874,7 @@ class TestPromoteFilePathsCloudUri:
             with mem_fs.open(f"/promote-cloud/data_{i}.csv", "wb") as f:
                 f.write(f"x,y\n{i},{i + 1}\n".encode())
 
-        # The input URI uses MemoryFileSystem while the committed format-2
+        # The input URI uses MemoryFileSystem while the committed supported-format
         # store stays local, exercising the cross-protocol resolution path.
         config = PipelineConfig(
             name="test",
@@ -2970,11 +2932,6 @@ class TestPromoteFilePathsCloudUri:
                 operation_name="ingest",
                 step_run_id="a" * 32,
             )
-
-
-# =============================================================================
-# Composite split (PR 2): submit_composite / run_composite fail-fast
-# =============================================================================
 
 
 class _OpForTests(OperationDefinition):
@@ -3133,11 +3090,6 @@ class TestCompositeFailFast:
             )
 
 
-# =============================================================================
-# Blocking-semantics tests for run_composite (PR-D)
-# =============================================================================
-
-
 class _IngestForCompositeTests(OperationDefinition):
     """Minimal curator op with one output role for composite blocking tests.
 
@@ -3161,7 +3113,7 @@ class _IngestForCompositeTests(OperationDefinition):
 
 
 class _TwoStepComposite(CompositeDefinition):
-    """Calls ``ctx.run`` twice — drives child-future capture in expanded mode."""
+    """Calls ``ctx.run`` twice — drives child-future capture."""
 
     name: ClassVar[str] = "_two_step_composite_for_blocking_tests"
     inputs: ClassVar[dict] = {}
@@ -3224,17 +3176,8 @@ class TestRunComposite:
         assert all(f.done for f in result._child_futures)
 
 
-# =============================================================================
-# Silent-misconfig rejection (PR-D)
-# =============================================================================
-
-
 class TestSilentMisconfigRejection:
-    """Dict overrides without a matching ``active`` selector must raise.
-
-    Closes the silent-misconfiguration gap PR-A's
-    ``_reject_inactive_provider_config`` was added to catch.
-    """
+    """Dict overrides without a matching ``active`` selector must raise."""
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_environment_dict_with_inactive_provider_raises(
@@ -3263,21 +3206,9 @@ class TestSilentMisconfigRejection:
             )
 
 
-# =============================================================================
-# Golden step_spec_ids — the cache keys submit() produces for each override
-# combo, driven end-to-end through submit() -> StepOverrides.from_user ->
-# instantiate_operation -> effective_config_payload -> compute_step_spec_id.
-# Regenerated for the effective-config-hashing change (the config component is
-# now read off the instantiated op, not the typed overrides), so every value
-# here differs from the pre-change baseline — a one-time, ratified cache flush.
-# A mismatch means every cached step with that override shape will
-# miss-and-rerun; confirm that is intended before updating.
-#
-# ``bare`` and ``environment_local`` share a digest by design: _MockOp's
-# default environment is already ``local``, so selecting it is a no-op on the
-# effective config. Under the old typed-override path they differed.
-# =============================================================================
-
+# Golden IDs cover effective configuration and concrete input identity. Changing
+# one intentionally invalidates cache reuse for that override shape.
+# ``bare`` and ``environment_local`` match because local is already the default.
 _GOLDEN_STEP_SPEC_IDS: dict[str, str] = {
     "bare": "92387ad3e5a1814738c3fdca68691d22",
     "environment_local": "92387ad3e5a1814738c3fdca68691d22",
@@ -3334,7 +3265,7 @@ def test_unconfigured_compute_selector_terminalizes_after_attempt_creation(
 def test_step_spec_id_is_byte_identical(
     mock_tracker_cls, mock_execute, label, tmp_path
 ):
-    """submit() reproduces the format-2 ID for each concrete override combo."""
+    """submit() reproduces the expected ID for each concrete override."""
     mock_tracker = MagicMock()
     mock_tracker.check_cache.return_value = None
     mock_tracker_cls.return_value = mock_tracker
@@ -3353,7 +3284,7 @@ def test_step_spec_id_is_byte_identical(
     pipeline.submit(_MockOp, inputs={"data": [_INPUT_ID]}, **_GOLDEN_OVERRIDES[label])
     pipeline.finalize()
 
-    assert pipeline._step_spec_ids[0] == _GOLDEN_STEP_SPEC_IDS[label]
+    assert _recorded_step_spec(pipeline, 0) == _GOLDEN_STEP_SPEC_IDS[label]
 
 
 # Two ops sharing a name but differing only in their class-default image —
@@ -3449,7 +3380,7 @@ def test_class_default_image_bump_changes_step_spec_id(
         pipeline = _make_pipeline(tmp_path / op.__name__)
         pipeline.submit(op, inputs={"data": [_INPUT_ID]})
         pipeline.finalize()
-        return pipeline._step_spec_ids[0]
+        return _recorded_step_spec(pipeline, 0)
 
     assert _spec_id(_ImageOpV1) != _spec_id(_ImageOpV2)
 

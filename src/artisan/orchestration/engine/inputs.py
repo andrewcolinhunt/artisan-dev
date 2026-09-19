@@ -96,7 +96,6 @@ def resolve_output_reference(
         )
         return []
 
-    # Query successful executions for the source step
     query = (
         scan_committed(
             delta_root,
@@ -116,10 +115,8 @@ def resolve_output_reference(
         )
         return []
 
-    # Get list of successful execution_run_ids
     execution_run_ids = records_result["execution_run_id"].to_list()
 
-    # Query execution_edges for outputs matching role
     if not fs.exists(execution_edges_path):
         logger.warning(
             "No execution edges table found for step %d — returning empty inputs.",
@@ -152,8 +149,6 @@ def resolve_output_reference(
         )
         return []
 
-    # Sort alphabetically for deterministic batching
-    # Deduplicate in case same artifact appears multiple times
     return sorted(set(artifact_ids))
 
 
@@ -169,7 +164,7 @@ def resolve_inputs(
     Handles multiple input formats:
     - dict[str, OutputReference]: Resolve each reference
     - dict[str, list[str]]: Pass through (already artifact IDs)
-    - list[OutputReference]: For runtime-defined inputs, auto-generate role names
+    - list[OutputReference]: Flatten into the ``_merged_streams`` role
     - None: Return empty dict (generative operations)
 
     Note: Raw file paths (list[str] of paths) are NOT handled here.
@@ -199,6 +194,7 @@ def resolve_inputs(
         resolved = resolve_inputs(
             {"data": OutputReference(source_step=0, role="data")},
             delta_root,
+            fs,
         )
         # Returns: {"data": ["abc123...", "def456...", ...]}
 
@@ -206,6 +202,7 @@ def resolve_inputs(
         resolved = resolve_inputs(
             [OutputReference(source_step=1, role="out"), OutputReference(source_step=2, role="out")],
             delta_root,
+            fs,
         )
         # Returns: {"_merged_streams": ["abc...", "def...", ...]}  # All IDs flattened
     """
@@ -219,13 +216,12 @@ def resolve_inputs(
         # Distinguish between OutputReference list and file path list
         first_item = inputs[0]
         if isinstance(first_item, OutputReference):
-            # List of OutputReferences - convert to dict with auto-generated keys
+            # Runtime-defined curators consume one merged stream.
             return _resolve_list_inputs(
                 inputs, delta_root, fs, step_run_ids, storage_options
             )
-        # File paths are handled in _execute_curator_step, not here
         msg = (  # type: ignore[unreachable]  # runtime defense: list may contain non-OutputReference
-            "Raw file paths must be handled by _execute_curator_step(). "
+            "Raw file paths must be promoted by PipelineManager.submit(). "
             "This function should not receive file paths directly."
         )
         raise ValueError(msg)
@@ -374,5 +370,4 @@ def _resolve_list_inputs(
         )
         all_artifact_ids.extend(artifact_ids)
 
-    # Sort all artifact IDs for determinism
     return {"_merged_streams": sorted(all_artifact_ids)}

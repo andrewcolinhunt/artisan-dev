@@ -83,11 +83,9 @@ class TestOutputReference:
         ref2 = OutputReference(source_step=0, role="data")
         ref3 = OutputReference(source_step=1, role="data")
 
-        # Can be used in sets
         refs = {ref1, ref2, ref3}
         assert len(refs) == 2  # ref1 and ref2 are equal
 
-        # Can be used as dict keys
         d = {ref1: "first", ref3: "second"}
         assert d[ref2] == "first"  # ref2 == ref1
 
@@ -287,7 +285,7 @@ class TestStepResultBuilder:
 
 
 class TestPipelineConfig:
-    """Tests for PipelineConfig dataclass."""
+    """Tests for the PipelineConfig model."""
 
     def test_create_minimal(self):
         """Test minimal PipelineConfig creation."""
@@ -299,10 +297,10 @@ class TestPipelineConfig:
         assert config.name == "test"
         assert config.delta_root == "/data/delta"
         assert config.staging_root == "/data/staging"
-        assert config.working_root == tempfile.gettempdir()  # Default
-        assert config.failure_policy == FailurePolicy.CONTINUE  # Default
-        assert config.cache_policy == CachePolicy.ALL_SUCCEEDED  # Default
-        assert config.default_step_runner == "local"  # Default
+        assert config.working_root == tempfile.gettempdir()
+        assert config.failure_policy == FailurePolicy.CONTINUE
+        assert config.cache_policy == CachePolicy.ALL_SUCCEEDED
+        assert config.default_step_runner == "local"
 
     def test_create_full(self):
         """Test PipelineConfig with all fields."""
@@ -486,17 +484,14 @@ class TestPipelineManager:
         assert summary["steps"] == []
         assert summary["overall_success"] is False
 
-    def test_step_increments_counter(self):
-        """Test that current_step increments (without full execution)."""
+    def test_step_counter_starts_at_zero(self):
+        """A new manager starts at step zero."""
         pipeline = PipelineManager.create(
             name="test",
             delta_root=self.delta_root,
             staging_root=self.staging_root,
         )
-        # Note: This test verifies the counter increment mechanism
-        # Full step execution requires additional infrastructure
         assert pipeline.current_step == 0
-        # After a step would be called, current_step would be 1
 
     # --- Dunder method tests ---
 
@@ -520,7 +515,6 @@ class TestPipelineManager:
             delta_root=self.delta_root,
             staging_root=self.staging_root,
         )
-        # Add mock step results
         pipeline._step_results.append(_succeeded_step("Ingest", 0))
         pipeline._step_results.append(_succeeded_step("Score", 1))
         repr_str = repr(pipeline)
@@ -596,7 +590,6 @@ class TestPipelineManager:
         pipeline._step_results.append(step0)
         pipeline._step_results.append(step1)
 
-        # Test iteration
         results = list(pipeline)
         assert len(results) == 2
         assert results[0].step_name == "Ingest"

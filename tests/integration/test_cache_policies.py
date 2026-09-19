@@ -277,6 +277,15 @@ def _membership(pipeline: PipelineManager, result: StepResult) -> pl.DataFrame:
     )
 
 
+def _step_spec_id(pipeline: PipelineManager, result: StepResult) -> str:
+    assert result.step_run_id is not None
+    state = pipeline._step_tracker.current_state(result.step_run_id)
+    assert state.status is result.status
+    assert isinstance(state.step_spec_id, str)
+    assert state.step_spec_id
+    return state.step_spec_id
+
+
 def _assert_policy(
     pipeline: PipelineManager, result: StepResult, policy: CachePolicy
 ) -> None:
@@ -310,7 +319,7 @@ def test_step_override_controls_whole_step_and_unit_reuse(
     assert result.status is StepStatus.PARTIAL
     assert (result.succeeded_count, result.failed_count) == (2, 1)
     assert result.step_run_id != source.step_run_id
-    assert consumer._step_spec_ids[1] == source_pipeline._step_spec_ids[1]
+    assert _step_spec_id(consumer, result) == _step_spec_id(source_pipeline, source)
     membership = _membership(consumer, result)
     assert membership.height == 3
     assert set(membership["pipeline_run_id"]) == {consumer.config.pipeline_run_id}
@@ -493,7 +502,7 @@ def test_cache_bypass_precedence_and_spec_identity(
             "execution_spec_id"
         ]
         assert sorted(direct["execution_spec_id"]) == sorted(source_specs)
-    assert source_pipeline._step_spec_ids[1] == consumer._step_spec_ids[1]
+    assert _step_spec_id(source_pipeline, source) == _step_spec_id(consumer, result)
     _assert_policy(consumer, result, policy)
 
 

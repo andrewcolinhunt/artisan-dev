@@ -1,7 +1,8 @@
-"""Tests for signal-related fixes in step_executor (Fixes 3, 4, 5)."""
+"""Tests for process failure and cancellation in step execution."""
 
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures.process import BrokenProcessPool
 from unittest.mock import MagicMock, patch
@@ -10,8 +11,13 @@ import pytest
 
 from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.orchestration.step_lifecycle import StepStatus
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus, StepStatus
 from artisan.utils.hashing import CacheInputIdentity
+
+
+@pytest.fixture(autouse=True)
+def _capture_framework_logs(monkeypatch):
+    monkeypatch.setattr(logging.getLogger("artisan"), "propagate", True)
 
 
 def _prepared(inputs: dict[str, list[str]]) -> PreparedInputs:
@@ -32,7 +38,7 @@ def _prepared(inputs: dict[str, list[str]]) -> PreparedInputs:
 
 
 class TestCreatorBrokenProcessPool:
-    """Fix 3: BrokenProcessPool in creator dispatch produces failed StepResult."""
+    """BrokenProcessPool in creator dispatch produces failed StepResult."""
 
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
     @patch(
@@ -95,7 +101,7 @@ class TestCreatorBrokenProcessPool:
 
 
 class TestCuratorCancelAwareMessage:
-    """Fix 4: BrokenProcessPool during cancellation uses cancel-specific message."""
+    """BrokenProcessPool during cancellation uses cancel-specific message."""
 
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
     @patch("artisan.orchestration.engine.step_executor.build_execution_context")
@@ -217,7 +223,7 @@ class TestCuratorCancelAwareMessage:
 
 
 class TestCuratorCancelAwareWait:
-    """Fix 5: _run_curator_in_subprocess raises on cancel within ~1s."""
+    """Curator cancellation returns typed process-exit evidence."""
 
     @patch("artisan.orchestration.engine.step_executor.ProcessPoolExecutor")
     def test_cancel_event_interrupts_wait(self, mock_ppe_cls):
@@ -226,25 +232,27 @@ class TestCuratorCancelAwareWait:
         )
 
         mock_future = MagicMock()
-        # Never done: the poll loop must hit the cancel check, which
-        # precedes the wait() call, so a cancelled step raises promptly.
+        # An unfinished child forces the cancellation path.
         mock_future.done.return_value = False
 
         mock_pool = MagicMock()
-        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
-        mock_pool.__exit__ = MagicMock(return_value=False)
         mock_pool.submit.return_value = mock_future
         mock_ppe_cls.return_value = mock_pool
 
         event = threading.Event()
         event.set()
 
-        with pytest.raises(RuntimeError, match="Curator interrupted by cancellation"):
-            _run_curator_in_subprocess(
-                unit=MagicMock(),
-                runtime_env=MagicMock(),
-                cancel_event=event,
+        with patch(
+            "artisan.orchestration.engine.step_executor._terminate_process_pool",
+            return_value=True,
+        ):
+            result = _run_curator_in_subprocess(
+                unit=MagicMock(), runtime_env=MagicMock(), cancel_event=event
             )
+        assert (
+            result.cancellation_acknowledgement.status is CancellationStatus.CONFIRMED
+        )
+        mock_pool.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
 
     @patch("artisan.orchestration.engine.step_executor.ProcessPoolExecutor")
     def test_returns_result_when_no_cancel(self, mock_ppe_cls):
@@ -259,8 +267,6 @@ class TestCuratorCancelAwareWait:
         mock_future.result.return_value = mock_result
 
         mock_pool = MagicMock()
-        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
-        mock_pool.__exit__ = MagicMock(return_value=False)
         mock_pool.submit.return_value = mock_future
         mock_ppe_cls.return_value = mock_pool
 

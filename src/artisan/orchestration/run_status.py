@@ -158,10 +158,11 @@ def resolve_step_number(
         fs: Filesystem for existence checks. Local if None.
 
     Returns:
-        The step number, or None when no such step exists in the run.
+        The step number, or None when no such step exists in a supported store,
+        including a store with no steps table.
 
     Raises:
-        FileNotFoundError: If the steps table does not exist.
+        IncompatibleStoreError: If the store manifest or schema is unsupported.
     """
     from artisan.orchestration.engine.step_tracker import StepTracker
     from artisan.storage.core.store_format import assert_store_format

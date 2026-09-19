@@ -12,7 +12,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
-import polars as pl
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -346,12 +345,15 @@ def test_composite_defaults_share_direct_presence_patch_semantics(
                 compute_resources=patch,
             )
         pipeline.finalize()
-        row = (
-            pl.read_delta(str(Path(delta_root) / "orchestration" / "steps"))
-            .filter(pl.col("pipeline_run_id") == pipeline.config.pipeline_run_id)
-            .row(0, named=True)
+        states = pipeline._step_tracker.load_current_states(
+            pipeline.config.pipeline_run_id
         )
-        return pipeline._step_spec_ids[0], json.loads(row["compute_options_json"])
+        assert len(states) == 1
+        state = states[0]
+        assert state.status is StepStatus.SUCCEEDED
+        assert isinstance(state.step_spec_id, str)
+        assert state.step_spec_id
+        return state.step_spec_id, json.loads(state.compute_options_json)
 
     results = [
         _result("direct_mapping", "direct", mapping_patch),

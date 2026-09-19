@@ -69,6 +69,7 @@ def _read_executions(runtime: RuntimeEnvironment) -> pl.DataFrame:
 def _source_snapshot(
     execution_run_id: str, runtime: RuntimeEnvironment
 ) -> ReplaySnapshot:
+    """Load one committed snapshot and validate its physical execution owner."""
     rows = _read_executions(runtime).filter(
         pl.col("execution_run_id") == execution_run_id
     )
@@ -127,6 +128,7 @@ def _restore_operation(
     replacement_env: dict[str, str],
     allow_code_change: bool,
 ) -> tuple[OperationDefinition, CommandRecorder]:
+    """Validate recorded configuration and restore caller-supplied secret slots."""
     assert snapshot.operation is not None
     evidence = snapshot.operation
     source = evidence.identity
@@ -219,6 +221,7 @@ def _verify_artifacts(
     operation: OperationDefinition,
     runtime: RuntimeEnvironment,
 ) -> None:
+    """Verify recorded inputs and associations before allocating an attempt."""
     assert snapshot.source is not None
     store = ArtifactStore(
         runtime.delta_root,
@@ -272,6 +275,7 @@ def _verify_artifacts(
 def _diagnostic_runtime(
     runtime: RuntimeEnvironment, snapshot: ReplaySnapshot
 ) -> RuntimeEnvironment:
+    """Choose fresh diagnostic roots disjoint from source storage and sandbox."""
     assert snapshot.source is not None
     if (
         runtime.working_root is None
@@ -338,18 +342,32 @@ def replay_execution(
     replacement_env: dict[str, str] | None = None,
     allow_code_change: bool = False,
 ) -> ReplayResult:
-    """Replay exactly one committed unit with fresh IDs and preserved diagnostics.
+    """Replay one committed unit with fresh IDs and preserved diagnostics.
+
+    Explicit inputs and framework associations are frozen. Operation reads of
+    stores, files, environment, and network services observe their current state.
+    Failed executions return committed failure results; preflight and persistence
+    errors raise before a usable diagnostic result can be returned.
 
     Args:
         execution_run_id: Opaque committed execution identifier.
         runtime: Source store and fresh diagnostic destination roots.
-        step_runner: Configured lifecycle runner, or explicit local override.
+        step_runner: Configured lifecycle runner or explicit local override.
+            Omission selects local only when the source also ran locally.
         operation_class: Explicit class for notebook/local definitions.
-        replacement_env: Recorded JSON pointers mapped to caller environment names.
-        allow_code_change: Permit the detected driver/source code difference.
+        replacement_env: Every recorded replacement pointer mapped to an
+            environment variable containing its replacement value (JSON or text).
+        allow_code_change: Permit changed code or behavior while still requiring
+            the recorded operation name/version and complete configuration.
 
     Returns:
-        Actual committed outcome, nullable execution identity, and evidence paths.
+        Actual outcome, nullable committed execution identity, and evidence paths.
+
+    Raises:
+        ArtisanError: Preflight rejects the execution, dependencies, or configuration.
+        ArtifactIntegrityError: A recorded input is missing or has changed content.
+        StoreIntegrityError: Recorded evidence or its ownership is inconsistent.
+        CommitError: Diagnostic persistence fails; the exception retains repair paths.
     """
     snapshot = _source_snapshot(execution_run_id, runtime)
     operation, redactor = _restore_operation(

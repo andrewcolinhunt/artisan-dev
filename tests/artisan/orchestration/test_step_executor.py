@@ -1,8 +1,5 @@
 """Tests for step_executor module.
 
-Reference: design_orchestration_internals_v2.md
-Reference: design_utility_operations.md
-
 These tests verify the step executor behavior for:
 - File-path promotion via _promote_file_paths_to_store() (in pipeline_manager)
 - Orchestrator-level input pairing (group_inputs integration)
@@ -41,10 +38,6 @@ from artisan.schemas.specs.input_models import PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import CacheInputIdentity
-
-# =============================================================================
-# Mock Operations
-# =============================================================================
 
 
 class MockIngestOp(OperationDefinition):
@@ -109,11 +102,6 @@ class MockCreatorOp(OperationDefinition):
         return ArtifactResult(success=True)
 
 
-# =============================================================================
-# Tests for File Path Detection
-# =============================================================================
-
-
 class TestFilePathDetection:
     """Tests for _is_file_path_input detection in pipeline_manager."""
 
@@ -146,7 +134,6 @@ class TestCreatorRejectsFilePaths:
             _is_file_path_input,
         )
 
-        # Create a test file
         test_file = tmp_path / "test.csv"
         test_file.write_text("ATOM content")
 
@@ -237,10 +224,6 @@ class TestFilePathPromotion:
         assert len(result["file"]) == 1
         assert count == 1
 
-
-# =============================================================================
-# Mock Operations with group_by for pairing tests
-# =============================================================================
 
 # Use 32-char hex artifact IDs for tests
 _ID_S1 = "a" * 32
@@ -413,11 +396,6 @@ class MockFilterOp(OperationDefinition):
         return PassthroughResult(success=True, passthrough={})
 
 
-# =============================================================================
-# Helpers
-# =============================================================================
-
-
 def _make_mock_backend(
     flow_return_value=None, flow_side_effect=None, needs_staging_verification=False
 ):
@@ -451,11 +429,6 @@ def _make_mock_backend(
 
     mock_backend.create_lifecycle_router.return_value = mock_handle
     return mock_backend, mock_handle
-
-
-# =============================================================================
-# Tests for Creator Step Pairing Phase
-# =============================================================================
 
 
 class TestCreatorStepPairing:
@@ -504,7 +477,7 @@ class TestCreatorStepPairing:
             failure_policy=FailurePolicy.CONTINUE,
         )
 
-        # step_runner flow receives units_path; verify captured units
+        # Inspect the ordered units received by the lifecycle router.
         dispatched_units = mock_handle._captured_units
         assert len(dispatched_units) > 0
         # With batch size 1 (default), 2 items -> 2 units
@@ -549,7 +522,7 @@ class TestCreatorStepPairing:
             failure_policy=FailurePolicy.CONTINUE,
         )
 
-        # step_runner flow receives units_path; verify captured units
+        # Inspect the ordered units received by the lifecycle router.
         dispatched_units = mock_handle._captured_units
         for unit in dispatched_units:
             assert unit.group_ids is None
@@ -620,11 +593,6 @@ class TestCreatorStepPairing:
         assert dispatched_units[1].group_ids == ["g3", "g4"]
         assert dispatched_units[1].inputs["data"] == [id_s3, id_s4]
         assert dispatched_units[1].inputs["config"] == [id_c3, id_c4]
-
-
-# =============================================================================
-# Tests for Curator Step Pairing Phase
-# =============================================================================
 
 
 class TestCuratorStepPairing:
@@ -757,11 +725,6 @@ class TestCuratorStepPairing:
         # Verify the paired inputs (reordered) are used
         assert unit.inputs == paired
         assert unit.group_ids == gids
-
-
-# =============================================================================
-# Tests for Step Result Metadata and Phase Timing
-# =============================================================================
 
 
 class TestStepResultMetadata:
@@ -934,11 +897,6 @@ class TestStepTimingIntegration:
         assert timings["total"] >= phase_sum - 0.001  # small tolerance for rounding
 
 
-# =============================================================================
-# Tests for Empty Input Handling (graceful skip on filtered-out inputs)
-# =============================================================================
-
-
 class TestEmptyInputHandling:
     """Tests for graceful skipping when upstream filter removes all artifacts."""
 
@@ -1068,13 +1026,8 @@ class TestEmptyInputHandling:
         assert _all_inputs_empty({}) is False
 
 
-# =============================================================================
-# Tests for Failure Handling (Phase 3 hardening)
-# =============================================================================
-
-
 class TestDispatchFailureHandling:
-    """Tests for F14: dispatch failure resilience."""
+    """Tests for dispatch failure resilience."""
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_creator_dispatch_failure_returns_step_result(
@@ -1348,7 +1301,7 @@ class TestCreatorCancellationCleanup:
 
 
 class TestCommitFailureHandling:
-    """Tests for F16: commit phase failure resilience."""
+    """Tests for commit phase failure resilience."""
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_creator_commit_failure_propagates(
@@ -1480,7 +1433,7 @@ class TestLogicalPersistenceBoundary:
 
 
 class TestStagingTimeoutHandling:
-    """Tests for F15: staging verification timeout resilience."""
+    """Tests for staging verification timeout resilience."""
 
     @patch("artisan.orchestration.engine.step_executor.await_staging_files")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
@@ -1558,11 +1511,6 @@ class TestFileValidationBatch:
             )
 
         assert not list((tmp_path / "staging").rglob("*.parquet"))
-
-
-# =============================================================================
-# Tests for Filter Step Logging
-# =============================================================================
 
 
 class TestFilterStepLogging:
@@ -1695,11 +1643,6 @@ class TestFilterStepLogging:
         assert len(filter_logs) == 1
         assert "0/2 artifacts passed" in filter_logs[0]
         assert "2 filtered out" in filter_logs[0]
-
-
-# =============================================================================
-# Tests for curator execution cache identity
-# =============================================================================
 
 
 class TestExecutionCacheReuseCapture:
@@ -2006,11 +1949,6 @@ class TestCuratorExecutionCacheIdentity:
         assert result.status == StepStatus.SUCCEEDED
 
 
-# =============================================================================
-# Tests for Curator Subprocess Isolation
-# =============================================================================
-
-
 class _DeadlineExceeded(Exception):
     """Raised by _deadline when the guarded block overruns.
 
@@ -2066,8 +2004,7 @@ class TestCuratorSubprocessIsolation:
             "artisan.orchestration.engine.step_executor.ProcessPoolExecutor"
         ) as mock_pool_cls:
             mock_pool = MagicMock()
-            mock_pool_cls.return_value.__enter__ = MagicMock(return_value=mock_pool)
-            mock_pool_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_pool_cls.return_value = mock_pool
             mock_pool.submit.return_value.result.return_value = expected
 
             result = _run_curator_in_subprocess(unit, runtime_env)
@@ -2156,8 +2093,7 @@ class TestCuratorSubprocessIsolation:
             "artisan.orchestration.engine.step_executor.ProcessPoolExecutor"
         ) as mock_pool_cls:
             mock_pool = MagicMock()
-            mock_pool_cls.return_value.__enter__ = MagicMock(return_value=mock_pool)
-            mock_pool_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_pool_cls.return_value = mock_pool
             future = mock_pool.submit.return_value
             future.done.return_value = True
             future.result.side_effect = TimeoutError("task self-timeout")
@@ -2337,11 +2273,6 @@ class TestCreateRuntimeEnvironmentFailureLogsRoot:
         assert env.failure_logs_root == str(tmp_path / "working" / "logs" / "failures")
 
 
-# =============================================================================
-# Per-step group_by override
-# =============================================================================
-
-
 class TestInstantiateOperationGroupByOverride:
     """``instantiate_operation`` applies a per-step ``group_by`` override
     via ``model_copy``, mirroring every other per-step knob."""
@@ -2446,7 +2377,7 @@ class TestGroupByEffectiveConfigHashing:
 
 
 class TestFailureRecordSynthesis:
-    """Seam tests for orchestrator-side failure-record synthesis (Fix 2)."""
+    """Seam tests for orchestrator-side failure-record synthesis."""
 
     def _config(self, tmp_path):
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -2461,7 +2392,7 @@ class TestFailureRecordSynthesis:
     def test_backfills_empty_run_id_with_a_readable_worker_seal(self, tmp_path):
         """A failed UnitResult with no run id receives a sealed staging record.
 
-        Covers the pre-try / unimportable-op path (Mechanism B) that cannot be
+        Covers the pre-try / unimportable-op path that cannot be
         built importably: a worker returns success=False with empty
         execution_run_ids, the orchestrator synthesizes the record, and the
         logical committer can use its execution ID as exact staging evidence.
