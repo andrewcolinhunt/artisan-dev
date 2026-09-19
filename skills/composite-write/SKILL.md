@@ -31,8 +31,7 @@ If you only need a single operation, use `operation-write` instead.
 
 ## Composite Template
 
-Follow this structure. Use the `# ---------- Section ----------` comment style.
-Declare sections in this order: Metadata, Inputs, Outputs, Parameters, Compose.
+Declare metadata, inputs, outputs, parameters, and `compose()` in that order.
 
 ```python
 """One-line module docstring describing what this composite does."""
@@ -56,11 +55,9 @@ class TransformAndScore(CompositeDefinition):
     final metrics as output.
     """
 
-    # ---------- Metadata ----------
     name = "transform_and_score"
     description = "Transform data then compute metrics"
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATA = "data"
 
@@ -72,7 +69,6 @@ class TransformAndScore(CompositeDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         METRICS = "metrics"
 
@@ -83,7 +79,6 @@ class TransformAndScore(CompositeDefinition):
         ),
     }
 
-    # ---------- Compose ----------
     def compose(self, ctx: CompositeContext) -> None:
         """Define the internal operation graph."""
         transformed = ctx.run(
@@ -253,8 +248,8 @@ pipeline.run(NextOp, inputs={"data": result.output("metrics")})
 def test_composite(tmp_path):
     pipeline = PipelineManager.create(
         name="test",
-        delta_root=tmp_path / "delta",
-        staging_root=tmp_path / "staging",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
     )
     output = pipeline.output
 
@@ -265,7 +260,8 @@ def test_composite(tmp_path):
 
     summary = pipeline.finalize()
     # The composite expands into one step per internal operation
-    assert summary.steps_completed >= 3
+    assert summary["overall_success"]
+    assert summary["total_steps"] >= 3
 ```
 
 ---
@@ -276,8 +272,7 @@ Follow these conventions (mirrors operation-write):
 
 - **Module docstring**: One line, describes what the composite does
 - **Class docstring**: Summary line + optional extended description
-- **Section comments**: Use `# ---------- Section ----------` with exactly 10
-  dashes on each side
+- **Comments**: Explain non-obvious choices; omit decorative section banners.
 - **Section order**: Metadata, Inputs, Outputs, Parameters, Compose
 - **compose() docstring**: One-line imperative summary
 - **name value**: `snake_case` matching the class name's snake_case form
