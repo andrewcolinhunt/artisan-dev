@@ -19,13 +19,16 @@ from fsspec import AbstractFileSystem
 from artisan.operations.curator.filter import (
     Criterion,
     _assemble_diagnostics,
+    _build_criterion_frame,
     _build_funnel,
     _build_metric_namespace,
     _build_metric_sources,
-    _check_collision,
     _compute_funnel_counts,
     _criterion_stats,
     _criterion_to_expr,
+    _empty_metric_pairs,
+    _MetricSelection,
+    _resolve_metric_step,
 )
 from artisan.provenance.traversal import walk_forward
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -106,7 +109,14 @@ class InteractiveFilter:
         self._criteria: list[Criterion] = []
         self._pipeline_run_id: str | None = None
         self._primary_artifact_ids: set[str] = set()
-        self._step_info: dict[str, Any] | None = None
+        self._metric_pairs = _empty_metric_pairs()
+        self._metric_steps = pl.DataFrame(
+            schema={"metric_id": pl.String, "step_number": pl.Int64}
+        )
+        self._step_names: dict[int, str] = {}
+        self._evaluation_df: pl.DataFrame | None = None
+        self._bound_criteria: list[Criterion] = []
+        self._resolved_steps: list[int | None] = []
         self._total_metrics_discovered: int = 0
         self._metric_sources: list[dict[str, Any]] = []
 
@@ -132,12 +142,15 @@ class InteractiveFilter:
                 None means all matching artifacts.
             artifact_type: Only load primary artifacts of this type
                 (e.g. "data"). None means all non-metric artifacts.
-            pipeline_run_id: Pipeline run ID for step name resolution.
-                None auto-detects from the steps table.
+            pipeline_run_id: Run whose accepted artifacts and metrics to load.
+                None selects the newest run from the steps table.
 
         Raises:
             ValueError: If no artifacts found or no metrics found.
         """
+        self._evaluation_df = None
+        self._wide_df = None
+        self._tidy_df = None
         index_path = uri_join(self._delta_root, TablePath.ARTIFACT_INDEX)
         if not self._fs.exists(index_path):
             msg = f"Artifact index not found at {index_path}"
@@ -233,17 +246,27 @@ class InteractiveFilter:
         )
 
         self._total_metrics_discovered = metric_pairs["metric_id"].n_unique()
+        self._metric_pairs = metric_pairs
+        # Accepted current-step membership can differ from a cached metric's origin.
+        self._metric_steps = (
+            all_index.filter(pl.col("artifact_type") == "metric")
+            .select(
+                pl.col("artifact_id").alias("metric_id"),
+                pl.col("origin_step_number").alias("step_number"),
+            )
+            .unique()
+        )
+        self._step_names = self._store.provenance.load_step_name_map(
+            self._pipeline_run_id
+        )
 
         # ── Build wide DataFrame via _build_metric_namespace ──
-        wide_df, step_info = _build_metric_namespace(
+        wide_df, _ = _build_metric_namespace(
             primary_df, metric_pairs, self._store, self._pipeline_run_id
         )
         self._wide_df = wide_df.rename({"passthrough_id": "artifact_id"})
-        self._step_info = step_info
 
         # ── Build tidy DataFrame for exploration ──
-        # Tidy uses qualified names (step_name.metric_name) for exploration.
-        # Source metric IDs from walk_result.
         all_found_metric_ids = set(metric_pairs["metric_id"].unique().to_list())
         self._metric_sources = _build_metric_sources(
             all_found_metric_ids, self._store, self._pipeline_run_id
@@ -361,7 +384,8 @@ class InteractiveFilter:
         """Set filter criteria, validating metric names against loaded data.
 
         Args:
-            criteria: List of criterion dicts with keys: metric, operator, value.
+            criteria: Criterion dicts with metric, operator, value, and optional
+                step name or step_number selectors.
 
         Raises:
             ValueError: If data not loaded, a metric name doesn't exist
@@ -383,15 +407,53 @@ class InteractiveFilter:
                 )
                 raise ValueError(msg)
 
-            # Collision detection for criteria without explicit step
-            if (
-                crit.step is None
-                and crit.step_number is None
-                and self._step_info is not None
-            ):
-                _check_collision(crit.metric, self._step_info)
-
+        frame, bound, resolved = self._bind_criteria(parsed)
         self._criteria = parsed
+        self._evaluation_df = frame
+        self._bound_criteria = bound
+        self._resolved_steps = resolved
+
+    def _bind_criteria(
+        self, criteria: list[Criterion]
+    ) -> tuple[pl.DataFrame, list[Criterion], list[int | None]]:
+        """Select values within the loaded run before collapsing metric fields."""
+        selections = {}
+        for criterion in criteria:
+            selector = (criterion.step, criterion.step_number)
+            if selector in selections:
+                continue
+            resolved = _resolve_metric_step(*selector, self._step_names)
+            pairs = self._metric_pairs
+            if selector != (None, None):
+                if resolved is None:
+                    pairs = _empty_metric_pairs()
+                else:
+                    metric_ids = self._metric_steps.filter(
+                        pl.col("step_number") == resolved
+                    ).select("metric_id")
+                    pairs = pairs.join(metric_ids, on="metric_id", how="semi")
+            selections[selector] = _MetricSelection(pairs, resolved)
+        return _build_criterion_frame(
+            self.wide_df.select("artifact_id"),
+            criteria,
+            selections,
+            self._store,
+            self._pipeline_run_id,
+            metric_steps=self._metric_steps,
+        )
+
+    def _evaluation_frame(self) -> pl.DataFrame:
+        """Return current bindings, rebuilding after a new load."""
+        if self._wide_df is None:
+            msg = "No data loaded. Call load() first."
+            raise ValueError(msg)
+        if not self._criteria:
+            msg = "No criteria set. Call set_criteria() first."
+            raise ValueError(msg)
+        if self._evaluation_df is None:
+            self.set_criteria([criterion.model_dump() for criterion in self._criteria])
+        assert self._evaluation_df is not None
+        return self._evaluation_df
 
     # ------------------------------------------------------------------
     # Filtered results
@@ -404,7 +466,11 @@ class InteractiveFilter:
         Raises:
             ValueError: If data not loaded or criteria not set.
         """
-        return self.filtered_wide_df["artifact_id"].to_list()
+        frame = self._evaluation_frame()
+        expressions = [
+            _criterion_to_expr(c).fill_null(False) for c in self._bound_criteria
+        ]
+        return frame.filter(pl.all_horizontal(expressions))["passthrough_id"].to_list()
 
     @property
     def filtered_wide_df(self) -> pl.DataFrame:
@@ -413,15 +479,7 @@ class InteractiveFilter:
         Raises:
             ValueError: If data not loaded or criteria not set.
         """
-        if self._wide_df is None:
-            msg = "No data loaded. Call load() first."
-            raise ValueError(msg)
-        if not self._criteria:
-            msg = "No criteria set. Call set_criteria() first."
-            raise ValueError(msg)
-
-        bool_exprs = [_criterion_to_expr(c).fill_null(False) for c in self._criteria]
-        return self._wide_df.filter(pl.all_horizontal(bool_exprs))
+        return self.wide_df.filter(pl.col("artifact_id").is_in(self.filtered_ids))
 
     # ------------------------------------------------------------------
     # Summary
@@ -436,20 +494,13 @@ class InteractiveFilter:
         Raises:
             ValueError: If data not loaded or criteria not set.
         """
-        if self._wide_df is None:
-            msg = "No data loaded. Call load() first."
-            raise ValueError(msg)
-        if not self._criteria:
-            msg = "No criteria set. Call set_criteria() first."
-            raise ValueError(msg)
-
-        wide = self._wide_df
+        wide = self._evaluation_frame()
         total = wide.height
 
         # Per-criterion stats
         crit_rows: list[dict[str, Any]] = []
-        for crit in self._criteria:
-            pass_count, stats = _criterion_stats(wide, crit)
+        for crit, bound in zip(self._criteria, self._bound_criteria, strict=True):
+            pass_count, stats = _criterion_stats(wide, bound)
             crit_rows.append(
                 {
                     "metric": crit.metric,
@@ -467,7 +518,7 @@ class InteractiveFilter:
         criteria_df = pl.DataFrame(crit_rows)
 
         funnel_rows = _build_funnel(
-            self._criteria, _compute_funnel_counts(wide, self._criteria, total)
+            self._criteria, _compute_funnel_counts(wide, self._bound_criteria, total)
         )
         funnel_df = pl.DataFrame(funnel_rows)
 
@@ -493,12 +544,7 @@ class InteractiveFilter:
         Raises:
             ValueError: If data not loaded or criteria not set.
         """
-        if self._wide_df is None:
-            msg = "No data loaded. Call load() first."
-            raise ValueError(msg)
-        if not self._criteria:
-            msg = "No criteria set. Call set_criteria() first."
-            raise ValueError(msg)
+        wide = self._evaluation_frame()
 
         import matplotlib.pyplot as plt
 
@@ -509,7 +555,7 @@ class InteractiveFilter:
             ax = axes[0][i]
             values = [
                 v
-                for v in self._wide_df[crit.metric].to_list()
+                for v in wide[self._bound_criteria[i].metric].to_list()
                 if isinstance(v, (int, float))
             ]
             if values:
@@ -565,13 +611,10 @@ class InteractiveFilter:
         now = datetime.now(UTC)
         timestamp_str = now.isoformat()
 
-        # Determine step_number
         step_number = self._next_step_number()
 
-        # Pipeline run ID
         pipeline_run_id = self._pipeline_run_id or str(uuid.uuid4())
 
-        # Deterministic IDs
         criteria_json = json.dumps(
             [c.model_dump() for c in self._criteria], sort_keys=True
         )
@@ -757,37 +800,13 @@ class InteractiveFilter:
         Returns:
             Diagnostics dict with v4 structure.
         """
-        # Only called from commit() after load()/set_criteria() have populated
-        # _wide_df; caller has already checked for None.
-        assert self._wide_df is not None, (
-            "load() must be called before _build_diagnostics"
-        )
-        wide = self._wide_df
-        total = len(self._primary_artifact_ids)
-
-        # Per-criterion diagnostics
+        wide = self._evaluation_frame()
+        total = wide.height
         criteria_diags: list[dict[str, Any]] = []
-        resolved_steps: list[int | None] = []
-        for crit in self._criteria:
-            pass_count, stats = _criterion_stats(wide, crit)
-
-            # Resolve step
-            resolved: int | None = None
-            if crit.step_number is not None:
-                resolved = crit.step_number
-            elif crit.step is not None and self._step_info is not None:
-                matching_steps = [
-                    sn
-                    for sn, name in self._step_info.get("_step_names", {}).items()
-                    if name == crit.step
-                ]
-                if len(matching_steps) == 1:
-                    resolved = matching_steps[0]
-            elif self._step_info is not None and crit.metric in self._step_info:
-                step_nums = self._step_info[crit.metric]
-                if len(step_nums) == 1:
-                    resolved = next(iter(step_nums))
-            resolved_steps.append(resolved)
+        for crit, bound, resolved in zip(
+            self._criteria, self._bound_criteria, self._resolved_steps, strict=True
+        ):
+            pass_count, stats = _criterion_stats(wide, bound)
 
             criteria_diags.append(
                 {
@@ -801,7 +820,7 @@ class InteractiveFilter:
             )
 
         funnel = _build_funnel(
-            self._criteria, _compute_funnel_counts(wide, self._criteria, total)
+            self._criteria, _compute_funnel_counts(wide, self._bound_criteria, total)
         )
 
         return _assemble_diagnostics(

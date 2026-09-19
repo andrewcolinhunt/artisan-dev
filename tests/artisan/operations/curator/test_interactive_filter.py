@@ -97,34 +97,6 @@ def _write_delta(
     commit_test_inputs(delta_root, delta_root.parent / "staging", tables)
 
 
-def _step_snapshots(terminal_rows: list[dict]) -> list[dict]:
-    """Expand terminal fixture facts into valid format-2 state histories."""
-    snapshots: list[dict] = []
-    for terminal in terminal_rows:
-        for sequence, status in enumerate(("pending", "running", terminal["status"])):
-            row = dict(terminal)
-            row.update(
-                status=status,
-                state_sequence=sequence,
-                disposition=terminal["disposition"] if sequence == 2 else None,
-                logical_commit_id=None,
-                total_count=terminal["total_count"] if sequence == 2 else None,
-                succeeded_count=(
-                    terminal["succeeded_count"] if sequence == 2 else None
-                ),
-                failed_count=terminal["failed_count"] if sequence == 2 else None,
-                duration_seconds=(
-                    terminal["duration_seconds"] if sequence == 2 else None
-                ),
-                error=terminal["error"] if sequence == 2 else None,
-                metadata=terminal["metadata"] if sequence == 2 else None,
-            )
-            if sequence == 0:
-                row["step_spec_id"] = None
-            snapshots.append(row)
-    return snapshots
-
-
 def _rewrite_existing_ids(delta_root: Path) -> None:
     """Apply newly concrete artifact IDs to deferred index rows."""
     for row in _PENDING_INDEX.get(delta_root, []):
@@ -249,7 +221,7 @@ def _metric_content(values: dict) -> bytes:
 
 
 @pytest.fixture
-def delta_root(tmp_path: Path) -> Path:
+def delta_root(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
     """Build a test delta store with known data.
 
     Layout:
@@ -301,6 +273,7 @@ def delta_root(tmp_path: Path) -> Path:
     confidence_vals = [90, 70, 50, 30]
     accuracy_vals = [1.0, 2.0, 3.0, 4.0]
     score_vals = [0.9, 0.7, 0.5, 0.3]
+    second_metric = getattr(request, "param", {}).get("second_metric", "score")
 
     metric_rows = []
     for i, mid in enumerate(m1_ids):
@@ -322,7 +295,7 @@ def delta_root(tmp_path: Path) -> Path:
             {
                 "artifact_id": mid,
                 "origin_step_number": 2,
-                "content": _metric_content({"score": score_vals[i]}),
+                "content": _metric_content({second_metric: score_vals[i]}),
                 "original_name": f"m2_{i}",
                 "extension": ".json",
                 "metadata": "{}",
@@ -1030,12 +1003,10 @@ class TestCommit:
         assert ref.role == "passthrough"
 
     def test_commit_execution_rows_golden(self, delta_root: Path) -> None:
-        """Characterization: committed executions/execution_edges rows.
+        """Commit preserves execution content and passthrough edge contracts.
 
-        Pins the exact execution record and edge rows so the rerouting of
-        commit() through record_passthrough + commit_logical can be
-        proven byte-identical. Fields set at commit time (run/spec IDs,
-        timestamps) are asserted structurally; content columns exactly.
+        Generated IDs and timestamps are checked structurally; stable content
+        columns are checked exactly.
         """
         filt = InteractiveFilter(delta_root)
         filt.load()
@@ -1049,7 +1020,6 @@ class TestCommit:
         assert exec_df.height == 1
         row = exec_df.to_dicts()[0]
 
-        # Content columns pinned exactly (byte-identical constraint).
         assert row["operation_name"] == "filter"
         assert row["origin_step_number"] == result.step_number
         assert row["params"] == json.dumps(
@@ -1308,8 +1278,10 @@ class TestWideColumnDisambiguation:
         with pytest.raises(ValueError, match="multiple steps"):
             filt.set_criteria([{"metric": "val", "operator": "gt", "value": 0.5}])
 
-    def test_step_number_disambiguation_skips_collision(self, tmp_path: Path) -> None:
-        """Providing step_number on criterion bypasses collision detection."""
+    def test_step_number_disambiguation_selects_only_target_step(
+        self, tmp_path: Path
+    ) -> None:
+        """A qualified criterion ignores same-name values from other steps."""
         root = tmp_path / "delta_disambig"
         root.mkdir()
 
@@ -1495,12 +1467,11 @@ class TestWideColumnDisambiguation:
         filt = InteractiveFilter(root)
         filt.load()
 
-        # With step_number, collision detection is skipped
         filt.set_criteria(
             [{"metric": "val", "operator": "gt", "value": 0.5, "step_number": 1}]
         )
-        # Should not raise — criterion is accepted
-        assert len(filt.criteria) == 1
+        assert filt.filtered_ids == [s_ids[0]]
+        assert filt.summary().criteria["mean"].to_list() == [1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -1724,7 +1695,7 @@ class TestRunScopedStepNames:
         detected run ("run-detected") owns the most-recent step overall
         (its step 2), but the *cross-run latest* record for step_number 1
         belongs to "run-other". The metric lives at step 1 of the detected
-        run. Both the tidy path and the wide path (_step_info) must label
+        run. Both the tidy path and the criterion step-name lookup must label
         step 1 with the detected run's name, not the cross-run-latest name.
         """
         from datetime import UTC, datetime, timedelta
@@ -1874,9 +1845,8 @@ class TestRunScopedStepNames:
         assert tidy_step1.height == 2
         assert set(tidy_step1["step_name"].to_list()) == {"eval_detected"}
 
-        # Wide path: _step_info step-name map uses the detected run's name.
-        assert filt._step_info is not None
-        assert filt._step_info["_step_names"][1] == "eval_detected"
+        # Criterion selectors use the detected run's step names.
+        assert filt._step_names[1] == "eval_detected"
 
         # Derived metric_sources reflect the detected run's name too.
         assert {
@@ -1919,3 +1889,178 @@ class TestExistingFloatMetricsStillWork:
             ]
         )
         assert len(filt.filtered_ids) == 2
+
+
+@pytest.mark.parametrize("delta_root", [{"second_metric": "confidence"}], indirect=True)
+@pytest.mark.parametrize("by_name", [False, True])
+def test_qualified_values_agree_across_filter_summary_and_commit(
+    delta_root: Path, by_name: bool
+) -> None:
+    filt = InteractiveFilter(delta_root)
+    filt.load()
+    public_columns = filt.wide_df.columns
+    criteria = [
+        {"metric": "confidence", "operator": "gt", "value": 60},
+        {"metric": "confidence", "operator": "lt", "value": 0.8},
+    ]
+    for index, criterion in enumerate(criteria, 1):
+        criterion.update(
+            {"step": "calc_metrics" if index == 1 else "extra_metrics"}
+            if by_name
+            else {"step_number": index}
+        )
+    filt.set_criteria(criteria)
+
+    assert filt.filtered_ids == [_pad("s1")]
+    assert filt.filtered_wide_df.columns == public_columns
+    summary = filt.summary()
+    assert summary.criteria["pass"].to_list() == [2, 3]
+    assert summary.criteria["mean"].to_list() == pytest.approx([60.0, 0.6])
+    assert summary.funnel["count"].to_list() == [4, 2, 1]
+    result = filt.commit()
+    assert result.metadata["diagnostics"]["total_passed"] == 1
+    rows = result.metadata["diagnostics"]["criteria"]
+    assert [row["pass_count"] for row in rows] == [2, 3]
+    assert [row["resolved_from_step"] for row in rows] == [1, 2]
+    assert [row["metric"] for row in rows] == ["confidence", "confidence"]
+
+
+def test_string_criteria_can_filter_summarize_and_commit(
+    mixed_type_delta_root: Path,
+) -> None:
+    filt = InteractiveFilter(mixed_type_delta_root)
+    filt.load()
+    filt.set_criteria([{"metric": "label", "operator": "eq", "value": "good"}])
+    assert filt.filtered_ids == [_pad("mt0")]
+    assert filt.summary().criteria["mean"].to_list() == [None]
+    result = filt.commit()
+    assert result.metadata["diagnostics"]["criteria"][0]["stats"] == {}
+
+
+@pytest.mark.parametrize(
+    "selector", [{"step_number": 5}, {"step": "current_metric_cached"}]
+)
+def test_qualified_cached_metric_uses_accepted_current_step(tmp_path, selector) -> None:
+    store = build_cache_isolation_store(tmp_path)
+    filt = InteractiveFilter(store.root)
+    filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
+    filt.set_criteria([{"metric": "score", "operator": "gt", "value": 0.5, **selector}])
+    assert filt.filtered_ids == [store.data_id]
+    assert filt.summary().criteria["mean"].to_list() == [0.9]
+    assert (
+        filt.commit().metadata["diagnostics"]["criteria"][0]["resolved_from_step"] == 5
+    )
+    filt.set_criteria(
+        [{"metric": "score", "operator": "gt", "value": 0.5, "step_number": 1}]
+    )
+    assert filt.filtered_ids == []
+
+
+@pytest.mark.parametrize("delta_root", [{"second_metric": "confidence"}], indirect=True)
+def test_selected_values_reach_plot_and_new_criteria(delta_root: Path) -> None:
+    filt = InteractiveFilter(delta_root)
+    filt.load()
+    criteria = [
+        {"metric": "confidence", "operator": "gt", "value": 0.8, "step_number": 2}
+    ]
+    filt.set_criteria(criteria)
+    with patch("matplotlib.axes.Axes.hist") as hist:
+        figure = filt.plot()
+    assert sorted(hist.call_args.args[0]) == [0.3, 0.5, 0.7, 0.9]
+    assert figure.axes[0].get_title() == "confidence"
+    assert filt.filtered_ids == [_pad("s0")]
+    filt.set_criteria([{**criteria[0], "step_number": 1}])
+    assert len(filt.filtered_ids) == 4
+    assert [criterion.model_dump() for criterion in filt.criteria] == [
+        {
+            "metric": "confidence",
+            "operator": "gt",
+            "value": 0.8,
+            "step": None,
+            "step_number": 1,
+        }
+    ]
+    assert all(not name.startswith("__criterion_") for name in filt.wide_df.columns)
+    assert "__criterion_0" not in filt.tidy_df["metric_name"].to_list()
+
+
+def test_interactive_step_selectors_and_failed_update(delta_root: Path) -> None:
+    filt = InteractiveFilter(delta_root)
+    filt.load()
+    criterion = {"metric": "confidence", "operator": "gt", "value": 60}
+    filt.set_criteria([{**criterion, "step": "calc_metrics", "step_number": 1}])
+    expected = set(filt.filtered_ids)
+    assert len(expected) == 2
+    with pytest.raises(ValueError, match="not found"):
+        filt.set_criteria([{**criterion, "metric": "absent"}])
+    assert set(filt.filtered_ids) == expected
+    for selector in [
+        {"step": "extra_metrics", "step_number": 1},
+        {"step": "absent"},
+        {"step_number": 99},
+        {"step_number": 2},
+    ]:
+        filt.set_criteria([{**criterion, **selector}])
+        assert filt.filtered_ids == []
+        assert filt.summary().criteria["mean"].to_list() == [None]
+    with (
+        patch.object(filt, "_step_names", {1: "duplicate", 2: "duplicate"}),
+        pytest.raises(ValueError, match="matches multiple step numbers"),
+    ):
+        filt.set_criteria([{**criterion, "step": "duplicate"}])
+
+
+def test_reload_rebinds_to_new_run_and_clears_failed_load(tmp_path: Path) -> None:
+    store = build_cache_isolation_store(tmp_path)
+    filt = InteractiveFilter(store.root)
+    filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
+    filt.set_criteria(
+        [{"metric": "score", "operator": "gt", "value": 0.5, "step_number": 5}]
+    )
+    assert filt.filtered_ids == [store.data_id]
+    filt.load(step_numbers=[0], pipeline_run_id=store.other_run)
+    assert filt.filtered_ids == []
+    assert filt.summary().criteria["mean"].to_list() == [0.1]
+    with pytest.raises(ValueError, match="No primary artifacts"):
+        filt.load(step_numbers=[99], pipeline_run_id=store.current_run)
+    with pytest.raises(ValueError, match="No data loaded"):
+        _ = filt.filtered_ids
+
+
+def test_cached_metric_retains_multiple_current_step_memberships(
+    tmp_path: Path,
+) -> None:
+    store = build_cache_isolation_store(tmp_path, reuse_source_metric_at_step_zero=True)
+    filt = InteractiveFilter(store.root)
+    filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
+    filt.set_criteria(
+        [
+            {"metric": "score", "operator": "gt", "value": 0.5, "step_number": number}
+            for number in [0, 5]
+        ]
+    )
+    assert filt.filtered_ids == [store.data_id]
+    assert filt.summary().criteria["mean"].to_list() == [0.9, 0.9]
+
+
+def test_unqualified_cached_metric_resolves_current_step(tmp_path: Path) -> None:
+    store = build_cache_isolation_store(tmp_path)
+    filt = InteractiveFilter(store.root)
+    filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
+    filt.set_criteria([{"metric": "score", "operator": "gt", "value": 0.5}])
+    assert filt.filtered_ids == [store.data_id]
+    assert filt.summary().criteria["mean"].to_list() == [0.9]
+    result = filt.commit()
+    assert result.metadata["diagnostics"]["criteria"][0]["resolved_from_step"] == 5
+
+
+def test_unqualified_cached_metric_detects_multiple_current_steps(
+    tmp_path: Path,
+) -> None:
+    store = build_cache_isolation_store(tmp_path, reuse_source_metric_at_step_zero=True)
+    filt = InteractiveFilter(store.root)
+    filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
+    with pytest.raises(ValueError, match="multiple steps") as caught:
+        filt.set_criteria([{"metric": "score", "operator": "gt", "value": 0.5}])
+    assert 'step 0 ("current_data")' in str(caught.value)
+    assert 'step 5 ("current_metric_cached")' in str(caught.value)
