@@ -151,6 +151,13 @@ class OperationDefinition(BaseModel):
     """
 
     # ---------- Behavior ----------
+    cacheable: ClassVar[bool] = True
+    """Whether declared inputs and configuration fully identify reusable work.
+
+    Set to False when execution reads mutable state outside its declared
+    inputs. This bypasses both cache layers without changing content identity.
+    """
+
     runtime_defined_inputs: ClassVar[bool] = False
     """If True, input roles are provided by the user at pipeline construction time,
     not declared in inputs. Accepts both list and dict input formats.

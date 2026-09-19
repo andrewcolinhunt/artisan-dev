@@ -1887,7 +1887,9 @@ class PipelineManager:
                 prepared_inputs,
             )
 
-            if not (ov.skip_cache or self._config.skip_cache):
+            if prepared_operation.cacheable and not (
+                ov.skip_cache or self._config.skip_cache
+            ):
                 cached = self._try_cached_step(
                     operation,
                     input_refs,
