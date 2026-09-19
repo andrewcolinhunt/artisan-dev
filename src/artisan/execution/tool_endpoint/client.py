@@ -154,7 +154,29 @@ def cancel_scope(event: threading.Event) -> Iterator[None]:
 def call_endpoint(
     operation: Any, inputs: ExecuteInput
 ) -> CancellationAcknowledgement | None:
-    """Run one remote invocation with scoped, validated diagnostic evidence."""
+    """Run an operation's execute phase on its configured endpoint.
+
+    Submit parameters and prepared files, then restore ordinary outputs into
+    ``inputs.execute_dir`` and append the sanitized tool-log tail to
+    ``inputs.log_path`` when set. Merge remote command evidence into the
+    active recording. During replay, retrieve diagnostics separately before
+    surfacing a worker or output-delivery failure.
+
+    Args:
+        operation: Operation instance with parameters and Modal configuration.
+        inputs: Per-artifact file inputs, integrity metadata, and local paths.
+
+    Returns:
+        A rejected-cancellation acknowledgement after the natural result is
+        delivered, or None when no cancellation was requested.
+
+    Raises:
+        ArtisanError: Invalid configuration or remote evidence, a rejected
+            HTTP response, an expired result, or a reported worker failure.
+        EndpointCancellationError: Cancellation is confirmed or its outcome
+            cannot be established.
+        httpx.HTTPError: A direct endpoint HTTP request fails in transport.
+    """
     scope = capture_commands(operation) if current_recorder() is None else nullcontext()
     with scope:
         builder = current_replay_builder()
@@ -193,17 +215,7 @@ def _call_endpoint(
     inputs: ExecuteInput,
     state: _RemoteCall,
 ) -> CancellationAcknowledgement | None:
-    """Run a tool op's execute on its deployed endpoint.
-
-    Args:
-        operation: The tool op instance (provides params + modal config).
-        inputs: The per-artifact ExecuteInput (file paths + execute dir).
-
-    Raises:
-        ArtisanError: Misconfiguration, HTTP failure, expired result, or a
-            tool failure re-raised from the worker's error envelope.
-        RuntimeError: When the pipeline cancel event fires mid-poll.
-    """
+    """Submit, poll, and receive one invocation while updating call evidence."""
     cfg = operation.compute_provider.modal
     if not isinstance(cfg, ModalComputeConfig):
         raise ArtisanError(
@@ -562,7 +574,7 @@ def _decode_result(payload: Any, op_name: str) -> ResultResponse:
 
 
 def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
-    """Validate that prepared inputs are file paths / URIs (v1 contract)."""
+    """Require prepared tool inputs to be file paths or remote URIs."""
     # Deferred: importing artisan.execution.compute.invoke at module level
     # runs the compute package __init__, whose endpoint re-export imports
     # this module back — a cycle for any client-first import order.
@@ -692,7 +704,7 @@ def _pack_request_inputs(
     cfg: ModalComputeConfig,
     transport: InlineTransport,
 ) -> list[InputRef]:
-    """Authorize prepared URIs and bind them to D1 integrity descriptors."""
+    """Authorize prepared URIs and bind their expected digest and byte count."""
     files = _file_inputs(op_name, inputs.inputs)
     raw_contracts = inputs.metadata.get("external_integrity", {})
     if not isinstance(raw_contracts, dict):
@@ -764,7 +776,7 @@ def _append_log(log_path: str, tail: str) -> None:
 
 
 def _check(response: httpx.Response, op_name: str) -> None:
-    """Raise a compute-typed ArtisanError on a non-2xx endpoint response."""
+    """Classify refused auth/redirects as config errors, other failures as compute."""
     # Modal's proxy answers missing/invalid tokens with a fast 401 response
     # (not a connection error); 407 handled defensively.
     if response.status_code in (401, 407):

@@ -69,7 +69,7 @@ def _tar_payload(tmp_path: Path) -> bytes:
 
 @pytest.fixture
 def mock_http(monkeypatch) -> MagicMock:
-    """Patch httpx; returns the client mock entered by the context manager."""
+    """Replace and return the httpx module mock."""
     mock_httpx = MagicMock()
     monkeypatch.setattr(client_mod, "httpx", mock_httpx)
     return mock_httpx
@@ -1037,7 +1037,7 @@ class TestAuthAndUrl:
     def test_url_resolved_from_modal_when_unset(
         self, mock_from_name, mock_http, tmp_path, monkeypatch
     ):
-        # tokens present so the local no-tokens guard lets resolution run
+        # Authentication follows URL resolution and precedes submission.
         monkeypatch.setenv("MODAL_PROXY_TOKEN_ID", "wk-x")
         monkeypatch.setenv("MODAL_PROXY_TOKEN_SECRET", "ws-x")
         mock_from_name.return_value.get_web_url.return_value = (

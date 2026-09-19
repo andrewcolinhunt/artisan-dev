@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import tarfile
-import tempfile
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,7 +29,7 @@ from artisan.utils.hashing import compute_content_digest
 
 
 class _FakeFs:
-    """fsspec stand-in: records get/put/sign calls; get writes a marker file."""
+    """Record open/put/sign calls and stream fixed input bytes."""
 
     protocol = "s3"
 
@@ -39,10 +38,6 @@ class _FakeFs:
         self.puts: list[tuple[str, str]] = []
         self.signed: list[tuple[str, int]] = []
         self.put_bytes = b""
-
-    def get(self, remote: str, local: str) -> None:
-        self.calls.append((remote, local))
-        Path(local).write_bytes(b"remote-bytes")
 
     def open(self, remote: str, mode: str):
         assert mode == "rb"
@@ -85,20 +80,6 @@ def _fake_s3_resolver(fs):
 def _origin(uri: str) -> str:
     parts = urlsplit(uri)
     return f"{parts.scheme}://{parts.netloc}"
-
-
-def _capture_tempdirs(monkeypatch) -> list[str]:
-    """Record every ``mkdtemp`` path allocated, calling through."""
-    created: list[str] = []
-    real = tempfile.mkdtemp
-
-    def spy(*args, **kwargs):
-        path = real(*args, **kwargs)
-        created.append(path)
-        return path
-
-    monkeypatch.setattr(tempfile, "mkdtemp", spy)
-    return created
 
 
 class TestPackInputs:
@@ -550,12 +531,12 @@ class TestOutputs:
         assert list(dest.iterdir()) == []
 
     def test_streamed_archive_is_spooled_and_extracted(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, capture_tempdirs
     ):
         payload = _tar_with_files({"out.txt": b"streamed"})
         chunks = (payload[index : index + 7] for index in range(0, len(payload), 7))
         dest = tmp_path / "dest"
-        created = _capture_tempdirs(monkeypatch)
+        created = capture_tempdirs()
 
         InlineTransport().unpack_output_stream(chunks, str(dest))
 
@@ -563,10 +544,10 @@ class TestOutputs:
         assert all(not os.path.exists(path) for path in created)
 
     def test_streamed_archive_stops_at_compressed_limit(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch, capture_tempdirs
     ):
         monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_BYTES", 4)
-        created = _capture_tempdirs(monkeypatch)
+        created = capture_tempdirs()
         consumed: list[bytes] = []
 
         def chunks():
@@ -658,12 +639,14 @@ class TestUploadOutputsPrefixMode:
     def test_non_signing_fs_propagates(self, tmp_path, monkeypatch):
         class _NoSignFs(_FakeFs):
             def sign(self, remote: str, expiration: int = 100) -> str:
-                msg = "Sign is not implemented for this fs"
+                msg = "Sign unavailable: credential-secret"
                 raise NotImplementedError(msg)
 
         fake = _NoSignFs()
         monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(fake))
-        with pytest.raises(EndpointTransportError, match="output transfer failed"):
+        with pytest.raises(
+            NotImplementedError, match="output transport is unavailable"
+        ) as caught:
             upload_outputs(
                 _make_outputs(tmp_path),
                 ["out.txt"],
@@ -671,6 +654,9 @@ class TestUploadOutputsPrefixMode:
                 "op",
                 policy=_policy(outputs=("s3://bucket",)),
             )
+
+        assert "credential-secret" not in str(caught.value)
+        assert caught.value.__suppress_context__
 
 
 class TestUploadOutputsCapabilityMode:
@@ -744,9 +730,9 @@ class TestUploadOutputsCapabilityMode:
 class TestUploadOutputsSpoolCleanup:
     """The gzipped-tar spool dir must not outlive the call (warm containers)."""
 
-    def test_spool_removed_on_success(self, tmp_path, monkeypatch):
+    def test_spool_removed_on_success(self, tmp_path, monkeypatch, capture_tempdirs):
         monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(_FakeFs()))
-        created = _capture_tempdirs(monkeypatch)
+        created = capture_tempdirs()
         upload_outputs(
             _make_outputs(tmp_path),
             ["out.txt"],
@@ -757,12 +743,14 @@ class TestUploadOutputsSpoolCleanup:
         assert created  # the call did allocate a spool dir
         assert all(not os.path.exists(p) for p in created)
 
-    def test_spool_removed_on_put_failure(self, tmp_path, monkeypatch):
+    def test_spool_removed_on_put_failure(
+        self, tmp_path, monkeypatch, capture_tempdirs
+    ):
         client = MagicMock()
         client.__enter__.return_value = client
         client.put.return_value = SimpleNamespace(status_code=403)
         monkeypatch.setattr(transport_mod, "_http_client", lambda: client)
-        created = _capture_tempdirs(monkeypatch)
+        created = capture_tempdirs()
         put_url = "https://bucket.s3.amazonaws.com/x.tar.gz?X-Amz-Signature=abc"
         with pytest.raises(EndpointTransportError):
             upload_outputs(
@@ -775,11 +763,13 @@ class TestUploadOutputsSpoolCleanup:
         assert created  # the call did allocate a spool dir
         assert all(not os.path.exists(p) for p in created)
 
-    def test_compressed_limit_stops_archive_before_upload(self, tmp_path, monkeypatch):
+    def test_compressed_limit_stops_archive_before_upload(
+        self, tmp_path, monkeypatch, capture_tempdirs
+    ):
         fake = _FakeFs()
         monkeypatch.setattr(transport_mod, "_resolve_s3", _fake_s3_resolver(fake))
         monkeypatch.setattr(transport_mod, "MAX_ARCHIVE_BYTES", 4)
-        created = _capture_tempdirs(monkeypatch)
+        created = capture_tempdirs()
 
         with pytest.raises(ValueError, match="compressed"):
             upload_outputs(
@@ -1016,11 +1006,11 @@ class TestHttpCapabilityTransport:
         assert "sig=abc" not in str(exc_info.value)
 
     def test_off_policy_output_denied_before_spool_or_resolver(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, capture_tempdirs
     ):
         resolver = MagicMock()
         monkeypatch.setattr(transport_mod, "_resolve_s3", resolver)
-        created = _capture_tempdirs(monkeypatch)
+        created = capture_tempdirs()
 
         with pytest.raises(ValueError, match="not allowed"):
             upload_outputs(
@@ -1043,20 +1033,12 @@ class TestUploadOutputsMinIO:
     """Stored delivery end to end against MinIO (s3 marker via ``s3_fs``)."""
 
     def test_prefix_mode_uploads_and_presigned_get_fetches(
-        self, s3_fs, tmp_path, monkeypatch
+        self, s3_fs, tmp_path, configure_ambient_s3
     ):
         import s3fs as s3fs_mod
 
         _fs, storage, uri_prefix = s3_fs
-        # worker-style ambient credentials: env vars, exactly how the Modal
-        # Secret hands them to the worker; the instance cache would otherwise
-        # serve a filesystem built before the env was patched
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", storage.options["key"])
-        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", storage.options["secret"])
-        monkeypatch.setenv(
-            "AWS_ENDPOINT_URL", storage.options["client_kwargs"]["endpoint_url"]
-        )
-        s3fs_mod.S3FileSystem.clear_instance_cache()
+        configure_ambient_s3(storage)
 
         stored = upload_outputs(
             _make_outputs(tmp_path),
@@ -1121,24 +1103,13 @@ class TestUnpackInputsMinIO:
     stores reject, so the round-trip must run against a custom endpoint.
     """
 
-    def _use_ambient_creds(self, storage, monkeypatch) -> None:
-        import s3fs as s3fs_mod
-
-        # worker-style ambient credentials: env vars, exactly how the Modal
-        # Secret hands them to the worker (unpack_inputs derives the fs from
-        # the URI scheme with no storage_options → botocore reads the env)
-        monkeypatch.setenv("AWS_ACCESS_KEY_ID", storage.options["key"])
-        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", storage.options["secret"])
-        monkeypatch.setenv(
-            "AWS_ENDPOINT_URL", storage.options["client_kwargs"]["endpoint_url"]
-        )
-        s3fs_mod.S3FileSystem.clear_instance_cache()
-
-    def test_uri_ref_fetched_from_ambient_config(self, s3_fs, tmp_path, monkeypatch):
+    def test_uri_ref_fetched_from_ambient_config(
+        self, s3_fs, tmp_path, configure_ambient_s3
+    ):
         fs, storage, uri_prefix = s3_fs
         bucket = uri_prefix.removeprefix("s3://")
         fs.pipe_file(f"{bucket}/inputs/model.bin", b"weights-bytes")
-        self._use_ambient_creds(storage, monkeypatch)
+        configure_ambient_s3(storage)
 
         dest = tmp_path / "inputs"
         paths = InlineTransport().unpack_inputs(
@@ -1170,13 +1141,13 @@ class TestUnpackInputsMinIO:
         ],
     )
     def test_encoded_s3_uri_opens_exact_authorized_object(
-        self, object_key, uri_key, s3_fs, tmp_path, monkeypatch
+        self, object_key, uri_key, s3_fs, tmp_path, configure_ambient_s3
     ):
         fs, storage, uri_prefix = s3_fs
         bucket = uri_prefix.removeprefix("s3://")
         body = f"content:{object_key}".encode()
         fs.pipe_file(f"{bucket}/{object_key}", body)
-        self._use_ambient_creds(storage, monkeypatch)
+        configure_ambient_s3(storage)
 
         paths = InlineTransport().unpack_inputs(
             [
@@ -1195,14 +1166,14 @@ class TestUnpackInputsMinIO:
         assert Path(paths["data"]).read_bytes() == body
 
     def test_missing_key_surfaces_as_input_resolution_failed(
-        self, s3_fs, tmp_path, monkeypatch
+        self, s3_fs, tmp_path, configure_ambient_s3
     ):
         from artisan.execution.tool_endpoint.protocol import ToolRequest
         from artisan.execution.tool_endpoint.server import run_tool_request
         from artisan.operations.examples import WaitTool
 
         _fs, storage, uri_prefix = s3_fs
-        self._use_ambient_creds(storage, monkeypatch)
+        configure_ambient_s3(storage)
 
         # a ref to a missing object: s3fs maps 404 → FileNotFoundError,
         # which run_tool_request maps to INPUT_RESOLUTION_FAILED before any

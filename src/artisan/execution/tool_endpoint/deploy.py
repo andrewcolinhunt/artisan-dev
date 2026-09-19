@@ -35,7 +35,7 @@ def build_app(
 ) -> Any:
     """Build the deployable Modal app for an operation's tool endpoint.
 
-    One app per tool: a GPU **worker** (resolves the deployed op class,
+    One app per tool: a **worker** (resolves the deployed op class,
     builds the command, runs the tool) behind a lightweight **endpoint**
     (FastAPI routes ``/schema``, ``/submit`` → ``/result`` → ``/download``
     → ``/cancel``, Swagger at ``/docs``). The worker runs the registry
@@ -269,9 +269,8 @@ def build_app(
             """The request contract: params JSON-schema + input roles.
 
             ``params_schema`` is the same dict ``/submit`` validates
-            against. A parameter-less op serves the empty-``Params`` object
-            schema (``{"type": "object", "properties": {}}``) — any JSON
-            object satisfies it — not an empty ``{}``.
+            against. A parameterless operation accepts only an empty object
+            and rejects extra keys.
             """
             return {
                 "operation": op_name,

@@ -1,8 +1,8 @@
 """Worker-side execution of tool requests.
 
-Runs inside the deployed worker image: resolve the deployed operation
-class, materialize input refs, run ``execute_command`` as a local subprocess,
-and return the manifest + output tar. No Modal imports — locally testable.
+Runs an already resolved operation class inside the worker image, with local
+input files and command or Python execution. Returns a manifest with inline
+or stored outputs and independent optional diagnostics. No Modal imports.
 """
 
 from __future__ import annotations
@@ -83,7 +83,32 @@ def run_tool_request(
     request: ToolRequest,
     data_policy: ToolEndpointDataPolicy | None = None,
 ) -> WorkerResult:
-    """Capture fresh request-wide command evidence across all ordinary outcomes."""
+    """Run a tool request in a temporary worker workspace and return its result.
+
+    Construct the operation from request parameters, materialize its inputs,
+    and run its command or ``execute_as_tool`` Python body locally. Deliver
+    ordinary outputs inline or to the requested store. These outputs exclude
+    input files and the tool log; the manifest carries a sanitized log tail.
+
+    Opt-in diagnostics capture inputs, outputs, and the full log separately,
+    including on failure. Clean up the workspace after delivery or capture,
+    and attach fresh request-wide command evidence to ordinary outcomes.
+
+    Args:
+        op_cls: Resolved operation class to execute.
+        request: Parameters, input references, and output/capture preferences.
+        data_policy: Deployment-owned URI permissions. Omission denies remote
+            input and output URIs.
+
+    Returns:
+        A manifest and independent optional output/diagnostic archives.
+        Ordinary validation, input, execution, and delivery failures appear
+        as structured errors on the manifest.
+
+    Raises:
+        EndpointTransportError: Even the minimal failure manifest exceeds
+            the control payload limit.
+    """
     with capture_commands(location="endpoint"), invocation_scope():
         try:
             result = _run_tool_request(op_cls, request, data_policy)
@@ -109,30 +134,7 @@ def _run_tool_request(
     request: ToolRequest,
     data_policy: ToolEndpointDataPolicy | None = None,
 ) -> WorkerResult:
-    """Build the command from the op + request params and run the tool.
-
-    Instantiates ``op_cls`` from the request params, resolves input refs
-    into the job's ``inputs/`` dir, runs ``op.execute_command`` as a local
-    subprocess with ``cwd=outputs/``, and returns the manifest + output tar
-    + tool-log tail. When the request names an ``output_store``, outputs
-    are delivered there instead and the manifest carries the stored
-    pointer. Param-validation, input-resolution, tool-execution, and
-    output-delivery failures each return a structured error envelope on the
-    manifest (stable ``code`` + ``recovery_hint``) rather than raising.
-
-    Normal outputs exclude inputs and the tool log so they cannot leak into
-    postprocess. Opt-in diagnostics preserve both job directories, including
-    the full log, in a separate archive before cleanup on every outcome.
-
-    Args:
-        op_cls: The deployed operation class.
-        request: Validated params + input refs.
-        data_policy: Deployment-owned URI permissions. Omission denies every
-            remote input and output URI.
-
-    Returns:
-        WorkerResult with the control manifest and, on success, the tar.
-    """
+    """Own request validation, workspace execution, delivery, and cleanup."""
     try:
         policy = ToolEndpointDataPolicy.model_validate(
             data_policy.model_dump(mode="python", warnings=False)
@@ -157,9 +159,8 @@ def _run_tool_request(
         assert recorder is not None
         recorder.add_operation(op)
     except ValidationError:
-        # bad params the /submit JSON-schema gate could not express (no-Params
-        # ops, custom validators); the agent can fix its own call. Runs before
-        # the job dir exists, so no cleanup is owed here.
+        # Direct callers bypass /submit, and custom validators can reject
+        # schema-valid values. No workspace exists yet to clean up.
         return _error_result(
             op_cls,
             ErrorCode.PARAM_TYPE_MISMATCH,
@@ -625,8 +626,8 @@ def _log_tail(log_path: str) -> str | None:
 def _list_outputs(outputs_dir: str) -> list[str]:
     """Relative paths of all files under ``outputs_dir``, sorted.
 
-    Excludes the tool log — it travels as ``log_tail`` on the manifest,
-    not on the data plane (local runs keep it outside ``execute_dir``).
+    Exclude the tool log from ordinary outputs. Its tail travels on the
+    manifest; opt-in diagnostics can carry the full log separately.
     """
 
     def raise_walk_error(error: OSError) -> None:

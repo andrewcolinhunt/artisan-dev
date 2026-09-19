@@ -521,10 +521,10 @@ class TestEndpointRoutes:
         assert response.status_code == 422
         assert "output_store" in response.json()["detail"]
 
-    def test_concurrent_callers_reach_worker_with_their_own_stores(
+    def test_requests_reach_worker_with_their_own_stores(
         self, client: TestClient, worker: MagicMock
     ):
-        """One deployment, per-request destinations — the caller-data criterion."""
+        """Keep each request's output destination independent."""
         worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
         client.post(
             "/submit", data={"params": _PARAMS, "output_store": "s3://team-a/runs"}
@@ -731,7 +731,7 @@ class TestRetainedResultRoutes:
 
 
 class TestCancellationRoute:
-    """Exercise cancellation without the environment's blocked TestClient."""
+    """Exercise cancellation outcomes through the route handler."""
 
     @pytest.fixture
     def cancel_endpoint(self, mock_modal: MagicMock):

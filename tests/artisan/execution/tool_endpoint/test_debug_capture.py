@@ -75,16 +75,10 @@ def _archive_files(payload: bytes) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_capture_keeps_inputs_outputs_and_full_log_before_cleanup(fail, monkeypatch):
-    roots = []
-    original = server_mod.tempfile.mkdtemp
-
-    def remember(*args, **kwargs):
-        root = original(*args, **kwargs)
-        roots.append(root)
-        return root
-
-    monkeypatch.setattr(server_mod.tempfile, "mkdtemp", remember)
+def test_capture_keeps_inputs_outputs_and_full_log_before_cleanup(
+    fail, capture_tempdirs
+):
+    roots = capture_tempdirs()
     result = run_tool_request(
         DiagnosticTool,
         ToolRequest(
@@ -505,15 +499,10 @@ def test_parallel_artifact_calls_keep_separate_diagnostic_ownership(
         ).exists()
 
 
-def test_diagnostic_roundtrip_through_minio(s3_fs, tmp_path, monkeypatch):
-    import s3fs
-
+def test_diagnostic_roundtrip_through_minio(s3_fs, tmp_path, configure_ambient_s3):
     _fs, storage, prefix = s3_fs
     endpoint = storage.options["client_kwargs"]["endpoint_url"]
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", storage.options["key"])
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", storage.options["secret"])
-    monkeypatch.setenv("AWS_ENDPOINT_URL", endpoint)
-    s3fs.S3FileSystem.clear_instance_cache()
+    configure_ambient_s3(storage)
     policy = ToolEndpointDataPolicy(output_allowlist=(prefix, endpoint))
     result = run_tool_request(
         DiagnosticTool,
