@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -27,11 +28,6 @@ from artisan.schemas.operation_config.environment_spec import (
     PixiEnvironmentSpec,
 )
 from artisan.utils.external_tools import ExternalToolError, run_command
-
-pytestmark = [
-    pytest.mark.filterwarnings("ignore::ResourceWarning"),
-    pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning"),
-]
 
 
 def _record(invocation: int = 0, sequence: int = 0, arg: str = "tool") -> CommandRecord:
@@ -118,7 +114,7 @@ def test_log_open_and_post_exit_write_boundaries(tmp_path):
 def test_interruption_finalizes_and_preserves_cleanup(stream):
     process = Mock(returncode=-15)
     process.communicate.side_effect = KeyboardInterrupt
-    process.stdout = iter(["line\n"])
+    process.stdout = io.StringIO("line\n")
     process.wait.side_effect = KeyboardInterrupt
     with (
         capture_commands() as recorder,

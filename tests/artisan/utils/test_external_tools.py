@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import signal
 import subprocess
+import sys
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -328,7 +331,7 @@ class TestRunCommand:
     def test_streaming_popen_uses_process_group(self, mock_popen):
         """Popen is called with process_group=0 in streaming mode."""
         mock_proc = MagicMock()
-        mock_proc.stdout = iter([])
+        mock_proc.stdout = io.StringIO()
         mock_proc.wait.return_value = 0
         mock_popen.return_value = mock_proc
 
@@ -337,6 +340,7 @@ class TestRunCommand:
 
         _, kwargs = mock_popen.call_args
         assert kwargs["process_group"] == 0
+        assert mock_proc.stdout.closed
 
     @patch("artisan.utils.external_tools._kill_process_group")
     @patch("artisan.utils.external_tools.subprocess.Popen")
@@ -352,12 +356,13 @@ class TestRunCommand:
             run_command(env, ["python", "run.py"], stream_output=True)
 
         mock_kill.assert_called_with(mock_proc)
+        mock_proc.stdout.close.assert_called_once()
 
     @patch("artisan.utils.external_tools.subprocess.Popen")
     def test_streaming_writes_each_line_to_stdout(self, mock_popen, capsys):
         """Each child stdout line is written to ``sys.stdout`` for live emission."""
         mock_proc = MagicMock()
-        mock_proc.stdout = iter(["hello\n", "world\n"])
+        mock_proc.stdout = io.StringIO("hello\nworld\n")
         mock_proc.wait.return_value = 0
         mock_popen.return_value = mock_proc
 
@@ -372,7 +377,7 @@ class TestRunCommand:
     def test_streaming_writes_log_path_and_stdout(self, mock_popen, capsys, tmp_path):
         """Streaming writes each line to both ``log_path`` and ``sys.stdout``."""
         mock_proc = MagicMock()
-        mock_proc.stdout = iter(["one\n", "two\n"])
+        mock_proc.stdout = io.StringIO("one\ntwo\n")
         mock_proc.wait.return_value = 0
         mock_popen.return_value = mock_proc
 
@@ -496,3 +501,74 @@ def test_launch_timing_brackets_only_popen(monkeypatch, tmp_path, streaming, out
         assert command.launch_seconds == pytest.approx(0.123456789, abs=1e-12)
         assert events == ["clock", "popen", "clock", "output"]
     assert kill.call_count == (outcome == "interrupted")
+
+
+@pytest.mark.parametrize("returncode", [0, 4])
+def test_streaming_closes_real_subprocess_pipe(
+    monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    processes: list[subprocess.Popen[str]] = []
+    original_popen = subprocess.Popen
+
+    def launch(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process = original_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr("artisan.utils.external_tools.subprocess.Popen", launch)
+    command = [sys.executable, "-c", f"print('output'); raise SystemExit({returncode})"]
+    if returncode:
+        with pytest.raises(ExternalToolError) as failure:
+            run_command(LocalEnvironmentSpec(), command, stream_output=True)
+        assert failure.value.return_code == returncode
+    else:
+        result = run_command(LocalEnvironmentSpec(), command, stream_output=True)
+        assert result.stdout == "output\n"
+    assert len(processes) == 1
+    assert processes[0].stdout is not None
+    assert processes[0].stdout.closed
+    assert processes[0].returncode == returncode
+
+
+@pytest.mark.parametrize("outcome", ["succeeded", "failed", "interrupted"])
+def test_streaming_close_failure_preserves_primary_outcome(outcome: str) -> None:
+    from artisan.execution.recording.commands import capture_commands
+
+    pipe = io.StringIO("output\n")
+    original_close = pipe.close
+    process = MagicMock(stdout=pipe)
+    process.returncode = {"succeeded": 0, "failed": 4, "interrupted": -15}[outcome]
+    process.wait.return_value = process.returncode
+    interruption = KeyboardInterrupt("cancelled")
+    if outcome == "interrupted":
+        process.wait.side_effect = interruption
+
+    def close() -> None:
+        original_close()
+        message = "read pipe close failed"
+        raise OSError(message)
+
+    with (
+        capture_commands() as recorder,
+        patch("artisan.utils.external_tools.subprocess.Popen", return_value=process),
+        patch("artisan.utils.external_tools._kill_process_group") as kill,
+        patch.object(pipe, "close", side_effect=close) as close_pipe,
+    ):
+        if outcome == "succeeded":
+            result = run_command(LocalEnvironmentSpec(), ["tool"], stream_output=True)
+            assert result.returncode == 0
+        elif outcome == "failed":
+            with pytest.raises(ExternalToolError) as failure:
+                run_command(LocalEnvironmentSpec(), ["tool"], stream_output=True)
+            assert failure.value.return_code == 4
+        else:
+            with pytest.raises(KeyboardInterrupt) as failure:
+                run_command(LocalEnvironmentSpec(), ["tool"], stream_output=True)
+            assert failure.value is interruption
+    assert pipe.closed
+    close_pipe.assert_called_once()
+    assert kill.call_count == (outcome == "interrupted")
+    command = recorder.snapshot().commands[0]
+    assert command.outcome == outcome
+    assert command.returncode == process.returncode
+    assert command.launch_seconds is not None

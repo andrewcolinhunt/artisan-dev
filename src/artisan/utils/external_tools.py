@@ -377,7 +377,7 @@ def _run_with_streaming(
     Returns:
         CompletedProcess with accumulated stdout.
     """
-    from contextlib import nullcontext
+    from contextlib import nullcontext, suppress
 
     log_context = open(log_path, log_mode) if log_path else nullcontext()  # noqa: SIM115 — conditional; held via `with log_context` below
 
@@ -426,6 +426,10 @@ def _run_with_streaming(
             if attempt:
                 attempt.finish("interrupted", process.returncode)
             raise
+        finally:
+            # Closing a read pipe must not replace the process outcome or error.
+            with suppress(OSError):
+                process.stdout.close()
 
         return subprocess.CompletedProcess(
             args=cmd.parts,
