@@ -130,6 +130,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "build_micro_graph",
         "display_provenance_stepper",
         "get_max_step_number",
+        "inspect_commands",
         "inspect_data",
         "inspect_failures",
         "inspect_metrics",

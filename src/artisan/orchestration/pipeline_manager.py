@@ -14,11 +14,13 @@ import signal
 import threading
 import time
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast, overload
+from functools import wraps
+from typing import TYPE_CHECKING, Any, Concatenate, cast, overload
 from uuid import uuid4
 
 import polars as pl
@@ -65,6 +67,7 @@ from artisan.utils.hashing import (
     serialize_params,
 )
 from artisan.utils.json import artisan_json_default as _set_default
+from artisan.utils.logging import _configure_default_logging, _RunLogSession
 from artisan.utils.path import uri_join, uri_parent
 
 if TYPE_CHECKING:
@@ -837,6 +840,21 @@ def _restore_persisted_local_runner(
     return runtime_runner
 
 
+def _with_log_context[**LogParams, LogReturn](
+    method: Callable[Concatenate[PipelineManager, LogParams], LogReturn],
+) -> Callable[Concatenate[PipelineManager, LogParams], LogReturn]:
+    """Attribute a manager boundary without permanently binding its caller."""
+
+    @wraps(method)
+    def bound(
+        self: PipelineManager, /, *args: LogParams.args, **kwargs: LogParams.kwargs
+    ) -> LogReturn:
+        with self._log_context():
+            return method(self, *args, **kwargs)
+
+    return bound
+
+
 class PipelineManager:
     """Main interface for defining and executing pipelines.
 
@@ -888,23 +906,14 @@ class PipelineManager:
                 ``config.default_step_runner``. Required when the stored name
                 belongs to an external provider that core cannot reconstruct.
         """
+        self._log_session: _RunLogSession | None = None
         self._default_step_runner = _resolve_runtime_default_runner(
             config.default_step_runner,
             default_step_runner,
         )
 
         if configure_logging:
-            from artisan.utils.logging import configure_logging as _configure
-
-            # logs_root must be local (configure_logging os.makedirs it
-            # at DEBUG level). When delta_root is cloud, pass None so no
-            # file handler is attached.
-            logs_root = (
-                uri_join(uri_parent(config.delta_root), "logs")
-                if config.storage.is_local
-                else None
-            )
-            _configure(logs_root=logs_root)
+            _configure_default_logging()
 
         self._config = config
 
@@ -947,13 +956,40 @@ class PipelineManager:
         self._finalized: bool = False
         self._summary: dict[str, Any] | None = None
         atexit.register(_atexit_shutdown_executor, weakref.ref(self._executor))
+        if configure_logging and config.storage.is_local:
+            try:
+                self._log_session = _RunLogSession(
+                    uri_join(uri_parent(config.delta_root), "logs"),
+                    config.pipeline_run_id,
+                )
+            except Exception:
+                logger.warning("Could not create pipeline log sink", exc_info=True)
 
     # -- Resource cleanup ------------------------------------------------------
 
     def __del__(self) -> None:
-        """Release executor threads if finalize() was never called."""
-        if not getattr(self, "_finalized", True):
-            self._shutdown_executor(wait=False)
+        """Release the owned sink and abandon unfinalized workers without joining."""
+        try:
+            if not getattr(self, "_finalized", True):
+                self._shutdown_executor(wait=False)
+        finally:
+            self._close_log_session()
+
+    def _log_context(self) -> AbstractContextManager[None]:
+        """Bind this session for orchestration, including prepared replay units."""
+        session = getattr(self, "_log_session", None)
+        return session.bind() if session is not None else nullcontext()
+
+    def _close_log_session(self) -> None:
+        """Close an optional sink safely during partial construction or cleanup."""
+        session = getattr(self, "_log_session", None)
+        if session is not None:
+            session.close()
+
+    @property
+    def log_path(self) -> str | None:
+        """Absolute local session log filename, retained after finalization."""
+        return self._log_session.path if self._log_session is not None else None
 
     def __enter__(self) -> PipelineManager:
         """Support ``with PipelineManager.create(...) as pipeline:``."""
@@ -1330,6 +1366,7 @@ class PipelineManager:
     # Cancellation
     # =========================================================================
 
+    @_with_log_context
     def cancel(self) -> None:
         """Request cancellation of the running pipeline.
 
@@ -1355,6 +1392,7 @@ class PipelineManager:
         except ValueError:
             pass  # Not on main thread (e.g. Jupyter)
 
+    @_with_log_context
     def _handle_signal(self, signum: int, _frame: Any) -> None:
         """Signal handler: escalating cancel → restore → force-kill."""
         sig_name = signal.Signals(signum).name
@@ -1501,9 +1539,19 @@ class PipelineManager:
             skip_cache=skip_cache,
         )
         instance = cls(config, default_step_runner=resolved)
-        logger.info("Pipeline '%s' initialized (run_id=%s)", name, pipeline_run_id)
-        logger.info("  delta_root: %s", config.delta_root)
-        logger.info("  staging_root: %s", config.staging_root)
+        try:
+            with instance._log_context():
+                logger.info(
+                    "Pipeline '%s' initialized (run_id=%s)", name, pipeline_run_id
+                )
+                logger.info("  delta_root: %s", config.delta_root)
+                logger.info("  staging_root: %s", config.staging_root)
+        except BaseException:
+            try:
+                instance._shutdown_executor(wait=False)
+            finally:
+                instance._close_log_session()
+            raise
         return instance
 
     @classmethod
@@ -1612,25 +1660,36 @@ class PipelineManager:
         config = PipelineConfig(**config_kwargs)
 
         instance = cls(config, default_step_runner=runtime_runner)
-        for step_state in resumable_steps:
-            result = step_state.to_step_result()
-            instance._step_results.append(result)
-            instance._named_steps.setdefault(result.step_name, []).append(result)
-            instance._step_registry.setdefault(result.step_name, []).append(
-                _StepEntry(
-                    step_number=result.step_number,
-                    output_roles=result.output_roles,
-                    output_types=result.output_types,
-                )
-            )
-            if step_state.step_spec_id is not None:
-                instance._step_spec_ids[step_state.step_number] = (
-                    step_state.step_spec_id
-                )
-            if step_state.step_run_id:
-                instance._step_run_ids[step_state.step_number] = step_state.step_run_id
-        instance._current_step = max(s.step_number for s in current_steps) + 1
-
+        try:
+            with instance._log_context():
+                for step_state in resumable_steps:
+                    result = step_state.to_step_result()
+                    instance._step_results.append(result)
+                    instance._named_steps.setdefault(result.step_name, []).append(
+                        result
+                    )
+                    instance._step_registry.setdefault(result.step_name, []).append(
+                        _StepEntry(
+                            step_number=result.step_number,
+                            output_roles=result.output_roles,
+                            output_types=result.output_types,
+                        )
+                    )
+                    if step_state.step_spec_id is not None:
+                        instance._step_spec_ids[step_state.step_number] = (
+                            step_state.step_spec_id
+                        )
+                    if step_state.step_run_id:
+                        instance._step_run_ids[step_state.step_number] = (
+                            step_state.step_run_id
+                        )
+                instance._current_step = max(s.step_number for s in current_steps) + 1
+        except BaseException:
+            try:
+                instance._shutdown_executor(wait=False)
+            finally:
+                instance._close_log_session()
+            raise
         return instance
 
     # =========================================================================
@@ -1714,6 +1773,7 @@ class PipelineManager:
             skip_cache=skip_cache,
         ).result()
 
+    @_with_log_context
     def submit(
         self,
         operation: type[OperationDefinition],
@@ -2547,11 +2607,11 @@ class PipelineManager:
                 )
 
             logger.info(
-                "Step %d (%s) starting... [step_runner=%s]",
+                "Step %d (%s) starting...",
                 step_number,
                 step_name,
-                resolved_runner.name,
             )
+            logger.debug("Step %d runner: %s", step_number, resolved_runner.name)
             start = time.perf_counter()
             try:
                 # Snapshot step_run_ids for scoped output resolution
@@ -2673,6 +2733,7 @@ class PipelineManager:
                 register=False,
             )
 
+    @_with_log_context
     def submit_composite(
         self,
         composite: type[CompositeDefinition],
@@ -2916,6 +2977,7 @@ class PipelineManager:
             self._executor.shutdown(wait=wait, cancel_futures=cancelled)
             self._executor = None
 
+    @_with_log_context
     def finalize(self) -> dict[str, Any]:
         """Finalize pipeline execution and return summary.
 
@@ -2935,70 +2997,73 @@ class PipelineManager:
             step1 = pipeline.run(ScoreOp, inputs={"data": step0.output("data")})
             result = pipeline.finalize()
         """
-        if self._finalized:
-            return self._summary  # type: ignore[return-value]
+        try:
+            if self._finalized:
+                return self._summary  # type: ignore[return-value]
 
-        self._shutdown_executor()
-        for step_num, future in self._active_futures.items():
-            try:
-                future.result()
-            except CancelledError:
-                continue
-            except Exception as exc:
-                logger.error(
-                    "Step %d future failed during finalize: %s: %s",
-                    step_num,
-                    type(exc).__name__,
-                    exc,
-                )
+            self._shutdown_executor()
+            for step_num, future in self._active_futures.items():
+                try:
+                    future.result()
+                except CancelledError:
+                    continue
+                except Exception as exc:
+                    logger.error(
+                        "Step %d future failed during finalize: %s: %s",
+                        step_num,
+                        type(exc).__name__,
+                        exc,
+                    )
 
-        if self._cancel_event.is_set():
-            self._settle_cancelled_futures()
-        self._restore_signal_handlers()
+            if self._cancel_event.is_set():
+                self._settle_cancelled_futures()
+            self._restore_signal_handlers()
 
-        # Results may arrive out of order (sync skips before async completions)
-        self._step_results.sort(key=lambda r: r.step_number)
+            # Results may arrive out of order (sync skips before async completions)
+            self._step_results.sort(key=lambda r: r.step_number)
 
-        total_elapsed = time.time() - self._start_time
-        all_ok = bool(self._step_results) and all(
-            result.status in {StepStatus.SUCCEEDED, StepStatus.SKIPPED}
-            for result in self._step_results
-        )
-        status = "all succeeded" if all_ok else "some steps failed"
-        logger.info(
-            "Pipeline '%s' complete: %d steps, %s",
-            self._config.name,
-            len(self._step_results),
-            status,
-        )
-        for r in self._step_results:
-            duration = f"{r.duration_seconds:.1f}s" if r.duration_seconds else "n/a"
-            logger.info(
-                "  Step %d: %-16s %s  [%d/%d]",
-                r.step_number,
-                r.step_name,
-                duration,
-                r.succeeded_count,
-                r.total_count,
+            total_elapsed = time.time() - self._start_time
+            all_ok = bool(self._step_results) and all(
+                result.status in {StepStatus.SUCCEEDED, StepStatus.SKIPPED}
+                for result in self._step_results
             )
-        logger.info("  Total: %.1fs", total_elapsed)
+            status = "all succeeded" if all_ok else "some steps failed"
+            logger.info(
+                "Pipeline '%s' complete: %d steps, %s",
+                self._config.name,
+                len(self._step_results),
+                status,
+            )
+            for r in self._step_results:
+                duration = f"{r.duration_seconds:.1f}s" if r.duration_seconds else "n/a"
+                logger.info(
+                    "  Step %d: %-16s %s  [%d/%d]",
+                    r.step_number,
+                    r.step_name,
+                    duration,
+                    r.succeeded_count,
+                    r.total_count,
+                )
+            logger.info("  Total: %.1fs", total_elapsed)
 
-        self._summary = {
-            "pipeline_name": self._config.name,
-            "total_steps": len(self._step_results),
-            "steps": [
-                {
-                    "step_number": r.step_number,
-                    "name": r.step_name,
-                    "status": r.status.value,
-                    "total": r.total_count,
-                    "succeeded": r.succeeded_count,
-                    "failed": r.failed_count,
-                    "duration_seconds": r.duration_seconds,
-                }
-                for r in self._step_results
-            ],
-            "overall_success": all_ok,
-        }
-        self._finalized = True
-        return self._summary
+            self._summary = {
+                "pipeline_name": self._config.name,
+                "total_steps": len(self._step_results),
+                "steps": [
+                    {
+                        "step_number": r.step_number,
+                        "name": r.step_name,
+                        "status": r.status.value,
+                        "total": r.total_count,
+                        "succeeded": r.succeeded_count,
+                        "failed": r.failed_count,
+                        "duration_seconds": r.duration_seconds,
+                    }
+                    for r in self._step_results
+                ],
+                "overall_success": all_ok,
+            }
+            self._finalized = True
+            return self._summary
+        finally:
+            self._close_log_session()

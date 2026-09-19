@@ -24,6 +24,7 @@ from artisan.execution.recording.recorder import (
 from artisan.execution.utils import generate_execution_run_id
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -292,6 +293,7 @@ class TestRecordExecutionSuccess:
         )
 
         result = record_execution_success(
+            command_recording=CommandRecording.empty(),
             execution_context=execution_context,
             artifacts={},
             lineage_edges=[],
@@ -333,6 +335,7 @@ class TestRecordExecutionSuccess:
         )
 
         result = record_execution_success(
+            command_recording=CommandRecording.empty(),
             execution_context=execution_context,
             artifacts={},
             lineage_edges=[],
@@ -379,6 +382,7 @@ class TestRecordExecutionFailure:
         )
 
         result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
             execution_context=execution_context,
             error="Test error message",
             inputs={"data": ["input_id_" + "0" * 23]},
@@ -424,6 +428,7 @@ class TestRecordExecutionFailure:
         )
 
         result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
             execution_context=execution_context,
             error="Test error",
             inputs={"data": ["input_a" + "0" * 24, "input_b" + "0" * 24]},

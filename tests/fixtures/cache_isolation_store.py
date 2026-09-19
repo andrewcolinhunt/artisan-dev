@@ -12,6 +12,7 @@ import polars as pl
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
@@ -281,6 +282,7 @@ def _execution(
         "tool_output": None,
         "worker_log": None,
         "metadata": json.dumps({"timings": {"total": timing}}),
+        "command_recording": CommandRecording.empty().model_dump_json(),
     }
 
 

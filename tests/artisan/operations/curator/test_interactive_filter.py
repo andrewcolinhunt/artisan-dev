@@ -1066,6 +1066,12 @@ class TestCommit:
             {"diagnostics": result.metadata["diagnostics"]}
         )
         assert row["timestamp_start"] == row["timestamp_end"]
+        from artisan.schemas.execution.command_record import CommandRecording
+
+        assert (
+            CommandRecording.model_validate_json(row["command_recording"])
+            == CommandRecording.empty()
+        )
 
         # Execution edges: one input edge per primary artifact, one output
         # edge per filtered artifact, all role="passthrough".

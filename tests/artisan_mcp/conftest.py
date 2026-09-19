@@ -183,16 +183,25 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
         operation_name="seed_unscoped_metric",
     )
 
-    log_dir = tmp_path / "logs" / "failures" / "step_2_transform"
-    log_dir.mkdir(parents=True)
-    (log_dir / f"{exec_id}.log").write_text(
-        "\n".join(f"line {i}" for i in range(1, 11))
+    from artisan.utils.log_paths import failure_log_relative_path
+
+    timestamp_start = execution_frame.filter(pl.col("execution_run_id") == exec_id)[
+        "timestamp_start"
+    ][0]
+    log_path = (
+        tmp_path
+        / "logs"
+        / "failures"
+        / failure_log_relative_path(exec_id, timestamp_start)
     )
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("\n".join(f"line {i}" for i in range(1, 11)))
 
     return SimpleNamespace(
         delta_root=delta_root,
         run_id=run_id,
         exec_id=exec_id,
+        log_path=log_path,
         envelope=envelope,
         data_ids={"a" * 32, "b" * 32},
         metric_id="c" * 32,

@@ -2518,6 +2518,12 @@ class TestFailureRecordSynthesis:
         assert rows[0]["source_worker"] == 0
         assert runtime_env.worker_id == 42
         assert "pre-try boom" in rows[0]["error"]
+        from artisan.schemas.execution.command_record import CommandRecording
+
+        assert (
+            CommandRecording.model_validate_json(rows[0]["command_recording"])
+            == CommandRecording.unavailable()
+        )
 
     def test_skips_units_that_already_recorded(self, tmp_path):
         """A failed result that already carries a run id is left untouched."""

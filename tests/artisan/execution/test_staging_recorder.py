@@ -17,6 +17,7 @@ from artisan.execution.recording.recorder import (
     error_envelope_dict,
     record_execution_failure,
 )
+from artisan.schemas.execution.command_record import CommandRecording
 
 
 def _make_execution_context(tmp_path: Path) -> MagicMock:
@@ -45,6 +46,7 @@ class TestRecordExecutionFailure:
         """Failure recording must set success=False on the StagingResult."""
         ctx = _make_execution_context(tmp_path)
         result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
             execution_context=ctx,
             error="something broke",
             inputs={},
@@ -57,6 +59,7 @@ class TestRecordExecutionFailure:
         """Failure recording must propagate the error string."""
         ctx = _make_execution_context(tmp_path)
         result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
             execution_context=ctx,
             error="ValueError: bad input",
             inputs={},
@@ -68,6 +71,7 @@ class TestRecordExecutionFailure:
         """Failure recording must set the execution_run_id."""
         ctx = _make_execution_context(tmp_path)
         result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
             execution_context=ctx,
             error="err",
             inputs={},
@@ -84,6 +88,7 @@ class TestRecordExecutionFailure:
             side_effect=OSError("disk full"),
         ):
             result = record_execution_failure(
+                command_recording=CommandRecording.empty(),
                 execution_context=ctx,
                 error="original error",
                 inputs={},
@@ -104,6 +109,7 @@ class TestRecordExecutionFailure:
             side_effect=RuntimeError("boom"),
         ):
             result = record_execution_failure(
+                command_recording=CommandRecording.empty(),
                 execution_context=ctx,
                 error="original",
                 inputs={},
@@ -166,6 +172,7 @@ class TestRecordExecutionFailureEnvelope:
         ).to_dict()
 
         result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
             execution_context=ctx,
             error="tool crashed",
             inputs={},
@@ -188,6 +195,7 @@ class TestRecordExecutionFailureEnvelope:
         ctx.step_run_id = None
 
         result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
             execution_context=ctx,
             error="unstructured",
             inputs={},
@@ -248,6 +256,7 @@ class TestPassthroughStagedRowsGolden:
         )
 
         _handle_passthrough_result(
+            command_recording=CommandRecording.empty(),
             result=result,
             operation=Filter(),
             execution_context=ctx,
@@ -285,7 +294,11 @@ class TestPassthroughStagedRowsGolden:
             "error_envelope": None,
             "tool_output": None,
             "worker_log": None,
-            "command_recording": None,
+            "command_recording": (
+                '{"status":"complete","commands":[],"missing_invocations":[],'
+                '"omitted_commands":0,"omitted_missing_invocations":0,'
+                '"unavailable_reason":null}'
+            ),
             "replay_snapshot": None,
             "replay_of_execution_run_id": None,
             "metadata": '{"k": "v"}',
@@ -373,6 +386,7 @@ class TestStagingRecorderBackendParametrized:
         ctx.step_run_id = None
 
         result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
             execution_context=ctx,
             error="smoke failure",
             inputs={},

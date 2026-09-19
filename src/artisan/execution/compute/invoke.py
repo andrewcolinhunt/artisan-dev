@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from artisan.execution.recording.commands import invocation_scope
 from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.utils.external_tools import run_command
 
@@ -68,19 +69,20 @@ def invoke_op_work(
         are the files written to ``execute_input.execute_dir`` plus the
         tool log.
     """
-    if operation.is_command_op():
-        prepared = (
-            execute_input.inputs
-            if operation.execute_as_tool
-            else tool_command_inputs(execute_input.inputs)
-        )
-        run_command(
-            environment or operation.environments.current(),
-            operation.execute_command(prepared),
-            cwd=execute_input.execute_dir,
-            log_path=execute_input.log_path,
-            log_mode="a",
-            stream_output=stream_output,
-        )
-        return None
-    return operation.execute_function(execute_input)
+    with invocation_scope(operation):
+        if operation.is_command_op():
+            prepared = (
+                execute_input.inputs
+                if operation.execute_as_tool
+                else tool_command_inputs(execute_input.inputs)
+            )
+            run_command(
+                environment or operation.environments.current(),
+                operation.execute_command(prepared),
+                cwd=execute_input.execute_dir,
+                log_path=execute_input.log_path,
+                log_mode="a",
+                stream_output=stream_output,
+            )
+            return None
+        return operation.execute_function(execute_input)

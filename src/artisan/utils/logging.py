@@ -8,9 +8,15 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import ClassVar
+from urllib.parse import quote
+from uuid import uuid4
 
 from rich.console import Console
 from rich.highlighter import RegexHighlighter
@@ -86,7 +92,6 @@ def configure_logging(
     level: str = "INFO",
     suppress_noise: bool = True,
     loggers: tuple[str, ...] = ("artisan",),
-    logs_root: str | None = None,
 ) -> None:
     """Configure logging for artisan execution.
 
@@ -99,40 +104,12 @@ def configure_logging(
         suppress_noise: If True, suppress noisy third-party loggers such as
             HTTP client chatter.
         loggers: Root logger names to configure. Defaults to ``("artisan",)``.
-        logs_root: When provided with ``level="DEBUG"``, a rotating file
-            handler is added that writes to ``logs_root / "pipeline.log"``.
     """
     for logger_name in loggers:
         logger = logging.getLogger(logger_name)
         logger.setLevel(getattr(logging, level.upper()))
 
-        if not logger.handlers:
-            handler = _ConsoleHandler(stream=sys.stdout)
-            handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
-            logger.addHandler(handler)
-
-        # Add file handler when DEBUG + logs_root (idempotent check)
-        if (
-            logs_root is not None
-            and level.upper() == "DEBUG"
-            and not any(
-                isinstance(h, logging.handlers.RotatingFileHandler)
-                for h in logger.handlers
-            )
-        ):
-            os.makedirs(logs_root, exist_ok=True)
-            file_handler = logging.handlers.RotatingFileHandler(
-                os.path.join(logs_root, "pipeline.log"),
-                maxBytes=50 * 1024 * 1024,
-                backupCount=3,
-            )
-            file_handler.setFormatter(
-                logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT)
-            )
-            file_handler.setLevel(logging.DEBUG)
-            logger.addHandler(file_handler)
-
-        logger.propagate = False
+        _install_console_handler(logger)
 
     if suppress_noise:
         for name in _NOISY_LOGGERS:
@@ -140,3 +117,127 @@ def configure_logging(
     else:
         for name in _NOISY_LOGGERS:
             logging.getLogger(name).setLevel(logging.INFO)
+
+
+def _install_console_handler(logger: logging.Logger) -> None:
+    """Install the shared console format while preserving configured handlers."""
+    if not logger.handlers:
+        handler = _ConsoleHandler(stream=sys.stdout)
+        handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        logger.addHandler(handler)
+    logger.propagate = False
+
+
+_LOG_SESSION: ContextVar[str | None] = ContextVar("artisan_log_session", default=None)
+
+
+class _SessionFileHandler(logging.handlers.RotatingFileHandler):
+    """An owned sink whose closed state prevents stale emits from reopening it."""
+
+    def __init__(self, path: Path, session_id: str) -> None:
+        self._session_id = session_id
+        self._session_closed = False
+        self._warned = False
+        super().__init__(
+            path, maxBytes=50 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        try:
+            self.setLevel(logging.DEBUG)
+            self.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+        except BaseException:
+            self.close()
+            raise
+
+    def filter(self, record: logging.LogRecord) -> bool | logging.LogRecord:
+        """Accept only the owning context, without retaining a manager."""
+        return _LOG_SESSION.get() == self._session_id and super().filter(record)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Serialize emission with close, including direct stale handler calls."""
+        self.acquire()
+        try:
+            if not self._session_closed:
+                super().emit(record)
+        finally:
+            self.release()
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        """Report sink failure once without recursively entering Artisan logging."""
+        self._warn_once()
+
+    def _warn_once(self) -> None:
+        if not self._warned:
+            self._warned = True
+            with suppress(Exception):
+                sys.stderr.write(
+                    "Artisan pipeline log sink failed; execution continues.\n"
+                )
+
+    def flush(self) -> None:
+        """Keep file I/O failures from escaping normal execution or shutdown."""
+        try:
+            super().flush()
+        except Exception:
+            self._warn_once()
+
+    def close(self) -> None:
+        """Close at most once, even when stream cleanup fails."""
+        self.acquire()
+        try:
+            if self._session_closed:
+                return
+            self._session_closed = True
+            try:
+                super().close()
+            except Exception:
+                self._warn_once()
+                self.stream = None  # type: ignore[assignment]  # FileHandler clears its stream on close.
+                logging.Handler.close(self)
+        finally:
+            self.release()
+
+
+class _RunLogSession:
+    """Own one unique local pipeline file and its context-scoped lifetime."""
+
+    def __init__(self, logs_root: str, pipeline_run_id: str) -> None:
+        self.session_id = str(uuid4())
+        prefix = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        directory = (
+            Path(logs_root).absolute()
+            / "runs"
+            / (f"{prefix}_{self.session_id}_{quote(pipeline_run_id, safe='')}")
+        )
+        directory.mkdir(parents=True, exist_ok=False)
+        self.path = str(directory / "pipeline.log")
+        self._handler = _SessionFileHandler(Path(self.path), self.session_id)
+        try:
+            logging.getLogger("artisan").addHandler(self._handler)
+        except BaseException:
+            self.close()
+            raise
+
+    @contextmanager
+    def bind(self) -> Iterator[None]:
+        """Bind only this call boundary and restore the previous nested context."""
+        token = _LOG_SESSION.set(self.session_id)
+        try:
+            yield
+        finally:
+            _LOG_SESSION.reset(token)
+
+    def close(self) -> None:
+        """Detach before taking the emit lock, preserving all other handlers."""
+        logging.getLogger("artisan").removeHandler(self._handler)
+        self._handler.close()
+
+
+def _configure_default_logging() -> None:
+    """Install automatic console output without changing explicit severity."""
+    logger = logging.getLogger("artisan")
+    if not logger.handlers:
+        if logger.level == logging.NOTSET:
+            logger.setLevel(logging.INFO)
+        _install_console_handler(logger)
+        for name in _NOISY_LOGGERS:
+            logging.getLogger(name).setLevel(logging.CRITICAL)

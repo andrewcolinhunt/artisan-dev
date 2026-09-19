@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
@@ -189,13 +190,7 @@ class TestGetStepLogs:
     def test_large_single_line_is_byte_bounded(
         self, make_app, invoke, seeded_run
     ) -> None:
-        path = (
-            seeded_run.delta_root.parent
-            / "logs"
-            / "failures"
-            / "step_2_transform"
-            / f"{seeded_run.exec_id}.log"
-        )
+        path = seeded_run.log_path
         path.write_bytes(b"x" * (300 * 1024))
 
         result = invoke(
@@ -211,3 +206,124 @@ class TestGetStepLogs:
         assert len(result["lines"]) == 1
         assert len(result["lines"][0].encode()) <= 256 * 1024
         assert result["truncated"] is True
+
+
+@pytest.mark.parametrize("escape", ["traversal", "symlink"])
+def test_get_step_logs_withholds_outside_root_contents(
+    make_app, invoke, seeded_run, tmp_path, monkeypatch, escape: str
+) -> None:
+    import importlib
+
+    import polars as pl
+
+    module = importlib.import_module("artisan.visualization.inspect")
+    outside = tmp_path / "outside-secret.log"
+    outside.write_text("outside secret contents")
+    if escape == "traversal":
+        relative = "../../outside-secret.log"
+    else:
+        link = tmp_path / "logs" / "failures" / "escape.log"
+        link.symlink_to(outside)
+        relative = "escape.log"
+    monkeypatch.setattr(
+        module,
+        "inspect_failures",
+        lambda *args, **kwargs: pl.DataFrame({"step": [2], "log": [relative]}),
+    )
+    result = invoke(
+        make_app(delta_root=seeded_run.delta_root),
+        "artisan_get_step_logs",
+        {
+            "pipeline_run_id": seeded_run.run_id,
+            "step_name": "transform",
+        },
+    )
+    assert result["lines"] == []
+    assert "outside secret" not in str(result)
+
+
+def test_get_step_logs_caps_files_in_source_recency_order(
+    make_app, invoke, seeded_run, tmp_path, monkeypatch
+) -> None:
+    import importlib
+    from datetime import UTC, datetime, timedelta
+
+    import polars as pl
+
+    from artisan.utils.log_paths import failure_log_relative_path
+    from artisan_mcp.tools.logs import MAX_LOG_FILES
+
+    module = importlib.import_module("artisan.visualization.inspect")
+    start = datetime(2026, 9, 19, tzinfo=UTC)
+    rows = []
+    for index in range(MAX_LOG_FILES + 3):
+        # The final two starts tie; execution ID gives a stable order.
+        timestamp = start + timedelta(seconds=min(index, MAX_LOG_FILES + 1))
+        run_id = f"id-{index:03d}"
+        relative = failure_log_relative_path(run_id, timestamp)
+        path = tmp_path / "logs" / "failures" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(run_id)
+        rows.append(
+            {
+                "step": 2,
+                "log": relative,
+                "timestamp_start": timestamp,
+                "execution_run_id": run_id,
+            }
+        )
+    ordered = pl.DataFrame(list(reversed(rows))).sort(
+        "timestamp_start", "execution_run_id", "step"
+    )
+    monkeypatch.setattr(module, "inspect_failures", lambda *args, **kwargs: ordered)
+    result = invoke(
+        make_app(delta_root=seeded_run.delta_root),
+        "artisan_get_step_logs",
+        {
+            "pipeline_run_id": seeded_run.run_id,
+            "step_name": "transform",
+            "tail_lines": 1000,
+        },
+    )
+    assert result["lines"] == [row["execution_run_id"] for row in rows[-MAX_LOG_FILES:]]
+    assert result["truncated"] is True
+
+
+def test_get_step_logs_caps_aggregate_bytes(
+    make_app, invoke, seeded_run, tmp_path, monkeypatch
+) -> None:
+    import importlib
+
+    import polars as pl
+
+    from artisan_mcp.tools.logs import MAX_LOG_BYTES
+
+    module = importlib.import_module("artisan.visualization.inspect")
+    paths = []
+    for index in range(4):
+        relative = f"part-{index}.log"
+        (tmp_path / "logs" / "failures" / relative).write_text(
+            str(index) * (MAX_LOG_BYTES // 2)
+        )
+        paths.append(relative)
+    monkeypatch.setattr(
+        module,
+        "inspect_failures",
+        lambda *args, **kwargs: pl.DataFrame({"step": [2] * 4, "log": paths}),
+    )
+    result = invoke(
+        make_app(delta_root=seeded_run.delta_root),
+        "artisan_get_step_logs",
+        {
+            "pipeline_run_id": seeded_run.run_id,
+            "step_name": "transform",
+            "tail_lines": 1000,
+        },
+    )
+    content = "\n".join(result["lines"])
+    assert len(content.encode()) <= MAX_LOG_BYTES
+    assert "0" not in content
+    assert "1" not in content
+    assert "3" in content
+    assert "2" in content
+    assert result["truncated"] is True

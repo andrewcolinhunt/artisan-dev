@@ -11,6 +11,7 @@ from artisan.execution.executors.curator import _handle_artifact_result
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
@@ -115,6 +116,7 @@ class TestCuratorHonorsExplicitLineage:
             "artisan.execution.executors.curator.capture_lineage_metadata"
         ) as mock_capture:
             _handle_artifact_result(
+                command_recording=CommandRecording.empty(),
                 result=result,
                 operation=_TestOp(),
                 artifact_store=MagicMock(),
@@ -164,6 +166,7 @@ class TestCuratorFallsBackToStemInference:
         mock_record_success.return_value = MagicMock()
 
         _handle_artifact_result(
+            command_recording=CommandRecording.empty(),
             result=result,
             operation=_TestOp(),
             artifact_store=MagicMock(),

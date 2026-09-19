@@ -6,6 +6,7 @@ from typing import Any
 
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.compute.invoke import invoke_op_work
+from artisan.execution.recording.commands import invocation_scope, reserve_invocations
 from artisan.schemas.specs.input_models import ExecuteInput
 
 
@@ -18,4 +19,9 @@ class LocalExecuteRouter(ExecuteRouter):
         execute_inputs: list[ExecuteInput],
         sandbox_root: str,
     ) -> list[Any]:
-        return [invoke_op_work(operation, ei) for ei in execute_inputs]
+        slots = reserve_invocations(len(execute_inputs))
+        results = []
+        for slot, execute_input in zip(slots, execute_inputs, strict=True):
+            with invocation_scope(operation, slot):
+                results.append(invoke_op_work(operation, execute_input))
+        return results

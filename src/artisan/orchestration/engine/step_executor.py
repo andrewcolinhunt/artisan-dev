@@ -50,6 +50,7 @@ from artisan.orchestration.engine.worker_logs import persist_worker_logs
 from artisan.orchestration.runners.base import RunnerBase
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -1011,6 +1012,7 @@ def _synthesize_failure_record(
             step_run_id=step_run_id,
         )
         record_execution_failure(
+            command_recording=CommandRecording.unavailable(),
             execution_context=execution_context,
             error=error,
             inputs=unit.inputs,

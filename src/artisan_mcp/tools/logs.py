@@ -2,7 +2,8 @@
 
 Only failed executions have discoverable log paths — ``inspect_failures``
 emits a relative fragment under ``<runs_dir>/logs/failures/``. This tool
-tails those files for a named step and does not expose success-step logs.
+tails the newest source execution starts for a named step, with execution-ID
+ties broken deterministically. It does not expose success-step logs.
 Failure logs are always local files, matching the standard layout where
 ``runs_dir`` is the parent of ``delta_root``.
 """

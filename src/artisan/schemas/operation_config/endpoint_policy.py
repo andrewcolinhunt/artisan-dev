@@ -76,7 +76,7 @@ class ToolEndpointDataPolicy(BaseModel):
         try:
             candidate = _parse_endpoint_uri(uri, allowlist_root=False)
         except (TypeError, ValueError) as exc:
-            msg = f"{direction} URI is invalid: {_safe_uri_display(uri)}"
+            msg = f"{direction} URI is invalid: {safe_uri_display(uri)}"
             raise ValueError(msg) from exc
         roots = tuple(
             _parse_endpoint_uri(root, allowlist_root=True) for root in allowlist
@@ -286,7 +286,7 @@ def _matches(candidate: _EndpointUri, root: _EndpointUri) -> bool:
     return candidate.segments[: len(root.segments)] == root.segments
 
 
-def _safe_uri_display(uri: object) -> str:
+def safe_uri_display(uri: object) -> str:
     """Remove credentials, query data, and fragments from a URI diagnostic."""
     if not isinstance(uri, str):
         return "<invalid URI>"

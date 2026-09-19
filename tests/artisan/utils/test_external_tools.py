@@ -427,3 +427,72 @@ class TestRunCommand:
         run_command(env, ["python", "run.py"])
 
         assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    "outcome", ["succeeded", "failed", "launch_failed", "interrupted"]
+)
+def test_launch_timing_brackets_only_popen(monkeypatch, tmp_path, streaming, outcome):
+    """Output waits and later failures cannot change a successful launch duration."""
+    from artisan.execution.recording.commands import capture_commands, invocation_scope
+    from artisan.utils import external_tools
+
+    clock = [100.0]
+    events = []
+
+    def now():
+        events.append("clock")
+        return clock[0]
+
+    process = MagicMock()
+    process.returncode = 7 if outcome == "failed" else 0
+
+    def output():
+        events.append("output")
+        clock[0] += 1000.0
+        if outcome == "interrupted":
+            raise KeyboardInterrupt
+        return "tool output\n", ""
+
+    def stream():
+        stdout, _ = output()
+        yield stdout
+
+    process.communicate.side_effect = output
+    process.stdout = stream()
+    process.wait.return_value = process.returncode
+
+    def popen(*args, **kwargs):
+        events.append("popen")
+        clock[0] += 0.123456789
+        if outcome == "launch_failed":
+            msg = "missing executable"
+            raise FileNotFoundError(msg)
+        return process
+
+    monkeypatch.setattr(external_tools, "perf_counter", now)
+    monkeypatch.setattr(external_tools.subprocess, "Popen", popen)
+    kill = MagicMock()
+    monkeypatch.setattr(external_tools, "_kill_process_group", kill)
+    exception = {
+        "failed": ExternalToolError,
+        "launch_failed": FileNotFoundError,
+        "interrupted": KeyboardInterrupt,
+    }.get(outcome)
+    with capture_commands() as recorder, invocation_scope():
+        kwargs = {"stream_output": streaming, "log_path": str(tmp_path / "tool.log")}
+        if exception is None:
+            run_command(LocalEnvironmentSpec(), ["tool"], **kwargs)
+        else:
+            with pytest.raises(exception):
+                run_command(LocalEnvironmentSpec(), ["tool"], **kwargs)
+    command = recorder.snapshot().commands[0]
+    assert command.outcome == outcome
+    if outcome == "launch_failed":
+        assert command.launch_seconds is None
+        assert events == ["clock", "popen"]
+    else:
+        assert command.launch_seconds == pytest.approx(0.123456789, abs=1e-12)
+        assert events == ["clock", "popen", "clock", "output"]
+    assert kill.call_count == (outcome == "interrupted")

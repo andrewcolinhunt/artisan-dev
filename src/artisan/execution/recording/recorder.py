@@ -17,12 +17,16 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from artisan.execution.recording.commands import sanitize_diagnostic
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+from artisan.schemas.execution.command_record import CommandRecording
 
 if TYPE_CHECKING:
     from artisan.schemas.execution.execution_context import ExecutionContext
+
+from artisan.utils.log_paths import failure_log_relative_path
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +131,7 @@ def record_execution_success(
     lineage_edges: list[ArtifactProvenanceEdge],
     inputs: dict[str, list[str]],
     timestamp_end: datetime,
+    command_recording: CommandRecording,
     params: dict[str, Any] | None = None,
     result_metadata: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
@@ -140,6 +145,7 @@ def record_execution_success(
         lineage_edges: Provenance edges linking inputs to outputs.
         inputs: Original input artifact IDs keyed by role.
         timestamp_end: Wall-clock end time of the execution.
+        command_recording: Explicit framework-owned subprocess evidence.
         params: Serialized operation parameters.
         result_metadata: Arbitrary metadata to persist with the execution record.
         user_overrides: User-provided parameter overrides before default merge.
@@ -180,6 +186,7 @@ def record_execution_success(
         outputs=output_ids,
     )
     _stage_execution(
+        command_recording=command_recording,
         execution_run_id=execution_context.execution_run_id,
         execution_spec_id=execution_context.execution_spec_id,
         operation_name=execution_context.operation_name,
@@ -197,7 +204,7 @@ def record_execution_success(
         shared_filesystem=execution_context.shared_filesystem,
         result_metadata=result_metadata,
         user_overrides=user_overrides,
-        tool_output=tool_output,
+        tool_output=sanitize_diagnostic(tool_output),
         step_run_id=execution_context.step_run_id,
     )
     return StagingResult(
@@ -214,6 +221,7 @@ def record_passthrough(
     lineage_edges: list[ArtifactProvenanceEdge] | None,
     inputs: dict[str, list[str]],
     timestamp_end: datetime,
+    command_recording: CommandRecording,
     params: dict[str, Any] | None = None,
     result_metadata: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
@@ -232,6 +240,7 @@ def record_passthrough(
         lineage_edges: Provenance edges to stage, or None/empty to stage none.
         inputs: Original input artifact IDs keyed by role.
         timestamp_end: Wall-clock end time of the execution.
+        command_recording: Explicit framework-owned subprocess evidence.
         params: Serialized operation parameters.
         result_metadata: Arbitrary metadata to persist with the execution record.
         user_overrides: User-provided parameter overrides before default merge.
@@ -268,6 +277,7 @@ def record_passthrough(
         outputs=passthrough,
     )
     _stage_execution(
+        command_recording=command_recording,
         execution_run_id=execution_context.execution_run_id,
         execution_spec_id=execution_context.execution_spec_id,
         operation_name=execution_context.operation_name,
@@ -299,6 +309,7 @@ def record_passthrough(
 def _write_failure_log(
     failure_logs_root: str | None,
     execution_run_id: str,
+    timestamp_start: datetime,
     operation_name: str,
     step_number: int,
     compute_backend: str,
@@ -311,7 +322,8 @@ def _write_failure_log(
 
     Args:
         failure_logs_root: Root directory for failure logs.
-        execution_run_id: Execution run ID (used as filename).
+        execution_run_id: Immutable execution attempt ID.
+        timestamp_start: Timezone-aware source execution start time.
         operation_name: Name of the operation that failed.
         step_number: Pipeline step number.
         compute_backend: Resolved step-runner name.
@@ -321,11 +333,11 @@ def _write_failure_log(
     if failure_logs_root is None:
         return
     try:
-        log_dir = os.path.join(
-            str(failure_logs_root), f"step_{step_number}_{operation_name}"
+        log_file = os.path.join(
+            str(failure_logs_root),
+            failure_log_relative_path(execution_run_id, timestamp_start),
         )
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, f"{execution_run_id}.log")
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
         sections = [
             "=== Execution Failure Log ===",
@@ -343,8 +355,10 @@ def _write_failure_log(
             tail = "\n".join(tool_output.splitlines()[-100:])
             sections.extend(["", "=== Tool Output (last 100 lines) ===", tail])
 
-        with open(log_file, "w") as f:
+        with open(log_file, "x") as f:
             f.write("\n".join(sections))
+    except FileExistsError:
+        return
     except Exception:
         logger.debug(
             "Failed to write failure log for %s", execution_run_id, exc_info=True
@@ -356,6 +370,7 @@ def record_execution_failure(
     error: str,
     inputs: dict[str, list[str]],
     timestamp_end: datetime,
+    command_recording: CommandRecording,
     params: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
     tool_output: str | None = None,
@@ -372,6 +387,7 @@ def record_execution_failure(
         error: Formatted error string (typically a traceback).
         inputs: Original input artifact IDs keyed by role.
         timestamp_end: Wall-clock end time of the execution.
+        command_recording: Explicit framework-owned subprocess evidence.
         params: Serialized operation parameters.
         user_overrides: User-provided parameter overrides before default merge.
         tool_output: Captured tool stdout/stderr.
@@ -405,6 +421,7 @@ def record_execution_failure(
             outputs={},
         )
         _stage_execution(
+            command_recording=command_recording,
             execution_run_id=execution_context.execution_run_id,
             execution_spec_id=execution_context.execution_spec_id,
             operation_name=execution_context.operation_name,
@@ -413,7 +430,7 @@ def record_execution_failure(
             staging_path=staging_path,
             fs=fs,
             success=False,
-            error=error,
+            error=sanitize_diagnostic(error),
             timestamp_start=execution_context.timestamp_start,
             timestamp_end=timestamp_end,
             worker_id=execution_context.worker_id,
@@ -421,22 +438,23 @@ def record_execution_failure(
             compute_backend=execution_context.compute_backend,
             shared_filesystem=execution_context.shared_filesystem,
             user_overrides=user_overrides,
-            tool_output=tool_output,
+            tool_output=sanitize_diagnostic(tool_output),
             step_run_id=execution_context.step_run_id,
-            error_envelope=error_envelope,
+            error_envelope=sanitize_diagnostic(error_envelope),
         )
         _write_failure_log(
             failure_logs_root=failure_logs_root,
             execution_run_id=execution_context.execution_run_id,
+            timestamp_start=execution_context.timestamp_start,
             operation_name=execution_context.operation_name,
             step_number=execution_context.step_number,
             compute_backend=execution_context.compute_backend,
-            error=error,
-            tool_output=tool_output,
+            error=sanitize_diagnostic(error),
+            tool_output=sanitize_diagnostic(tool_output),
         )
         return StagingResult(
             success=False,
-            error=error,
+            error=sanitize_diagnostic(error),
             staging_path=staging_path,
             execution_run_id=execution_context.execution_run_id,
             artifact_ids=[],

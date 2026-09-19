@@ -203,7 +203,7 @@ class TestRunCreatorFlowRouterForwarding:
         )
 
         unit = MagicMock()
-        unit.operation.name = "test"
+        unit.operation = _SimpleOp()
         unit.user_overrides = None
         runtime_env = MagicMock()
         router = MagicMock()
@@ -224,7 +224,7 @@ class TestRunCreatorFlowRouterForwarding:
         )
 
         unit = MagicMock()
-        unit.operation.name = "test"
+        unit.operation = _SimpleOp()
         unit.user_overrides = None
         runtime_env = MagicMock()
 
@@ -232,3 +232,65 @@ class TestRunCreatorFlowRouterForwarding:
 
         _, kwargs = mock_lifecycle.call_args
         assert kwargs["execute_router"] is None
+
+
+def test_endpoint_dispatch_contexts_preserve_input_order_and_isolate_units(
+    monkeypatch, tmp_path
+):
+    import sys
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from artisan.execution.compute.endpoint import EndpointExecuteRouter
+    from artisan.execution.recording.commands import (
+        capture_commands,
+        current_recorder,
+        invocation_scope,
+    )
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    barriers = {unit: threading.Barrier(3) for unit in ("a", "b")}
+    release = {(unit, i): threading.Event() for unit in ("a", "b") for i in range(3)}
+
+    def endpoint(operation, execute_input):
+        unit = execute_input.inputs["unit"]
+        index = execute_input.inputs["index"]
+        parent = current_recorder()
+        with invocation_scope() as slot:
+            with capture_commands(location="endpoint") as worker, invocation_scope():
+                for _ in range(2):
+                    run_command(
+                        LocalEnvironmentSpec(), [sys.executable, "-c", "pass", unit]
+                    )
+            barriers[unit].wait(timeout=10)
+            if index < 2:
+                assert release[(unit, index + 1)].wait(timeout=10)
+            parent.merge(worker.snapshot(), slot)
+            release[(unit, index)].set()
+
+    monkeypatch.setattr("artisan.execution.compute.endpoint.call_endpoint", endpoint)
+
+    def unit_run(unit):
+        with capture_commands() as recorder:
+            results = EndpointExecuteRouter().route_execute(
+                _SimpleOp(),
+                [
+                    ExecuteInput(
+                        execute_dir=str(tmp_path), inputs={"unit": unit, "index": i}
+                    )
+                    for i in range(3)
+                ],
+                str(tmp_path),
+            )
+        assert results == [None, None, None]
+        return recorder.snapshot()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {unit: pool.submit(unit_run, unit) for unit in ("a", "b")}
+        results = {unit: future.result() for unit, future in futures.items()}
+    for unit, recording in results.items():
+        assert [(c.invocation, c.sequence) for c in recording.commands] == [
+            (i, j) for i in range(3) for j in range(2)
+        ]
+        assert all(command.argv[-1] == unit for command in recording.commands)

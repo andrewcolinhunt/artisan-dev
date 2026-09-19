@@ -27,6 +27,11 @@ from artisan.execution.lineage.validation import (
     validate_lineage_integrity,
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.execution.recording.commands import (
+    capture_commands,
+    command_snapshot,
+    sanitize_diagnostic,
+)
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import (
     error_envelope_dict,
@@ -43,6 +48,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import (
     ArtifactResult,
     PassthroughResult,
@@ -128,6 +134,7 @@ def _handle_artifact_result(
     inputs: dict[str, Any],
     input_artifacts: dict[str, list[Artifact]],
     timestamp_end: datetime,
+    command_recording: CommandRecording,
     user_overrides: dict[str, Any] | None = None,
 ) -> StagingResult:
     """Finalize, validate, and stage new artifacts from a curator result."""
@@ -186,6 +193,7 @@ def _handle_artifact_result(
 
     params_dict = serialize_params(operation)
     return record_execution_success(
+        command_recording=command_recording,
         execution_context=execution_context,
         artifacts=dict(finalized),
         lineage_edges=artifact_edges,
@@ -203,6 +211,7 @@ def _handle_passthrough_result(
     execution_context: ExecutionContext,
     inputs: dict[str, Any],
     timestamp_end: datetime,
+    command_recording: CommandRecording,
     user_overrides: dict[str, Any] | None = None,
 ) -> StagingResult:
     """Validate and stage a passthrough result (no new artifacts created).
@@ -213,6 +222,7 @@ def _handle_passthrough_result(
     """
     validate_passthrough_result(result, operation.outputs)
     return record_passthrough(
+        command_recording=command_recording,
         execution_context=execution_context,
         passthrough=result.passthrough,
         lineage_edges=result.lineage_edges,
@@ -225,6 +235,14 @@ def _handle_passthrough_result(
 
 
 def run_curator_flow(
+    unit: ExecutionUnit, runtime_env: RuntimeEnvironment
+) -> StagingResult:
+    """Capture command evidence throughout the curator lifecycle."""
+    with capture_commands(unit.operation):
+        return _run_curator_flow(unit, runtime_env)
+
+
+def _run_curator_flow(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
 ) -> StagingResult:
@@ -280,6 +298,7 @@ def run_curator_flow(
                 )
             except Exception as exc:
                 return record_execution_failure(
+                    command_recording=command_snapshot(),
                     execution_context=execution_context,
                     error=format_error(exc),
                     inputs=inputs,
@@ -295,6 +314,7 @@ def run_curator_flow(
             timestamp_end = datetime.now(UTC)
             if not result.success:
                 staging_result = record_execution_failure(
+                    command_recording=command_snapshot(),
                     execution_context=execution_context,
                     error=result.error or "Unknown error",
                     inputs=inputs,
@@ -321,6 +341,7 @@ def run_curator_flow(
                             inputs, output_specs, artifact_store
                         )
                         staging_result = _handle_artifact_result(
+                            command_recording=command_snapshot(),
                             result=result_with_metadata,
                             operation=operation,
                             artifact_store=artifact_store,
@@ -333,6 +354,7 @@ def run_curator_flow(
                         )
                     case PassthroughResult():
                         staging_result = _handle_passthrough_result(
+                            command_recording=command_snapshot(),
                             result=result_with_metadata,
                             operation=operation,
                             execution_context=execution_context,
@@ -348,6 +370,7 @@ def run_curator_flow(
                             f"Expected ArtifactResult or PassthroughResult."
                         )
                         staging_result = record_execution_failure(
+                            command_recording=command_snapshot(),
                             execution_context=execution_context,
                             error=error,
                             inputs=inputs,
@@ -358,7 +381,7 @@ def run_curator_flow(
                         )
 
     except Exception as exc:
-        error = format_error(exc)
+        error = sanitize_diagnostic(format_error(exc))
         if execution_context is None:
             logger.error("Curator setup failed: %s", error)
             return StagingResult(
@@ -368,6 +391,7 @@ def run_curator_flow(
                 artifact_ids=[],
             )
         staging_result = record_execution_failure(
+            command_recording=command_snapshot(),
             execution_context=execution_context,
             error=error,
             inputs=inputs,

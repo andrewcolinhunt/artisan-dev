@@ -19,13 +19,16 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from artisan.errors import StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.storage.core.committed_scan import read_committed, scan_committed
 from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.dicts import flatten_dict
+from artisan.utils.log_paths import failure_log_relative_path
 
 if TYPE_CHECKING:
     from polars.datatypes import DataType, DataTypeClass
@@ -50,6 +53,53 @@ def _validated_fs(
         fs = LocalFileSystem()
     assert_store_format(delta_root, fs, storage_options)
     return fs
+
+
+def inspect_commands(
+    delta_root: str,
+    execution_run_id: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Read the canonical command evidence for exactly one committed execution.
+
+    Args:
+        delta_root: Root of the current-format Artisan store.
+        execution_run_id: Execution attempt to inspect.
+        fs: Filesystem for store access; defaults to local storage.
+        storage_options: Delta-rs options for cloud storage.
+
+    Returns:
+        Validated command recording, including omissions and missing invocations.
+
+    Raises:
+        FileNotFoundError: No committed execution has this ID.
+        StoreIntegrityError: The ID is duplicated or its evidence is malformed.
+    """
+    fs = _validated_fs(delta_root, fs, storage_options)
+    rows = (
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTIONS,
+            fs=fs,
+            storage_options=storage_options,
+        )
+        .filter(pl.col("execution_run_id") == execution_run_id)
+        .select("command_recording")
+        .collect()
+    )
+    if rows.height == 0:
+        msg = f"Committed execution {execution_run_id!r} not found"
+        raise FileNotFoundError(msg)
+    if rows.height != 1:
+        msg = "Duplicate committed execution ID"
+        raise StoreIntegrityError(msg)
+    try:
+        return CommandRecording.model_validate_json(rows.item()).model_dump(mode="json")
+    except (ValidationError, TypeError, ValueError):
+        msg = "Invalid canonical command recording"
+        raise StoreIntegrityError(msg) from None
 
 
 def inspect_pipeline(
@@ -168,6 +218,7 @@ _FAILURES_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "step": pl.Int32,
     "operation": pl.String,
     "execution_run_id": pl.String,
+    "timestamp_start": pl.Datetime("us", "UTC"),
     "code": pl.String,
     "recovery_hint": pl.String,
     "field": pl.String,
@@ -208,10 +259,11 @@ def inspect_failures(
         fs: Filesystem for existence checks. Local if None.
 
     Returns:
-        DataFrame with columns: step, operation, execution_run_id, code,
+        DataFrame with columns: step, operation, execution_run_id, timestamp_start, code,
         recovery_hint, field, suggestions, error, log. ``log`` is the
-        relative fragment ``step_{step}_{operation}/{run_id}.log`` — prefix
-        it with ``<runs_dir>/logs/failures/``.
+        relative fragment ``YYYYMMDD/YYYYMMDDTHHMMSSffffffZ_executionID.log``;
+        prefix it with ``<runs_dir>/logs/failures/``. Rows sort by source
+        start time, execution ID, then current step, oldest first.
 
     Raises:
         FileNotFoundError: If the delta root is not an Artisan store — no
@@ -244,8 +296,8 @@ def inspect_failures(
         ).filter(~pl.col("success"))
         failures = failures.select(
             "execution_run_id",
+            "timestamp_start",
             pl.col("current_step_number").alias("origin_step_number"),
-            "execution_step_number",
             "operation_name",
             "error",
             "error_envelope",
@@ -261,8 +313,8 @@ def inspect_failures(
             .filter(~pl.col("success"))
             .select(
                 "execution_run_id",
+                "timestamp_start",
                 "origin_step_number",
-                pl.col("origin_step_number").alias("execution_step_number"),
                 "operation_name",
                 "error",
                 "error_envelope",
@@ -282,27 +334,29 @@ def inspect_failures(
             field = env.get("field")
             suggestions = env.get("suggestions")
         step = row["origin_step_number"]
-        execution_step = row["execution_step_number"]
         operation = row["operation_name"]
         rows.append(
             {
                 "step": step,
                 "operation": operation,
                 "execution_run_id": row["execution_run_id"],
+                "timestamp_start": row["timestamp_start"],
                 "code": code,
                 "recovery_hint": recovery_hint,
                 "field": field,
                 "suggestions": suggestions,
                 "error": row["error"],
-                "log": (
-                    f"step_{execution_step}_{operation}/{row['execution_run_id']}.log"
+                "log": failure_log_relative_path(
+                    row["execution_run_id"], row["timestamp_start"]
                 ),
             }
         )
 
     if not rows:
         return pl.DataFrame(schema=_FAILURES_SCHEMA)
-    return pl.DataFrame(rows, schema=_FAILURES_SCHEMA)
+    return pl.DataFrame(rows, schema=_FAILURES_SCHEMA).sort(
+        "timestamp_start", "execution_run_id", "step"
+    )
 
 
 _RECOVERY_ACTIONS = {

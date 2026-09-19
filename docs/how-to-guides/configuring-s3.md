@@ -37,8 +37,15 @@ pipeline = PipelineManager(
 
 `working_root` and `failure_logs_root` (derived from `working_root` when
 `storage` is cloud) **must** stay local — they're used for sandbox dirs
-and human-readable failure logs that the orchestrator writes with
-`os.*` calls.
+and human-readable failure logs. For cloud stores, failure files live under
+`<working_root>/logs/failures/YYYYMMDD/YYYYMMDDTHHMMSSffffffZ_executionID.log`,
+using each source execution's UTC start time.
+
+Pipeline session file logging is disabled for cloud stores, so
+`pipeline.log_path` is `None`; console logging remains available. Local stores
+create a separate session file under `<runs_dir>/logs/runs/` for every manager,
+including resumes. MCP reads failure files available on its own host and does
+not download cloud logs.
 
 ---
 

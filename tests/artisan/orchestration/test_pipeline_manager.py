@@ -2830,15 +2830,10 @@ class TestFilesRootThreading:
 
 
 class TestConfigureLoggingCloudGuard:
-    """logs_root must not be derived from cloud delta_root.
+    """Owned pipeline file sinks exist only for local storage."""
 
-    `configure_logging` os.makedirs the logs_root at DEBUG level. If
-    cloud delta_root flowed through unchanged, that would corrupt a
-    literal-colon directory on the local filesystem.
-    """
-
-    def test_local_storage_passes_derived_logs_root(self, tmp_path):
-        """Local storage: logs_root is the sibling-of-delta path."""
+    def test_local_storage_creates_owned_log_path(self, tmp_path):
+        """Local sessions live under the sibling logs/runs directory."""
         from artisan.schemas.execution.storage_config import StorageConfig
 
         config = PipelineConfig(
@@ -2848,14 +2843,15 @@ class TestConfigureLoggingCloudGuard:
             working_root=str(tmp_path / "working"),
             storage=StorageConfig(),  # protocol="file"
         )
-        with patch("artisan.utils.logging.configure_logging") as mock_configure:
-            PipelineManager(config)
-        mock_configure.assert_called_once()
-        call_kwargs = mock_configure.call_args.kwargs
-        assert call_kwargs["logs_root"] == str(tmp_path / "logs")
+        pipeline = PipelineManager(config)
+        try:
+            assert pipeline.log_path is not None
+            assert Path(pipeline.log_path).is_relative_to(tmp_path / "logs" / "runs")
+        finally:
+            pipeline.finalize()
 
-    def test_cloud_storage_passes_logs_root_none(self, tmp_path):
-        """Cloud storage: logs_root must be None — no os.makedirs on s3:// path."""
+    def test_cloud_storage_has_no_pipeline_file(self, tmp_path):
+        """Cloud stores never pass a URI to a local file handler."""
         from artisan.schemas.execution.storage_config import StorageConfig
 
         config = PipelineConfig(
@@ -2874,7 +2870,9 @@ class TestConfigureLoggingCloudGuard:
             json.dumps(STORE_MANIFEST)
         )
         with (
-            patch("artisan.utils.logging.configure_logging") as mock_configure,
+            patch(
+                "artisan.orchestration.pipeline_manager._RunLogSession"
+            ) as mock_session,
             patch.object(StorageConfig, "filesystem", return_value=fake_fs),
             patch(
                 "artisan.storage.io.commit.prepare_store_initialization",
@@ -2882,9 +2880,10 @@ class TestConfigureLoggingCloudGuard:
             ),
             patch("artisan.orchestration.pipeline_manager.StepTracker"),
         ):
-            PipelineManager(config)
-        mock_configure.assert_called_once()
-        assert mock_configure.call_args.kwargs["logs_root"] is None
+            pipeline = PipelineManager(config)
+            assert pipeline.log_path is None
+            pipeline.finalize()
+        mock_session.assert_not_called()
 
 
 class TestPromoteFilePathsCloudUri:
@@ -3487,3 +3486,194 @@ def test_submit_cacheability_takes_precedence_over_consumer_policy(
     assert result.status == StepStatus.SUCCEEDED
     assert lookup.call_count == int(cacheable)
     execute.assert_called_once()
+
+
+@pytest.fixture
+def session_logging():
+    import logging
+
+    from artisan.utils.logging import configure_logging
+
+    logger = logging.getLogger("artisan")
+    original = (logger.handlers[:], logger.level, logger.propagate)
+    logger.handlers.clear()
+    configure_logging("DEBUG")
+    yield logger
+    for handler in logger.handlers[:]:
+        handler.close()
+    logger.handlers[:] = original[0]
+    logger.setLevel(original[1])
+    logger.propagate = original[2]
+
+
+def test_manager_cancel_signal_and_finalize_are_session_scoped(
+    tmp_path, session_logging
+):
+    import logging
+
+    first = PipelineManager.create(
+        "first", str(tmp_path / "delta"), str(tmp_path / "staging")
+    )
+    second = PipelineManager.create(
+        "second", str(tmp_path / "delta"), str(tmp_path / "staging")
+    )
+    first_path, second_path = first.log_path, second.log_path
+    assert first_path != second_path
+    first._handle_signal(signal.SIGINT, None)
+    first._handle_signal(signal.SIGINT, None)
+    logging.getLogger("artisan.test").info("unbound sentinel")
+    summary = first.finalize()
+    assert first.finalize() is summary
+    assert first.log_path == first_path
+    second.cancel()
+    second.finalize()
+    one, two = Path(first_path).read_text(), Path(second_path).read_text()
+    assert "received SIGINT" in one
+    assert "received second SIGINT" in one
+    assert "Pipeline 'first' complete" in one
+    assert "Pipeline 'second' complete" in two
+    assert "Pipeline 'second'" not in one
+    assert "Pipeline 'first'" not in two
+    assert "unbound sentinel" not in one + two
+
+
+def test_manager_finalize_failure_closes_sink_and_retry_does_not_reopen(
+    tmp_path, session_logging
+):
+    pipeline = PipelineManager.create(
+        "failed", str(tmp_path / "delta"), str(tmp_path / "staging")
+    )
+    handler = pipeline._log_session._handler
+    with (
+        patch.object(
+            pipeline, "_shutdown_executor", side_effect=RuntimeError("finalize broke")
+        ),
+        pytest.raises(RuntimeError, match="finalize broke"),
+    ):
+        pipeline.finalize()
+    assert handler not in session_logging.handlers
+    assert handler.stream is None
+    path = Path(pipeline.log_path)
+    content = path.read_text()
+    pipeline.finalize()
+    assert path.read_text() == content
+
+
+def test_manager_gc_releases_handler_without_joining_workers(tmp_path, session_logging):
+    import gc
+    import weakref
+
+    pipeline = PipelineManager.create(
+        "forgotten", str(tmp_path / "delta"), str(tmp_path / "staging")
+    )
+    handler = pipeline._log_session._handler
+    executor = pipeline._executor
+    reference = weakref.ref(pipeline)
+    with patch.object(executor, "shutdown", wraps=executor.shutdown) as shutdown:
+        del pipeline
+        gc.collect()
+        assert reference() is None
+        shutdown.assert_called_once_with(wait=False, cancel_futures=False)
+    assert handler not in session_logging.handlers
+    assert handler.stream is None
+
+
+def test_manager_automatic_logging_can_be_disabled(tmp_path, session_logging):
+    config = PipelineConfig(
+        name="disabled",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+    )
+    with patch(
+        "artisan.orchestration.pipeline_manager._configure_default_logging"
+    ) as configure:
+        pipeline = PipelineManager(config, configure_logging=False)
+    assert pipeline.log_path is None
+    configure.assert_not_called()
+    pipeline.finalize()
+
+
+def test_manager_sink_setup_failure_does_not_fail_construction(
+    tmp_path, session_logging
+):
+    with patch(
+        "artisan.orchestration.pipeline_manager._RunLogSession",
+        side_effect=PermissionError("read only"),
+    ):
+        pipeline = PipelineManager.create(
+            "no-file", str(tmp_path / "delta"), str(tmp_path / "staging")
+        )
+    assert pipeline.log_path is None
+    pipeline.finalize()
+
+
+def test_manager_partial_construction_never_attaches_sink(tmp_path, session_logging):
+    before = session_logging.handlers[:]
+    with (
+        patch(
+            "artisan.storage.io.commit.DeltaCommitter.initialize_tables",
+            side_effect=RuntimeError("bad store"),
+        ),
+        pytest.raises(RuntimeError, match="bad store"),
+    ):
+        PipelineManager.create(
+            "broken", str(tmp_path / "delta"), str(tmp_path / "staging")
+        )
+    assert session_logging.handlers == before
+
+
+def test_manager_factory_error_closes_constructed_session(tmp_path, session_logging):
+    before = session_logging.handlers[:]
+    original = PipelineManager._shutdown_executor
+    cleanups = []
+
+    def shutdown(self, *, wait=True):
+        cleanups.append(wait)
+        original(self, wait=wait)
+
+    with (
+        patch(
+            "artisan.orchestration.pipeline_manager.logger.info",
+            side_effect=RuntimeError("post-construction"),
+        ),
+        patch.object(PipelineManager, "_shutdown_executor", shutdown),
+        pytest.raises(RuntimeError, match="post-construction"),
+    ):
+        PipelineManager.create(
+            "broken", str(tmp_path / "delta"), str(tmp_path / "staging")
+        )
+    assert cleanups[0] is False
+    assert session_logging.handlers == before
+
+
+def test_manager_session_context_reaches_router_collection(tmp_path, session_logging):
+    import logging
+
+    from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
+    from artisan.schemas.orchestration.step_lifecycle import (
+        CancellationAcknowledgement,
+        CancellationStatus,
+    )
+
+    class LogRouter(LifecycleRouter):
+        def _dispatch(self, units, runtime_env):
+            def collect():
+                logging.getLogger("artisan.test.router").info(
+                    "router collection marker"
+                )
+                return []
+
+            self._start_background(collect)
+
+        def cancel(self):
+            return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+
+    with PipelineManager.create(
+        "router", str(tmp_path / "delta"), str(tmp_path / "staging")
+    ) as manager:
+        with manager._log_context():
+            router = LogRouter()
+            router._dispatch([], None)
+        router._thread.join(timeout=5)
+        assert not router._thread.is_alive()
+    assert "router collection marker" in Path(manager.log_path).read_text()

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.execution.unit_result import UnitResult
+from artisan.utils.log_paths import find_failure_log
 from artisan.utils.path import shard_uri, uri_join
 
 logger = logging.getLogger(__name__)
@@ -98,15 +98,10 @@ def _append_worker_log(
 ) -> None:
     """Append opaque provider output to an existing failure log, best-effort."""
     try:
-        for entry in os.listdir(failure_logs_root):
-            step_dir = os.path.join(failure_logs_root, entry)
-            if not os.path.isdir(step_dir):
-                continue
-            log_path = os.path.join(step_dir, f"{execution_run_id}.log")
-            if os.path.exists(log_path):
-                with open(log_path, "a") as file:
-                    file.write(f"\n\n=== Worker Log ===\n{worker_log}")
-                return
+        log_path = find_failure_log(failure_logs_root, execution_run_id)
+        if log_path is not None:
+            with open(log_path, "a") as file:
+                file.write(f"\n\n=== Worker Log ===\n{worker_log}")
     except Exception:
         logger.debug(
             "Failed to append worker log to failure log for %s",
