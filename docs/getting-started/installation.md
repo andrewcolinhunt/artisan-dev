@@ -7,8 +7,8 @@ editor.
 
 ## Prerequisites
 
-- **Platform:** Linux (x86_64) or macOS (Apple Silicon)
-- [Pixi](https://pixi.sh) package manager (installs Python and all other
+- **Platform:** Linux (x86_64 or aarch64) or macOS (Apple Silicon)
+- [Pixi](https://pixi.sh) **0.66.0** (installs Python 3.12 and all other
   dependencies for you)
 
 ---
@@ -17,7 +17,7 @@ editor.
 
 ```bash
 # Install Pixi (if not already installed)
-curl -fsSL https://pixi.sh/install.sh | sh
+curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.66.0 bash
 ```
 
 :::{tip}
@@ -30,27 +30,40 @@ git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
 
 # Install all dependencies (Python 3.12, scientific stack, etc.)
-pixi install
+pixi install --locked
+pixi run --locked setup
 ```
 
 :::{note}
-The first `pixi install` downloads Python and all dependencies, which may take
-several minutes. Subsequent runs are fast.
+The first `pixi install --locked` downloads Python and all dependencies, which
+may take several minutes. `setup` registers Graphviz's layout plugins in the
+selected environment and is safe to repeat. It does not install Git hooks or
+register a Jupyter kernel.
 :::
 
 Verify the installation:
 
 ```bash
-pixi run python -c "import artisan; print('Installation OK')"
+pixi run --locked python -c "import artisan; print('Installation OK')"
+pixi run --locked python -c "from graphviz import Source; assert b'<svg' in Source('digraph { source -> result }').pipe(format='svg'); print('Graphviz OK')"
 ```
 
-You should see `Installation OK` printed to the terminal.
+You should see `Installation OK` and `Graphviz OK` printed to the terminal.
+Use `--locked` for routine work so manifest drift stops with an error instead
+of rewriting the lockfile.
 
 :::{tip}
-**Contributors:** run `pixi run -e dev setup` once to register Graphviz layout
-plugins and install pre-commit hooks. The hook suite (ruff, mypy, codespell,
-blacken-docs, and supporting checkers) runs on every commit; the same suite
-is enforced in CI. Customize via `.pre-commit-config.yaml`.
+**Contributors:** prepare the dev environment, then install Git hooks explicitly:
+
+```bash
+pixi install --locked -e dev
+pixi run --locked -e dev setup
+pixi run --locked -e dev install-hooks
+```
+
+Run `setup` in each environment you use to render graphs. The hook suite
+(ruff, mypy, codespell, blacken-docs, and supporting checkers) runs on every
+commit; the same suite is enforced in CI. Customize via `.pre-commit-config.yaml`.
 :::
 
 :::{dropdown} What is Pixi?
@@ -100,7 +113,7 @@ and workspaces.
 Set the Pixi environment as your VSCode Python interpreter:
 
 ```bash
-pixi run which python
+pixi run --locked which python
 # Example output: /home/user/artisan/.pixi/envs/default/bin/python
 ```
 
@@ -113,10 +126,15 @@ Register the Pixi environment as a Jupyter kernel so notebooks use the correct
 packages:
 
 ```bash
-pixi run install-kernel
+pixi run --locked install-kernel
 ```
 
 In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**.
+
+This registers a user kernel pointing to the environment that ran the task.
+To use the dev environment, run `pixi run --locked -e dev install-kernel`;
+this replaces the same **Artisan** kernel registration with the dev interpreter.
+Environment setup does not choose or overwrite your kernel.
 
 ### Kernel slowness (Pixi environments)
 
@@ -146,10 +164,10 @@ setup and usage.
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | `pixi: command not found` | Pixi not on `PATH` | Restart your terminal, or add `~/.pixi/bin` to your `PATH` manually |
-| Thread-spawn panic during `pixi install` | Too many threads on constrained node | `RAYON_NUM_THREADS=4 pixi install` |
+| Thread-spawn panic during `pixi install` | Too many threads on constrained node | `RAYON_NUM_THREADS=4 pixi install --locked` |
 | `pixi install` is very slow | First run downloads Python + all deps | Expected on first install — subsequent runs are fast |
-| `dot` / Graphviz errors in provenance graphs | Graphviz layout plugins not registered | Run `pixi run dot -c` to register plugins (normally handled automatically) |
-| Jupyter kernel missing "Artisan" option | Kernel not registered | Run `pixi run install-kernel` and restart your notebook |
+| `dot` / Graphviz errors in provenance graphs | Graphviz layout plugins not registered | Run `pixi run --locked setup` in the selected environment; use `-e dev` for dev |
+| Jupyter kernel missing "Artisan" option | Kernel not registered | Run `pixi run --locked install-kernel` and restart your notebook |
 
 ---
 

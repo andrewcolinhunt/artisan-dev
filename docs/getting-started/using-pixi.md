@@ -14,20 +14,37 @@ specific workflow.
 | Environment | Flag | What it includes | When to use it |
 |-------------|------|------------------|----------------|
 | `default` | *(none)* | Python 3.12, Artisan, scientific stack | Running pipelines and scripts |
-| `dev` | `-e dev` | Everything in default + pytest, ruff, ipython, build tools | Testing, formatting, debugging |
+| `dev` | `-e dev` | Everything in default + pytest, ruff, ipython, build tools, read-only MCP server | Testing, formatting, debugging |
 | `docs` | `-e docs` | Everything in default + jupyter-book, Node.js | Building documentation |
 
 ```bash
 # Run a command in the default environment
-pixi run python script.py
+pixi run --locked python script.py
 
 # Run a command in a named environment
-pixi run -e dev pytest
-pixi run -e docs docs-build
+pixi run --locked -e dev pytest
+pixi run --locked -e docs docs-build
 ```
 
 All environments share a single solve group, so package versions are consistent
-across them.
+across them. `mcp` is a feature included in `dev`, not a separate environment.
+Use `--locked` for routine installs and tasks so manifest drift stops with an
+error instead of rewriting `pixi.lock`.
+
+After installing an environment, run `setup` there to prepare Graphviz. Git
+hooks and notebook kernels have separate tasks with explicit side effects:
+
+```bash
+pixi install --locked -e dev
+pixi run --locked -e dev setup
+pixi run --locked -e dev install-hooks
+pixi run --locked -e dev install-kernel  # Only when using notebooks
+```
+
+`setup` is safe to repeat and only prepares the selected environment.
+`install-hooks` installs this repository's pre-commit hook. `install-kernel`
+registers a user **Artisan** kernel pointing to the environment that ran it;
+running it again from another environment replaces that kernel registration.
 
 ---
 
@@ -37,15 +54,15 @@ across them.
 exploring data, running multiple commands — open a shell instead:
 
 ```bash
-pixi shell                          # Default environment
-pixi shell -e dev                   # Dev environment (pytest, ruff, ipython)
-pixi shell -e docs                  # Docs environment (jupyter-book, node)
+pixi shell --locked                 # Default environment
+pixi shell --locked -e dev          # Dev environment (pytest, ruff, ipython)
+pixi shell --locked -e docs         # Docs environment (jupyter-book, node)
 ```
 
 Inside a Pixi shell, commands run directly without the `pixi run` prefix:
 
 ```bash
-$ pixi shell -e dev
+$ pixi shell --locked -e dev
 (artisan-dev) $ pytest tests/artisan/storage/
 (artisan-dev) $ ruff check src/
 (artisan-dev) $ exit                # Return to your regular shell
@@ -70,8 +87,8 @@ pixi workspace register
 pixi workspace register --name custom-name
 
 # Run tasks or open a shell from anywhere
-pixi run -w workspace-name task-name
-pixi shell -w workspace-name
+pixi run --locked -w workspace-name task-name
+pixi shell --locked -w workspace-name
 ```
 
 ---
@@ -121,8 +138,10 @@ With `editable = true`, Python picks up your local changes immediately — no
 reinstall needed. This is the same concept as `pip install -e .` but managed
 through Pixi.
 
-When you're done, remove the override and run `pixi install` to restore the
-locked version.
+Run `pixi install` to resolve the intentional dependency change. When you're
+done, remove the override and run `pixi install` again to resolve the published
+dependency. Review and commit `pyproject.toml` and `pixi.lock` together for each
+dependency change you keep. Return to `--locked` for routine commands.
 
 ---
 
@@ -135,17 +154,18 @@ flags and command sequences.
 
 | Task | Command | Description |
 |------|---------|-------------|
-| `setup` | `bash scripts/setup.sh` | One-time post-install fixups; run once after cloning |
-| `install-kernel` | `python -m ipykernel install ...` | Register the Artisan Jupyter kernel |
+| `setup` | `bash scripts/setup.sh` | Prepare Graphviz in the selected environment; safe to repeat |
+| `install-kernel` | `python -m ipykernel install --user --name=artisan --display-name='Artisan'` | Register the selected environment as the user Artisan kernel |
 
 ### Dev environment
 
 | Task | Command | Description |
 |------|---------|-------------|
-| `test` | `pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 4 && pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Unit (sequential) + integration (parallel) + S3 (parallel) + tutorial notebooks |
+| `install-hooks` | `pre-commit install` | Install this repository's Git hooks |
+| `test` | `pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 2 && pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Unit (sequential) + integration (parallel) + S3 (parallel) + tutorial notebooks |
 | `test-unit` | `pytest -m 'not integration and not notebook and not modal and not s3'` | Run only unit tests (no external services) |
 | `test-integration` | `pytest -m 'integration and not s3' -n 4` | End-to-end pipeline tests (parallel, no external services) |
-| `test-s3` | `pytest -m s3 -n 4` | S3-backend tests (parallel); needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
+| `test-s3` | `pytest -m s3 -n 2` | S3-backend tests (parallel); needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
 | `test-notebook` | `pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Run every CI-runnable tutorial notebook |
 | `test-notebook-modal` | `pytest -m 'notebook and modal' --nbval-lax docs/tutorials/` | Modal tutorial notebooks; needs Modal credentials |
 | `test-seq` | `pytest -m 'not notebook and not modal'` | Run tests sequentially, excluding notebook/modal (useful for debugging) |

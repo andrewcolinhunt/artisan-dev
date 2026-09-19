@@ -156,10 +156,10 @@ method receives DataFrames of artifact metadata (each with at least an
 `artifact_id` column, keyed by role name) and returns either new artifacts
 (`ArtifactResult`) or routed artifact IDs (`PassthroughResult`).
 
-Curators have no sandbox directories, no input materialization to disk, and no
-worker dispatch. They run locally and immediately. This makes them fast and
-simple, but limits them to work that does not require heavy computation or
-file I/O.
+Curators run in an isolated local subprocess without creator sandbox phases,
+input materialization, or configurable creator-runner dispatch. This keeps
+coordination separate from the orchestrator while avoiding the creator lifecycle
+for metadata work.
 
 ### Two result shapes
 
@@ -271,6 +271,8 @@ For concrete classes (non-empty `name`):
 - Creator operations with inputs must implement `preprocess()`
 - `OutputRole` enum values must match `outputs` keys
 - `InputRole` enum values must match `inputs` keys (when inputs exist)
+- Algorithm configuration must use a matched nested `Params` model and `params`
+  field; operations without algorithm parameters omit both
 
 Violations raise `TypeError` at import time. A misconfigured operation cannot
 be instantiated, cannot be added to a pipeline, and cannot fail silently at
@@ -317,14 +319,20 @@ specific cluster configurations.
 
 Operations that need algorithm-specific configuration define a nested
 `Params(BaseModel)` class as a Pydantic model, then declare a `params` instance
-field with a default. This pattern separates domain parameters (scale factor,
-noise amplitude, random seed) from infrastructure concerns (CPUs, time limit,
-batch size), and gives each parameter its own type, default, validation, and
-documentation.
+field annotated with that exact model. This contract separates domain
+parameters (scale factor, noise amplitude, random seed) from infrastructure
+concerns (CPUs, time limit, batch size), and gives each parameter its own type,
+validation, documentation, and optional default.
 
-The `Params` class is a convention, not a framework requirement — the framework
-does not inspect it. But the pattern is consistent across all built-in
-operations and provides a clean namespace for algorithm tuning.
+The framework validates this pair at class definition time and inspects it for
+parameter schemas, validation, serialization, and hashing. `params` may be
+required or have a default instance of the exact nested model. Parameterless
+operations omit both members. Subclasses may inherit the pair unchanged or
+redefine both members together; redefining only one is invalid. Flat per-run
+configuration fields are rejected.
+
+See [Writing Creator Operations](../how-to-guides/writing-creator-operations.md)
+for authoring examples.
 
 ---
 

@@ -105,10 +105,10 @@ one sub-package but are used across several.
 
 ## The `__init__.py` Contract
 
-Every package's `__init__.py` must contain three things:
+Supported public facades expose a curated API through three elements:
 
 1. **Docstring** — what this package provides
-2. **Re-exports** — import public symbols from internal modules
+2. **Re-exports** — import the supported symbols from their implementation modules
 3. **`__all__`** — explicit list of public symbols
 
 <!-- artisan-import-policy: allow-internal -->
@@ -134,18 +134,25 @@ __all__ = [
 ]
 ```
 
-### Re-export depth
+### Facade ownership
 
-| Package level | Re-exports | Example |
-|---------------|------------|---------|
-| Leaf | Own public classes | `operations/curator/` re-exports `Filter`, `Merge`, etc. |
-| Mid-level hub | Everything from all children | `schemas/` re-exports all artifacts, specs, configs |
-| Root (`artisan/`) | Top-level public API | Users import from sub-packages or root |
+| Facade | Supported workflow |
+|--------|--------------------|
+| `artisan.operations.base` | Operation definitions and per-artifact parameters |
+| `artisan.schemas` | Operation-authoring artifacts, specs, and configuration |
+| `artisan.orchestration` | Pipeline construction, steps, and run history |
+| `artisan.composites` | Reusable operation compositions |
+| `artisan.orchestration.runner_api` | External runner-provider implementations |
+| `artisan` | Version metadata only |
 
-The mid-level hub pattern means users can write
-`from artisan.schemas import DataArtifact` instead of reaching into
-`schemas.artifact.data`. When adding a new type, you must add re-exports
-to both the leaf `__init__.py` and the hub `__init__.py`.
+For example, operation authors import `DataArtifact` from `artisan.schemas`.
+That facade deliberately exposes only supported authoring symbols, not every
+internal schema. Internal packages may keep an empty `__all__` and do not need
+to re-export their implementation types.
+
+Add a public export only when a supported workflow needs it. Choose its owning
+facade and update `tests/test_public_api.py` with the intended contract; adding
+a type does not automatically make it public at every package level.
 
 ## Domain Operation Package Structure
 
@@ -221,8 +228,8 @@ for the full diagram.
 
 ### Import boundaries
 
-When importing across packages, prefer importing from the package's
-re-exports (`__init__.py`). Each package's `__all__` defines its public API.
+Published examples and downstream code import from the supported facade that
+owns the workflow. The facade's `__all__` defines its supported exports.
 
 <!-- artisan-import-policy: allow-internal -->
 ```python
@@ -249,12 +256,12 @@ internal wiring.
 | A new domain operation | `operations/<tool_name>/` | Package with `__init__.py`, main file, optional `utils.py` |
 | A new curator operation | `operations/curator/<name>.py` | Single file, flat alongside siblings |
 | A new example operation | `operations/examples/<name>.py` | Single file + re-export in `examples/__init__.py` |
-| A new artifact type | `schemas/artifact/<name>.py` | Single file + re-exports in `artifact/__init__.py` and `schemas/__init__.py` |
+| A new artifact type | `schemas/artifact/<name>.py` | Single file; add a curated facade export only if a supported authoring workflow needs it |
 | A new enum value | `schemas/enums.py` | Add to existing enum class |
 | A new enum type | `schemas/enums.py` | New class in same file |
 | A new execution concern | `execution/<existing_subpackage>/` | File in the sub-package that owns the responsibility |
 | A new orchestration step-runner provider | A separate provider package | Import the stable runner facade, subclass `RunnerBase`, and pass instances to pipelines |
-| A shared utility function | `utils/<topic>.py` | New file or add to existing file by topic, add re-export |
+| A shared utility function | `utils/<topic>.py` | New file or add to existing file by topic; keep internal unless a supported workflow needs an export |
 | A helper used by one operation only | `operations/<tool>/utils.py` | Inside the operation's own package |
 
 ### External step-runner providers
@@ -385,8 +392,9 @@ Generative operations (no inputs) skip `InputRole`.
 
 ### Parameters
 
-Algorithm-specific configuration uses a nested `Params(BaseModel)` class with
-Pydantic `Field` annotations for validation and documentation:
+Algorithm-specific configuration requires a matched nested `Params(BaseModel)`
+class and a `params` field annotated with that exact model. Use Pydantic `Field`
+annotations for validation and documentation:
 
 ```python
 class Params(BaseModel):
@@ -398,8 +406,15 @@ class Params(BaseModel):
 params: Params = Params()
 ```
 
-Users override parameters at pipeline construction time. The framework
-serializes `params` for caching and provenance recording.
+The field may be required (`params: Params`) or default to an instance of the
+exact nested model, as above. Parameterless operations omit both members.
+Subclasses inherit both unchanged or redefine both together. Flat per-run
+fields and mismatched pairs fail validation at class definition time.
+
+Users override parameters at pipeline construction time. The framework inspects
+the pair for schemas, validation, serialization, and hashing. See
+[Operations Model](../concepts/operations-model.md#algorithm-parameters) and
+[Writing Creator Operations](../how-to-guides/writing-creator-operations.md).
 
 ## Error Handling
 
