@@ -12,7 +12,10 @@ from pydantic import BaseModel, ConfigDict
 from artisan.errors import IncompatibleStoreError, StoreIntegrityError
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.enums import TablePath
-from artisan.schemas.orchestration.step_lifecycle import StepStatus
+from artisan.schemas.orchestration.step_lifecycle import (
+    TERMINAL_STEP_STATUSES,
+    StepStatus,
+)
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.storage.core.committed_scan import read_logical_commits
 from artisan.storage.core.store_format import assert_store_format
@@ -76,7 +79,19 @@ def repair_store(
     abandon: str | None = None,
     reason: str | None = None,
 ) -> RepairReport:
-    """Report by default, replay validated plans, or abandon one planned commit."""
+    """Inspect commit evidence or perform one explicit repair action.
+
+    With neither action selected, report without modifying either root.
+    ``apply=True`` retries validated plans and removes staging for completed
+    plans. ``abandon`` instead marks one planned commit abandoned and reconciles
+    its step's failure; it requires a reason and retains staging evidence.
+
+    Raises:
+        ValueError: If apply and abandon are combined, abandonment has no
+            reason, or a reason is supplied without abandonment.
+        IncompatibleStoreError: If a mutation targets an unsupported store.
+        StoreIntegrityError: If evidence cannot authorize the requested action.
+    """
     _validate_action(apply=apply, abandon=abandon, reason=reason)
     options = storage_options or {}
     try:
@@ -398,7 +413,7 @@ def _preflight_abandonment(
     committer: DeltaCommitter,
     plan: CommitPlan,
 ) -> None:
-    """Prove D4 reconciliation is possible before changing control state."""
+    """Prove lifecycle reconciliation is possible before changing control state."""
     if plan.commit_kind != "step_result":
         return
     tracker = StepTracker(
@@ -407,13 +422,7 @@ def _preflight_abandonment(
         fs=committer._fs,
     )
     current = tracker.current_state(plan.step_run_id)
-    if current.status in {
-        StepStatus.SUCCEEDED,
-        StepStatus.PARTIAL,
-        StepStatus.FAILED,
-        StepStatus.CANCELLED,
-        StepStatus.SKIPPED,
-    }:
+    if current.status in TERMINAL_STEP_STATUSES:
         return
     if current.status != StepStatus.RUNNING:
         msg = (
@@ -428,7 +437,7 @@ def _reconcile_abandonment(
     plan: CommitPlan,
     reason: str,
 ) -> None:
-    """Append one guarded D4 failure without replacing a terminal winner."""
+    """Record failure without replacing an authoritative terminal outcome."""
     if plan.commit_kind != "step_result":
         return
     tracker = StepTracker(
@@ -437,13 +446,7 @@ def _reconcile_abandonment(
         fs=committer._fs,
     )
     current = tracker.current_state(plan.step_run_id)
-    if current.status in {
-        StepStatus.SUCCEEDED,
-        StepStatus.PARTIAL,
-        StepStatus.FAILED,
-        StepStatus.CANCELLED,
-        StepStatus.SKIPPED,
-    }:
+    if current.status in TERMINAL_STEP_STATUSES:
         return
     message = f"Logical commit {plan.logical_commit_id} abandoned: {reason}"
     result = StepResult(

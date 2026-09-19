@@ -1,10 +1,8 @@
 """Smoke test: DeltaCommitter round-trip against MinIO.
 
-Validates the PR 3 fixture chain (`minio_endpoint` → `s3_fs`) and
-PR 1's `StorageConfig.delta_options` plumbing together. Also asserts
-per-op latency is reasonable — a regression here usually means the
-EC2 IMDS probe is firing (3 s timeout per op) because
-`AWS_EC2_METADATA_DISABLED` isn't taking effect.
+Exercise MinIO fixtures and `StorageConfig.delta_storage_options` together.
+Check latency to catch slow EC2 instance-metadata probes when
+`AWS_EC2_METADATA_DISABLED` is not taking effect.
 """
 
 from __future__ import annotations
@@ -82,7 +80,6 @@ def test_delta_commit_roundtrip_on_minio(s3_fs):
         f"first logical commit PUT took {write_elapsed:.2f}s — too slow"
     )
 
-    # Read back and verify
     table_uri = f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}"
     read_back = pl.read_delta(
         table_uri, storage_options=storage.delta_storage_options()

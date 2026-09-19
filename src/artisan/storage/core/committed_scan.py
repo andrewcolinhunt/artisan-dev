@@ -10,6 +10,7 @@ from fsspec import AbstractFileSystem
 from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.store_format import assert_store_format
+from artisan.storage.core.table_schemas import is_global_artifact_table
 from artisan.storage.io.commit_plan import canonical_table_plan_key, read_commit_plan
 from artisan.utils.path import uri_join
 
@@ -23,7 +24,11 @@ def scan_committed(
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
 ) -> pl.LazyFrame:
-    """Return a lazy frame containing only completion-authorized rows."""
+    """Eagerly read and verify committed rows, then expose a lazy frame.
+
+    Subsequent filters operate on the materialized result; they do not defer
+    Delta reads or push predicates into the physical table scan.
+    """
     return read_committed(
         delta_root,
         table,
@@ -66,7 +71,6 @@ def read_committed(
         physical,
         controls,
         fs,
-        options,
     )
     if "logical_commit_id" in visible.columns:
         return visible.drop("logical_commit_id")
@@ -170,7 +174,6 @@ def _validate_complete_effects(
     physical: pl.DataFrame,
     controls: pl.DataFrame,
     fs: AbstractFileSystem,
-    storage_options: dict[str, str],
 ) -> None:
     """Prove every completed plan's effect for the requested table."""
     complete_plans: dict[str, Any] = {}
@@ -237,7 +240,7 @@ def _reject_unplanned_complete_rows(
             continue
         if owned.is_empty():
             continue
-        if _is_global_artifact_table(table_path) and "origin_step_number" in owned:
+        if is_global_artifact_table(table_path) and "origin_step_number" in owned:
             invalid_origin = owned.filter(
                 pl.col("origin_step_number").is_null()
                 | (pl.col("origin_step_number") != plan.step_number)
@@ -286,7 +289,7 @@ def _planned_physical_rows(
         rows = physical.filter(
             pl.col("current_step_run_id") == logical_commit_id.split(":", 1)[1]
         )
-    elif _is_global_artifact_table(table_path):
+    elif is_global_artifact_table(table_path):
         rows = filter_committed_rows(physical, table_path, controls)
         rows = rows.join(
             expected,
@@ -300,22 +303,7 @@ def _planned_physical_rows(
     if not duplicates.is_empty():
         msg = f"Duplicate natural key in table {table_path!r}"
         raise StoreIntegrityError(msg)
-    data_columns = [column for column in rows.columns if column != "logical_commit_id"]
-    conflicting = (
-        rows.group_by(list(natural_key))
-        .agg(pl.struct(data_columns).n_unique().alias("variants"))
-        .filter(pl.col("variants") != 1)
-    )
-    if not conflicting.is_empty():
-        msg = f"Conflicting natural key in table {table_path!r}"
-        raise StoreIntegrityError(msg)
-    return rows.unique(subset=list(natural_key), maintain_order=True)
-
-
-def _is_global_artifact_table(table_path: str) -> bool:
-    return table_path.startswith("artifacts/") and table_path not in {
-        TablePath.LOGICAL_COMMITS.value,
-    }
+    return rows
 
 
 def _complete_ids(controls: pl.DataFrame) -> list[str]:

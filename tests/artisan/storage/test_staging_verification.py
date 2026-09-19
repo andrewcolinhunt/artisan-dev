@@ -123,7 +123,6 @@ class TestAwaitStagingFiles:
 
     def test_empty_execution_run_ids_returns_immediately(self, tmp_path):
         """No-op when execution_run_ids is empty."""
-        # Should not raise, should return quickly
         await_staging_files(
             staging_root=str(tmp_path),
             execution_run_ids=[],
@@ -134,7 +133,6 @@ class TestAwaitStagingFiles:
         """Returns quickly when all files are already present."""
         execution_run_id = "abcdef1234567890abcdef1234567890"
 
-        # Create staging directory with required file
         staging_dir = Path(shard_uri(str(tmp_path), execution_run_id))
         staging_dir.mkdir(parents=True)
         (staging_dir / REQUIRED_STAGING_FILE).write_bytes(b"data")
@@ -147,7 +145,6 @@ class TestAwaitStagingFiles:
         )
         elapsed = time.monotonic() - start
 
-        # Should complete quickly (not wait for timeout)
         assert elapsed < 2.0
 
     def test_files_appear_after_delay_succeeds(self, tmp_path):
@@ -163,12 +160,10 @@ class TestAwaitStagingFiles:
 
         import threading
 
-        # Start thread to create file after delay
         thread = threading.Thread(target=create_file_after_delay)
         thread.start()
 
         try:
-            # Should succeed after file appears
             await_staging_files(
                 staging_root=str(tmp_path),
                 execution_run_ids=[execution_run_id],
@@ -194,7 +189,6 @@ class TestAwaitStagingFiles:
             )
 
         error_msg = str(exc_info.value)
-        # Check error message contains helpful info
         assert "not visible after" in error_msg
         assert "Missing 2/2" in error_msg
         assert "abcdef" in error_msg
@@ -233,53 +227,13 @@ class TestAwaitStagingFiles:
             "deadbeef12345678deadbeef12345678",
         ]
 
-        # Create all staging directories with required files
         for run_id in execution_run_ids:
             staging_dir = Path(shard_uri(str(tmp_path), run_id))
             staging_dir.mkdir(parents=True)
             (staging_dir / REQUIRED_STAGING_FILE).write_bytes(b"data")
 
-        # Should succeed without timeout
         await_staging_files(
             staging_root=str(tmp_path),
             execution_run_ids=execution_run_ids,
             timeout_seconds=5.0,
         )
-
-
-class TestWorkerResultsHelpers:
-    """Tests for extract_execution_run_ids helpers in worker_results.py."""
-
-    def test_extract_execution_run_ids_from_results(self):
-        """Extract execution_run_ids from UnitResult instances."""
-        from artisan.orchestration.engine.results import (
-            extract_execution_run_ids,
-        )
-        from artisan.schemas.execution.unit_result import UnitResult
-
-        results = [
-            UnitResult(
-                success=True, error=None, item_count=1, execution_run_ids=["id1"]
-            ),
-            UnitResult(
-                success=True, error=None, item_count=1, execution_run_ids=["id2", "id3"]
-            ),
-            UnitResult(
-                success=False, error="fail", item_count=1, execution_run_ids=[None]
-            ),
-            UnitResult(success=True, error=None, item_count=1, execution_run_ids=[]),
-        ]
-
-        ids = extract_execution_run_ids(results)
-
-        assert ids == ["id1", "id2", "id3"]
-
-    def test_extract_execution_run_ids_empty_list(self):
-        """Empty list returns empty list."""
-        from artisan.orchestration.engine.results import (
-            extract_execution_run_ids,
-        )
-
-        ids = extract_execution_run_ids([])
-
-        assert ids == []

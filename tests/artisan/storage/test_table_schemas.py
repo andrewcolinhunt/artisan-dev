@@ -150,7 +150,7 @@ class TestFrameworkSchemaDefinitions:
         } == CACHE_REUSE_SCHEMA
 
     def test_artifact_index_has_required_columns(self):
-        """artifact_index has all columns from v3 design."""
+        """Require the exact artifact index columns."""
         required = {"artifact_id", "artifact_type", "origin_step_number", "metadata"}
         assert required == set(ARTIFACT_INDEX_SCHEMA.keys())
 
@@ -162,10 +162,7 @@ class TestFrameworkSchemaDefinitions:
         assert TablePath.ARTIFACT_LOCATIONS in NON_PARTITIONED_TABLES
 
     def test_framework_schemas_have_metadata_column(self):
-        """Most framework tables have a metadata column.
-
-        Exceptions: artifact_edges and execution_edges (pure edge tables).
-        """
+        """Require metadata for framework tables that store extensible records."""
         tables_without_metadata = {
             TablePath.ARTIFACT_EDGES,
             TablePath.EXECUTION_EDGES,
@@ -260,12 +257,12 @@ class TestCreateEmptyDataframe:
         """create_empty_dataframe works for all framework TablePath values."""
         for table_path in TablePath:
             df = create_empty_dataframe(table_path)
-            assert df.shape[0] == 0  # Empty
-            assert len(df.columns) > 0  # Has columns
+            assert df.shape[0] == 0
+            assert len(df.columns) > 0
 
 
 def test_physical_ownership_is_central_and_domain_schemas_remain_ownerless():
-    """D5 metadata exists only at the physical persistence boundary."""
+    """Keep logical-commit ownership at the physical persistence boundary."""
     for table in (
         TablePath.ARTIFACT_INDEX,
         TablePath.ARTIFACT_LOCATIONS,
@@ -345,7 +342,7 @@ class TestDataFrameCreation:
             "artifact_id": ["a" * 32, "b" * 32, "c" * 32],
         }
         df = pl.DataFrame(data, schema=EXECUTION_EDGES_SCHEMA)
-        assert df.shape == (3, 4)  # 3 rows (edges), 4 columns
+        assert df.shape == (3, 4)
         assert df.filter(pl.col("direction") == "input").shape[0] == 2
         assert df.filter(pl.col("direction") == "output").shape[0] == 1
 

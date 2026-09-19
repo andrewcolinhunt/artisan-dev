@@ -36,17 +36,17 @@ CONFIGS_SCHEMA = ExecutionConfigArtifact.POLARS_SCHEMA
 
 @pytest.fixture(autouse=True)
 def _format_local_tmp_root(tmp_path) -> None:
-    """Give direct local test stores the exact format-2 manifest."""
+    """Initialize the supported store tables and manifest for local tests."""
     publish_test_store(str(tmp_path), LocalFileSystem())
 
 
 def _metric(values: dict, name: str, step: int = 1) -> MetricArtifact:
-    """Build a finalized metric row with a valid format-2 identity."""
+    """Build a finalized metric for persistence tests."""
     return MetricArtifact.draft(values, f"{name}.json", step).finalize()  # type: ignore[return-value]
 
 
 def _config(values: dict, name: str, step: int = 1) -> ExecutionConfigArtifact:
-    """Build a finalized config row with a valid format-2 identity."""
+    """Build a finalized configuration for persistence tests."""
     return ExecutionConfigArtifact.draft(values, f"{name}.json", step).finalize()  # type: ignore[return-value]
 
 
@@ -108,7 +108,7 @@ def _write_file_ref(
 
 
 class TestArtifactStorePrepare:
-    """Tests for artifact preparation (no Delta Lake needed)."""
+    """Test preparation of ownerless artifact index rows."""
 
     @pytest.fixture
     def store(self, tmp_path):
@@ -144,8 +144,8 @@ class TestArtifactStoreFilesRoot:
         )
         assert store.files_root == str(files_root)
 
-    def test_backward_compatible_positional(self, tmp_path):
-        """Existing positional-only callers still work."""
+    def test_positional_base_path(self, tmp_path):
+        """Accept the base path as a positional argument."""
         store = ArtifactStore(str(tmp_path), fs=LocalFileSystem())
         assert store.base_path == str(tmp_path)
         assert store.files_root is None
@@ -343,7 +343,7 @@ class TestBulkLoadMethods:
         assert "a" * 32 not in pmap
 
     def test_load_provenance_map_empty_table(self, backend_fs):
-        """Returns empty dict when no provenance table exists."""
+        """Return an empty mapping when the provenance table is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -369,7 +369,7 @@ class TestBulkLoadMethods:
         assert len(smap) == 2
 
     def test_load_step_number_map_empty_table(self, backend_fs):
-        """Returns empty dict when no index table exists."""
+        """Return an empty mapping when the index is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -441,8 +441,8 @@ class TestGetArtifactsByType:
         result = store.get_artifacts_by_type(["x" * 32, "y" * 32], ArtifactTypes.METRIC)
         assert result == {}
 
-    def test_bulk_load_no_table(self, backend_fs):
-        """Missing table returns empty dict."""
+    def test_bulk_load_empty_table(self, backend_fs):
+        """Return an empty mapping when the content table is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -562,8 +562,8 @@ class TestLoadOriginalNames:
         store, _metric_ids, _config_ids = store_with_names
         assert store.load_original_names(["x" * 32, "y" * 32]) == {}
 
-    def test_no_index_table(self, backend_fs):
-        """Returns empty dict when the artifact_index table is absent."""
+    def test_empty_index_table(self, backend_fs):
+        """Return an empty mapping when the artifact index is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -676,8 +676,8 @@ class TestArtifactStoreProvenanceQueries:
         result = store_with_provenance.provenance.get_direct_ancestors("z" * 32)
         assert result == []
 
-    def test_get_ancestor_artifact_ids_no_table(self, backend_fs):
-        """Missing provenance table returns empty list."""
+    def test_get_ancestor_artifact_ids_empty_table(self, backend_fs):
+        """Return an empty list when the provenance table is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -697,8 +697,8 @@ class TestArtifactStoreProvenanceQueries:
             store_with_provenance.provenance.get_artifact_step_number("z" * 32) is None
         )
 
-    def test_get_artifact_step_number_no_table(self, backend_fs):
-        """Missing artifact_index table returns None."""
+    def test_get_artifact_step_number_empty_table(self, backend_fs):
+        """Return None when the artifact index is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -707,11 +707,7 @@ class TestArtifactStoreProvenanceQueries:
 
 
 class TestMetricOriginalNamePersistence:
-    """Tests for MetricArtifact.original_name persistence.
-
-    Verifies that original_name is correctly stored and retrieved from Delta Lake.
-    This was a bug fix - original_name existed in memory but wasn't persisted.
-    """
+    """Verify metric original names survive a storage round trip."""
 
     @pytest.fixture
     def store_with_metrics(self, backend_fs):
@@ -903,8 +899,8 @@ class TestGetDescendantArtifactIds:
         result = store_with_provenance.provenance.get_direct_descendants(set())
         assert result == {}
 
-    def test_missing_table(self, backend_fs):
-        """Missing provenance table returns empty dict."""
+    def test_empty_table(self, backend_fs):
+        """Return an empty mapping when the provenance table is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -960,7 +956,7 @@ class TestLoadArtifactTypeMap:
         assert result["c" * 32] == "metric"
 
     def test_empty_index(self, backend_fs):
-        """Missing index returns empty dict."""
+        """Return an empty mapping when the index is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -1027,8 +1023,8 @@ class TestLoadArtifactIdsByType:
         )
         assert result == set()
 
-    def test_missing_index(self, backend_fs):
-        """Missing index returns empty set."""
+    def test_empty_index(self, backend_fs):
+        """Return an empty set when the index is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -1074,8 +1070,8 @@ class TestLoadForwardProvenanceMap:
         assert result["b" * 32] == ["c" * 32]
         assert "c" * 32 not in result  # leaf has no outgoing edges
 
-    def test_missing_table(self, backend_fs):
-        """Missing provenance table returns empty dict."""
+    def test_empty_table(self, backend_fs):
+        """Return an empty mapping when the provenance table is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -1154,8 +1150,8 @@ class TestLoadStepNameMap:
         assert result[0] == "ingest"
         assert result[1] == "tool_c"
 
-    def test_missing_tables(self, backend_fs):
-        """Missing tables returns empty dict."""
+    def test_empty_steps(self, backend_fs):
+        """Return an empty mapping when no step attempts exist."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -1273,8 +1269,8 @@ class TestGetAssociated:
         result = store.get_associated(set(), "metric")
         assert result == {}
 
-    def test_missing_provenance_table(self, backend_fs):
-        """Missing provenance table returns empty dict."""
+    def test_empty_provenance_table(self, backend_fs):
+        """Return an empty mapping when the provenance table is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -1351,7 +1347,6 @@ class TestArtifactStoreBackendParametrized:
         )
         assert verify.shape[0] == 1
 
-        # Now exercise ArtifactStore against the same step_runner.
         store = ArtifactStore(
             delta_root,
             fs=fs,

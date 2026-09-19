@@ -154,14 +154,13 @@ def await_staging_files(
 
     start_time = time.monotonic()
     current_interval = poll_interval_seconds
-    max_interval = 5.0  # Cap backoff at 5 seconds
+    max_interval = 5.0
     attempt = 0
 
     while True:
         attempt += 1
         elapsed = time.monotonic() - start_time
 
-        # Check all paths using open() for close-to-open consistency
         missing: dict[str, str] = {}
         for run_id, path in id_to_path.items():
             success, issues = verify_staging_directory(path)
@@ -175,18 +174,15 @@ def await_staging_files(
             )
             return
 
-        # Check timeout
         if elapsed >= timeout_seconds:
             _raise_timeout_error(missing, len(execution_run_ids), timeout_seconds)
 
-        # Log progress
         logger.debug(
             f"Staging verification attempt {attempt}: "
             f"{len(missing)}/{len(execution_run_ids)} still missing, "
             f"elapsed={elapsed:.1f}s"
         )
 
-        # Wait with exponential backoff
         time.sleep(current_interval)
         current_interval = min(current_interval * 1.5, max_interval)
 

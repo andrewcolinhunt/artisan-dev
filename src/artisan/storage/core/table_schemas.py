@@ -21,9 +21,6 @@ from polars.datatypes import DataType, DataTypeClass
 
 from artisan.schemas.enums import TablePath
 
-# =============================================================================
-# executions table
-# =============================================================================
 # Lightweight execution log with success/error/timestamps. Stores
 # execution metadata only; input/output edges live in the
 # execution_edges table.
@@ -33,19 +30,19 @@ from artisan.schemas.enums import TablePath
 
 EXECUTIONS_SCHEMA = {
     "execution_run_id": pl.String,  # PK - unique per execution attempt
-    "execution_spec_id": pl.String,  # Deterministic ID for caching (indexed)
+    "execution_spec_id": pl.String,  # Deterministic cache key
     "step_run_id": pl.String,  # Links execution to step attempt (nullable)
     "origin_step_number": pl.Int32,  # Partition key
     "operation_name": pl.String,  # From OperationDefinition.name
-    "params": pl.String,  # JSON - full instantiated params
-    "user_overrides": pl.String,  # JSON - original user-provided overrides
+    "params": pl.String,  # JSON - instantiated params with sensitive values redacted
+    "user_overrides": pl.String,  # JSON - user overrides with sensitive values redacted
     "timestamp_start": pl.Datetime("us", "UTC"),  # Execution start (microseconds, UTC)
     "timestamp_end": pl.Datetime(
         "us", "UTC"
     ),  # Execution end (microseconds, UTC); nullable
-    "source_worker": pl.Int32,  # Worker ID
+    "source_worker": pl.Int32,
     "compute_backend": pl.String,  # Resolved step-runner name
-    "success": pl.Boolean,  # Whether execution succeeded (row-level)
+    "success": pl.Boolean,
     "error": pl.String,  # Error message if failed (row-level)
     "error_envelope": pl.String,  # JSON - structured ArtisanError envelope (nullable)
     "tool_output": pl.String,  # Captured stdout+stderr from external command
@@ -56,9 +53,6 @@ EXECUTIONS_SCHEMA = {
     "metadata": pl.String,  # JSON - additional data
 }
 
-# =============================================================================
-# execution_edges table
-# =============================================================================
 # Normalized input/output edges for execution provenance.
 # One row per edge (input or output artifact), which keeps queries
 # simple and avoids array columns in the executions table.
@@ -66,13 +60,10 @@ EXECUTIONS_SCHEMA = {
 EXECUTION_EDGES_SCHEMA = {
     "execution_run_id": pl.String,  # FK to executions
     "direction": pl.String,  # "input" or "output"
-    "role": pl.String,  # Role name
-    "artifact_id": pl.String,  # Artifact ID
+    "role": pl.String,
+    "artifact_id": pl.String,
 }
 
-# =============================================================================
-# artifact_edges table
-# =============================================================================
 # Directed source->target derivation edges for artifact provenance.
 # This is the entity-centric provenance table (vs activity-centric executions).
 #
@@ -95,16 +86,12 @@ ARTIFACT_EDGES_SCHEMA = {
     "step_boundary": pl.Boolean,  # True = crosses step boundary, False = composite-internal
 }
 
-# =============================================================================
-# artifact_index table
-# =============================================================================
-# Global registry resolving artifact_id -> type + location.
-# Speed optimization for artifact lookups without scanning type-specific tables.
+# Global type and origin index; external URIs live in artifact_locations.
 
 ARTIFACT_INDEX_SCHEMA = {
     "artifact_id": pl.String,  # PK
     "artifact_type": pl.String,  # data, metric, file_ref, config
-    "origin_step_number": pl.Int32,  # Where produced
+    "origin_step_number": pl.Int32,  # Step of the first committed artifact row
     "metadata": pl.String,  # JSON - additional data
 }
 
@@ -113,9 +100,6 @@ ARTIFACT_LOCATIONS_SCHEMA = {
     "uri": pl.String,
 }
 
-# =============================================================================
-# cache_reuse table
-# =============================================================================
 # Minimal relation between a current logical step and an execution accepted
 # from cache. Every other fact is derived from steps, executions, and edges.
 
@@ -124,14 +108,12 @@ CACHE_REUSE_SCHEMA = {
     "cached_execution_run_id": pl.String,
 }
 
-# =============================================================================
-# steps table
-# =============================================================================
 # Append-only event log of step state transitions.
 # Snapshots are ordered by state_sequence. The unique latest authoritative
 # snapshot is the lifecycle source of truth for one step attempt.
 # Not partitioned (small table, few rows per step per run).
-# Written directly by StepTracker, not through staging path.
+# StepTracker writes lifecycle events directly; commit-owned result snapshots
+# pass through staging and become visible only at logical completion.
 
 STEPS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "step_run_id": pl.String,
@@ -171,9 +153,6 @@ LOGICAL_COMMITS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "abandon_reason": pl.String,
 }
 
-# =============================================================================
-# Framework Schema Registry
-# =============================================================================
 # Mapping from TablePath to schema for framework tables only.
 # Artifact content table schemas are managed by ArtifactTypeDef.
 
@@ -221,8 +200,7 @@ NATURAL_KEYS: dict[TablePath, tuple[str, ...]] = {
     TablePath.LOGICAL_COMMITS: ("logical_commit_id",),
 }
 
-# Tables that are NOT partitioned by origin_step_number
-# Used by commit.py to avoid setting partition_by for these tables
+# Framework tables without origin-step partitioning.
 NON_PARTITIONED_TABLES: frozenset[TablePath] = frozenset(
     {
         TablePath.ARTIFACT_INDEX,
@@ -303,3 +281,8 @@ def get_natural_key(table: str | TablePath) -> tuple[str, ...]:
         except ValueError:
             return ("artifact_id",)
     return NATURAL_KEYS[table]
+
+
+def is_global_artifact_table(table_path: str) -> bool:
+    """Return whether a table holds artifact rows reusable across commits."""
+    return table_path.startswith("artifacts/")

@@ -153,8 +153,8 @@ class TestLoadProvenanceEdgesDf:
         assert result.is_empty()
         assert result.columns == ["source_artifact_id", "target_artifact_id"]
 
-    def test_empty_when_no_tables(self, backend_fs):
-        """Returns empty DataFrame when tables don't exist."""
+    def test_empty_when_tables_empty(self, backend_fs):
+        """Return an empty frame when the required tables are empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -184,7 +184,6 @@ class TestLoadMetricsDf:
                     "original_name": "score",
                     "extension": ".json",
                     "metadata": "{}",
-                    "external_path": None,
                 }
             ],
             opts,
@@ -212,7 +211,6 @@ class TestLoadMetricsDf:
                     "original_name": "a",
                     "extension": ".json",
                     "metadata": "{}",
-                    "external_path": None,
                 },
                 {
                     "artifact_id": "m2",
@@ -221,7 +219,6 @@ class TestLoadMetricsDf:
                     "original_name": "b",
                     "extension": ".json",
                     "metadata": "{}",
-                    "external_path": None,
                 },
             ],
             opts,
@@ -244,8 +241,8 @@ class TestLoadMetricsDf:
         assert result.is_empty()
         assert result.columns == ["artifact_id", "content"]
 
-    def test_empty_when_no_table(self, backend_fs):
-        """Returns empty DataFrame when metrics table doesn't exist."""
+    def test_empty_when_table_empty(self, backend_fs):
+        """Return an empty frame when the metrics table is empty."""
         fs, storage, root = backend_fs
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
@@ -257,11 +254,7 @@ class TestLoadMetricsDf:
 
 
 class TestStoreDfMethodsBackendParametrized:
-    """Smoke test ArtifactStore DataFrame methods on both [local, s3] backends.
-
-    Kept alongside the promoted classes above as an additional
-    integration-level round-trip check.
-    """
+    """Test metric frame loading through committed storage on both backends."""
 
     def test_load_metrics_df_round_trip(self, backend_fs):
         """Write a metrics Delta table and load it back via ArtifactStore."""
