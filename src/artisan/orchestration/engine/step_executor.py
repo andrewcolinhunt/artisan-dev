@@ -623,7 +623,7 @@ def execute_step(
     failure_policy = (
         ov.failure_policy if ov.failure_policy is not None else config.failure_policy
     )
-    skip_cache = ov.skip_cache or config.skip_cache
+    skip_cache = ov.skip_cache or config.skip_cache or not operation.cacheable
 
     # Check if this is a curator operation
     if is_curator_operation(operation):
