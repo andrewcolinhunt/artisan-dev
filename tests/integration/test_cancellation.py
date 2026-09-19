@@ -41,8 +41,8 @@ def test_cancel_before_any_steps(pipeline_env: dict[str, str]):
     assert "overall_success" in summary
 
 
-def test_cancel_skips_downstream_steps(pipeline_env: dict[str, str]):
-    """Cancelling after step 0 causes step 1 to be skipped."""
+def test_cancel_marks_downstream_steps_cancelled(pipeline_env: dict[str, str]):
+    """Cancelling after step 0 marks the subsequent step cancelled."""
     pipeline = PipelineManager.create(
         name="test_cancel_downstream",
         delta_root=pipeline_env["delta_root"],
@@ -77,8 +77,8 @@ def test_cancel_skips_downstream_steps(pipeline_env: dict[str, str]):
     assert summary["total_steps"] == 2
 
 
-def test_cancel_during_submit(pipeline_env: dict[str, str]):
-    """cancel() after submit() causes the queued step to skip."""
+def test_cancel_before_submit(pipeline_env: dict[str, str]):
+    """Cancelling before submission returns a cancelled future."""
     pipeline = PipelineManager.create(
         name="test_cancel_during",
         delta_root=pipeline_env["delta_root"],

@@ -26,29 +26,29 @@ the proposal and give feedback before you start coding.
 
 ### Prerequisites
 
-- Python 3.12+
-- [Pixi](https://pixi.sh) (manages all dependencies and environments)
+- [Pixi 0.66.0](docs/getting-started/installation.md) supplies Python and the
+  project dependencies.
 
 ### Getting Started
 
 ```bash
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
-pixi install
+pixi install --locked
 ```
 
 ### Environments
 
-| Environment | Activate with        | Purpose                                       |
-| ----------- | -------------------- | --------------------------------------------- |
-| `default`   | `pixi run …`         | Core runtime — everything needed to run pipelines |
-| `dev`       | `pixi run -e dev …`  | Testing, linting, formatting, notebooks       |
-| `docs`      | `pixi run -e docs …` | Documentation building (Jupyter Book 2)       |
+| Environment | Activate with | Purpose |
+| --- | --- | --- |
+| `default` | `pixi run --locked …` | Core runtime for pipelines |
+| `dev` | `pixi run --locked -e dev …` | Testing, linting, formatting, notebooks |
+| `docs` | `pixi run --locked -e docs …` | Documentation building (Jupyter Book 2) |
 
 ### Install Pre-commit Hooks
 
 ```bash
-pixi run -e dev pre-commit install
+pixi run --locked -e dev pre-commit install
 ```
 
 This ensures linting, formatting, and type checks run automatically on every
@@ -69,22 +69,23 @@ commit.
 ### Running Tests
 
 ```bash
-pixi run -e dev test              # Unit (sequential) + integration (parallel)
-pixi run -e dev test-unit         # Unit tests only
-pixi run -e dev test-integration  # Integration tests only (parallel)
-pixi run -e dev test-seq          # All tests sequentially (for debugging)
+pixi run --locked -e dev test              # Unit + integration + S3 tests
+pixi run --locked -e dev test-unit         # Unit tests only
+pixi run --locked -e dev test-integration  # Integration tests only (parallel)
+pixi run --locked -e dev test-s3           # S3 tests (MinIO required)
+pixi run --locked -e dev test-seq          # All tests sequentially (for debugging)
 ```
 
 ### Formatting and Linting
 
 ```bash
-pixi run -e dev fmt               # Ruff format + lint with auto-fix
+pixi run --locked -e dev fmt               # Ruff format + lint with auto-fix
 ```
 
 ### Pre-commit (all checks)
 
 ```bash
-pixi run -e dev pre-commit run --all-files
+pixi run --locked -e dev pre-commit run --all-files
 ```
 
 ---

@@ -2,7 +2,7 @@
 
 Deploys ``artisan-tool-wait_tool`` from the working branch (WaitTool's
 source overlay is on by design), then exercises both stored-output modes
-of ``endpoint-s3-outputs`` against the real bucket:
+against the real bucket:
 
 - **prefix mode** through the artisan client (``call_endpoint``): the
   worker uploads with the ``r2-artisan`` Modal Secret's credentials and
@@ -18,7 +18,7 @@ Unlike the sibling ``test_tool_endpoint.py`` (which assumes a prior
 deploy), this module deploys in its fixture — the deployment must carry
 the R2 secret. Run explicitly:
 
-    ~/.pixi/bin/pixi run -e dev test-modal-endpoint
+    ~/.pixi/bin/pixi run --locked -e dev test-modal-endpoint
 
 Requirements (each missing one skips with a reason):
 
@@ -29,9 +29,8 @@ Requirements (each missing one skips with a reason):
   falling back to ``_dev/demos/s3_real/.env``)
 - the ``r2-artisan`` Modal Secret carrying ``AWS_ACCESS_KEY_ID``,
   ``AWS_SECRET_ACCESS_KEY``, ``AWS_REGION``, ``AWS_ENDPOINT_URL``
-- a worker image carrying s3fs and ca-certificates (any
-  ``artisan-worker:latest`` from the ``fix/s3fs-default-env`` lock
-  onward); ``ARTISAN_TEST_WORKER_IMAGE`` pins a different ref —
+- a worker image carrying s3fs and ca-certificates;
+  ``ARTISAN_TEST_WORKER_IMAGE`` selects a specific image ref —
   remember Modal caches registry refs, so a re-pushed tag needs one
   run with ``MODAL_FORCE_BUILD=1``
 """
@@ -135,7 +134,8 @@ def endpoint_url(r2: dict[str, str]) -> str:
 
     Mirrors ``artisan modal deploy wait_tool`` exactly (``build_app`` +
     ``app.deploy()``), with the R2 secret — and optionally a test image —
-    swapped into the class-level config ``endpoint_spec`` reads.
+    set on the ``compute_provider`` model-field default that ``endpoint_spec``
+    reads, then restored after deployment.
     """
     if not ((Path.home() / ".modal.toml").exists() or os.environ.get("MODAL_TOKEN_ID")):
         pytest.skip("no Modal credentials (~/.modal.toml or MODAL_TOKEN_ID)")

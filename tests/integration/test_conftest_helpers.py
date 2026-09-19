@@ -17,7 +17,7 @@ from .conftest import read_table
 
 
 class TestReadTableLocal:
-    """Local path behavior — must stay byte-identical to pre-PR-8a."""
+    """Read existing local tables and return empty frames for absent tables."""
 
     def test_returns_rows_when_table_exists(self, tmp_path: Path) -> None:
         delta_root = str(tmp_path)
@@ -44,7 +44,7 @@ class TestReadTableLocal:
 
 
 class TestReadTableCloudContract:
-    """URI-path contract — matters even without a live cloud step_runner."""
+    """URI reads preserve filesystem selection without a live cloud backend."""
 
     def test_raises_without_fs_on_cloud_uri(self) -> None:
         with pytest.raises(ValueError, match="fs required for cloud"):

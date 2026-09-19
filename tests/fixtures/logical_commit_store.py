@@ -1,4 +1,4 @@
-"""Helpers for seeding tests through the format-2 commit boundary."""
+"""Helpers for seeding tests through the current-format commit boundary."""
 
 from __future__ import annotations
 
