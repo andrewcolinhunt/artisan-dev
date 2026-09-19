@@ -102,3 +102,72 @@ jobs:
         run: |
           python -m zipfile --list dist/*.whl | grep -q 'artisan/py.typed'
           python -m zipfile --list dist/*.whl | grep -q 'artisan_mcp/py.typed'
+
+      - name: Verify MCP from the installed wheel
+        run: |
+          pixi run --locked -e dev python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import tempfile
+          import venv
+
+          checkout = Path.cwd().resolve()
+          wheels = list((checkout / "dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise RuntimeError(f"Expected exactly one built wheel, found {len(wheels)}")
+          wheel = wheels[0]
+          print(f"Wheel: {wheel.name}; sha256={hashlib.sha256(wheel.read_bytes()).hexdigest()}", flush=True)
+          with tempfile.TemporaryDirectory(prefix="artisan-wheel-mcp-") as temporary:
+              root = Path(temporary).resolve()
+              assert not root.is_relative_to(checkout)
+              environment = root / "venv"
+              venv.EnvBuilder(with_pip=True).create(environment)
+              scripts = environment / "bin"
+              python = str(scripts / "python")
+              env = dict(os.environ)
+              env.pop("PYTHONPATH", None)
+              env.pop("PYTHONHOME", None)
+              env["PATH"] = str(scripts) + os.pathsep + env.get("PATH", "")
+              subprocess.run(
+                  [python, "-I", "-m", "pip", "install", f"{wheel}[mcp]", "pytest"],
+                  cwd=root, env=env, check=True,
+              )
+              preflight = """
+          import importlib
+          import importlib.metadata
+          from pathlib import Path
+          import sys
+          import sysconfig
+          root = Path(sys.prefix).resolve()
+          assert root == Path(sys.argv[1]).resolve()
+          for name in ("artisan", "artisan_mcp", "mcp", "fastmcp", "pytest"):
+              module = importlib.import_module(name)
+              path = Path(module.__file__).resolve()
+              assert path.is_relative_to(root), (name, path)
+          console = Path(sysconfig.get_path("scripts")) / "artisan-mcp"
+          assert console.is_file() and console.resolve().is_relative_to(root)
+          print("Python:", sys.version)
+          print("MCP:", importlib.metadata.version("mcp"))
+          print("FastMCP:", importlib.metadata.version("fastmcp"))
+          print("Console:", console)
+          """
+              subprocess.run(
+                  [python, "-I", "-c", preflight, str(environment)],
+                  cwd=root, env=env, check=True,
+              )
+              tests = root / "tests"
+              tests.mkdir()
+              shutil.copy2(
+                  checkout / "tests/artisan_mcp/integration/test_stdio_client.py",
+                  tests / "test_stdio_client.py",
+              )
+              subprocess.run(
+                  [python, "-I", "-m", "pytest", "--strict-markers",
+                   "-o", "markers=integration: real subprocess integration",
+                   "-q", "test_stdio_client.py"],
+                  cwd=tests, env=env, check=True,
+              )
+          PY

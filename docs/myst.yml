@@ -121,6 +121,7 @@ project:
             - file: how-to-guides/op-container-images.md
         - title: Results
           children:
+            - file: how-to-guides/connecting-mcp.md
             - file: how-to-guides/inspecting-provenance.md
             - file: how-to-guides/exporting-results.md
 

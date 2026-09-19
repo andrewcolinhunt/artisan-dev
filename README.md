@@ -208,6 +208,10 @@ The canonical skill packages remain under `skills/`. Downstream Claude Code
 repositories can install the plugin by pointing their settings to this repo.
 See [Using Claude Code](docs/getting-started/using-claude-code.md) for details.
 
+For operation discovery and inspection of persisted runs and failure logs,
+[connect an MCP client](docs/how-to-guides/connecting-mcp.md) to the optional
+read-only `artisan-mcp` server.
+
 ---
 
 ## Architecture
