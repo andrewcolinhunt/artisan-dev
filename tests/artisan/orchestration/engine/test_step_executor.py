@@ -740,3 +740,45 @@ class TestInstantiateOperationValidatedMappingOverrides:
             interpreter=None,
             subcommand="run",
         )
+
+
+@pytest.mark.parametrize("curator", [False, True])
+@pytest.mark.parametrize("cacheable", [False, True])
+def test_execute_step_cacheability_controls_both_dispatch_routes(
+    tmp_path,
+    monkeypatch,
+    curator: bool,
+    cacheable: bool,
+) -> None:
+    """An explicit reuse policy and skip_cache=False cannot override the class."""
+    from artisan.operations.curator import IngestPipelineStep
+    from artisan.schemas.enums import CachePolicy
+    from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+    operation = (
+        IngestPipelineStep(
+            params={
+                "source_delta_root": str(tmp_path / "source"),
+                "source_run_id": "source",
+                "source_step": 0,
+            }
+        )
+        if curator
+        else _SimpleCreatorOp()
+    )
+    monkeypatch.setattr(type(operation), "cacheable", cacheable)
+    route = "_execute_curator_step" if curator else "_execute_creator_step"
+    with patch(f"artisan.orchestration.engine.step_executor.{route}") as dispatch:
+        execute_step(
+            operation,
+            _prepared({}),
+            StepOverrides(skip_cache=False, cache_policy=CachePolicy.STEP_COMPLETED),
+            MagicMock(),
+            config=PipelineConfig(
+                name="test",
+                delta_root=str(tmp_path / "delta"),
+                staging_root=str(tmp_path / "staging"),
+                skip_cache=False,
+            ),
+        )
+    assert dispatch.call_args.kwargs["skip_cache"] is (not cacheable)

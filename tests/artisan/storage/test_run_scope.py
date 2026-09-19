@@ -4,17 +4,21 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
 from fixtures.logical_commit_store import commit_test_step
+from fsspec import AbstractFileSystem
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import (
+    CommitError,
     IncompatibleStoreError,
     PersistenceIntegrityError,
     StoreIntegrityError,
 )
+from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.run_scope import (
     load_execution_membership,
@@ -27,6 +31,7 @@ from artisan.storage.core.table_schemas import (
     get_physical_schema,
 )
 from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.commit_plan import CommitPlan
 from artisan.storage.io.staging import StagingManager
 
 
@@ -331,3 +336,203 @@ def test_membership_rejects_conflicting_step_name(store) -> None:
 
     with pytest.raises(PersistenceIntegrityError, match="conflicting owners"):
         load_execution_membership(root, fs=fs, pipeline_run_id="run-a")
+
+
+def _selected(
+    root: str,
+    fs: AbstractFileSystem,
+    *,
+    number: int = 0,
+    prior: bool = False,
+    run_id: str = "source-run",
+) -> pl.DataFrame:
+    """Read the source selection under test."""
+    from artisan.storage.core.run_scope import load_run_step_outputs
+
+    return load_run_step_outputs(
+        root,
+        fs=fs,
+        pipeline_run_id=run_id,
+        step_number=number,
+        include_prior_steps=prior,
+    )
+
+
+def _artifact(content: bytes, number: int = 0) -> DataArtifact:
+    """Create typed committed output content."""
+    return DataArtifact.draft(
+        content=content, original_name="data.csv", step_number=number
+    ).finalize()
+
+
+def test_run_step_outputs_isolates_runs_latest_attempts_and_cached_origins(
+    store: tuple[str, AbstractFileSystem, Path],
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    outside = _artifact(b"outside", 8)
+    _, execution = commit_outputs(
+        root, run_id="other-run", number=8, artifacts=[outside]
+    )
+    obsolete, _ = commit_outputs(root, artifacts=[_artifact(b"obsolete")])
+    latest, _ = commit_outputs(root, reused_execution_id=execution)
+    commit_outputs(root, run_id="other-run", artifacts=[_artifact(b"unrelated")])
+    selected = _selected(root, fs)
+    assert selected["current_step_run_id"].to_list() == [latest]
+    assert obsolete not in selected["current_step_run_id"].to_list()
+    assert selected["artifact_id"].to_list() == [outside.artifact_id]
+    assert selected["origin_step_number"].to_list() == [8]
+    assert selected["cache_hit"].to_list() == [True]
+
+
+def test_run_step_outputs_inclusive_boundary_allows_gaps_and_later_running(
+    store: tuple[str, AbstractFileSystem, Path],
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    first, _ = commit_outputs(root, artifacts=[_artifact(b"first")])
+    last, _ = commit_outputs(root, number=2, artifacts=[_artifact(b"last", 2)])
+    commit_outputs(root, number=3, status="running")
+    assert _selected(root, fs)["current_step_run_id"].to_list() == [first]
+    assert _selected(root, fs, number=2)["current_step_run_id"].to_list() == [last]
+    assert _selected(root, fs, number=2, prior=True)[
+        "current_step_run_id"
+    ].to_list() == [first, last]
+    with pytest.raises(ValueError, match="has no step 1"):
+        _selected(root, fs, number=1, prior=True)
+
+
+@pytest.mark.parametrize("status", ["pending", "running"])
+def test_run_step_outputs_rejects_selected_unresolved_latest_attempt(
+    store: tuple[str, AbstractFileSystem, Path], status: str
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    commit_outputs(root, artifacts=[_artifact(b"previous")])
+    unresolved, _ = commit_outputs(root, status=status)
+    commit_outputs(root, number=2, artifacts=[_artifact(b"last", 2)])
+    with pytest.raises(ValueError, match=unresolved):
+        _selected(root, fs, number=2, prior=True)
+    assert _selected(root, fs, number=2).height == 1
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled", "skipped"])
+def test_run_step_outputs_terminal_failures_do_not_resurrect_old_outputs(
+    store: tuple[str, AbstractFileSystem, Path], status: str
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    commit_outputs(root, artifacts=[_artifact(b"previous")])
+    commit_outputs(root, status=status, execution_success=False)
+    assert _selected(root, fs).is_empty()
+
+
+def test_run_step_outputs_partial_excludes_failed_execution_edges(
+    store: tuple[str, AbstractFileSystem, Path],
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    good, bad = _artifact(b"good"), _artifact(b"bad")
+    commit_outputs(
+        root,
+        status="partial",
+        artifacts=[good, bad],
+        output_ids={"accepted": [good.artifact_id]},
+        failed_output_ids=[bad.artifact_id],
+    )
+    assert _selected(root, fs)["artifact_id"].to_list() == [good.artifact_id]
+    commit_outputs(root, artifacts=[_artifact(b"replacement")])
+    assert _selected(root, fs)["artifact_id"].to_list() != [good.artifact_id]
+
+
+def test_run_step_outputs_keeps_frozen_attempt_when_retry_commits_during_read(
+    store: tuple[str, AbstractFileSystem, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    from artisan.storage.core import run_scope
+
+    root, fs, _ = store
+    original, _ = commit_outputs(root, artifacts=[_artifact(b"original")])
+    reader = run_scope.load_accepted_outputs
+    replacement_ids = []
+
+    def commit_then_read(*args: Any, **kwargs: Any) -> pl.DataFrame:
+        replacement_ids.append(
+            commit_outputs(root, artifacts=[_artifact(b"replacement")])[0]
+        )
+        return reader(*args, **kwargs)
+
+    monkeypatch.setattr(run_scope, "load_accepted_outputs", commit_then_read)
+    assert _selected(root, fs)["current_step_run_id"].to_list() == [original]
+    monkeypatch.setattr(run_scope, "load_accepted_outputs", reader)
+    assert _selected(root, fs)["current_step_run_id"].to_list() == replacement_ids
+
+
+def test_run_step_outputs_incomplete_latest_commit_remains_unresolved(
+    store: tuple[str, AbstractFileSystem, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    commit_outputs(root, artifacts=[_artifact(b"original")])
+
+    def fail_completion(self: DeltaCommitter, plan: CommitPlan) -> None:
+        msg = "completion unavailable"
+        raise OSError(msg)
+
+    monkeypatch.setattr(DeltaCommitter, "_complete", fail_completion)
+    with pytest.raises(CommitError, match="logical completion"):
+        commit_outputs(root, artifacts=[_artifact(b"unfinished")])
+    with pytest.raises(ValueError, match="unresolved attempts"):
+        _selected(root, fs)
+
+
+@pytest.mark.parametrize("damage", ["missing_manifest", "old_format", "missing_table"])
+def test_run_step_outputs_gates_store_before_unknown_run(
+    store: tuple[str, AbstractFileSystem, Path], damage: str
+) -> None:
+    import json
+
+    from artisan.storage.core.store_format import STORE_MANIFEST_PATH
+
+    root, fs, _ = store
+    manifest = Path(root) / STORE_MANIFEST_PATH
+    if damage == "missing_manifest":
+        manifest.unlink()
+    elif damage == "old_format":
+        document = json.loads(manifest.read_text())
+        document["store_format"] = 2
+        manifest.write_text(json.dumps(document))
+    else:
+        fs.rm(f"{root}/{TablePath.STEPS.value}", recursive=True)
+    with pytest.raises(IncompatibleStoreError):
+        _selected(root, fs, run_id="unknown")
+
+
+def test_run_step_outputs_distinguishes_unknown_run_and_empty_boundary(
+    store: tuple[str, AbstractFileSystem, Path],
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    with pytest.raises(ValueError, match="Unknown source run 'unknown'"):
+        _selected(root, fs, run_id="unknown")
+    commit_outputs(root)
+    assert _selected(root, fs).is_empty()
+
+
+def test_run_step_outputs_propagates_dangling_reuse(
+    store: tuple[str, AbstractFileSystem, Path],
+) -> None:
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    commit_outputs(root, reused_execution_id="b" * 32)
+    with pytest.raises(PersistenceIntegrityError, match="Dangling"):
+        _selected(root, fs)

@@ -9,8 +9,9 @@ from __future__ import annotations
 from typing import ClassVar
 
 import polars as pl
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -20,20 +21,23 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage.core.run_scope import load_run_step_outputs
 
 
 class IngestPipelineStep(OperationDefinition):
     """Import artifacts from another pipeline's Delta Lake store.
 
-    Reads artifacts at a specific step in the source pipeline, optionally
-    filtered by type, and re-drafts them as new roots in the current
-    pipeline. This is a generative curator (no pipeline inputs, dynamic
-    outputs).
+    Reads accepted outputs from an explicit source run at one step or through
+    an inclusive boundary, optionally filtered by type. Each invocation reads
+    the latest source attempts and re-drafts their artifacts as destination
+    roots. External content retains its verified source location.
     """
 
     # ---------- Metadata ----------
     name = "ingest_pipeline_step"
-    description = "Import artifacts from another pipeline step"
+    description = "Import accepted artifacts from another pipeline run"
+    version = "2"
+    cacheable = False
 
     # ---------- Inputs ----------
     inputs: ClassVar[dict[str, InputSpec]] = {}
@@ -48,19 +52,34 @@ class IngestPipelineStep(OperationDefinition):
         source_delta_root: str = Field(
             ..., description="Path to the source pipeline's delta_root"
         )
+        source_run_id: str = Field(..., description="Exact source pipeline run ID")
         source_step: int = Field(
-            ..., ge=0, description="Step number to import artifacts from"
+            ..., ge=0, description="Inclusive source step boundary"
+        )
+        include_prior_steps: bool = Field(
+            default=False,
+            description="Import the union of accepted outputs through source_step",
         )
         artifact_type: str | None = Field(
             default=None,
             description="Optional filter: import only this artifact type. "
-            "If None, imports all types found at the source step.",
+            "If None, imports all selected artifact types.",
         )
         source_storage: StorageConfig = Field(
             default_factory=StorageConfig,
             description="Storage config for the source pipeline. "
             "Default (local) works for local/NFS source pipelines.",
         )
+
+        @field_validator("source_run_id")
+        @classmethod
+        def validate_source_run_id(cls, value: str) -> str:
+            """Require an explicit nonempty source run ID."""
+            value = value.strip()
+            if not value:
+                msg = "source_run_id must not be empty"
+                raise ValueError(msg)
+            return value
 
     params: Params
 
@@ -97,69 +116,72 @@ class IngestPipelineStep(OperationDefinition):
                 error=f"Source delta root does not exist: {self.params.source_delta_root}",
             )
 
-        source_store = ArtifactStore(
+        options = self.params.source_storage.delta_storage_options()
+        selected = load_run_step_outputs(
             self.params.source_delta_root,
+            pipeline_run_id=self.params.source_run_id,
+            step_number=self.params.source_step,
+            include_prior_steps=self.params.include_prior_steps,
             fs=fs,
-            storage_options=self.params.source_storage.delta_storage_options(),
+            storage_options=options,
         )
-        types_to_import = self._resolve_types(source_store)
-
-        if not types_to_import:
+        if self.params.artifact_type is not None:
+            selected = selected.filter(
+                pl.col("artifact_type") == self.params.artifact_type
+            )
+        if selected.is_empty():
+            mode = "through" if self.params.include_prior_steps else "at"
             return ArtifactResult(
                 success=False,
-                error=f"No artifacts found at step {self.params.source_step}"
-                + (
-                    f" with type {self.params.artifact_type!r}"
-                    if self.params.artifact_type
-                    else ""
+                error=(
+                    f"No accepted artifacts found in run {self.params.source_run_id!r} "
+                    f"{mode} step {self.params.source_step}"
+                    + (
+                        f" with type {self.params.artifact_type!r}"
+                        if self.params.artifact_type is not None
+                        else ""
+                    )
                 ),
             )
-
-        all_drafts: dict[str, list[Artifact]] = {}
-        for atype in sorted(types_to_import):
-            drafts = self._import_type(source_store, atype, step_number)
-            if drafts:
-                all_drafts[atype] = drafts
-
-        if not all_drafts:
-            return ArtifactResult(
-                success=False,
-                error=f"No artifacts loaded from step {self.params.source_step}",
+        source_store = ArtifactStore(
+            self.params.source_delta_root, fs=fs, storage_options=options
+        )
+        typed_ids = (
+            selected.select("artifact_type", "artifact_id")
+            .unique()
+            .sort("artifact_type", "artifact_id")
+        )
+        all_drafts = {
+            artifact_type: self._import_type(
+                source_store,
+                artifact_type,
+                group["artifact_id"].to_list(),
+                step_number,
             )
-
-        return ArtifactResult(success=True, artifacts=all_drafts)
-
-    def _resolve_types(self, source_store: ArtifactStore) -> list[str]:
-        """Discover which artifact types exist at the source step.
-
-        Args:
-            source_store: Read-only store for the source pipeline.
-
-        Returns:
-            List of artifact type strings to import.
-        """
-        if self.params.artifact_type is not None:
-            # User specified a type — check it exists at the step
-            ids = source_store.provenance.load_artifact_ids_by_type(
-                self.params.artifact_type, step_numbers=[self.params.source_step]
+            for (artifact_type,), group in typed_ids.group_by(
+                "artifact_type", maintain_order=True
             )
-            return [self.params.artifact_type] if ids else []
-
-        # Discover all types at the step
-        type_map = source_store.provenance.load_type_map()
-        step_map = source_store.provenance.load_step_map()
-
-        types_at_step: set[str] = set()
-        for aid, atype in type_map.items():
-            if step_map.get(aid) == self.params.source_step:
-                types_at_step.add(atype)
-
-        return list(types_at_step)
+        }
+        return ArtifactResult(
+            success=True,
+            artifacts=all_drafts,
+            metadata={
+                "ingest_source": {
+                    "pipeline_run_id": self.params.source_run_id,
+                    "source_step": self.params.source_step,
+                    "include_prior_steps": self.params.include_prior_steps,
+                    "step_run_ids": sorted(
+                        set(selected["current_step_run_id"].to_list())
+                    ),
+                }
+            },
+        )
 
     def _import_type(
         self,
         source_store: ArtifactStore,
         artifact_type: str,
+        artifact_ids: list[str],
         target_step_number: int,
     ) -> list[Artifact]:
         """Load and re-draft all artifacts of a type from the source step.
@@ -167,30 +189,23 @@ class IngestPipelineStep(OperationDefinition):
         Args:
             source_store: Read-only store for the source pipeline.
             artifact_type: The artifact type to import.
+            artifact_ids: Sorted source artifact IDs selected for this type.
             target_step_number: Step number for the new drafts.
 
         Returns:
             List of finalized draft artifacts.
         """
-        artifact_ids = source_store.provenance.load_artifact_ids_by_type(
-            artifact_type, step_numbers=[self.params.source_step]
-        )
-        if not artifact_ids:
-            return []
+        artifacts = source_store.get_artifacts_by_type(artifact_ids, artifact_type)
+        missing = sorted(set(artifact_ids) - set(artifacts))
+        if missing:
+            msg = f"Selected source artifacts are missing content rows: {missing!r}"
+            raise ArtifactIntegrityError(msg)
+        return [
+            self._to_draft(artifacts[artifact_id], target_step_number)
+            for artifact_id in artifact_ids
+        ]
 
-        artifacts = source_store.get_artifacts_by_type(
-            list(artifact_ids), artifact_type
-        )
-
-        drafts: list[Artifact] = []
-        for artifact in artifacts.values():
-            draft = self._to_draft(artifact, target_step_number)
-            drafts.append(draft)
-
-        return drafts
-
-    @staticmethod
-    def _to_draft(artifact: Artifact, step_number: int) -> Artifact:
+    def _to_draft(self, artifact: Artifact, step_number: int) -> Artifact:
         """Re-draft an artifact for import into the current pipeline.
 
         Creates a copy with a new step number and clears the artifact_id
@@ -204,14 +219,18 @@ class IngestPipelineStep(OperationDefinition):
         Returns:
             Finalized draft with same content but new step context.
         """
+        metadata = dict(artifact.metadata)
+        metadata.pop("imported_from_step", None)
+        metadata["imported_from"] = {
+            "pipeline_run_id": self.params.source_run_id,
+            "artifact_id": artifact.artifact_id,
+            "origin_step_number": artifact.origin_step_number,
+        }
         draft = artifact.model_copy(
             update={
                 "artifact_id": None,
                 "origin_step_number": step_number,
-                "metadata": {
-                    **artifact.metadata,
-                    "imported_from_step": artifact.origin_step_number,
-                },
+                "metadata": metadata,
                 "materialized_path": None,
             }
         )

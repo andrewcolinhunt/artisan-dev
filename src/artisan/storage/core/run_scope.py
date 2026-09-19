@@ -27,6 +27,7 @@ _MEMBERSHIP_SCHEMA: dict[str, Any] = {
     "success": pl.Boolean,
     "operation_name": pl.String,
     "execution_step_number": pl.Int32,
+    "timestamp_start": pl.Datetime("us", "UTC"),
     "error": pl.String,
     "error_envelope": pl.String,
     "metadata": pl.String,
@@ -52,7 +53,7 @@ def load_execution_membership(
     """Derive direct and reused executions for exact current step attempts.
 
     Args:
-        delta_root: Root containing the format-2 Delta tables.
+        delta_root: Root containing the current release's Delta tables.
         fs: Filesystem used for table existence checks.
         storage_options: Delta-rs storage options for cloud backends.
         pipeline_run_id: Optional exact pipeline-run restriction.
@@ -92,6 +93,7 @@ def load_execution_membership(
         "success",
         "operation_name",
         "execution_step_number",
+        "timestamp_start",
         "error",
         "error_envelope",
         "metadata",
@@ -185,6 +187,70 @@ def load_accepted_outputs(
         )
         .sort("current_step_number", "role", "artifact_id")
     )
+
+
+def load_run_step_outputs(
+    delta_root: str,
+    *,
+    pipeline_run_id: str,
+    step_number: int,
+    include_prior_steps: bool,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str] | None = None,
+) -> pl.DataFrame:
+    """Read accepted outputs from the latest attempts at or through a boundary.
+
+    Args:
+        delta_root: Root containing the supported Delta tables.
+        pipeline_run_id: Exact source run to select.
+        step_number: Required inclusive boundary in that run.
+        include_prior_steps: Include existing positions below the boundary.
+        fs: Source filesystem.
+        storage_options: Delta-rs storage options for cloud backends.
+
+    Returns:
+        Accepted output edges for the selected terminal attempt IDs.
+
+    Raises:
+        ValueError: If the run or boundary is absent, or selected attempts
+            are pending or running.
+        PersistenceIntegrityError: If source lifecycle or membership is invalid.
+    """
+    from artisan.orchestration.engine.step_tracker import StepTracker
+
+    options = storage_options or {}
+    assert_store_format(delta_root, fs, options)
+    states = StepTracker(
+        delta_root, fs=fs, storage_options=options
+    ).load_current_states(pipeline_run_id)
+    if not states:
+        msg = f"Unknown source run {pipeline_run_id!r}"
+        raise ValueError(msg)
+    if not any(state.step_number == step_number for state in states):
+        msg = f"Source run {pipeline_run_id!r} has no step {step_number}"
+        raise ValueError(msg)
+    selected = [
+        state
+        for state in states
+        if state.step_number == step_number
+        or (include_prior_steps and state.step_number < step_number)
+    ]
+    unresolved = [
+        (state.step_number, state.step_run_id)
+        for state in selected
+        if state.status.value in {"pending", "running"}
+    ]
+    if unresolved:
+        msg = f"Source run {pipeline_run_id!r} has unresolved attempts: {unresolved!r}"
+        raise ValueError(msg)
+    # Freeze exact terminal attempts before reading their accepted output edges.
+    selected_ids = [state.step_run_id for state in selected]
+    return load_accepted_outputs(
+        delta_root,
+        fs=fs,
+        storage_options=options,
+        pipeline_run_id=pipeline_run_id,
+    ).filter(pl.col("current_step_run_id").is_in(selected_ids))
 
 
 def validate_cached_executions(
@@ -299,6 +365,7 @@ def _read_executions(
         "success",
         "operation_name",
         pl.col("origin_step_number").alias("execution_step_number"),
+        "timestamp_start",
         "error",
         "error_envelope",
         "metadata",
@@ -486,12 +553,12 @@ def _require_tables(
     fs: AbstractFileSystem,
     tables: tuple[TablePath, ...],
 ) -> None:
-    """Fail closed when a format-2 framework table is missing."""
+    """Fail closed when a required framework table is missing."""
     missing = [
         table.value for table in tables if not fs.exists(uri_join(delta_root, table))
     ]
     if missing:
-        msg = f"Format-2 store is missing required tables: {missing!r}"
+        msg = f"Store is missing required tables: {missing!r}"
         raise PersistenceIntegrityError(msg)
 
 
