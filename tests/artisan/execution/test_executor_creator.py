@@ -511,28 +511,45 @@ class TestRunExecutionFullLifecycle:
             assert len(df) == 3  # 3 generated metrics
             assert len(result.artifact_ids) == 3
 
+    @pytest.mark.parametrize("fails", [False, True])
     def test_execute_with_worker_id(
-        self, delta_root_with_input, working_root, staging_root
+        self, delta_root_with_input, working_root, staging_root, fails, monkeypatch
     ):
-        """Worker ID is included in execution."""
+        """Run ID generation and success/failure recording use runtime identity."""
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
             delta_root=str(delta_path),
             working_root=str(working_root),
             staging_root=str(staging_root),
+            worker_id=42,
+            worker_id_env_var="WORKER_ID",
         )
+        monkeypatch.setenv("WORKER_ID", "7")
 
         unit = ExecutionUnit(
-            operation=GenerativeTestOp(params=GenerativeTestOp.Params(count=1)),
+            operation=(
+                FailingTestOp()
+                if fails
+                else GenerativeTestOp(params=GenerativeTestOp.Params(count=1))
+            ),
             inputs={},
             execution_spec_id="spec_worker" + "0" * 21,
             step_number=0,
         )
 
-        result = run_creator_flow(unit, config, worker_id=42)
+        result = run_creator_flow(unit, config)
 
-        assert result.success is True
+        assert result.success is not fails
+        row = pl.read_parquet(Path(result.staging_path) / "executions.parquet").row(
+            0, named=True
+        )
+        assert row["source_worker"] == 42
+        assert row["execution_run_id"] == result.execution_run_id
+        assert result.execution_run_id == generate_execution_run_id(
+            unit.execution_spec_id, row["timestamp_start"], 42
+        )
+        assert row["success"] is not fails
 
 
 class TestToolOutputRecording:

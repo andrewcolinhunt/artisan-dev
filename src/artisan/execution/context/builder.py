@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fsspec import AbstractFileSystem
-
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.execution.execution_context import ExecutionContext
+from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.storage.core.artifact_store import ArtifactStore
 
 
@@ -17,17 +16,10 @@ def build_execution_context(
     execution_spec_id: str,
     step_number: int,
     timestamp_start: datetime,
-    worker_id: int,
-    delta_root: str,
-    staging_root: str,
-    fs: AbstractFileSystem,
-    storage_options: dict[str, str] | None = None,
+    runtime_env: RuntimeEnvironment,
     operation: OperationDefinition,
     sandbox_path: str | None = None,
-    compute_backend_name: str = "local",
-    shared_filesystem: bool = False,
     step_run_id: str | None = None,
-    files_root: str | None = None,
 ) -> ExecutionContext:
     """Build an execution context for a creator or curator operation.
 
@@ -36,47 +28,37 @@ def build_execution_context(
         execution_spec_id: Deterministic cache key (32-char hex).
         step_number: Pipeline step number.
         timestamp_start: Execution start time (UTC).
-        worker_id: Worker identifier for distributed execution.
-        delta_root: Root URI for the Delta Lake tables (local path or
-            cloud URI).
-        staging_root: Root URI/path for staged Parquet files.
-        fs: Filesystem implementation for staging I/O.
-        storage_options: Backend storage options for the ArtifactStore.
-            None for local filesystems.
+        runtime_env: Resolved worker identity, runtime paths, and storage configuration.
         operation: Fully configured operation this context describes.
         sandbox_path: Sandbox directory for the file-based I/O of a
             creator's preprocess/execute/postprocess phases. None for
             curators, which operate on in-memory DataFrames.
-        compute_backend_name: Resolved step-runner name recorded in provenance.
-        shared_filesystem: Whether workers share a filesystem with the
-            orchestrator.
         step_run_id: Identifier of the owning pipeline step run, or None
             for composite-internal lifecycles.
-        files_root: Root for Artisan-managed external files. None when
-            not configured.
 
     Returns:
         The assembled ExecutionContext for the operation.
     """
+    fs = runtime_env.storage.filesystem()
     artifact_store = ArtifactStore(
-        delta_root,
+        runtime_env.delta_root,
         fs=fs,
-        storage_options=storage_options,
-        files_root=files_root,
+        storage_options=runtime_env.storage.delta_storage_options(),
+        files_root=runtime_env.files_root,
     )
     return ExecutionContext(
         execution_run_id=execution_run_id,
         execution_spec_id=execution_spec_id,
         step_number=step_number,
         timestamp_start=timestamp_start,
-        worker_id=worker_id,
+        worker_id=runtime_env.worker_id,
         artifact_store=artifact_store,
-        staging_root=staging_root,
+        staging_root=runtime_env.staging_root,
         fs=fs,
         operation_name=type(operation).name,
         operation=operation,
         sandbox_path=sandbox_path,
-        compute_backend=compute_backend_name,
-        shared_filesystem=shared_filesystem,
+        compute_backend=runtime_env.compute_backend_name,
+        shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=step_run_id,
     )

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from inspect import signature
+
 from artisan.orchestration.runner_api import (
     BatchStrategy,
     ExecutionUnit,
@@ -36,3 +38,8 @@ def test_runner_api_exports_provider_contract() -> None:
     assert execute_unit_batch
     assert failure_results_for_units
     assert validate_batch_results
+
+
+def test_worker_entry_points_keep_provider_signatures() -> None:
+    assert list(signature(execute_unit).parameters) == ["unit", "runtime_env"]
+    assert list(signature(execute_unit_batch).parameters) == ["units", "runtime_env"]

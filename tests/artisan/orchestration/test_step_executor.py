@@ -2106,12 +2106,10 @@ class TestCuratorSubprocessIsolation:
         def _run_notebook_curator(
             child_unit: ExecutionUnit,
             child_runtime_env: RuntimeEnvironment,
-            worker_id: int,
         ) -> StagingResult:
-            del child_runtime_env
             return StagingResult(
                 success=True,
-                execution_run_id=f"run-{worker_id}",
+                execution_run_id=f"run-{child_runtime_env.worker_id}",
                 artifact_ids=[child_unit.operation.params.marker],
             )
 
@@ -2480,7 +2478,9 @@ class TestFailureRecordSynthesis:
 
         config = self._config(tmp_path)
         op = MockNoGroupByCreatorOp()
-        runtime_env = _create_runtime_environment(config, op)
+        runtime_env = _create_runtime_environment(config, op).model_copy(
+            update={"worker_id": 42}
+        )
         unit = ExecutionUnit(
             operation=op,
             inputs={},
@@ -2515,6 +2515,8 @@ class TestFailureRecordSynthesis:
         assert len(rows) == 1
         assert rows[0]["origin_step_number"] == 0
         assert rows[0]["success"] is False
+        assert rows[0]["source_worker"] == 0
+        assert runtime_env.worker_id == 42
         assert "pre-try boom" in rows[0]["error"]
 
     def test_skips_units_that_already_recorded(self, tmp_path):

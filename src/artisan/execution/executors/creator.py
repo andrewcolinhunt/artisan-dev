@@ -84,7 +84,6 @@ class LifecycleResult:
 def run_creator_lifecycle(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
-    worker_id: int = 0,
     execution_run_id: str | None = None,
     sources: dict[str, ArtifactSource] | None = None,
     execute_router: ExecuteRouter | None = None,
@@ -103,7 +102,6 @@ def run_creator_lifecycle(
     Args:
         unit: Execution unit specifying the operation and its inputs.
         runtime_env: Paths and runner configuration for this run.
-        worker_id: Numeric worker identifier for concurrency tracking.
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources keyed by role.
             When provided, hydrate from sources instead of unit.inputs.
@@ -120,7 +118,9 @@ def run_creator_lifecycle(
     """
     from artisan.execution.executors.creator_phases import post_unit, prep_unit
 
-    prepped = prep_unit(unit, runtime_env, worker_id, execution_run_id, sources)
+    prepped = prep_unit(
+        unit, runtime_env, execution_run_id=execution_run_id, sources=sources
+    )
 
     # --- execute phase ---
     with phase_timer("execute", prepped.timings):
@@ -208,7 +208,6 @@ def _cancel_check(
 def run_creator_flow(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
-    worker_id: int = 0,
     execute_router: ExecuteRouter | None = None,
 ) -> StagingResult:
     """Execute a creator operation through ordered execution phases.
@@ -219,7 +218,6 @@ def run_creator_flow(
     Args:
         unit: Execution unit specifying the operation and its inputs.
         runtime_env: Paths and runner configuration for this run.
-        worker_id: Numeric worker identifier for concurrency tracking.
         execute_router: Shared router for compute_provider dispatch. When provided,
             the lifecycle skips creating its own router. When ``None``,
             each invocation creates a router from the operation's config.
@@ -238,7 +236,7 @@ def run_creator_flow(
     execution_run_id = generate_execution_run_id(
         unit.execution_spec_id,
         timestamp_start,
-        worker_id,
+        runtime_env.worker_id,
     )
 
     total_start = time.perf_counter()
@@ -249,8 +247,7 @@ def run_creator_flow(
         lifecycle_result = run_creator_lifecycle(
             unit,
             runtime_env,
-            worker_id,
-            execution_run_id,
+            execution_run_id=execution_run_id,
             execute_router=execute_router,
         )
         timings.update(lifecycle_result.timings)
@@ -260,7 +257,6 @@ def run_creator_flow(
             execution_run_id,
             unit,
             timestamp_start,
-            worker_id,
             runtime_env,
             operation,
         )
@@ -305,7 +301,6 @@ def run_creator_flow(
             execution_run_id,
             unit,
             timestamp_start,
-            worker_id,
             runtime_env,
             operation,
         )
@@ -327,7 +322,6 @@ def run_creator_flow(
             execution_run_id,
             unit,
             timestamp_start,
-            worker_id,
             runtime_env,
             operation,
         )
@@ -361,7 +355,6 @@ def _build_execution_context(
     execution_run_id: str,
     unit: ExecutionUnit,
     timestamp_start: datetime,
-    worker_id: int,
     runtime_env: RuntimeEnvironment,
     operation: Any,
 ) -> Any:
@@ -370,27 +363,18 @@ def _build_execution_context(
     if working_root is None:
         msg = "RuntimeEnvironment.working_root must be set"
         raise ValueError(msg)
-    fs = runtime_env.storage.filesystem()
-    storage_options = runtime_env.storage.delta_storage_options()
     return build_execution_context(
         execution_run_id=execution_run_id,
         execution_spec_id=unit.execution_spec_id,
         step_number=unit.step_number,
         timestamp_start=timestamp_start,
-        worker_id=worker_id,
-        delta_root=runtime_env.delta_root,
-        staging_root=runtime_env.staging_root,
-        fs=fs,
-        storage_options=storage_options,
+        runtime_env=runtime_env,
         operation=operation,
         # The record phase only stages the execution record, which never
         # reads sandbox_path; the sandbox was created and torn down inside
         # run_creator_lifecycle, so any placeholder path suffices here.
         sandbox_path=os.path.join(working_root, "dummy"),
-        compute_backend_name=runtime_env.compute_backend_name,
-        shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=unit.step_run_id,
-        files_root=runtime_env.files_root,
     )
 
 
@@ -398,7 +382,6 @@ def _try_build_execution_context(
     execution_run_id: str,
     unit: ExecutionUnit,
     timestamp_start: datetime,
-    worker_id: int,
     runtime_env: RuntimeEnvironment,
     operation: Any,
 ) -> Any | None:
@@ -415,7 +398,6 @@ def _try_build_execution_context(
             execution_run_id,
             unit,
             timestamp_start,
-            worker_id,
             runtime_env,
             operation,
         )

@@ -120,7 +120,6 @@ class PreppedUnit:
 def prep_unit(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
-    worker_id: int = 0,
     execution_run_id: str | None = None,
     sources: dict[str, ArtifactSource] | None = None,
 ) -> PreppedUnit:
@@ -134,7 +133,6 @@ def prep_unit(
     Args:
         unit: Execution unit specifying the operation and its inputs.
         runtime_env: Paths and runtime configuration.
-        worker_id: Numeric worker identifier.
         execution_run_id: Pre-generated run ID. Generated if None.
         sources: Optional pre-resolved artifact sources.
 
@@ -153,7 +151,7 @@ def prep_unit(
     timestamp_start = datetime.now(UTC)
     if execution_run_id is None:
         execution_run_id = generate_execution_run_id(
-            unit.execution_spec_id, timestamp_start, worker_id
+            unit.execution_spec_id, timestamp_start, runtime_env.worker_id
         )
 
     # --- setup phase ---
@@ -193,25 +191,15 @@ def prep_unit(
         else:
             files_dir = None
 
-        fs = runtime_env.storage.filesystem()
-        storage_options = runtime_env.storage.delta_storage_options()
-
         execution_context = build_execution_context(
             execution_run_id=execution_run_id,
             execution_spec_id=unit.execution_spec_id,
             step_number=unit.step_number,
             timestamp_start=timestamp_start,
-            worker_id=worker_id,
-            delta_root=runtime_env.delta_root,
-            staging_root=runtime_env.staging_root,
-            fs=fs,
-            storage_options=storage_options,
+            runtime_env=runtime_env,
             operation=operation,
             sandbox_path=sandbox_path_str,
-            compute_backend_name=runtime_env.compute_backend_name,
-            shared_filesystem=runtime_env.shared_filesystem,
             step_run_id=unit.step_run_id,
-            files_root=runtime_env.files_root,
         )
         artifact_store = execution_context.artifact_store
 

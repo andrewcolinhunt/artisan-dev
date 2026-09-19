@@ -30,8 +30,7 @@ def execute_unit(
         RuntimeError: If the worker receives ``KeyboardInterrupt``.
     """
     try:
-        env_var = runtime_env.worker_id_env_var
-        worker_id = int(os.environ.get(env_var, "0")) if env_var else 0
+        runtime_env = _resolve_worker_environment(runtime_env)
 
         from artisan.execution.executors.curator import (
             is_curator_operation,
@@ -39,7 +38,7 @@ def execute_unit(
         )
 
         if is_curator_operation(unit.operation):
-            result = run_curator_flow(unit, runtime_env, worker_id=worker_id)
+            result = run_curator_flow(unit, runtime_env)
             return UnitResult(
                 success=result.success,
                 error=result.error,
@@ -50,7 +49,7 @@ def execute_unit(
 
         from artisan.execution.executors.creator import run_creator_flow
 
-        result = run_creator_flow(unit, runtime_env, worker_id=worker_id)
+        result = run_creator_flow(unit, runtime_env)
         return UnitResult(
             success=result.success,
             error=result.error,
@@ -63,6 +62,25 @@ def execute_unit(
         raise RuntimeError(msg) from None
     except Exception as exc:
         return _failed_unit_result(exc, item_count=unit.get_batch_size() or 1)
+
+
+def _resolve_worker_environment(runtime_env: RuntimeEnvironment) -> RuntimeEnvironment:
+    """Create a validated per-call snapshot of the provider's worker identity."""
+    env_var = runtime_env.worker_id_env_var
+    try:
+        worker_id = (
+            runtime_env.worker_id
+            if env_var is None
+            else int(os.environ.get(env_var, "0"))
+        )
+        return RuntimeEnvironment.model_validate(
+            {**runtime_env.model_dump(mode="python"), "worker_id": worker_id}
+        )
+    except ValueError:
+        if env_var is None:
+            raise
+        msg = f"Worker environment variable {env_var!r} must contain a signed 32-bit integer"
+        raise ValueError(msg) from None
 
 
 def execute_unit_batch(

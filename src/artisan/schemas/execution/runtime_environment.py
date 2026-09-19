@@ -90,7 +90,14 @@ class RuntimeEnvironment(BaseModel):
     # Runner traits (flattened from WorkerTraits for serialization)
     worker_id_env_var: str | None = Field(
         None,
-        description="Provider-defined environment variable containing a worker ID.",
+        description="Provider environment variable resolved at the worker entry point.",
+    )
+    worker_id: int = Field(
+        default=0,
+        strict=True,
+        ge=-(2**31),
+        le=2**31 - 1,
+        description="Resolved numeric worker index; 0 for local execution.",
     )
     shared_filesystem: bool = Field(
         False,
