@@ -16,9 +16,7 @@ from fsspec.implementations.local import LocalFileSystem
 from artisan.visualization.graph import build_macro_graph, render_macro_graph
 from artisan.visualization.graph.macro import _parse_input_refs
 
-# =============================================================================
 # Helpers
-# =============================================================================
 
 
 def _write_steps(delta_root: Path, rows: list[dict]) -> None:
@@ -72,14 +70,12 @@ def _write_steps(delta_root: Path, rows: list[dict]) -> None:
         )
 
 
-# =============================================================================
 # Fixtures
-# =============================================================================
 
 
 @pytest.fixture
 def empty_delta_root(tmp_path: Path) -> Path:
-    """Empty Delta Lake root directory (no tables)."""
+    """Initialize a store without step or execution records."""
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
     publish_test_store(str(delta_root), LocalFileSystem())
@@ -254,9 +250,7 @@ def multi_input_pipeline(tmp_path: Path) -> Path:
     return delta_root
 
 
-# =============================================================================
 # Tests: _parse_input_refs
-# =============================================================================
 
 
 class TestParseInputRefs:
@@ -333,9 +327,7 @@ class TestParseInputRefs:
         assert result == [(0, "data")]
 
 
-# =============================================================================
 # Tests: build_macro_graph
-# =============================================================================
 
 
 class TestBuildMacroGraph:
@@ -478,9 +470,7 @@ class TestMultiInputOperations:
         assert len(edges_to_exec_2) == 3
 
 
-# =============================================================================
 # Tests: render_macro_graph
-# =============================================================================
 
 
 class TestRenderMacroGraph:

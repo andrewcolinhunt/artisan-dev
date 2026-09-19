@@ -235,7 +235,7 @@ def inspect_failures(
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
-    """Execution-level failure report — one row per failed execution.
+    """Report failed executions and their structured errors.
 
     Scans ``executions`` for ``success == False``, deserializes each
     ``error_envelope`` into its structured fields (``code``,
@@ -251,10 +251,10 @@ def inspect_failures(
 
     Args:
         delta_root: Path to Delta Lake root.
-        pipeline_run_id: Filter to one run (joined via ``steps`` on
-            ``step_run_id``). All runs if None. Failures with a null
-            ``step_run_id`` (composite-internal lifecycles) do not match a
-            run filter.
+        pipeline_run_id: Exact run whose execution participation to inspect.
+            Reused executions appear at their current logical positions while
+            retaining source execution/log identity. None reports executions
+            across all runs at their origin steps.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks. Local if None.
 
@@ -266,19 +266,14 @@ def inspect_failures(
         start time, execution ID, then current step, oldest first.
 
     Raises:
-        FileNotFoundError: If the delta root is not an Artisan store — no
-            executions table *and* no steps table. A real store whose
-            executions table simply does not exist yet (steps table present,
-            nothing has executed or failed) returns the empty frame instead.
+        IncompatibleStoreError: The root lacks the current store-format contract.
+        FileNotFoundError: Both execution and step tables are absent after
+            store-format validation. An initialized store without failures
+            returns an empty frame.
     """
     fs = _validated_fs(delta_root, fs, storage_options)
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
     if not fs.exists(executions_path):
-        # Distinguish a real store with nothing recorded yet from a bogus
-        # root. The steps table is written at the first step's start, so its
-        # presence means a pipeline ran here (empty frame); its absence means
-        # this is not an Artisan store (FileNotFoundError -> store_not_found
-        # envelope at the CLI/MCP boundary).
         steps_path = uri_join(delta_root, TablePath.STEPS)
         if fs.exists(steps_path):
             return pl.DataFrame(schema=_FAILURES_SCHEMA)
@@ -415,14 +410,13 @@ def diagnose_run(
             local filesystem.
 
     Returns:
-        A ``RunDiagnosis``. When the store exists but no executions have been
-        recorded (steps table present, executions table absent), the
-        diagnosis simply carries no failed steps rather than raising.
+        A ``RunDiagnosis``. An initialized store without failed executions
+        yields a diagnosis with no failed steps.
 
     Raises:
-        FileNotFoundError: If the delta root is not an Artisan store (neither
-            executions nor steps table present), propagated from
-            ``inspect_failures``.
+        IncompatibleStoreError: The root lacks the current store-format contract.
+        FileNotFoundError: Required tables are missing after store-format
+            validation, propagated from the underlying readers.
     """
     from artisan.orchestration.run_history import list_runs
     from artisan.schemas.execution.storage_config import StorageConfig
@@ -474,8 +468,8 @@ def _failure_upstream_edges(
 ) -> list[dict[str, str]]:
     """Walk backward provenance from the failed steps' artifacts, deduplicated.
 
-    Best-effort and bounded: at most a handful of artifacts, depth 2. A
-    missing index or edges table degrades to no edges rather than raising.
+    Trace at most ten output artifacts from failed executions, to depth two.
+    Missing execution or artifact provenance edges yield no upstream edges.
     """
     from artisan.provenance import provenance_edges
 
@@ -529,8 +523,10 @@ def inspect_step(
 
     Args:
         delta_root: Path to Delta Lake root.
-        step_number: Step number to inspect.
-        pipeline_run_id: Optional run whose current logical step to inspect.
+        step_number: Origin step by default, or current logical step when a
+            run is selected.
+        pipeline_run_id: Exact run whose accepted outputs to inspect. None
+            selects artifacts by origin step across all runs.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks. Local if None.
 
@@ -648,8 +644,10 @@ def inspect_metrics(
 
     Args:
         delta_root: Path to Delta Lake root.
-        step_number: Filter to a specific step. All metric steps if None.
-        pipeline_run_id: Optional run whose current output metrics to inspect.
+        step_number: Origin step by default, or current logical step when a
+            run is selected. None includes all steps in the selected scope.
+        pipeline_run_id: Exact run whose accepted metric outputs to inspect.
+            None includes metrics across all runs at their origin steps.
         round_digits: Decimal places for float rounding.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks. Local if None.
@@ -703,9 +701,7 @@ def inspect_metrics(
     if df.is_empty():
         return pl.DataFrame(schema={"name": pl.String, "step": pl.Int32})
 
-    # Parse all metric values and collect unique keys
     parsed_rows: list[dict[str, Any]] = []
-    all_keys: dict[str, None] = {}
 
     for row in df.iter_rows(named=True):
         name = row.get("original_name") or row["artifact_id"][:16]
@@ -729,7 +725,6 @@ def inspect_metrics(
 
         entry: dict[str, Any] = {"name": name, "step": display_step}
         for k, v in flat.items():
-            all_keys[k] = None
             if isinstance(v, float):
                 entry[k] = round(v, round_digits)
             else:
@@ -764,8 +759,10 @@ def inspect_data(
     Args:
         delta_root: Path to Delta Lake root.
         name: Filter by original_name. Takes the first match.
-        step_number: Filter by step number.
-        pipeline_run_id: Optional run whose current outputs may match.
+        step_number: Origin step by default, or current logical step when a
+            run is selected. None includes all steps in the selected scope.
+        pipeline_run_id: Exact run whose accepted data outputs may match.
+            None selects artifacts across all runs by origin step.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks. Local if None.
 

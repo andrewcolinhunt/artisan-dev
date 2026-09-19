@@ -28,10 +28,6 @@ from artisan.visualization.graph._styles import (
     render_graph,
 )
 
-# =============================================================================
-# Data Loading
-# =============================================================================
-
 
 def _load_usable_steps(
     delta_root: str,
@@ -46,17 +42,18 @@ def _load_usable_steps(
 
         fs = LocalFileSystem()
     assert_store_format(delta_root, fs, storage_options)
+    empty = pl.DataFrame(
+        schema={
+            "step_number": pl.Int32,
+            "step_name": pl.String,
+            "output_roles_json": pl.String,
+            "output_types_json": pl.String,
+            "input_refs_json": pl.String,
+        }
+    )
     table_path = uri_join(delta_root, TablePath.STEPS)
     if not fs.exists(table_path):
-        return pl.DataFrame(
-            schema={
-                "step_number": pl.Int32,
-                "step_name": pl.String,
-                "output_roles_json": pl.String,
-                "output_types_json": pl.String,
-                "input_refs_json": pl.String,
-            }
-        )
+        return empty
 
     from artisan.orchestration.engine.step_tracker import StepTracker
     from artisan.schemas.orchestration.step_lifecycle import StepStatus
@@ -77,24 +74,7 @@ def _load_usable_steps(
         for state in states
         if state.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
     ]
-    return (
-        pl.DataFrame(rows)
-        if rows
-        else pl.DataFrame(
-            schema={
-                "step_number": pl.Int32,
-                "step_name": pl.String,
-                "output_roles_json": pl.String,
-                "output_types_json": pl.String,
-                "input_refs_json": pl.String,
-            }
-        )
-    )
-
-
-# =============================================================================
-# Input Refs Parsing
-# =============================================================================
+    return pl.DataFrame(rows) if rows else empty
 
 
 def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str]]:
@@ -116,23 +96,15 @@ def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str]]:
     if parsed is None:
         return []
 
-    refs: list[tuple[int, str]] = []
-
     if isinstance(parsed, dict):
-        for value in parsed.values():
-            if isinstance(value, dict) and value.get("type") == "output_ref":
-                refs.append((value["source_step"], value["role"]))
-    elif isinstance(parsed, list):
-        for item in parsed:
-            if isinstance(item, dict) and item.get("type") == "output_ref":
-                refs.append((item["source_step"], item["role"]))
-
-    return refs
-
-
-# =============================================================================
-# Graph Building
-# =============================================================================
+        parsed = list(parsed.values())
+    if not isinstance(parsed, list):
+        return []
+    return [
+        (value["source_step"], value["role"])
+        for value in parsed
+        if isinstance(value, dict) and value.get("type") == "output_ref"
+    ]
 
 
 def build_macro_graph(
@@ -154,8 +126,7 @@ def build_macro_graph(
         delta_root: Path to Delta Lake root directory.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
-        pipeline_run_id: Pipeline run to render. None renders the unscoped
-            steps table, preserving the existing Python API behavior.
+        pipeline_run_id: Pipeline run to render. None selects the latest run.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
@@ -173,7 +144,6 @@ def build_macro_graph(
     if steps_df.is_empty():
         return graph
 
-    # Build output_types lookup per step for data-node colouring
     step_output_types: dict[int, dict[str, str | None]] = {}
     for row in steps_df.iter_rows(named=True):
         step_num = row["step_number"]
@@ -183,7 +153,6 @@ def build_macro_graph(
         else:
             step_output_types[step_num] = {}
 
-    # Collect node IDs by step for column ranking
     exec_by_step: dict[int, str] = {}
     data_by_step: dict[int, list[str]] = {}
     all_steps: list[int] = []
@@ -193,7 +162,6 @@ def build_macro_graph(
         step_name = row["step_name"]
         all_steps.append(step_num)
 
-        # --- Execution node ---
         exec_node_id = f"exec_{step_num}"
         shape, color = EXECUTION_STYLE
         graph.node(
@@ -204,7 +172,6 @@ def build_macro_graph(
         )
         exec_by_step[step_num] = exec_node_id
 
-        # --- Data nodes (one per output role) ---
         roles_json = row["output_roles_json"]
         if not roles_json:
             continue
@@ -224,12 +191,10 @@ def build_macro_graph(
             graph.node(data_node_id, label=role, shape=shape, fillcolor=color)
             step_data_nodes.append(data_node_id)
 
-            # Output edge: exec → data
             graph.edge(exec_node_id, data_node_id)
 
         data_by_step[step_num] = step_data_nodes
 
-    # --- Input edges (data → exec) from input_refs_json ---
     for row in steps_df.iter_rows(named=True):
         step_num = row["step_number"]
         refs_json = row["input_refs_json"]
@@ -243,10 +208,8 @@ def build_macro_graph(
             data_node_id = f"data_{source_step}_{source_role}"
             graph.edge(data_node_id, exec_node_id)
 
-    # ==========================================================================
     # Strict column ordering using anchor nodes (same pattern as micro)
     # Column order: exec_0 → data_0 → exec_1 → data_1 → ...
-    # ==========================================================================
     anchor_nodes: list[str] = []
     for step_num in all_steps:
         anchor_nodes.append(f"_anchor_exec_{step_num}")

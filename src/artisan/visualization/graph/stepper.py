@@ -55,21 +55,17 @@ def display_provenance_stepper(
         )
         raise ImportError(msg) from e
 
-    # Default output_dir to runs/images alongside runs/delta
     if output_dir is None:
         output_dir = uri_join(uri_parent(delta_root), "images")
     else:
         output_dir = str(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    # Get max step to check if there's anything to show
     max_step = get_max_step_number(delta_root, storage_options=storage_options, fs=fs)
     if max_step is None:
-        # No executions, show empty message
         label = widgets.Label(value="No pipeline steps to display.")
         return widgets.VBox([label])
 
-    # Render all steps upfront
     rendered_paths = render_micro_graph_steps(
         delta_root,
         output_dir,
@@ -82,7 +78,6 @@ def display_provenance_stepper(
         label = widgets.Label(value="No pipeline steps to display.")
         return widgets.VBox([label])
 
-    # Create slider
     slider = widgets.IntSlider(
         value=max_step,
         min=0,
@@ -93,10 +88,8 @@ def display_provenance_stepper(
         layout=widgets.Layout(width="400px"),
     )
 
-    # Create label showing "N / max"
     step_label = widgets.Label(value=f"{max_step} / {max_step}")
 
-    # Create output area for the graph
     output = widgets.Output()
 
     def update_display(change: dict[str, Any]) -> None:
@@ -106,12 +99,9 @@ def display_provenance_stepper(
         output.outputs = ()
         output.append_display_data(SVG(filename=str(rendered_paths[step])))  # type: ignore[no-untyped-call,unused-ignore]  # IPython.display.SVG; env-dependent typing
 
-    # Connect slider to update function
     slider.observe(update_display, names="value")
 
-    # Initial display
     output.append_display_data(SVG(filename=str(rendered_paths[max_step])))  # type: ignore[no-untyped-call,unused-ignore]  # IPython.display.SVG; env-dependent typing
 
-    # Layout: slider + label on top, graph below
     header = widgets.HBox([slider, step_label])
     return widgets.VBox([header, output])
