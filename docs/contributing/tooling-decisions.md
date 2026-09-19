@@ -322,8 +322,9 @@ providing readable output without requiring a full TUI framework.
 
 ## AI assistance: Agent Skills and Claude Code plugin
 
-**The problem.** Writing operations and pipelines requires knowing framework
-conventions, base classes, and patterns. New contributors face a steep ramp-up.
+**The problem.** Writing artifact types, operations, composites, and pipelines
+requires knowing framework conventions, base classes, and patterns. New
+contributors face a steep ramp-up.
 
 **Why skills plus a plugin.** Artisan uses portable Agent Skills for local
 cross-agent discovery and retains a Claude Code plugin so downstream Claude
@@ -331,8 +332,9 @@ repositories can install the same framework-aware workflows. The plugin is
 defined using the inline marketplace pattern (`.claude-plugin/marketplace.json`
 with `"source": "./"`).
 
-**What's included.** Three skills in `skills/`:
+**What's included.** Authoring skills in `skills/`:
 
+- `artifact-write` — scaffold or review a custom artifact model and its registration
 - `operation-write` — scaffold or review an `OperationDefinition` subclass
 - `composite-write` — scaffold or review a `CompositeDefinition` subclass
 - `pipeline-write` — scaffold a pipeline script composing operations

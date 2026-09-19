@@ -8,11 +8,12 @@
       "name": "artisan",
       "source": "./",
       "strict": false,
-      "description": "Skills for building pipelines and operations with the Artisan framework",
+      "description": "Skills for building artifacts, operations, composites, and pipelines with the Artisan framework",
       "skills": [
         "./skills/operation-write",
         "./skills/pipeline-write",
-        "./skills/composite-write"
+        "./skills/composite-write",
+        "./skills/artifact-write"
       ]
     }
   ]

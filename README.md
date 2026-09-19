@@ -176,12 +176,14 @@ pixi run --locked -e docs docs-clean
 
 ## Coding Agent Integration
 
-Artisan includes portable Agent Skills for scaffolding operations, composites,
-and pipelines. Compatible agents discover them through `.agents/skills/`;
-Claude Code also receives them through the repository's published plugin.
+Artisan includes portable Agent Skills for scaffolding artifact types,
+operations, composites, and pipelines. Compatible agents discover them through
+`.agents/skills/`; Claude Code also receives them through the repository's
+published plugin.
 
 | Skill | Description |
 |-------|-------------|
+| `artifact-write` | Scaffold or review a custom artifact model and its registration |
 | `operation-write` | Scaffold or review an `OperationDefinition` subclass |
 | `composite-write` | Scaffold or review a `CompositeDefinition` subclass |
 | `pipeline-write` | Scaffold a pipeline script composing operations |

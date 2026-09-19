@@ -44,6 +44,7 @@ coding agents how to write Artisan code that follows project conventions.
 
 | Skill | Description |
 |-------|-------------|
+| `/artifact-write` | Scaffold or review a custom artifact model and its registration |
 | `/operation-write` | Scaffold or review an `OperationDefinition` subclass |
 | `/composite-write` | Scaffold or review a `CompositeDefinition` subclass |
 | `/pipeline-write` | Scaffold a pipeline script composing operations |
@@ -55,9 +56,11 @@ canonical source of truth and the public Claude plugin contract. The repo adds
 discovery symlinks for both cross-agent clients and Claude Code:
 
 ```
+.agents/skills/artifact-write   →  ../../skills/artifact-write
 .agents/skills/operation-write  →  ../../skills/operation-write
 .agents/skills/composite-write  →  ../../skills/composite-write
 .agents/skills/pipeline-write   →  ../../skills/pipeline-write
+.claude/skills/artifact-write   →  ../../skills/artifact-write
 .claude/skills/operation-write  →  ../../skills/operation-write
 .claude/skills/composite-write  →  ../../skills/composite-write
 .claude/skills/pipeline-write   →  ../../skills/pipeline-write
@@ -94,6 +97,8 @@ contributors to trust the marketplace on first launch.
 
 A few examples of real workflows:
 
+- **"Create a custom artifact type for binary content"** — Claude writes the
+  model, registration, and tests for persistence and hydration.
 - **"Write me an operation that takes CSV files and computes column
   statistics"** — Claude scaffolds the class, tests, and docstrings following
   Artisan conventions.

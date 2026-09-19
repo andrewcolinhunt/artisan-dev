@@ -5,6 +5,10 @@ caching, and provenance systems handle it automatically.
 
 **Prerequisites:** [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md) (draft/finalize lifecycle, content addressing), familiarity with Pydantic models.
 
+For coding-agent assistance, use the bundled `skills/artifact-write/SKILL.md`;
+see [skill discovery](../getting-started/using-claude-code.md#how-skills-are-discovered)
+for setup.
+
 ---
 
 ## Minimal working example
@@ -61,9 +65,9 @@ class DataRecordArtifact(Artifact):
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         if self.content is None:
             raise ValueError("Cannot materialize: artifact not hydrated")
-        if self.original_name is None:
-            raise ValueError("Cannot materialize: original_name not set")
-        filename = f"{self.original_name}{self.extension or '.csv'}"
+        if self.artifact_id is None:
+            raise ValueError("Cannot materialize: artifact not finalized")
+        filename = f"{self.artifact_id}{self.extension or '.csv'}"
         path = os.path.join(directory, filename)
         with open(path, "wb") as f:
             f.write(self.content)
@@ -265,15 +269,18 @@ in the given directory, set `self.materialized_path`, and return the path:
 def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
     if self.content is None:
         raise ValueError("Cannot materialize: artifact not hydrated")
-    if self.original_name is None:
-        raise ValueError("Cannot materialize: original_name not set")
-    filename = f"{self.original_name}{self.extension or '.csv'}"
+    if self.artifact_id is None:
+        raise ValueError("Cannot materialize: artifact not finalized")
+    filename = f"{self.artifact_id}{self.extension or '.csv'}"
     path = os.path.join(directory, filename)
     with open(path, "wb") as f:
         f.write(self.content)
     self.materialized_path = path
     return path
 ```
+
+Use the finalized artifact ID as the filename so distinct artifacts with the
+same original name can share a directory without overwriting each other.
 
 The `fs` parameter is an optional fsspec filesystem for reading source content
 from cloud storage. Artifacts that hold their content in memory accept it for
@@ -391,7 +398,7 @@ def test_materialize_writes_file(tmp_path):
     ).finalize()
     path = artifact.materialize_to(str(tmp_path))
     assert os.path.exists(path)
-    assert os.path.basename(path) == "test.csv"
+    assert os.path.basename(path) == f"{artifact.artifact_id}.csv"
     with open(path, "rb") as f:
         assert f.read() == SAMPLE_CSV
 
@@ -474,15 +481,20 @@ Some artifact types reference external data rather than storing content inline.
 verified bytes without including their location:
 
 ```python
+import json
+
 EXTERNALLY_BACKED: ClassVar[bool] = True
 LOCATOR_FIELDS: ClassVar[frozenset[str]] = frozenset({"path"})
 
 def _identity_payload(self) -> bytes | None:
     if self.content_hash is None or self.size_bytes is None:
         return None
-    return canonical_json_bytes(
-        {"content_hash": self.content_hash, "size_bytes": self.size_bytes}
-    )
+    return json.dumps(
+        {"content_hash": self.content_hash, "size_bytes": self.size_bytes},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
 ```
 
 The declared locator must be a model field, must stay out of `POLARS_SCHEMA`,
@@ -523,7 +535,7 @@ Both work identically. Pick whichever keeps your import graph cleaner.
 | `ValueError: Duplicate artifact type key` | Two `ArtifactTypeDef` subclasses share the same `key` | Use a unique key string |
 | `KeyError` when looking up the type | Type def class was never imported | Ensure the module is imported (add to `__init__.py`) |
 | Data loss in round-trip | `to_row()` and `from_row()` are out of sync | Test with `from_row(artifact.to_row())` and compare all fields |
-| Non-deterministic artifact IDs | Type payload encoding is not canonical | Use `canonical_json_bytes()` for structured identity payloads |
+| Non-deterministic artifact IDs | Type payload encoding is not canonical | Use deterministic UTF-8 JSON with sorted keys for structured identity payloads |
 | `POLARS_SCHEMA` mismatch | Schema columns don't match `to_row()` keys | Keep schema and `to_row()` in sync -- same keys, same order |
 | `ValidationError: extra fields not permitted` | Field name typo in `from_row()` or `draft()` | The base class uses `ConfigDict(extra="forbid")` -- check field names match the model |
 | `ValueError` on `artifact_type` | Used `ArtifactTypes.ANY` as a default | `ANY` is a spec-only sentinel; use a concrete type string |
