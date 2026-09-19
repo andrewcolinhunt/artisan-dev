@@ -3,7 +3,7 @@
 Query the executions table for a previous successful run with the same
 deterministic execution_spec_id. On a cache hit the caller skips
 execution entirely and reuses existing artifacts. The lookup is global
-across all prior executions.
+across prior non-diagnostic executions.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def cache_lookup(
 ) -> CacheHit | CacheMiss:
     """Look up a cached execution by its deterministic spec ID.
 
-    Query the executions Delta table for a prior successful run matching
+    Query committed, non-diagnostic executions for a prior success matching
     ``execution_spec_id``. On a hit, return the cached execution's
     identifiers so the caller can skip re-execution.
 
@@ -50,7 +50,6 @@ def cache_lookup(
             reason=CacheValidationReason.NO_PREVIOUS_EXECUTION,
         )
 
-    # Query for successful execution with this spec_id
     result = (
         scan_committed(
             delta_root,
@@ -61,7 +60,7 @@ def cache_lookup(
         .filter(pl.col("execution_spec_id") == execution_spec_id)
         .filter(pl.col("replay_of_execution_run_id").is_null())
         .filter(pl.col("success") == True)  # noqa: E712
-        .sort("timestamp_start", descending=True)  # Most recent first
+        .sort("timestamp_start", descending=True)
         .limit(1)
         .collect()
     )

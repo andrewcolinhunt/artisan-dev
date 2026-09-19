@@ -62,3 +62,16 @@ class TestExtractExecutionRunIds:
         ]
         ids = extract_execution_run_ids(results)
         assert ids == ["a", "b", "c"]
+
+    def test_filters_missing_ids_and_preserves_order(self):
+        results = [
+            _result(execution_run_ids=["id1"]),
+            _result(execution_run_ids=["id2", "id3"]),
+            _result(success=False, error="fail", execution_run_ids=[None]),
+            _result(execution_run_ids=[]),
+        ]
+
+        assert extract_execution_run_ids(results) == ["id1", "id2", "id3"]
+
+    def test_empty_results(self):
+        assert extract_execution_run_ids([]) == []

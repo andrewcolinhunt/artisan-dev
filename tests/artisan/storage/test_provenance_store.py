@@ -70,8 +70,8 @@ def prov_env(backend_fs):
 class TestGetAncestorIds:
     """Tests for ProvenanceStore.get_ancestor_ids."""
 
-    def test_no_edges_table(self, prov_env):
-        """Returns empty list when artifact_edges table is missing."""
+    def test_empty_edges_table(self, prov_env):
+        """Return an empty list when the artifact edges table is empty."""
         store, _fs, _opts, _root = prov_env
         assert store.get_ancestor_ids(A) == []
 
@@ -193,8 +193,8 @@ class TestGetAncestorIds:
 class TestGetDescendantIds:
     """Tests for ProvenanceStore.get_descendant_ids."""
 
-    def test_no_edges_table(self, prov_env):
-        """Returns empty list when artifact_edges table is missing."""
+    def test_empty_edges_table(self, prov_env):
+        """Return an empty list when the artifact edges table is empty."""
         store, _fs, _opts, _root = prov_env
         assert store.get_descendant_ids(A) == []
 
@@ -267,8 +267,8 @@ class TestGetDescendantIds:
 class TestLoadEdgesDf:
     """Tests for ProvenanceStore.load_edges_df, especially the optional flags."""
 
-    def test_returns_empty_when_table_missing(self, prov_env):
-        """No artifact_edges table → empty DataFrame with the expected schema."""
+    def test_returns_empty_when_tables_empty(self, prov_env):
+        """Return an empty frame with the expected schema for empty tables."""
         store, _fs, _opts, _root = prov_env
         result = store.load_edges_df(0, 10)
         assert result.is_empty()
@@ -363,12 +363,7 @@ class TestLoadEdgesDf:
 
 
 class TestProvenanceStoreBackendParametrized:
-    """Smoke test: seed a small provenance graph and read it back on each step_runner.
-
-    Kept alongside the promoted classes above as an integration-level
-    end-to-end check of the store's public walk API. The promoted classes
-    cover more edge cases at the class-method level via ``prov_env``.
-    """
+    """Test both traversal directions against each storage backend."""
 
     def test_seed_and_walk(self, backend_fs):
         """Seed A -> B -> C, then walk both directions via the store."""

@@ -379,12 +379,12 @@ class ProvenanceStore:
         """Load a mapping of step number to human-readable step name.
 
         Args:
-            pipeline_run_id: If given, restrict the steps query to this
-                pipeline run. None uses the latest available names.
+            pipeline_run_id: Exact run to query. None selects the run with
+                the most recent authoritative attempt snapshot.
 
         Returns:
-            Mapping of step number to step or operation name. Empty
-            dict if neither table exists.
+            Mapping of logical step number to its latest attempt's step name.
+            Empty when the selected run has no steps.
         """
         steps_path = self._table_path(TablePath.STEPS)
         if self._fs.exists(steps_path):
@@ -412,11 +412,14 @@ class ProvenanceStore:
         include_roles: bool = False,
         execution_ids: set[str] | list[str] | None = None,
     ) -> pl.DataFrame:
-        """Load provenance edges where both endpoints fall within a step range.
+        """Load edges whose endpoints' origin steps fall within a range.
+
+        Origin steps belong to the artifacts' first committed rows; cached
+        reuse does not change them to current-run logical step numbers.
 
         Args:
-            step_min: Minimum step number (inclusive).
-            step_max: Maximum step number (inclusive).
+            step_min: Minimum origin step number (inclusive).
+            step_max: Maximum origin step number (inclusive).
             include_target_type: When True, include ``target_artifact_type``
                 column in the output.
             include_roles: When True, include ``source_role``,
@@ -581,9 +584,7 @@ class ProvenanceStore:
             Ancestor artifact IDs (excludes the starting artifact itself).
             Empty list if no ancestors exist or tables are missing.
         """
-        # Ancestor type filtering resolves each node's type from the
-        # artifact_index (an edge's source_artifact_type is the edge's role,
-        # not the ancestor's own type), so it runs after the walk.
+        # Resolve ancestor types from the authoritative index after traversal.
         ancestor_ids = self._walk_transitive(
             artifact_id,
             frontier_col="target_artifact_id",

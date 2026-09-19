@@ -17,7 +17,7 @@ def _seed_executions(
     backend_fs,
     records_data: dict[str, list[object]],
 ) -> tuple[str, object, dict[str, str]]:
-    """Commit execution fixtures through the format-2 persistence boundary."""
+    """Commit execution fixtures through the logical persistence boundary."""
     fs, storage, root = backend_fs
     options = storage.delta_storage_options()
     delta_root = f"{root}/delta"
@@ -165,17 +165,7 @@ class TestCacheLookup:
         assert result.execution_run_id == "run_new"
 
     def test_cache_miss_reasons_for_different_scenarios(self, backend_fs):
-        """CacheMiss.reason distinguishes between no execution and failed execution.
-
-        This helps the executor decide:
-        - NO_PREVIOUS_EXECUTION: New execution needed (first time)
-        - EXECUTION_FAILED: Retry needed (previous attempt failed)
-
-        Note: On cache miss, the executor proceeds to:
-        1. Materialization (stream artifacts to working directory)
-        2. Execute operation
-        3. Record execution
-        """
+        """Report a missing execution when the table does not exist."""
         fs, storage, root = backend_fs
         # Non-existent table -> NO_PREVIOUS_EXECUTION
         result = cache_lookup(
@@ -213,14 +203,10 @@ class TestCacheHitSchema:
 
 
 class TestCacheLookupBackendParametrized:
-    """Smoke test cache_lookup against both [local, s3] backends.
-
-    Kept alongside the promoted ``TestCacheLookup`` class as an
-    additional integration-level round-trip guard.
-    """
+    """Test cache lookup through committed storage on both backends."""
 
     def test_cache_hit_round_trip(self, backend_fs):
-        """A successful execution produces a CacheHit on either step_runner."""
+        """Return the successful execution on either storage backend."""
         now = datetime.now()
         records_data = {
             "execution_run_id": ["run_success"],

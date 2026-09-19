@@ -45,7 +45,7 @@ def test_initialize_empty_root_publishes_manifest_last(tmp_path) -> None:
     assert_store_format(root, fs)
 
 
-def test_current_manifest_without_cache_reuse_table_fails(tmp_path) -> None:
+def test_current_manifest_without_required_tables_fails(tmp_path) -> None:
     fs = LocalFileSystem()
     root = str(tmp_path / "delta")
     publish_store_manifest(root, fs)

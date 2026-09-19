@@ -529,7 +529,7 @@ def _validate_output_content(
     storage_options: dict[str, str],
     files_root: str | None,
 ) -> None:
-    """Hydrate cached outputs through D1's typed integrity boundary."""
+    """Hydrate cached outputs through the typed artifact integrity boundary."""
     from artisan.storage.core.artifact_store import ArtifactStore
 
     artifact_ids = sorted(set(outputs["artifact_id"].to_list()))

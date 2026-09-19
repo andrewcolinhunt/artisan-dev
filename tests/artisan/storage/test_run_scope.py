@@ -108,7 +108,7 @@ def _execution(
 
 @pytest.fixture
 def store(tmp_path):
-    """Create an empty format-2 store and return its root and filesystem."""
+    """Initialize a supported store and return its root and filesystem."""
     fs = LocalFileSystem()
     root = str(tmp_path / "delta")
     DeltaCommitter(

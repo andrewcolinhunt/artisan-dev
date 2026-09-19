@@ -20,7 +20,11 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from artisan.errors import StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.table_schemas import get_natural_key, get_schema
+from artisan.storage.core.table_schemas import (
+    get_natural_key,
+    get_schema,
+    is_global_artifact_table,
+)
 from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 from artisan.utils.path import shard_uri, step_dir_name, uri_join
 
@@ -86,7 +90,7 @@ class PlannedTable(BaseModel):
             raise ValueError(msg)
         staged_row_count = sum(file.row_count for file in self.files)
         if self.row_count > staged_row_count or (
-            not _is_global_artifact_table(self.table_path)
+            not is_global_artifact_table(self.table_path)
             and self.row_count != staged_row_count
         ):
             msg = f"Invalid row count for planned table {self.table_path!r}"
@@ -326,7 +330,7 @@ def verify_plan_files(
     for table in plan.tables:
         frames: list[pl.DataFrame] = []
         for planned_file in table.files:
-            path = _resolve_relative(staging_root, planned_file.relative_path, fs)
+            path = _resolve_relative(staging_root, planned_file.relative_path)
             data, frame = _read_parquet_bytes(path, fs)
             if (
                 len(data) != planned_file.size_bytes
@@ -359,7 +363,7 @@ def commit_plan_path(
 
 def comparable_effect_rows(table_path: str, frame: pl.DataFrame) -> pl.DataFrame:
     """Separate reusable artifact values from their first commit's origin."""
-    if _is_global_artifact_table(table_path) and "origin_step_number" in frame.columns:
+    if is_global_artifact_table(table_path) and "origin_step_number" in frame.columns:
         return frame.drop("origin_step_number")
     return frame
 
@@ -636,7 +640,7 @@ def _planned_effect_rows(
     unique = frame.unique(subset=list(natural_key), maintain_order=True)
     if frame.height == unique.height:
         return frame
-    if not _is_global_artifact_table(table_path):
+    if not is_global_artifact_table(table_path):
         msg = f"Duplicate natural keys in staged table {table_path}"
         raise StoreIntegrityError(msg)
 
@@ -650,10 +654,6 @@ def _planned_effect_rows(
         msg = f"Conflicting natural keys in staged table {table_path}"
         raise StoreIntegrityError(msg)
     return unique
-
-
-def _is_global_artifact_table(table_path: str) -> bool:
-    return table_path.startswith("artifacts/")
 
 
 def _canonical_rows(
@@ -708,7 +708,6 @@ def _relative_path(root: str, path: str, fs: AbstractFileSystem) -> str:
 def _resolve_relative(
     root: str,
     relative: str,
-    fs: AbstractFileSystem,
 ) -> str:
     if posixpath.isabs(relative) or relative == ".." or relative.startswith("../"):
         msg = f"Invalid relative staging path {relative!r}"

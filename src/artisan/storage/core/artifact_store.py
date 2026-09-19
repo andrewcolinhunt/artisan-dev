@@ -96,15 +96,19 @@ class ArtifactStore:
 
         Args:
             artifact_id: Content-addressed artifact identifier.
-            artifact_type: Type key hint. When provided, skips the
-                artifact_index lookup to determine the storage table.
-            hydrate: If True, load all fields from the content table.
+            artifact_type: Expected type, checked against the artifact index.
+            hydrate: If True, load content fields and verify external bytes.
                 If False, return a minimal model with only the ID and
                 type populated.
 
         Returns:
             Typed artifact model, or None if the ID is not found in
             the index or content table.
+
+        Raises:
+            ArtifactIntegrityError: If the indexed type conflicts with the
+                expected type, persisted content is invalid, or an external
+                artifact has no readable location with matching content.
         """
         stored_type = self.get_artifact_type(artifact_id)
         if stored_type is None:
@@ -117,7 +121,6 @@ class ArtifactStore:
             raise ArtifactIntegrityError(msg)
         artifact_type = stored_type
 
-        # ID-only mode - return minimal artifact
         if not hydrate:
             model_cls = ArtifactTypeDef.get_model(artifact_type)
             return cast(
@@ -125,7 +128,6 @@ class ArtifactStore:
                 model_cls(artifact_id=artifact_id, artifact_type=artifact_type),
             )
 
-        # Full hydration - load from storage
         table_path_str = ArtifactTypeDef.get_table_path(artifact_type)
         table_path = uri_join(self.base_path, table_path_str)
 
@@ -168,6 +170,10 @@ class ArtifactStore:
         Returns:
             Mapping of artifact ID to typed model. IDs not found in
             storage are silently omitted.
+
+        Raises:
+            ArtifactIntegrityError: If persisted content is invalid or an
+                external artifact has no readable location with matching content.
         """
         if not artifact_ids:
             return {}
@@ -486,7 +492,7 @@ class ArtifactStore:
 
         Returns:
             Single-row DataFrame matching the artifact_index schema,
-            ready to be staged via ``StagingArea.stage_dataframe``.
+            ready for ``StagingManager.stage_orchestrator_dataframe``.
         """
 
         data = {

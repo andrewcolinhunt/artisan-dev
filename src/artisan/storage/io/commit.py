@@ -29,6 +29,7 @@ from artisan.storage.core.table_schemas import (
     NON_PARTITIONED_TABLES,
     get_physical_schema,
     get_physical_schema_for_path,
+    is_global_artifact_table,
 )
 from artisan.storage.io.commit_plan import (
     CommitPlan,
@@ -74,7 +75,22 @@ class DeltaCommitter:
         *,
         preserve_staging: bool = False,
     ) -> dict[str, int]:
-        """Commit or exactly replay one persisted logical-commit plan."""
+        """Commit or exactly retry a persisted plan, publishing completion last.
+
+        Args:
+            plan: Immutable plan already published under this Delta root.
+            preserve_staging: Retain planned staging files after completion.
+                Otherwise, remove them after verifying the completed effect.
+
+        Returns:
+            Newly written row counts keyed by table name. An already complete
+            plan is verified again and returns an empty mapping.
+
+        Raises:
+            StoreIntegrityError: If plan evidence conflicts or its attempt
+                cannot accept this commit.
+            CommitError: If planning, a table write, or completion fails.
+        """
         assert_store_format(self.delta_base_path, self._fs, self._storage_options)
         self._require_persisted_plan(plan)
         controls = self._controls()
@@ -283,7 +299,7 @@ class DeltaCommitter:
             satisfied = keyed
             if 0 < satisfied.height < expected.height:
                 self._raise_partial(table.table_path)
-        elif _is_global_artifact_table(table.table_path):
+        elif is_global_artifact_table(table.table_path):
             if physical["logical_commit_id"].null_count():
                 msg = f"Table {table.table_path!r} contains unowned rows"
                 raise StoreIntegrityError(msg)
@@ -494,7 +510,10 @@ class DeltaCommitter:
         z_order_columns: list[str] | None = None,
         step_number: int | None = None,
     ) -> dict[str, int]:
-        """Compact a table after logical completion."""
+        """Compact a table, optionally restricting a partition or Z-ordering.
+
+        Callers must schedule maintenance after logical commits finish.
+        """
         table_path = _normalize_table(table)
         assert_store_format(self.delta_base_path, self._fs, self._storage_options)
         delta = DeltaTable(
@@ -522,7 +541,7 @@ class DeltaCommitter:
         z_order: bool = True,
         step_number: int | None = None,
     ) -> dict[str, dict[str, int]]:
-        """Compact every data table as best-effort maintenance."""
+        """Compact every data table, propagating the first maintenance failure."""
         config = {
             definition.table_path: ["artifact_id"]
             for definition in ArtifactTypeDef.get_all().values()
@@ -553,7 +572,11 @@ class DeltaCommitter:
         return results
 
     def vacuum_table(self, table: str | TablePath, retention_hours: int = 168) -> None:
-        """Remove old Delta data files as an explicit maintenance action."""
+        """Run Delta's vacuum eligibility check without deleting files.
+
+        This maintenance hook discards the dry-run candidate list. Actual
+        reclamation is not implemented.
+        """
         assert_store_format(self.delta_base_path, self._fs, self._storage_options)
         delta = DeltaTable(
             self._table_path(_normalize_table(table)),
@@ -566,10 +589,6 @@ class DeltaCommitter:
 
     def _table_path(self, table_path: str) -> str:
         return uri_join(self.delta_base_path, table_path)
-
-
-def _is_global_artifact_table(table_path: str) -> bool:
-    return table_path.startswith("artifacts/")
 
 
 def _frames_equal(
