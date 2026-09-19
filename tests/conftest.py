@@ -128,7 +128,7 @@ def _detect_minio_unavailable() -> str | None:
     except ImportError as exc:
         return (
             f"testcontainers package not installed ({exc.name}). "
-            f"Install dev deps (`pixi install -e dev`), or set "
+            f"Install dev deps (`pixi install --locked -e dev`), or set "
             f"ARTISAN_S3_ENDPOINT to a long-lived MinIO/S3 instance."
         )
 
@@ -146,7 +146,7 @@ def _detect_minio_unavailable() -> str | None:
 
 @pytest.fixture(scope="session")
 def minio_endpoint() -> Iterator[dict[str, str] | None]:
-    """Endpoint + credentials for the session-scoped MinIO step_runner.
+    """Endpoint + credentials for the session-scoped MinIO storage service.
 
     Honors ``ARTISAN_S3_ENDPOINT`` for developer-owned instances; otherwise
     boots a MinIO container via testcontainers. Yields ``None`` when boot

@@ -1,4 +1,4 @@
-"""Test helpers for constructing the strict format-2 store boundary."""
+"""Test helpers for constructing the strict current-format store boundary."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def commit_test_tables(
     operation_name: str = "seed",
     storage_options: dict[str, str] | None = None,
 ) -> None:
-    """Publish a format-2 store and seed tables through one logical commit."""
+    """Publish a current-format store and seed tables through one logical commit."""
     publish_test_store(delta_root, fs, storage_options)
     staging = StagingManager(staging_root, fs)
     for table_path, frame in tables.items():

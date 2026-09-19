@@ -203,8 +203,8 @@ sub-package owns a distinct phase of the worker-side execution flow:
 | `context/` | Build execution context, run identity, sandbox environment | `builder.py`, `sandbox.py` |
 | `inputs/` | Instantiate, materialize, and group artifacts for execution | `instantiation.py`, `materialization.py`, `grouping.py`, `lineage_matching.py` |
 | `lineage/` | Capture lineage, build provenance edges, validate completeness | `builder.py`, `capture.py`, `enrich.py`, `validation.py` |
-| `models/` | Transport containers carrying work from orchestrator to executor | `execution_unit.py`, `artifact_source.py` |
-| `recording/` | Stage artifacts and metadata, record outcomes | `parquet_writer.py`, `recorder.py` |
+| `models/` | Transport containers carrying work from orchestrator to executor | `execution_unit.py` |
+| `recording/` | Stage artifacts, record outcomes, command evidence and replay snapshots | `parquet_writer.py`, `recorder.py`, `commands.py`, `replay_snapshot.py` |
 
 The package also has root-level cross-cutting files: `exceptions.py` and
 `utils.py`.

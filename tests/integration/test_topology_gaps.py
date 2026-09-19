@@ -194,7 +194,7 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
         step_runner=Runner.LOCAL,
     )
 
-    # Step 3: MetricCalculator (should be skipped — pipeline stopped)
+    # Empty upstream outputs propagate the skip to MetricCalculator.
     step3_result = pipeline.run(
         MetricCalculator,
         inputs={"dataset": pipeline.output("data_transformer", "dataset")},

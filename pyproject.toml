@@ -161,11 +161,11 @@ build = ">=1.4.0,<2"
 twine = ">=6.2.0,<7"
 
 # S3 testing — MinIO test container (s3fs itself lives in the default
-# environment; pip consumers still opt in via the `artisan[s3]` extra)
+# environment; pip consumers still opt in via the `dexterity-artisan[s3]` extra)
 testcontainers = { version = "*", extras = ["minio"] }
 
 # =============================================================================
-# MCP FEATURE - Model Context Protocol server (artisan[mcp] extra)
+# MCP FEATURE - Model Context Protocol server (dexterity-artisan[mcp] extra)
 # =============================================================================
 [tool.pixi.feature.mcp.pypi-dependencies]
 fastmcp = ">=3"
@@ -265,21 +265,12 @@ disallow_incomplete_defs = false
 explicit_package_bases = true
 namespace_packages = true
 
-# Tests are not strictly type-checked at the mypy gate. The functional
-# gate is pytest, which fires when tests drift from real src signatures.
-# This override makes mypy silent on tests/** so the pre-commit mypy
-# hook can pass while src/artisan stays under strict mode (top-level).
-# A later phase tightens this incrementally back toward strict; see
-# _dev/design/0_current/precommit-state-and-reinstatement.md.
+# Source uses strict checking; test behavior and call signatures are checked by pytest.
 [[tool.mypy.overrides]]
 module = ["tests.*", "conftest"]
 ignore_errors = true
 
-# Third-party libs without py.typed / stubs. Silence import-untyped repo-wide.
-# Note: matplotlib, modal, and IPython are listed here because the pre-commit
-# mypy hook runs in an isolated environment where those packages aren't
-# installed — without this override, the hook would flag them as
-# import-not-found even though `pixi run -e dev mypy` sees them via the dev env.
+# Optional libraries may lack stubs or be absent from isolated hook environments.
 [[tool.mypy.overrides]]
 module = [
     "fastapi",
@@ -318,7 +309,7 @@ extend-select = [
   "PL",       # pylint
   "PT",       # flake8-pytest-style
   # PTH (flake8-use-pathlib) disabled: framework uses str paths + os.path
-  # to support cloud URIs (S3/GCS). See 02-storage-layer.md.
+  # to support cloud URIs (S3/GCS).
   "RET",      # flake8-return
   "RUF",      # Ruff-specific
   "SIM",      # flake8-simplify
@@ -333,8 +324,6 @@ ignore = [
   "G004",     # logging-f-string — readable idiom; lazy-eval perf cost is negligible here
 ]
 isort.required-imports = ["from __future__ import annotations"]
-# Uncomment if using a _compat.typing backport
-# typing-modules = ["artisan._compat.typing"]
 
 # Typer/FastAPI declare CLI options and dependencies as call-valued defaults
 # (typer.Option(...), typer.Argument(...)); these are immutable descriptors,

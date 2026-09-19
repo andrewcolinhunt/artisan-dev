@@ -8,8 +8,6 @@ These tests verify the core data flow patterns supported by the pipeline framewo
 5. Passthrough: Artifact identity preservation through Filter (direct-input)
 6. Batch Processing: Multi-item batch execution
 7. Comprehensive: Complex multi-pattern pipeline
-
-Reference: docs/design/design_data_flow_integration_tests.md
 """
 
 from __future__ import annotations
@@ -37,7 +35,7 @@ from .conftest import (
 )
 
 # =============================================================================
-# Test 1: Linear Chain
+# Linear Chain
 # =============================================================================
 
 
@@ -121,7 +119,7 @@ def test_linear_chain(pipeline_env: dict[str, str]):
 
 
 # =============================================================================
-# Test 2: Fan-Out (Execution)
+# Fan-Out (Execution)
 # =============================================================================
 
 
@@ -211,7 +209,7 @@ def test_fan_out_execution(pipeline_env: dict[str, str]):
 
 
 # =============================================================================
-# Test 3: Fan-Out (Data)
+# Fan-Out (Data)
 # =============================================================================
 
 
@@ -286,7 +284,7 @@ def test_fan_out_data(pipeline_env: dict[str, str]):
 
 
 # =============================================================================
-# Test 4: Fan-In (Merge)
+# Fan-In (Merge)
 # =============================================================================
 
 
@@ -368,7 +366,7 @@ def test_fan_in_merge(pipeline_env: dict[str, str]):
 
 
 # =============================================================================
-# Test 5: Passthrough
+# Passthrough
 # =============================================================================
 
 
@@ -465,7 +463,7 @@ def test_passthrough(pipeline_env: dict[str, str]):
 
 
 # =============================================================================
-# Test 7: Batch Processing
+# Batch Processing
 # =============================================================================
 
 
@@ -559,7 +557,7 @@ def test_batch_processing(pipeline_env: dict[str, str]):
 
 
 # =============================================================================
-# Test 8: Comprehensive
+# Comprehensive
 # =============================================================================
 
 

@@ -167,7 +167,7 @@ class WorkerCrash(_GenBase):
     """Creator whose execute hard-kills the worker (models OOM/segfault).
 
     ``os._exit`` bypasses the executor's own failure recording, so the record
-    must be synthesized by the orchestrator (Mechanism B).
+    must be synthesized by the orchestrator.
     """
 
     name = "fp_worker_crash"

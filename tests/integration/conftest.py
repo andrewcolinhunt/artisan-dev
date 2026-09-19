@@ -251,45 +251,10 @@ def get_execution_outputs(
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
 ) -> list[str]:
-    """Get output artifact IDs for a step/role.
-
-    Steps:
-    1. Query executions for execution_run_id WHERE origin_step_number = step_number
-    2. Query execution_edges for artifact_id WHERE execution_run_id IN (...)
-       AND direction = 'output' AND role = role
-
-    Args:
-        delta_root: Root directory for Delta Lake tables.
-        step_number: Step number to query.
-        role: Output role name.
-        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
-        storage_options: Delta-rs storage options.
-
-    Returns:
-        List of artifact IDs.
-    """
-    df_exec = read_table(
-        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    """Read output occurrences by origin step/role across the fixture store."""
+    return _execution_artifact_ids(
+        delta_root, step_number, role, "output", fs=fs, storage_options=storage_options
     )
-    df_prov = read_table(
-        delta_root,
-        "provenance/execution_edges",
-        fs=fs,
-        storage_options=storage_options,
-    )
-
-    if df_exec.is_empty() or df_prov.is_empty():
-        return []
-
-    exec_ids = df_exec.filter(pl.col("origin_step_number") == step_number)[
-        "execution_run_id"
-    ].to_list()
-
-    return df_prov.filter(
-        pl.col("execution_run_id").is_in(exec_ids)
-        & (pl.col("direction") == "output")
-        & (pl.col("role") == role)
-    )["artifact_id"].to_list()
 
 
 def get_execution_inputs(
@@ -300,20 +265,22 @@ def get_execution_inputs(
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
 ) -> list[str]:
-    """Get input artifact IDs for a step/role.
+    """Read input occurrences by origin step/role across the fixture store."""
+    return _execution_artifact_ids(
+        delta_root, step_number, role, "input", fs=fs, storage_options=storage_options
+    )
 
-    Same as get_execution_outputs but with direction = 'input'.
 
-    Args:
-        delta_root: Root directory for Delta Lake tables.
-        step_number: Step number to query.
-        role: Input role name.
-        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
-        storage_options: Delta-rs storage options.
-
-    Returns:
-        List of artifact IDs.
-    """
+def _execution_artifact_ids(
+    delta_root: str,
+    step_number: int,
+    role: str,
+    direction: str,
+    *,
+    fs: AbstractFileSystem | None,
+    storage_options: dict | None,
+) -> list[str]:
+    """Preserve repeated occurrences without restricting accepted run membership."""
     df_exec = read_table(
         delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
     )
@@ -333,7 +300,7 @@ def get_execution_inputs(
 
     return df_prov.filter(
         pl.col("execution_run_id").is_in(exec_ids)
-        & (pl.col("direction") == "input")
+        & (pl.col("direction") == direction)
         & (pl.col("role") == role)
     )["artifact_id"].to_list()
 
@@ -571,7 +538,7 @@ class FailingTransformer(OperationDefinition):
         return prepared
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Transform CSV (prepend marker line) with controllable failure injection."""
+        """Scale numeric CSV columns with controllable failure injection."""
         output_dir = inputs.execute_dir
         os.makedirs(output_dir, exist_ok=True)
 

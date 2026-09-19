@@ -120,12 +120,12 @@ def test_creator_continue_records_failure(
 
 
 # ===========================================================================
-# Fix 1 — FAIL_FAST commits the failure record before aborting.
+# FAIL_FAST commits the failure record before aborting.
 # ===========================================================================
 
 
 def test_creator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> None:
-    """FAIL_FAST full failure lands a readable row (was stranded in staging)."""
+    """FAIL_FAST publishes a readable failure row before returning."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.FAIL_FAST)
     step = pipeline.run(failure_ops.FailExecute, step_runner=Runner.LOCAL)
     assert step.status is StepStatus.FAILED
@@ -216,7 +216,7 @@ def test_curator_continue_records_failure(
 
 
 def test_curator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> None:
-    """FAIL_FAST curator failure lands a readable row (Fix 1, curator path)."""
+    """FAIL_FAST publishes a readable curator failure row."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.FAIL_FAST)
     gen = pipeline.run(
         DataGenerator, params={"count": 2, "seed": 5}, step_runner=Runner.LOCAL
@@ -267,7 +267,7 @@ def test_composite_internal_failure_recorded(
 
 
 # ===========================================================================
-# Fix 2 — synthesized records when the worker hard-crashes (Mechanism B).
+# The orchestrator records hard crashes that bypass worker recording.
 # ===========================================================================
 
 

@@ -1,4 +1,4 @@
-"""Rich format-2 store fixture for run-isolation reader tests."""
+"""Rich current-format store fixture for run-isolation reader tests."""
 
 from __future__ import annotations
 

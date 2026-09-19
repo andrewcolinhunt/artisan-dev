@@ -1,12 +1,7 @@
 """End-to-end pipeline run against S3-compatible storage (MinIO).
 
-This is the gate that proves all six s3-readiness PRs hold together:
-
-- PR 1's ``StorageConfig.delta_options`` reaches delta-rs.
-- PR 2's logs/failure_logs derivations stay local under cloud delta.
-- PR 3's MinIO fixture provides a working step_runner.
-- PR 4's cloud-URI inputs ingest via the two-step ``resolve_fs`` rule.
-- PR 5's storage layer round-trips against s3.
+Covers explicit storage options, cloud input ingestion, external files and
+committed Delta tables with local worker execution.
 
 Marked ``integration``; skips cleanly when MinIO is unavailable
 (via the ``s3_pipeline_env`` fixture chain).
@@ -45,7 +40,7 @@ def _make_pipeline(env: dict, name: str) -> PipelineManager:
 
 
 class TestS3PipelineEndToEnd:
-    """A creator → curator pipeline runs end-to-end on MinIO."""
+    """Creator pipelines persist their results on MinIO."""
 
     def test_full_pipeline_writes_delta_tables_on_s3(self, s3_pipeline_env):
         """DataGenerator → MetricCalculator on MinIO; all Delta tables land in s3."""
@@ -81,7 +76,7 @@ class TestS3PipelineEndToEnd:
         # Verify the executions table was committed.
         exec_uri = f"{env['delta_root']}/orchestration/executions"
         exec_df = pl.read_delta(exec_uri, storage_options=storage_options)
-        assert exec_df.height >= 2  # one per step (curator) or per worker (creator)
+        assert exec_df.height >= 2  # one per execution unit
         assert all(exec_df["success"].to_list())
 
     def test_manager_initializes_with_cloud_failure_logs(self, s3_pipeline_env):
@@ -100,9 +95,9 @@ class TestS3PipelineEndToEnd:
         pipeline.finalize()
 
     def test_cloud_uri_input_ingestion(self, s3_pipeline_env):
-        """`input_files=["s3://bucket/...", ...]` round-trips end-to-end.
+        """`inputs=["s3://bucket/...", ...]` round-trips end-to-end.
 
-        Validates PR 4's cloud-URI ingestion: the user passes s3:// URIs,
+        The user passes s3:// URIs,
         `_promote_file_paths_to_store` resolves the per-path fs via the
         two-step rule (matching `config.storage.protocol="s3"` so
         `storage.filesystem()` is used — no env-var leakage), and the

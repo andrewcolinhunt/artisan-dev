@@ -131,8 +131,8 @@ src/artisan/                # Framework (domain-agnostic)
 │   ├── executors/          # Creator/curator phase executors
 │   ├── inputs/             # Input grouping, instantiation, lineage matching, materialization
 │   ├── lineage/            # Lineage capture, enrichment, name derivation, validation
-│   ├── models/             # Execution unit + artifact source models
-│   ├── recording/          # Execution-record recorder + parquet writer
+│   ├── models/             # Execution unit model
+│   ├── recording/          # Execution records, command evidence, replay snapshots + parquet writer
 │   ├── tool_endpoint/      # Operation-as-tool endpoint (client, server, deploy, docker)
 │   ├── transport/          # Transport log constants
 │   ├── exceptions.py       # Execution-phase exceptions
@@ -146,7 +146,9 @@ src/artisan/                # Framework (domain-agnostic)
 │   ├── runners/            # Native local runner and public provider contract
 │   ├── pipeline_manager.py # PipelineManager orchestration entry point
 │   ├── runner_api.py       # Stable API for external runner providers
+│   ├── replay.py           # Single-execution diagnostic replay
 │   ├── run_history.py      # Run-history aggregation reader
+│   ├── run_status.py       # Current run and step status readers
 │   └── step_future.py      # Step future handle
 ├── provenance/             # Domain-agnostic provenance traversal (Polars BFS)
 ├── registry/               # Operation discovery and registration
@@ -162,13 +164,13 @@ src/artisan/                # Framework (domain-agnostic)
 ├── storage/                # Artifact storage and persistence
 │   ├── cache/              # Cache lookup
 │   ├── core/               # Artifact store, provenance store, table schemas
-│   └── io/                 # Commit, staging, staging verification
+│   └── io/                 # Logical commits, exact-plan staging, verification + repair
 ├── utils/                  # Hashing, paths, filenames, external tools, dotenv, logging
 ├── visualization/          # Provenance graphs and analytics
 │   ├── graph/              # Micro/macro provenance rendering (Graphviz) + interactive stepper
 │   ├── inspect.py          # Pipeline/step/metric/data/failure inspection readers
 │   └── timing.py           # Timing analytics
-├── cli.py                  # CLI entry point (execute_as_tool op runner, schema export)
+├── cli.py                  # Operation/deployment commands, inspection, replay + store repair
 └── errors.py               # ArtisanError base + domain exception hierarchy
 ```
 

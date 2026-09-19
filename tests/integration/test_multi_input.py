@@ -288,7 +288,6 @@ def test_with_associated(pipeline_env: dict[str, str]):
 
     assert count_artifacts_by_step(delta_root, 2) == 2
 
-    # Verify association count is encoded in output filenames
     output_ids = get_execution_outputs(delta_root, 2, "result")
     assert len(output_ids) == 2
 
@@ -727,19 +726,8 @@ def test_cross_product_default_preserves_classvar_behavior(
     _assert_cross_product_provenance(delta_root, op_step_number=3)
 
 
-# Note on Bug A end-to-end coverage:
-# The CROSS_PRODUCT + ``artifacts_per_unit > 1`` + per-artifact-dispatch
-# code path fans out per artifact on every backend (the lifecycle preps
-# with per-artifact splitting; the execute router iterates). Ops that opt
-# out (``per_artifact_dispatch=False``) keep the single monolithic call,
-# where the framework cannot recover pair-index automatically — that case
-# is documented as op-author responsibility on
-# ``OperationDefinition.group_by``. The Bug A
-# ``output_pair_map`` mechanism is covered by unit tests in
-# ``tests/artisan/execution/test_creator_phases.py::TestReassembleResults``
-# (production side) and
-# ``tests/artisan/execution/test_lineage_utils.py::TestCaptureLineageOutputPairMap``
-# (consumption side).
+# Monolithic operations must provide output-pair mappings themselves;
+# per-artifact dispatch retains pair identity through its individual calls.
 
 
 # =============================================================================
