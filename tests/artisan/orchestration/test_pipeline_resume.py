@@ -15,6 +15,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.enums import CachePolicy
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -110,6 +111,49 @@ def _run_external_default_pipeline(
 
 class TestResume:
     """Tests for PipelineManager.resume()."""
+
+    @pytest.mark.parametrize("default", [None, *CachePolicy])
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_policy_default_applies_only_to_new_submissions(
+        self, mock_exec, tmp_path, default: CachePolicy | None
+    ) -> None:
+        roots = {
+            "delta_root": str(tmp_path / "delta"),
+            "staging_root": str(tmp_path / "staging"),
+        }
+        original = PipelineManager.create(name="resume_policy", **roots)
+        first = original.run(IngestMockOp, cache_policy=CachePolicy.STEP_COMPLETED)
+        second = original.run(IngestMockOp, cache_policy=CachePolicy.ALL_SUCCEEDED)
+        original.finalize()
+        before = pl.read_delta(tmp_path / "delta" / "orchestration" / "steps")
+        options = {} if default is None else {"cache_policy": default}
+        resumed = PipelineManager.resume(
+            **roots, pipeline_run_id=original.config.pipeline_run_id, **options
+        )
+        assert [step.step_run_id for step in resumed._step_results] == [
+            first.step_run_id,
+            second.step_run_id,
+        ]
+        assert mock_exec.call_count == 2
+        inherited = resumed.submit(IngestMockOp).result()
+        explicit = resumed.run(IngestMockOp, cache_policy=CachePolicy.STEP_COMPLETED)
+        resumed.finalize()
+        after = pl.read_delta(tmp_path / "delta" / "orchestration" / "steps")
+        assert after.filter(
+            pl.col("step_run_id").is_in([first.step_run_id, second.step_run_id])
+        ).equals(before)
+        for result, expected in (
+            (inherited, default or CachePolicy.ALL_SUCCEEDED),
+            (explicit, CachePolicy.STEP_COMPLETED),
+        ):
+            rows = after.filter(pl.col("step_run_id") == result.step_run_id)
+            assert {
+                json.loads(value)["cache_policy"]
+                for value in rows["compute_options_json"]
+            } == {expected.value}
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",

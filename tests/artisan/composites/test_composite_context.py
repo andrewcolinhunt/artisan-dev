@@ -19,7 +19,7 @@ from artisan.composites.base.composite_definition import CompositeDefinition
 from artisan.composites.base.results import CompositeResult
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.schemas.composites.composite_ref import CompositeRef
-from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -136,6 +136,7 @@ class TestForwarding:
             "compute_provider": "modal",
             "compute_resources": {"memory_gb": 3},
             "failure_policy": FailurePolicy.CONTINUE,
+            "cache_policy": CachePolicy.STEP_COMPLETED,
         }
         pipeline = MagicMock()
         ctx = _make_ctx(pipeline, step_defaults=step_defaults)
@@ -149,6 +150,7 @@ class TestForwarding:
         assert kwargs["compute_provider"] == "modal"
         assert kwargs["compute_resources"] == {"memory_gb": 3}
         assert kwargs["failure_policy"] == FailurePolicy.CONTINUE
+        assert kwargs["cache_policy"] == CachePolicy.STEP_COMPLETED
 
     def test_explicit_per_op_value_wins(self):
         pipeline = MagicMock()
@@ -201,6 +203,37 @@ class TestForwarding:
         ctx = _make_ctx(pipeline, step_defaults={"params": {"count": 99}})
         ctx.run(DataGenerator, params={"count": 2})
         assert pipeline.submit.call_args.kwargs["params"] == {"count": 2}
+
+
+class TestCachePolicyInheritance:
+    @pytest.mark.parametrize("kwargs", [{}, {"cache_policy": None}])
+    @pytest.mark.parametrize("default", [None, *CachePolicy])
+    def test_child_inherits_omitted_and_none(self, kwargs, default):
+        pipeline = MagicMock()
+        ctx = _make_ctx(pipeline, step_defaults={"cache_policy": default})
+        ctx.run(DataGenerator, **kwargs)
+        assert pipeline.submit.call_args.kwargs["cache_policy"] is default
+
+    @pytest.mark.parametrize("policy", list(CachePolicy))
+    def test_explicit_policy_overrides_default(self, policy):
+        pipeline = MagicMock()
+        default = next(value for value in CachePolicy if value != policy)
+        ctx = _make_ctx(pipeline, step_defaults={"cache_policy": default})
+        ctx.run(DataGenerator, cache_policy=policy)
+        assert pipeline.submit.call_args.kwargs["cache_policy"] is policy
+
+    @pytest.mark.parametrize("override", [None, *CachePolicy])
+    def test_nested_composite_receives_nearest_default(self, override):
+        pipeline = MagicMock()
+        pipeline.submit_composite.return_value = CompositeResult(
+            output_map={}, output_types={}
+        )
+        ctx = _make_ctx(
+            pipeline, step_defaults={"cache_policy": CachePolicy.STEP_COMPLETED}
+        )
+        ctx.run(InnerComposite, cache_policy=override)
+        expected = override if override is not None else CachePolicy.STEP_COMPLETED
+        assert pipeline.submit_composite.call_args.kwargs["cache_policy"] is expected
 
 
 class TestSkipCacheSentinel:

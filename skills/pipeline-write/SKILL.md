@@ -99,6 +99,7 @@ result = pipeline.run(
     compute_provider=None,    # str | dict | ComputeProvider
     compute_resources=None,   # dict | ComputeResources
     failure_policy=None,      # FailurePolicy — CONTINUE or FAIL_FAST
+    cache_policy=None,        # CachePolicy — None inherits pipeline default
     group_by=None,            # GroupByStrategy — per-step pairing override
     compact=True,             # bool — compact provenance
     name=None,                # str — step name for wiring and display
@@ -147,6 +148,7 @@ result = pipeline.run_composite(
     compute_provider=None,    # default for every child step
     compute_resources=None,   # default for every child step
     failure_policy=None,      # default for every child step
+    cache_policy=None,        # default whole-step cache policy for children
     compact=True,             # default for every child step
     skip_cache=False,         # default for every child step
 )
@@ -158,6 +160,14 @@ Composite-level overrides are defaults for each child step; a value set on a
 block on the children; `run_composite()` returns the resolved `CompositeResult`.
 External runner defaults apply to creator children; curator children remain
 local.
+
+Import `CachePolicy` from `artisan.schemas`. Use `CachePolicy.ALL_SUCCEEDED`
+to accept only succeeded whole steps, or `CachePolicy.STEP_COMPLETED` to also
+accept partial steps. `None` inherits the nearest explicit composite policy,
+then the pipeline default. An explicit child enum replaces either default.
+Successful execution units can still be reused when a partial whole-step hit
+is rejected. `skip_cache=True` at the pipeline or step and an operation's
+`cacheable=False` declaration bypass both layers regardless of policy.
 
 ---
 
@@ -191,6 +201,7 @@ pipelines for readability. Bind `output = pipeline.output` at the top.
 | `compute_provider` | `str \| dict \| ComputeProvider` | Execute-phase routing target |
 | `compute_resources` | `dict \| ComputeResources` | Compute-provider CPU, memory, GPU, and timeout |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` (default) or `FAIL_FAST` |
+| `cache_policy` | `CachePolicy \| None` | Whole-step acceptance: `ALL_SUCCEEDED` or `STEP_COMPLETED`; `None` inherits |
 | `group_by` | `GroupByStrategy` | Per-step input-pairing override |
 | `compact` | `bool` | Compact Delta tables after commit (default `True`) |
 | `skip_cache` | `bool` | Bypass cache lookup for this step |
@@ -398,7 +409,7 @@ summary = pipeline.finalize()
 | `working_root` | `Path \| str \| None` | `$TMPDIR` | Sandbox for execution |
 | `files_root` | `Path \| str \| None` | Derived beside `delta_root` | Artisan-managed external files |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | Default for all steps |
-| `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | When to cache step results |
+| `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | Default whole-step cache policy |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Built-in local runner or external provider instance |
 | `preserve_staging` | `bool` | `False` | Keep staging dirs after commit |
 | `preserve_working` | `bool` | `False` | Keep working dirs after execution |
@@ -424,6 +435,10 @@ summary = pipeline.finalize()
 ## Resume
 
 Reconstruct pipeline state from Delta Lake and continue:
+
+`resume(cache_policy=...)` sets the default for new steps. Restored steps keep
+their outcomes and recorded policies. Omitting it uses `ALL_SUCCEEDED` for
+new steps, even if completed steps used another policy.
 
 ```python
 pipeline = PipelineManager.resume(

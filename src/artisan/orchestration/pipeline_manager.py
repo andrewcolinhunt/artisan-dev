@@ -1473,7 +1473,7 @@ class PipelineManager:
             files_root: Root path for Artisan-managed external files. If None,
                 defaults to a sibling "files" directory next to delta_root.
             failure_policy: Default failure handling for steps.
-            cache_policy: Controls which usable terminal steps qualify as cache hits.
+            cache_policy: Default policy for whole-step cache eligibility.
             default_step_runner: Default step runner for step execution. Accepts a
                 ``RunnerBase`` instance or a built-in string name (currently
                 ``"local"``). External providers are passed as instances.
@@ -1538,7 +1538,8 @@ class PipelineManager:
             files_root: Root path for Artisan-managed external files. If None,
                 derives a sibling path from a local delta_root.
             failure_policy: Default failure handling for subsequent steps.
-            cache_policy: Controls which usable terminal steps qualify as cache hits.
+            cache_policy: Default whole-step cache policy for new submissions.
+                Restored steps retain their outcomes and recorded policies.
             preserve_staging: Preserve staging files after commit.
             preserve_working: Preserve worker sandboxes after execution.
             skip_cache: Bypass cache lookups for subsequent steps.
@@ -1655,6 +1656,7 @@ class PipelineManager:
         compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
         compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
+        cache_policy: CachePolicy | None = None,
         group_by: GroupByStrategy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1678,6 +1680,7 @@ class PipelineManager:
             compute_resources: Compute-provider hardware override
                 (gpu, cpu, memory_gb, timeout).
             failure_policy: Override pipeline-level failure policy.
+            cache_policy: Whole-step cache policy. None uses the pipeline default.
             group_by: Override the operation's class-level ``group_by`` for
                 this step only. ``None`` (default) preserves the operation's
                 declared default. A ``GroupByStrategy`` member switches
@@ -1704,6 +1707,7 @@ class PipelineManager:
             compute_provider=compute_provider,
             compute_resources=compute_resources,
             failure_policy=failure_policy,
+            cache_policy=cache_policy,
             group_by=group_by,
             compact=compact,
             name=name,
@@ -1729,6 +1733,7 @@ class PipelineManager:
         compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
         compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
+        cache_policy: CachePolicy | None = None,
         group_by: GroupByStrategy | None = None,
         compact: bool = True,
         name: str | None = None,
@@ -1751,6 +1756,7 @@ class PipelineManager:
             compute_resources: Compute-provider hardware override
                 (gpu, cpu, memory_gb, timeout).
             failure_policy: Override pipeline-level failure policy.
+            cache_policy: Whole-step cache policy. None uses the pipeline default.
             group_by: Override the operation's class-level ``group_by`` for
                 this step only. ``None`` (default) preserves the operation's
                 declared default. A ``GroupByStrategy`` member switches
@@ -1764,7 +1770,8 @@ class PipelineManager:
 
         Raises:
             TypeError: If ``operation`` is a CompositeDefinition subclass,
-                or if ``group_by`` is not a ``GroupByStrategy`` member.
+                ``group_by`` is not a ``GroupByStrategy`` member, or
+                ``cache_policy`` is not a ``CachePolicy`` member or None.
             ValueError: If any override keys are unrecognized.
         """
         from artisan.composites.base.composite_definition import CompositeDefinition
@@ -1781,6 +1788,7 @@ class PipelineManager:
             compute_provider=compute_provider,
             compute_resources=compute_resources,
             failure_policy=failure_policy,
+            cache_policy=cache_policy,
             group_by=group_by,
             compact=compact,
             skip_cache=skip_cache,
@@ -2191,6 +2199,14 @@ class PipelineManager:
             }
         return metadata
 
+    def _resolve_cache_policy(self, ov: StepOverrides) -> CachePolicy:
+        """Resolve a step's policy against the immutable pipeline default."""
+        return (
+            ov.cache_policy
+            if ov.cache_policy is not None
+            else self._config.cache_policy
+        )
+
     def _build_step_start_record(
         self,
         operation: type[OperationDefinition],
@@ -2216,6 +2232,7 @@ class PipelineManager:
             ),
             "compute_resources": ov.compute_resources or {},
             "group_by": (ov.group_by.value if ov.group_by is not None else None),
+            "cache_policy": self._resolve_cache_policy(ov).value,
             **self._default_runner_metadata(),
         }
         return StepStartRecord(
@@ -2257,7 +2274,7 @@ class PipelineManager:
         """
         cached = self._step_tracker.check_cache(
             step_spec_id,
-            self._config.cache_policy,
+            self._resolve_cache_policy(ov),
         )
         if cached is None:
             return None
@@ -2671,6 +2688,7 @@ class PipelineManager:
         compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
         compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
+        cache_policy: CachePolicy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
     ) -> CompositeResult:
@@ -2697,6 +2715,8 @@ class PipelineManager:
             compute_provider: Default compute provider for child steps.
             compute_resources: Default hardware resources for child steps.
             failure_policy: Default failure policy for child steps.
+            cache_policy: Default whole-step cache policy for child steps.
+                None inherits the pipeline default.
             compact: Default Delta compaction flag for child steps.
             skip_cache: Default cache-bypass flag for child steps.
 
@@ -2705,7 +2725,8 @@ class PipelineManager:
             downstream wiring and ``.wait()`` to block on child completion.
 
         Raises:
-            TypeError: If ``composite`` is not a CompositeDefinition subclass.
+            TypeError: If ``composite`` is not a CompositeDefinition subclass,
+                or ``cache_policy`` is not a ``CachePolicy`` member or None.
             ValueError: If any composite-level override key is unrecognized.
         """
         from artisan.composites.base.composite_context import CompositeContext
@@ -2723,6 +2744,7 @@ class PipelineManager:
             compute_provider=compute_provider,
             compute_resources=compute_resources,
             failure_policy=failure_policy,
+            cache_policy=cache_policy,
             compact=compact,
             skip_cache=skip_cache,
         )
@@ -2780,6 +2802,7 @@ class PipelineManager:
             "compute_provider": ov.compute_provider,
             "compute_resources": ov.compute_resources,
             "failure_policy": ov.failure_policy,
+            "cache_policy": ov.cache_policy,
             "compact": ov.compact,
             "skip_cache": ov.skip_cache,
         }
@@ -2814,6 +2837,7 @@ class PipelineManager:
         compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
         compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
+        cache_policy: CachePolicy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
     ) -> CompositeResult:
@@ -2843,6 +2867,7 @@ class PipelineManager:
             compute_provider=compute_provider,
             compute_resources=compute_resources,
             failure_policy=failure_policy,
+            cache_policy=cache_policy,
             compact=compact,
             skip_cache=skip_cache,
         )

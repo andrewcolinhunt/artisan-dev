@@ -152,7 +152,7 @@ def test_current_reader_exposes_every_authoritative_status(
     """Current-state reads preserve each lifecycle value without derivation."""
     tracker = StepTracker(str(tmp_path), "run")
     step_run_id = "a" * 32
-    tracker.create_attempt(_record(step_run_id))
+    tracker.create_attempt(_record(step_run_id, spec="b" * 32))
     if status == StepStatus.RUNNING:
         tracker.transition(step_run_id, StepStatus.PENDING, StepStatus.RUNNING)
     elif status == StepStatus.SKIPPED:
@@ -239,6 +239,32 @@ def test_current_reader_exposes_every_authoritative_status(
     states = tracker.load_current_states("run")
     assert len(states) == 1
     assert states[0].status == status
+
+    with patch(
+        "artisan.orchestration.engine.step_tracker.load_execution_membership"
+    ) as membership:
+        membership.return_value = pl.DataFrame({"execution_run_id": ["c" * 32]})
+        for policy in CachePolicy:
+            hit = tracker.check_cache("b" * 32, policy)
+            eligible = status is StepStatus.SUCCEEDED or (
+                status is StepStatus.PARTIAL and policy is CachePolicy.STEP_COMPLETED
+            )
+            assert (hit is not None) is eligible
+
+
+@patch("artisan.orchestration.engine.step_tracker.load_execution_membership")
+def test_cache_selects_newest_eligible_status(mock_membership, tmp_path) -> None:
+    mock_membership.return_value = pl.DataFrame({"execution_run_id": ["c" * 32]})
+    older = StepTracker(str(tmp_path), "older")
+    newer = StepTracker(str(tmp_path), "newer")
+    _write_terminal(older, tmp_path, "a" * 32, StepStatus.SUCCEEDED)
+    _write_terminal(newer, tmp_path, "d" * 32, StepStatus.PARTIAL)
+    strict = newer.check_cache("b" * 32, CachePolicy.ALL_SUCCEEDED)
+    partial = newer.check_cache("b" * 32, CachePolicy.STEP_COMPLETED)
+    assert strict is not None
+    assert strict.result.step_run_id == "a" * 32
+    assert partial is not None
+    assert partial.result.step_run_id == "d" * 32
 
 
 def test_run_rollup_uses_authoritative_status_and_active_end(tmp_path) -> None:

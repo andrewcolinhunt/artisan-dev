@@ -35,7 +35,7 @@ class PipelineConfig(BaseModel):
     )
     cache_policy: CachePolicy = Field(
         default=CachePolicy.ALL_SUCCEEDED,
-        description="Controls which usable terminal steps qualify as cache hits.",
+        description="Default policy for which terminal steps qualify as cache hits.",
     )
     default_step_runner: str = Field(
         default="local",

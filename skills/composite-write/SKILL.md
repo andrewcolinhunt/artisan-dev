@@ -122,6 +122,7 @@ primitives on the `CompositeContext`:
 
 ```python
 from artisan.orchestration import Runner
+from artisan.schemas import CachePolicy
 
 ctx.run(
     DataTransformer,
@@ -132,12 +133,23 @@ ctx.run(
     step_runner=Runner.LOCAL,
     environment="my_container",
     tool={"executable": "/path/to/tool"},
+    cache_policy=CachePolicy.ALL_SUCCEEDED,
 )
 ```
 
 Composite-level overrides passed to `run_composite`/`submit_composite` are the
 defaults for every child step; a value set on a `ctx.run()` call wins for that
 step and that knob.
+
+`cache_policy: CachePolicy | None = None` follows the same rule through nested
+composites. Omission and explicit `None` inherit the nearest enclosing explicit
+policy, then the pipeline default. Pass `CachePolicy.ALL_SUCCEEDED` to require
+a succeeded whole-step source, or `CachePolicy.STEP_COMPLETED` to also accept
+a partial source. A nested `ctx.run(InnerComposite, cache_policy=...)` changes
+the default for that subtree; a deeper leaf can override it again. Policies
+do not alter computational IDs or the reuse of successful individual units.
+Pipeline or child `skip_cache=True` and operation `cacheable=False` bypass both
+cache layers regardless of the selected policy.
 
 Core recognizes only the built-in `"local"` name. Pass an initialized runner
 from an optional provider at the pipeline boundary when creator children need

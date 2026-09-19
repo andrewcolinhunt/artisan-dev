@@ -1,6 +1,6 @@
 """Per-step user-override carrier for the pipeline dispatch path.
 
-``StepOverrides`` bundles the thirteen per-step override knobs that
+``StepOverrides`` bundles the per-step override knobs that
 ``PipelineManager.run``/``submit`` accept into one frozen record. It is
 constructed once at the public API boundary via ``from_user`` (which
 normalizes typed models and mappings to detached patch dictionaries) and
@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, overload
 
 from pydantic import BaseModel
 
-from artisan.schemas.enums import FailurePolicy, GroupByStrategy
+from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider
 from artisan.schemas.operation_config.compute_resources import ComputeResources
@@ -116,6 +116,7 @@ class StepOverrides:
         compute_provider: Compute-provider override (string or dict).
         compute_resources: Hardware-resource overrides.
         failure_policy: Per-step failure policy override.
+        cache_policy: Whole-step cache policy, or None to inherit the default.
         group_by: Per-step multi-input pairing-strategy override.
         compact: Whether to run Delta Lake compaction after commit.
         skip_cache: Bypass cache lookups for this step.
@@ -131,6 +132,7 @@ class StepOverrides:
     compute_provider: str | dict[str, Any] | None = None
     compute_resources: dict[str, Any] | None = None
     failure_policy: FailurePolicy | None = None
+    cache_policy: CachePolicy | None = None
     group_by: GroupByStrategy | None = None
     compact: bool = True
     skip_cache: bool = False
@@ -155,6 +157,7 @@ class StepOverrides:
         "runner_resources",
         "batch_strategy",
         "failure_policy",
+        "cache_policy",
         "compact",
         "skip_cache",
         "name",
@@ -173,6 +176,7 @@ class StepOverrides:
         compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
         compute_resources: dict[str, Any] | ComputeResources | None = None,
         failure_policy: FailurePolicy | None = None,
+        cache_policy: CachePolicy | None = None,
         group_by: GroupByStrategy | None = None,
         compact: bool = True,
         skip_cache: bool = False,
@@ -187,7 +191,17 @@ class StepOverrides:
 
         Returns:
             A frozen ``StepOverrides`` with all overrides coerced.
+
+        Raises:
+            TypeError: If cache_policy is not a CachePolicy member or None.
         """
+        policy_value: object = cache_policy
+        if policy_value is not None and not isinstance(policy_value, CachePolicy):
+            msg = (
+                "cache_policy must be CachePolicy.ALL_SUCCEEDED, "
+                "CachePolicy.STEP_COMPLETED, or None"
+            )
+            raise TypeError(msg)
         return cls(
             params=deepcopy(params),
             step_runner=step_runner,
@@ -200,6 +214,7 @@ class StepOverrides:
             ),
             compute_resources=_normalize_patch(compute_resources, ComputeResources),
             failure_policy=failure_policy,
+            cache_policy=cache_policy,
             group_by=group_by,
             compact=compact,
             skip_cache=skip_cache,
