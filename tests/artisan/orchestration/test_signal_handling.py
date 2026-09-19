@@ -20,7 +20,7 @@ def _make_pipeline(tmp_path) -> PipelineManager:
 
 
 class TestEscalatingSignalHandler:
-    """Fix 1: second Ctrl+C restores default handlers."""
+    """second Ctrl+C restores default handlers."""
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_first_signal_cancels(self, mock_tracker_cls, tmp_path):

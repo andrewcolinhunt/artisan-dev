@@ -4,7 +4,6 @@ This module tests resolve_output_reference with the normalized schema that uses
 the `execution_edges` table for input/output edges instead of storing
 arrays in executions.
 
-Reference: design_utility-operation-lifecycle-refactor-v2.md
 """
 
 from __future__ import annotations
@@ -99,7 +98,7 @@ def _write_tables(
     records_df: pl.DataFrame,
     execution_edges: list[dict],
 ):
-    """Commit executions and execution edges as visible format-2 rows."""
+    """Commit executions and execution edges as visible committed rows."""
     edges = _create_execution_edges_df(execution_edges)
     for (step_number,), records in records_df.group_by(
         "origin_step_number", maintain_order=True
@@ -555,8 +554,8 @@ class TestResolveOutputReferenceNewSchema:
         result = resolve_output_reference(ref, str(tmp_path), fs=LocalFileSystem())
         assert result == []
 
-    def test_no_successful_executions_raises(self, tmp_path):
-        """Test that no successful executions raises ValueError."""
+    def test_no_successful_executions_returns_empty(self, tmp_path):
+        """No successful executions resolve to an empty list."""
         exec_run_id = "e" * 32
 
         records_df = _create_executions_df(

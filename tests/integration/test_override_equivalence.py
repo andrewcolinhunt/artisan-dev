@@ -61,16 +61,6 @@ def _read_steps_table(delta_root: str) -> pl.DataFrame:
     return pl.read_delta(str(table_path))
 
 
-def _succeeded_step(delta_root: str, name: str) -> dict[str, Any]:
-    """Return the most recent COMPLETED row for a given step name as a dict."""
-    df = _read_steps_table(delta_root)
-    matches = df.filter(
-        (pl.col("step_name") == name) & (pl.col("status") == "succeeded")
-    )
-    assert len(matches) >= 1, f"no succeeded step named {name!r} in delta"
-    return matches.sort("started_at", descending=True).row(0, named=True)
-
-
 def _succeeded_step_for_run(delta_root: str, pipeline_run_id: str) -> dict[str, Any]:
     """Return the succeeded step row for one single-step pipeline run."""
     matches = _read_steps_table(delta_root).filter(
@@ -78,7 +68,10 @@ def _succeeded_step_for_run(delta_root: str, pipeline_run_id: str) -> dict[str, 
         & (pl.col("status") == "succeeded")
     )
     assert len(matches) == 1
-    return matches.row(0, named=True)
+    row = matches.row(0, named=True)
+    assert isinstance(row["step_spec_id"], str)
+    assert row["step_spec_id"]
+    return row
 
 
 def _execution_spec_ids(delta_root: str) -> list[str]:
@@ -142,7 +135,9 @@ def test_dict_and_model_forms_produce_identical_step_spec_id(
         **{kwarg: dict_form},
     )
     p1.finalize()
-    spec_id_dict = p1._step_spec_ids[0]  # contract under test
+    spec_id_dict = _succeeded_step_for_run(
+        p1.config.delta_root, p1.config.pipeline_run_id
+    )["step_spec_id"]
 
     # Run 2: typed-model form
     p2 = PipelineManager.create(
@@ -158,7 +153,9 @@ def test_dict_and_model_forms_produce_identical_step_spec_id(
         **{kwarg: model_form},
     )
     p2.finalize()
-    spec_id_model = p2._step_spec_ids[0]
+    spec_id_model = _succeeded_step_for_run(
+        p2.config.delta_root, p2.config.pipeline_run_id
+    )["step_spec_id"]
 
     assert spec_id_dict == spec_id_model, (
         f"step_spec_id drifted between dict and typed-model forms of {kwarg!r}: "
@@ -240,7 +237,7 @@ def test_presence_based_forms_match_execution_persistence_and_cache(
         assert result.status is StepStatus.SUCCEEDED
         row = _succeeded_step_for_run(delta_root, pipeline.config.pipeline_run_id)
         pipeline.finalize()
-        return pipeline._step_spec_ids[0], row
+        return row["step_spec_id"], row
 
     mapping_step_id, mapping_row = _run("mapping", mapping_patch, skip_cache=False)
     first_execution_ids = _execution_spec_ids(delta_root)

@@ -108,9 +108,6 @@ class TestListRuns:
                 delta_root=pipeline_env["delta"],
                 staging_root=pipeline_env["staging"],
             )
-            # skip_cache=True so each run records a distinct step row;
-            # otherwise reruns of the same op with no params dedup to the
-            # first run's pipeline_run_id.
             pipeline.run(_IngestMockOp, inputs=None, skip_cache=True)
 
         runs = list_runs(pipeline_env["delta"])

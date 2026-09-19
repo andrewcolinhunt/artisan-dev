@@ -17,8 +17,6 @@ def get_batch_config(
 ) -> BatchConfig:
     """Extract batch configuration from a fully configured operation instance.
 
-    Reads directly from the operation's execution config.
-
     Args:
         operation: Fully configured OperationDefinition instance.
 
@@ -28,7 +26,6 @@ def get_batch_config(
     artifacts_per_unit = operation.batch_strategy.artifacts_per_unit
     units_per_worker = operation.batch_strategy.units_per_worker
 
-    # Optional cap from execution config
     max_artifacts = operation.batch_strategy.max_artifacts_per_unit
     if max_artifacts is not None and artifacts_per_unit > max_artifacts:
         artifacts_per_unit = max_artifacts
@@ -54,35 +51,24 @@ def generate_execution_unit_batches(
 ]:
     """Generate ExecutionUnit input batches (Level 1 batching).
 
-    Splits artifact IDs into batches based on artifacts_per_unit.
-    Each returned tuple contains inputs for one ExecutionUnit and the
-    corresponding sliced group_ids (or None if no pairing was applied).
+    Slice input IDs, optional group IDs, and typed cache occurrences together.
+    Cache occurrence positions restart at zero within each unit.
 
     Args:
-        inputs: Dict mapping role to sorted artifact IDs.
+        inputs: Ordered artifact IDs for each input role.
         batch_config: Batching configuration.
         group_ids: Optional per-index group_id list from framework pairing.
             Sliced in sync with input lists when present.
         cache_inputs: Ordered typed cache occurrences to slice in lockstep.
 
     Returns:
-        List of (input_dict, group_ids_slice) tuples, one per ExecutionUnit.
-
-    Example:
-        >>> inputs = {"data": ["a", "b", "c", "d", "e"]}
-        >>> config = BatchConfig(artifacts_per_unit=2)
-        >>> batches = generate_execution_unit_batches(inputs, config)
-        >>> # Returns: [
-        >>> #   ({"data": ["a", "b"]}, None),
-        >>> #   ({"data": ["c", "d"]}, None),
-        >>> #   ({"data": ["e"]}, None),  # Remainder
-        >>> # ]
+        Tuples of (input IDs, group IDs or None, cache occurrences), one
+        per execution unit. Generative inputs produce one empty unit.
     """
     if not inputs:
         # Generative operation - single batch with empty inputs
         return [({}, None, {})]
 
-    # Get total item count from first role
     first_role = next(iter(inputs.keys()))
     total_items = len(inputs[first_role])
 

@@ -250,17 +250,18 @@ def _promote_file_paths_to_store(
     step_number: int,
     operation_name: str,
     step_run_id: str,
-) -> tuple[dict[str, list[str]] | None, int, set[str]]:
+) -> tuple[dict[str, list[str]], int, set[str]]:
     """Validate file paths, create FileRefArtifacts, and commit to delta.
 
     Args:
         file_paths: Raw file path strings from the user.
         config: Pipeline configuration.
         step_number: Pipeline step number.
-        operation_name: Operation name (for logging).
+        operation_name: Operation name for staging ownership and diagnostics.
+        step_run_id: Attempt that owns the input-registration commit.
 
     Returns:
-        Tuple of resolved inputs (or None), valid-file count, and IDs verified
+        Tuple of ordered resolved inputs, valid-file count, and IDs verified
         by this promotion read.
     """
     from fsspec import AbstractFileSystem
@@ -308,7 +309,6 @@ def _promote_file_paths_to_store(
         )
         raise ArtifactIntegrityError(msg)
 
-    # Create FileRefArtifacts and finalize
     file_ref_artifacts: list[FileRefArtifact] = []
     for original, fs, stripped in valid_paths:
         try:
@@ -348,7 +348,6 @@ def _promote_file_paths_to_store(
         )
         file_ref_artifacts.append(artifact)
 
-    # Build DataFrames for file_refs table and artifact_index
     file_ref_rows = [a.to_row() for a in file_ref_artifacts]
     file_ref_df = pl.DataFrame(file_ref_rows, schema=FileRefArtifact.POLARS_SCHEMA)
 
@@ -609,7 +608,7 @@ def _validate_compute_resources(value: dict[str, Any]) -> None:
 def _reject_inactive_provider_config(value: dict[str, Any], *, kwarg: str) -> None:
     """Raise if dict configures a provider without setting it active.
 
-    Closes the silent case-3 misconfiguration: a user passes
+    A user can pass
     ``environment={"docker": {"image": "..."}}`` thinking they have
     configured docker, but the active selector still points at local.
 
@@ -903,9 +902,8 @@ class PipelineManager:
 
         Args:
             config: Full pipeline configuration.
-            configure_logging: If True (default), call
-                :func:`~artisan.utils.logging.configure_logging` so
-                users don't need to set up logging manually.
+            configure_logging: Configure default console logging when unset
+                and attach an owned session log for local stores.
             default_step_runner: Runtime runner instance corresponding to
                 ``config.default_step_runner``. Required when the stored name
                 belongs to an external provider that core cannot reconstruct.
@@ -937,9 +935,7 @@ class PipelineManager:
         self._start_time: float = time.time()
         self._current_step: int = 0
         self._step_results: list[StepResult] = []
-        self._named_steps: dict[str, list[StepResult]] = {}
         self._step_registry: dict[str, list[_StepEntry]] = {}
-        self._step_spec_ids: dict[int, str] = {}
         self._step_run_ids: dict[int, str] = {}
         self._step_tracker = StepTracker(
             config.delta_root,
@@ -1146,7 +1142,6 @@ class PipelineManager:
         reader.set(StepStatus.SKIPPED)
         self._step_results.append(result)
         self._register_step(step_name, step_number, operation_outputs)
-        self._named_steps.setdefault(step_name, []).append(result)
         self._step_run_ids[step_number] = step_run_id
         self._current_step += 1
 
@@ -1224,7 +1219,6 @@ class PipelineManager:
             self._register_step(step_name, step_number, operation_outputs)
             self._current_step += 1
         self._step_results.append(result)
-        self._named_steps.setdefault(step_name, []).append(result)
         return result
 
     def _publish_existing_terminal(
@@ -1246,7 +1240,6 @@ class PipelineManager:
             saved.step_run_id == state.step_run_id for saved in self._step_results
         ):
             self._step_results.append(result)
-            self._named_steps.setdefault(result.step_name, []).append(result)
         return result
 
     def _step_start_records_by_id(self, step_run_id: str) -> StepStartRecord:
@@ -1327,6 +1320,11 @@ class PipelineManager:
                 StepStatus.RUNNING,
                 CancellationAcknowledgement(CancellationStatus.REQUESTED),
             )
+            existing = self._publish_existing_terminal(
+                current, operation.outputs, register=register
+            )
+            if existing is not None:
+                return existing
         if current.cancellation_status == CancellationStatus.REQUESTED:
             final_cancellation = cancellation_status or CancellationStatus.UNKNOWN
             current = self._step_tracker.record_cancellation(
@@ -1341,6 +1339,11 @@ class PipelineManager:
                     ),
                 ),
             )
+            existing = self._publish_existing_terminal(
+                current, operation.outputs, register=register
+            )
+            if existing is not None:
+                return existing
         cancellation_status = current.cancellation_status
         result = StepResult(
             step_name=step_name,
@@ -1351,19 +1354,28 @@ class PipelineManager:
             duration_seconds=duration_seconds,
             step_run_id=step_run_id,
         )
-        self._step_tracker.transition(
-            step_run_id,
-            StepStatus.RUNNING,
-            StepStatus.FAILED,
-            step_spec_id=step_spec_id,
-            result=result,
-        )
+        try:
+            self._step_tracker.transition(
+                step_run_id,
+                StepStatus.RUNNING,
+                StepStatus.FAILED,
+                step_spec_id=step_spec_id,
+                result=result,
+            )
+        except PersistenceIntegrityError:
+            existing = self._publish_existing_terminal(
+                self._step_tracker.current_state(step_run_id),
+                operation.outputs,
+                register=register,
+            )
+            if existing is None:
+                raise
+            return existing
         self._step_status_readers[record.step_number].set(StepStatus.FAILED)
         if register:
             self._register_step(step_name, record.step_number, operation.outputs)
             self._current_step += 1
         self._step_results.append(result)
-        self._named_steps.setdefault(step_name, []).append(result)
         return result
 
     # =========================================================================
@@ -1669,9 +1681,6 @@ class PipelineManager:
                 for step_state in resumable_steps:
                     result = step_state.to_step_result()
                     instance._step_results.append(result)
-                    instance._named_steps.setdefault(result.step_name, []).append(
-                        result
-                    )
                     instance._step_registry.setdefault(result.step_name, []).append(
                         _StepEntry(
                             step_number=result.step_number,
@@ -1679,10 +1688,6 @@ class PipelineManager:
                             output_types=result.output_types,
                         )
                     )
-                    if step_state.step_spec_id is not None:
-                        instance._step_spec_ids[step_state.step_number] = (
-                            step_state.step_spec_id
-                        )
                     if step_state.step_run_id:
                         instance._step_run_ids[step_state.step_number] = (
                             step_state.step_run_id
@@ -1759,7 +1764,6 @@ class PipelineManager:
         )
         self._step_start_records[step_number] = record
         self._step_run_ids[step_number] = step_run_id
-        self._step_spec_ids[step_number] = spec
         self._step_status_readers[step_number] = _StepStatusReader(StepStatus.PENDING)
         self._step_tracker.create_attempt(record)
         self._step_tracker.transition(
@@ -1804,34 +1808,38 @@ class PipelineManager:
                 register=False,
             )
         if result.cancellation_status == CancellationStatus.UNKNOWN:
-            return self._persist_unknown_cancellation(result, spec)
+            return self._persist_unknown_cancellation(
+                result,
+                spec,
+                operation=type(operation),
+                step_name=operation.name,
+                duration_seconds=time.perf_counter() - started,
+            )
         self._step_status_readers[step_number].set(result.status)
         self._step_results.append(result)
-        self._named_steps.setdefault(result.step_name, []).append(result)
         return result
 
     def _persist_unknown_cancellation(
-        self, result: StepResult, spec: str
+        self,
+        result: StepResult,
+        spec: str,
+        *,
+        operation: type[OperationDefinition],
+        step_name: str,
+        duration_seconds: float,
     ) -> StepResult:
-        """Preserve cancellation uncertainty without sealing discarded worker data."""
-        step_run_id = result.step_run_id
-        assert step_run_id is not None
-        for status in (CancellationStatus.REQUESTED, CancellationStatus.UNKNOWN):
-            self._step_tracker.record_cancellation(
-                step_run_id,
-                StepStatus.RUNNING,
-                CancellationAcknowledgement(status, result.error),
-            )
-        self._step_tracker.transition(
-            step_run_id,
-            StepStatus.RUNNING,
-            StepStatus.FAILED,
+        """Preserve uncertain cancellation through the existing failure transition."""
+        assert result.step_run_id is not None
+        return self._failed_step(
+            operation,
+            step_name,
+            result.step_run_id,
+            result.error or "Cancellation outcome is unknown",
+            register=False,
             step_spec_id=spec,
-            result=result,
+            cancellation_status=CancellationStatus.UNKNOWN,
+            duration_seconds=duration_seconds,
         )
-        self._step_status_readers[result.step_number].set(result.status)
-        self._step_results.append(result)
-        return result
 
     def run(
         self,
@@ -1936,8 +1944,10 @@ class PipelineManager:
         name: str | None = None,
         skip_cache: bool = False,
     ) -> StepFuture:
-        """Submit an operation step (non-blocking).
+        """Prepare an operation and submit its execution in the background.
 
+        Submission waits for referenced predecessors and prepares inputs/cache
+        state synchronously. The returned future tracks execution and commit.
         Composites must use ``submit_composite``; passing one here raises.
 
         Args:
@@ -2053,7 +2063,6 @@ class PipelineManager:
             # Prepare once after running is durable: input resolution, path
             # promotion, cache lookup, and dispatch are operational work.
             prepared_operation = instantiate_operation(operation, ov)
-            input_refs = inputs
             already_verified: set[str] = set()
             if _is_file_path_input(inputs):
                 promoted_inputs, already_verified = self._handle_file_path_inputs(
@@ -2061,8 +2070,6 @@ class PipelineManager:
                     prepared_operation,
                     operation,
                     step_number,
-                    step_name,
-                    ov.failure_policy,
                     step_run_id,
                 )
                 inputs = cast(
@@ -2097,7 +2104,6 @@ class PipelineManager:
             ):
                 cached = self._try_cached_step(
                     operation,
-                    input_refs,
                     ov,
                     step_spec_id=step_spec_id,
                     step_number=step_number,
@@ -2112,7 +2118,6 @@ class PipelineManager:
             return self._dispatch_step(
                 operation=operation,
                 inputs=prepared_inputs,
-                input_refs=input_refs,
                 ov=ov,
                 step_name=step_name,
                 step_number=step_number,
@@ -2337,10 +2342,9 @@ class PipelineManager:
     ) -> str:
         """Compute a deterministic step spec ID from a prepared operation.
 
-        The step_spec_id is a content hash of (operation name, step number,
-        merged params, upstream spec IDs, and config overrides). Two runs
-        with identical inputs and configuration produce the same spec ID,
-        enabling the step-level cache to skip re-execution.
+        Hash the operation name, step number, effective configuration, parameters,
+        and ordered typed input occurrences. Upstream execution history does not
+        change the identity when the concrete inputs remain the same.
 
         Returns:
             Deterministic step spec ID for the prepared operation.
@@ -2453,7 +2457,6 @@ class PipelineManager:
     def _try_cached_step(
         self,
         operation: type[OperationDefinition],
-        inputs: Any,
         ov: StepOverrides,
         *,
         step_spec_id: str,
@@ -2524,11 +2527,9 @@ class PipelineManager:
             )
             return self._resolved_step_future(result)
 
-        self._step_spec_ids[step_number] = step_spec_id
         self._step_run_ids[step_number] = step_run_id
         self._step_results.append(result)
         self._register_step(step_name, step_number, operation.outputs)
-        self._named_steps.setdefault(result.step_name, []).append(result)
         self._current_step += 1
 
         return self._resolved_step_future(result)
@@ -2665,8 +2666,6 @@ class PipelineManager:
         prepared_operation: OperationDefinition,
         operation: type[OperationDefinition],
         step_number: int,
-        step_name: str,
-        failure_policy: FailurePolicy | None,
         step_run_id: str,
     ) -> tuple[dict[str, list[str]], set[str]]:
         """Promote raw file paths to FileRefArtifacts in the store.
@@ -2674,20 +2673,19 @@ class PipelineManager:
         When the user passes ``["path/a.nc", "path/b.nc"]`` as inputs,
         this method validates each path, hashes file contents, creates
         FileRefArtifact records, and commits them to Delta Lake. The
-        returned dict maps the ``"file"`` role to a sorted list of
-        artifact IDs that the executor will resolve at dispatch time.
+        returned inputs map the ``"file"`` role to artifact IDs in caller order;
+        the verified-ID set avoids rereading content during preparation.
 
         Only curator operations (IngestData, IngestFiles, etc.) accept
         raw paths. Creator operations must receive artifact references
         from a prior ingest step.
 
         Returns:
-            Promoted inputs dict ``{"file": [artifact_ids...]}`` on
-            success, or a resolved StepFuture wrapping a failure result
-            if all files are invalid.
+            Ordered promoted inputs and IDs whose content was verified.
 
         Raises:
             ValueError: If operation is not a curator operation.
+            ArtifactIntegrityError: If any input is inaccessible or invalid.
         """
         if not is_curator_operation(prepared_operation):
             msg = (
@@ -2704,16 +2702,12 @@ class PipelineManager:
             operation.name,
             step_run_id,
         )
-        if promoted is None:
-            msg = "File promotion returned no resolved inputs"
-            raise RuntimeError(msg)
         return promoted, verified
 
     def _dispatch_step(
         self,
         operation: type[OperationDefinition],
         inputs: PreparedInputs,
-        input_refs: Any,
         ov: StepOverrides,
         *,
         step_name: str,
@@ -2728,7 +2722,6 @@ class PipelineManager:
             self._install_signal_handlers()
         self._register_step(step_name, step_number, operation.outputs)
         self._current_step += 1
-        self._step_spec_ids[step_number] = step_spec_id
         self._step_run_ids[step_number] = step_run_id
 
         output_types_map = self._build_output_types(operation.outputs)
@@ -2751,8 +2744,6 @@ class PipelineManager:
             logger.debug("Step %d runner: %s", step_number, resolved_runner.name)
             start = time.perf_counter()
             try:
-                # Snapshot step_run_ids for scoped output resolution
-                upstream_step_run_ids = dict(self._step_run_ids)
                 result = execute_step(
                     operation=prepared_operation,
                     inputs=inputs,
@@ -2762,7 +2753,6 @@ class PipelineManager:
                     config=self._config,
                     cancel_event=self._cancel_event,
                     step_run_id=step_run_id,
-                    step_run_ids=upstream_step_run_ids,
                     persist_result=lambda result, execution_ids: (
                         self._commit_execution_result(
                             result,
@@ -2788,6 +2778,15 @@ class PipelineManager:
                         step_run_id,
                         StepStatus.RUNNING,
                         register=False,
+                    )
+
+                if result.cancellation_status == CancellationStatus.UNKNOWN:
+                    return self._persist_unknown_cancellation(
+                        result,
+                        step_spec_id,
+                        operation=operation,
+                        step_name=step_name,
+                        duration_seconds=elapsed,
                     )
 
                 if result.status == StepStatus.SKIPPED:
@@ -2817,7 +2816,6 @@ class PipelineManager:
                     result.total_count,
                 )
                 self._step_results.append(result)
-                self._named_steps.setdefault(result.step_name, []).append(result)
                 return result
 
             except Exception as e:
@@ -2890,7 +2888,10 @@ class PipelineManager:
         compact: bool = True,
         skip_cache: bool = False,
     ) -> CompositeResult:
-        """Submit a composite (non-blocking).
+        """Compose child steps and return their asynchronous result handles.
+
+        Composition and child submission run synchronously, including any
+        predecessor waits. Use the returned result to wait for completion.
 
         Each internal ``ctx.run()`` becomes its own pipeline step with
         independent worker dispatch, batching, caching, and provenance. Every

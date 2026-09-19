@@ -47,7 +47,7 @@ def _create_executions_df(**overrides) -> pl.DataFrame:
 
 
 def _commit_executions(tmp_path, df: pl.DataFrame) -> None:
-    """Commit execution rows with current format-2 ownership."""
+    """Commit execution rows with current commit ownership."""
     step_run_id = "seed-step"
     commit_test_tables(
         str(tmp_path),
@@ -63,7 +63,7 @@ def _commit_executions(tmp_path, df: pl.DataFrame) -> None:
 
 
 class TestResolveOutputReferenceEmptyUpstream:
-    """Tests for F20: empty upstream returns empty list instead of raising."""
+    """Tests for empty upstream returns empty list instead of raising."""
 
     def test_empty_executions_table_returns_empty(self, tmp_path):
         """A coordinated store with no executions returns an empty list."""

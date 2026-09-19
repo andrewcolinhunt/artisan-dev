@@ -160,7 +160,7 @@ class TestResume:
         side_effect=_mock_execute_step,
     )
     def test_resume_reconstructs_state(self, mock_exec, tmp_path):
-        """step_results, current_step, step_spec_ids are restored."""
+        """Restore terminal results and the next step position."""
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
@@ -180,8 +180,9 @@ class TestResume:
         )
         assert p2.current_step == 2
         assert len(p2._step_results) == 2
-        assert 0 in p2._step_spec_ids
-        assert 1 not in p2._step_spec_ids
+        restored = p2._step_tracker.load_current_states(run_id)
+        assert restored[0].step_spec_id
+        assert restored[1].step_spec_id is None
         assert p2._step_results[1].status == StepStatus.SKIPPED
 
     @patch(
@@ -432,7 +433,3 @@ class TestResume:
                 pipeline_run_id=p1.config.pipeline_run_id,
                 default_step_runner="external_test",
             )
-
-
-# NOTE: TestListRuns moved to test_run_history.py (PR 4 — list_runs is now
-# a module-level function, not a classmethod).

@@ -35,15 +35,15 @@ class _RouterState(enum.Enum):
 class LifecycleRouter(ABC):
     """Places and controls the lifecycle of in-flight step_runner work.
 
-    Provides start, poll, collect, and cancel semantics. Non-streaming
-    pipelines use ``run()`` (blocking template method). The streaming
-    step scheduler uses the non-blocking ``dispatch()`` / ``is_done()``
-    / ``collect()`` methods directly.
+    The manager calls the blocking ``run()`` template in its background step
+    thread. Providers can also use ``dispatch()``, ``is_done()``, and
+    ``collect()`` to control the lifecycle directly.
 
     State machine:
         - ``dispatch()`` must be called exactly once (IDLE → DISPATCHED).
         - ``is_done()`` and ``collect()`` are valid after ``dispatch()``.
-        - ``cancel()`` is valid in any state (no-op if idle or done).
+        - ``cancel()`` is valid in any state and returns cancellation evidence;
+          completed work may retain evidence from a nested provider.
         - ``collect()`` is valid only after ``is_done()`` returns True.
     """
 

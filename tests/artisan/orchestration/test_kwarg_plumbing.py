@@ -51,7 +51,7 @@ SUBMIT_OVERRIDE_KWARGS = frozenset(
 )
 
 # Composite-only kwargs that exist on submit_composite but not submit.
-# Single-mode composites have none — expand / intermediates are gone.
+# The current composite API has no additional override kwargs.
 COMPOSITE_ONLY_KWARGS: frozenset[str] = frozenset()
 
 # Operation-only kwargs that exist on submit but not on submit_composite.
@@ -59,11 +59,6 @@ COMPOSITE_ONLY_KWARGS: frozenset[str] = frozenset()
 # (composites don't pair their own role inputs — internal ``ctx.run()``
 # calls handle per-step pairing).
 OPERATION_ONLY_KWARGS = frozenset({"group_by"})
-
-
-# ---------------------------------------------------------------------------
-# Signature drift guards
-# ---------------------------------------------------------------------------
 
 
 def _kwarg_names(method: Any) -> set[str]:
@@ -160,11 +155,6 @@ def test_run_composite_kwargs_match_submit_composite() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Plumbing-through assertion: each kwarg reaches the prepared operation
-# ---------------------------------------------------------------------------
-
-
 class _StubOp(OperationDefinition):
     """Minimal creator op used solely to drive sentinel injection."""
 
@@ -193,8 +183,7 @@ class _StubOp(OperationDefinition):
 
 
 def _make_pipeline(tmp_path) -> PipelineManager:
-    """Mirrors the helper in test_pipeline_manager.py — minimal manager
-    with no Prefect."""
+    """Construct an isolated manager for override tests."""
     config = PipelineConfig(
         name="kwarg_plumbing",
         delta_root=str(tmp_path / "delta"),

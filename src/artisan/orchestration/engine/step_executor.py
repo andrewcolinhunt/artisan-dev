@@ -51,6 +51,7 @@ from artisan.orchestration.engine.results import (
 )
 from artisan.orchestration.engine.worker_logs import persist_worker_logs
 from artisan.orchestration.runners.base import RunnerBase
+from artisan.orchestration.runners.local import _terminate_process_pool
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.command_record import CommandRecording
@@ -264,6 +265,10 @@ def build_step_result(
         failure_policy: Failure handling policy enum.
         metadata: Optional metadata dict (timings, diagnostics, etc.).
         step_run_id: Unique ID for this step attempt.
+        disposition: Whether usable results were executed or reused.
+        status: Explicit terminal status; otherwise classify counts by policy.
+        cancellation_status: Evidence associated with a cancellation request.
+        error: Failure or cancellation diagnostic.
 
     Returns:
         StepResult with execution metadata.
@@ -586,8 +591,8 @@ def execute_step(
     This is the main entry point called by PipelineManager.run().
     It coordinates the three-phase workflow: dispatch, execute, commit.
 
-    For curator operations (Merge, Filter), a separate execution
-    path is used that executes locally without worker dispatch.
+    Curators use one local spawned worker for memory isolation. Creators
+    dispatch through the configured lifecycle runner.
 
     Args:
         operation: Prepared operation instance to execute.
@@ -598,8 +603,9 @@ def execute_step(
         config: Pipeline configuration.
         cancel_event: Set to request cooperative cancellation between phases.
         step_run_id: Unique ID for this step attempt (for output isolation).
-        step_run_ids: Mapping of upstream step_number to step_run_id
-            for scoped output resolution.
+        step_run_ids: Upstream attempt IDs for unprepared input references.
+        persist_result: Manager callback that commits the terminal result and
+            exact worker execution IDs before publishing success.
 
     Returns:
         StepResult with output references and execution metadata.
@@ -630,7 +636,6 @@ def execute_step(
     )
     skip_cache = ov.skip_cache or config.skip_cache or not operation.cacheable
 
-    # Check if this is a curator operation
     if is_curator_operation(operation):
         return _execute_curator_step(
             operation=operation,
@@ -643,11 +648,9 @@ def execute_step(
             cancel_event=cancel_event,
             skip_cache=skip_cache,
             step_run_id=step_run_id,
-            step_run_ids=step_run_ids,
             persist_result=persist_result,
         )
 
-    # Standard creator operation execution
     return _execute_creator_step(
         operation=operation,
         inputs=inputs,
@@ -660,7 +663,6 @@ def execute_step(
         cancel_event=cancel_event,
         skip_cache=skip_cache,
         step_run_id=step_run_id,
-        step_run_ids=step_run_ids,
         persist_result=persist_result,
     )
 
@@ -728,7 +730,6 @@ def _execute_curator_step(
     cancel_event: threading.Event | None = None,
     skip_cache: bool = False,
     step_run_id: str | None = None,
-    step_run_ids: dict[int, str] | None = None,
     persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
     prepared_unit: ExecutionUnit | None = None,
     prepared_runtime: RuntimeEnvironment | None = None,
@@ -741,7 +742,7 @@ def _execute_curator_step(
     Args:
         operation: Fully configured curator operation instance.
         inputs: Input specification.
-        config_overrides: Merged environment + tool overrides (for hashing only).
+        config_overrides: Effective operation configuration used for hashing.
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
@@ -749,7 +750,9 @@ def _execute_curator_step(
         cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
-        step_run_ids: Upstream step_number to step_run_id mapping.
+        persist_result: Manager callback for the result and worker seal IDs.
+        prepared_unit: Exact diagnostic unit that bypasses preparation and caches.
+        prepared_runtime: Diagnostic runtime whose roots must be preserved.
 
     Returns:
         StepResult with output references and execution metadata.
@@ -846,7 +849,6 @@ def _execute_curator_step(
                 operation, step_number, failure_policy, step_run_id=step_run_id
             )
 
-        # Create single ExecutionUnit with all inputs
         unit = ExecutionUnit(
             operation=operation,
             inputs=paired_inputs,
@@ -868,13 +870,11 @@ def _execute_curator_step(
     # --- execute phase ---
     dispatch_error: str | None = None
     with phase_timer("execute", timings):
-        # Create RuntimeEnvironment
         runtime_env = prepared_runtime or _create_runtime_environment(config, operation)
 
         # Capture before subprocess spawn — needed for failure record on kill
         timestamp_start = datetime.now(UTC)
 
-        # Execute in subprocess for memory isolation
         try:
             staging_result = _run_curator_in_subprocess(unit, runtime_env, cancel_event)
             results = [
@@ -886,7 +886,10 @@ def _execute_curator_step(
                         if staging_result.success
                         else unit.get_batch_size() or 1
                     ),
-                    execution_run_ids=[staging_result.execution_run_id],  # type: ignore[list-item]  # execution_run_id may be None in failure paths; preserve runtime behavior
+                    execution_run_ids=[staging_result.execution_run_id]
+                    if staging_result.execution_run_id
+                    else [],
+                    cancellation_acknowledgement=staging_result.cancellation_acknowledgement,
                 )
             ]
             succeeded, failed = aggregate_results(results)
@@ -937,11 +940,24 @@ def _execute_curator_step(
                 step_run_id=step_run_id,
             )
 
-    # --- verify_staging phase (no-op: curator runs in-process, no NFS delay) ---
+    # The curator child uses local staging, so no shared-filesystem poll is needed.
     with phase_timer("verify_staging", timings):
         pass
 
-    # --- cancel check: before commit ---
+    cancellation_outcome = _aggregate_cancellation(results, None)
+    if (
+        cancellation_outcome is not None
+        and cancellation_outcome.status == CancellationStatus.UNKNOWN
+    ):
+        _discard_cancelled_staging(results, runtime_env, operation.name, step_number)
+        return _unknown_cancellation_result(
+            operation,
+            step_number,
+            failure_policy,
+            cancellation_outcome,
+            step_run_id=step_run_id,
+        )
+
     if cancel_event is not None and cancel_event.is_set():
         _discard_cancelled_staging(
             results,
@@ -985,25 +1001,40 @@ def _run_curator_in_subprocess(
     runtime_env: RuntimeEnvironment,
     cancel_event: threading.Event | None = None,
 ) -> StagingResult:
-    """Run curator flow in a spawned subprocess for memory isolation."""
+    """Run one curator in a spawned child, proving exit on cancellation."""
     call = serialize_process_call(run_curator_flow, unit, runtime_env)
     ctx = multiprocessing.get_context("spawn")
-    with (
-        suppress_main_reimport(),
-        ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool,
-    ):
-        future = pool.submit(execute_process_call, call)
-        # Poll done() and call result() exactly once after completion. On
-        # Python 3.12 concurrent.futures.TimeoutError IS builtins.TimeoutError,
-        # so calling result(timeout=) in the loop would swallow a task-raised
-        # TimeoutError as a poll timeout and spin forever; polling done()
-        # instead lets task exceptions surface as real failures.
-        while not future.done():
-            if cancel_event is not None and cancel_event.is_set():
-                msg = "Curator interrupted by cancellation"
-                raise RuntimeError(msg)
-            wait([future], timeout=0.5)
-        return future.result()
+    with suppress_main_reimport():
+        pool = ProcessPoolExecutor(max_workers=1, mp_context=ctx)
+        wait_for_exit = True
+        try:
+            future = pool.submit(execute_process_call, call)
+            # Poll completion so a task-raised TimeoutError remains a task failure.
+            while not future.done():
+                if cancel_event is not None and cancel_event.is_set():
+                    # Never let context-manager shutdown wait on uncertain work.
+                    wait_for_exit = False
+                    try:
+                        confirmed = _terminate_process_pool(pool)
+                    except (OSError, RuntimeError):
+                        confirmed = False
+                    acknowledgement = CancellationAcknowledgement(
+                        CancellationStatus.CONFIRMED
+                        if confirmed
+                        else CancellationStatus.UNKNOWN,
+                        "Curator worker process exited"
+                        if confirmed
+                        else "Could not prove curator worker process exit",
+                    )
+                    return StagingResult(
+                        success=False,
+                        error=acknowledgement.message,
+                        cancellation_acknowledgement=acknowledgement,
+                    )
+                wait([future], timeout=0.1)
+            return future.result()
+        finally:
+            pool.shutdown(wait=wait_for_exit, cancel_futures=not wait_for_exit)
 
 
 def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
@@ -1062,7 +1093,7 @@ def _synthesize_failure_record(
         error: Error string to persist (and write to the failure log).
         timestamp_start: Start time captured before dispatch.
         user_overrides: User-provided parameter overrides for the record.
-        step_run_id: Owning step run id, or None for composite-internal steps.
+        step_run_id: Owning attempt ID, or None for direct executor calls.
 
     Returns:
         The fresh synthetic execution run id, or ``""`` if
@@ -1129,7 +1160,7 @@ def _synthesize_missing_failure_records(
         runtime_env: Runtime paths and storage for the failing step.
         timestamp_start: Start time captured before dispatch.
         user_overrides: User-provided parameter overrides for the record.
-        step_run_id: Owning step run id, or None for composite-internal steps.
+        step_run_id: Owning attempt ID, or None for direct executor calls.
 
     Returns:
         Results with synthetic run ids filled in for the backfilled units.
@@ -1227,7 +1258,6 @@ def _execute_creator_step(
     cancel_event: threading.Event | None = None,
     skip_cache: bool = False,
     step_run_id: str | None = None,
-    step_run_ids: dict[int, str] | None = None,
     persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
     prepared_unit: ExecutionUnit | None = None,
     prepared_runtime: RuntimeEnvironment | None = None,
@@ -1238,7 +1268,7 @@ def _execute_creator_step(
         operation: Fully configured creator operation instance.
         inputs: Input specification.
         step_runner: Resolved lifecycle runner for worker dispatch.
-        config_overrides: Merged environment + tool overrides (for hashing only).
+        config_overrides: Effective operation configuration used for hashing.
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
@@ -1246,7 +1276,9 @@ def _execute_creator_step(
         cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass per-batch execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
-        step_run_ids: Upstream step_number to step_run_id mapping.
+        persist_result: Manager callback for the result and worker seal IDs.
+        prepared_unit: Exact diagnostic unit that bypasses preparation and caches.
+        prepared_runtime: Diagnostic runtime whose roots must be preserved.
 
     Returns:
         StepResult with output references and execution metadata.
@@ -1287,7 +1319,6 @@ def _execute_creator_step(
 
         # --- batch_and_cache phase ---
         with phase_timer("batch_and_cache", timings):
-            # Get batch configuration from the instance
             batch_config = get_batch_config(operation)
 
             merged_params = serialize_params(operation)
@@ -1295,7 +1326,6 @@ def _execute_creator_step(
             # Import lazily to avoid package import cycles during module initialization.
             from artisan.utils.hashing import compute_execution_spec_id
 
-            # Generate ExecutionUnit batches (Level 1)
             execution_unit_batches = generate_execution_unit_batches(
                 paired_inputs,
                 batch_config,
@@ -1303,7 +1333,6 @@ def _execute_creator_step(
                 cache_inputs=inputs.cache_inputs,
             )
 
-            # Create ExecutionUnits with cache checking
             units_to_dispatch: list[ExecutionUnit] = []
             cached_count = 0
             cached_units = 0
@@ -1314,7 +1343,6 @@ def _execute_creator_step(
                 batch_group_ids,
                 execution_cache_inputs,
             ) in execution_unit_batches:
-                # Compute spec_id for cache lookup
                 spec_id = compute_execution_spec_id(
                     operation_name=operation.name,
                     inputs=execution_cache_inputs,
@@ -1322,7 +1350,6 @@ def _execute_creator_step(
                     config_overrides=config_overrides,
                 )
 
-                # Cache lookup
                 cache_result = (
                     None
                     if skip_cache
@@ -1332,7 +1359,6 @@ def _execute_creator_step(
                 )
 
                 if cache_result is not None:
-                    # Cache hit - skip this unit
                     cached_count += (
                         sum(len(ids) for ids in execution_unit_inputs.values()) or 1
                     )
@@ -1340,7 +1366,6 @@ def _execute_creator_step(
                     cached_execution_run_ids.add(cache_result.execution_run_id)
                     continue
 
-                # Cache miss - create ExecutionUnit with operation instance
                 unit = ExecutionUnit(
                     operation=operation,
                     inputs=execution_unit_inputs,
@@ -1401,7 +1426,6 @@ def _execute_creator_step(
         # --- execute phase ---
         dispatch_error: str | None = None
         with phase_timer("execute", timings):
-            # Create RuntimeEnvironment with step_runner traits
             runtime_env = prepared_runtime or _create_runtime_environment(
                 config, operation, step_runner
             )

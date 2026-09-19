@@ -356,7 +356,7 @@ class TestCancelSentinel:
         assert any("cancel sentinel" in record.message for record in caplog.records)
 
     def test_no_step_run_id_skips_sentinel(self) -> None:
-        """Units without step_run_id (composites) write nothing and don't raise."""
+        """Direct units without an attempt ID do not write a cancel sentinel."""
         handle = _SlowStubHandle()
         cancel_event = threading.Event()
         cancel_event.set()
