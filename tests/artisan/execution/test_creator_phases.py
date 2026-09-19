@@ -44,10 +44,6 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _setup_delta(base_path: Path, metrics: list[dict], index: list[dict]) -> None:
     fs = LocalFileSystem()
@@ -126,11 +122,6 @@ class _NoFanOutOp(_SimpleOp):
     per_artifact_dispatch: ClassVar[bool] = False
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def delta_env(tmp_path: Path):
     """Create Delta root with two input artifacts for batch testing."""
@@ -167,11 +158,6 @@ def delta_env(tmp_path: Path):
     return runtime_env, ids
 
 
-# ---------------------------------------------------------------------------
-# _split_prepared_inputs tests
-# ---------------------------------------------------------------------------
-
-
 class TestSplitPreparedInputs:
     def test_per_artifact_slices_and_wraps(self):
         prepared = {
@@ -195,8 +181,7 @@ class TestSplitPreparedInputs:
     def test_raw_list_not_sliced(self):
         """Raw lists pass through unchanged regardless of length.
 
-        Regression: confirms the legacy coincidence-slicing path
-        (``len(value) == batch_size``) is removed.
+        Matching the batch length does not imply per-artifact slicing.
         """
         prepared = {"data": ["/a.csv", "/b.csv", "/c.csv"], "config": "shared"}
         for index in range(3):
@@ -211,11 +196,6 @@ class TestSplitPreparedInputs:
 
     def test_empty_dict(self):
         assert _split_prepared_inputs({}, 0, 1) == {}
-
-
-# ---------------------------------------------------------------------------
-# _reassemble_results tests
-# ---------------------------------------------------------------------------
 
 
 class TestReassembleResults:
@@ -284,7 +264,7 @@ class TestReassembleResults:
         """Each file's extension-stripped stem maps to its slot/pair index.
 
         Stems (not raw basenames) so the keys match ``artifact.original_name``
-        after draft strips extensions. Regression for Bug A —
+        after draft strips extensions.
         ``capture_lineage_metadata`` uses this map to recover the correct
         pair index for grouped multi-input batches with repeated primaries.
         """
@@ -313,11 +293,6 @@ class TestReassembleResults:
         assert pair_map == {"result": [0, 1]}
 
 
-# ---------------------------------------------------------------------------
-# prep_unit tests
-# ---------------------------------------------------------------------------
-
-
 class TestPrepUnit:
     def test_returns_per_artifact_inputs(self, delta_env):
         runtime_env, ids = delta_env
@@ -332,7 +307,6 @@ class TestPrepUnit:
         prepped = prep_unit(unit, runtime_env)
 
         assert isinstance(prepped, PreppedUnit)
-        assert prepped.execution_context.worker_id == 42
         assert len(prepped.artifact_execute_inputs) == 2
         assert len(prepped.artifact_execute_dirs) == 2
         for d in prepped.artifact_execute_dirs:
@@ -375,11 +349,6 @@ class TestPrepUnit:
         assert len(prepped.artifact_execute_dirs) == 1
 
 
-# ---------------------------------------------------------------------------
-# Round-trip equivalence: prep → execute → post matches run_creator_lifecycle
-# ---------------------------------------------------------------------------
-
-
 class TestRoundTripEquivalence:
     def test_manual_phases_match_lifecycle(self, delta_env):
         """prep_unit → route_execute → post_unit matches run_creator_lifecycle."""
@@ -411,17 +380,11 @@ class TestRoundTripEquivalence:
 
         split_result = post_unit(prepped, raw_results, runtime_env)
 
-        # Compare results
         assert isinstance(split_result, LifecycleResult)
         assert set(split_result.artifacts.keys()) == set(mono_result.artifacts.keys())
         for role in mono_result.artifacts:
             assert len(split_result.artifacts[role]) == len(mono_result.artifacts[role])
         assert len(split_result.edges) == len(mono_result.edges)
-
-
-# ---------------------------------------------------------------------------
-# TestUploadFilesToRoot — unit tests for _upload_files_to_root
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture

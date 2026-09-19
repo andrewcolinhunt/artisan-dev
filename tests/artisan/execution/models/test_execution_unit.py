@@ -1,7 +1,4 @@
-"""Unit tests for the unified ExecutionUnit dataclass.
-
-Reference: design_execution_unit_refactor.md
-"""
+"""Tests for execution-unit input validation and batch metadata."""
 
 from __future__ import annotations
 
@@ -9,13 +6,13 @@ from enum import StrEnum, auto
 from typing import Any, ClassVar
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.specs.input_models import PreprocessInput
+from artisan.schemas.specs.input_models import ExecuteInput, PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -26,7 +23,6 @@ ARTIFACT_ID_3 = "c" * 32
 ARTIFACT_ID_4 = "d" * 32
 
 
-# Mock operation definitions (prefixed with Mock to avoid pytest collection)
 class MockOperation(OperationDefinition):
     """Mock operation for testing."""
 
@@ -67,7 +63,7 @@ class MockOperation(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute_function(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: ExecuteInput) -> ArtifactResult:
         return ArtifactResult(success=True, metadata={"count": self.params.count})
 
 
@@ -108,7 +104,7 @@ class MultiInputOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute_function(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: ExecuteInput) -> ArtifactResult:
         return ArtifactResult(success=True)
 
 
@@ -128,7 +124,7 @@ class GenerativeOp(OperationDefinition):
         ),
     }
 
-    def execute_function(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: ExecuteInput) -> ArtifactResult:
         return ArtifactResult(success=True)
 
 
@@ -156,14 +152,14 @@ class UnionOp(OperationDefinition):
             for role, artifacts in inputs.input_artifacts.items()
         }
 
-    def execute_function(self, inputs: dict[str, Any], output_dir):
+    def execute_function(self, inputs: ExecuteInput) -> ArtifactResult:
         return ArtifactResult(success=True)
 
 
 class TestExecutionUnit:
     """Tests for ExecutionUnit with batch inputs."""
 
-    def test_create_with_single_role_batch(self):
+    def test_create_with_single_role_batch(self) -> None:
         """Test creation with single input role batch."""
         unit = ExecutionUnit(
             operation=MockOperation(),
@@ -172,7 +168,7 @@ class TestExecutionUnit:
         assert unit.inputs == {"files": [ARTIFACT_ID_1, ARTIFACT_ID_2]}
         assert unit.get_batch_size() == 2
 
-    def test_create_with_multi_role_batch(self):
+    def test_create_with_multi_role_batch(self) -> None:
         """Test creation with multiple input roles (same batch size)."""
         unit = ExecutionUnit(
             operation=MultiInputOp(),
@@ -183,7 +179,7 @@ class TestExecutionUnit:
         )
         assert unit.get_batch_size() == 2
 
-    def test_empty_inputs_for_generative_ops(self):
+    def test_empty_inputs_for_generative_ops(self) -> None:
         """Test creation with empty inputs (generative ops)."""
         unit = ExecutionUnit(
             operation=GenerativeOp(),
@@ -191,51 +187,52 @@ class TestExecutionUnit:
         )
         assert unit.get_batch_size() == 0
 
-    def test_mismatched_batch_sizes_rejected(self):
+    def test_mismatched_batch_sizes_rejected(self) -> None:
         """Test that different batch sizes across roles are rejected."""
         with pytest.raises(ValueError, match="same batch size"):
             ExecutionUnit(
                 operation=MultiInputOp(),
                 inputs={
                     "data": [ARTIFACT_ID_1, ARTIFACT_ID_2],
-                    "config": [ARTIFACT_ID_3],  # Only 1 item!
+                    "config": [ARTIFACT_ID_3],
                 },
             )
 
-    def test_unequal_input_lengths_allowed_when_flagged(self):
+    def test_unequal_input_lengths_allowed_when_flagged(self) -> None:
         """Test that unequal input lengths are allowed when independent_input_streams=True."""
-        # UnionOp has independent_input_streams = True
+
         unit = ExecutionUnit(
             operation=UnionOp(),
             inputs={
                 "branch_a": [ARTIFACT_ID_1, ARTIFACT_ID_2],
-                "branch_b": [ARTIFACT_ID_3],  # Different size - should be allowed
+                "branch_b": [ARTIFACT_ID_3],
             },
         )
-        # Should not raise - union semantics allow different sizes
+
         assert "branch_a" in unit.inputs
         assert "branch_b" in unit.inputs
         assert len(unit.inputs["branch_a"]) == 2
         assert len(unit.inputs["branch_b"]) == 1
 
-    def test_invalid_artifact_id_rejected(self):
-        """Test that non-32-char strings are rejected."""
+    @pytest.mark.parametrize("artifact_id", ["short", "g" * 32])
+    def test_invalid_artifact_id_rejected(self, artifact_id: str) -> None:
+        """Reject IDs with an invalid length or non-hexadecimal characters."""
         with pytest.raises(ValueError, match="32-char hex string"):
             ExecutionUnit(
                 operation=MockOperation(),
-                inputs={"files": ["short"]},
+                inputs={"files": [artifact_id]},
             )
 
-    def test_non_list_value_rejected(self):
+    def test_non_list_value_rejected(self) -> None:
         """Test that non-list values are rejected."""
-        # Pydantic raises ValidationError when type doesn't match
-        with pytest.raises(Exception, match="list"):
+
+        with pytest.raises(ValidationError, match="list"):
             ExecutionUnit(
                 operation=MockOperation(),
-                inputs={"files": ARTIFACT_ID_1},  # Not a list!
+                inputs={"files": ARTIFACT_ID_1},
             )
 
-    def test_should_access_operation_metadata(self):
+    def test_should_access_operation_metadata(self) -> None:
         """Test accessing operation metadata through execution unit."""
         unit = ExecutionUnit(
             operation=MockOperation(),
@@ -244,23 +241,22 @@ class TestExecutionUnit:
 
         assert unit.operation.name == "mock_op"
 
-    def test_should_validate_inputs_against_inputs(self):
+    def test_should_validate_inputs_against_inputs(self) -> None:
         """Test that inputs are validated against inputs spec."""
-        # Valid inputs
+
         unit = ExecutionUnit(
             operation=MockOperation(),
             inputs={"files": [ARTIFACT_ID_1]},
         )
         assert "files" in unit.inputs
 
-        # Invalid input name should raise
         with pytest.raises(ValueError, match="Unexpected input"):
             ExecutionUnit(
                 operation=MockOperation(),
                 inputs={"unknown_input": [ARTIFACT_ID_1]},
             )
 
-    def test_should_get_input_artifact_ids(self):
+    def test_should_get_input_artifact_ids(self) -> None:
         """Test extracting artifact IDs from inputs."""
         unit = ExecutionUnit(
             operation=MockOperation(),
@@ -269,8 +265,11 @@ class TestExecutionUnit:
 
         artifact_ids = unit.get_input_artifact_ids()
         assert artifact_ids == {"files": [ARTIFACT_ID_1, ARTIFACT_ID_2]}
+        artifact_ids["files"].append(ARTIFACT_ID_3)
+        artifact_ids["new_role"] = [ARTIFACT_ID_4]
+        assert unit.inputs == {"files": [ARTIFACT_ID_1, ARTIFACT_ID_2]}
 
-    def test_create_with_step_number(self):
+    def test_create_with_step_number(self) -> None:
         """Test creation with all optional fields."""
         unit = ExecutionUnit(
             operation=MockOperation(params=MockOperation.Params(count=3)),
@@ -287,7 +286,7 @@ class TestExecutionUnit:
 class TestExecutionUnitGroupIds:
     """Tests for ExecutionUnit group_ids field."""
 
-    def test_group_ids_defaults_to_none(self):
+    def test_group_ids_defaults_to_none(self) -> None:
         """Test that group_ids defaults to None when not provided."""
         unit = ExecutionUnit(
             operation=MockOperation(),
@@ -295,7 +294,7 @@ class TestExecutionUnitGroupIds:
         )
         assert unit.group_ids is None
 
-    def test_group_ids_set_on_creation(self):
+    def test_group_ids_set_on_creation(self) -> None:
         """Test that group_ids can be set when creating ExecutionUnit."""
         unit = ExecutionUnit(
             operation=MockOperation(),
@@ -304,7 +303,7 @@ class TestExecutionUnitGroupIds:
         )
         assert unit.group_ids == ["group_a", "group_b"]
 
-    def test_group_ids_with_multi_role_inputs(self):
+    def test_group_ids_with_multi_role_inputs(self) -> None:
         """Test group_ids with multi-role inputs (paired operation)."""
         unit = ExecutionUnit(
             operation=MultiInputOp(),
@@ -317,7 +316,7 @@ class TestExecutionUnitGroupIds:
         assert unit.group_ids == ["g1", "g2"]
         assert unit.get_batch_size() == 2
 
-    def test_group_ids_empty_list(self):
+    def test_group_ids_empty_list(self) -> None:
         """Test that empty group_ids list is valid (e.g., no matches found)."""
         unit = ExecutionUnit(
             operation=GenerativeOp(),
@@ -330,15 +329,14 @@ class TestExecutionUnitGroupIds:
 class TestOperationDefinitionValidation:
     """Tests for OperationDefinition validation."""
 
-    def test_should_validate_operation_with_execute_method(self):
-        """Operations with execute() should be valid and usable."""
-        # MockOperation has execute() defined - class creation should succeed
+    def test_should_validate_operation_with_execute_method(self) -> None:
+        """Operations with execute_function() should be valid and usable."""
+
         assert MockOperation.name == "mock_op"
 
-    def test_should_fail_without_execute_method(self):
-        """Operations without execute() or execute_curator() should fail validation."""
-        # Since validation happens automatically in __pydantic_init_subclass__,
-        # the error is raised during class definition, not when calling validate_execution_spec()
+    def test_should_fail_without_execute_method(self) -> None:
+        """Operations without execute_function() or execute_curator() should fail validation."""
+
         with pytest.raises(
             TypeError,
             match="must implement execute_function\\(\\) \\(creator ops\\)",
@@ -349,4 +347,3 @@ class TestOperationDefinitionValidation:
 
                 inputs: ClassVar[dict[str, InputSpec]] = {}
                 outputs: ClassVar[dict[str, OutputSpec]] = {}
-                # No execute() or execute_curator() method!

@@ -112,7 +112,7 @@ class TestEdgeCases:
         assert result == {f"{input_id}_out": input_id}
 
 
-def _make_artifact(_artifact_id: str, original_name: str) -> DataArtifact:
+def _make_artifact(original_name: str) -> DataArtifact:
     """Create a draft output artifact for name matching."""
     return DataArtifact.draft(b"a\n1\n", original_name, 1)
 
@@ -123,7 +123,7 @@ class TestAugmentMatchMapFromArtifacts:
     def test_adds_memory_based_output(self):
         """Artifacts with artifact_id-prefixed names get added to match map."""
         input_id = "a" * 32
-        output_art = _make_artifact("x" * 32, f"{input_id}_metrics")
+        output_art = _make_artifact(f"{input_id}_metrics")
 
         match_map: dict[str, str] = {}
         augment_match_map_from_artifacts(
@@ -135,7 +135,7 @@ class TestAugmentMatchMapFromArtifacts:
     def test_skips_already_matched(self):
         """Names already in the match map are not overwritten."""
         input_id = "a" * 32
-        output_art = _make_artifact("x" * 32, f"{input_id}_scored")
+        output_art = _make_artifact(f"{input_id}_scored")
 
         match_map = {f"{input_id}_scored": input_id}
         augment_match_map_from_artifacts(match_map, {input_id}, {"data": [output_art]})
@@ -144,7 +144,7 @@ class TestAugmentMatchMapFromArtifacts:
 
     def test_skips_unrelated_names(self):
         """Artifact names that don't start with any input ID are skipped."""
-        output_art = _make_artifact("x" * 32, "summary_report")
+        output_art = _make_artifact("summary_report")
 
         match_map: dict[str, str] = {}
         augment_match_map_from_artifacts(match_map, {"a" * 32}, {"data": [output_art]})
@@ -153,7 +153,7 @@ class TestAugmentMatchMapFromArtifacts:
 
     def test_handles_none_original_name(self):
         """Artifacts with None original_name are skipped."""
-        output_art = _make_artifact("x" * 32, "temp")
+        output_art = _make_artifact("temp")
         output_art.original_name = None
 
         match_map: dict[str, str] = {}

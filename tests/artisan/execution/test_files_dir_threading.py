@@ -25,6 +25,7 @@ from artisan.schemas.specs.input_models import (
     PostprocessInput,
 )
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.path import shard_uri
 
 
 def _setup_delta_tables(base_path: Path) -> None:
@@ -32,13 +33,8 @@ def _setup_delta_tables(base_path: Path) -> None:
     publish_test_store(str(base_path), LocalFileSystem())
 
 
-# ---------------------------------------------------------------------------
-# Test operation that captures files_dir from ExecuteInput
-# ---------------------------------------------------------------------------
-
-
 class _FilesDirCapture(OperationDefinition):
-    """Generative op that records files_dir for test assertions."""
+    """Generate a metric while the fixture records its execute input."""
 
     class OutputRole(StrEnum):
         output = auto()
@@ -57,7 +53,7 @@ class _FilesDirCapture(OperationDefinition):
         output_path = os.path.join(inputs.execute_dir, "out.json")
         with open(output_path, "w") as fh:
             fh.write(content)
-        return {"files_dir": inputs.files_dir if inputs.files_dir else None}
+        return {}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         drafts = []
@@ -73,11 +69,6 @@ class _FilesDirCapture(OperationDefinition):
                     )
                 )
         return ArtifactResult(success=True, artifacts={"output": drafts})
-
-
-# ---------------------------------------------------------------------------
-# ExecuteInput field tests
-# ---------------------------------------------------------------------------
 
 
 class TestExecuteInputFilesDir:
@@ -96,11 +87,6 @@ class TestExecuteInputFilesDir:
         ei = ExecuteInput(execute_dir=str(tmp_path))
         with pytest.raises(FrozenInstanceError):
             ei.files_dir = str(tmp_path)  # type: ignore[misc]
-
-
-# ---------------------------------------------------------------------------
-# Creator lifecycle integration tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -124,11 +110,29 @@ def working_root(tmp_path: Path) -> Path:
     return d
 
 
+@pytest.fixture
+def observed_files_dirs(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    observed: list[str | None] = []
+    execute = _FilesDirCapture.execute_function
+
+    def record(operation: _FilesDirCapture, inputs: ExecuteInput) -> dict[str, Any]:
+        observed.append(inputs.files_dir)
+        return execute(operation, inputs)
+
+    monkeypatch.setattr(_FilesDirCapture, "execute_function", record)
+    return observed
+
+
 class TestCreatorLifecycleFilesDir:
     """Tests for files_dir construction in run_creator_lifecycle."""
 
     def test_files_dir_constructed_when_files_root_set(
-        self, delta_root: Path, working_root: Path, staging_root: Path, tmp_path: Path
+        self,
+        delta_root: Path,
+        working_root: Path,
+        staging_root: Path,
+        tmp_path: Path,
+        observed_files_dirs: list[str | None],
     ) -> None:
         files_root = tmp_path / "files"
         files_root.mkdir()
@@ -146,11 +150,7 @@ class TestCreatorLifecycleFilesDir:
             step_number=3,
         )
 
-        result = run_creator_lifecycle(unit, env)
-        for arts in result.artifacts.values():
-            for art in arts:
-                if art.artifact_id:
-                    break
+        run_creator_lifecycle(unit, env)
 
         # The operation captured files_dir — verify the sharded directory was created
         step_dir = files_root / "3_files_dir_capture"
@@ -159,9 +159,19 @@ class TestCreatorLifecycleFilesDir:
         [shard_dir] = list(prefix_dir.iterdir())
         [run_dir] = list(shard_dir.iterdir())
         assert run_dir.is_dir()
+        sandbox = shard_uri(
+            str(working_root), run_dir.name, 3, operation_name="files_dir_capture"
+        )
+        assert observed_files_dirs == [
+            os.path.join(sandbox, "files_outputs", "artifact_0")
+        ]
 
     def test_files_dir_none_when_files_root_unset(
-        self, delta_root: Path, working_root: Path, staging_root: Path
+        self,
+        delta_root: Path,
+        working_root: Path,
+        staging_root: Path,
+        observed_files_dirs: list[str | None],
     ) -> None:
         env = RuntimeEnvironment(
             delta_root=str(delta_root),
@@ -178,8 +188,8 @@ class TestCreatorLifecycleFilesDir:
 
         result = run_creator_lifecycle(unit, env)
 
-        # The operation should have received files_dir=None
-        assert result.artifacts  # execution succeeded
+        assert result.artifacts
+        assert observed_files_dirs == [None]
 
     def test_files_dir_path_structure(
         self, delta_root: Path, working_root: Path, staging_root: Path, tmp_path: Path

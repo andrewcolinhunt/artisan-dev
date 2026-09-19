@@ -251,7 +251,16 @@ def _handle_passthrough_result(
 def run_curator_flow(
     unit: ExecutionUnit, runtime_env: RuntimeEnvironment
 ) -> StagingResult:
-    """Capture command evidence throughout the curator lifecycle."""
+    """Execute a curator and stage its result with command and replay evidence.
+
+    Args:
+        unit: Configured operation and concrete input batch.
+        runtime_env: Resolved worker identity, runtime paths and storage.
+
+    Returns:
+        Staged success or failure, or an unstaged failure if setup prevents
+        recording.
+    """
     with (
         capture_commands(unit.operation) as commands,
         capture_replay(unit, runtime_env),
@@ -266,15 +275,7 @@ def _run_curator_flow(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
 ) -> StagingResult:
-    """Execute a curator operation through setup, execute, and record phases.
-
-    Args:
-        unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and runtime configuration for this run.
-
-    Returns:
-        StagingResult indicating success or failure with staged paths.
-    """
+    """Run setup, execution and recording for one curator unit."""
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
     operation = unit.operation

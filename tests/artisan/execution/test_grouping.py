@@ -27,10 +27,6 @@ from artisan.execution.inputs.grouping import (
 )
 from artisan.schemas.enums import GroupByStrategy
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def group_inputs(
     inputs: dict[str, list[str]],
@@ -101,11 +97,6 @@ def _make_mock_store(
     store._test_ids = test_ids
 
     return store
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -285,11 +276,6 @@ def mock_artifact_store_one_to_n():
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests: compute_group_id
-# ---------------------------------------------------------------------------
-
-
 class TestComputeGroupId:
     """Tests for deterministic group_id computation."""
 
@@ -299,7 +285,7 @@ class TestComputeGroupId:
         assert compute_group_id(artifacts) == compute_group_id(artifacts)
 
     def test_order_independent(self):
-        """Sorted internally, so order of IDs does not matter."""
+        """Dictionary insertion order does not affect the role-aware hash."""
         artifacts_a = {
             "data": ("data", "artifact_abc"),
             "config": ("config", "artifact_def"),
@@ -327,11 +313,6 @@ class TestComputeGroupId:
         artifacts = {"left": ("data", "a"), "right": ("config", "b")}
         swapped = {"left": ("config", "b"), "right": ("data", "a")}
         assert compute_group_id(artifacts) != compute_group_id(swapped)
-
-
-# ---------------------------------------------------------------------------
-# Tests: group_inputs - ZIP strategy
-# ---------------------------------------------------------------------------
 
 
 class TestGroupInputsZip:
@@ -407,11 +388,6 @@ class TestGroupInputsZip:
         assert group_ids == []
 
 
-# ---------------------------------------------------------------------------
-# Tests: group_inputs - CROSS_PRODUCT strategy
-# ---------------------------------------------------------------------------
-
-
 class TestGroupInputsCrossProduct:
     """Tests for group_inputs() with CROSS_PRODUCT strategy."""
 
@@ -472,11 +448,6 @@ class TestGroupInputsCrossProduct:
 
         # All 4 group_ids should be unique
         assert len(set(group_ids)) == 4
-
-
-# ---------------------------------------------------------------------------
-# Tests: group_inputs - LINEAGE strategy
-# ---------------------------------------------------------------------------
 
 
 class TestGroupInputsLineage:
@@ -610,11 +581,6 @@ class TestGroupInputsLineage:
 
         assert len(group_ids) == 1
         assert len(group_ids[0]) == 32  # xxh3_128 hex digest
-
-
-# ---------------------------------------------------------------------------
-# Tests: group_inputs - NAME strategy
-# ---------------------------------------------------------------------------
 
 
 def _make_name_store(name_map: dict[str, str]) -> Mock:
@@ -780,23 +746,17 @@ class TestGroupInputsName:
         assert group_ids == group_ids_again
 
 
-# ---------------------------------------------------------------------------
-# Tests: group_id role-order independence
-# ---------------------------------------------------------------------------
-
-
 class TestGroupIdRoleOrderIndependence:
     """Verify group_id is the same regardless of role ordering in inputs."""
 
     def test_zip_role_order_does_not_affect_group_id(self):
-        """Same artifact pair produces same group_id regardless of role names."""
+        """Dictionary insertion order does not change group identity."""
         inputs_ab = {"role_a": ["id_1", "id_2"], "role_b": ["id_3", "id_4"]}
         inputs_ba = {"role_b": ["id_3", "id_4"], "role_a": ["id_1", "id_2"]}
 
         _, ids_ab = group_inputs(inputs_ab, GroupByStrategy.ZIP)
         _, ids_ba = group_inputs(inputs_ba, GroupByStrategy.ZIP)
 
-        # group_id is computed from sorted artifact IDs, not role names
         assert ids_ab == ids_ba
 
     def test_cross_product_same_pair_same_group_id(self):
@@ -806,11 +766,6 @@ class TestGroupIdRoleOrderIndependence:
 
         expected_id = compute_group_id({"a": ("a_type", "x"), "b": ("b_type", "y")})
         assert group_ids[0] == expected_id
-
-
-# ---------------------------------------------------------------------------
-# Tests: match_inputs_to_primary - LINEAGE strategy
-# ---------------------------------------------------------------------------
 
 
 class TestMatchInputsToPrimary:
@@ -993,11 +948,6 @@ class TestMatchInputsToPrimary:
             match_inputs_to_primary("primary", inputs, GroupByStrategy.CROSS_PRODUCT)
 
 
-# ---------------------------------------------------------------------------
-# Tests: match_inputs_to_primary - NAME strategy
-# ---------------------------------------------------------------------------
-
-
 class TestMatchInputsToPrimaryName:
     """Tests for match_inputs_to_primary() with NAME strategy."""
 
@@ -1108,11 +1058,6 @@ class TestMatchInputsToPrimaryName:
             match_inputs_to_primary("primary", inputs, GroupByStrategy.NAME, None)
 
 
-# ---------------------------------------------------------------------------
-# Tests: validate_stem_match_uniqueness
-# ---------------------------------------------------------------------------
-
-
 class TestValidateStemMatchUniqueness:
     """Tests for validate_stem_match_uniqueness()."""
 
@@ -1153,25 +1098,13 @@ class TestValidateStemMatchUniqueness:
         assert error_msg.count("x.json") >= 1
 
 
-# ---------------------------------------------------------------------------
-# Tests: edge cases and integration
-# ---------------------------------------------------------------------------
-
-
 class TestGroupInputsEdgeCases:
     """Edge cases for group_inputs()."""
 
     def test_unknown_strategy_raises(self):
         """Passing an invalid strategy raises ValueError."""
-        # GroupByStrategy is an enum, so we can't easily pass an invalid value.
-        # Instead verify all valid strategies are handled without raising
-        # "Unknown group_by strategy".
-        inputs = {"a": ["x"], "b": ["y"]}
-        store_required = {GroupByStrategy.LINEAGE, GroupByStrategy.NAME}
-        for strategy in GroupByStrategy:
-            if strategy in store_required:
-                continue  # Needs artifact_store
-            group_inputs(inputs, strategy)
+        with pytest.raises(ValueError, match="Unknown group_by strategy"):
+            group_inputs({"a": ["x"], "b": ["y"]}, "unknown")  # type: ignore[arg-type]
 
     def test_single_role_zip(self):
         """ZIP with a single role (degenerate case) works."""

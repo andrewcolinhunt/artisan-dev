@@ -328,6 +328,17 @@ A local input larger than 100 MB on an endpoint step still fails at the
 inline cap (v1): host it in object storage first — a cloud-backend
 pipeline does this automatically via `files_root`.
 
+### Config files with artifact references
+
+For endpoint execution, pass files as explicit input roles and build any config
+containing their paths inside `execute_command`, using the worker-local paths
+provided to that method. Endpoint transport sends config file contents unchanged.
+
+Artisan rejects materialized `ExecutionConfigArtifact` inputs containing
+`$artifact` references before fetching dependencies or writing inputs. Configs
+without references work on endpoints. Local execution continues to resolve
+`$artifact` references into materialized file paths.
+
 (object-store-output-delivery)=
 ### Object-store output delivery
 

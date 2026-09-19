@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from artisan.execution.inputs._validation import is_hex_id
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.execution.replay import ReplaySnapshot
 
@@ -72,11 +73,9 @@ class ExecutionUnit(BaseModel):
             )
             raise ValueError(msg)
 
-        # Check if operation accepts runtime-defined inputs
         runtime_defined = getattr(self.operation, "runtime_defined_inputs", False)
 
         if not runtime_defined:
-            # Fixed inputs: validate against inputs
             op_name = type(self.operation).__name__
             for role in self.inputs:
                 if role not in op_inputs:
@@ -86,20 +85,14 @@ class ExecutionUnit(BaseModel):
                     )
                     raise ValueError(msg)
 
-        # Validate all values are lists of 32-character strings
-        for role, artifact_ids in self.inputs.items():
-            if not isinstance(artifact_ids, list):
-                msg = f"inputs['{role}'] must be a list, got {type(artifact_ids).__name__}"  # type: ignore[unreachable]
-                raise ValueError(msg)
+        for artifact_ids in self.inputs.values():
             for artifact_id in artifact_ids:
-                if not isinstance(artifact_id, str) or len(artifact_id) != 32:  # type: ignore[redundant-expr]
+                if not is_hex_id(artifact_id):
                     msg = (
                         f"artifact_id must be 32-char hex string, got: {artifact_id!r}"
                     )
                     raise ValueError(msg)
 
-        # Validate all roles have same batch size
-        # Some operations allow independent input streams.
         independent = getattr(self.operation, "independent_input_streams", False)
         if self.inputs and not independent:
             sizes = {role: len(ids) for role, ids in self.inputs.items()}
@@ -117,5 +110,5 @@ class ExecutionUnit(BaseModel):
         return len(next(iter(self.inputs.values())))
 
     def get_input_artifact_ids(self) -> dict[str, list[str]]:
-        """Return a copy of the input artifact IDs keyed by role."""
-        return dict(self.inputs)
+        """Copy the role mapping and each input artifact ID list."""
+        return {role: list(ids) for role, ids in self.inputs.items()}

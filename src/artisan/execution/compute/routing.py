@@ -17,21 +17,9 @@ from artisan.schemas.operation_config.compute import (
 
 
 def routes_to_endpoint(operation: Any) -> bool:
-    """True when this operation's execute phase ships to a Modal endpoint.
+    """Return whether inputs will be sent to a Modal endpoint.
 
-    The same ``compute_provider`` signal ``create_execute_router`` switches
-    on, exposed for the input-materialization pass, which must know before
-    the router is constructed whether cloud inputs travel by reference. The
-    two reads cannot drift: both consult ``operation.compute_provider`` on
-    the same instance, and this module owns the provider→behavior mapping —
-    ``create_execute_router`` owns router *construction*, this predicate
-    owns the input-delivery read.
-
-    Args:
-        operation: The operation instance.
-
-    Returns:
-        True iff ``compute_provider.active == "modal"``.
+    Materialization needs this decision before the execute router is created.
     """
     return bool(operation.compute_provider.active == "modal")
 
@@ -42,11 +30,6 @@ def create_execute_router(
     cancel_check: Callable[[], bool] | None = None,
 ) -> ExecuteRouter:
     """Create an execute router from a provider config.
-
-    The router-construction site: ``compute_provider`` is consulted
-    here for building the router and nowhere else. The read-only sibling
-    ``routes_to_endpoint`` (same module) exposes the same signal to the
-    input-materialization pass.
 
     Args:
         config: Provider config from ``ComputeProvider.current()``.

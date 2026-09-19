@@ -91,11 +91,8 @@ class TestComputeExecutionSpecId:
     def test_execution_spec_id_differs_per_role_assignment(self):
         """Swapping which role an artifact_id belongs to changes the spec_id.
 
-        Regression for Bug C: the legacy implementation deduplicated IDs
-        into a flat set across roles, so two batches with identical ID
-        multisets but different role assignments produced identical
-        spec_ids. Multi-input ops where the same artifact may appear in
-        multiple roles relied on this masking a latent collision.
+        Equal ID multisets with different role assignments represent
+        different execution units.
         """
         a, b = "a" * 32, "b" * 32
         spec_a_primary = compute_execution_spec_id(

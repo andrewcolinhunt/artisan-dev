@@ -1,7 +1,4 @@
-"""Tests for validation functions in artifact-centric execution.
-
-Reference: v4 design - validation framework for artifacts and lineage.
-"""
+"""Tests for artifact, lineage and structured validation errors."""
 
 from __future__ import annotations
 
@@ -23,10 +20,6 @@ from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
 from artisan.schemas.specs.output_spec import OutputSpec
-
-# =============================================================================
-# Test Fixtures
-# =============================================================================
 
 
 @pytest.fixture
@@ -83,11 +76,6 @@ def draft_config_artifact():
     )
 
 
-# =============================================================================
-# Test validate_artifacts_match_specs
-# =============================================================================
-
-
 class TestValidateArtifactsMatchSpecs:
     """Tests for validate_artifacts_match_specs function."""
 
@@ -101,12 +89,11 @@ class TestValidateArtifactsMatchSpecs:
             )
         }
 
-        # Should not raise
         validate_artifacts_match_specs(artifacts, specs)
 
     def test_missing_required_role_raises_error(self):
         """Missing required role should raise ArtifactValidationError."""
-        artifacts = {}  # No artifacts
+        artifacts = {}
         specs = {
             "outputs": OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
@@ -121,7 +108,7 @@ class TestValidateArtifactsMatchSpecs:
 
     def test_empty_artifact_list_for_required_role_raises_error(self, draft_artifact):
         """Empty artifact list for required role should raise error."""
-        artifacts = {"outputs": []}  # Empty list
+        artifacts = {"outputs": []}
         specs = {
             "outputs": OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
@@ -136,36 +123,34 @@ class TestValidateArtifactsMatchSpecs:
 
     def test_empty_artifact_list_for_optional_role_passes(self):
         """Empty artifact list for optional role should pass."""
-        artifacts = {"outputs": []}  # Empty list
+        artifacts = {"outputs": []}
         specs = {
             "outputs": OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
-                required=False,  # Optional
+                required=False,
             )
         }
 
-        # Should not raise
         validate_artifacts_match_specs(artifacts, specs)
 
     def test_missing_optional_role_passes(self):
         """Missing optional role should pass validation."""
-        artifacts = {}  # No artifacts
+        artifacts = {}
         specs = {
             "outputs": OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
-                required=False,  # Optional
+                required=False,
             )
         }
 
-        # Should not raise
         validate_artifacts_match_specs(artifacts, specs)
 
     def test_artifact_type_mismatch_raises_error(self, draft_artifact):
         """Wrong artifact type for spec should raise error."""
-        artifacts = {"outputs": [draft_artifact]}  # Metric
+        artifacts = {"outputs": [draft_artifact]}
         specs = {
             "outputs": OutputSpec(
-                artifact_type=ArtifactTypes.FILE_REF,  # Expects FileRef
+                artifact_type=ArtifactTypes.FILE_REF,
                 required=True,
             )
         }
@@ -177,7 +162,7 @@ class TestValidateArtifactsMatchSpecs:
         """Extra roles not in specs should raise error."""
         artifacts = {
             "outputs": [draft_artifact],
-            "extra_role": [draft_artifact],  # Not in specs
+            "extra_role": [draft_artifact],
         }
         specs = {
             "outputs": OutputSpec(
@@ -199,7 +184,6 @@ class TestValidateArtifactsMatchSpecs:
             )
         }
 
-        # Should not raise - no type checking for ANY
         validate_artifacts_match_specs(artifacts, specs)
 
     def test_multiple_artifacts_per_role(self, draft_artifact, draft_artifact_2):
@@ -212,7 +196,6 @@ class TestValidateArtifactsMatchSpecs:
             )
         }
 
-        # Should not raise
         validate_artifacts_match_specs(artifacts, specs)
 
     def test_multiple_artifacts_one_wrong_type_raises_error(
@@ -229,11 +212,6 @@ class TestValidateArtifactsMatchSpecs:
 
         with pytest.raises(ArtifactValidationError, match="Artifact type mismatch"):
             validate_artifacts_match_specs(artifacts, specs)
-
-
-# =============================================================================
-# Test validate_lineage_completeness
-# =============================================================================
 
 
 class TestValidateLineageCompleteness:
@@ -257,7 +235,6 @@ class TestValidateLineageCompleteness:
             ]
         }
 
-        # Should not raise
         validate_lineage_completeness(artifacts, specs, lineage)
 
     def test_missing_lineage_for_non_orphan_raises_error(self, draft_artifact):
@@ -284,7 +261,6 @@ class TestValidateLineageCompleteness:
         }
         lineage = {}  # No lineage mappings
 
-        # Should not raise - orphans don't need lineage
         validate_lineage_completeness(artifacts, specs, lineage)
 
     def test_empty_artifact_list_passes(self):
@@ -297,16 +273,14 @@ class TestValidateLineageCompleteness:
         }
         lineage = {}
 
-        # Should not raise - no artifacts means nothing to validate
         validate_lineage_completeness(artifacts, specs, lineage)
 
     def test_role_not_in_specs_skipped(self, draft_artifact):
         """Roles not in specs should be skipped."""
         artifacts = {"unknown_role": [draft_artifact]}
-        specs = {}  # No specs
+        specs = {}
         lineage = {}
 
-        # Should not raise - role not in specs, skip validation
         validate_lineage_completeness(artifacts, specs, lineage)
 
     def test_multiple_artifacts_all_need_lineage(
@@ -362,7 +336,6 @@ class TestValidateLineageCompleteness:
             ]
         }
 
-        # Should not raise
         validate_lineage_completeness(artifacts, specs, lineage)
 
     def test_explicit_multi_input_lineage_requires_every_declared_role(
@@ -410,11 +383,6 @@ class TestValidateLineageCompleteness:
             validate_lineage_completeness(artifacts, specs, lineage)
 
 
-# =============================================================================
-# Test validate_lineage_integrity
-# =============================================================================
-
-
 class TestValidateLineageIntegrity:
     """Tests for validate_lineage_integrity function."""
 
@@ -432,7 +400,6 @@ class TestValidateLineageIntegrity:
         input_artifacts = {"input_metrics": [finalized_artifact]}
         output_artifacts = {"outputs": [draft_artifact]}
 
-        # Should not raise
         validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_nonexistent_source_raises_error(self, draft_artifact):
@@ -612,7 +579,6 @@ class TestValidateLineageIntegrity:
             "derived": [dependent_metric],
         }
 
-        # Should not raise - output->output is valid
         validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_empty_lineage_passes(self):
@@ -621,7 +587,6 @@ class TestValidateLineageIntegrity:
         input_artifacts = {}
         output_artifacts = {}
 
-        # Should not raise
         validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_multiple_roles_all_validated(
@@ -657,7 +622,6 @@ class TestValidateLineageIntegrity:
             "derived": [draft_derived],
         }
 
-        # Should not raise
         validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_draft_without_artifact_id_valid_as_output(
@@ -676,7 +640,6 @@ class TestValidateLineageIntegrity:
         input_artifacts = {"inputs": [finalized_artifact]}
         output_artifacts = {"outputs": [draft_artifact]}  # Draft
 
-        # Should not raise - drafts without artifact_id are valid outputs
         validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_source_original_name_valid_in_role(self):
@@ -706,7 +669,6 @@ class TestValidateLineageIntegrity:
             "metrics": [metric],
         }
 
-        # Should not raise
         validate_lineage_integrity(lineage, {}, output_artifacts)
 
     def test_source_original_name_missing_in_role_raises(self):
@@ -832,7 +794,6 @@ class TestValidateLineageIntegrity:
         }
         output_artifacts = {"outputs": [draft_artifact]}
 
-        # Should not raise — distinct source_roles permit co-input edges.
         validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_co_input_with_source_original_name_passes(self):
@@ -873,7 +834,6 @@ class TestValidateLineageIntegrity:
             "metrics": [derived],
         }
 
-        # Should not raise — one input source, one co-output source, distinct roles.
         validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
 
     def test_duplicate_draft_same_role_different_source_raises(
@@ -930,11 +890,6 @@ class TestValidateLineageIntegrity:
 
         with pytest.raises(LineageIntegrityError, match="Duplicate lineage mapping"):
             validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-
-# =============================================================================
-# Test Exception Classes
-# =============================================================================
 
 
 class TestExceptions:

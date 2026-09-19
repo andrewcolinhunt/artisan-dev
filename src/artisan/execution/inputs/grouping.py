@@ -31,7 +31,8 @@ def compute_group_id(artifacts: dict[str, tuple[str, str]]) -> str:
     """Compute a role- and type-aware group identifier.
 
     The group_id is a content-addressed hash that identifies a particular
-    pairing of source artifacts, independent of role names or target outputs.
+    pairing by role, artifact type and artifact ID. Dictionary insertion order
+    and target outputs do not affect it.
 
     Args:
         artifacts: Role to ``(artifact_type, artifact_id)`` mapping.
@@ -78,7 +79,7 @@ def group_inputs(
         Tuple of:
         - Aligned inputs: same roles, same length, positionally paired.
         - group_ids: list of group_id strings, one per paired index.
-          group_id = deterministic hash of sorted source artifact IDs in the pair.
+          Each hash includes the role, type and ID of every paired input.
 
     Raises:
         ValueError: If inputs are incompatible with the chosen strategy.
@@ -108,10 +109,10 @@ def match_inputs_to_primary(
 ) -> dict[str, list[str]]:
     """Pair each non-primary role independently against a primary role.
 
-    For each primary artifact, finds the best match in EVERY other role.
-    Only complete matches (matched in all roles) are returned. This is
-    the pairing pattern used by FilterOp: primary_input paired independently
-    with each metric role.
+    Return only primary artifacts with matches in every other role. LINEAGE
+    retains all candidates matched to each primary and expands their
+    cross-product; NAME permits one match per role. Filter uses this pattern
+    to pair selected artifacts with metric roles.
 
     Args:
         primary_role: The anchor role name (e.g., "passthrough").
@@ -161,13 +162,12 @@ def validate_stem_match_uniqueness(
 ) -> None:
     """Validate that artifacts in the stem-matched role have unique names.
 
-    The stem-matching algorithm in ``capture_lineage_metadata()`` requires
-    unique ``original_name`` values within the stem-matched role. Duplicate
-    names cause ambiguous matches and silently dropped lineage edges.
+    NAME grouping requires one artifact per stripped filename stem in each
+    role so pairing is unambiguous.
 
     Args:
         role_name: Name of the role being validated (for error messages).
-        artifact_names: List of ``original_name`` values from the role's artifacts.
+        artifact_names: Extension-stripped names from one input role.
 
     Raises:
         ValueError: If any names are duplicated.
@@ -469,6 +469,7 @@ def _matched_sets_to_aligned(
     Args:
         inputs: Original inputs (used for role ordering).
         matched_sets: Each element is {role: artifact_id} for one pairing.
+        artifact_types: Concrete type keyed by artifact ID.
 
     Returns:
         Tuple of (aligned dict, group_ids list).

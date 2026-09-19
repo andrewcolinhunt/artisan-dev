@@ -45,6 +45,10 @@ def materialize_inputs(
     Returns:
         Tuple of (artifacts dict, set of artifact_ids that were materialized).
         The artifacts dict is the same input dict (files written as side effect).
+
+    Raises:
+        ValueError: If a materialized endpoint config contains artifact references,
+            or a locally referenced artifact cannot be loaded.
     """
     non_configs: list[tuple[Artifact, str | None]] = []
     configs: list[ExecutionConfigArtifact] = []
@@ -65,6 +69,13 @@ def materialize_inputs(
             seen_ids.add(artifact.artifact_id)
 
             if isinstance(artifact, ExecutionConfigArtifact):
+                if endpoint_routed and artifact.get_artifact_references():
+                    msg = (
+                        "Endpoint materialization does not support config artifact "
+                        "references. Build worker-local configuration in "
+                        "execute_command from explicit input roles."
+                    )
+                    raise ValueError(msg)
                 configs.append(artifact)
             else:
                 non_configs.append((artifact, spec.materialize_as))

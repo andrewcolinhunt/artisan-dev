@@ -36,8 +36,7 @@ def build_artifact_edges_from_store(
 ) -> list[ArtifactProvenanceEdge]:
     """Build typed provenance edges by resolving types from the artifact store.
 
-    Uses a single bulk ``load_type_map`` call instead of per-pair
-    lookups, reducing delta scans from 2N to 1.
+    Resolve all source and target types in one bulk lookup.
 
     Args:
         source_target_pairs: Untyped source/target pairs from lineage capture.
@@ -50,7 +49,6 @@ def build_artifact_edges_from_store(
     if not source_target_pairs:
         return []
 
-    # Bulk-resolve all artifact types (1 scan instead of 2N)
     all_ids: set[str] = set()
     for pair in source_target_pairs:
         all_ids.add(pair.source)
@@ -136,7 +134,6 @@ def build_config_reference_edges(
     """
     from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 
-    # Collect all reference IDs across all configs
     all_ref_ids: set[str] = set()
     config_refs: list[tuple[ExecutionConfigArtifact, list[str]]] = []
     for config in config_artifacts:
@@ -146,7 +143,6 @@ def build_config_reference_edges(
         config_refs.append((config, refs))
         all_ref_ids.update(refs)
 
-    # Bulk-resolve types (1 scan instead of N)
     type_map = (
         artifact_store.provenance.load_type_map(list(all_ref_ids))
         if all_ref_ids

@@ -1,11 +1,4 @@
-"""Tests for run_creator_flow function.
-
-Reference: Phase 4c - Executor (v2)
-Reference: design_execution_api_refactor_v2.md
-Reference: design_execution_unit_refactor.md
-Reference: design_provenance_phase3_execution.md
-Reference: v4 design - artifact-centric execution model
-"""
+"""Tests for creator lifecycle execution and staged outcomes."""
 
 from __future__ import annotations
 
@@ -21,7 +14,7 @@ from unittest.mock import MagicMock
 import polars as pl
 import pytest
 from fixtures.logical_commit_store import commit_test_inputs
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.compute.base import ExecuteRouter
@@ -78,15 +71,10 @@ def _setup_delta_tables(
     )
 
 
-# =============================================================================
-# Test Operations (v4 API - artifact-centric)
-# =============================================================================
-
-
 class MetricCopyTestOp(OperationDefinition):
     """Test operation that copies input metric with a modification.
 
-    v4 API: Uses input_artifacts with materialized_path, returns draft Artifacts.
+    Consume materialized input paths and return draft artifacts.
     """
 
     class InputRole(StrEnum):
@@ -138,7 +126,7 @@ class MetricCopyTestOp(OperationDefinition):
         return {"copied": True}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """v4: Create draft MetricArtifacts from file_outputs."""
+        """Create draft MetricArtifacts from output files."""
         drafts: list[MetricArtifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".json"):
@@ -157,7 +145,7 @@ class MetricCopyTestOp(OperationDefinition):
 class GenerativeTestOp(OperationDefinition):
     """Test operation that generates output without inputs.
 
-    v4 API: Returns draft Artifacts with infer_lineage_from={"inputs": []} (orphan).
+    Return draft artifacts declared as orphan outputs.
     """
 
     class OutputRole(StrEnum):
@@ -191,7 +179,7 @@ class GenerativeTestOp(OperationDefinition):
         return {"generated": self.params.count}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """v4: Create draft MetricArtifacts from file_outputs."""
+        """Create draft MetricArtifacts from output files."""
         drafts: list[MetricArtifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".json"):
@@ -288,7 +276,7 @@ class ExceptionTestOp(OperationDefinition):
 class MetricOutputTestOp(OperationDefinition):
     """Test operation that produces metric outputs.
 
-    v4 API: Creates MetricArtifact drafts in postprocess.
+    Create MetricArtifact drafts in postprocess.
     """
 
     class OutputRole(StrEnum):
@@ -311,7 +299,7 @@ class MetricOutputTestOp(OperationDefinition):
         return {"score": 0.95, "confidence": 0.87}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """v4: Create draft MetricArtifacts from memory_outputs."""
+        """Create draft MetricArtifacts from in-memory results."""
         raw = inputs.memory_outputs
         drafts = [
             MetricArtifact.draft(
@@ -326,11 +314,6 @@ class MetricOutputTestOp(OperationDefinition):
             ),
         ]
         return ArtifactResult(success=True, artifacts={"scores": drafts})
-
-
-# =============================================================================
-# Fixtures
-# =============================================================================
 
 
 @pytest.fixture
@@ -382,11 +365,6 @@ def runtime_env(delta_root_with_input, working_root, staging_root):
         working_root=str(working_root),
         staging_root=str(staging_root),
     )
-
-
-# =============================================================================
-# Tests
-# =============================================================================
 
 
 class TestGenerateExecutionRunId:
@@ -449,12 +427,12 @@ class TestShardUri:
 
 
 class TestRunExecutionFullLifecycle:
-    """Tests for full 12-step execution lifecycle."""
+    """Tests for the full creator execution lifecycle."""
 
     def test_execute_full_lifecycle(
         self, delta_root_with_input, working_root, staging_root
     ):
-        """Full 12-step lifecycle produces staged output."""
+        """The creator lifecycle stages its artifacts and execution evidence."""
         delta_path, input_artifact_id = delta_root_with_input
 
         config = RuntimeEnvironment(
@@ -502,14 +480,12 @@ class TestRunExecutionFullLifecycle:
         result = run_creator_flow(unit, config)
 
         assert result.success is True
-        # Check that metrics were staged
-        if (
-            result.staging_path
-            and (Path(result.staging_path) / "metrics.parquet").exists()
-        ):
-            df = pl.read_parquet(Path(result.staging_path) / "metrics.parquet")
-            assert len(df) == 3  # 3 generated metrics
-            assert len(result.artifact_ids) == 3
+        assert result.staging_path is not None
+        metrics_path = Path(result.staging_path) / "metrics.parquet"
+        assert metrics_path.is_file()
+        df = pl.read_parquet(metrics_path)
+        assert len(df) == 3
+        assert len(result.artifact_ids) == 3
 
     @pytest.mark.parametrize("fails", [False, True])
     def test_execute_with_worker_id(
@@ -661,7 +637,7 @@ class TestRunExecutionFailureHandling:
     def test_error_message_includes_exception_type(
         self, delta_root_with_input, working_root, staging_root
     ):
-        """Error messages include the exception type name (F4)."""
+        """Error messages include the exception type name."""
         delta_path, _ = delta_root_with_input
 
         config = RuntimeEnvironment(
@@ -828,14 +804,12 @@ class TestRunExecutionStagedOutput:
         # Check execution_edges.parquet has the input/output rows
         df = pl.read_parquet(Path(result.staging_path) / "execution_edges.parquet")
 
-        # Check inputs
         inputs = df.filter(pl.col("direction") == "input")
         assert len(inputs) >= 1
         # Each entry should have role and artifact_id
         assert "role" in inputs.columns
         assert "artifact_id" in inputs.columns
 
-        # Check outputs
         outputs = df.filter(pl.col("direction") == "output")
         assert len(outputs) >= 1
         assert "role" in outputs.columns
@@ -881,13 +855,12 @@ class TestRuntimeEnvironment:
             staging_root=str(tmp_path / "staging"),
         )
 
-        # Should raise ValidationError when trying to modify
-        with pytest.raises(Exception):  # pydantic.ValidationError
+        with pytest.raises(ValidationError):
             env.delta_root = str(tmp_path / "other")
 
     def test_config_requires_all_paths(self, tmp_path):
-        """RuntimeEnvironment requires all three paths."""
-        with pytest.raises(Exception):  # pydantic.ValidationError
+        """RuntimeEnvironment requires staging_root."""
+        with pytest.raises(ValidationError):
             RuntimeEnvironment(
                 delta_root=str(tmp_path / "delta"),
                 working_root=str(tmp_path / "working"),

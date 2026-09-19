@@ -67,7 +67,7 @@ class _SuffixOp(OperationDefinition):
     """Test operation that reads inputs by materialized path and appends a suffix.
 
     The key behavior: the output filename preserves the input filename stem
-    (which is now the artifact_id) plus a suffix. This allows the filesystem
+    (the artifact_id) plus a suffix. This allows the filesystem
     match map to connect outputs back to inputs.
     """
 
@@ -362,7 +362,7 @@ class TestFunctionReturnsReassembled:
 
 class TestCancelCheck:
     def test_none_step_run_id_disables_cancel_check(self, tmp_path: Path):
-        """Composite-internal lifecycles (no step_run_id) get no probe."""
+        """An execution without an owning step has no cancellation probe."""
         from artisan.execution.executors.creator import _cancel_check
 
         runtime_env = RuntimeEnvironment(

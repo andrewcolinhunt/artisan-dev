@@ -18,7 +18,7 @@ from artisan.utils.hashing import compute_content_digest
 
 @pytest.fixture(autouse=True)
 def _format_common_delta_root(tmp_path: Path) -> None:
-    """Initialize the conventional execution-test Delta root as format 2."""
+    """Publish the execution-test Delta root with the current store format."""
     publish_test_store(str(tmp_path / "delta"), LocalFileSystem())
 
 
