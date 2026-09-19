@@ -3453,3 +3453,37 @@ def test_class_default_image_bump_changes_step_spec_id(
         return pipeline._step_spec_ids[0]
 
     assert _spec_id(_ImageOpV1) != _spec_id(_ImageOpV2)
+
+
+@pytest.mark.parametrize("cacheable", [False, True])
+@pytest.mark.parametrize(
+    "policy", [CachePolicy.ALL_SUCCEEDED, CachePolicy.STEP_COMPLETED]
+)
+def test_submit_cacheability_takes_precedence_over_consumer_policy(
+    tmp_path,
+    monkeypatch,
+    cacheable: bool,
+    policy: CachePolicy,
+) -> None:
+    """Only operations with sufficient declared identity enter whole-step lookup."""
+    monkeypatch.setattr(_MockOp, "cacheable", cacheable)
+    with patch("artisan.orchestration.pipeline_manager.execute_step") as execute:
+        execute.return_value = StepResult(
+            step_name=_MockOp.name,
+            step_number=0,
+            status=StepStatus.SUCCEEDED,
+            disposition=StepDisposition.EXECUTED,
+        )
+        pipeline = _make_pipeline(tmp_path)
+        with patch.object(pipeline, "_try_cached_step", return_value=None) as lookup:
+            result = pipeline.run(
+                _MockOp,
+                inputs={"data": [_INPUT_ID]},
+                skip_cache=False,
+                cache_policy=policy,
+                compact=False,
+            )
+        pipeline.finalize()
+    assert result.status == StepStatus.SUCCEEDED
+    assert lookup.call_count == int(cacheable)
+    execute.assert_called_once()

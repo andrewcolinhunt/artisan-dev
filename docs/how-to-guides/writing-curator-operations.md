@@ -452,7 +452,8 @@ pipeline.run(operation=IngestData, name="ingest", inputs=["/data/a.csv", "/data/
 
 ### IngestPipelineStep
 
-Import artifacts from another pipeline's Delta Lake store:
+Import accepted outputs from an explicit run in another pipeline's Delta Lake
+store. Use `artisan.orchestration.list_runs` to discover source run IDs:
 
 ```python
 from artisan.operations.curator import IngestPipelineStep
@@ -462,11 +463,37 @@ pipeline.run(
     name="ingest_external",
     params={
         "source_delta_root": "/runs/other_pipeline/delta",
+        "source_run_id": "other_pipeline_20260919_120000_a1b2c3d4",
         "source_step": 3,
+        "include_prior_steps": True,  # optional: include existing steps 0 through 3
         "artifact_type": "data",  # optional: filter by type
     },
 )
 ```
+
+Omit `include_prior_steps` to select only step 3. Both modes select the latest
+attempt at each chosen position and import its accepted outputs, including
+cached and passthrough results. Failed executions contribute no artifacts;
+successful executions of a partial step do. The boundary must exist, and
+selected pending or running attempts fail the import.
+
+Through-N imports the union of outputs through the boundary, with duplicates
+removed. If step 0 produces A and B and step 1 filters to A, importing only
+step 1 gives A; importing through step 1 gives A and B. Select the final filter
+step alone when you want its surviving set.
+
+Each invocation reads the source again, even when its parameters match an
+earlier import. Restoring an already accepted destination step with `resume()`
+restores that result; submit a new ingest step or run to observe source changes.
+Imported artifacts become destination roots, with their immediate source run
+and artifact identity in `metadata.imported_from`. The execution's
+`ingest_source` metadata records which source attempts contributed.
+
+External files retain their verified source locations. Keep those files
+accessible for the lifetime of the imported artifacts. Destination readers
+need a filesystem that supports the retained URIs and the required access or
+credentials. `source_storage` configures source reads; it does not transfer
+credentials or copy file ownership. Missing or modified bytes fail the import.
 
 ### InteractiveFilter
 

@@ -1227,3 +1227,24 @@ class TestExecuteAsTool:
     def test_shim_argv_non_serializable_input_names_role(self):
         with pytest.raises(TypeError, match="source"):
             FlagOp().execute_command({"source": object()})
+
+
+def test_cacheable_is_class_only_and_does_not_change_computational_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reuse eligibility is separate from serialized input/config identity."""
+    from artisan.operations.curator import IngestPipelineStep
+    from artisan.utils.hashing import effective_config_payload
+
+    operation = SimpleOperation()
+    before = effective_config_payload(operation)
+    assert OperationDefinition.cacheable is True
+    assert SimpleOperation.cacheable is True
+    assert IngestPipelineStep.cacheable is False
+    monkeypatch.setattr(SimpleOperation, "cacheable", False)
+    assert effective_config_payload(operation) == before
+    assert "cacheable" not in SimpleOperation.model_fields
+    assert "cacheable" not in operation.model_dump()
+    assert "cacheable" not in SimpleOperation.to_metadata().params_schema["properties"]
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        SimpleOperation(cacheable=True)

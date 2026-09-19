@@ -295,6 +295,19 @@ Operations use two distinct configuration patterns: infrastructure
 configuration through built-in fields, and algorithm configuration through a
 nested `Params` class.
 
+### Cacheability
+
+An operation's `cacheable` class declaration says whether its declared inputs
+and configuration are sufficient to reuse an earlier execution. It defaults to
+`True`. Operations such as `IngestPipelineStep` read mutable external state and
+set it to `False`, so each invocation observes that state again.
+
+A false declaration bypasses both whole-step and execution cache lookups,
+regardless of the step's cache policy or an explicit `skip_cache=False`. It
+is a class contract, absent from instance configuration, parameter schemas,
+and computational identity. Repeated executions can still produce identical
+artifact IDs and use the store's ordinary artifact deduplication.
+
 ### Infrastructure fields
 
 Built-in fields control how the framework runs the operation:

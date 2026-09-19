@@ -1,453 +1,243 @@
-"""Unit tests for the IngestPipelineStep curator operation.
-
-Tests cover:
-1. Importing artifacts from a source step
-2. Filtering by artifact type
-3. Empty step / missing path error handling
-4. Import metadata propagation
-5. Multiple artifact types at a step
-6. Source path validation
-"""
+"""Run-scoped cross-pipeline import and typed hydration tests."""
 
 from __future__ import annotations
 
-import json
+from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import polars as pl
 import pytest
-from fixtures.store_format import commit_test_tables, publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from fixtures import run_outputs
+from fixtures.run_outputs import commit_outputs
+from pydantic import ValidationError
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.schemas.enums import TablePath
-from artisan.storage.core.table_schemas import get_schema
+from artisan.schemas.execution.curator_result import ArtifactResult
 
 
-def _mock_store() -> Mock:
-    """Create a mock ArtifactStore."""
-    return Mock()
-
-
-def setup_source_store(
-    base_path,
-    data_rows: list[dict] | None = None,
-    metrics: list[dict] | None = None,
-    index_entries: list[dict] | None = None,
-):
-    """Helper to create a Delta Lake store with test data."""
-    tables: dict[str, pl.DataFrame] = {}
-    artifact_ids: dict[str, str] = {}
-    if data_rows:
-        normalized_data = []
-        for row in data_rows:
-            artifact = DataArtifact.draft(
-                content=row["content"],
-                original_name=f"{row['original_name']}{row['extension'] or ''}",
-                step_number=row["origin_step_number"],
-                metadata=json.loads(row["metadata"]),
-            ).finalize()
-            artifact_ids[row["artifact_id"]] = artifact.artifact_id
-            normalized_data.append(artifact.to_row())
-        tables["artifacts/data"] = pl.DataFrame(
-            normalized_data, schema=DataArtifact.POLARS_SCHEMA
-        )
-
-    if metrics:
-        normalized_metrics = []
-        for row in metrics:
-            artifact = MetricArtifact.draft(
-                content=json.loads(row["content"]),
-                original_name=f"{row['original_name']}.json",
-                step_number=row["origin_step_number"],
-                metadata=json.loads(row["metadata"]),
-            ).finalize()
-            artifact_ids[row["artifact_id"]] = artifact.artifact_id
-            normalized_metrics.append(artifact.to_row())
-        tables["artifacts/metrics"] = pl.DataFrame(
-            normalized_metrics, schema=MetricArtifact.POLARS_SCHEMA
-        )
-
-    if index_entries:
-        normalized_index = [
-            {**entry, "artifact_id": artifact_ids[entry["artifact_id"]]}
-            for entry in index_entries
-        ]
-        tables[TablePath.ARTIFACT_INDEX.value] = pl.DataFrame(
-            normalized_index, schema=get_schema(TablePath.ARTIFACT_INDEX)
-        )
-
-    fs = LocalFileSystem()
-    if not tables:
-        publish_test_store(str(base_path), fs)
-        return
-    step_numbers = sorted(
-        {
-            int(step_number)
-            for frame in tables.values()
-            for step_number in frame["origin_step_number"].unique().to_list()
+def _operation(root: Path, **params: object) -> IngestPipelineStep:
+    """Build a source-run import with optional selection overrides."""
+    return IngestPipelineStep(
+        params={
+            "source_delta_root": str(root),
+            "source_run_id": "source-run",
+            "source_step": 0,
+            **params,
         }
     )
-    for step_number in step_numbers:
-        step_tables = {
-            table_path: frame.filter(pl.col("origin_step_number") == step_number)
-            for table_path, frame in tables.items()
-        }
-        commit_test_tables(
-            str(base_path),
-            str(base_path.parent / f"{base_path.name}-staging"),
-            fs,
-            step_tables,
-            step_run_id=f"{step_number:032x}",
-            step_number=step_number,
-            operation_name="seed_source_store",
-        )
 
 
-def make_data_row(artifact_id: str, step_number: int, content: bytes = b"test") -> dict:
-    """Create a data artifact data dict."""
-    return {
-        "artifact_id": artifact_id,
-        "origin_step_number": step_number,
-        "content": content,
-        "original_name": "test",
-        "extension": ".csv",
-        "size_bytes": len(content),
-        "columns": None,
-        "row_count": None,
-        "metadata": "{}",
-        "external_path": None,
+def _execute(operation: IngestPipelineStep) -> ArtifactResult:
+    """Execute at a destination position distinct from source origins."""
+    return operation.execute_curator({}, 7, Mock())
+
+
+def _data(content: bytes, step_number: int = 0, **metadata: object) -> DataArtifact:
+    """Create a finalized source artifact."""
+    return DataArtifact.draft(
+        content=content,
+        original_name="source.csv",
+        step_number=step_number,
+        metadata=metadata,
+    ).finalize()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_run_id", ""),
+        ("source_run_id", " \t"),
+        ("source_step", -1),
+    ],
+)
+def test_params_reject_invalid_selection(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    with pytest.raises(ValidationError):
+        _operation(tmp_path, **{field: value})
+
+
+def test_params_require_run_and_trim_run_id(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="source_run_id"):
+        IngestPipelineStep.Params(source_delta_root=str(tmp_path), source_step=0)
+    operation = _operation(tmp_path, source_run_id=" source-public-id \n")
+    assert operation.params.source_run_id == "source-public-id"
+    assert operation.params.include_prior_steps is False
+    assert operation.version == "2"
+    assert operation.cacheable is False
+
+
+@pytest.mark.parametrize(("include_prior", "expected"), [(False, 1), (True, 3)])
+def test_ingest_selects_accepted_union_and_sorts_hydrated_ids(
+    tmp_path: Path,
+    include_prior: bool,
+    expected: int,
+) -> None:
+    root = tmp_path / "source"
+    artifacts = sorted(
+        [_data(b"a"), _data(b"b"), _data(b"c")],
+        key=lambda artifact: artifact.artifact_id,
+        reverse=True,
+    )
+    step0, _ = commit_outputs(str(root), artifacts=artifacts)
+    step1, _ = commit_outputs(
+        str(root),
+        number=1,
+        output_ids={
+            "first": [artifacts[0].artifact_id],
+            "second": [artifacts[0].artifact_id],
+        },
+    )
+    commit_outputs(
+        str(root),
+        run_id="other-run",
+        number=1,
+        artifacts=[_data(b"other", step_number=1)],
+    )
+    result = _execute(
+        _operation(root, source_step=1, include_prior_steps=include_prior)
+    )
+    imported = result.artifacts["data"]
+    assert result.success
+    assert len(imported) == expected
+    source_ids = [
+        artifact.metadata["imported_from"]["artifact_id"] for artifact in imported
+    ]
+    assert source_ids == sorted(source_ids)
+    assert all(artifact.origin_step_number == 7 for artifact in imported)
+    assert result.metadata["ingest_source"] == {
+        "pipeline_run_id": "source-run",
+        "source_step": 1,
+        "include_prior_steps": include_prior,
+        "step_run_ids": sorted([step0, step1]) if include_prior else [step1],
     }
 
 
-def make_metric_data(artifact_id: str, step_number: int, value: float = 1.0) -> dict:
-    """Create a metric artifact data dict."""
-    content = json.dumps({"test_metric": value}, sort_keys=True).encode("utf-8")
-    return {
-        "artifact_id": artifact_id,
-        "origin_step_number": step_number,
-        "content": content,
-        "original_name": "test_metric",
-        "extension": None,
-        "metadata": "{}",
-        "external_path": None,
+@pytest.mark.parametrize(
+    ("type_filter", "expected"), [(None, ["data", "metric"]), ("metric", ["metric"])]
+)
+def test_ingest_type_filter_limits_contributing_attempts(
+    tmp_path: Path,
+    type_filter: str | None,
+    expected: list[str],
+) -> None:
+    data_step, _ = commit_outputs(str(tmp_path), artifacts=[_data(b"test")])
+    metric = MetricArtifact.draft(
+        content={"score": 2}, original_name="metric.json", step_number=1
+    ).finalize()
+    metric_step, _ = commit_outputs(str(tmp_path), number=1, artifacts=[metric])
+    result = _execute(
+        _operation(
+            tmp_path, source_step=1, include_prior_steps=True, artifact_type=type_filter
+        )
+    )
+    assert list(result.artifacts) == expected
+    assert result.metadata["ingest_source"]["step_run_ids"] == (
+        sorted([data_step, metric_step]) if type_filter is None else [metric_step]
+    )
+    assert result.artifacts["metric"][0].content == metric.content
+
+
+def test_ingest_preserves_content_and_replaces_only_owned_metadata(
+    tmp_path: Path,
+) -> None:
+    original = _data(
+        b"content",
+        annotation={"label": "keep"},
+        imported_from_step=9,
+        imported_from={"pipeline_run_id": "older-run"},
+    )
+    source_metadata = dict(original.metadata)
+    commit_outputs(str(tmp_path), artifacts=[original])
+    operation = _operation(tmp_path)
+    imported = _execute(operation).artifacts["data"][0]
+    assert imported.content == original.content
+    assert imported.original_name == original.original_name
+    assert imported.extension == original.extension
+    assert imported.artifact_id != original.artifact_id
+    assert imported.metadata == {
+        "annotation": {"label": "keep"},
+        "imported_from": {
+            "pipeline_run_id": "source-run",
+            "artifact_id": original.artifact_id,
+            "origin_step_number": 0,
+        },
     }
+    assert original.metadata == source_metadata
+    assert operation._to_draft(original, 7).artifact_id == imported.artifact_id
+    assert operation._to_draft(original, 12).artifact_id == imported.artifact_id
+    assert (
+        _operation(tmp_path / "moved")._to_draft(original, 7).artifact_id
+        == imported.artifact_id
+    )
+    assert original.metadata == source_metadata
+    assert (
+        _operation(tmp_path, source_run_id="different")
+        ._to_draft(original, 7)
+        .artifact_id
+        != imported.artifact_id
+    )
 
 
-def make_index_entry(artifact_id: str, artifact_type: str, step_number: int) -> dict:
-    """Create an artifact_index entry."""
-    return {
-        "artifact_id": artifact_id,
-        "artifact_type": artifact_type,
-        "origin_step_number": step_number,
-        "metadata": "{}",
-    }
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        ({"source_run_id": "unknown-run"}, "Unknown source run 'unknown-run'"),
+        ({"source_step": 99}, "has no step 99"),
+    ],
+)
+def test_ingest_rejects_invalid_selection(
+    tmp_path: Path, params: dict, match: str
+) -> None:
+    commit_outputs(str(tmp_path), artifacts=[_data(b"test")])
+    with pytest.raises(ValueError, match=match):
+        _execute(_operation(tmp_path, **params))
 
 
-class TestIngestPipelineStepBasic:
-    """Tests for basic artifact import."""
+@pytest.mark.parametrize("empty_step", [False, True])
+def test_ingest_empty_selection_has_run_boundary_and_type_context(
+    tmp_path: Path, empty_step: bool
+) -> None:
+    commit_outputs(str(tmp_path), artifacts=[] if empty_step else [_data(b"test")])
+    result = _execute(
+        _operation(tmp_path, artifact_type="metric", include_prior_steps=True)
+    )
+    assert not result.success
+    assert "source-run" in result.error
+    assert "through step 0" in result.error
+    assert "metric" in result.error
 
-    def test_should_import_data_from_source_step(self, tmp_path):
-        """Test importing data artifacts from a source step."""
-        source_root = tmp_path / "source_delta"
-        aid = "a" * 32
 
-        setup_source_store(
-            source_root,
-            data_rows=[make_data_row(aid, step_number=2, content=b"csv data")],
-            index_entries=[make_index_entry(aid, "data", step_number=2)],
+def test_ingest_missing_source_path_fails(tmp_path: Path) -> None:
+    result = _execute(_operation(tmp_path / "absent"))
+    assert not result.success
+    assert "does not exist" in result.error
+
+
+def test_ingest_missing_typed_content_fails_before_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifacts = [_data(b"one"), _data(b"two")]
+    original = run_outputs.commit_test_step
+
+    def omit_content(
+        root: str,
+        staging: str,
+        steps: list[dict[str, object]],
+        tables: dict[str, pl.DataFrame],
+        **kwargs: Any,
+    ) -> None:
+        tables["artifacts/data"] = tables["artifacts/data"].filter(
+            pl.col("artifact_id") != artifacts[0].artifact_id
         )
+        original(root, staging, steps, tables, **kwargs)
 
-        op = IngestPipelineStep(
-            params={"source_delta_root": str(source_root), "source_step": 2}
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=5, artifact_store=_mock_store()
-        )
-
-        assert result.success
-        assert "data" in result.artifacts
-        assert len(result.artifacts["data"]) == 1
-
-        artifact = result.artifacts["data"][0]
-        assert artifact.content == b"csv data"
-        assert artifact.origin_step_number == 5
-        assert artifact.is_finalized
-
-    def test_should_import_multiple_artifacts(self, tmp_path):
-        """Test importing multiple artifacts from same step."""
-        source_root = tmp_path / "source_delta"
-        aid_a = "a" * 32
-        aid_b = "b" * 32
-
-        setup_source_store(
-            source_root,
-            data_rows=[
-                make_data_row(aid_a, step_number=1, content=b"data1"),
-                make_data_row(aid_b, step_number=1, content=b"data2"),
-            ],
-            index_entries=[
-                make_index_entry(aid_a, "data", step_number=1),
-                make_index_entry(aid_b, "data", step_number=1),
-            ],
-        )
-
-        op = IngestPipelineStep(
-            params={"source_delta_root": str(source_root), "source_step": 1}
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=5, artifact_store=_mock_store()
-        )
-
-        assert result.success
-        assert len(result.artifacts["data"]) == 2
-
-    def test_should_preserve_content_and_create_import_identity(self, tmp_path):
-        """Import metadata gives copied content a distinct semantic identity."""
-        source_root = tmp_path / "source_delta"
-        content = b"deterministic content"
-
-        # Create a DataArtifact draft to get the expected artifact_id
-        original = DataArtifact.draft(
-            content=content, original_name="test.csv", step_number=2
-        ).finalize()
-
-        setup_source_store(
-            source_root,
-            data_rows=[
-                make_data_row(original.artifact_id, step_number=2, content=content)
-            ],
-            index_entries=[
-                make_index_entry(original.artifact_id, "data", step_number=2)
-            ],
-        )
-
-        op = IngestPipelineStep(
-            params={"source_delta_root": str(source_root), "source_step": 2}
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=10, artifact_store=_mock_store()
-        )
-
-        imported = result.artifacts["data"][0]
-        assert imported.content == original.content
-        assert imported.artifact_id != original.artifact_id
-        assert imported.origin_step_number == 10
-
-
-class TestIngestPipelineStepTypeFilter:
-    """Tests for artifact type filtering."""
-
-    def test_should_filter_by_artifact_type(self, tmp_path):
-        """Test filtering to a specific artifact type."""
-        source_root = tmp_path / "source_delta"
-        data_id = "a" * 32
-        metric_id = "b" * 32
-
-        setup_source_store(
-            source_root,
-            data_rows=[make_data_row(data_id, step_number=1)],
-            metrics=[make_metric_data(metric_id, step_number=1)],
-            index_entries=[
-                make_index_entry(data_id, "data", step_number=1),
-                make_index_entry(metric_id, "metric", step_number=1),
-            ],
-        )
-
-        op = IngestPipelineStep(
-            params={
-                "source_delta_root": str(source_root),
-                "source_step": 1,
-                "artifact_type": "data",
-            }
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=5, artifact_store=_mock_store()
-        )
-
-        assert result.success
-        assert "data" in result.artifacts
-        assert "metric" not in result.artifacts
-        assert len(result.artifacts["data"]) == 1
-
-    def test_should_import_all_types_when_no_filter(self, tmp_path):
-        """Test importing all types when artifact_type is None."""
-        source_root = tmp_path / "source_delta"
-        data_id = "a" * 32
-        metric_id = "b" * 32
-
-        setup_source_store(
-            source_root,
-            data_rows=[make_data_row(data_id, step_number=1)],
-            metrics=[make_metric_data(metric_id, step_number=1)],
-            index_entries=[
-                make_index_entry(data_id, "data", step_number=1),
-                make_index_entry(metric_id, "metric", step_number=1),
-            ],
-        )
-
-        op = IngestPipelineStep(
-            params={"source_delta_root": str(source_root), "source_step": 1}
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=5, artifact_store=_mock_store()
-        )
-
-        assert result.success
-        assert "data" in result.artifacts
-        assert "metric" in result.artifacts
-
-    def test_should_only_import_from_specified_step(self, tmp_path):
-        """Test that only artifacts from the specified step are imported."""
-        source_root = tmp_path / "source_delta"
-        step1_id = "a" * 32
-        step2_id = "b" * 32
-
-        setup_source_store(
-            source_root,
-            data_rows=[
-                make_data_row(step1_id, step_number=1, content=b"step1"),
-                make_data_row(step2_id, step_number=2, content=b"step2"),
-            ],
-            index_entries=[
-                make_index_entry(step1_id, "data", step_number=1),
-                make_index_entry(step2_id, "data", step_number=2),
-            ],
-        )
-
-        op = IngestPipelineStep(
-            params={"source_delta_root": str(source_root), "source_step": 2}
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=5, artifact_store=_mock_store()
-        )
-
-        assert result.success
-        assert len(result.artifacts["data"]) == 1
-        assert result.artifacts["data"][0].content == b"step2"
-
-
-class TestIngestPipelineStepErrorHandling:
-    """Tests for error handling."""
-
-    def test_should_fail_for_nonexistent_source_path(self, tmp_path):
-        """Test failure when source_delta_root does not exist."""
-        fake_path = tmp_path / "nonexistent"
-
-        op = IngestPipelineStep(
-            params={"source_delta_root": str(fake_path), "source_step": 0}
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=5, artifact_store=_mock_store()
-        )
-
-        assert not result.success
-        assert "does not exist" in result.error
-
-    def test_should_fail_for_empty_step(self, tmp_path):
-        """Test failure when source step has no artifacts."""
-        source_root = tmp_path / "source_delta"
-        aid = "a" * 32
-
-        # Artifacts at step 1 only
-        setup_source_store(
-            source_root,
-            data_rows=[make_data_row(aid, step_number=1)],
-            index_entries=[make_index_entry(aid, "data", step_number=1)],
-        )
-
-        # Request step 99 which has nothing
-        op = IngestPipelineStep(
-            params={"source_delta_root": str(source_root), "source_step": 99}
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=5, artifact_store=_mock_store()
-        )
-
-        assert not result.success
-        assert "No artifacts found" in result.error
-
-    def test_should_fail_for_missing_type_at_step(self, tmp_path):
-        """Test failure when requested type doesn't exist at step."""
-        source_root = tmp_path / "source_delta"
-        aid = "a" * 32
-
-        setup_source_store(
-            source_root,
-            data_rows=[make_data_row(aid, step_number=1)],
-            index_entries=[make_index_entry(aid, "data", step_number=1)],
-        )
-
-        op = IngestPipelineStep(
-            params={
-                "source_delta_root": str(source_root),
-                "source_step": 1,
-                "artifact_type": "metric",
-            }
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=5, artifact_store=_mock_store()
-        )
-
-        assert not result.success
-        assert "No artifacts found" in result.error
-        assert "metric" in result.error
-
-
-class TestIngestPipelineStepMetadata:
-    """Tests for metadata propagation on imported artifacts."""
-
-    def test_should_set_imported_from_step_metadata(self, tmp_path):
-        """Test that imported artifacts have imported_from_step in metadata."""
-        source_root = tmp_path / "source_delta"
-        aid = "a" * 32
-
-        setup_source_store(
-            source_root,
-            data_rows=[make_data_row(aid, step_number=3)],
-            index_entries=[make_index_entry(aid, "data", step_number=3)],
-        )
-
-        op = IngestPipelineStep(
-            params={"source_delta_root": str(source_root), "source_step": 3}
-        )
-        result = op.execute_curator(
-            inputs={}, step_number=7, artifact_store=_mock_store()
-        )
-
-        artifact = result.artifacts["data"][0]
-        assert artifact.metadata["imported_from_step"] == 3
-        assert artifact.origin_step_number == 7
-
-
-class TestIngestPipelineStepClassAttributes:
-    """Tests for class attributes."""
-
-    def test_should_have_correct_name(self):
-        """Test operation name."""
-        assert IngestPipelineStep.name == "ingest_pipeline_step"
-
-    def test_should_have_description(self):
-        """Test operation has description."""
-        assert IngestPipelineStep.description is not None
-        assert "import" in IngestPipelineStep.description.lower()
-
-    def test_should_have_empty_inputs(self):
-        """Test generative pattern: no inputs."""
-        assert IngestPipelineStep.inputs == {}
-
-    def test_should_have_empty_outputs(self):
-        """Test dynamic pattern: no declared outputs."""
-        assert IngestPipelineStep.outputs == {}
-
-    def test_should_require_source_delta_root(self):
-        """Test source_delta_root is a required field."""
-        with pytest.raises(Exception):
-            IngestPipelineStep(params={"source_step": 0})
-
-    def test_should_require_source_step(self):
-        """Test source_step is a required field."""
-        with pytest.raises(Exception):
-            IngestPipelineStep(params={"source_delta_root": "/tmp/test"})
+    with monkeypatch.context() as context:
+        context.setattr(run_outputs, "commit_test_step", omit_content)
+        commit_outputs(str(tmp_path), artifacts=artifacts)
+    with pytest.raises(ArtifactIntegrityError, match=artifacts[0].artifact_id):
+        _execute(_operation(tmp_path))
