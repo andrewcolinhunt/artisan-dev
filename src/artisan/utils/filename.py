@@ -39,35 +39,16 @@ def strip_extensions(
         'archive.tar'
     """
 
-    if strip_all and not suffixes_to_strip:
-        # Fast path: pure string ops, no Path objects.
-        # Extract basename (everything after last '/')
-        slash_pos = filename.rfind("/")
-        name = filename if slash_pos < 0 else filename[slash_pos + 1 :]
-        # Find first real extension dot: position > 0, followed by a non-dot char.
-        # This matches Path.stem behavior for edge cases like "file..txt" -> "file."
+    name = posixpath.basename(filename)
+    if strip_all:
+        # Preserve leading, consecutive, and trailing dots in the stem.
         for i in range(1, len(name)):
             if name[i] == "." and i + 1 < len(name) and name[i + 1] != ".":
-                return name[:i]
-        return name
-
-    # Extract basename
-    name = posixpath.basename(filename)
-
-    if strip_all:
-        # Remove all extensions by repeatedly stripping
-        while "." in name:
-            stem, _ = posixpath.splitext(name)
-            # Prevent infinite loop for dotfiles like .gitignore
-            # where splitext returns the name unchanged
-            if stem == name:
+                name = name[:i]
                 break
-            name = stem
     else:
-        # Remove only final extension
         name, _ = posixpath.splitext(name)
 
-    # Remove specified suffixes in order
     if suffixes_to_strip:
         for suffix in suffixes_to_strip:
             if name.endswith(suffix):

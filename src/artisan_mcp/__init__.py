@@ -1,7 +1,7 @@
 """Artisan MCP server — a read-only Model Context Protocol adapter.
 
 Ships in the core wheel; its fastmcp dependencies install only via the
-``artisan[mcp]`` extra. Every tool delegates to an artisan core reader and
+``dexterity-artisan[mcp]`` extra. Every tool delegates to an artisan core reader and
 serializes plain data — no server-side domain logic.
 """
 

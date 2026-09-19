@@ -10,14 +10,14 @@ from typing import Any
 
 @contextmanager
 def phase_timer(name: str, timings: dict[str, Any]) -> Iterator[None]:
-    """Record wall-clock seconds for a named phase into timings dict.
+    """Record wall-clock seconds for a phase that exits successfully.
 
     Args:
         name: Phase name (used as dict key).
         timings: Dict to store the elapsed time in.
 
     Yields:
-        None — the timing is recorded on exit.
+        Control to the timed block. Exceptions propagate without recording.
     """
     start = time.perf_counter()
     yield

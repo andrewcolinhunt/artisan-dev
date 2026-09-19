@@ -1,19 +1,8 @@
-"""Recorded-fixture tests for compute_step_spec_id.
+"""Pin cache identity domain v2 digests against silent semantic changes.
 
-These hashes are recorded values from the approved release-format v2 cache
-identity (2026-09-14). Any commit that changes
-the hashing semantics — adding fields to the payload, changing
-canonicalization, reordering concatenation — will flip these digests
-and fail CI. That failure is the signal: "this commit invalidates
-every cache entry currently in production."
-
-Updating these constants is fine but should be called out in the PR
-description so reviewers know to expect a cache flush.
-
-Comparison-only tests (test_step_spec_id.py) verify *determinism* — same
-inputs → same hash. They cannot detect a silent semantic change because
-both sides of the comparison change together. This file is the brittle,
-golden-value safety net.
+Unlike determinism checks, recorded values detect changes shared by both sides
+of a comparison. Update these constants only for intentional cache invalidation,
+and explain the identity change in the PR.
 """
 
 from __future__ import annotations
@@ -104,21 +93,12 @@ RECORDED_STEP_HASHES = [
 
 @pytest.mark.parametrize(("inputs", "expected"), RECORDED_STEP_HASHES)
 def test_step_spec_id_is_recorded_value(inputs: dict, expected: str) -> None:
-    """compute_step_spec_id must produce the recorded hex digest.
-
-    A failure here means the hashing semantics changed. Every cached
-    step in production with these exact inputs will now miss-and-rerun.
-    Confirm that's intended before updating the constant.
-    """
+    """Pin the step identity for concrete recorded inputs."""
     assert compute_step_spec_id(**inputs) == expected
 
 
 def test_step_spec_id_input_order_independent() -> None:
-    """Reordering the input_spec dict must not affect the hash.
-
-    Guard against a future change that iterates the dict in insertion
-    order rather than sorting keys.
-    """
+    """Keep input dictionary insertion order out of cache identity."""
     spec_a = compute_step_spec_id(
         operation_name="x",
         step_number=0,
@@ -136,25 +116,8 @@ def test_step_spec_id_input_order_independent() -> None:
     assert spec_a == spec_b
 
 
-# ---------------------------------------------------------------------------
-# Step + execution spec hashes via the effective-config payload (end-to-end)
-# ---------------------------------------------------------------------------
-#
-# The fixtures above call the primitives directly with hand-built
-# config_overrides dicts, so they lock the hashing primitive but not the
-# effective-config payload builder. A change to that payload's shape (adding
-# a key, dropping one, renaming one) — or to the config a class default
-# carries — would not flip any recorded hash above.
-#
-# These end-to-end fixtures close that gap. They instantiate a pinned op
-# (``DataTransformer`` — matching the fixtures' ``operation_name``) with each
-# override set, dump its effective config via ``effective_config_payload``,
-# and feed that into ``compute_step_spec_id`` / ``compute_execution_spec_id``.
-# The payload now reads the op's class defaults too, so these digests reflect
-# what actually runs — not just what the caller typed.
-#
-# A failure means callers' cached results will miss-and-rerun. Confirm that is
-# intended before updating the constants.
+# These fixtures also pin class defaults and the effective-config payload;
+# primitive-only fixtures above cannot detect changes to those inputs.
 
 _PINNED_OP = DataTransformer
 
@@ -206,7 +169,7 @@ def _effective_payload(merge_kwargs: dict) -> dict:
 
 
 def test_invalid_selector_fails_before_hashing() -> None:
-    """Invalid selectors are no longer accepted as recorded cache inputs."""
+    """Reject invalid selectors before constructing the cache payload."""
     with pytest.raises(ValidationError, match="Unknown compute provider"):
         _effective_payload(
             {
@@ -224,13 +187,7 @@ def test_invalid_selector_fails_before_hashing() -> None:
 def test_effective_payload_step_spec_id_is_recorded(
     merge_kwargs: dict, step_hash: str, exec_hash: str
 ) -> None:
-    """End-to-end: effective_config_payload → compute_step_spec_id.
-
-    Locks the effective-config payload (shape + the class defaults it reads)
-    AND the primitive's hashing semantics together. A change to either layer
-    flips these digests. A failure means callers' cached step results will
-    miss-and-rerun; confirm that is intended before updating the constants.
-    """
+    """Pin step identity after applying class defaults and overrides."""
     config_overrides = _effective_payload(merge_kwargs)
     actual = compute_step_spec_id(
         **_MERGE_SPEC_KWARGS, config_overrides=config_overrides
@@ -244,13 +201,7 @@ def test_effective_payload_step_spec_id_is_recorded(
 def test_effective_payload_execution_spec_id_is_recorded(
     merge_kwargs: dict, step_hash: str, exec_hash: str
 ) -> None:
-    """Worker-level twin: effective_config_payload → compute_execution_spec_id.
-
-    The creator worker recomputes execution_spec_id per unit rather than
-    reusing step_spec_id, so the effective config must reach this level too.
-    Previously unguarded by any golden; a failure means the unit cache will
-    miss-and-rerun.
-    """
+    """Pin execution identity using the effective worker configuration."""
     config_overrides = _effective_payload(merge_kwargs)
     actual = compute_execution_spec_id(
         **_MERGE_EXEC_KWARGS, config_overrides=config_overrides

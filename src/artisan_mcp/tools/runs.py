@@ -1,9 +1,8 @@
-"""Run-inspection tools: list_runs, get_run_status.
+"""Run-inspection tools: list_runs, get_run_status, diagnose_run.
 
-Delegate to ``run_history.list_runs`` and the ``run_status`` composite;
-serialize and paginate. All store reads resolve the configured Delta root
-through the shared boundary, so an unset root or empty store surfaces the
-shipped envelope.
+Serialize core run-history, status, and diagnosis readers through the shared
+boundary. A valid store with no runs returns empty results; unset roots and
+unsupported stores return configuration error envelopes.
 """
 
 from __future__ import annotations
@@ -30,9 +29,10 @@ def register(mcp: FastMCP) -> None:
         last_status, started_at, ended_at — with has_more and next_cursor
         for paging, capped at 100 items. Use this to find a run to feed to
         artisan_get_run_status, artisan_get_step_result, or
-        artisan_diagnose_run. Reads the steps Delta table; an empty or
-        unconfigured store yields an empty page (or the delta_root_unset
-        envelope when no root is set). Rollups only, never step detail.
+        artisan_diagnose_run. A valid initialized store with no runs yields
+        an empty page. No configured root yields delta_root_unset; a missing
+        or unsupported store manifest yields incompatible_store. Rollups
+        only, never step detail.
         """
         config = ctx.lifespan_context["config"]
 

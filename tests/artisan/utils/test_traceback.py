@@ -6,10 +6,7 @@ from artisan.utils.traceback import format_error
 
 
 class TestFormatError:
-    """Tests for format_error()."""
-
     def test_includes_traceback(self) -> None:
-        """Raised exception includes full traceback text."""
         try:
             msg = "test error"
             raise ValueError(msg)

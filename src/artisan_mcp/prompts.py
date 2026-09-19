@@ -34,7 +34,7 @@ def register(mcp: FastMCP) -> None:
                 require_delta_root(config), pipeline_run_id
             ).model_dump()
 
-        diagnosis = _safe(fetch)
+        diagnosis = boundary(fetch)
         return (
             f"You are diagnosing pipeline run {pipeline_run_id!r}.\n\n"
             f"{_evidence('failure diagnosis', diagnosis)}\n\n"
@@ -52,7 +52,7 @@ def register(mcp: FastMCP) -> None:
 
             return run_status(require_delta_root(config), pipeline_run_id).model_dump()
 
-        status = _safe(fetch_status)
+        status = boundary(fetch_status)
         return (
             f"Summarize pipeline run {pipeline_run_id!r} for a colleague.\n\n"
             f"{_evidence('run status', status)}\n\n"
@@ -76,7 +76,7 @@ def register(mcp: FastMCP) -> None:
                 depth=3,
             ).model_dump()
 
-        edges = _safe(fetch)
+        edges = boundary(fetch)
         return (
             f"Trace the lineage of artifact {artifact_id!r}.\n\n"
             f"{_evidence('backward provenance edges (depth 3)', edges)}\n\n"
@@ -84,11 +84,6 @@ def register(mcp: FastMCP) -> None:
             "artifacts that produced it. Walk further with "
             "artisan_get_provenance_graph if the trace was truncated."
         )
-
-
-def _safe(fetch: Any) -> Any:
-    """Run a reader through the sanitized MCP error boundary."""
-    return boundary(fetch)
 
 
 def _evidence(label: str, value: Any) -> str:

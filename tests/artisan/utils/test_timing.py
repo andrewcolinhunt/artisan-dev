@@ -8,10 +8,7 @@ from artisan.utils.timing import phase_timer
 
 
 class TestPhaseTimer:
-    """Tests for the phase_timer context manager."""
-
     def test_records_elapsed_time(self):
-        """phase_timer should record a positive elapsed time."""
         timings: dict = {}
         with phase_timer("test_phase", timings):
             time.sleep(0.01)
@@ -20,7 +17,6 @@ class TestPhaseTimer:
         assert timings["test_phase"] > 0
 
     def test_records_multiple_phases(self):
-        """Multiple phase_timer calls should accumulate in the same dict."""
         timings: dict = {}
         with phase_timer("phase_a", timings):
             time.sleep(0.01)
@@ -32,7 +28,6 @@ class TestPhaseTimer:
         assert len(timings) == 2
 
     def test_zero_work_phase(self):
-        """A phase with no real work should still record a non-negative time."""
         timings: dict = {}
         with phase_timer("empty", timings):
             pass
@@ -61,6 +56,4 @@ class TestPhaseTimer:
         except ValueError:
             pass
 
-        # The timing should NOT be recorded since the exception prevents
-        # the post-yield code from running
         assert "failing" not in timings

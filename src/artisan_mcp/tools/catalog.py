@@ -1,9 +1,8 @@
 """Catalog tools: capabilities, list_operations, describe_operation.
 
-Pure serialization veneers over ``artisan.registry`` — the lifespan ran
-``discover()`` once, so the registry is populated when these fire. Only
-``describe`` is fallible (unknown op → envelope); it goes through the
-shared boundary.
+Serialize the registry populated by startup discovery. Unknown operations and
+invalid pagination return error envelopes through the shared boundary;
+argument-schema errors are handled by MCP.
 """
 
 from __future__ import annotations

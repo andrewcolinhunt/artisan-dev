@@ -27,7 +27,7 @@ def _build_app() -> Any:
 
     app = typer.Typer(
         add_completion=False,
-        help="Run the Artisan MCP server (read-only by default).",
+        help="Run the read-only Artisan MCP server.",
     )
 
     @app.callback(invoke_without_command=True)

@@ -124,8 +124,8 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
     Layout: ``<tmp>/delta`` is the Delta root; failure logs live at
     ``<tmp>/logs/failures`` (runs_dir = parent of delta_root). One run
     ``run-1`` with a succeeded ``generate`` step (two data artifacts) and a
-    failed ``transform`` step (one metric + a failed execution with an
-    error envelope and a written failure log).
+    failed ``transform`` step with an error envelope and a failure log.
+    A separately seeded metric is outside accepted run output membership.
     """
     delta_root = tmp_path / "delta"
     run_id = "run-1"

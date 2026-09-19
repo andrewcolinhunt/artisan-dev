@@ -8,13 +8,14 @@ _MAX_TRACEBACK_LINES = 50
 
 
 def format_error(exc: BaseException) -> str:
-    """Format an exception with its full traceback.
+    """Format an exception with at most the last 50 traceback lines.
 
     Args:
         exc: The exception to format.
 
     Returns:
-        Full traceback string, truncated to the last 50 lines if longer.
+        Exception type and message when no traceback exists; otherwise the
+        traceback, prefixed with ``[truncated]`` when earlier lines are omitted.
     """
     if exc.__traceback__ is None:
         return f"{type(exc).__name__}: {exc}"

@@ -347,7 +347,7 @@ class TestOpRun:
 
 
 def _seed_steps(root: Path, run_ids: list[str]) -> None:
-    """Write a format-2 pending/running/succeeded lifecycle per run."""
+    """Write a current-format pending/running/succeeded lifecycle per run."""
     from datetime import UTC, datetime, timedelta
 
     t0 = datetime(2026, 7, 1, tzinfo=UTC)

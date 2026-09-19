@@ -7,6 +7,7 @@ find_project_root (walk-up, editable install, env var).
 
 from __future__ import annotations
 
+import runpy
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,10 +22,6 @@ from artisan.utils.path import (
     uri_parent,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_mock_frame(caller_globals: dict) -> MagicMock:
     """Build a mock frame chain: currentframe() -> f_back (caller)."""
@@ -34,11 +31,6 @@ def _make_mock_frame(caller_globals: dict) -> MagicMock:
     current_frame = MagicMock()
     current_frame.f_back = caller_frame
     return current_frame
-
-
-# ===================================================================
-# get_caller_dir — Strategy 1: script __file__
-# ===================================================================
 
 
 class TestGetCallerDirScript:
@@ -93,11 +85,6 @@ class TestGetCallerDirScript:
         assert result == Path.cwd().resolve()
 
 
-# ===================================================================
-# get_caller_dir — Strategy 2: VS Code __vsc_ipynb_file__
-# ===================================================================
-
-
 class TestGetCallerDirVSCode:
     """Strategy 2: __vsc_ipynb_file__ injected by VS Code."""
 
@@ -131,11 +118,6 @@ class TestGetCallerDirVSCode:
             result = get_caller_dir()
 
         assert result == nb.resolve().parent
-
-
-# ===================================================================
-# get_caller_dir — Strategy 3: JupyterHub JPY_SESSION_NAME
-# ===================================================================
 
 
 class TestGetCallerDirJupyterHub:
@@ -189,11 +171,6 @@ class TestGetCallerDirJupyterHub:
         assert result == Path.cwd().resolve()
 
 
-# ===================================================================
-# get_caller_dir — Strategy 4: cwd fallback
-# ===================================================================
-
-
 class TestGetCallerDirFallback:
     """Strategy 4: Path.cwd() fallback when nothing else works."""
 
@@ -220,11 +197,6 @@ class TestGetCallerDirFallback:
             result = get_caller_dir()
 
         assert result == Path.cwd().resolve()
-
-
-# ===================================================================
-# get_caller_dir — priority ordering
-# ===================================================================
 
 
 class TestGetCallerDirPriority:
@@ -279,13 +251,20 @@ class TestGetCallerDirPriority:
         assert result == nb.parent.resolve()
 
 
-# ===================================================================
-# find_project_root — Strategy 1: walk up from caller dir
-# ===================================================================
-
-
 class TestFindProjectRootWalkUp:
     """Strategy 1: walk up directory tree from get_caller_dir()."""
+
+    def test_finds_root_from_real_caller_module(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").touch()
+        script = tmp_path / "scripts" / "nested" / "caller.py"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            "from artisan.utils import find_project_root\nroot = find_project_root()\n"
+        )
+
+        namespace = runpy.run_path(str(script))
+
+        assert namespace["root"] == tmp_path.resolve()
 
     def test_finds_root_from_test_directory(self):
         """Normal case: test file is inside the project tree."""
@@ -322,11 +301,6 @@ class TestFindProjectRootWalkUp:
         assert result == inner
 
 
-# ===================================================================
-# find_project_root — Strategy 2: editable install
-# ===================================================================
-
-
 class TestFindProjectRootEditableInstall:
     """Strategy 2: resolve from installed package __file__ location."""
 
@@ -345,11 +319,6 @@ class TestFindProjectRootEditableInstall:
             result = find_project_root()
 
         assert (result / "pyproject.toml").exists()
-
-
-# ===================================================================
-# find_project_root — Strategy 3: ARTISAN_ROOT env var
-# ===================================================================
 
 
 class TestFindProjectRootEnvVar:
@@ -405,11 +374,6 @@ class TestFindProjectRootEnvVar:
                 find_project_root()
 
 
-# ===================================================================
-# find_project_root — error case
-# ===================================================================
-
-
 class TestFindProjectRootError:
     """RuntimeError when all strategies fail."""
 
@@ -424,11 +388,6 @@ class TestFindProjectRootError:
             monkeypatch.setattr(path_module, "__file__", str(fake_file))
             with pytest.raises(RuntimeError, match="ARTISAN_ROOT"):
                 find_project_root()
-
-
-# ===================================================================
-# shard_uri
-# ===================================================================
 
 
 class TestShardUri:
@@ -455,11 +414,6 @@ class TestShardUri:
     def test_gcs_uri(self):
         result = shard_uri("gcs://bucket/staging", "abcdef1234567890", step_number=1)
         assert result == "gcs://bucket/staging/1/ab/cd/abcdef1234567890"
-
-
-# ===================================================================
-# uri_join
-# ===================================================================
 
 
 class TestUriJoin:
@@ -489,11 +443,6 @@ class TestUriJoin:
     def test_absolute_part_replaces_base(self):
         """posixpath.join behavior: absolute part resets the path."""
         assert uri_join("/data/delta", "/other") == "/other"
-
-
-# ===================================================================
-# uri_parent
-# ===================================================================
 
 
 class TestUriParent:
