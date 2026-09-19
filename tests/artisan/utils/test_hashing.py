@@ -64,6 +64,29 @@ class TestContentDigests:
             len(content),
         )
 
+    def test_content_digest_returns_32_char_hex(self):
+        """Content digests use 32 lowercase hex characters."""
+        content = b"test content"
+        artifact_id = compute_content_digest(content)
+
+        assert len(artifact_id) == 32
+        assert all(c in "0123456789abcdef" for c in artifact_id)
+
+    def test_content_digest_deterministic(self):
+        """Same content should always produce same ID."""
+        content = b"deterministic test"
+        id1 = compute_content_digest(content)
+        id2 = compute_content_digest(content)
+
+        assert id1 == id2
+
+    def test_content_digest_different_content_different_id(self):
+        """Different content should produce different IDs."""
+        id1 = compute_content_digest(b"content A")
+        id2 = compute_content_digest(b"content B")
+
+        assert id1 != id2
+
 
 def _cache_input(
     role: str,
@@ -260,3 +283,428 @@ class TestEffectiveConfigPayload:
             "mpnn_design", {}, None, config_overrides=v2
         )
         assert exec_v1 != exec_v2
+
+
+def _typed_inputs(inputs: dict[str, list[str]]) -> dict[str, list[CacheInputIdentity]]:
+    """Add the concrete type, role, group, and position cache dimensions."""
+    return {
+        role: [
+            CacheInputIdentity(role, None, position, "metric", artifact_id)
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in inputs.items()
+    }
+
+
+def _execution_spec_from_ids(
+    *,
+    operation_name: str,
+    inputs: dict[str, list[str]],
+    params=None,
+    config_overrides=None,
+) -> str:
+    """Call the production cache hash with typed test identities."""
+    return compute_execution_spec_id(
+        operation_name,
+        _typed_inputs(inputs),
+        params,
+        config_overrides,
+    )
+
+
+class TestComputeExecutionSpecId:
+    """Tests for _execution_spec_from_ids()."""
+
+    def test_deterministic_output(self):
+        """Same inputs produce same output."""
+        spec1 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["abc123" + "0" * 26, "def456" + "0" * 26]},
+            params={"tolerance": 0.1},
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["abc123" + "0" * 26, "def456" + "0" * 26]},
+            params={"tolerance": 0.1},
+        )
+        assert spec1 == spec2
+        assert len(spec1) == 32  # xxh3_128 hex length
+
+    def test_artifact_order_is_preserved(self):
+        """Occurrence order within a role remains part of the cache identity."""
+        spec1 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["bbb" + "0" * 29, "aaa" + "0" * 29]},  # Unsorted
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["aaa" + "0" * 29, "bbb" + "0" * 29]},  # Sorted
+        )
+        assert spec1 != spec2
+
+    def test_multi_role_inputs_role_order_irrelevant(self):
+        """Role-key ordering of the inputs dict doesn't affect the hash.
+
+        Roles are sorted before hashing, so the dict-construction order
+        is irrelevant. Role *assignment* of each artifact_id still matters
+        — see ``test_execution_spec_id_differs_per_role_assignment``.
+        """
+        spec1 = _execution_spec_from_ids(
+            operation_name="transform",
+            inputs={
+                "primary": ["aaa" + "0" * 29],
+                "reference": ["bbb" + "0" * 29],
+            },
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="transform",
+            inputs={
+                "reference": ["bbb" + "0" * 29],
+                "primary": ["aaa" + "0" * 29],
+            },
+        )
+        assert spec1 == spec2
+
+    def test_execution_spec_id_differs_per_role_assignment(self):
+        """Swapping which role an artifact_id belongs to changes the spec_id.
+
+        Equal ID multisets with different role assignments represent
+        different execution units.
+        """
+        a, b = "a" * 32, "b" * 32
+        spec_a_primary = _execution_spec_from_ids(
+            operation_name="transform",
+            inputs={"primary": [a], "reference": [b]},
+        )
+        spec_b_primary = _execution_spec_from_ids(
+            operation_name="transform",
+            inputs={"primary": [b], "reference": [a]},
+        )
+        assert spec_a_primary != spec_b_primary
+
+    def test_params_key_order_irrelevant(self):
+        """Params dict key order doesn't affect hash."""
+        spec1 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={},
+            params={"a": 1, "b": 2},
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={},
+            params={"b": 2, "a": 1},  # Different order
+        )
+        assert spec1 == spec2
+
+    def test_different_operation_different_hash(self):
+        """Different operation names produce different hashes."""
+        spec1 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["a" * 32]},
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="minimize",
+            inputs={"data": ["a" * 32]},
+        )
+        assert spec1 != spec2
+
+    def test_different_artifacts_different_hash(self):
+        """Different artifact IDs produce different hashes."""
+        spec1 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["a" * 32]},
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["b" * 32]},
+        )
+        assert spec1 != spec2
+
+    def test_empty_inputs(self):
+        """Handles empty inputs gracefully (generative ops)."""
+        spec = _execution_spec_from_ids(
+            operation_name="generate",
+            inputs={},
+            params=None,
+        )
+        assert len(spec) == 32
+
+    def test_different_params_different_hash(self):
+        """Different merged params produce different spec_id."""
+        spec1 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={},
+            params={"tolerance": 0.1},
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={},
+            params={"tolerance": 0.2},
+        )
+        assert spec1 != spec2
+
+    def test_duplicate_artifact_ids_preserve_multiplicity(self):
+        """Multiplicity within a role is preserved (not deduped) in the hash.
+
+        ``[A, A]`` and ``[A]`` produce different spec_ids — repeated
+        artifacts reflect the actual unit shape (e.g. aligned CROSS_PRODUCT
+        primaries) rather than collapsing into a content-only fingerprint.
+        """
+        spec1 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["a" * 32, "a" * 32]},
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["a" * 32]},
+        )
+        assert spec1 != spec2
+
+    def test_config_overrides_none_same_as_empty(self):
+        """config_overrides=None produces same spec_id as empty dict."""
+        spec_none = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={},
+            config_overrides=None,
+        )
+        spec_empty = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={},
+            config_overrides={},
+        )
+        assert spec_none == spec_empty
+
+    def test_config_overrides_changes_hash(self):
+        """Different config_overrides produce different spec_id."""
+        spec1 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["a" * 32]},
+            config_overrides=None,
+        )
+        spec2 = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={"data": ["a" * 32]},
+            config_overrides={"image": "/path/to/image.sif"},
+        )
+        assert spec1 != spec2
+
+    def test_config_overrides_deterministic(self):
+        """Same config_overrides produce same spec_id."""
+        kwargs = {
+            "operation_name": "relax",
+            "inputs": {"data": ["a" * 32]},
+            "config_overrides": {"image": "/opt/image.sif", "gpu": True},
+        }
+        assert _execution_spec_from_ids(**kwargs) == _execution_spec_from_ids(**kwargs)
+
+    def test_config_overrides_with_path_objects(self):
+        """Path objects in config_overrides serialize correctly."""
+        from pathlib import Path
+
+        spec = _execution_spec_from_ids(
+            operation_name="relax",
+            inputs={},
+            config_overrides={"image": Path("/opt/containers/relax.sif")},
+        )
+        assert len(spec) == 32
+
+
+def _step_spec_from_ids(
+    *,
+    operation_name: str,
+    step_number: int,
+    params: dict[str, Any] | None,
+    inputs: dict[str, tuple[str, str]],
+    config_overrides: dict[str, Any] | None = None,
+) -> str:
+    """Call the production step hash with concrete typed test identities."""
+    typed = {
+        role: [CacheInputIdentity(role, None, 0, artifact_type, artifact_id)]
+        for role, (artifact_id, artifact_type) in inputs.items()
+    }
+    return compute_step_spec_id(
+        operation_name,
+        step_number,
+        params,
+        typed,
+        config_overrides,
+    )
+
+
+class TestComputeStepSpecId:
+    """Tests for step_spec_id computation."""
+
+    def test_deterministic(self):
+        """Same inputs produce same spec_id."""
+        spec1 = _step_spec_from_ids(
+            operation_name="ToolC",
+            step_number=1,
+            params={"model": "v2"},
+            inputs={"data": ("abc123", "data")},
+        )
+        spec2 = _step_spec_from_ids(
+            operation_name="ToolC",
+            step_number=1,
+            params={"model": "v2"},
+            inputs={"data": ("abc123", "data")},
+        )
+        assert spec1 == spec2
+        assert len(spec1) == 32
+
+    def test_upstream_change_cascades(self):
+        """Different concrete input artifact identities change the step hash."""
+        spec1 = _step_spec_from_ids(
+            operation_name="ToolB",
+            step_number=2,
+            params=None,
+            inputs={"data": ("upstream_v1", "data")},
+        )
+        spec2 = _step_spec_from_ids(
+            operation_name="ToolB",
+            step_number=2,
+            params=None,
+            inputs={"data": ("upstream_v2", "data")},
+        )
+        assert spec1 != spec2
+
+    def test_param_change(self):
+        """Different params produce different spec_id."""
+        spec1 = _step_spec_from_ids(
+            operation_name="ToolC",
+            step_number=1,
+            params={"model": "v1"},
+            inputs={"data": ("abc123", "data")},
+        )
+        spec2 = _step_spec_from_ids(
+            operation_name="ToolC",
+            step_number=1,
+            params={"model": "v2"},
+            inputs={"data": ("abc123", "data")},
+        )
+        assert spec1 != spec2
+
+    def test_role_matters(self):
+        """Same upstream but different role produces different spec_id."""
+        spec1 = _step_spec_from_ids(
+            operation_name="Score",
+            step_number=2,
+            params=None,
+            inputs={"data": ("abc123", "data")},
+        )
+        spec2 = _step_spec_from_ids(
+            operation_name="Score",
+            step_number=2,
+            params=None,
+            inputs={"scored": ("abc123", "data")},
+        )
+        assert spec1 != spec2
+
+    def test_step_number_matters(self):
+        """Same operation at different positions produces different spec_id."""
+        spec1 = _step_spec_from_ids(
+            operation_name="Score",
+            step_number=1,
+            params=None,
+            inputs={"data": ("abc123", "data")},
+        )
+        spec2 = _step_spec_from_ids(
+            operation_name="Score",
+            step_number=3,
+            params=None,
+            inputs={"data": ("abc123", "data")},
+        )
+        assert spec1 != spec2
+
+    def test_empty_inputs(self):
+        """Generative ops with no inputs produce valid spec_id."""
+        spec = _step_spec_from_ids(
+            operation_name="Generate",
+            step_number=0,
+            params={"count": 10},
+            inputs={},
+        )
+        assert len(spec) == 32
+
+    def test_none_params(self):
+        """None params produces same spec_id as empty dict."""
+        spec_none = _step_spec_from_ids(
+            operation_name="Op",
+            step_number=0,
+            params=None,
+            inputs={},
+        )
+        spec_empty = _step_spec_from_ids(
+            operation_name="Op",
+            step_number=0,
+            params={},
+            inputs={},
+        )
+        assert spec_none == spec_empty
+
+    def test_config_overrides_none_same_as_empty(self):
+        """config_overrides=None produces same spec_id as empty dict."""
+        spec_none = _step_spec_from_ids(
+            operation_name="Op",
+            step_number=0,
+            params=None,
+            inputs={},
+            config_overrides=None,
+        )
+        spec_empty = _step_spec_from_ids(
+            operation_name="Op",
+            step_number=0,
+            params=None,
+            inputs={},
+            config_overrides={},
+        )
+        assert spec_none == spec_empty
+
+    def test_config_overrides_changes_hash(self):
+        """Different config_overrides produce different spec_id."""
+        spec1 = _step_spec_from_ids(
+            operation_name="ToolC",
+            step_number=1,
+            params=None,
+            inputs={"data": ("abc123", "data")},
+            config_overrides=None,
+        )
+        spec2 = _step_spec_from_ids(
+            operation_name="ToolC",
+            step_number=1,
+            params=None,
+            inputs={"data": ("abc123", "data")},
+            config_overrides={"image": "/path/to/image.sif"},
+        )
+        assert spec1 != spec2
+
+    def test_config_overrides_deterministic(self):
+        """Same config_overrides produce same spec_id."""
+        kwargs = {
+            "operation_name": "ToolC",
+            "step_number": 1,
+            "params": None,
+            "inputs": {"data": ("abc123", "data")},
+            "config_overrides": {"image": "/path/to/image.sif", "gpu": True},
+        }
+        assert _step_spec_from_ids(**kwargs) == _step_spec_from_ids(**kwargs)
+
+    def test_config_overrides_with_path_objects(self):
+        """Path objects in config_overrides serialize correctly."""
+        from pathlib import Path
+
+        spec1 = _step_spec_from_ids(
+            operation_name="ToolC",
+            step_number=1,
+            params=None,
+            inputs={},
+            config_overrides={"image": Path("/opt/containers/tool_c.sif")},
+        )
+        spec2 = _step_spec_from_ids(
+            operation_name="ToolC",
+            step_number=1,
+            params=None,
+            inputs={},
+            config_overrides={"image": Path("/opt/containers/tool_c.sif")},
+        )
+        assert spec1 == spec2
+        assert len(spec1) == 32

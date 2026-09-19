@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
+
+import pytest
 
 from artisan.orchestration.pipeline_manager import (
     _extract_name_from_run_id,
@@ -11,6 +15,7 @@ from artisan.orchestration.pipeline_manager import (
     _generate_step_run_id,
     _qualified_name,
     _serialize_input_refs,
+    _set_default,
 )
 from artisan.schemas.orchestration.output_reference import OutputReference
 
@@ -29,6 +34,11 @@ class TestGenerateRunId:
         # Last part is 8 hex chars
         assert len(parts[-1]) == 8
         assert re.match(r"^[0-9a-f]{8}$", parts[-1])
+
+    def test_unique_across_calls(self):
+        a = _generate_run_id("x")
+        b = _generate_run_id("x")
+        assert a != b
 
 
 class TestGenerateStepRunId:
@@ -55,8 +65,7 @@ class TestQualifiedName:
         from artisan.operations.curator.filter import Filter
 
         name = _qualified_name(Filter)
-        assert "artisan.operations.curator.filter" in name
-        assert "Filter" in name
+        assert name == f"{Filter.__module__}.{Filter.__qualname__}"
 
 
 class TestExtractSourceSteps:
@@ -118,6 +127,7 @@ class TestSerializeInputRefs:
         parsed = json.loads(result)
         assert len(parsed) == 2
         assert parsed[0]["type"] == "output_ref"
+        assert parsed[1]["source_step"] == 1
 
     def test_list_of_paths(self):
         """List of file paths."""
@@ -128,6 +138,16 @@ class TestSerializeInputRefs:
         parsed = json.loads(result)
         assert len(parsed) == 2
         assert parsed[0]["type"] == "literal"
+
+    def test_dict_with_literal(self):
+        inputs = {"data": ["some_artifact_id"]}
+        result = json.loads(_serialize_input_refs(inputs))
+        assert result["data"]["type"] == "literal"
+        assert result["data"]["value"] == ["some_artifact_id"]
+
+    def test_fallback_to_str(self):
+        result = json.loads(_serialize_input_refs(42))
+        assert result == "42"
 
 
 class TestExtractNameFromRunId:
@@ -143,3 +163,23 @@ class TestExtractNameFromRunId:
             _extract_name_from_run_id("example_pipeline_20260214_103000_a1b2c3d4")
             == "example_pipeline"
         )
+
+    def test_name_with_underscores(self):
+        result = _extract_name_from_run_id("a_b_c_20240101_120000_abc12345")
+        assert result == "a_b_c"
+
+
+class TestSetDefault:
+    """Tests for _set_default JSON serializer."""
+
+    def test_set_becomes_sorted_list(self):
+        result = _set_default({"c", "a", "b"})
+        assert result == ["a", "b", "c"]
+
+    def test_path_becomes_string(self):
+        result = _set_default(Path("/tmp/foo"))
+        assert result == "/tmp/foo"
+
+    def test_unsupported_type_raises(self):
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            _set_default(object())

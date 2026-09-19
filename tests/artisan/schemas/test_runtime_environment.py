@@ -88,3 +88,27 @@ class TestRuntimeEnvironmentFilesRoot:
             pytest.fail("Should have raised")
         except Exception:
             pass  # Expected: ValidationError on frozen model
+
+
+class TestRuntimeEnvironment:
+    """Tests for RuntimeEnvironment model."""
+
+    def test_config_is_frozen(self, tmp_path):
+        """RuntimeEnvironment should be immutable."""
+        env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            working_root=str(tmp_path / "working"),
+            staging_root=str(tmp_path / "staging"),
+        )
+
+        with pytest.raises(ValidationError):
+            env.delta_root = str(tmp_path / "other")
+
+    def test_config_requires_all_paths(self, tmp_path):
+        """RuntimeEnvironment requires staging_root."""
+        with pytest.raises(ValidationError):
+            RuntimeEnvironment(
+                delta_root=str(tmp_path / "delta"),
+                working_root=str(tmp_path / "working"),
+                # missing staging_root
+            )

@@ -8,12 +8,11 @@ import shutil
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
-from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
 from fixtures.logical_commit_store import commit_test_inputs
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
 from artisan.execution.compute.base import ExecuteRouter
@@ -21,9 +20,6 @@ from artisan.execution.executors.creator import (
     LifecycleResult,
     run_creator_flow,
     run_creator_lifecycle,
-)
-from artisan.execution.lineage.enrich import (
-    build_artifact_edges_from_store,
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.utils import generate_execution_run_id
@@ -34,7 +30,6 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -42,7 +37,6 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.path import shard_uri
 
 
 def _setup_delta_tables(
@@ -364,29 +358,6 @@ def runtime_env(delta_root_with_input, working_root, staging_root):
         working_root=str(working_root),
         staging_root=str(staging_root),
     )
-
-
-class TestShardUri:
-    """Tests for shard_uri helper function."""
-
-    def test_creates_two_level_sharding(self):
-        """shard_uri creates two-level sharding."""
-        root = "/tmp/staging"
-        run_id = "abcdef1234567890abcdef1234567890"
-
-        result = shard_uri(root, run_id)
-
-        assert result == f"{root}/ab/cd/{run_id}"
-
-    def test_handles_short_hash(self):
-        """shard_uri works with shorter hashes."""
-        root = "/tmp"
-        run_id = "abc"  # Short hash
-
-        result = shard_uri(root, run_id)
-
-        # Uses first 4 chars: ab/c/abc
-        assert result == f"{root}/ab/c/{run_id}"
 
 
 class TestRunExecutionFullLifecycle:
@@ -805,114 +776,6 @@ class TestRunExecutionStagedOutput:
         assert len(df) == 1
         assert df["artifact_type"][0] == "metric"
         assert df["origin_step_number"][0] == 1
-
-
-class TestRuntimeEnvironment:
-    """Tests for RuntimeEnvironment model."""
-
-    def test_config_is_frozen(self, tmp_path):
-        """RuntimeEnvironment should be immutable."""
-        env = RuntimeEnvironment(
-            delta_root=str(tmp_path / "delta"),
-            working_root=str(tmp_path / "working"),
-            staging_root=str(tmp_path / "staging"),
-        )
-
-        with pytest.raises(ValidationError):
-            env.delta_root = str(tmp_path / "other")
-
-    def test_config_requires_all_paths(self, tmp_path):
-        """RuntimeEnvironment requires staging_root."""
-        with pytest.raises(ValidationError):
-            RuntimeEnvironment(
-                delta_root=str(tmp_path / "delta"),
-                working_root=str(tmp_path / "working"),
-                # missing staging_root
-            )
-
-
-class TestBuildArtifactEdgesFromStore:
-    """Tests for build_artifact_edges_from_store helper."""
-
-    def test_enriches_source_target_pairs(self):
-        """Test that SourceTargetPairs are enriched to ArtifactProvenance."""
-        mock_store = MagicMock()
-        mock_store.provenance.load_type_map.return_value = {
-            "s" * 32: ArtifactTypes.METRIC,
-            "t" * 32: ArtifactTypes.METRIC,
-        }
-
-        pairs = [
-            SourceTargetPair(
-                source="s" * 32,
-                target="t" * 32,
-                source_role="input",
-                target_role="energy",
-            )
-        ]
-
-        result = build_artifact_edges_from_store(
-            source_target_pairs=pairs,
-            execution_run_id="e" * 32,
-            artifact_store=mock_store,
-        )
-
-        assert len(result) == 1
-        prov = result[0]
-        assert prov.execution_run_id == "e" * 32
-        assert prov.source_artifact_id == "s" * 32
-        assert prov.target_artifact_id == "t" * 32
-        assert prov.source_artifact_type == "metric"
-        assert prov.target_artifact_type == "metric"
-        assert prov.source_role == "input"
-        assert prov.target_role == "energy"
-
-    def test_enriches_multiple_pairs(self):
-        """Test that multiple SourceTargetPairs are enriched."""
-        mock_store = MagicMock()
-        mock_store.provenance.load_type_map.return_value = {
-            "a" * 32: ArtifactTypes.METRIC,
-            "b" * 32: ArtifactTypes.METRIC,
-            "c" * 32: ArtifactTypes.METRIC,
-        }
-
-        pairs = [
-            SourceTargetPair(
-                source="a" * 32,
-                target="b" * 32,
-                source_role="input",
-                target_role="output",
-            ),
-            SourceTargetPair(
-                source="b" * 32,
-                target="c" * 32,
-                source_role="input",
-                target_role="energy",
-            ),
-        ]
-
-        result = build_artifact_edges_from_store(
-            source_target_pairs=pairs,
-            execution_run_id="e" * 32,
-            artifact_store=mock_store,
-        )
-
-        assert len(result) == 2
-        assert result[0].source_artifact_id == "a" * 32
-        assert result[1].target_artifact_type == "metric"
-
-    def test_empty_pairs_returns_empty_list(self):
-        """Test that empty pairs returns empty list."""
-        mock_store = MagicMock()
-
-        result = build_artifact_edges_from_store(
-            source_target_pairs=[],
-            execution_run_id="e" * 32,
-            artifact_store=mock_store,
-        )
-
-        assert result == []
-        mock_store.provenance.load_type_map.assert_not_called()
 
 
 class TestRunCreatorLifecycle:

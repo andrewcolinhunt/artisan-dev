@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from artisan.schemas.enums import (
     CacheValidationReason,
+    FailurePolicy,
     GroupByStrategy,
     TablePath,
 )
@@ -64,3 +65,12 @@ class TestTablePath:
     def test_steps_value(self):
         """Test STEPS enum value."""
         assert TablePath.STEPS == "orchestration/steps"
+
+
+class TestFailurePolicy:
+    """Tests for FailurePolicy enum."""
+
+    def test_valid_values(self):
+        """Test that FailurePolicy enum has expected members."""
+        assert FailurePolicy.CONTINUE.value == "continue"
+        assert FailurePolicy.FAIL_FAST.value == "fail_fast"

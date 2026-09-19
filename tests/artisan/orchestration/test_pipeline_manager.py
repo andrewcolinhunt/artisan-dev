@@ -8,6 +8,7 @@ correctly stops the pipeline.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import json
 import signal
@@ -27,28 +28,16 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.pipeline_manager import (
     PipelineManager,
-    _extract_name_from_run_id,
-    _extract_source_steps,
-    _generate_run_id,
-    _generate_step_run_id,
     _is_file_path_input,
-    _qualified_name,
-    _serialize_input_refs,
-    _set_default,
     _StepStatusReader,
-    _validate_execution,
-    _validate_input_roles,
-    _validate_input_types,
-    _validate_params,
-    _validate_required_inputs,
-    _validate_resources,
 )
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.enums import CachePolicy, GroupByStrategy, TablePath
+from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy, TablePath
+from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
@@ -64,6 +53,7 @@ from artisan.schemas.orchestration.step_lifecycle import (
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
+from artisan.schemas.specs.input_models import PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.store_format import STORE_MANIFEST
@@ -805,27 +795,6 @@ class TestEmptyInputsHandling:
             "running",
             "failed",
         ]
-
-
-class TestExtractSourceSteps:
-    """Tests for _extract_source_steps helper."""
-
-    def test_dict_inputs(self):
-        inputs = {
-            "a": OutputReference(source_step=0, role="data"),
-            "b": OutputReference(source_step=2, role="metric"),
-        }
-        assert _extract_source_steps(inputs) == {0, 2}
-
-    def test_list_inputs(self):
-        inputs = [
-            OutputReference(source_step=1, role="data"),
-            OutputReference(source_step=3, role="data"),
-        ]
-        assert _extract_source_steps(inputs) == {1, 3}
-
-    def test_none_inputs(self):
-        assert _extract_source_steps(None) == set()
 
 
 class TestStepNameOverride:
@@ -1752,132 +1721,19 @@ class TestStepRegistry:
             pipeline.output("foo", "bad")
 
 
-class TestGenerateRunId:
-    """Tests for _generate_run_id."""
-
-    def test_contains_name_prefix(self):
-        run_id = _generate_run_id("my_pipeline")
-        assert run_id.startswith("my_pipeline_")
-
-    def test_contains_timestamp_and_hex(self):
-        run_id = _generate_run_id("test")
-        parts = run_id.split("_")
-        assert len(parts) >= 4
-        assert len(parts[-1]) == 8  # 8-char hex suffix
-
-    def test_unique_across_calls(self):
-        a = _generate_run_id("x")
-        b = _generate_run_id("x")
-        assert a != b
-
-
-class TestGenerateStepRunId:
-    """Tests for _generate_step_run_id."""
-
-    def test_returns_32_char_hex(self):
-        result = _generate_step_run_id()
-        assert len(result) == 32
-        int(result, 16)  # valid hex
-
-    def test_different_spec_ids_differ(self):
-        a = _generate_step_run_id()
-        b = _generate_step_run_id()
-        assert a != b
-
-
-class TestQualifiedName:
-    """Tests for _qualified_name."""
-
-    def test_returns_module_and_qualname(self):
-        result = _qualified_name(_MockOp)
-        assert result.endswith("_MockOp")
-        assert "." in result
-
-
-class TestSerializeInputRefs:
-    """Tests for _serialize_input_refs."""
-
-    def test_none_returns_null(self):
-        assert _serialize_input_refs(None) == "null"
-
-    def test_dict_with_output_reference(self):
-        inputs = {"data": OutputReference(source_step=0, role="output")}
-        result = json.loads(_serialize_input_refs(inputs))
-        assert result["data"]["type"] == "output_ref"
-        assert result["data"]["source_step"] == 0
-        assert result["data"]["role"] == "output"
-
-    def test_dict_with_literal(self):
-        inputs = {"data": ["some_artifact_id"]}
-        result = json.loads(_serialize_input_refs(inputs))
-        assert result["data"]["type"] == "literal"
-        assert result["data"]["value"] == ["some_artifact_id"]
-
-    def test_list_with_output_references(self):
-        inputs = [
-            OutputReference(source_step=0, role="a"),
-            OutputReference(source_step=1, role="b"),
-        ]
-        result = json.loads(_serialize_input_refs(inputs))
-        assert len(result) == 2
-        assert result[0]["type"] == "output_ref"
-        assert result[1]["source_step"] == 1
-
-    def test_list_with_literal(self):
-        inputs = ["literal_val"]
-        result = json.loads(_serialize_input_refs(inputs))
-        assert len(result) == 1
-        assert result[0]["type"] == "literal"
-
-    def test_fallback_to_str(self):
-        result = json.loads(_serialize_input_refs(42))
-        assert result == "42"
-
-
-class TestExtractNameFromRunId:
-    """Tests for _extract_name_from_run_id."""
-
-    def test_standard_run_id(self):
-        assert (
-            _extract_name_from_run_id("my_pipeline_20240101_120000_abc12345")
-            == "my_pipeline"
-        )
-
-    def test_name_with_underscores(self):
-        result = _extract_name_from_run_id("a_b_c_20240101_120000_abc12345")
-        assert result == "a_b_c"
-
-    def test_simple_name(self):
-        assert _extract_name_from_run_id("test_20240101_120000_abc12345") == "test"
-
-
-class TestSetDefault:
-    """Tests for _set_default JSON serializer."""
-
-    def test_set_becomes_sorted_list(self):
-        result = _set_default({"c", "a", "b"})
-        assert result == ["a", "b", "c"]
-
-    def test_path_becomes_string(self):
-        result = _set_default(Path("/tmp/foo"))
-        assert result == "/tmp/foo"
-
-    def test_unsupported_type_raises(self):
-        with pytest.raises(TypeError, match="not JSON serializable"):
-            _set_default(object())
-
-
 class TestIsFilePathInput:
     """Tests for _is_file_path_input."""
 
     def test_valid_file_paths(self):
         assert _is_file_path_input(["/path/to/file.nc"]) is True
+        assert _is_file_path_input(["relative/path.csv", "another.csv"]) is True
 
     def test_empty_list(self):
         assert _is_file_path_input([]) is False
 
     def test_non_list(self):
         assert _is_file_path_input({"data": "val"}) is False
+        assert _is_file_path_input({}) is False
         assert _is_file_path_input(None) is False
 
     def test_output_reference_list(self):
@@ -1928,191 +1784,8 @@ class _ParamsOp(OperationDefinition):
         return None
 
 
-class _MultiInputOp(OperationDefinition):
-    """Op with required + optional inputs for validation testing."""
-
-    class InputRole(StrEnum):
-        primary = auto()
-        reference = auto()
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "multi_input_op"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        "primary": InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
-        "reference": InputSpec(artifact_type=ArtifactTypes.METRIC, required=False),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        "output": OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": ["primary"]},
-        ),
-    }
-
-    def preprocess(self, inputs: Any) -> dict:
-        return {}
-
-    def execute_function(self, inputs: Any, output_dir: Any) -> Any:
-        return None
-
-
-class TestValidateParams:
-    """Tests for _validate_params."""
-
-    def test_valid_params_accepted(self):
-        _validate_params(_ParamsOp, {"alpha": 2.0})
-
-    def test_unknown_param_raises(self):
-        with pytest.raises(ValueError, match="Unknown params.*gamma"):
-            _validate_params(_ParamsOp, {"gamma": 99})
-
-    def test_parameter_less_op_accepts_empty_params(self):
-        _validate_params(_MockOp, {})
-
-    def test_parameter_less_op_rejects_any_key(self):
-        with pytest.raises(ValueError, match="Unknown params"):
-            _validate_params(_MockOp, {"anything": 1})
-
-
-class TestValidateResources:
-    """Tests for _validate_resources."""
-
-    def test_valid_keys_accepted(self):
-        _validate_resources({"cpus": 4, "memory_gb": 8})
-
-    def test_unknown_key_raises(self):
-        with pytest.raises(ValueError, match="Unknown resource keys.*bogus"):
-            _validate_resources({"bogus": 42})
-
-
-class TestValidateExecution:
-    """Tests for _validate_execution."""
-
-    def test_valid_keys_accepted(self):
-        _validate_execution({"artifacts_per_unit": 10, "max_workers": 4})
-
-    def test_unknown_key_raises(self):
-        with pytest.raises(ValueError, match="Unknown execution keys.*bad_key"):
-            _validate_execution({"bad_key": True})
-
-
-class TestValidateInputRoles:
-    """Tests for _validate_input_roles."""
-
-    def test_valid_roles_accepted(self):
-        _validate_input_roles(_MultiInputOp, {"primary": "something"})
-
-    def test_unknown_role_raises(self):
-        with pytest.raises(ValueError, match="Unknown input roles.*bogus"):
-            _validate_input_roles(_MultiInputOp, {"bogus": "val"})
-
-    def test_non_dict_is_noop(self):
-        _validate_input_roles(_MultiInputOp, ["list_input"])
-
-    def test_none_is_noop(self):
-        _validate_input_roles(_MultiInputOp, None)
-
-
-class TestValidateRequiredInputs:
-    """Tests for _validate_required_inputs."""
-
-    def test_all_required_provided(self):
-        _validate_required_inputs(_MultiInputOp, {"primary": "val"})
-
-    def test_missing_required_raises(self):
-        with pytest.raises(ValueError, match="Missing required input.*primary"):
-            _validate_required_inputs(_MultiInputOp, {"reference": "val"})
-
-    def test_optional_can_be_omitted(self):
-        _validate_required_inputs(_MultiInputOp, {"primary": "val"})
-
-    def test_non_dict_is_noop(self):
-        _validate_required_inputs(_MultiInputOp, ["list"])
-
-
-class TestValidateInputTypes:
-    """Tests for _validate_input_types."""
-
-    def test_matching_type_accepted(self):
-        inputs = {
-            "primary": OutputReference(source_step=0, role="out", artifact_type="data")
-        }
-        _validate_input_types(_MultiInputOp, inputs)
-
-    def test_mismatched_type_raises(self):
-        inputs = {
-            "primary": OutputReference(
-                source_step=0, role="out", artifact_type="metric"
-            )
-        }
-        with pytest.raises(ValueError, match="Type mismatch on input 'primary'"):
-            _validate_input_types(_MultiInputOp, inputs)
-
-    def test_any_type_always_accepted(self):
-        inputs = {
-            "primary": OutputReference(
-                source_step=0, role="out", artifact_type=ArtifactTypes.ANY
-            )
-        }
-        _validate_input_types(_MultiInputOp, inputs)
-
-    def test_non_dict_is_noop(self):
-        _validate_input_types(_MultiInputOp, ["list"])
-
-
 class TestPipelineManagerDunderMethods:
     """Tests for PipelineManager __repr__, __str__, __len__, etc."""
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_repr(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        r = repr(pipeline)
-        assert "PipelineManager(" in r
-        assert "name='test'" in r
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_str_no_steps(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        assert "no steps executed" in str(pipeline)
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_str_with_steps(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        pipeline._step_results = [
-            StepResult(
-                step_name="a",
-                step_number=0,
-                status=StepStatus.SUCCEEDED,
-                disposition=StepDisposition.EXECUTED,
-            ),
-            StepResult(
-                step_name="b",
-                step_number=1,
-                status=StepStatus.FAILED,
-                error="test failure",
-            ),
-        ]
-        s = str(pipeline)
-        assert "2 steps" in s
-        assert "1/2 succeeded" in s
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_str_all_succeeded(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        pipeline._step_results = [
-            StepResult(
-                step_name="a",
-                step_number=0,
-                status=StepStatus.SUCCEEDED,
-                disposition=StepDisposition.EXECUTED,
-            ),
-        ]
-        assert "all succeeded" in str(pipeline)
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_len(self, mock_tracker_cls, tmp_path):
@@ -2128,46 +1801,6 @@ class TestPipelineManagerDunderMethods:
             )
         )
         assert len(pipeline) == 1
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_iter(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        r1 = StepResult(
-            step_name="a",
-            step_number=0,
-            status=StepStatus.SUCCEEDED,
-            disposition=StepDisposition.EXECUTED,
-        )
-        r2 = StepResult(
-            step_name="b",
-            step_number=1,
-            status=StepStatus.SUCCEEDED,
-            disposition=StepDisposition.EXECUTED,
-        )
-        pipeline._step_results = [r1, r2]
-        assert list(pipeline) == [r1, r2]
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_getitem_index(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        r0 = StepResult(
-            step_name="a",
-            step_number=0,
-            status=StepStatus.SUCCEEDED,
-            disposition=StepDisposition.EXECUTED,
-        )
-        r1 = StepResult(
-            step_name="b",
-            step_number=1,
-            status=StepStatus.SUCCEEDED,
-            disposition=StepDisposition.EXECUTED,
-        )
-        pipeline._step_results = [r0, r1]
-        assert pipeline[0] == r0
-        assert pipeline[1] == r1
-        assert pipeline[-1] == r1
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_getitem_slice(self, mock_tracker_cls, tmp_path):
@@ -2194,59 +1827,6 @@ class TestPipelineManagerDunderMethods:
         pipeline = _make_pipeline(tmp_path)
         with pytest.raises(IndexError):
             pipeline[0]
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_bool_empty(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        assert not pipeline
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_bool_all_success(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        pipeline._step_results = [
-            StepResult(
-                step_name="a",
-                step_number=0,
-                status=StepStatus.SUCCEEDED,
-                disposition=StepDisposition.EXECUTED,
-            ),
-        ]
-        assert pipeline
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_bool_with_failure(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        pipeline._step_results = [
-            StepResult(
-                step_name="a",
-                step_number=0,
-                status=StepStatus.SUCCEEDED,
-                disposition=StepDisposition.EXECUTED,
-            ),
-            StepResult(
-                step_name="b",
-                step_number=1,
-                status=StepStatus.FAILED,
-                error="test failure",
-            ),
-        ]
-        assert not pipeline
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_config_property(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        assert pipeline.config.name == "test"
-        assert isinstance(pipeline.config, PipelineConfig)
-
-    @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_current_step_property(self, mock_tracker_cls, tmp_path):
-        mock_tracker_cls.return_value = MagicMock()
-        pipeline = _make_pipeline(tmp_path)
-        assert pipeline.current_step == 0
 
 
 class TestBuildOutputTypes:
@@ -3608,3 +3188,552 @@ def test_manager_session_context_reaches_router_collection(tmp_path, session_log
         router._thread.join(timeout=5)
         assert not router._thread.is_alive()
     assert "router collection marker" in Path(manager.log_path).read_text()
+
+
+def _succeeded_step(step_name: str, step_number: int) -> StepResult:
+    """Build a minimal successful terminal step for manager API tests."""
+    return StepResult(
+        step_name=step_name,
+        step_number=step_number,
+        status=StepStatus.SUCCEEDED,
+        disposition=StepDisposition.EXECUTED,
+    )
+
+
+def _failed_step(step_name: str, step_number: int) -> StepResult:
+    """Build a minimal failed terminal step for manager API tests."""
+    return StepResult(
+        step_name=step_name,
+        step_number=step_number,
+        status=StepStatus.FAILED,
+        error="test failure",
+    )
+
+
+class TestPipelineManagerAPI:
+    """Tests for PipelineManager class."""
+
+    @pytest.fixture(autouse=True)
+    def _storage_roots(self, tmp_path):
+        """Use an isolated writable store for PipelineManager construction."""
+        self.delta_root = str(tmp_path / "delta")
+        self.staging_root = str(tmp_path / "staging")
+
+    def test_create_factory(self):
+        """Test PipelineManager.create() factory method."""
+        pipeline = PipelineManager.create(
+            name="test_pipeline",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        assert pipeline.config.name == "test_pipeline"
+        assert isinstance(pipeline.config, PipelineConfig)
+        assert pipeline.config.delta_root == self.delta_root
+        assert pipeline.current_step == 0
+
+    def test_create_with_string_paths(self):
+        """Test that create() accepts string paths."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        assert isinstance(pipeline.config.delta_root, str)
+        assert isinstance(pipeline.config.staging_root, str)
+
+    def test_create_custom_config(self):
+        """Test create() with custom configuration and external runner."""
+        runner = _ExternalRunner()
+        pipeline = PipelineManager.create(
+            name="custom",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+            working_root="/tmp/work",
+            failure_policy="fail_fast",
+            default_step_runner=runner,
+        )
+        assert pipeline.config.working_root == "/tmp/work"
+        assert pipeline.config.failure_policy == FailurePolicy.FAIL_FAST
+        assert pipeline.config.default_step_runner == "external_test"
+        assert pipeline._default_step_runner is runner
+
+    def test_prefect_server_removed_from_factory_signatures(self):
+        """The removed server adapter must not remain as an ignored shim."""
+        assert (
+            "prefect_server" not in inspect.signature(PipelineManager.create).parameters
+        )
+        assert (
+            "prefect_server" not in inspect.signature(PipelineManager.resume).parameters
+        )
+        assert all(
+            parameter.kind is not inspect.Parameter.VAR_KEYWORD
+            for parameter in inspect.signature(
+                PipelineManager.resume
+            ).parameters.values()
+        )
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            PipelineManager.resume(
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
+                prefect_server=False,  # type: ignore[call-arg]
+            )
+
+    def test_default_compute_provider_removed_from_factory_signatures(self):
+        """Factories reject the removed compute-provider default keyword."""
+        for factory in (PipelineManager.create, PipelineManager.resume):
+            parameters = inspect.signature(factory).parameters
+            assert "default_compute_provider" not in parameters
+            assert "default_step_runner" in parameters
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            PipelineManager.create(
+                name="test",
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
+                default_compute_provider="modal",  # type: ignore[call-arg]
+            )
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            PipelineManager.resume(
+                delta_root=self.delta_root,
+                staging_root=self.staging_root,
+                default_compute_provider="modal",  # type: ignore[call-arg]
+            )
+
+    def test_external_runner_name_requires_runtime_instance(self):
+        """Core cannot reconstruct an external runner from persisted text."""
+        config = PipelineConfig(
+            name="external",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+            default_step_runner="external_test",
+        )
+
+        with pytest.raises(ValueError, match="initialized provider runner"):
+            PipelineManager(config)
+
+    def test_local_runner_name_is_reconstructed(self):
+        """Core reconstructs its built-in local runner from persisted text."""
+        config = PipelineConfig(
+            name="local",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+
+        pipeline = PipelineManager(config, configure_logging=False)
+
+        assert isinstance(pipeline._default_step_runner, LocalRunner)
+
+    def test_finalize_empty(self):
+        """Test finalize() with no steps."""
+        pipeline = PipelineManager.create(
+            name="empty",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        summary = pipeline.finalize()
+        assert summary["pipeline_name"] == "empty"
+        assert summary["total_steps"] == 0
+        assert summary["steps"] == []
+        assert summary["overall_success"] is False
+
+    def test_step_counter_starts_at_zero(self):
+        """A new manager starts at step zero."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        assert pipeline.current_step == 0
+
+    # --- Dunder method tests ---
+
+    def test_repr(self):
+        """Test __repr__ returns unambiguous representation."""
+        pipeline = PipelineManager.create(
+            name="test_pipeline",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        repr_str = repr(pipeline)
+        assert "PipelineManager(" in repr_str
+        assert "name='test_pipeline'" in repr_str
+        assert "steps=0" in repr_str
+        assert "delta_root=" in repr_str
+
+    def test_repr_with_steps(self):
+        """Test __repr__ shows step count."""
+        pipeline = PipelineManager.create(
+            name="test_pipeline",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+        repr_str = repr(pipeline)
+        assert "steps=2" in repr_str
+
+    def test_str_no_steps(self):
+        """Test __str__ with no steps executed."""
+        pipeline = PipelineManager.create(
+            name="my_pipeline",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        str_output = str(pipeline)
+        assert "Pipeline 'my_pipeline'" in str_output
+        assert "no steps executed" in str_output
+
+    def test_str_all_succeeded(self):
+        """Test __str__ when all steps succeeded."""
+        pipeline = PipelineManager.create(
+            name="my_pipeline",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+        str_output = str(pipeline)
+        assert "2 steps" in str_output
+        assert "all succeeded" in str_output
+
+    def test_str_partial_success(self):
+        """Test __str__ when some steps failed."""
+        pipeline = PipelineManager.create(
+            name="my_pipeline",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_failed_step("Score", 1))
+        str_output = str(pipeline)
+        assert "2 steps" in str_output
+        assert "1/2 succeeded" in str_output
+
+    def test_len_empty(self):
+        """Test __len__ with no steps."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        assert len(pipeline) == 0
+
+    def test_len_with_steps(self):
+        """Test __len__ with steps."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+        pipeline._step_results.append(_succeeded_step("Filter", 2))
+        assert len(pipeline) == 3
+
+    def test_iter(self):
+        """Test __iter__ iterates over step results."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        step0 = _succeeded_step("Ingest", 0)
+        step1 = _succeeded_step("Score", 1)
+        pipeline._step_results.append(step0)
+        pipeline._step_results.append(step1)
+
+        results = list(pipeline)
+        assert results == [step0, step1]
+        assert len(results) == 2
+        assert results[0].step_name == "Ingest"
+        assert results[1].step_name == "Score"
+
+    def test_iter_in_for_loop(self):
+        """Test __iter__ works in for loop."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+
+        names = []
+        for step in pipeline:
+            names.append(step.step_name)
+        assert names == ["Ingest", "Score"]
+
+    def test_getitem_single_index(self):
+        """Test __getitem__ with single index."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+
+        first = pipeline[0]
+        assert first == pipeline._step_results[0]
+        assert isinstance(first, StepResult)
+        assert first.step_name == "Ingest"
+        second = pipeline[1]
+        assert second == pipeline._step_results[1]
+        assert isinstance(second, StepResult)
+        assert second.step_name == "Score"
+        last = pipeline[-1]
+        assert last == pipeline._step_results[1]
+        assert isinstance(last, StepResult)
+        assert last.step_name == "Score"  # Negative index
+
+    def test_getitem_slice(self):
+        """Test __getitem__ with slice."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+        pipeline._step_results.append(_succeeded_step("Filter", 2))
+
+        last_two = pipeline[-2:]
+        assert isinstance(last_two, list)
+        assert len(last_two) == 2
+        assert last_two[0].step_name == "Score"
+        assert last_two[1].step_name == "Filter"
+
+    def test_getitem_index_error(self):
+        """Test __getitem__ raises IndexError for invalid index."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+
+        with pytest.raises(IndexError):
+            _ = pipeline[5]
+
+    def test_bool_empty_is_false(self):
+        """Test __bool__ returns False for empty pipeline."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        assert not pipeline
+        assert bool(pipeline) is False
+
+    def test_bool_all_succeeded_is_true(self):
+        """Test __bool__ returns True when all steps succeeded."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+        assert pipeline
+        assert bool(pipeline) is True
+
+    def test_bool_with_failure_is_false(self):
+        """Test __bool__ returns False when any step failed."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_failed_step("Score", 1))
+        assert not pipeline
+        assert bool(pipeline) is False
+
+    def test_contains_existing_step(self):
+        """Test __contains__ returns True for existing step name."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+        pipeline._step_results.append(_succeeded_step("Score", 1))
+
+        assert "Ingest" in pipeline
+        assert "Score" in pipeline
+
+    def test_contains_missing_step(self):
+        """Test __contains__ returns False for missing step name."""
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=self.delta_root,
+            staging_root=self.staging_root,
+        )
+        pipeline._step_results.append(_succeeded_step("Ingest", 0))
+
+        assert "NonExistent" not in pipeline
+        assert "Filter" not in pipeline
+
+
+class _RawPathCreatorOp(OperationDefinition):
+    """Mock creator operation for testing."""
+
+    class InputRole(StrEnum):
+        data = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "mock_creator"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.FILE_REF, required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.FILE_REF,
+            infer_lineage_from={"inputs": ["data"]},
+        ),
+    }
+
+    def preprocess(self, inputs: PreprocessInput) -> dict:
+        """Extract materialized paths from input artifacts."""
+        return {
+            role: [a.materialized_path for a in artifacts]
+            for role, artifacts in inputs.input_artifacts.items()
+        }
+
+    def execute_function(self, inputs, output_dir):
+        """Mock creator execution."""
+        return ArtifactResult(success=True)
+
+
+class TestCreatorRejectsFilePaths:
+    """Tests for creator operation rejection of raw file paths via pipeline_manager."""
+
+    def test_creator_rejects_raw_file_paths(self, tmp_path):
+        """Creator operations should reject raw file paths at the PipelineManager level."""
+        from artisan.orchestration.pipeline_manager import (
+            _is_file_path_input,
+        )
+
+        test_file = tmp_path / "test.csv"
+        test_file.write_text("ATOM content")
+
+        inputs = [str(test_file)]
+        assert _is_file_path_input(inputs)
+
+        # Creator operations should raise ValueError (not call _promote)
+        # The actual raise happens in submit(), so we test the detection
+        from artisan.execution.executors.curator import is_curator_operation
+
+        assert not is_curator_operation(_RawPathCreatorOp())
+
+
+class TestFilePathPromotion:
+    """Tests for _promote_file_paths_to_store in pipeline_manager."""
+
+    def test_missing_file_fails_closed(self, tmp_path):
+        """A missing raw input aborts before promotion."""
+        from artisan.orchestration.pipeline_manager import (
+            _promote_file_paths_to_store,
+        )
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test_pipeline",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
+
+        non_existent = str(tmp_path / "does_not_exist.csv")
+        with pytest.raises(ArtifactIntegrityError, match="Not found"):
+            _promote_file_paths_to_store(
+                [non_existent], config, 1, "mock_ingest", "a" * 32
+            )
+
+    def test_directory_path_fails_closed(self, tmp_path):
+        """A raw directory input is rejected rather than skipped."""
+        from artisan.orchestration.pipeline_manager import (
+            _promote_file_paths_to_store,
+        )
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test_pipeline",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
+
+        test_dir = tmp_path / "test_directory"
+        test_dir.mkdir()
+
+        with pytest.raises(ArtifactIntegrityError, match="Not a file"):
+            _promote_file_paths_to_store(
+                [str(test_dir)], config, 1, "mock_ingest", "a" * 32
+            )
+
+    def test_valid_files_promoted(self, tmp_path):
+        """Valid file paths should be promoted to artifact IDs."""
+        from artisan.orchestration.pipeline_manager import (
+            _promote_file_paths_to_store,
+        )
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test_pipeline",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
+
+        test_file = tmp_path / "test.csv"
+        test_file.write_bytes(b"ATOM content")
+
+        result, count, _verified = _promote_file_paths_to_store(
+            [str(test_file)], config, 0, "mock_ingest", "a" * 32
+        )
+
+        assert result is not None
+        assert "file" in result
+        assert len(result["file"]) == 1
+        assert count == 1
+
+    def test_mixed_valid_invalid_files_fail_without_partial_promotion(self, tmp_path):
+        """One invalid raw input rejects the full ordered input occurrence list."""
+        from artisan.orchestration.pipeline_manager import (
+            _promote_file_paths_to_store,
+        )
+        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(
+            name="test",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+            working_root=str(tmp_path / "working"),
+        )
+        (tmp_path / "delta").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "staging").mkdir(parents=True, exist_ok=True)
+
+        # One valid file, one non-existent
+        valid_file = tmp_path / "valid.csv"
+        valid_file.write_bytes(b"ATOM content")
+        non_existent = str(tmp_path / "missing.csv")
+
+        with pytest.raises(ArtifactIntegrityError, match="missing.csv"):
+            _promote_file_paths_to_store(
+                [str(valid_file), non_existent],
+                config,
+                1,
+                "mock_ingest",
+                "a" * 32,
+            )
+
+        assert not list((tmp_path / "staging").rglob("*.parquet"))

@@ -50,6 +50,16 @@ class TestAggregateResults:
         assert succeeded == 0
         assert failed == 0
 
+    def test_all_failure(self):
+        """Test with all failed results."""
+        results = [
+            UnitResult(success=False, error="err1", item_count=2, execution_run_ids=[]),
+            UnitResult(success=False, error="err2", item_count=3, execution_run_ids=[]),
+        ]
+        succeeded, failed = aggregate_results(results)
+        assert succeeded == 0
+        assert failed == 5
+
 
 class TestExtractExecutionRunIds:
     """Tests for extract_execution_run_ids()."""

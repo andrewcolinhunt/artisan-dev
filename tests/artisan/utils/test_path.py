@@ -415,6 +415,16 @@ class TestShardUri:
         result = shard_uri("gcs://bucket/staging", "abcdef1234567890", step_number=1)
         assert result == "gcs://bucket/staging/1/ab/cd/abcdef1234567890"
 
+    def test_handles_short_hash(self):
+        """shard_uri works with shorter hashes."""
+        root = "/tmp"
+        run_id = "abc"  # Short hash
+
+        result = shard_uri(root, run_id)
+
+        # Uses first 4 chars: ab/c/abc
+        assert result == f"{root}/ab/c/{run_id}"
+
 
 class TestUriJoin:
     """URI-safe path joining for local and cloud URIs."""
