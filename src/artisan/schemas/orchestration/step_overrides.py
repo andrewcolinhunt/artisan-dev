@@ -1,22 +1,9 @@
-"""Per-step user-override carrier for the pipeline dispatch path.
+"""Normalize per-step overrides for validation, preparation, and dispatch.
 
-``StepOverrides`` bundles the per-step override knobs that
-``PipelineManager.run``/``submit`` accept into one frozen record. It is
-constructed once at the public API boundary via ``from_user`` (which
-normalizes typed models and mappings to detached patch dictionaries) and
-threaded by reference through validation, operation preparation, persistence,
-and dispatch.
-
-Two ``ClassVar`` tuples classify every field as either a *cache field* or a
-*runtime field*. A cache field is an override knob whose effect reaches the
-step/execution spec id by mutating an instance field that
-``effective_config_payload`` reads off the instantiated operation (class
-defaults + applied overrides); a runtime field does not enter that
-config-hash channel. A unit test asserts the classification is total, so a
-newly added override cannot silently escape the cache decision. ``params`` is
-output-affecting but keeps its own full-merged-params hash channel in
-``_prepare_step_spec``; it is therefore a runtime field here, not a
-config-hash field.
+Cache fields affect the instantiated operation's ``effective_config_payload``.
+Runtime fields do not enter that config hash. Although output-affecting,
+``params`` is classified as runtime here because ``_prepare_step_spec`` hashes
+the fully merged parameters separately.
 """
 
 from __future__ import annotations
@@ -36,10 +23,7 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 
 if TYPE_CHECKING:
-    # RunnerBase lives in orchestration/runners/; importing it at runtime
-    # would create the first schemas->orchestration cycle. It is used as a
-    # string annotation only (the ExecutionContext pattern), and from_user
-    # does not coerce step_runner, so no runtime import is needed.
+    # Keep the runner import type-only to avoid a schemas/orchestration cycle.
     from artisan.orchestration.runners.base import RunnerBase
 
 
@@ -100,8 +84,6 @@ def _normalize_patch(
 class StepOverrides:
     """Per-step user overrides normalized to detached patch dictionaries.
 
-    Constructed once at the public API boundary via ``from_user``; threaded
-    by reference through validation, preparation, persistence, and dispatch.
     Frozen so fields cannot be reassigned; nested patch data is framework-owned
     because ``from_user`` detaches it from caller containers.
 
@@ -138,9 +120,6 @@ class StepOverrides:
     skip_cache: bool = False
     name: str | None = None
 
-    # Override knobs whose effect reaches the cache key by mutating an
-    # instance field that ``effective_config_payload`` reads off the
-    # instantiated operation (see the module docstring).
     _CACHE_FIELDS: ClassVar[tuple[str, ...]] = (
         "environment",
         "tool",
@@ -148,9 +127,6 @@ class StepOverrides:
         "compute_resources",
         "group_by",
     )
-    # Fields that do not enter the config_overrides hash channel. ``params``
-    # is hashed via the separate merged-params channel; the rest are pure
-    # runtime/dispatch knobs.
     _RUNTIME_FIELDS: ClassVar[tuple[str, ...]] = (
         "params",
         "step_runner",

@@ -21,6 +21,7 @@ class UnitResult:
         item_count: Number of items processed.
         execution_run_ids: Run IDs produced by this unit.
         worker_log: Optional stdout/stderr captured by the step runner.
+        cancellation_acknowledgement: Provider evidence for requested cancellation.
     """
 
     success: bool

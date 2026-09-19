@@ -10,6 +10,7 @@ class StepStartRecord(BaseModel):
 
     Attributes:
         step_run_id: Unique ID for this step execution attempt.
+        replay_of_execution_run_id: Source execution for a diagnostic replay, if any.
         step_spec_id: Deterministic ID for cache lookup, once inputs resolve.
         step_number: Sequential pipeline step index.
         step_name: Human-readable step label.

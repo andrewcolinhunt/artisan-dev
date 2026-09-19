@@ -46,7 +46,7 @@ class TestExternalPathDraft:
 
 
 class TestExternalPathSerialization:
-    """Source locations stay out of format-2 content rows."""
+    """Source locations stay out of artifact content rows."""
 
     def test_file_ref_locators_are_not_serialized(self) -> None:
         original = FileRefArtifact.draft(

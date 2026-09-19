@@ -1,18 +1,59 @@
-"""Tests for artifacts.py"""
+"""Tests for artifact hydration, JSON content, and file references."""
 
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from artisan.errors import ArtifactIntegrityError
+from artisan.schemas.artifact.appendable import AppendableArtifact
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
+from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+
+
+class TestArtifactHydration:
+    def test_embedded_content_without_origin_is_hydrated(self) -> None:
+        artifact = MetricArtifact(content=b'{"score":1}').finalize()
+
+        assert artifact.origin_step_number is None
+        assert artifact.is_hydrated
+
+    def test_origin_without_content_is_not_hydrated(self) -> None:
+        artifact = MetricArtifact(artifact_id="a" * 32, origin_step_number=1)
+
+        assert not artifact.is_hydrated
+
+    @pytest.mark.parametrize(
+        "artifact",
+        [
+            FileRefArtifact(content_hash="b" * 32, size_bytes=0),
+            LargeFileArtifact(content_hash="b" * 32, size_bytes=0),
+            AppendableArtifact(content_hash="b" * 32, size_bytes=0, record_id="record"),
+        ],
+        ids=lambda artifact: type(artifact).__name__,
+    )
+    def test_external_descriptors_are_hydrated_without_a_location(
+        self, artifact: Artifact
+    ) -> None:
+        assert artifact.is_hydrated
+
+    @pytest.mark.parametrize(
+        "artifact_type", [FileRefArtifact, LargeFileArtifact, AppendableArtifact]
+    )
+    def test_incomplete_external_descriptors_are_not_hydrated(
+        self, artifact_type: type[Artifact]
+    ) -> None:
+        artifact = artifact_type(content_hash="b" * 32, origin_step_number=1)
+
+        assert not artifact.is_hydrated
 
 
 class TestMetricArtifact:
@@ -663,17 +704,17 @@ class TestGetArtifactReferences:
         refs = artifact.get_artifact_references()
         assert refs == []
 
-    def test_caches_result(self):
-        """get_artifact_references() caches the result."""
+    def test_returned_references_are_independent(self) -> None:
         artifact = ExecutionConfigArtifact.draft(
             content={"input_pdb": {"$artifact": "abc123"}},
             original_name="config.json",
             step_number=1,
         ).finalize()
 
-        refs1 = artifact.get_artifact_references()
-        refs2 = artifact.get_artifact_references()
-        assert refs1 is refs2  # Same object (cached)
+        references = artifact.get_artifact_references()
+        references.clear()
+
+        assert artifact.get_artifact_references() == ["abc123"]
 
     def test_returns_empty_when_content_none(self):
         """get_artifact_references() returns empty when content is None."""
@@ -686,6 +727,30 @@ class TestGetArtifactReferences:
 
         refs = artifact.get_artifact_references()
         assert refs == []
+
+    def test_draft_content_replacement_refreshes_values_and_references(self) -> None:
+        artifact = ExecutionConfigArtifact.draft(
+            content={"input": {"$artifact": "first"}, "options": {"count": 1}},
+            original_name="config.json",
+            step_number=1,
+        )
+        assert artifact.values["options"] == {"count": 1}
+        assert artifact.get_artifact_references() == ["first"]
+
+        artifact.content = json.dumps(
+            {"input": {"$artifact": "second"}, "options": {"count": 2}}
+        ).encode()
+
+        assert artifact.values["options"] == {"count": 2}
+        assert artifact.get_artifact_references() == ["second"]
+
+    def test_metric_values_are_independent(self) -> None:
+        artifact = MetricArtifact.draft(
+            content={"scores": [1, 2]}, original_name="metric.json", step_number=1
+        ).finalize()
+        artifact.values["scores"].append(3)
+
+        assert artifact.values == {"scores": [1, 2]}
 
 
 class TestExecutionConfigArtifactMaterializeWithRefs:
@@ -749,6 +814,44 @@ class TestExecutionConfigArtifactMaterializeWithRefs:
             original_name="config.json",
             step_number=1,
         ).finalize()
+
+        with pytest.raises(ValueError, match="Missing paths for referenced artifacts"):
+            artifact.materialize_to(str(tmp_path), resolved_paths={})
+
+    def test_values_mutation_cannot_change_finalized_materialization(
+        self, tmp_path: Path
+    ) -> None:
+        artifact = ExecutionConfigArtifact.draft(
+            content={"input": {"$artifact": "input-id"}, "options": {"count": 1}},
+            original_name="config.json",
+            step_number=1,
+        ).finalize()
+        stored_content = artifact.to_row()["content"]
+        artifact_id = artifact.artifact_id
+        artifact.values["options"]["count"] = 99
+
+        path = artifact.materialize_to(
+            str(tmp_path), resolved_paths={"input-id": "/path/to/input"}
+        )
+
+        with open(path) as source:
+            materialized = json.load(source)
+        assert materialized == {
+            "input": "/path/to/input",
+            "options": {"count": 1},
+        }
+        assert artifact.to_row()["content"] == stored_content
+        assert artifact.artifact_id == artifact_id
+
+    def test_reference_list_mutation_cannot_bypass_mapping_validation(
+        self, tmp_path: Path
+    ) -> None:
+        artifact = ExecutionConfigArtifact.draft(
+            content={"input": {"$artifact": "input-id"}},
+            original_name="config.json",
+            step_number=1,
+        ).finalize()
+        artifact.get_artifact_references().clear()
 
         with pytest.raises(ValueError, match="Missing paths for referenced artifacts"):
             artifact.materialize_to(str(tmp_path), resolved_paths={})

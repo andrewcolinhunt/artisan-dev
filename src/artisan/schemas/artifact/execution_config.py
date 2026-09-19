@@ -7,7 +7,7 @@ import os
 from typing import Any, ClassVar
 
 import polars as pl
-from pydantic import Field, PrivateAttr
+from pydantic import Field
 
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.common import (
@@ -104,17 +104,11 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
         description="File extension (.json typically). None for ID-only artifacts.",
     )
 
-    _cached_refs: list[str] | None = PrivateAttr(default=None)
-
     def get_artifact_references(self) -> list[str]:
-        """Return artifact IDs from ``$artifact`` references (cached)."""
-        if self._cached_refs is not None:
-            return self._cached_refs
+        """Return a new list of artifact IDs referenced by the current content."""
         if self.content is None:
-            self._cached_refs = []
-            return self._cached_refs
-        self._cached_refs = find_artifact_references(self.values)
-        return self._cached_refs
+            return []
+        return find_artifact_references(self.values)
 
     def materialize_to(
         self,
@@ -132,8 +126,9 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
 
         Args:
             directory: Target directory for the output file.
-            resolved_paths: Mapping from artifact ID to materialized
-                path. Required when the config contains references.
+            resolved_paths: Mapping from artifact ID to materialized path.
+                When supplied, every reference must have a mapping. None
+                preserves reference markers in the written content.
             format: Not supported; raises if provided.
             fs: Accepted for base-class signature parity but unused;
                 config content is embedded, so no filesystem read is

@@ -10,7 +10,7 @@ from artisan.schemas.specs.input_spec import InputSpec
 
 
 class TestInputSpec:
-    """Tests for InputSpec dataclass."""
+    """Tests for the InputSpec model."""
 
     def test_create_with_artifact_type(self):
         """Create InputSpec with explicit artifact type."""

@@ -1,16 +1,7 @@
-"""Tests for the ``StepOverrides`` per-step override carrier.
+"""Test override normalization and complementary cache-classification guards.
 
-Three layers:
-
-- **Classification completeness** — every dataclass field is classified
-  into exactly one of ``_CACHE_FIELDS`` / ``_RUNTIME_FIELDS``, so a new
-  override cannot silently escape the cache decision.
-- **from_user coercion** — each typed-or-dict knob lands in canonical
-  dict-or-str form; ``step_runner`` and scalars pass through untouched.
-- **Cache-field / payload correspondence** — every cache-classified knob
-  maps to an instance field that ``effective_config_payload`` actually
-  reads, so a knob cannot be wired into ``instantiate_operation`` yet
-  silently skipped by the hash.
+Every field must be classified, and every cache field must reach the operation
+payload hash. Either check alone could miss an incorrectly wired override.
 """
 
 from __future__ import annotations
@@ -35,18 +26,9 @@ from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.utils.hashing import effective_config_payload
 
-# ---------------------------------------------------------------------------
-# Classification completeness
-# ---------------------------------------------------------------------------
-
 
 def test_every_field_classified_exactly_once() -> None:
-    """Each dataclass field is in exactly one of _CACHE_FIELDS/_RUNTIME_FIELDS.
-
-    This is the escape-hatch closer: adding a field to StepOverrides without
-    classifying it (or double-classifying it) fails here, forcing the
-    author to decide whether it enters the cache key.
-    """
+    """Require every override to have exactly one hash-channel classification."""
     field_names = {f.name for f in fields(StepOverrides)}
     cache = set(StepOverrides._CACHE_FIELDS)
     runtime = set(StepOverrides._RUNTIME_FIELDS)
@@ -58,11 +40,6 @@ def test_every_field_classified_exactly_once() -> None:
         "stale classification(s): "
         f"{(cache | runtime) - field_names}"
     )
-
-
-# ---------------------------------------------------------------------------
-# from_user coercion
-# ---------------------------------------------------------------------------
 
 
 class TestFromUserCoercion:
@@ -244,20 +221,7 @@ class TestFromUserCoercion:
             ov.environment = "local"  # type: ignore[misc]
 
 
-# ---------------------------------------------------------------------------
-# Cache-field / payload correspondence
-# ---------------------------------------------------------------------------
-#
-# The classification guard above proves every override *knob* is classified;
-# this guard proves every cache-classified knob reaches the hash through a
-# concrete instance field that ``effective_config_payload`` reads. Without
-# it, someone could add a cache-affecting knob, wire it into
-# ``instantiate_operation``, but forget to read the resulting instance field
-# in the payload — and the completeness test would still pass.
-
-# Maps each cache knob (``StepOverrides`` field name) to the instance field
-# ``effective_config_payload`` reads for it. ``environment`` mutates the
-# ``environments`` instance field; the rest share their name.
+# The environment override updates the plural ``environments`` instance field.
 _CACHE_KNOB_TO_INSTANCE_FIELD = {
     "environment": "environments",
     "tool": "tool",

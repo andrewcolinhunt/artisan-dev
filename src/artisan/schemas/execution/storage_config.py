@@ -12,31 +12,25 @@ from pydantic import BaseModel, Field
 class StorageConfig(BaseModel):
     """Storage configuration.
 
-    Credentials are NOT stored here — they come from the execution
-    environment (IAM roles, env vars, service accounts). This config
-    carries only the protocol and non-sensitive fsspec options.
-
-    ``options`` feeds fsspec only. Delta-rs reads credentials and
-    config from the same environment variables (``AWS_REGION``,
-    ``AWS_ENDPOINT_URL``, ``GOOGLE_APPLICATION_CREDENTIALS``, etc.)
-    via the Rust ``object_store`` crate. No key translation needed.
+    Backends use ambient credentials by default (IAM roles, environment
+    variables, or service accounts). Explicit configuration and credentials
+    may be supplied separately for fsspec and delta-rs; option keys are not
+    translated between the two backends.
 
     Attributes:
         protocol: fsspec protocol identifier. ``"file"`` for local
             filesystem, ``"s3"`` for S3, ``"gcs"`` for Google Cloud
             Storage.
-        options: Non-sensitive fsspec constructor arguments. Values
-            may be any type fsspec accepts (str, bool, int).
-            Credentials come from the environment.
+        options: Arguments passed to the fsspec filesystem constructor,
+            including explicit credentials when needed.
         delta_options: Delta-rs ``storage_options`` dict passed to
             :func:`polars.read_delta`/:func:`polars.DataFrame.write_delta`.
             Keys follow the delta-rs / object_store schema
             (``AWS_ENDPOINT_URL``, ``AWS_ACCESS_KEY_ID``,
             ``AWS_SECRET_ACCESS_KEY``, ``AWS_REGION``, ``AWS_ALLOW_HTTP``,
-            etc.). Empty dict (default) means "let delta-rs read from the
-            environment" — production IAM-role default. Populated when
-            an explicit non-default endpoint is needed (MinIO, LocalStack,
-            on-prem S3) without leaking credentials into the process env.
+            etc.). An empty dict uses ambient configuration. Explicit options
+            configure endpoints and credentials without changing process-wide
+            environment variables.
     """
 
     model_config = {"extra": "forbid", "frozen": True}

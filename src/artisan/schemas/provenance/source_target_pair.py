@@ -26,8 +26,8 @@ class SourceTargetPair:
         group_id: Hash linking co-input edges. None for single-input.
     """
 
-    source: str  # Artifact ID (the derivation source)
-    target: str  # Artifact ID (the derived artifact)
-    source_role: str  # Role name of source
-    target_role: str  # Role name of target
-    group_id: str | None = None  # Links jointly-necessary input edges
+    source: str
+    target: str
+    source_role: str
+    target_role: str
+    group_id: str | None = None

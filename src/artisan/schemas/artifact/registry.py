@@ -53,7 +53,6 @@ class ArtifactTypeDef:
             msg = f"{ArtifactTypes.ANY!r} is reserved for artifact specifications"
             raise ValueError(msg)
 
-        # Validate required attributes
         if "table_path" not in cls.__dict__:
             msg = f"{cls.__name__} must set 'table_path' class variable"
             raise TypeError(msg)
@@ -124,7 +123,6 @@ class ArtifactTypeDef:
                 )
                 raise ValueError(msg)
 
-        # Reject duplicate keys
         if key in ArtifactTypeDef._registry:
             existing = ArtifactTypeDef._registry[key]
             if existing is not cls:
@@ -135,7 +133,6 @@ class ArtifactTypeDef:
                 raise ValueError(msg)
             return
 
-        # Register in both registries
         ArtifactTypes.register(key)
         ArtifactTypeDef._registry[key] = cls
 
@@ -148,8 +145,6 @@ class ArtifactTypeDef:
     def polars_schema(cls) -> dict[str, Any]:
         """Return the Polars column schema from the model."""
         return cast("dict[str, Any]", cls.model.POLARS_SCHEMA)  # type: ignore[attr-defined]
-
-    # --- Public lookup API ---
 
     @staticmethod
     def get(key: str) -> type[ArtifactTypeDef]:
@@ -213,10 +208,6 @@ class ArtifactTypeDef:
         """
         return cast("dict[str, Any]", ArtifactTypeDef.get(key).model.POLARS_SCHEMA)  # type: ignore[attr-defined]
 
-
-# =============================================================================
-# Concrete type definitions (auto-registered via __init_subclass__)
-# =============================================================================
 
 # Imports are deferred to module level to avoid circular imports at
 # class-definition time. The models are fully defined before this

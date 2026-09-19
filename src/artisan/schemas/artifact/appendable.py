@@ -123,19 +123,7 @@ class AppendableArtifact(Artifact):
         return path
 
     def _read_record(self, *, fs: Any = None) -> dict[str, Any]:
-        """Read this record from the JSONL file by record_id.
-
-        Args:
-            fs: Optional fsspec filesystem for reading from cloud storage.
-                When None, infers fs from ``self.external_path`` via
-                ``fsspec.core.url_to_fs``.
-
-        Returns:
-            The parsed JSON record dict.
-
-        Raises:
-            ValueError: If external_path is not set or record_id is not found.
-        """
+        """Return the unique record after verifying its digest and size."""
         return self._read_verified_record(fs=fs)
 
     def _read_verified_record(self, *, fs: Any = None) -> dict[str, Any]:

@@ -1,8 +1,8 @@
 """Extensible artifact type namespace.
 
 Provides ``ArtifactTypes``, a facade that supports both built-in types
-(with IDE autocomplete) and dynamically registered types.  All values
-are plain ``str``: ``ArtifactTypes.DATA == "data"`` is True.
+(with IDE autocomplete) and dynamically registered types. Built-in values
+are string-compatible enum members: ``ArtifactTypes.DATA == "data"`` is True.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
     Dynamic types are added at registration time via ``register()``.
 
     Examples:
-        >>> ArtifactTypes.DATA
+        >>> str(ArtifactTypes.DATA)
         'data'
         >>> "data" in ArtifactTypes
         True
@@ -66,7 +66,7 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
 
     @classmethod
     def register(cls, key: str) -> str:
-        """Register a new artifact type.
+        """Register a type key, returning its existing value when already present.
 
         Called automatically by ``ArtifactTypeDef.__init_subclass__``.
         Also sets ``ArtifactTypes.<KEY>`` as a class attribute for
@@ -77,12 +77,8 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
 
         Returns:
             The registered type string.
-
-        Raises:
-            ValueError: If key is already registered.
         """
         if key in cls._registry:
-            # Allow re-registration of built-in types (idempotent)
             return cls._registry[key]
         cls._registry[key] = key
         setattr(cls, key.upper(), key)
