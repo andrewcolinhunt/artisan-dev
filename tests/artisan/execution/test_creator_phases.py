@@ -321,6 +321,7 @@ class TestReassembleResults:
 class TestPrepUnit:
     def test_returns_per_artifact_inputs(self, delta_env):
         runtime_env, ids = delta_env
+        runtime_env = runtime_env.model_copy(update={"worker_id": 42})
         unit = ExecutionUnit(
             operation=_SimpleOp(),
             inputs={"source": ids},
@@ -331,6 +332,7 @@ class TestPrepUnit:
         prepped = prep_unit(unit, runtime_env)
 
         assert isinstance(prepped, PreppedUnit)
+        assert prepped.execution_context.worker_id == 42
         assert len(prepped.artifact_execute_inputs) == 2
         assert len(prepped.artifact_execute_dirs) == 2
         for d in prepped.artifact_execute_dirs:

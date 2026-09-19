@@ -419,11 +419,11 @@ the same structure: run the lifecycle inside a try/except, then record success
 or failure:
 
 ```python
-def run_creator_flow(unit, runtime_env, worker_id=0) -> StagingResult:
+def run_creator_flow(unit, runtime_env) -> StagingResult:
     execution_run_id = generate_execution_run_id(...)
     try:
         # Lifecycle: setup → preprocess → execute → postprocess → lineage
-        lifecycle_result = run_creator_lifecycle(unit, runtime_env, worker_id)
+        lifecycle_result = run_creator_lifecycle(unit, runtime_env)
 
         # Record phase: stage results to parquet
         return record_execution_success(...)
@@ -458,10 +458,11 @@ creator and curator executors:
 ```python
 def execute_unit(unit, runtime_env):
     try:
+        runtime_env = _resolve_worker_environment(runtime_env)
         if is_curator_operation(unit.operation):
-            result = run_curator_flow(unit, runtime_env, worker_id=...)
+            result = run_curator_flow(unit, runtime_env)
         else:
-            result = run_creator_flow(unit, runtime_env, worker_id=...)
+            result = run_creator_flow(unit, runtime_env)
         return {"success": result.success, "error": result.error}
     except Exception as exc:
         return {"success": False, "error": format_error(exc)}

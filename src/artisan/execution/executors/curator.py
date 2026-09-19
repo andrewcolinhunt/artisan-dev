@@ -227,14 +227,12 @@ def _handle_passthrough_result(
 def run_curator_flow(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
-    worker_id: int = 0,
 ) -> StagingResult:
     """Execute a curator operation through setup, execute, and record phases.
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
         runtime_env: Paths and runtime configuration for this run.
-        worker_id: Numeric worker identifier for concurrency tracking.
 
     Returns:
         StagingResult indicating success or failure with staged paths.
@@ -247,7 +245,7 @@ def run_curator_flow(
     execution_run_id = generate_execution_run_id(
         unit.execution_spec_id,
         timestamp_start,
-        worker_id,
+        runtime_env.worker_id,
     )
     params_dict = serialize_params(operation)
     user_overrides = unit.user_overrides
@@ -256,32 +254,16 @@ def run_curator_flow(
     try:
         # --- setup phase ---
         with phase_timer("setup", timings):
-            fs = runtime_env.storage.filesystem()
-            storage_options = runtime_env.storage.delta_storage_options()
-
-            artifact_store = ArtifactStore(
-                runtime_env.delta_root,
-                fs=fs,
-                storage_options=storage_options,
-                files_root=runtime_env.files_root,
-            )
-
             execution_context = build_execution_context(
                 execution_run_id=execution_run_id,
                 execution_spec_id=unit.execution_spec_id,
                 step_number=unit.step_number,
                 timestamp_start=timestamp_start,
-                worker_id=worker_id,
-                delta_root=runtime_env.delta_root,
-                staging_root=runtime_env.staging_root,
-                fs=fs,
-                storage_options=storage_options,
+                runtime_env=runtime_env,
                 operation=operation,
-                compute_backend_name=runtime_env.compute_backend_name,
-                shared_filesystem=runtime_env.shared_filesystem,
                 step_run_id=unit.step_run_id,
-                files_root=runtime_env.files_root,
             )
+            artifact_store = execution_context.artifact_store
 
             # Build DataFrames with artifact_id column per role
             input_dfs = {
