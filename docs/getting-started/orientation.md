@@ -16,7 +16,7 @@ situation:
 | **Tutorials** | "I want to learn" | Interactive notebooks that walk you through complete examples step by step. Start here if you're new. |
 | **How-to Guides** | "I need to do X" | Focused recipes for specific tasks. Assumes you already know the basics. |
 | **Concepts** | "I want to understand why" | Design decisions, mental models, and architecture. No code to run — explanation only. |
-| **Reference** | "I need to look something up" | API signatures, schema tables, parameter lists. Structured for quick lookup, not reading. |
+| **Reference** | "I need to look something up" | Terminology, public API entry points, and links to source and docstrings for exact contracts. |
 
 These four kinds are kept separate on purpose. Tutorials don't stop to explain
 architecture. How-to guides don't teach theory. Reference pages don't include
@@ -92,7 +92,7 @@ pipeline step.
 A **pipeline** is a directed acyclic graph (DAG) of steps. You build one by
 calling `pipeline.run()` to execute steps and `pipeline.output(name, role)` to
 wire outputs from earlier steps into inputs of later ones. `PipelineManager`
-handles dispatch, caching, and atomic commits.
+handles dispatch, caching, and publishing completed results.
 
 ```python
 from artisan.orchestration import PipelineManager
@@ -130,28 +130,39 @@ The framework captures **dual provenance** automatically:
 - **Artifact provenance** records which input artifacts produced which output
   artifacts, forming a derivation graph across the entire pipeline.
 
-You never need to wire provenance manually. Each operation declares lineage
-relationships through `infer_lineage_from` on its output specs, and the
-framework resolves them at runtime using filename stem matching to pair inputs
-with outputs.
+Operations declare parent roles through `infer_lineage_from`. The framework
+matches outputs to inputs using filename stems or dispatch pairing. Operations
+that rename outputs or need custom pairings can return explicit lineage mappings.
 
 > **Deep dive:** [Provenance System](../concepts/provenance-system.md)
 
 ### Storage
 
-All pipeline data lives in **Delta Lake** tables, giving you ACID transactions,
-time travel, and efficient queries via Polars. Artifact content is stored
-directly in Delta table columns — binary bytes for data artifacts, JSON content
-serialized as bytes for metrics and configs — while `FILE_REF` artifacts store path references to
-files on disk. Workers stage results as Parquet files during execution, and the
-orchestrator commits them atomically to the Delta tables.
+Artisan stores artifact records, execution history, and provenance in **Delta
+Lake** tables. Small payloads live in those tables; externally backed artifact
+types retain verified references to separate files.
+
+Workers stage results as Parquet files. The orchestrator writes the affected
+tables and records when the complete logical commit is accepted. Each table has
+its own Delta transaction; readers use the logical completion record to avoid
+exposing incomplete writes across tables.
+
+Use Artisan's inspection helpers and `ArtifactStore` to read accepted results.
+For example, after running the pipeline above:
 
 ```python
-import polars as pl
+from artisan.visualization import inspect_step
 
-# Read the artifact index — every artifact in the pipeline
-df = pl.read_delta(str(delta_root / "artifacts" / "index"))
+inspect_step(
+    "runs/delta",
+    step_number=1,
+    pipeline_run_id=pipeline.config.pipeline_run_id,
+)
 ```
+
+Selecting a run includes the outputs it reused from earlier runs. See
+[Inspect Pipeline Results](../how-to-guides/inspecting-provenance.md) for run
+selection and provenance queries.
 
 > **Deep dive:** [Storage and Delta Lake](../concepts/storage-and-delta-lake.md)
 

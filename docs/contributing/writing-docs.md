@@ -1,610 +1,166 @@
-# Documentation Contributor Guide
+# Writing Documentation
 
-This guide establishes conventions for writing and maintaining Artisan framework
-documentation. All contributors (human and AI) should follow these rules to keep
-docs consistent, well-organized, and domain-agnostic.
+Write documentation that helps someone use Artisan correctly. Keep explanations
+and working examples in the site. Keep exact API details beside the code that
+implements them.
 
----
+## Choose the page's purpose
 
-## Documentation structure (Diataxis)
+Use the reader's task to decide what belongs on a page:
 
-Artisan docs follow the [Diataxis](https://diataxis.fr/) framework, which
-organizes documentation into four quadrants based on two axes: the reader's
-**mode** (learning vs. working) and the content's **orientation** (practical vs.
-theoretical).
+| Page type | Purpose | Include |
+| --- | --- | --- |
+| Tutorial | Learn by running a small workflow | Prerequisites, runnable notebook cells, observations, and next steps |
+| How-to guide | Complete a specific task | A working example, necessary choices, and a way to verify the result |
+| Concept | Understand behavior and tradeoffs | A concrete example, the relevant guarantees, and their limits |
+| Reference | Look up a fact | A short index, terminology, or information derived from the public API |
 
-|                            | Learning (acquiring) | Working (applying) |
-| -------------------------- | -------------------- | ------------------ |
-| **Practical (doing)**      | Tutorials            | How-to Guides      |
-| **Theoretical (thinking)** | Concepts             | Reference          |
+These distinctions follow [Diátaxis](https://diataxis.fr/). Use them to keep a
+page focused. A short explanation within a recipe is useful when it helps the
+reader make the next decision; link to the concept page for more detail.
 
-### Rationale
+Use only the sections a page needs. A short guide does not need a summary that
+repeats its opening or a table of pitfalls with no relevant entries.
 
-- **Mixing categories serves nobody well.** A tutorial that stops to explain
-  architectural rationale loses the learner. A reference page that weaves in
-  step-by-step narrative frustrates someone scanning for a function signature.
-- **Different maintenance cadences.** Tutorials need updating when the onboarding
-  experience changes. Reference pages need updating when the API changes. Concepts
-  pages are the most stable. Separating categories lets each evolve independently.
-- **Clear placement rules for new content.** When adding a page, there should be
-  exactly one correct quadrant. If it does not fit cleanly, the content should be
-  split.
+## Keep one authoritative description
 
-### Implications
+- **Signatures, types, defaults, return values, and exceptions** belong in
+  function and class docstrings, type annotations, and schema fields. Link to
+  [Python API lookup](../reference/python-api.md) for inspection and source access.
+  Do not copy complete signatures or field catalogs into guides.
+- **Workflow behavior** belongs in one main guide or concept page. Explain
+  choices such as cache reuse, run selection, and cancellation there; link from
+  other pages instead of repeating the explanation.
+- **Examples** should demonstrate the task with the fewest relevant options.
+  Keep a complete example intact. Avoid repeating a shortened implementation
+  that differs from the working version.
+- **Implementation details** belong in source comments or contributor guidance
+  when a contributor needs them. User docs should describe the behavior that
+  affects a user's decisions.
 
-- **One page, one category.** Never mix quadrants on a single page.
-- **Concepts pages have no API signatures; reference pages have no prose
-  rationale.** If you need both, link between pages instead.
-- **Tutorials are self-contained.** A reader should be able to follow a tutorial
-  without reading anything else first.
-- **How-to guides assume competence and link to concepts for background.** They
-  do not teach; they direct.
+A small table comparing choices can be useful. Include it because the reader
+needs to make that choice, not because a model has fields that could be listed.
+An internal module move should not require rewriting a user-facing concept.
 
----
+Automatic reference generation still depends on accurate docstrings. If API
+reference is generated, build it from the same revision as the rest of the site
+and select supported public interfaces. Do not publish every internal helper or
+maintain a second set of descriptions in the generator.
 
-## Diataxis boundary rules
+## Write directly
 
-| Quadrant       | Purpose                 | Format                                                    | Constraints                                                           | Reader mindset              |
-| -------------- | ----------------------- | --------------------------------------------------------- | --------------------------------------------------------------------- | --------------------------- |
-| **Tutorials**  | Learning by doing       | Self-contained, step-by-step. Notebooks only.             | No API signatures, no architectural rationale.                        | "I'm new, teach me."       |
-| **How-to Guides** | Task-oriented recipes | Prerequisites/Verify sections. Structured steps.          | Assumes competence. Links to concepts for background.                 | "I need to accomplish X."   |
-| **Concepts**   | Explanations of *why*   | "Why This Exists" opener. Decision/Rationale/Implications format. | No API signatures. No step-by-step instructions.                     | "I want to understand."     |
-| **Reference**  | Factual descriptions    | Tables, signatures, enum values. "See Also" footer.       | No prose rationale. No narrative or teaching.                         | "I need the exact API."     |
+Use plain, matter-of-fact language and address the reader as “you.” Lead with
+what the page helps them do or understand. Explain an unfamiliar term when it
+first matters, and use the same term throughout the docs.
 
----
+Describe observable behavior. For example, say “The failed attempt remains
+available for inspection” instead of claiming that the architecture makes all
+failure modes impossible. State relevant limits alongside the behavior they
+qualify.
 
-## Cross-quadrant linking pattern
+Avoid promotional claims, rhetorical introductions, filler, and claims that a
+task is easy. Prefer short sentences, but keep the context needed to understand
+why a setting or step matters.
 
-Every page must link to related pages in other quadrants.
+## Write examples that prove the point
 
-| Source quadrant   | Must link to                                                  |
-| ----------------- | ------------------------------------------------------------- |
-| **Concepts**      | 1-2 tutorials + the relevant reference page                   |
-| **How-to Guides** | Prerequisite concepts page(s) + the relevant reference page   |
-| **Reference**     | Corresponding concepts page + relevant how-to guide(s)        |
-| **Tutorials**     | Concepts page for deeper understanding + how-to for techniques |
+Use Artisan's built-in example operations and generic data. Import from the
+supported public packages listed in [Python API lookup](../reference/python-api.md).
+Do not teach a private import as a user workflow.
 
-When adding a new page, check that the linked pages also link back.
+A runnable example needs its imports, input data, and setup. If a fragment
+continues an earlier example, say so. For snippets showing a user's own operation,
+state what they must supply; do not label an undefined operation a minimal
+working example.
 
----
+Use deterministic data when the expected outcome depends on identity, caching,
+ordering, or exact counts. Show the result that matters:
 
-## Writing tone
+- A cache example checks whether the step executed or reused prior work.
+- A batching example checks which inputs each output came from.
+- An export example selects the intended run and verifies the exported data.
 
-Respect the reader's time and intelligence. Write as a knowledgeable colleague
-explaining something at a whiteboard -- not a legal contract, not a blog post.
+Operation-authoring examples should work with multiple inputs per execution
+unit when they teach per-artifact dispatch. Keep sample files small and use
+isolated output directories. Explain cleanup that deletes a tutorial's previous
+run. State account, credential, and deployment prerequisites for cloud examples
+before the first command that needs them.
 
-**Be direct.** Use active voice. Address the reader as "you." Get to the point.
+Tutorials are notebooks. Keep their committed outputs empty; the notebook tests
+execute cells. Include assertions for outcomes that would otherwise be checked
+only by reading a printed table. A passing cell alone does not prove that its
+explanation is correct.
 
-- Good: "Run the command"
-- Avoid: "The command should be run"
+## Format and navigation
 
-**Be confident but honest.** State things plainly. When something is a
-limitation or rough edge, say so.
+Write pages in MyST Markdown and tutorials in Jupyter notebooks. Use lowercase
+kebab-case filenames, a title-case page title, and sentence-case subheadings.
+Use tables for comparisons and diagrams when they make a relationship clearer.
 
-- Good: "This method returns a string"
-- Avoid: "This method should return a string"
+Register every content page in `docs/myst.yml`. Add links where a reader needs
+background or a next action. Link directly to the relevant page or section; do
+not add reciprocal links solely to satisfy a template.
 
-**Be warm without being chatty.** A brief orienting sentence is welcoming.
-Excessive enthusiasm wastes the reader's time.
-
-- Good: "This guide walks you through setting up authentication for your API"
-- Avoid: "Awesome! You're going to LOVE this feature!"
-
-**Be task-oriented.** Structure around what the reader is trying to do, not
-what the software can do.
-
-**Be consistent in terminology.** Pick a term and stick with it. If you call
-it a "workspace" in one paragraph, do not call it a "project" in the next.
-Use the terms defined in the [Glossary](../reference/glossary.md).
-
-**Layer detail progressively.** Lead with the most common case, then explain
-options, then cover edge cases. A reader who needs the quick answer gets it in
-10 seconds; someone with a complex scenario keeps reading.
-
-**Be economical.** Short sentences. Use "use" not "utilize," "start" not
-"initialize" (unless "initialize" is the actual API term). Cut filler: "in
-order to," "it should be noted that," "as a matter of fact."
-
-**Be neutral about skill level.** Never write "simply," "just," or "easily."
-Give clear instructions and let the reader judge difficulty.
-
----
-
-## File and format conventions
-
-### Markup
-
-All docs use **MyST Markdown** (Jupyter Book 2). Use MyST directives, not RST.
-
-### File formats
-
-| Quadrant       | Format             | Extension |
-| -------------- | ------------------ | --------- |
-| Tutorials      | Jupyter notebooks  | `.ipynb`  |
-| How-to Guides  | Markdown           | `.md`     |
-| Concepts       | Markdown           | `.md`     |
-| Reference      | Markdown           | `.md`     |
-| Contributing   | Markdown           | `.md`     |
-| Getting Started | Markdown          | `.md`     |
-
-### Directory layout
-
-New pages go in the directory that matches their Diataxis quadrant:
-
-```
-docs/
-├── getting-started/             # Installation and orientation
-├── tutorials/                   # Jupyter notebooks (.ipynb)
-│   ├── 01-getting-started/      # First steps
-│   ├── 02-pipeline-design/      # Topology patterns
-│   ├── 03-caching/              # Resume, cache lookup, force re-run
-│   ├── 04-batching/             # Two-level batching, per-artifact dispatch
-│   ├── 05-errors-and-control/   # Step overrides, errors, cancellation
-│   ├── 06-storage/              # Layout, logging, external files
-│   ├── 07-compute-backends/     # Compute routing and Modal
-│   ├── 08-analysis/             # Provenance, filtering, timing
-│   └── 09-writing-operations/   # Building custom operations and composites
-├── concepts/                    # Explanations of design and architecture
-├── how-to-guides/               # Task-oriented recipes
-├── reference/                   # API signatures, glossary, comparisons
-└── contributing/                # Project conventions (this page)
-```
-
-### File naming
-
-- Use **lowercase kebab-case**: `writing-creator-operations.md`
-- Tutorials are numbered with a two-digit prefix: `01-first-pipeline.ipynb`,
-  `02-exploring-results.ipynb`
-- Every directory has an `index.md` landing page
-
-### Headings
-
-- **Page title**: title case (e.g., "Documentation Contributor Guide")
-- **All subheadings**: sentence case (e.g., "Cross-quadrant linking pattern")
-
-### Section separators
-
-Use `---` horizontal rules between major sections. This matches the convention
-across all existing pages.
-
----
-
-## Registering new pages
-
-Every new page must be added to the table of contents in `docs/myst.yml`.
-
-Find the appropriate section under `project.toc` and add a `file:` entry. For
-example, to add a new concepts page:
-
-```yaml
-# In docs/myst.yml, under project.toc
-- title: Concepts
-  children:
-    - file: concepts/index.md
-    - title: System Architecture
-      children:
-        - file: concepts/architecture-overview.md
-        - file: concepts/operations-model.md
-        - file: concepts/my-new-concept.md  # <-- add here
-```
-
-Tutorials within a sub-section are ordered by their numeric prefix. Place the
-new entry in the position that matches its prefix number.
-
-A page that exists on disk but is not listed in `myst.yml` will not appear in
-the built site.
-
----
-
-## MyST Markdown conventions
-
-### Links between pages
-
-Use standard Markdown links with relative paths:
+Use relative Markdown links within the site:
 
 ```markdown
-[Operations Model](../concepts/operations-model.md)
-[First Pipeline tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb)
+[Building a pipeline](../how-to-guides/building-a-pipeline.md)
+[First pipeline](../tutorials/01-getting-started/01-first-pipeline.ipynb)
 ```
 
-Link to a specific heading by appending `#anchor`:
+Preserve a referenced heading when revising a page, or update its incoming links.
+Use an explicit MyST label when a heading needs a stable target:
 
 ```markdown
-[Five layers](../concepts/architecture-overview.md#five-layers)
+(cache-reuse)=
+## Reuse previous results
 ```
 
-### Label targets
-
-Use MyST label targets for anchors that other pages reference (especially in
-the glossary):
-
-```markdown
-(glossary-artifact)=
-## Artifact
-
-An immutable, content-addressed data node...
-```
-
-### Directives
-
-Use colon-fence syntax for MyST directives:
+Use MyST directives for notes that deserve separate attention:
 
 ```markdown
 ::::{note}
-This is important context the reader should know.
-::::
-
-::::{tip} Optional title
-Helpful but non-essential information.
+State the condition and what the reader should do about it.
 ::::
 ```
-
-For grid layouts (used on landing pages):
-
-```markdown
-::::{grid} 2
-:::{grid-item-card} Card Title
-:link: path/to/page.md
-
-Card description.
-:::
-::::
-```
-
-### Include directives
-
-Pull in external content with the `include` directive:
-
-````markdown
-```{include} ../README.md
-```
-````
-
----
-
-## Code examples in documentation
-
-Code blocks in docs must be **syntactically correct** and use the **current
-API**. Import from the correct package (`artisan` for the framework).
-
-- Show the minimum code needed to illustrate the point
-- Include imports so the reader can copy-paste
-- Use the example operations (`DataGenerator`, `DataTransformer`,
-  `MetricCalculator`) for generic demonstrations -- these live in
-  `src/artisan/operations/examples/`
-- In how-to guides, provide a **minimal working example** before breaking
-  the code into explained steps
-
-When referencing source files, use the path from the project root:
-
-```markdown
-**Source:** `src/artisan/schemas/artifact/base.py`
-```
-
----
-
-## Domain decontamination
-
-Artisan is a domain-agnostic framework. All documentation must use generic
-examples that do not reference any specific scientific domain, tool, or dataset.
-
-**What to avoid:**
-
-- Domain-specific tool names, file formats, or workflows
-- References to specific research fields or application areas
-- Hardcoded paths, usernames, or environment-specific values
-
-**What to use instead:**
-
-- The built-in example operations (`DataGenerator`, `DataTransformer`,
-  `MetricCalculator`) for demonstrations
-- Generic terms like "input data," "output artifacts," "computed metrics"
-- Placeholder paths like `~/projects/my-pipeline/`
-
-If a concept requires a concrete example to be understandable, use a
-self-contained scenario that any reader can follow regardless of their domain.
-
----
 
 ## Building and previewing docs
 
-Build the documentation site locally to verify your changes render correctly:
+From the repository root:
 
 ```bash
-pixi run -e docs docs-build     # Build HTML site
-pixi run -e docs docs-serve     # Serve at http://localhost:8000
-pixi run -e docs docs-clean     # Remove build artifacts
+pixi run --locked -e docs docs-build
+pixi run --locked -e docs docs-serve
 ```
 
-The build output goes to `docs/_build/html/`. Check for:
+Open `http://localhost:8000`. Check the changed pages, their examples and diagrams,
+and navigation to and from them. `docs-build` renders the site; it does not
+execute all notebook examples.
 
-- Broken links (the build warns about these)
-- Correct rendering of tables, code blocks, and directives
-- New pages appearing in the sidebar navigation
+For code changes in local tutorials, run:
 
----
-
-## Templates
-
-### Tutorial
-
-All tutorials are Jupyter notebooks. Follow this cell structure:
-
-```markdown
-# Cell 1 (markdown)
-
-# Title
-
-## What you'll learn
-- Bullet 1
-- Bullet 2
-- Bullet 3
-
-**Prerequisites:** [links]
-**Estimated time:** X minutes
+```bash
+pixi run --locked -e dev test-notebook
 ```
 
-```python
-# Cell 2+ (alternating markdown -> code)
-# Narrative explains *what* and *why* before each code cell.
-# Code cells are short, focused, and produce visible output.
+See [development tasks](../getting-started/using-pixi.md#dev-environment) for the
+separate resource requirements of local, S3, and Modal tests. Run the relevant
+cloud checks when a changed example depends on a live service.
+
+Run the published-example syntax/import check after changing Python snippets:
+
+```bash
+pixi run --locked -e dev pytest -q tests/test_published_imports.py
 ```
 
-```markdown
-# Final cell (markdown)
-
-## Summary
-Recap of what was covered.
-
-## Next steps
-- [Tutorial name](link) -- what it covers
-- [Concept name](link) -- deeper understanding
-- [How-to name](link) -- related task
-```
-
-Guidelines:
-
-- Tutorials must be self-contained. A reader should not need to read other docs
-  to follow along.
-- Do not explain architecture or design decisions. Link to concepts pages
-  instead.
-- Do not include API signature tables. Link to reference pages instead.
-- Every code cell should produce visible output so the reader can verify
-  progress.
-
----
-
-### How-to guide
-
-```markdown
-# Title (verb phrase)
-
-One-line description of what the reader will accomplish.
-
-**Prerequisites:** [links]
-
----
-
-## Minimal working example
-
-Complete, copy-pasteable code block that works end-to-end.
-
----
-
-## Step 1: ...
-
-Code block + brief explanation.
-
-## Step 2: ...
-
-...
-
----
-
-## Common patterns
-
-Named patterns with small code blocks (if applicable).
-
----
-
-## Common pitfalls
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| ...     | ...   | ... |
-
----
-
-## Verify
-
-How to confirm success (expected output, a test to run, a state to check).
-
----
-
-## Cross-references
-
-- [Reference page](link) -- full API
-- [Concepts page](link) -- design rationale
-- [Related how-to](link) -- related task
-```
-
-Guidelines:
-
-- **Title** is a verb phrase (e.g., "Configure Custom Artifact Storage", not
-  "Custom Artifact Storage").
-- **Prerequisites** links to concepts or other how-to pages the reader should
-  have completed.
-- **Steps** are numbered and concrete. Each step includes a code block or
-  command.
-- **Minimal working example** appears before the steps so readers who learn by
-  example can copy-paste immediately.
-- **Common pitfalls** table is optional but encouraged for operations that have
-  non-obvious failure modes.
-- **Verify** tells the reader how to confirm the task succeeded.
-
----
-
-### Concepts page
-
-```markdown
-# Title (noun phrase)
-
-Opening paragraph: state *why* this concept matters and what understanding it
-enables. Frame around the reader's needs, not the software's features.
-
-One-line summary restating the scope.
-
----
-
-## Section heading (sentence case)
-
-Explain the design decision or architectural concept. Use the pattern:
-
-1. **What** the mechanism/pattern is (brief)
-2. **Why** it exists (the problem it solves or the trade-off it makes)
-3. **Implications** for the reader (what this means in practice)
-
-Use comparison tables for contrasting two approaches:
-
-| Aspect   | Approach A | Approach B |
-|----------|------------|------------|
-| Purpose  | ...        | ...        |
-| Trade-off| ...        | ...        |
-
-Use ASCII diagrams for flows or relationships:
-
-    +-----------+     +-----------+
-    |  Phase 1  | --> |  Phase 2  |
-    +-----------+     +-----------+
-
----
-
-## Key design decisions (optional)
-
-Summarize the most important decisions as a table or bulleted list when
-the page covers multiple related choices.
-
-| Decision | Rationale |
-|----------|-----------|
-| ...      | ...       |
-
----
-
-## Cross-references
-
-- [Reference page](link) -- field tables and API signatures
-- [Tutorial](link) -- see this concept in action
-- [Related concept](link) -- complementary explanation
-```
-
-Guidelines:
-
-- **Title** is a noun phrase (e.g., "Operations Model", not "Understanding
-  Operations").
-- **Opening paragraph** answers "why should I read this?" before diving into
-  detail.
-- **No API signatures or code blocks showing imports.** Those belong in
-  reference pages. Short illustrative pseudocode is acceptable when it clarifies
-  a concept.
-- **No step-by-step instructions.** Link to how-to guides instead.
-- **Explain "why" explicitly.** Use phrases like "Why this matters:",
-  "Why this separation exists:", or a "Rationale" subsection.
-- **Progressive disclosure:** lead with the high-level mental model, then
-  layer in details. A reader who stops after two paragraphs should still
-  understand the core idea.
-
----
-
-### Reference page
-
-```markdown
-# Title Reference
-
-One-line description of what this page covers.
-
-**Source:** `src/artisan/path/to/module.py`
-
----
-
-## Section name
-
-Brief (1-2 sentence) description of this component.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| ...   | ...  | ...     | ...         |
-
-### Methods (if applicable)
-
-    def method_name(self, param: Type) -> ReturnType
-
-One-line description. No rationale or narrative.
-
----
-
-## Another section
-
-...
-
----
-
-## Skeleton examples
-
-Minimal, copy-pasteable code showing correct usage. Place at the bottom,
-not woven into field tables.
-
-    class Example(BaseClass):
-        ...
-
----
-
-## See also
-
-- [Concepts page](link) -- design rationale
-- [How-to guide](link) -- step-by-step usage
-- [Related reference](link) -- complementary API
-```
-
-Guidelines:
-
-- **Title** ends with "Reference" (e.g., "OperationDefinition Reference",
-  "Provenance Schemas Reference").
-- **Source path** at the top so readers can jump to the implementation.
-- **Field tables** use four columns: Field, Type, Default, Description.
-  Every field in the public API must appear.
-- **Minimal prose.** Sentences are descriptive ("Returns the artifact ID"),
-  not explanatory ("This returns the artifact ID because..."). Save "why"
-  for concepts pages.
-- **No narrative or teaching.** No "first you need to understand..." or
-  design rationale paragraphs.
-- **Skeleton examples** at the bottom show correct, minimal usage. They
-  complement the field tables but do not replace them.
-- **"See also" footer** links to the corresponding concepts page, how-to
-  guides, and related reference pages.
-
----
-
-## Pre-submission checklist
-
-Before finishing a documentation change, verify:
-
-- [ ] Page belongs to exactly one Diataxis category and follows its template
-- [ ] Tone follows the rules above (scan for "simply," "just," "easily,"
-      passive voice, filler phrases)
-- [ ] Terminology is consistent with existing docs and the
-      [Glossary](../reference/glossary.md)
-- [ ] Code examples are syntactically correct and use current imports
-- [ ] Progressive disclosure: common case first, edge cases last
-- [ ] Cross-references link to related pages in other quadrants
-- [ ] New pages are registered in `docs/myst.yml`
-- [ ] Docs build without errors (`pixi run -e docs docs-build`)
-
----
-
-## Cross-references
-
-- [Coding Conventions](coding-conventions.md) -- Code style, naming, and
-  project structure
-- [Tooling Decisions](tooling-decisions.md) -- Why Pixi and native runners
-- [Orientation](../getting-started/orientation.md) -- How the docs are
-  organized from a reader's perspective
+For a changed how-to example, execute the complete example in a temporary
+working directory and verify its result. Syntax and import checks do not catch
+wrong input types, incorrect run selection, or misleading count assertions.
+
+## Review before merging
+
+Check that the page answers its stated question, the examples match the code,
+and the changed claims have supporting evidence. Remove repeated API facts and
+unnecessary implementation detail. Confirm that links resolve and the rendered
+page is readable. Update the canonical explanation when behavior changes, then
+check the examples that depend on it.

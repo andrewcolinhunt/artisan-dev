@@ -2,9 +2,9 @@
 
 When you call `pipeline.run()`, a cascade of coordinated work happens between
 the orchestrator and workers before results appear in Delta Lake. Understanding
-this flow explains why cache hits are free, why partial failures never corrupt
-your data, why lineage must be captured during execution rather than after, and
-where to look when something goes wrong.
+this flow explains what work a cache hit skips, when results become visible,
+why lineage is captured during execution, and where to look when something goes
+wrong.
 
 This page walks through the lifecycle of a pipeline step and the design
 decisions that shape each phase.
@@ -25,7 +25,7 @@ Each pipeline step flows through three phases split across two runtime roles:
 │  Compute cache key │──│  Run operation lifecycle │──│  Collect staged files  │
 │  Check cache       │  │  Capture lineage         │  │  Deduplicate           │
 │  Batch + dispatch  │  │  Stage to Parquet        │  │  Write to Delta Lake   │
-│                    │  │                          │  │  Compact tables        │
+│                    │  │                          │  │  Complete commit       │
 │                    │  │                          │  │  Return StepResult     │
 └────────────────────┘  └──────────────────────────┘  └────────────────────────┘
 ```
@@ -70,14 +70,20 @@ orchestrator [pairs inputs](operations-model.md#pairing-strategies) according
 to the operation's `group_by` strategy before batching, so batch boundaries
 respect paired groups.
 
-Three strategies are available:
+Four strategies are available:
 
 - **ZIP** -- positional pairing (first with first, second with second). All
   roles must have the same length.
-- **LINEAGE** -- provenance-aware matching. Artifacts sharing common ancestry
-  in the provenance graph are paired together. Requires exactly two input roles.
+- **LINEAGE** -- matches a candidate to its nearest target ancestor along
+  directed provenance edges. Sharing a common ancestor is insufficient.
+  Ordinary pairing requires exactly two input roles.
 - **CROSS_PRODUCT** -- all combinations of artifacts across roles. Useful when
   every combination is meaningful.
+- **NAME** -- exact filename-stem matching across roles, for corresponding
+  inputs that do not have directed ancestry.
+
+See [Pairing strategies](operations-model.md#pairing-strategies) for ancestor
+and sibling examples, unmatched inputs, and ambiguity handling.
 
 For operations with a primary input role (such as Filter), a variant called
 anchor-based matching pairs each primary artifact independently against every
@@ -162,9 +168,9 @@ group IDs from pairing. Workers need nothing else to execute.
 
 ## Execute: running operations
 
-Workers receive `ExecutionUnit` objects and run the operation lifecycle. The
-creator, curator, and composite paths diverge here because they optimize for
-different workloads.
+Workers receive `ExecutionUnit` objects and run the operation lifecycle.
+Creators and curators use different paths. Composites expand into ordinary
+steps before worker execution.
 
 ### Creator operations: the sandbox lifecycle
 
@@ -221,11 +227,11 @@ memory), and stages a failure record rather than crashing the pipeline.
 ### Composite execution
 
 When multiple creator operations are composed into a
-[composite](operations-model.md), running the composite expands it into
+[composite](composites-and-composition.md), running the composite expands it into
 real pipeline steps. Each `ctx.run()` call delegates to the parent
 pipeline as its own step, giving each internal operation its own
-dispatch-execute-commit cycle with full parallelism and independent
-failure handling.
+dispatch-execute-commit cycle and independent failure handling. Steps execute
+serially in the current manager; each creator step can parallelize its batches.
 
 There is no separate composite runtime. A composite is a named grouping
 over ordinary steps, so every internal operation participates in the same
@@ -296,12 +302,12 @@ edge carries a `group_id` that links it to the rest of its paired group.
 Workers never write to Delta Lake. Instead, each worker writes Parquet files to
 an isolated staging directory -- one file per table type, with `executions.parquet`
 written last as a sentinel. The orchestrator collects these after all workers
-complete and commits them atomically.
+complete and prepares a logical commit with the terminal step snapshot.
 
 This [staging-commit pattern](storage-and-delta-lake.md#the-staging-commit-pattern)
-eliminates write conflicts, ensures atomic visibility, and tolerates worker
-failures. See the storage page for the full directory layout, sharding strategy,
-and NFS consistency handling.
+isolates worker writes and preserves evidence for verification and recovery.
+See the storage page for the full directory layout, sharding strategy, and NFS
+consistency handling.
 
 ### Staging verification
 
@@ -314,26 +320,28 @@ reports a shared filesystem; local step runners skip it entirely.
 
 ---
 
-## Commit: atomic persistence
+## Commit: making results visible
 
-After all workers complete, the orchestrator collects staged Parquet files and
-commits them to Delta Lake. Tables are committed in a
-[specific order](storage-and-delta-lake.md#commit-ordering) (content before
-index before provenance before execution records) so that partial failures
-leave recoverable state rather than broken references.
+The orchestrator seals an immutable plan containing staged worker evidence and
+the terminal step snapshot. It writes the planned table effects and then marks
+the logical commit complete. Supported readers expose those results only after
+completion and verification; raw Delta reads can show partial physical writes.
+The authoritative sequence is in
+[Commit ordering](storage-and-delta-lake.md#commit-ordering).
 
-During commit, content-addressed
-[deduplication](storage-and-delta-lake.md#deduplication-during-commit) drops
-artifacts that already exist in storage. After commit, optional compaction
-merges small Parquet files into larger ones for better read performance.
+Commit verification reuses identical artifact content and rejects conflicting
+rows under the same ID. Optional compaction merges small Parquet files after
+commit. Neither deduplication nor compaction changes run ownership: new attempts
+and cache reuse retain their own recorded membership.
 
 ### Worker log capture
 
 Runner providers can attach worker stdout/stderr to each `UnitResult` before
 collection completes. Artisan then patches those logs into the
 `executions.parquet` staging files before commit. Failed executions also get
-human-readable log files written to a per-step directory under `logs/failures/`.
-This happens on a best-effort basis -- missing logs never block the commit.
+human-readable log files grouped by source execution start date under
+`logs/failures/YYYYMMDD/` (UTC). This happens on a best-effort basis -- missing
+logs never block the commit.
 
 ---
 
@@ -432,18 +440,21 @@ The cancel event is checked at multiple gates:
 ### Signal escalation
 
 When running from a terminal, the framework installs signal handlers on the
-first dispatched step. These implement a three-press escalation:
+first dispatched step when running on the main thread:
 
 | Press | Effect |
 |-------|--------|
-| First Ctrl+C | Graceful cancellation -- current step drains, remaining steps skip |
-| Second Ctrl+C | Restores Python's default signal handlers |
-| Third Ctrl+C | Raises `KeyboardInterrupt`, force-killing the process |
+| First Ctrl+C | Requests cooperative cancellation; pending work records confirmed cancellation before dispatch |
+| Second Ctrl+C | Restores the signal handlers that were installed before Artisan's handlers |
+| Later Ctrl+C | Uses the restored handler; Python's usual SIGINT handler raises `KeyboardInterrupt` |
 
 Worker child processes ignore SIGINT (via `SIG_IGN` in the process pool
-initializer), so only the orchestrator handles the signal. In Jupyter
-notebooks, signal handlers are not installed -- use `pipeline.cancel()`
-directly.
+initializer), so only the orchestrator handles the signal. Signal-handler
+installation is skipped off the main thread. In notebooks, use
+`pipeline.cancel()` directly instead of relying on interrupt handling.
+Cancellation does not guarantee that the current execute phase
+finishes: a local runner may terminate workers after its cooperative grace
+period. The recorded acknowledgement determines the terminal status.
 
 ### Provider cancellation
 

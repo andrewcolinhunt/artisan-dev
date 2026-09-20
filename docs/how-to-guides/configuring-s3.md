@@ -7,7 +7,7 @@ S3-compatible backend for Delta Lake tables, staging, and external files.
 the `artisan[s3]` install extra (`pip install 'dexterity-artisan[s3]'`).
 
 **Related:** [Pipeline Configuration](../concepts/pipeline-configuration.md)
-explains the `PipelineConfig` schema in depth.
+explains how storage and execution settings fit together.
 
 **Key types:** `StorageConfig`, `PipelineConfig`.
 
@@ -51,9 +51,8 @@ not download cloud logs.
 
 ## MinIO / LocalStack / on-prem S3
 
-Non-default endpoints can't be reached via env-var discovery alone — you
-need to pass an explicit `endpoint_url` to fsspec **and** to delta-rs.
-`StorageConfig` carries both:
+For a non-default endpoint, configure both the fsspec client and delta-rs.
+`StorageConfig` carries their settings separately:
 
 ```python
 storage = StorageConfig(
@@ -113,9 +112,11 @@ For each path, Artisan resolves the filesystem via a two-step rule
 2. Otherwise fall back to fsspec's standard ambient credential discovery
    (env vars, IAM roles, `~/.aws/credentials`).
 
-This lets a local pipeline ingest from S3, an on-prem MinIO pipeline
-ingest from public S3 in a different account, or any other cross-protocol
-combination — without forcing users to think about which credentials apply.
+A local pipeline can therefore ingest from S3 using ambient S3 credentials.
+MinIO and public AWS S3 both use `s3://`, so a MinIO-backed pipeline routes both
+to its configured MinIO endpoint and credentials. There is no automatic routing
+between S3-compatible endpoints. To ingest from a different endpoint, download
+those files with the source's client first, then pass their local paths.
 
 ---
 
@@ -137,15 +138,14 @@ external-file storage model in depth.
 
 ## Verification
 
-Construct the manager and submit a no-op:
+Inspect the configured endpoint without printing credentials:
 
 ```python
-pipeline = PipelineManager(config)
-print(
-    pipeline.config.storage.delta_storage_options()
-)  # confirms delta-rs sees the endpoint
+print(pipeline.config.storage.protocol)
+print(pipeline.config.storage.delta_storage_options().get("AWS_ENDPOINT_URL"))
 ```
 
+This confirms configuration only; a small ingest verifies access and writes.
 If you're testing against MinIO locally, the project provides a
 `testcontainers`-based fixture (`tests/conftest.py`'s `s3_fs`) that
 boots a MinIO container per pytest session. See

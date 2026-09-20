@@ -1,459 +1,223 @@
 # Inspect Pipeline Results and Provenance
 
-How to explore what a pipeline produced, trace where artifacts came from, and
-diagnose problems — from quick overviews to full lineage traversal.
+Select a run, inspect its accepted outputs, and trace how artifacts relate to
+one another. These recipes assume a populated local `delta_root`.
 
-**Prerequisites:** A completed pipeline run with data in `delta_root`, and
-familiarity with [Provenance System](../concepts/provenance-system.md).
+See [Provenance System](../concepts/provenance-system.md) for the distinction
+between execution history and artifact lineage.
 
----
+## Select the run you want to inspect
 
-## Minimal working example
-
-A complete inspection workflow in a few lines:
+A store can contain many runs, each with steps numbered from zero. List the runs
+first, then keep one run ID throughout your inspection:
 
 ```python
-from pathlib import Path
-from artisan.visualization import (
-    inspect_pipeline,
-    inspect_step,
-    inspect_metrics,
-    build_macro_graph,
+from artisan.orchestration import list_runs
+from artisan.visualization import inspect_pipeline, inspect_step, inspect_metrics
+
+delta_root = "runs/delta"
+runs = list_runs(delta_root)
+print(runs)
+
+# Choose the most recently started run, or replace this with a listed run ID.
+run_id = runs.sort("started_at", descending=True)["pipeline_run_id"][0]
+print(inspect_pipeline(delta_root, pipeline_run_id=run_id))
+print(inspect_step(delta_root, step_number=0, pipeline_run_id=run_id))
+```
+
+While building a pipeline, obtain this ID from
+`pipeline.config.pipeline_run_id`.
+
+**Accepted outputs and artifact origin answer different questions.** Suppose a
+run reuses three datasets at step 2 that were first created at step 0 of an
+older run. A run-scoped query at step 2 shows those three datasets. Their
+`origin_step_number` remains 0.
+
+`inspect_pipeline` defaults to the latest run. In contrast, omitting
+`pipeline_run_id` from `inspect_step`, `inspect_metrics`, or `inspect_data`
+queries artifacts across runs, and a step filter means their first origin step.
+Pass the run ID explicitly when comparing a step's status with its outputs.
+
+The inspection helpers read accepted, integrity-checked results. Raw Delta
+queries inspect physical rows and can include incomplete writes; see
+[Storage and Delta Lake](../concepts/storage-and-delta-lake.md).
+
+## Read metrics and data
+
+Metric keys become columns, including flattened nested keys such as
+`distribution.median`:
+
+```python
+# All metrics accepted by this run.
+metrics = inspect_metrics(delta_root, pipeline_run_id=run_id)
+
+# Metrics at one logical step, with display rounding.
+metrics_at_step = inspect_metrics(
+    delta_root, step_number=2, pipeline_run_id=run_id, round_digits=4
 )
-
-delta_root = Path("runs/delta")
-
-inspect_pipeline(delta_root)  # One row per step: operation, status, counts, duration
-inspect_step(delta_root, 0)  # One row per artifact at step 0
-inspect_metrics(delta_root, 2)  # Metric values as columns at step 2
-build_macro_graph(delta_root)  # Step-level pipeline graph (renders in Jupyter)
 ```
 
-The rest of this guide covers each inspection technique in detail.
-
----
-
-## Get a pipeline overview
-
-Start with `inspect_pipeline` to see what happened at each step:
-
-```python
-from artisan.visualization import inspect_pipeline
-
-df = inspect_pipeline(delta_root)
-```
-
-Returns a Polars DataFrame with one row per step:
-
-| Column | Description |
-|--------|-------------|
-| `step` | Step number |
-| `operation` | Step name |
-| `status` | `pending`, `running`, `succeeded`, `partial`, `failed`, `cancelled`, or `skipped` |
-| `produced` | Artifact summary (e.g., `"5 data, 5 metric"` or `"3 passed"` for filters) |
-| `duration` | Wall-clock time (e.g., `"2.3s"`) |
-
-To inspect a specific run when `delta_root` contains multiple:
-
-```python
-inspect_pipeline(delta_root, pipeline_run_id="run_abc123...")
-```
-
----
-
-## Inspect artifacts at a step
-
-Drill into a step to see individual artifacts:
-
-```python
-from artisan.visualization import inspect_step
-
-df = inspect_step(delta_root, step_number=0)
-```
-
-Returns one row per artifact with type-specific details:
-
-| Artifact type | `details` column shows |
-|---------------|------------------------|
-| `data` | `"N rows, M cols"` |
-| `metric` | Up to 4 metric key names |
-| `config` | `"N params"` |
-| `file_ref` | Human-readable file size |
-
----
-
-## Read metric values
-
-`inspect_metrics` parses metric JSON into a flat table with one column per
-metric key:
-
-```python
-from artisan.visualization import inspect_metrics
-
-# All metric steps
-df = inspect_metrics(delta_root)
-
-# Single step, with rounding control
-df = inspect_metrics(delta_root, step_number=2, round_digits=4)
-```
-
-Nested metric dicts are automatically flattened (e.g., `distribution.median`
-becomes a column).
-
----
-
-## Read data artifact contents
-
-`inspect_data` reads the CSV content stored in `DataArtifact` entries and returns
-it as a Polars DataFrame:
+Read stored CSV content with `inspect_data`. A step query concatenates matching
+datasets and adds `_source` to identify each artifact's name:
 
 ```python
 from artisan.visualization import inspect_data
 
-# By name
-df = inspect_data(delta_root, name="d0")
-
-# All data at a step (concatenated, with a `_source` column)
-df = inspect_data(delta_root, step_number=1)
+data = inspect_data(delta_root, step_number=0, pipeline_run_id=run_id)
 ```
 
----
+Use `name="dataset_00000"` to narrow the query by original name. Use
+`inspect_step` first to check available names and types. See
+[Export Pipeline Results](exporting-results.md) to save these tables or
+materialize individual artifacts.
 
-## Visualize the pipeline graph
+## Visualize a selected run
 
-### Macro graph (step-level)
-
-Shows steps as nodes and data flow as edges:
+A macro graph shows steps and their output roles. A micro graph includes
+artifacts and derivation edges:
 
 ```python
-from artisan.visualization import build_macro_graph
+from artisan.visualization import build_macro_graph, build_micro_graph
 
-build_macro_graph(delta_root)  # Renders inline in Jupyter
+build_macro_graph(delta_root, pipeline_run_id=run_id)
+build_micro_graph(delta_root, pipeline_run_id=run_id, max_step=2)
 ```
 
-To save to a file:
+Both render inline in Jupyter when Graphviz is installed. To save a graph:
 
 ```python
-from artisan.visualization import render_macro_graph
+from artisan.visualization import render_micro_graph
 
-render_macro_graph(delta_root, output_path=Path("pipeline"), format="svg")
+macro = build_macro_graph(delta_root, pipeline_run_id=run_id)
+macro.render(filename="pipeline", format="svg")
+render_micro_graph(
+    delta_root,
+    output_path="provenance",
+    format="svg",
+    max_step=2,
+    pipeline_run_id=run_id,
+)
 ```
 
-### Micro graph (artifact-level)
+Grey boxes represent executions; blue boxes represent artifacts. Execution
+arrows show consumption and production. Orange arrows show artifact derivation;
+dashed arrows mark backward or passthrough connections.
 
-Shows individual artifacts and their derivation edges:
+### Step through a single-run store
 
-```python
-from artisan.visualization import build_micro_graph
-
-build_micro_graph(delta_root)  # Full graph
-build_micro_graph(delta_root, max_step=2)  # Steps 0–2 only
-```
-
-To save to a file or render per-step images:
-
-```python
-from artisan.visualization import render_micro_graph, render_micro_graph_steps
-
-render_micro_graph(delta_root, output_path=Path("provenance"), format="svg")
-render_micro_graph(delta_root, output_path=Path("provenance"), format="png", max_step=3)
-render_micro_graph_steps(delta_root, output_dir=Path("steps/"), format="svg")
-```
-
-### Interactive stepper (Jupyter widget)
-
-Step through the provenance graph one step at a time with a slider:
+The notebook stepper and automatic frame exporter do not accept a run ID. They
+use origin steps across the store, so use them for a store containing one run:
 
 ```python
 from artisan.visualization import display_provenance_stepper
 
 display_provenance_stepper(delta_root)
-
-# Custom output directory for rendered step images
-display_provenance_stepper(delta_root, output_dir=Path("my_images/"))
 ```
 
-### Reading the graph
+For a multi-run store, generate frames by calling `render_micro_graph` with the
+same `pipeline_run_id` and successive `max_step` values. This keeps reused
+artifacts at the selected run's logical steps.
 
-| Element | Meaning |
-|---------|---------|
-| Grey boxes | Execution records (one per step) |
-| Blue boxes | Artifacts (shade varies by type from a blue palette) |
-| Solid arrows with dot tails | Execution provenance (consumed/produced) |
-| Orange arrows | Artifact provenance (derived from) |
-| Dashed arrows | Backward/passthrough edges |
+## Trace an artifact's lineage
 
----
-
-## Trace lineage programmatically
-
-Use `ArtifactStore` when you need lineage data in code rather than as a
-visualization.
+Artifact IDs identify content across runs. The store's lineage methods traverse
+the committed artifact graph across that history; they do not restrict results
+to a selected run.
 
 ```python
 from artisan.storage import ArtifactStore
 
 store = ArtifactStore(delta_root)
+artifact_id = "<artifact ID to trace>"
+
+parents = store.provenance.get_direct_ancestors(artifact_id)
+ancestor_ids = store.provenance.get_ancestor_ids(artifact_id)
+metric_ids = store.provenance.get_descendant_ids(artifact_id, descendant_type="metric")
 ```
 
-### One hop backward (direct parents)
+The descendant query follows every reachable derivation edge. Do not restrict
+it to the source artifact's origin step: descendants can originate in later
+steps or other runs.
+
+To load directly associated metrics as artifact objects:
 
 ```python
-parents = store.provenance.get_direct_ancestors("abc123...")
+metrics_by_source = store.get_associated({artifact_id}, associated_type="metric")
 ```
 
-### One hop forward (direct children)
+To compare two artifacts:
 
 ```python
-children_map = store.provenance.get_direct_descendants({"abc123..."})
-children = children_map.get("abc123...", [])
-
-# Filter by type
-metric_children = store.provenance.get_direct_descendants(
-    {"abc123..."}, target_artifact_type="metric"
-)
+ancestors_a = set(store.provenance.get_ancestor_ids(artifact_a_id))
+ancestors_b = set(store.provenance.get_ancestor_ids(artifact_b_id))
+shared = ancestors_a & ancestors_b
 ```
 
-### Full graph traversal
+### Look up origin metadata
 
-Load the entire provenance graph or transitively walk ancestors/descendants:
+Use origin queries when you deliberately want to investigate where content was
+first recorded:
 
 ```python
-# Backward map: {target_id: [source_ids]}
-backward_map = store.provenance.load_backward_map()
+artifact_type = store.get_artifact_type(artifact_id)
+origin_step = store.provenance.get_artifact_step_number(artifact_id)
 
-# Forward map: {source_id: [target_ids]}
-forward_map = store.provenance.load_forward_map()
-
-# Transitive ancestor/descendant queries (no hand-rolled BFS needed)
-ancestor_ids = store.provenance.get_ancestor_ids("artifact_abc123...")
-descendant_ids = store.provenance.get_descendant_ids("artifact_abc123...")
-
-# Filter transitive results by artifact type
-metric_ancestors = store.provenance.get_ancestor_ids(
-    "artifact_abc123...", ancestor_type="metric"
-)
-data_descendants = store.provenance.get_descendant_ids(
-    "artifact_abc123...", descendant_type="data"
-)
+# Metrics first recorded at these origin step numbers, across all runs.
+metric_ids = store.provenance.load_artifact_ids_by_type("metric", step_numbers=[2, 3])
 ```
 
-For forward traversal using the DataFrame-based walk:
+These IDs do not describe the accepted outputs of step 2 or 3 in `run_id`.
+For that task, use the run-scoped inspection helpers above.
+
+## Diagnose failures and timing
+
+Start with the selected run's status, then retrieve failed execution details:
 
 ```python
-import polars as pl
-from artisan.provenance import walk_forward
+from artisan.visualization import inspect_failures
 
-sources = pl.DataFrame({"artifact_id": [source_id]})
-edges = store.provenance.load_edges_df(step_min, step_max, include_target_type=True)
-result = walk_forward(sources, edges, target_type="metric")
-# result has columns [source_id, target_id]
+print(inspect_pipeline(delta_root, pipeline_run_id=run_id))
+failures = inspect_failures(delta_root, pipeline_run_id=run_id)
+print(failures)
 ```
 
-For backward traversal (e.g., matching candidates to their source targets):
+The failure report includes execution IDs, error codes, recovery hints, and log
+locations. Use an execution ID to [inspect command evidence or replay the
+execution](debugging-executions.md).
 
-```python
-from artisan.provenance import walk_backward
-
-candidates = pl.DataFrame({"artifact_id": [candidate_id]})
-targets = pl.DataFrame({"artifact_id": [target_id]})
-edges_df = store.provenance.load_edges_df(step_min, step_max)
-result = walk_backward(candidates, targets, edges_df)
-# result has columns [candidate_id, target_id]
-```
-
-### Get descendants as full artifact objects
-
-```python
-# Returns {source_id: [Artifact, ...]} — loaded and typed
-metrics = store.get_associated({"abc123..."}, associated_type="metric")
-```
-
----
-
-## Look up artifact metadata
-
-```python
-store = ArtifactStore(delta_root)
-
-# Single lookups
-artifact_type = store.get_artifact_type("abc123...")  # "data", "metric", etc.
-step_number = store.provenance.get_artifact_step_number("abc123...")  # int
-
-# Bulk lookups (single Delta scan each — use these when querying many artifacts)
-type_map = store.provenance.load_type_map()  # {artifact_id: type_str}
-step_map = store.provenance.load_step_map()  # {artifact_id: step_number}
-name_map = store.provenance.load_step_name_map()  # {step_number: step_name}
-
-# Get artifact IDs by type, optionally filtered by step
-ids = store.provenance.load_artifact_ids_by_type("metric", step_numbers=[2, 3])
-```
-
----
-
-## Profile execution timing
-
-`PipelineTimings` provides step-level and execution-level timing breakdowns:
+For phase-level timing:
 
 ```python
 from artisan.visualization import PipelineTimings
 
-timings = PipelineTimings.from_delta(delta_root)
-
-# Filter to a specific pipeline run
-timings = PipelineTimings.from_delta(delta_root, pipeline_run_id="run_abc123...")
-
-# Step-level durations (one row per step, columns per phase)
+timings = PipelineTimings.from_delta(delta_root, pipeline_run_id=run_id)
 timings.step_timings()
-
-# Per-execution timings at a specific step
-timings.execution_timings(step_number=1)
-
-# Summary statistics (mean, std, min, max per phase)
 timings.execution_stats(step_number=1)
-
-# Matplotlib plots
-timings.plot_steps()  # Stacked bar chart of step timings
-timings.plot_steps(step_numbers=[0, 2, 4])  # Subset of steps
-timings.plot_execution_stats()  # Stacked bar chart of mean execution timings
+timings.plot_steps()
 ```
 
-When `pipeline_run_id` is set, execution timing includes only work actually
-performed for that run. Cached outputs remain visible to provenance and result
-inspection, but the source execution's historical duration is not counted as
-time spent executing in the current run.
+Run-scoped execution timing includes work actually performed for that run.
+Cached outputs remain visible in results and provenance, but their historical
+execution duration is not charged to the current run.
 
----
+## Check unexpected results
 
-## Common patterns
+- If a step looks different from the overview, check that both calls use the
+  same run ID.
+- If metrics are empty, inspect the step's artifact types before assuming it
+  produced metrics.
+- If lineage is missing, check the operation's `infer_lineage_from`, filename
+  stems, and explicit mappings. Generative artifacts intentionally have no
+  parents.
+- If a graph is too large, narrow `max_step` or trace one artifact in code.
+- If the stepper fails to render, use a Jupyter environment with `ipywidgets`
+  and Graphviz installed.
 
-### Quick triage after a failed run
+## Related guides
 
-```python
-from artisan.visualization import inspect_pipeline, inspect_failures, inspect_step
-
-# What happened? The status column flags each step's outcome.
-df = inspect_pipeline(delta_root)  # look for status == "failed"
-
-# Get the failure code, recovery hint, error, and log for failed steps:
-failures = inspect_failures(delta_root)
-
-# Drill into a failed step's artifacts:
-inspect_step(delta_root, step_number=2)
-```
-
-### Find all metrics derived from a source artifact
-
-```python
-import polars as pl
-from artisan.provenance import walk_forward
-from artisan.storage import ArtifactStore
-
-store = ArtifactStore(delta_root)
-sources = pl.DataFrame({"artifact_id": ["source_abc..."]})
-step_range = store.provenance.get_step_range(["source_abc..."])
-edges = store.provenance.load_edges_df(*step_range, include_target_type=True)
-
-derived = walk_forward(sources, edges, target_type="metric")
-# derived has columns [source_id, target_id]
-```
-
-### Compare ancestry of two artifacts
-
-```python
-ancestors_a = set(store.provenance.get_ancestor_ids("artifact_a"))
-ancestors_b = set(store.provenance.get_ancestor_ids("artifact_b"))
-
-shared = ancestors_a & ancestors_b
-unique_to_a = ancestors_a - ancestors_b
-unique_to_b = ancestors_b - ancestors_a
-```
-
-### Query provenance tables directly
-
-For custom analysis beyond what the helpers provide:
-
-```python
-import polars as pl
-
-# Artifact provenance edges (source → target)
-df_edges = pl.read_delta(str(delta_root / "provenance" / "artifact_edges"))
-
-# Find all children of a specific artifact
-children = df_edges.filter(pl.col("source_artifact_id") == "abc123...").select(
-    "target_artifact_id", "target_role"
-)
-
-# Execution provenance edges (artifact ↔ execution)
-df_exec = pl.read_delta(str(delta_root / "provenance" / "execution_edges"))
-
-# All artifacts consumed by a specific execution
-inputs = df_exec.filter(
-    (pl.col("execution_run_id") == "run_xyz...") & (pl.col("direction") == "input")
-)
-```
-
-### Export provenance graphs to files
-
-```python
-from artisan.visualization import render_micro_graph, render_micro_graph_steps
-
-# Single graph as PNG
-render_micro_graph(delta_root, output_path=Path("provenance"), format="png")
-
-# Limit to a step range
-render_micro_graph(delta_root, output_path=Path("provenance"), format="svg", max_step=5)
-
-# Step-by-step frames for animation
-paths = render_micro_graph_steps(delta_root, output_dir=Path("frames/"))
-# [Path("frames/step_00.svg"), Path("frames/step_01.svg"), ...]
-```
-
----
-
-## Common pitfalls
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| `FileNotFoundError` from inspect helpers | No steps table in `delta_root` | Verify the pipeline ran and the path is correct |
-| Empty provenance map | No artifact edges committed | Check that operations set `infer_lineage_from` on their outputs |
-| Orphan artifacts (no parent edges) | Stem matching found 0 or >1 candidates | Ensure output filenames preserve the input filename stem. See [stem matching](../concepts/provenance-system.md) |
-| `inspect_metrics` returns empty DataFrame | No metric artifacts at that step | Use `inspect_step` to check what artifact types exist |
-| `inspect_data` raises `ValueError` | `content` is `None` (not hydrated) | The DataArtifact was created without CSV content |
-| Stepper widget does not render | Missing `ipywidgets` or not in Jupyter | Install: `pip install ipywidgets` |
-| Micro graph is unreadable | Too many artifacts | Use `max_step` to limit scope, or query programmatically |
-
----
-
-## Verify
-
-Confirm provenance is populated:
-
-```python
-from artisan.visualization import inspect_pipeline
-from artisan.storage import ArtifactStore
-
-# Should return a non-empty DataFrame with one row per step
-df = inspect_pipeline(delta_root)
-assert len(df) > 0, "No step attempts found"
-
-# Should contain entries linking source and target artifacts
-store = ArtifactStore(delta_root)
-prov_map = store.provenance.load_backward_map()
-assert len(prov_map) > 0, "No provenance edges found"
-```
-
----
-
-## Cross-references
-
-- [Provenance System](../concepts/provenance-system.md) — Dual provenance
-  model, stem matching, and design rationale
-- [Provenance Graphs Tutorial](../tutorials/08-analysis/01-provenance-graphs.ipynb) — Interactive
-  provenance visualization walkthrough
-- [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) — Table
-  schemas and Delta Lake layout
-- [Export Pipeline Results](exporting-results.md) — Artifact retrieval,
-  materialization, and raw Delta table access
-- [Error Handling](../concepts/error-handling.md) — Understanding step status
-  values and failure modes
+- [Exploring Results](../tutorials/01-getting-started/02-exploring-results.ipynb)
+  introduces the readers with a runnable pipeline.
+- [Provenance Graphs](../tutorials/08-analysis/01-provenance-graphs.ipynb) walks
+  through graph interpretation.
+- [Python API](../reference/python-api.md) points to supported imports and
+  source docstrings for reader arguments and return values.

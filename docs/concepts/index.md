@@ -36,4 +36,4 @@ then explore topics relevant to your work.
 
 - [Tutorials](../tutorials/index.md) -- Hands-on walkthroughs that demonstrate these concepts in practice
 - [How-to Guides](../how-to-guides/index.md) -- Task-oriented instructions that apply these concepts
-- [Reference](../reference/index.md) -- API details and schema specifications for the types described here
+- [Python API](../reference/python-api.md) -- Public entry points and links to source definitions and docstrings

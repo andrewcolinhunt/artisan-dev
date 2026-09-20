@@ -1,13 +1,16 @@
 # Reference
 
-Lookup-oriented pages for quick access to API details, terminology, and
-framework comparisons.
+Use the API index to find supported interfaces and inspect their current
+docstrings. Workflow examples and explanations live in the linked guides.
+
+- [Python API Lookup](python-api.md) -- Public packages, signatures, docstrings,
+  and schema inspection for your installed version
 
 - [Comparison to Alternatives](comparison-to-alternatives.md) -- How Artisan
   compares to Nextflow, Snakemake, Airflow, and Prefect
 - [Glossary](glossary.md) -- Key terms and definitions
-- [CompositeDefinition Reference](composite-definition.md) -- API reference for
-  the composite system
+- [Composite Interface](composite-definition.md) -- Find the composite APIs and
+  their usage guides
 
 ## Cross-references
 

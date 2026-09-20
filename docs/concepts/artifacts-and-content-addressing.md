@@ -28,9 +28,9 @@ This single decision produces three consequences that underpin the rest of the
 framework:
 
 **Deduplication.** If two operations produce the same typed semantic artifact,
-only one copy is stored. The commit logic performs an anti-join on incoming IDs against
-the existing Delta Lake table and silently drops duplicates. No configuration
-needed -- it is a structural guarantee.
+only one content row is stored. Commit verification checks that content and
+semantic metadata agree before reusing an existing ID; a conflict is an
+integrity error.
 
 **Deterministic caching.** Cache keys are computed from the operation, concrete
 typed input occurrences, parameters, and effective configuration. Roles, group
@@ -50,10 +50,9 @@ artifact identities rather than mutable records.
 The framework uses xxHash (xxh3_128) rather than a cryptographic hash like
 SHA-256. The choice is deliberate:
 
-- **Speed.** xxh3 processes data at memory bandwidth. On a typical pipeline
-  producing thousands of artifacts, hashing adds negligible overhead. A
-  cryptographic hash would be 10-50x slower with no benefit -- the threat model
-  does not include adversarial content manipulation.
+- **Speed.** xxh3 is a non-cryptographic hash chosen for content hashing with
+  low computational overhead. It does not protect against adversarial content
+  manipulation.
 - **128-bit collision resistance.** 128 bits provides sufficient collision
   resistance for artifact identity in scientific workflows. The birthday bound
   is roughly 2^64 (~10^19) artifacts before a collision becomes probable.
@@ -194,26 +193,21 @@ extends to cover the new type.
 
 ## Hydration: controlling what gets loaded
 
-When the framework loads artifacts from storage, it can operate in two modes:
+Hydration controls what the operation receives. Full hydration supplies the
+artifact's content; ID-only delivery supplies references for passthrough
+operations such as Filter and Merge. An input spec can choose a different mode
+for each role. Non-hydrated artifacts are not materialized to disk.
 
-**Full hydration** loads the complete artifact including content bytes. This is
-what operations need when they read or transform data.
+This does not eliminate content reads during pipeline preparation. Before cache
+lookup or dispatch, the orchestrator loads input content to validate identities
+and verifies external bytes. Filter can route dataset IDs without consuming
+those datasets in its own logic, while preparation still reads them for
+integrity checks.
 
-**ID-only mode** loads only the artifact ID and type, skipping the Delta Lake
-content table scan entirely. This is what passthrough operations need --
-operations like Filter and Merge that route artifacts without reading their
-content.
-
-Hydration is controlled at the input spec level, so different input roles on the
-same operation can use different modes. The framework also skips materialization
-(writing content to disk) for non-hydrated artifacts, since there is no content
-to write.
-
-**Why this matters for performance:** a Filter operation processing 10,000
-artifacts does not need to load 10,000 data files from Delta Lake. It loads
-only the metric artifacts it needs to evaluate filter conditions, and passes
-artifact IDs through unchanged. The difference can be orders of magnitude in
-I/O.
+Supported storage readers also currently load and verify the physical table
+before applying later filters. Hydration settings therefore describe operation
+input delivery, not a guarantee about total I/O or memory use. See
+[Reading pipeline results](storage-and-delta-lake.md#reading-pipeline-results).
 
 ---
 
@@ -233,9 +227,9 @@ than symbolic step references. They add the step number to distinguish pipeline
 position. Preparing once means both cache levels agree on type validation,
 external-byte verification, grouping, ordering, and duplicates.
 
-Both levels share the same guarantee: no false hits (any input change
-invalidates the key), no false misses (identical computation always matches),
-and no manual invalidation.
+Both levels identify the declared invocation. Reuse also depends on the
+operation's cacheability and the applicable cache policy. Operations that read
+mutable external state must declare that they are not cacheable.
 
 A hit reuses an existing execution and its output edges while the current step
 keeps its own fresh attempt ID. The small `cache_reuse` relation records that

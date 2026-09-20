@@ -1,203 +1,124 @@
 # Export Pipeline Results
 
-How to extract pipeline outputs — artifacts, metrics, and execution metadata —
-from Delta Lake tables for downstream analysis or file export.
+Save accepted data and metrics from a selected run, or materialize known artifact
+IDs as files. These recipes assume a completed run in `delta_root`.
 
-**Prerequisites:** A completed pipeline run with data in `delta_root`. Familiarity
-with [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) helps but is
-not required.
+## Choose a run and export a step
 
----
-
-## Minimal working example
+Use the same run ID for selection, inspection, and export. See
+[run selection](inspecting-provenance.md#select-the-run-you-want-to-inspect) for
+how accepted step outputs differ from artifact origin.
 
 ```python
 from pathlib import Path
-from artisan.visualization import inspect_pipeline, inspect_metrics, inspect_data
 
-delta_root = Path("runs/delta")
+from artisan.orchestration import list_runs
+from artisan.visualization import inspect_data, inspect_pipeline
 
-# Pipeline overview: one row per step
-inspect_pipeline(delta_root)
+delta_root = "runs/delta"
+runs = list_runs(delta_root)
+run_id = runs.sort("started_at", descending=True)["pipeline_run_id"][0]
+print(inspect_pipeline(delta_root, pipeline_run_id=run_id))
 
-# Metrics as a flat table with one column per metric key
-inspect_metrics(delta_root)
+output_dir = Path("exported")
+output_dir.mkdir(parents=True, exist_ok=True)
 
-# Read a data artifact's CSV content as a DataFrame
-inspect_data(delta_root, name="dataset_00000")
+# Choose a data-producing step from the overview.
+step_number = 0
+data = inspect_data(delta_root, step_number=step_number, pipeline_run_id=run_id)
+data.write_csv(output_dir / f"step_{step_number}.csv")
 ```
 
----
+The CSV combines accepted datasets from that step and retains `_source` to
+identify their original names. It includes cached and passthrough outputs
+accepted at that logical step, even when their content originated elsewhere.
+`inspect_data` raises if no matching data artifacts exist.
 
-## Quick overview with inspect helpers
+## Export metrics
 
-Artisan provides read-only helpers (`inspect_pipeline`, `inspect_step`,
-`inspect_metrics`, `inspect_data`) that present Delta Lake tables as clean
-Polars DataFrames. Use them to quickly survey what a pipeline produced before
-deciding what to export.
+Metric keys become columns, with nested keys flattened into names such as
+`distribution.median`:
 
-For full documentation of these helpers — column descriptions, filtering
-options, and rounding control — see
-[Inspect Pipeline Results and Provenance](inspecting-provenance.md).
+```python
+from artisan.visualization import inspect_metrics
 
----
+metrics = inspect_metrics(delta_root, pipeline_run_id=run_id)
+metrics.write_parquet(output_dir / "metrics.parquet")
+```
 
-## Retrieve and materialize artifacts
+Add `step_number` to select one logical step. This display-oriented reader rounds
+floats; choose `round_digits` for the precision you need. Load metric artifacts
+directly when you need their original payloads.
 
-The inspect helpers return DataFrames. When you need the actual artifact objects
-— for example, to write files to disk — use `ArtifactStore`:
+## Materialize an artifact by ID
+
+When you already have artifact IDs, use `ArtifactStore` to load the objects and
+write their content. IDs can come from recorded operation inputs, provenance
+queries, or the read-only [MCP query tools](connecting-mcp.md).
 
 ```python
 from artisan.storage import ArtifactStore
 
 store = ArtifactStore(delta_root)
+artifact = store.get_artifact("<artifact ID>", artifact_type="data")
+path = artifact.materialize_to(str(output_dir))
 ```
 
-### Load a single artifact
+The type hint avoids a separate type lookup. Omit it when the type is unknown.
+The store loads content by default; metadata-only objects cannot materialize
+embedded content until hydrated.
+
+For several known IDs:
 
 ```python
-artifact = store.get_artifact("abc123...", artifact_type="data")
-```
-
-The `artifact_type` hint avoids an extra index lookup. If omitted, the store
-resolves the type from the artifact index automatically.
-
-### Load artifacts in bulk
-
-```python
-artifacts = store.get_artifacts_by_type(
-    artifact_ids=["abc123...", "def456..."],
-    artifact_type="data",
-)
-# Returns {artifact_id: DataArtifact, ...}
-```
-
-### Write artifact content to disk
-
-Data, metric, and file reference artifacts support `materialize_to`, which
-writes the artifact's content to a directory and returns the output path:
-
-```python
-from pathlib import Path
-
-output_dir = Path("exported/")
-output_dir.mkdir(exist_ok=True)
-
-artifact = store.get_artifact("abc123...", artifact_type="data")
-path = artifact.materialize_to(output_dir)
-# path is a str like "exported/<artifact_id>.csv"
-```
-
-### Export all data artifacts from a step
-
-```python
-artifact_ids = store.provenance.load_artifact_ids_by_type("data", step_numbers=[2])
-artifacts = store.get_artifacts_by_type(list(artifact_ids), "data")
-
-output_dir = Path("exported/step_2/")
-output_dir.mkdir(parents=True, exist_ok=True)
-
+artifacts = store.get_artifacts_by_type(artifact_ids, artifact_type="data")
 for artifact in artifacts.values():
-    artifact.materialize_to(output_dir)
+    artifact.materialize_to(str(output_dir))
 ```
 
----
+`store.provenance.load_artifact_ids_by_type(..., step_numbers=[...])` filters
+**first-origin steps across runs**. It is useful for origin analysis, but does
+not select the accepted outputs of a run's cached or passthrough step. Use the
+run-scoped table export above when you want everything that step accepted.
 
-## Read Delta tables directly
+## Inspect physical storage when diagnosing a store
 
-All pipeline state is stored as Delta Lake tables under `delta_root`. You can
-read any table with Polars for custom queries beyond what the inspect helpers
-provide.
+A raw Delta read bypasses Artisan's logical-completion filtering and integrity
+checks. It can reveal rows from incomplete or abandoned commits. Use it to
+investigate physical storage, not to determine which results a run accepted.
 
-### Framework tables
+```python
+import polars as pl
+from artisan.schemas import TablePath
+
+physical_rows = pl.read_delta(f"{delta_root}/{TablePath.ARTIFACT_INDEX}")
+```
+
+A manual join with a completion table is not a substitute for the supported
+readers' ownership and integrity checks. See
+[Storage and Delta Lake](../concepts/storage-and-delta-lake.md) for logical
+commits, and [Debug a Recorded Execution](debugging-executions.md) for execution
+diagnostics.
+
+## Verify the export
+
+Check the written table against the selected data:
 
 ```python
 import polars as pl
 
-# Artifact index — one row per artifact with IDs, types, and step numbers
-artifacts = pl.read_delta(str(delta_root / "artifacts/index"))
-
-# Step records — pipeline step status and duration
-steps = pl.read_delta(str(delta_root / "orchestration/steps"))
-
-# Execution records — individual operation runs with timing metadata
-executions = pl.read_delta(str(delta_root / "orchestration/executions"))
-
-# Provenance: artifact derivation relationships (source -> target)
-artifact_edges = pl.read_delta(str(delta_root / "provenance/artifact_edges"))
-
-# Provenance: which artifacts an execution consumed/produced
-execution_edges = pl.read_delta(str(delta_root / "provenance/execution_edges"))
+exported = pl.read_csv(output_dir / f"step_{step_number}.csv")
+assert exported.height == data.height
+assert "_source" in exported.columns
 ```
 
-You can also use the `TablePath` enum to avoid hardcoding path strings:
+CSV consumers can infer different data types on import. Use Parquet when you
+need to preserve the DataFrame schema.
 
-```python
-from artisan.schemas import TablePath
+## Related guides
 
-steps = pl.read_delta(str(delta_root / TablePath.STEPS))
-```
-
-`TablePath` members are string enums, so they work directly in path
-construction without `.value`.
-
-### Artifact content tables
-
-Each artifact type stores its content in a dedicated table:
-
-```python
-data = pl.read_delta(str(delta_root / "artifacts/data"))
-metrics = pl.read_delta(str(delta_root / "artifacts/metrics"))
-configs = pl.read_delta(str(delta_root / "artifacts/configs"))
-file_refs = pl.read_delta(str(delta_root / "artifacts/file_refs"))
-```
-
-To look up the table path for a given type programmatically:
-
-```python
-from artisan.schemas import ArtifactTypeDef
-
-path = ArtifactTypeDef.get_table_path("data")  # "artifacts/data"
-```
-
----
-
-## Common pitfalls
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| `FileNotFoundError` from inspect helpers | No steps table at `delta_root` | Verify the pipeline ran and the path is correct |
-| `inspect_data` raises `ValueError` | `content` is `None` (not hydrated) | The `DataArtifact` was created without CSV content |
-| `inspect_data` raises `ValueError` with "No matching data artifacts found" | Name does not match any `original_name` in the data table | Check the error message for available names |
-| `inspect_metrics` returns empty DataFrame | No metric artifacts at that step | Use `inspect_step` to check what artifact types exist |
-| `materialize_to` raises `ValueError` | `content`/`path` is `None` (not hydrated) or `artifact_id` is `None` (not finalized) | Load the artifact with `hydrate=True` (the default) |
-| `pl.read_delta` raises an error | Path does not contain a valid Delta table | Check spelling; use `TablePath` enum values for framework tables |
-
----
-
-## Verify
-
-Confirm you can read pipeline outputs:
-
-```python
-from artisan.visualization import inspect_pipeline, inspect_metrics
-
-df = inspect_pipeline(delta_root)
-assert len(df) > 0, "No step attempts found"
-
-metrics = inspect_metrics(delta_root)
-assert len(metrics) > 0, "No metrics found"
-```
-
----
-
-## Cross-references
-
+- [Inspect Pipeline Results and Provenance](inspecting-provenance.md) — run
+  selection, lineage, and timing.
 - [Exploring Results](../tutorials/01-getting-started/02-exploring-results.ipynb) —
-  Interactive tutorial for inspect helpers
-- [Inspect Pipeline Results and Provenance](inspecting-provenance.md) — Lineage
-  traversal, graph visualization, and timing analysis
-- [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) — How Artisan
-  persists data and the Delta Lake table layout
-- [Error Handling](../concepts/error-handling.md) — Understanding step status
-  values and failure modes
+  a runnable introduction to inspection.
+- [Python API](../reference/python-api.md) — public reader and store entry points.

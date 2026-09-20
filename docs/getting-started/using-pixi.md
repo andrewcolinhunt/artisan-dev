@@ -147,41 +147,44 @@ dependency change you keep. Return to `--locked` for routine commands.
 
 ## Task reference
 
-Tasks are shortcuts defined in `pyproject.toml`. They save you from remembering
-flags and command sequences.
+Tasks are defined in `pyproject.toml`. Run `pixi task list` to see the available
+tasks; the [project manifest](https://github.com/dexterity-systems/artisan/blob/main/pyproject.toml)
+contains their exact commands. Invoke a task with `pixi run --locked -e ENV TASK`.
 
 ### Default environment
 
-| Task | Command | Description |
-|------|---------|-------------|
-| `setup` | `bash scripts/setup.sh` | Prepare Graphviz in the selected environment; safe to repeat |
-| `install-kernel` | `python -m ipykernel install --user --name=artisan --display-name='Artisan'` | Register the selected environment as the user Artisan kernel |
+| Task | Purpose |
+|------|---------|
+| `setup` | Prepare Graphviz in the selected environment; safe to repeat |
+| `install-kernel` | Register the selected environment as the user Artisan kernel |
 
 ### Dev environment
 
-| Task | Command | Description |
-|------|---------|-------------|
-| `install-hooks` | `pre-commit install` | Install this repository's Git hooks |
-| `test` | `pytest -m 'not integration and not notebook and not modal and not s3' && pytest -m 'integration and not s3' -n 4 && pytest -m s3 -n 2 && pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Unit (sequential) + integration (parallel) + S3 (parallel) + tutorial notebooks |
-| `test-unit` | `pytest -m 'not integration and not notebook and not modal and not s3'` | Run only unit tests (no external services) |
-| `test-integration` | `pytest -m 'integration and not s3' -n 4` | End-to-end pipeline tests (parallel, no external services) |
-| `test-s3` | `pytest -m s3 -n 2` | S3-backend tests (parallel); needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
-| `test-notebook` | `pytest -m 'notebook and not modal' -n 4 --dist=loadfile --nbval-lax docs/tutorials/` | Run every CI-runnable tutorial notebook |
-| `test-notebook-modal` | `pytest -m 'notebook and modal' --nbval-lax docs/tutorials/` | Modal tutorial notebooks; needs Modal credentials |
-| `test-seq` | `pytest -m 'not notebook and not modal'` | Run tests sequentially, excluding notebook/modal (useful for debugging) |
-| `fmt` | `ruff format . && ruff check --fix .` | Format and lint the codebase |
-| `build-dist` | `rm -rf dist/ && python -m build` | Build distribution packages |
-| `check-dist` | `python -m twine check dist/*` | Validate distribution packages |
-| `upload-testpypi` | `python -m twine upload --repository testpypi dist/*` | Upload to Test PyPI |
-| `upload-pypi` | `python -m twine upload dist/*` | Upload to PyPI |
+| Task | Purpose and resource needs |
+|------|----------------------------|
+| `install-hooks` | Install this repository's Git hooks |
+| `test` | Run unit, integration, S3, and local tutorial suites; needs Docker/MinIO or configured S3 |
+| `test-unit` | Unit tests; no external services |
+| `test-integration` | End-to-end local pipelines; no external services |
+| `test-s3` | S3 tests; needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
+| `test-notebook` | CI-runnable tutorial notebooks; excludes Modal notebooks |
+| `test-notebook-modal` | Optional Modal tutorials; needs deployed endpoints and credentials, plus object storage for the R2 tutorial |
+| `test-seq` | Sequential tests for debugging; excludes notebooks and Modal, includes S3 |
+| `test-modal` | Optional live Modal tests; needs cloud credentials and each test's prerequisites |
+| `test-modal-endpoint` | Deploy a test endpoint and exercise R2 delivery; needs Modal/R2 credentials and a worker secret |
+| `fmt` | Format and lint the codebase |
+| `build-dist` | Build distribution packages |
+| `check-dist` | Validate distribution packages |
+| `upload-testpypi` | Publish built distributions to Test PyPI |
+| `upload-pypi` | Publish built distributions to PyPI |
 
 ### Docs environment
 
-| Task | Command | Description |
-|------|---------|-------------|
-| `docs-build` | `jupyter-book build --html` | Build the documentation site |
-| `docs-clean` | `jupyter-book clean` | Remove built documentation |
-| `docs-serve` | `python -m http.server -d _build/html 8000` | Serve docs locally on port 8000 |
+| Task | Purpose |
+|------|---------|
+| `docs-build` | Build the documentation site |
+| `docs-clean` | Remove built documentation |
+| `docs-serve` | Serve built docs locally on port 8000 |
 
 ---
 

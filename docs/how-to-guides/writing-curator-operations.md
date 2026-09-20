@@ -82,7 +82,7 @@ pipeline.run(
 
 ---
 
-## Step 1: Choose curator vs creator
+## Choose curator vs creator
 
 Curator and creator operations solve different problems. Pick the right one
 before you start writing code.
@@ -104,7 +104,7 @@ Curators stay local even when the pipeline's default step runner is external.
 
 ---
 
-## Step 2: Choose a return type
+## Choose a return type
 
 Curator operations return one of two result types. This choice shapes the rest
 of your implementation.
@@ -149,20 +149,18 @@ objects. Drafts are finalized automatically by the framework after
 
 ---
 
-## Step 3: Define the operation class
+## Define the operation class
 
 A curator operation is an `OperationDefinition` subclass that overrides
 `execute_curator`. The framework detects curator operations automatically — if
 `execute_curator()` is overridden, the operation is treated as a curator.
 No explicit flag or registration needed.
 
-### Class variables
-
-| Variable | Type | Default | When to change |
-|----------|------|---------|----------------|
-| `runtime_defined_inputs` | `bool` | `False` | Set `True` when input role names are defined by the caller, not the operation |
-| `independent_input_streams` | `bool` | `False` | Set `True` when input roles have different cardinalities (e.g., a merge with streams of different lengths) |
-| `hydrate_inputs` | `bool` | `True` | Set `False` when the operation only needs artifact IDs, not full content (e.g., passthrough operations) |
+For a merge-like operation, `runtime_defined_inputs=True` lets callers choose
+input roles, and `independent_input_streams=True` allows different stream lengths.
+Use `hydrate_inputs=False` when only IDs are needed. The complete `SimpleMerge`
+example above combines these settings; see the
+[operation docstrings](../reference/python-api.md) for their exact contracts.
 
 ### Input and output specs
 
@@ -203,7 +201,7 @@ content, metrics, provenance edges, etc.
 
 ---
 
-## Step 4: Implement `execute_curator`
+## Implement `execute_curator`
 
 Here are the three common curator patterns with complete implementations.
 
@@ -399,14 +397,6 @@ pipeline.run(
 
 All criteria are AND'd. Supported operators: `gt`, `ge`, `lt`, `le`, `eq`, `ne`.
 
-#### Filter parameters
-
-| Parameter | Type | Default | Effect |
-|-----------|------|---------|--------|
-| `criteria` | `list[Criterion]` | `[]` | AND'd filter criteria to evaluate |
-| `passthrough_failures` | `bool` | `False` | Pass all artifacts through regardless of criteria (diagnostics still computed) |
-| `chunk_size` | `int` | `100_000` | Number of passthrough artifacts per hydration/evaluation chunk |
-
 Set `passthrough_failures=True` to preview what a filter *would* remove without
 actually removing anything — useful for debugging filter thresholds:
 
@@ -526,6 +516,11 @@ result = filt.commit(step_name="interactive_filter")
 # result.output("passthrough") is available for downstream steps
 ```
 
+The `load()` step filter uses artifact origin steps across the store. It does
+not select outputs accepted by a particular run. Use it when you intend that
+origin-based selection; see [run selection](inspecting-provenance.md#select-the-run-you-want-to-inspect)
+for the distinction.
+
 The `load()` method discovers descendant metrics via forward provenance walk.
 `set_criteria()` validates metric names against loaded data and checks for
 ambiguous field names across steps. `commit()` writes step and execution records
@@ -602,6 +597,7 @@ step = pipeline.run(
     inputs=[output("gen_a", "datasets"), output("gen_b", "datasets")],
 )
 assert step.status is StepStatus.SUCCEEDED
+pipeline.finalize()
 ```
 
 ---

@@ -1,15 +1,12 @@
 # Storage and Delta Lake
 
-A pipeline that loses results to a crashed worker, silently stores duplicate
-data, or requires an external database to track what it produced is a pipeline
-you cannot trust at scale. The storage layer exists to make these failures
-structurally impossible — not through careful coding discipline, but through
-architectural choices that eliminate entire categories of problems.
+Artisan stores artifact content, provenance, and execution history in Delta
+Lake tables. Workers stage isolated outputs; the orchestrator commits them and
+records when the complete result is safe to read.
 
-This page explains why the framework uses Delta Lake as its persistence
-backbone, how the staging-commit pattern keeps shared state safe under
-concurrent execution, and how the artifact type registry makes the storage
-layer extensible without framework modifications.
+This page explains the table layout, that visibility boundary, and what remains
+after an interrupted commit. These distinctions matter when inspecting results
+or recovering a store.
 
 ---
 
@@ -29,64 +26,21 @@ silently reading rows under the wrong identity or cache semantics.
 
 ---
 
-## The problem storage solves
-
-Computational pipelines on HPC clusters face a specific set of storage
-challenges that general-purpose solutions handle poorly:
-
-**Concurrent writes from many workers.** A pipeline step may dispatch thousands
-of local processes or provider jobs. If each worker writes directly to shared
-state, write conflicts and partial corruption are inevitable.
-
-**No database services.** HPC clusters provide shared filesystems, not managed
-database instances. A storage solution that requires PostgreSQL, Redis, or any
-long-running service is impractical in this environment.
-
-**Filesystem hygiene.** Creating millions of small files in a single directory
-degrades filesystem performance and violates HPC best practices. The storage
-system must control file proliferation at the architecture level.
-
-**NFS consistency gaps.** Shared filesystems like NFS do not guarantee that a
-file written by one node is immediately visible to another. The storage layer
-must handle this explicitly, not hope for the best.
-
-**Partial failure recovery.** When 3 of 1,000 workers fail, the 997 successful
-results must be preserved. Rolling back everything because of a few failures
-wastes hours of compute time.
-
----
-
 ## Why Delta Lake
 
-Delta Lake provides transactional storage over Parquet files on a regular
-filesystem. No external services, no connection strings, no processes to keep
-alive. The Delta Lake library reads and writes Parquet files with a transaction
-log that provides ACID guarantees.
+Delta Lake stores columnar Parquet files with a transaction log, allowing local
+pipelines to persist queryable results without running a database service.
+Embedded artifact content lives in table rows; large external bytes stay at
+verified locations recorded separately.
 
-Four properties make it the right choice for this problem:
+Each table write is atomic. A pipeline result spans several tables, so Artisan
+adds a logical commit and completion checks to coordinate their visibility.
+Delta Lake's per-table transactions alone do not make the whole step atomic.
 
-**Atomic transactions.** Each commit to a Delta Lake table is all-or-nothing.
-The orchestrator commits results from all workers in a single transaction per
-table. If the commit succeeds, all results are visible. If it fails, none are.
-There is no intermediate state where some results are visible and others are
-not.
-
-**Columnar storage.** Artifact content, metrics, and configuration data are
-stored directly in Delta Lake columns rather than as separate files. A pipeline
-that produces 50,000 metric artifacts stores them as rows in a single table,
-not as 50,000 JSON files. This enforces filesystem hygiene at the architecture
-level — the framework cannot accidentally create a directory with a million
-loose files.
-
-**Partition pruning.** Tables are partitioned by pipeline step number. When you
-query results from step 3, only the Parquet files for step 3 are read. This
-makes queries fast even when a pipeline has produced millions of artifacts
-across dozens of steps.
-
-**Ecosystem compatibility.** Delta Lake tables are Parquet files with a
-transaction log. You can query them with Polars, DuckDB, pandas, or any
-Delta-compatible tool. Pipeline results are not locked inside a proprietary
-format.
+Content and execution tables are partitioned by origin step number. That is a
+physical layout choice, not a read-cost guarantee: current supported readers
+load and verify the physical table before applying later filters. See
+[Reading pipeline results](#reading-pipeline-results).
 
 ---
 
@@ -115,41 +69,25 @@ delta_root/
 └── orchestration/          Execution history and step state
     ├── executions/         Operation execution log
     ├── cache_reuse/        Current step → reused execution links
-    └── steps/              Step-level state transitions
+    ├── steps/              Step-level state transitions
+    └── logical_commits/    Planned, complete, or abandoned commit state
 ```
 
 ### Why three groups
 
-The grouping reflects how data is written and read:
+**Artifact tables** store content and identity. Content tables are partitioned
+by `origin_step_number`; the global index and location relations are not.
 
-**Artifact tables** are written during commit after every pipeline step. They
-grow with each step. Queries against them are almost always filtered by step
-number, so content tables are partitioned by `origin_step_number` for fast
-predicate pushdown.
+**Provenance tables** store directed derivation edges and execution inputs and
+outputs. They are unpartitioned because traversal crosses step boundaries.
 
-**Provenance tables** are also written during commit, but are queried
-differently — typically by artifact ID rather than step number. They are not
-partitioned, because provenance queries need to traverse across steps.
+**Orchestration tables** record executions, run membership, cache reuse, step
+state, and logical commit completion. Executions are partitioned by origin step
+number. Steps and the other control relations are unpartitioned.
 
-**Orchestration tables** track execution metadata. The `executions` table is
-partitioned by step number (queries are step-scoped). The `steps` table is
-written directly by the orchestrator (not through the staging path) and is not
-partitioned.
-
-### Partitioning summary
-
-Not all tables are partitioned. The choice depends on access patterns:
-
-| Table | Partitioned by `origin_step_number` | Reason |
-|-------|-------------------------------------|--------|
-| Artifact content tables | Yes | Queries are step-scoped |
-| `artifacts/index` | No | Small table, cross-step lookups |
-| `artifacts/locations` | No | One artifact can have several verified URIs |
-| `provenance/artifact_edges` | No | Graph traversal crosses steps |
-| `provenance/execution_edges` | No | Joined with executions by run ID |
-| `orchestration/executions` | Yes | Queries are step-scoped |
-| `orchestration/cache_reuse` | No | Small relation joined by current step-run ID |
-| `orchestration/steps` | No | Few rows, written directly by orchestrator |
+The orchestrator writes pending and running step snapshots directly. A terminal
+snapshot that accepts persisted results is staged with those results and becomes
+visible through their logical commit.
 
 ### The artifact index
 
@@ -217,8 +155,8 @@ state.
 
 Workers never write to Delta Lake tables. Instead, each worker writes its
 results as Parquet files to an isolated staging directory. After all workers
-complete, the orchestrator reads the staged files and commits them atomically
-to Delta Lake.
+complete, the orchestrator verifies the staged files and includes them in an
+immutable logical commit plan. It also stages the terminal step snapshot.
 
 ```
                               staging_root/
@@ -235,7 +173,7 @@ Worker C ──writes──>          │   │   ├── metrics.parquet
                               │   └── 7a/3b/{run_id_7a3b...}/
                               │       └── ...
                               │
-Orchestrator ──reads all──>   └── commit atomically ──> Delta Lake
+Orchestrator ──verifies──>    └── seal plan → write tables → mark complete
 ```
 
 The step directory name combines the step number and operation name
@@ -261,15 +199,13 @@ uses this as the signal that a worker's results are ready for commit.
 
 Three reasons:
 
-**Concurrency.** Delta Lake uses optimistic concurrency control. If 1,000
-workers attempt concurrent writes to the same table, most would encounter
-transaction conflicts and need to retry. With staging, there are zero write
-conflicts — each worker writes to its own directory.
+**Concurrency.** Delta Lake uses optimistic concurrency control. Isolating
+worker staging avoids workers competing to update the same shared tables;
+the orchestrator coordinates those writes.
 
-**Partial failure isolation.** If a worker crashes, its staging directory is
-ignored during commit. The orchestrator has a complete view of which
-workers succeeded and which failed before committing anything. There is no need
-to roll back partially-written data.
+**Partial failure isolation.** Incomplete worker staging is not accepted as a
+successful result. Finished sibling work and staged failure records can still
+be persisted according to the step's failure policy.
 
 **Consistency checks.** The orchestrator can validate staged data before
 committing — checking for duplicates, verifying referential integrity, and
@@ -280,67 +216,46 @@ these checks.
 
 ## NFS consistency
 
-When provider workers run on cluster nodes and the staging directory lives on
-a shared NFS filesystem, a write-then-read race condition exists: a worker writes
-a file, but the orchestrator (running on a different node) may not see it
-immediately due to NFS caching.
+Shared filesystems can delay visibility between a worker and the orchestrator.
+Shared-filesystem workers flush staged files and their directories. The
+orchestrator refreshes directory listings and polls for readable
+`executions.parquet` sentinels before committing.
 
-The framework handles this with a three-part strategy:
-
-**Writer-side fsync.** After writing all staging files, shared-filesystem workers call
-`fsync()` on each file and its containing directory. This forces the NFS client
-to flush data to the server. The fsync is conditional — it runs only when the
-execution is on a shared filesystem, avoiding unnecessary I/O overhead for
-local execution.
-
-**Reader-side directory cache invalidation.** Before checking for a staging
-file, the orchestrator walks the ancestor directories of the expected path and
-calls `listdir()` on each one. This forces READDIR RPCs that flush stale NFS
-directory entry caches, ensuring newly created directories become visible.
-
-**Reader-side file verification.** The orchestrator deterministically computes
-where each worker's staging files should be and polls for the sentinel file
-(`executions.parquet`) with exponential backoff (capped at 5-second intervals).
-The polling uses `open()` + `read(1)` rather than `os.path.exists()`, because
-the open-read pattern triggers NFS close-to-open consistency guarantees that
-stat-based checks do not.
-
-This is not an optimization — it is a correctness requirement. Without these
-measures, the orchestrator could miss worker results that were successfully
-written but not yet visible through NFS caching.
+These checks reduce the chance of treating a delayed file as missing; the
+commit plan still verifies the actual staged evidence. Local runners skip the
+shared-filesystem verification path.
 
 ---
 
 ## Commit ordering
 
-The orchestrator commits tables in a specific order designed to maintain
-referential integrity even if a crash occurs mid-commit:
+A logical commit records an immutable plan of the staged evidence and expected
+table effects. The orchestrator applies the present tables in this order:
 
+```text
+Artifact content tables
+        ↓
+Artifact index → Artifact locations
+        ↓
+Executions → Execution edges → Artifact edges
+        ↓
+Cache reuse links
+        ↓
+Terminal step snapshot
+        ↓
+Logical commit marked complete
 ```
-Artifact content tables    (data, metrics, configs, file_refs, custom types)
-        ↓
-Artifact index             (maps IDs to types)
-        ↓
-Artifact edges             (source → target derivation)
-        ↓
-Execution edges            (input/output per execution)
-        ↓
-Executions                 (execution log — last)
-```
 
-**Why this order:** Content exists before its index entry. Index entries exist
-before provenance edges reference them. Provenance edges exist before execution
-records reference them. If a crash interrupts the commit sequence, the database
-is in a consistent (if incomplete) state — there are never dangling references
-pointing to content that does not exist.
+The final completion marker is the visibility boundary. Supported Artisan
+readers exclude rows owned by planned or abandoned commits and validate the
+expected effects of completed commits. A crash can leave some physical table
+writes behind without making them accepted pipeline results.
 
-The `steps` table is excluded from this sequence. It is written directly by the
-orchestrator at step start and end, outside the staging-commit path.
-
-Delta Lake does not support multi-table transactions. Each table commit is
-atomic individually, but the sequence across tables is not. The commit ordering
-is the mitigation: it ensures that partial commits degrade gracefully rather
-than creating inconsistencies.
+Write order does not replace a multi-table transaction. Each Delta write is
+atomic independently; Artisan's completion checks coordinate visibility across
+them. Raw Delta readers bypass those checks and may expose unfinished effects.
+Pending and running step snapshots remain observable while work is in progress.
+See [Crash recovery](#crash-recovery) for handling incomplete plans.
 
 ---
 
@@ -354,7 +269,8 @@ ID is an integrity error.
 This means:
 
 - If two workers produce identical output, only one copy is stored
-- Re-running a pipeline step that produces the same results adds zero new rows
+- Reproducing identical artifacts adds no new content rows; a new execution
+  still records its own attempt and provenance
 - Deduplication requires no configuration — it is a structural consequence of
   content-addressed identity
 
@@ -442,18 +358,28 @@ For the full two-level caching mechanism (step-level and execution-level), see
 
 ## Reading pipeline results
 
-Because Delta Lake tables are Parquet files with a transaction log, you can
-query pipeline results with any Delta-compatible tool. The most common approach
-is Polars with lazy scanning, which uses partition pruning to read only the
-data you need.
+Use Artisan's inspection helpers, `ArtifactStore`, and `ProvenanceStore` to read
+accepted results. They apply logical-completion filtering and integrity checks.
+For a store shared by several runs, select the `pipeline_run_id` when inspecting
+run results. A cached artifact retains its original content row and origin step;
+the current run's execution and cache-reuse relations identify where it was used.
 
-This interoperability is intentional. Pipeline results are not locked inside
-the framework — they are accessible to any data tool that reads Parquet. You
-can build dashboards, run ad hoc analyses, or feed results into other systems
-without going through the framework's API.
+These readers currently load and verify a physical table eagerly. Even when an
+API returns a Polars `LazyFrame`, subsequent filters operate on that loaded
+result and do not push predicates into the original Delta scan. Partitioning
+therefore does not promise that a step-scoped read touches only that step's
+files.
 
-For hands-on examples of querying pipeline results, see the
-[Exploring Results Tutorial](../tutorials/01-getting-started/02-exploring-results.ipynb).
+Delta-compatible tools remain useful for physical inspection. Direct
+`pl.scan_delta(...)`, DuckDB, or other raw queries bypass Artisan's completion
+filter and integrity validation. Their rows are not necessarily accepted
+results, especially after an interrupted commit. Per-table version history also
+does not reconstruct a complete historical run or its external files.
+
+See [Inspect Pipeline Results and Provenance](../how-to-guides/inspecting-provenance.md)
+for supported readers and run selection, and
+[Exploring Results](../tutorials/01-getting-started/02-exploring-results.ipynb)
+for an interactive example.
 
 ---
 
@@ -463,14 +389,14 @@ For hands-on examples of querying pipeline results, see the
 |----------|-----------|
 | Delta Lake over a database | No external services required on HPC clusters |
 | Content in columns, not files | Prevents filesystem bloat from millions of small files |
-| Staging before commit | Eliminates concurrent write conflicts and enables partial failure recovery |
+| Staging before commit | Isolates worker output and preserves evidence for recovery |
 | Sharded staging directories | Prevents single-directory performance degradation |
 | Sentinel file pattern | Enables reliable completion detection over NFS |
 | Registry-driven tables | Domain layers extend storage without framework changes |
 | Exact store manifest | Prevents cross-version identity and cache misreads |
 | Separate artifact locations | Keeps external availability independent of identity |
-| Ordered table commits | Maintains referential integrity without multi-table transactions |
-| Partition by step number | Enables fast predicate pushdown for step-scoped queries |
+| Logical completion and verified reads | Keeps incomplete multi-table effects out of accepted results |
+| Partition by origin step number | Organizes content and execution files; current readers still verify eagerly |
 | Separate provenance store | Keeps graph queries independent of artifact content |
 | Zstd compression everywhere | Good compression ratio with fast read/write performance |
 | Conditional fsync | NFS flush only on shared filesystems, avoiding local overhead |

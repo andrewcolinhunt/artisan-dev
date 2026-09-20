@@ -53,17 +53,10 @@ pipeline = PipelineManager.create(
 )
 ```
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `name` | `str` | — | Pipeline identifier (used in logging and run IDs) |
-| `delta_root` | `str` | — | Where Delta Lake tables are written |
-| `staging_root` | `str` | — | Where workers write intermediate files before commit |
-| `working_root` | `str \| None` | `tempfile.gettempdir()` | Worker sandbox directory. Defaults to `$TMPDIR` |
-| `failure_policy` | `FailurePolicy` | `CONTINUE` | How to handle step failures (`CONTINUE` or `FAIL_FAST`) |
-| `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | Which usable terminal steps qualify as cache hits (`ALL_SUCCEEDED` or `STEP_COMPLETED`) |
-| `default_step_runner` | `str \| RunnerBase` | `"local"` | Default step runner. Core accepts `"local"`; optional providers are passed as runner instances |
-| `preserve_staging` | `bool` | `False` | Keep staging files after commit (debugging) |
-| `preserve_working` | `bool` | `False` | Keep worker sandboxes after execution (debugging) |
+`delta_root` contains the durable store; `staging_root` holds workers' pending
+results. Use [Configure Execution](configuring-execution.md) for worker
+resources, batching, cache policy, and diagnostic directories. Exact arguments
+are available through the [Python API entry points](../reference/python-api.md).
 
 Both `delta_root` and `staging_root` are created automatically if they do not
 exist. Cluster runner providers can map the default `working_root` to
@@ -187,11 +180,11 @@ the executor.
 
 ### `run()` vs `submit()`
 
-`run()` blocks and returns a `StepResult`; `submit()` returns a `StepFuture`
-immediately. Both wire downstream the same way (`.output("role")`). Use
-`submit()` when steps can overlap; `run()` is the natural choice for
-straight-line scripts. `finalize()` is required after `submit()` (it drains
-pending futures); after `run()` only it is optional.
+`run()` waits and returns a `StepResult`. `submit()` returns a `StepFuture`
+after preparing the step and waiting for any referenced predecessors. Both wire
+downstream with `.output("role")`. Use `submit()` to keep the caller available
+while execution runs, then call `finalize()` to wait and clean up. The current
+manager executes steps serially; workers within a step can run concurrently.
 
 For composites, the equivalent surface is `submit_composite()` /
 `run_composite()`.
@@ -241,15 +234,17 @@ Both `run()` and `submit()` accept override parameters beyond `operation`,
 | `runner_resources` | Override runner resource allocation (CPUs, memory, GPUs, time limit) |
 | `batch_strategy` | Override batching settings (`artifacts_per_unit`, `max_workers`) |
 | `compute_provider` | Override the compute provider — local, modal, etc. |
-| `compute_resources` | Override compute hardware (GPU, memory_gb, timeout) when using modal |
+| `compute_resources` | Patch the operation’s compute configuration; deployed hardware still requires redeployment |
 | `environment` | Override the operation's runtime environment |
 | `tool` | Override the operation's external tool configuration |
 | `failure_policy` | Override the pipeline's failure policy for this step |
-| `compact` | Run Delta Lake compaction after commit (default `True`) |
+| `cache_policy` | Decide whether a prior partial step may supply a whole-step cache hit |
+| `skip_cache` | Bypass both step and execution caching for this step |
+| `compact` | Control Delta Lake compaction after commit |
 
 See [Configuring Execution](configuring-execution.md) for details on each.
 
-### Branching (parallel paths)
+### Branching
 
 Feed the same output into multiple independent steps:
 
@@ -314,47 +309,9 @@ pipeline.run(
 
 ### Composing operations with composites
 
-A composite groups multiple operations into a reusable unit. Define one by
-subclassing `CompositeDefinition` and implementing `compose()`:
-
-```python
-from enum import StrEnum
-from typing import ClassVar
-
-from artisan.composites import CompositeContext, CompositeDefinition
-from artisan.schemas import InputSpec, OutputSpec
-
-
-class TransformAndScore(CompositeDefinition):
-    """Transform data then compute metrics."""
-
-    name = "transform_and_score"
-
-    class InputRole(StrEnum):
-        DATASET = "dataset"
-
-    class OutputRole(StrEnum):
-        METRICS = "metrics"
-
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATASET: InputSpec(artifact_type="data", required=True),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.METRICS: OutputSpec(artifact_type="metric"),
-    }
-
-    def compose(self, ctx: CompositeContext) -> None:
-        transformed = ctx.run(
-            DataTransformer,
-            inputs={"dataset": ctx.input("dataset")},
-            params={"scale_factor": 2.0},
-        )
-        scored = ctx.run(
-            MetricCalculator,
-            inputs={"dataset": transformed.output("dataset")},
-        )
-        ctx.output("metrics", scored.output("metrics"))
-```
+A composite exposes a sequence of operations as one reusable definition. Use the
+`TransformAndScore` class from [Write Composite Operations](writing-composite-operations.md),
+which transforms a dataset and scores the result:
 
 Run a composite with `pipeline.run_composite()`. Each internal operation
 becomes its own pipeline step with independent caching and dispatch:
@@ -393,8 +350,7 @@ pipeline.run(
 )
 ```
 
-See [Configuring Execution](configuring-execution.md) for the full list of
-resource and batching options.
+See [Configuring Execution](configuring-execution.md) for resource and batching recipes.
 
 ### Resume a previous run
 
@@ -451,7 +407,7 @@ print(runs)  # polars DataFrame with run IDs, step counts, and timestamps
 | Downstream step receives 0 artifacts | Upstream step failed or filtered everything out | Check `step.status` and `step.succeeded_count` |
 | `Raw file paths are not allowed for creator operations` | Passed a file path list to a creator operation | Use `IngestData` first, then wire its output |
 | Pipeline hangs on exit | Forgot `finalize()` after using `submit()` | Call `pipeline.finalize()` |
-| Stale results after code change | Content-addressed cache hit from a previous run | Use a fresh `delta_root` |
+| Re-run a step after changing code or external state | A prior cached result is still eligible | Pass `skip_cache=True`; see [Bypass caching](configuring-execution.md#bypass-caching-and-resume). Use a fresh store only when you want separate history |
 
 ---
 
@@ -469,7 +425,15 @@ pipeline = PipelineManager.create(
 )
 step = pipeline.run(operation=DataGenerator, params={"count": 3})
 assert step.status is StepStatus.SUCCEEDED
-assert step.succeeded_count == 3
+assert step.succeeded_count == 1  # One source execution creates three artifacts.
+
+from artisan.visualization import inspect_step
+
+outputs = inspect_step(
+    "test/delta", step.step_number, pipeline_run_id=pipeline.config.pipeline_run_id
+)
+assert outputs.filter(outputs["artifact_type"] == "data").height == 3
+pipeline.finalize()
 ```
 
 ---
@@ -477,7 +441,7 @@ assert step.succeeded_count == 3
 ## Cross-references
 
 - [Configuring Execution](configuring-execution.md) — resources, batching, step runners
-- [CompositeDefinition Reference](../reference/composite-definition.md) — full API for composites
+- [CompositeDefinition Reference](../reference/composite-definition.md) — composite entry points and usage
 - [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) — interactive walkthrough
 - [Execution Flow](../concepts/execution-flow.md) — what happens under the hood
 - [Writing Creator Operations](writing-creator-operations.md) — building custom operations

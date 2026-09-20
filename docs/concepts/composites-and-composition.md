@@ -40,38 +40,12 @@ an `OperationDefinition` in structure — `name`, `InputRole`, `OutputRole`,
 `inputs`, `outputs` — but instead of implementing a computation lifecycle,
 it implements `compose()`.
 
-```python
-class TransformAndScore(CompositeDefinition):
-    name = "transform_and_score"
-
-    class InputRole(StrEnum):
-        DATASET = "dataset"
-
-    class OutputRole(StrEnum):
-        METRICS = "metrics"
-
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATASET: InputSpec(artifact_type="data", required=True),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.METRICS: OutputSpec(artifact_type="metric"),
-    }
-
-    def compose(self, ctx: CompositeContext) -> None:
-        transformed = ctx.run(
-            DataTransformer,
-            inputs={"dataset": ctx.input("dataset")},
-        )
-        scored = ctx.run(
-            MetricCalculator,
-            inputs={"dataset": transformed.output("dataset")},
-        )
-        ctx.output("metrics", scored.output("metrics"))
-```
-
-The key difference from an operation: **compose does not compute**.
-It wires. Each `ctx.run()` delegates to a real operation. The composite
-itself produces no artifacts — it orchestrates the operations that do.
+For example, a transform-and-score composite connects its dataset input to a
+transformer, connects the transformer's output to a metric calculator, and
+exposes the calculator's metrics as its own output. `compose()` declares that
+wiring; the child operations perform the computation. The
+[writing guide](../how-to-guides/writing-composite-operations.md) provides the
+complete implementation.
 
 ### compose() vs the operation lifecycle
 
@@ -87,8 +61,7 @@ itself produces no artifacts — it orchestrates the operations that do.
 ## How compose() wires operations
 
 `compose()` receives a `CompositeContext`, the wiring surface it uses to
-connect operations. The context exposes three methods, all visible in the
-example above:
+connect operations through three actions:
 
 - **Referencing inputs.** `ctx.input(role)` hands back a reference to one
   of the composite's declared inputs, ready to feed into a step.
@@ -102,8 +75,8 @@ example above:
 Only refs mapped through `ctx.output()` are visible outside the composite.
 Everything else is an internal wiring reference between steps, so the
 composite's external contract is exactly its declared inputs and mapped
-outputs. For exact signatures and return types, see the
-[CompositeDefinition Reference](../reference/composite-definition.md).
+outputs. See the [composite API entry points](../reference/composite-definition.md)
+for the public classes and current definitions.
 
 ---
 
@@ -119,11 +92,9 @@ no in-worker mini-engine, and no whole-composite cache entry.
    (3 datasets)              (3 datasets)                            (3 metrics)
 ```
 
-**What this buys the reader:** every step inside a composite is an
-ordinary pipeline step. It gets its own cache entry, its own lifecycle
-and failure records, its own provenance edges, its own dispatch, and
-participates in cancellation — for free, from the same machinery every
-non-composite step uses. Step names are prefixed with the composite name
+Every child has its own cache entry, persisted results, lifecycle and failure
+records, provenance edges, and dispatch. It participates in cancellation in the
+same way as other steps. Step names are prefixed with the composite name
 (dot-separated: `outer.inner.operation` for nested composites) so the
 grouping stays legible in the graph.
 
@@ -136,13 +107,11 @@ second kind of step.
 
 ### Composite-level overrides are step defaults
 
-`submit_composite`/`run_composite` accept the same execution overrides an
-ordinary step accepts (`step_runner`, `runner_resources`, `batch_strategy`,
-`environment`, `tool`, `compute_provider`, `compute_resources`,
-`failure_policy`, `compact`, `skip_cache`). Each acts as a **default for
-every child step**. A value set explicitly on a `ctx.run()` call wins for
-that knob; anything the child leaves unset falls back to the
-composite-level default.
+Execution overrides on `submit_composite`/`run_composite` act as **defaults for
+every child step**. These include placement, resources, batching, and policies
+such as `failure_policy` and `cache_policy`. A value set explicitly on a
+`ctx.run()` call wins for that setting; anything the child leaves unset falls
+back to the composite-level default.
 
 | | Composite-level override | Per-op `ctx.run()` override |
 |---|---|---|
@@ -153,7 +122,21 @@ composite-level default.
 This mirrors the default-then-explicit-override shape used by ordinary steps.
 The source of an ordinary step's default depends on the knob: for example,
 `step_runner` falls back to the pipeline default, while `compute_provider`
-falls back to the operation declaration.
+falls back to the operation declaration. `cache_policy` inherits from the
+nearest composite default, then the pipeline default. Algorithm `params` are
+forwarded explicitly by `compose()` rather than inherited as child defaults.
+
+### Submission and waiting
+
+`submit_composite()` calls `compose()` and submits its children synchronously.
+Preparation and predecessor waits can therefore block the call. Its returned
+`CompositeResult` exposes output references and can wait for remaining children.
+`run_composite()` also waits for every child before returning.
+
+The current `PipelineManager` executes steps serially. Parallelism is within a
+creator step's worker batches; wrapping steps in a composite does not add
+parallel step execution. See
+[Synchronous and asynchronous execution](architecture-overview.md#synchronous-and-asynchronous-execution).
 
 ---
 
@@ -186,26 +169,14 @@ one-allocation execution without a second execution model.
 
 ## Nesting composites
 
-A composite can contain other composites. `ctx.run()` accepts both
-`OperationDefinition` and `CompositeDefinition` subclasses:
+A composite can contain other composites. `ctx.run()` accepts both operation
+and composite definitions. A generate-and-score composite could run a generator
+and then pass its outputs to a nested transform-and-score composite.
 
-```python
-class GenerateAndScore(CompositeDefinition):
-    name = "generate_and_score"
-    # ...
-
-    def compose(self, ctx: CompositeContext) -> None:
-        generated = ctx.run(DataGenerator, params={"count": 3})
-        scored = ctx.run(
-            TransformAndScore,  # nested composite
-            inputs={"dataset": generated.output("datasets")},
-        )
-        ctx.output("metrics", scored.output("metrics"))
-```
-
-A nested composite's internal operations become their own pipeline steps,
-with dot-separated names (`outer.inner.operation`). Nesting composes
-grouping; it does not introduce a new execution model.
+The nested child's operations become ordinary pipeline steps with dot-separated
+names (`outer.inner.operation`). Nesting adds grouping without changing the
+execution or persistence model. See the
+[nesting example](../how-to-guides/writing-composite-operations.md#nesting-composites).
 
 ---
 
@@ -245,8 +216,8 @@ pipeline DAG.
 
 ## Cross-references
 
-- [CompositeDefinition Reference](../reference/composite-definition.md) — API
-  signatures and field tables
+- [CompositeDefinition Reference](../reference/composite-definition.md) — Public
+  entry points and links to current definitions
 - [Writing Composite Operations](../how-to-guides/writing-composite-operations.md) —
   step-by-step guide
 - [Composable Operations Tutorial](../tutorials/02-pipeline-design/07-composites.ipynb) —

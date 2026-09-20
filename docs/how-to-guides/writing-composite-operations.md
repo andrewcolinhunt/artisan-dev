@@ -35,12 +35,14 @@ class TransformAndScore(CompositeDefinition):
         DATASET = "dataset"
 
     class OutputRole(StrEnum):
+        DATASET = "dataset"
         METRICS = "metrics"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATASET: InputSpec(artifact_type="data", required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.DATASET: OutputSpec(artifact_type="data"),
         OutputRole.METRICS: OutputSpec(artifact_type="metric"),
     }
 
@@ -54,6 +56,7 @@ class TransformAndScore(CompositeDefinition):
             MetricCalculator,
             inputs={"dataset": transformed.output("dataset")},
         )
+        ctx.output("dataset", transformed.output("dataset"))
         ctx.output("metrics", scored.output("metrics"))
 ```
 
@@ -86,9 +89,13 @@ result = pipeline.finalize()
 ```
 
 `run_composite` blocks until every child step completes. Use
-`submit_composite` for the non-blocking form; it returns a
-`CompositeResult` whose `.output(role)` wires downstream steps and whose
-`.wait()` blocks on the children.
+`submit_composite` to receive a `CompositeResult` whose `.output(role)` wires
+downstream steps and whose `.wait()` waits for the children. Composition can
+wait while preparing dependent children, so submission is not guaranteed to
+return immediately. The current manager executes child steps serially.
+
+As an alternative to the blocking call above, submit the composite and wire its
+output into a downstream step before finalizing the pipeline:
 
 ```python
 scored = pipeline.submit_composite(
@@ -98,8 +105,9 @@ scored = pipeline.submit_composite(
 pipeline.run(
     operation=MetricCalculator,
     name="rescore",
-    inputs={"dataset": scored.output("metrics")},
+    inputs={"dataset": scored.output("dataset")},
 )
+pipeline.finalize()
 ```
 
 Composites run only through `run_composite`/`submit_composite`. Passing a
@@ -194,7 +202,9 @@ class TransformAndScore(CompositeDefinition):
     # ... name, roles, inputs, outputs ...
 
     class Params(BaseModel):
-        scale_factor: float = Field(default=2.0, ge=0.0)
+        scale_factor: float = Field(
+            default=2.0, ge=0.0, description="Multiplier for values."
+        )
 
     params: Params = Params()
 
@@ -227,7 +237,7 @@ pipeline.run_composite(
 `run_composite`/`submit_composite` accept the same execution overrides an
 ordinary step takes: `step_runner`, `runner_resources`, `batch_strategy`,
 `environment`, `tool`, `compute_provider`, `compute_resources`,
-`failure_policy`, `compact`, and `skip_cache`. Each becomes the
+`failure_policy`, `cache_policy`, `compact`, and `skip_cache`. Each becomes the
 **default for every child step**. A value set explicitly on a `ctx.run()`
 call wins for that step and that knob; anything the child leaves unset
 falls back to the composite-level default.
@@ -358,12 +368,20 @@ as a real pipeline step, so its upstream artifacts are already committed
 and its provenance edges are recorded by the ordinary step path:
 
 ```python
+from artisan.operations.curator import Filter
+
+
 def compose(self, ctx: CompositeContext) -> None:
-    generated = ctx.run(DataGenerator, params={"count": 10})
+    generated = ctx.run(DataGenerator, params={"count": 10, "seed": 42})
+    ctx.run(MetricCalculator, inputs={"dataset": generated.output("datasets")})
     filtered = ctx.run(
         Filter,
         inputs={"passthrough": generated.output("datasets")},
-        params={"criteria": [{"metric": "score", "operator": "gt", "value": 0.5}]},
+        params={
+            "criteria": [
+                {"metric": "distribution.median", "operator": "gt", "value": 0.5}
+            ]
+        },
     )
     ctx.output("filtered", filtered.output("passthrough"))
 ```
@@ -416,8 +434,7 @@ pipeline.finalize()
 
 - [Composites and Composition](../concepts/composites-and-composition.md) — why
   composites exist and how they execute
-- [CompositeDefinition Reference](../reference/composite-definition.md) — API
-  signatures and field tables
+- [CompositeDefinition Reference](../reference/composite-definition.md) — public entry points and source contracts
 - [Composable Operations Tutorial](../tutorials/02-pipeline-design/07-composites.ipynb) —
   interactive examples
 - [Writing Creator Operations](writing-creator-operations.md) — the operations

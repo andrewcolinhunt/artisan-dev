@@ -8,9 +8,9 @@ Key terms used throughout the Artisan documentation.
 ## ACID
 
 Atomicity, Consistency, Isolation, Durability -- the four properties that
-guarantee reliable database transactions. Delta Lake provides ACID transactions
-over Parquet files, ensuring that concurrent worker writes and partial failures
-never corrupt the shared artifact store.
+describe reliable database transactions. Delta Lake provides transactions for
+individual tables. Artisan coordinates multi-table result visibility through
+[logical commits](#glossary-logical-commit).
 
 ---
 
@@ -26,6 +26,18 @@ Artifacts follow a [draft/finalize](#glossary-draft-finalize) lifecycle: they
 are created as mutable drafts and become immutable when finalized. The six
 built-in artifact types are `data`, `metric`, `file_ref`, `config`,
 `large_file`, and `appendable`.
+
+---
+
+(glossary-artisan-error)=
+## ArtisanError
+
+The base class for structured framework exceptions. It carries a stable code
+and an `ArtisanErrorEnvelope` with a readable message, available context, and
+recovery guidance. Failed executions can persist that envelope alongside the
+error text; ordinary exceptions may have no envelope. See
+[Structured failure identity](../concepts/error-handling.md#structured-failure-identity)
+and [Python API](python-api.md).
 
 ---
 
@@ -185,7 +197,7 @@ state so direct and nested mutation are rejected. Operations create drafts in
 Per-operation configuration controlling how work is divided and distributed.
 Fields include `artifacts_per_unit`, `units_per_worker`, `max_workers`, and
 `estimated_seconds` (used for scheduler hints such as SLURM time limits). Set
-as the `execution` attribute on an [OperationDefinition](#glossary-operation-definition).
+as the `batch_strategy` attribute on an [OperationDefinition](#glossary-operation-definition).
 
 ---
 
@@ -216,7 +228,7 @@ occurrences) and
 The work package dispatched to a worker. An `ExecutionUnit` carries a fully
 configured operation instance, a batch of input artifact IDs keyed by
 [role](#glossary-role), the cache key, and the step number. The number of
-artifacts per unit is controlled by `execution.artifacts_per_unit`.
+artifacts per unit is controlled by `batch_strategy.artifacts_per_unit`.
 
 ---
 
@@ -225,8 +237,9 @@ artifacts per unit is controlled by `execution.artifacts_per_unit`.
 
 Controls how the framework handles individual execution failures within a step.
 `CONTINUE` (default) logs failures and commits successful items, reporting
-failure counts in [StepResult](#glossary-step-result). `FAIL_FAST` stops on the
-first failure and raises an exception with no commit.
+failure counts in [StepResult](#glossary-step-result). `FAIL_FAST` makes an
+observed failure return a failed step result with no downstream outputs. The
+failed execution and finished sibling work remain persisted for audit.
 
 ---
 
@@ -235,8 +248,12 @@ first failure and raises an exception with no commit.
 
 Strategy for pairing artifacts from multiple input
 [roles](#glossary-role) before dispatch. `ZIP` matches by position (first with
-first). `LINEAGE` matches artifacts sharing a common ancestor. `CROSS_PRODUCT`
-generates all combinations. Set via `OperationDefinition.group_by`.
+first). `LINEAGE` matches a candidate to its nearest target ancestor along
+directed provenance edges; sibling branches do not match merely by sharing a
+root. `CROSS_PRODUCT` generates all combinations. `NAME` matches exact filename
+stems across roles. Set via `OperationDefinition.group_by`. See
+[Pairing strategies](../concepts/operations-model.md#pairing-strategies) for
+unmatched and ambiguous inputs.
 
 ---
 
@@ -246,7 +263,9 @@ generates all combinations. Set via `OperationDefinition.group_by`.
 The process of loading an artifact's full content from storage. `hydrate=True`
 (default) loads all fields including content bytes. `hydrate=False` loads only
 the artifact ID and type, which is sufficient for passthrough operations like
-Filter and Merge that route artifacts without reading their content.
+Filter and Merge that route artifacts without consuming their content.
+Orchestration still reads and verifies inputs before cache lookup or dispatch;
+ID-only delivery is not a guarantee that pipeline preparation avoids content I/O.
 
 ---
 
@@ -271,6 +290,17 @@ and an output draft. Used in `ArtifactResult.lineage` when the default
 mapping specifies the draft's `draft_original_name`, a source reference (one
 of `source_artifact_id` for input parents or `source_original_name` for
 co-produced output parents), and the `source_role`.
+
+---
+
+(glossary-logical-commit)=
+## Logical commit
+
+An immutable plan that coordinates a step's effects across Delta tables,
+including its terminal result snapshot. Each physical table write is atomic;
+supported Artisan readers expose plan-owned rows only after the logical commit
+is complete and its effects verify. Raw Delta reads can include incomplete
+writes. See [Commit ordering](../concepts/storage-and-delta-lake.md#commit-ordering).
 
 ---
 
@@ -331,7 +361,7 @@ variable keyed by [role](#glossary-role) name.
 
 A columnar file format optimized for analytical queries. Delta Lake tables are
 composed of Parquet files. Artisan stages worker results as Parquet files before
-committing them atomically to Delta Lake.
+including them in a [logical commit](#glossary-logical-commit).
 
 ---
 
@@ -340,8 +370,10 @@ committing them atomically to Delta Lake.
 
 A directed acyclic graph (DAG) of [steps](#glossary-step) managed by
 [PipelineManager](#glossary-pipeline-manager). Steps are added by calling
-`pipeline.run()` (blocking) or `pipeline.submit()` (non-blocking) and wired
-together via [output references](#glossary-output-reference).
+`pipeline.run()` (waits for completion) or `pipeline.submit()` (returns a
+completion handle after synchronous preparation) and wired through
+[output references](#glossary-output-reference). The current manager executes
+steps serially and can parallelize worker batches within a creator step.
 
 ---
 
@@ -349,8 +381,8 @@ together via [output references](#glossary-output-reference).
 ## PipelineManager
 
 The main user-facing interface for defining and executing pipelines. Provides
-`run()` (blocking step execution), `submit()` (non-blocking, returns a
-[StepFuture](#glossary-step-future)), `run_composite()` / `submit_composite()`
+`run()` (waits for step completion), `submit()` (returns a
+[StepFuture](#glossary-step-future) after preparation and predecessor waits), `run_composite()` / `submit_composite()`
 (expand a [composite](#glossary-composite) into separate steps), and `output()`
 (reference a step's outputs). Configured with a `PipelineConfig`
 specifying the Delta Lake root, staging root, failure policy, and cache policy.
@@ -395,9 +427,9 @@ must define matching `InputRole` and `OutputRole` `StrEnum` classes.
 
 An isolated directory tree created for each
 [creator operation](#glossary-creator-operation) execution. Contains three
-subdirectories:
-`preprocess/` (input materialization), `execute/` (operation writes output
-files here), and `postprocess/` (draft artifact construction). The sandbox is
+phase subdirectories: `preprocess/` (input adaptation), `execute/` (computation
+outputs), and `postprocess/` (draft artifact construction). Materialized inputs
+live separately in `materialized_inputs/`. The sandbox is
 cleaned up after execution unless `preserve_working=True` is set on the
 pipeline config.
 
@@ -409,8 +441,9 @@ pipeline config.
 The intermediate write area where workers write Parquet files instead of
 committing directly to Delta Lake. This avoids transaction conflicts on shared
 filesystems. After all workers in a step complete, the orchestrator commits
-staged files atomically via `DeltaCommitter`. On [NFS](#glossary-nfs), staging
-verification polling ensures file visibility before commit.
+staged files and the terminal step snapshot through a
+[logical commit](#glossary-logical-commit). On [NFS](#glossary-nfs), staging
+verification polls for readable worker evidence before commit.
 
 ---
 
@@ -434,8 +467,8 @@ output. For custom lineage, use explicit
 
 A single operation invocation within a [pipeline](#glossary-pipeline). Each step
 has a sequential step number, an operation, resolved inputs, and produces a
-[StepResult](#glossary-step-result) on completion. Steps can be blocking
-(`pipeline.run()`) or non-blocking (`pipeline.submit()`).
+[StepResult](#glossary-step-result) on completion. `pipeline.run()` waits for
+completion; `pipeline.submit()` returns a handle after synchronous preparation.
 
 ---
 
@@ -450,8 +483,9 @@ How a usable `StepResult` was obtained: `executed` or `cache_hit`. Only
 (glossary-step-future)=
 ## StepFuture
 
-A non-blocking handle returned by `pipeline.submit()`. Wraps a concurrent
-future and provides `output()` for wiring to downstream steps without waiting,
+A completion handle returned by `pipeline.submit()` after synchronous
+preparation, which can include predecessor waits. Wraps a concurrent future
+and provides `output()` to create a downstream reference without waiting,
 plus `result()` for blocking retrieval and a `status` property containing the
 latest durably persisted [StepStatus](#glossary-step-status).
 
@@ -492,6 +526,7 @@ operation. `None` for pure-Python operations.
 
 ## See also
 
+- [Python API](python-api.md) -- public entry points, source definitions, and docstrings
 - [Architecture Overview](../concepts/architecture-overview.md) -- design
   rationale for the framework's key abstractions
 - [Operations Model](../concepts/operations-model.md) -- how creators and

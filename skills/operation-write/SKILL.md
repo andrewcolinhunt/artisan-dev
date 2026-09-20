@@ -43,7 +43,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from artisan.operations.base import OperationDefinition
+from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.schemas import (
     ArtifactResult,
     BatchStrategy,
@@ -107,7 +107,7 @@ class MyOperation(OperationDefinition):
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized paths from input artifacts."""
         return {
-            role: [a.materialized_path for a in artifacts]
+            role: PerArtifact([a.materialized_path for a in artifacts])
             for role, artifacts in inputs.input_artifacts.items()
         }
 
@@ -301,8 +301,9 @@ See `src/artisan/operations/examples/data_generator.py`.
 
 - Define multiple roles in `InputRole` and `inputs`
 - Set `group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE`
-  (or `ZIP` or `CROSS_PRODUCT`)
-- In `preprocess`, iterate paired groups via `inputs.grouped()`
+  (or `ZIP`, `CROSS_PRODUCT`, or `NAME`)
+- In `preprocess`, iterate paired groups via `inputs.grouped()` and wrap
+  per-pair values in `PerArtifact`.
 
 ```python
 def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
@@ -314,8 +315,13 @@ def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
                 "config": str(group["config"].materialized_path),
             }
         )
-    return {"items": prepared}
+    return {"items": PerArtifact(prepared)}
 ```
+
+Default per-artifact dispatch slices each `PerArtifact` value for one execute
+call. Raw lists are shared unchanged across calls. Use raw lists only when all
+calls need the same list; increasing `artifacts_per_unit` must not cause each
+call to process every input again.
 
 See `src/artisan/operations/examples/data_transformer_script.py`.
 
@@ -408,7 +414,7 @@ def test_my_operation(tmp_path):
     execute_dir.mkdir()
     execute_input = ExecuteInput(
         execute_dir=str(execute_dir),
-        inputs={"dataset": [str(input_csv)]},
+        inputs={"dataset": str(input_csv)},
     )
     memory_outputs = op.execute_function(execute_input)
 
@@ -422,6 +428,10 @@ def test_my_operation(tmp_path):
     assert result.success
     assert "dataset" in result.artifacts
 ```
+
+Also run the operation through a pipeline with multiple inputs per execution
+unit. Assert output content and lineage for each input; direct method calls do
+not exercise the framework's per-artifact dispatch.
 
 ### Unit test a curator
 

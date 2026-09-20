@@ -214,9 +214,12 @@ writes artifact content to a file in the sandbox (for external tools that read
 from disk) or delivers content bytes directly (faster for in-memory Python
 processing). **Hydration** controls whether the full artifact is loaded or only
 the artifact ID — passthrough operations like Filter that route artifacts
-without reading content benefit from ID-only hydration.
+without reading content receive ID-only inputs. This controls delivery to the
+operation; orchestration still verifies stored input content before cache lookup
+or dispatch. See [Hydration](artifacts-and-content-addressing.md#hydration-controlling-what-gets-loaded).
 
-For the full field reference, see [Writing Creator Operations — Input specs](../how-to-guides/writing-creator-operations.md).
+See [Writing Creator Operations](../how-to-guides/writing-creator-operations.md)
+for usage and [Python API](../reference/python-api.md) for the spec definitions.
 
 ### Output specs
 
@@ -362,7 +365,7 @@ The `group_by` field controls how inputs from different roles are matched
 
 | Strategy | Behavior | When to use |
 |----------|----------|-------------|
-| `LINEAGE` | Pairs inputs that share provenance ancestry | Inputs from different steps that process the same original artifact |
+| `LINEAGE` | Pairs a candidate with its nearest target ancestor along directed provenance edges | An artifact paired with a result derived from it |
 | `ZIP` | Pairs inputs by position (index-aligned) | Inputs in a known, consistent order |
 | `CROSS_PRODUCT` | Every combination of inputs across roles | When every input should be combined with every other |
 | `NAME` | Pairs inputs whose `original_name` stems match exactly | Independently-ingested streams that share a filename convention but no ancestry |
@@ -371,6 +374,15 @@ The `group_by` field controls how inputs from different roles are matched
 Pairing happens between the resolve and batch phases in the orchestrator. The
 operation iterates paired inputs via the `grouped()` method on
 `PreprocessInput`.
+
+`LINEAGE` normally pairs two roles, using the role from the earlier producing step as targets and
+walking backward from each candidate. For `root → transformed → metric`,
+`root` can pair with `metric`; if both `root` and `transformed` are targets,
+`transformed` is the nearer match. For sibling branches `root → left` and
+`root → right`, `left` and `right` do not pair merely because they share
+`root`. An unmatched candidate is dropped with a warning. Equally near target
+ancestors are ambiguous and raise an error. Operations with a primary role use
+that role as the anchor when matching the other roles.
 
 `NAME` strips all extensions before matching (`sample_001.csv` and
 `sample_001.json` both reduce to the stem `sample_001`), so different
@@ -409,7 +421,7 @@ storage, caching, or infrastructure.
 This is by design. An operation receives data in, produces data out, and
 declares its contract through specs. Everything else — input resolution, cache
 lookup, worker dispatch, sandbox creation, input materialization, lineage
-capture, result staging, atomic commit — is handled by the execution and
+capture, result staging, logical commit — is handled by the execution and
 orchestration layers above.
 
 The consequence: you can unit test an operation by constructing its inputs
