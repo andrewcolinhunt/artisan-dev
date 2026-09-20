@@ -178,6 +178,17 @@ contains their exact commands. Invoke a task with `pixi run --locked -e ENV TASK
 | `upload-testpypi` | Publish built distributions to Test PyPI |
 | `upload-pypi` | Publish built distributions to PyPI |
 
+To use an already-running local MinIO service for S3 checks:
+
+```bash
+ARTISAN_S3_ENDPOINT=http://127.0.0.1:9000 pixi run --locked -e dev test-s3
+```
+
+The tests create and remove isolated buckets. Set `ARTISAN_S3_ACCESS_KEY` and
+`ARTISAN_S3_SECRET_KEY` if the service uses credentials other than `minioadmin`.
+If S3 tests are skipped, read the reported service-startup error; skipped tests
+do not verify storage behavior.
+
 ### Docs environment
 
 | Task | Purpose |
