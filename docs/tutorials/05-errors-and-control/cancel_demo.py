@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """Interactive Ctrl+C cancellation demo.
 
-Run this script and press Ctrl+C while it's executing to see graceful
-pipeline cancellation in action.
+Run this script and press Ctrl+C while it's executing to see pipeline cancellation and its reported outcome.
 
 Usage:
     pixi run python docs/tutorials/05-errors-and-control/cancel_demo.py
@@ -16,11 +15,13 @@ What happens:
     - finalize() returns a clean summary
 
 Signal escalation:
-    - First Ctrl+C: graceful cancellation (drain current phase, cancel rest)
-    - Second Ctrl+C: restore default signal handlers
-    - Third Ctrl+C: force kill (KeyboardInterrupt)
+    - First Ctrl+C: request cancellation from the active runner
+    - Second Ctrl+C: restore the previous signal handlers
+    - Later signals: follow those handlers (usually KeyboardInterrupt for Ctrl+C)
 
-If the graceful shutdown feels slow, spam Ctrl+C to force exit.
+The local runner allows a brief grace period and can terminate owned workers.
+An in-flight execute phase is not guaranteed to finish. Accepted outputs depend
+on the confirmed lifecycle outcome; arbitrary tool side effects may remain.
 
 Try pressing Ctrl+C at different points to see how the cancellation
 window affects which steps succeed vs cancel.

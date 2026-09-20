@@ -69,12 +69,18 @@ commit.
 ### Running Tests
 
 ```bash
-pixi run --locked -e dev test              # Unit + integration + S3 tests
-pixi run --locked -e dev test-unit         # Unit tests only
-pixi run --locked -e dev test-integration  # Integration tests only (parallel)
-pixi run --locked -e dev test-s3           # S3 tests (MinIO required)
-pixi run --locked -e dev test-seq          # All tests sequentially (for debugging)
+pixi run --locked -e dev test
 ```
+
+This runs unit, integration, S3, and local notebook tests. S3 tests need
+Docker/MinIO or a configured endpoint. Modal tests and notebooks run separately.
+See the [development tasks](docs/getting-started/using-pixi.md#dev-environment)
+for the focused suites and their resource requirements.
+
+When changing documentation, follow the
+[documentation guide](docs/contributing/writing-docs.md): verify the examples'
+outcomes and build the site. Keep exact API descriptions with the source;
+guides should explain tasks and relevant behavior.
 
 ### Formatting and Linting
 

@@ -71,8 +71,8 @@ or guessing relationships is brittle and unreliable.
 
 **The framework's solution:** Lineage inference runs during a dedicated lineage
 phase (after postprocess), while context is still available. The resulting edges
-are staged alongside artifacts and committed atomically. There is no separate
-"lineage reconstruction" step.
+are staged alongside artifacts and exposed through the same completed logical
+commit. There is no separate "lineage reconstruction" step.
 
 ---
 
@@ -356,10 +356,10 @@ artifact index.
 
 All provenance data is written through the
 [staging-commit pattern](storage-and-delta-lake.md#the-staging-commit-pattern):
-workers stage Parquet files, and the orchestrator commits them atomically.
-Provenance tables are committed after content and index tables, so partial
-failures leave artifacts reachable even if their provenance edges are
-incomplete.
+workers stage Parquet files, and the orchestrator includes them in a logical
+commit with the artifacts and terminal step snapshot. Supported readers expose
+these rows only after logical completion and validate the recorded effects.
+Raw Delta reads bypass that boundary and can show incomplete physical writes.
 
 ---
 
@@ -411,9 +411,11 @@ to avoid extra index scans.
 single Delta scan, enabling efficient batch analysis when you need to explore
 the full graph rather than starting from a single artifact.
 
-For the practical API, see the
-[inspecting provenance](../how-to-guides/inspecting-provenance.md) how-to
-guide.
+Artifact ancestry belongs to the shared store. To inspect what a particular
+run executed or reused, select that run explicitly; artifact origin step
+numbers alone do not identify its outputs. See
+[Select the run you want to inspect](../how-to-guides/inspecting-provenance.md#select-the-run-you-want-to-inspect)
+for run selection and practical queries.
 
 ---
 

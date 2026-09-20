@@ -1,6 +1,7 @@
 # How-to Guides
 
-Task-oriented instructions for common Artisan framework operations. Each guide follows a consistent format: prerequisites, step-by-step instructions, and a verification step to confirm success.
+Recipes for building operations, configuring pipelines, and working with results.
+Each guide explains the task, its prerequisites, and how to check the outcome.
 
 ## Operations
 
@@ -22,6 +23,8 @@ Task-oriented instructions for common Artisan framework operations. Each guide f
 
 - [Configuring Execution](configuring-execution.md) -- Resource allocation,
   batching, and runner configuration
+- [Deploy Tool Endpoints](deploying-tool-endpoints.md) -- Deploy command operations
+  and configure object-store input/output delivery
 - [Debug a Recorded Execution](debugging-executions.md) -- Replay one unit and
   retain diagnostic evidence
 - [Op Container Images](op-container-images.md) -- Build, resolve, and pin
@@ -35,11 +38,10 @@ Task-oriented instructions for common Artisan framework operations. Each guide f
   runs and failure logs through the read-only MCP server
 - [Inspecting Provenance](inspecting-provenance.md) -- Query lineage and trace
   artifact history
-- [Exporting Results](exporting-results.md) -- Extract data from Delta tables
-  and export artifacts
+- [Exporting Results](exporting-results.md) -- Export accepted run outputs and materialize artifacts
 
 ## Cross-references
 
 - [Concepts](../concepts/index.md) -- Understand the design decisions behind the tasks in these guides
-- [Reference](../reference/index.md) -- API details and schema specifications for types used in these guides
+- [Reference](../reference/index.md) -- Public entry points, source contracts, and terminology
 - [Tutorials](../tutorials/index.md) -- Hands-on walkthroughs that introduce the framework interactively

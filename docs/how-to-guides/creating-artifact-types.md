@@ -111,8 +111,7 @@ That is the complete implementation. The rest of this guide breaks it down.
 
 ## Create the artifact model
 
-Create a new file in `src/artisan/schemas/artifact/` (or your domain layer's
-`schemas/artifact/` directory). The model must subclass `Artifact` and provide
+Create a model file in your domain package's artifact directory. The model must subclass `Artifact` and provide
 these members:
 
 | Member | Kind | Purpose |
@@ -125,26 +124,13 @@ these members:
 
 The base `Artifact` class provides `finalize()`, `materialize_to()`,
 `to_row()`, `from_row()`, and several fields your model inherits
-automatically. You do not need to redeclare these inherited fields on your
-subclass, but you must include them in `POLARS_SCHEMA` because they are stored
-as Delta Lake columns.
+automatically. Do not redeclare inherited model fields. Include the durable
+fields your type stores in `POLARS_SCHEMA`; runtime paths stay out of it.
 
-### Inherited fields from the base class
-
-The `Artifact` base class defines these fields that every artifact type shares:
-
-| Field | Type | Purpose |
-|-------|------|---------|
-| `artifact_id` | `str \| None` | Content-addressed ID (32-char hex). `None` for drafts. |
-| `artifact_type` | `str` | Type discriminator. Must be overridden with a default on each subclass. |
-| `origin_step_number` | `int \| None` | Pipeline step that produced this artifact. |
-| `metadata` | `dict[str, Any]` | Generic JSON-serializable metadata dict. |
-| `external_path` | `str \| None` | Optional source path for embedded drafts; protected after finalization and not stored. |
-| `materialized_path` | `str \| None` | Runtime-only path (excluded from serialization). |
-
-The base class also sets `model_config = ConfigDict(extra="forbid")`, which
-means Pydantic rejects any fields not declared on your model. This catches
-typos in field names early.
+The base model supplies IDs, origin metadata, serialization, finalization, and
+runtime materialization state. Consult the [Python API entry points](../reference/python-api.md)
+for inherited fields rather than redeclaring them. Pydantic rejects undeclared
+fields, so a misspelled custom descriptor fails early.
 
 ### Set the artifact type
 
@@ -163,19 +149,6 @@ concrete artifacts.
 
 ### Define the Polars schema
 
-```python
-POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
-    "artifact_id": pl.String,
-    "origin_step_number": pl.Int32,
-    "content": pl.Binary,
-    "original_name": pl.String,
-    "extension": pl.String,
-    "size_bytes": pl.Int64,
-    "record_count": pl.Int64,
-    "metadata": pl.String,
-}
-```
-
 Every column written by `to_row()` must appear here. Column order determines
 Parquet column order. All artifact types share `artifact_id` and
 `origin_step_number` and typically store `metadata`. Runtime fields such as
@@ -184,26 +157,14 @@ the content table.
 
 ### Implement draft
 
-`draft()` builds a mutable artifact with `artifact_id=None`:
+The complete `draft()` above fills every descriptor that finalization validates:
+`size_bytes` comes from the payload length, and `record_count` comes from parsing
+the CSV. Keep this computation in one constructor so callers cannot accidentally
+omit a required descriptor. A supplied `record_count` is checked against content
+at finalization.
 
-```python
-@classmethod
-def draft(
-    cls, content: bytes, original_name: str, step_number: int
-) -> DataRecordArtifact:
-    return cls(
-        artifact_id=None,
-        origin_step_number=step_number,
-        content=content,
-        original_name=strip_extensions(original_name),
-        extension=get_compound_extension(original_name),
-        size_bytes=len(content),
-    )
-```
-
-Use `strip_extensions()` from `artisan.utils` to extract the bare filename stem
-and `get_compound_extension()` from `artisan.schemas` to capture compound
-extensions like `.tar.gz`.
+Use `strip_extensions()` and `get_compound_extension()` to retain the base name
+and compound extension separately.
 
 ### Understand finalize (base class)
 
@@ -261,23 +222,8 @@ def _row_decoders(cls) -> dict[str, Callable[[Any], Any]]:
 
 ### Implement _materialize_content
 
-The base class `_materialize_content()` raises `NotImplementedError`, so your
-subclass must provide an implementation. Write the artifact content to a file
-in the given directory, set `self.materialized_path`, and return the path:
-
-```python
-def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
-    if self.content is None:
-        raise ValueError("Cannot materialize: artifact not hydrated")
-    if self.artifact_id is None:
-        raise ValueError("Cannot materialize: artifact not finalized")
-    filename = f"{self.artifact_id}{self.extension or '.csv'}"
-    path = os.path.join(directory, filename)
-    with open(path, "wb") as f:
-        f.write(self.content)
-    self.materialized_path = path
-    return path
-```
+Implement `_materialize_content()` as in the complete example: write content to
+the supplied directory, set `materialized_path`, and return that path.
 
 Use the finalized artifact ID as the filename so distinct artifacts with the
 same original name can share a directory without overwriting each other.
@@ -318,7 +264,6 @@ When Python loads this class, `__init_subclass__` fires and:
 - For external types, validates one real relation-backed locator plus explicit
   verification and materialization hooks
 - Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.DATA_RECORD` works at runtime)
-- Registers the type def in `ArtifactTypeDef._registry`
 
 If any validation fails, you get an immediate `TypeError` or `ValueError` at
 import time.
@@ -508,7 +453,7 @@ digest-and-size-checked reads. You do not override `finalize()` itself.
 
 Domain types can live in a separate package outside `artisan`. The pattern is
 identical -- subclass `Artifact`, define an `ArtifactTypeDef`, and the
-framework discovers it at import time via `__init_subclass__`.
+framework discovers it at import time when its definition is imported.
 
 Ensure the module containing your `ArtifactTypeDef` subclass is imported
 somewhere during application startup. If it is never imported, the type will
@@ -557,7 +502,7 @@ assert "data_record" in ArtifactTypes
 Run the tests:
 
 ```bash
-pixi run -e dev test-unit -k test_data_record
+pixi run --locked -e dev test-unit -k test_data_record
 ```
 
 ---
@@ -571,7 +516,7 @@ pixi run -e dev test-unit -k test_data_record
 | `tests/.../test_data_record.py` | **New:** unit tests |
 
 No changes to the storage layer, staging functions, dispatch chains, or enum
-definitions. The registry handles everything.
+definitions. The registry connects your type to those framework paths.
 
 ---
 

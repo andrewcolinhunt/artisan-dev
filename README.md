@@ -3,15 +3,13 @@
 A Python framework for building computational pipelines with automatic
 provenance tracking.
 
-Artisan is a set of protocols for composable, scalable, and reproducible computation. Operations declare a
-contract (typed inputs, typed outputs, parameters) and the framework uses that
-contract to wire things together, track what produced what, and store results
-as content-addressed artifacts. The computation inside each operation is a
-black box: wrap whatever tools you're already using.
+Operations declare typed inputs, outputs, and parameters. Artisan uses that
+contract to connect steps, track how results were produced, and store artifacts
+by content identity. Operations can wrap Python functions or external tools.
 
-Because the contract is explicit and structured, caching, lineage queries, and
-portability across environments come for free. The same pipeline runs on a
-laptop or an HPC cluster without changes to the operations themselves.
+Core includes local process execution. Optional runner providers and tool
+endpoints support other compute environments while retaining the operation
+contract.
 
 > **Status:** This project is in early development. APIs may change between
 > releases.
@@ -20,22 +18,13 @@ laptop or an HPC cluster without changes to the operations themselves.
 
 ## Why Artisan?
 
-**Simple** — Define steps, connect outputs to inputs, run. No boilerplate,
-plain Python.
+- Define pipelines and reusable operations in Python.
+- Reuse eligible results through content-addressed caching.
+- Inspect artifacts, metrics, execution evidence, and provenance as dataframes.
+- Keep operation logic separate from runner and compute configuration.
 
-**Extensible** — Wrap any tool as an `OperationDefinition`. Declare inputs and
-outputs, implement three methods, and the framework handles the rest.
-
-**Reproducible** — Artifacts are content-addressed and provenance is tracked
-automatically. Same content, same identity. Every result traces back to the
-inputs and parameters that produced it.
-
-**Scale-invariant** — The same operation code runs on a laptop or an HPC
-cluster. Core includes local process execution; optional runner packages add
-cluster backends without changing operation implementations.
-
-**Queryable** — Artifacts, metrics, and provenance live in a single store,
-accessible as dataframes. No log parsing, no directory archaeology.
+See the [orientation](docs/getting-started/orientation.md) for the execution and
+storage model, including its limits.
 
 ---
 
@@ -87,7 +76,7 @@ pipeline.run(
     operation=DataTransformer,
     name="transform",
     inputs={"dataset": output("generate", "datasets")},
-    params={"scale_factor": 2.0},
+    params={"scale_factor": 2.0, "seed": 42},
 )
 pipeline.run(
     operation=MetricCalculator,
@@ -144,9 +133,12 @@ then commit `pyproject.toml` and `pixi.lock` together.
 ```bash
 pixi run --locked -e dev test
 pixi run --locked -e dev test-unit
-pixi run --locked -e dev test-integration
-pixi run --locked -e dev test-seq
 ```
+
+`test` includes local notebooks and S3 tests; it needs Docker/MinIO or a
+configured S3 endpoint. Modal checks are separate. See the
+[development task list](docs/getting-started/using-pixi.md#dev-environment) for
+focused suites and their resource requirements.
 
 ### Formatting and Linting
 
@@ -186,7 +178,7 @@ pixi run --locked -e docs docs-clean
   building pipelines, writing operations, and more
 - **[Concepts](docs/concepts/index.md)** — Architecture, design principles, and
   system internals
-- **[Reference](docs/reference/index.md)** — API reference and coding conventions
+- **[Reference](docs/reference/index.md)** — Public API lookup and terminology
 
 ---
 

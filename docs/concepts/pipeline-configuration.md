@@ -45,14 +45,12 @@ and uses its configured policy only for new submissions. See
 [Set cache policy](../how-to-guides/configuring-execution.md#set-cache-policy)
 for overrides and the distinction between whole-step and execution reuse.
 
-**Recovery and debugging.** Flags to recover leftover staging files from a
-crashed run, bypass the cache, or keep staging directories and worker sandboxes
-around for inspection.
+**Debugging.** Flags to bypass the cache or keep staging directories and worker
+sandboxes for inspection. Crash recovery is a separate, explicit
+[`artisan store repair` action](storage-and-delta-lake.md#crash-recovery).
 
-The exhaustive field list, with types and defaults, lives in the
-[Glossary](../reference/glossary.md#glossary-pipeline-manager) reference
-entries. This page covers why those settings live together in one frozen
-object, not the mechanics of each field.
+For current fields, types, and defaults, follow the `PipelineConfig` entry in
+[Python API](../reference/python-api.md) to its source and docstrings.
 
 ---
 
@@ -104,8 +102,8 @@ deployments must set it explicitly.
 
 ## Cross-references
 
-- [Glossary](../reference/glossary.md#glossary-pipeline-manager) -- Reference
-  entries for `PipelineManager` and `PipelineConfig`
+- [Python API](../reference/python-api.md) -- Public entry points and current
+  definitions for `PipelineManager` and `PipelineConfig`
 - [First Pipeline tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb)
   -- Create a `PipelineManager` and see its configuration in context
 - [Storage and Delta Lake](storage-and-delta-lake.md) -- How `delta_root`,

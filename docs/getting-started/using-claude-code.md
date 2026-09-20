@@ -2,25 +2,16 @@
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is an AI coding
 assistant that runs in your terminal. It reads your codebase, edits files, runs
-commands, and writes code. Artisan is set up so Claude Code understands the
-framework's conventions, architecture, and APIs out of the box.
+commands, and writes code. Artisan provides shared project instructions and authoring skills for coding
+agents working in this repository.
 
 ---
 
 ## Install Claude Code
 
-```bash
-npm install -g @anthropic-ai/claude-code
-```
-
-Verify the installation:
-
-```bash
-claude --version
-```
-
-See the [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) for
-detailed installation instructions and requirements.
+Follow the [Claude Code installation guide](https://docs.anthropic.com/en/docs/claude-code)
+for current platform requirements and installation commands. Confirm that the
+`claude` command is available before continuing.
 
 ---
 
@@ -78,7 +69,7 @@ A downstream repo enables it by adding to `.claude/settings.json`:
     "artisan": {
       "source": {
         "source": "github",
-        "repo": "your-org/artisan"
+        "repo": "dexterity-systems/artisan"
       }
     }
   },
@@ -110,8 +101,9 @@ A few examples of real workflows:
 - **"Run the tests and fix any failures"** — Claude runs pytest, reads errors,
   and proposes fixes.
 
-Claude Code knows the `pixi run` commands, the test structure, and the
-formatting rules. It follows the same conventions a human contributor would.
+The shared instructions point agents to Pixi tasks, test structure, and
+formatting rules. Review generated changes and check their behavior using the
+same project tasks you would use for handwritten code.
 
 ---
 
@@ -127,13 +119,10 @@ formatting rules. It follows the same conventions a human contributor would.
 
 ---
 
-## What `CLAUDE.md` contains
+## Personal instructions
 
-`CLAUDE.md` is a project-level instruction file that Claude Code reads
-automatically. It contains environment setup, code style, testing commands, Git
-conventions, and an architecture overview. You can read it yourself at
-`CLAUDE.md` in the repo root — it's the same instructions a new contributor
-would follow.
+`CLAUDE.md` imports the shared `AGENTS.md` rather than copying its commands and
+conventions. Read `AGENTS.md` for the current project rules.
 
 You can create a personal `CLAUDE.local.md` for your own preferences (editor
 settings, branch conventions, etc.). It's auto-gitignored.

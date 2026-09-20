@@ -6,7 +6,8 @@ in. One image serves two consumers: the Modal tool endpoint
 script — that pulls the same image and runs the tool's CLI directly,
 with no artisan orchestration.
 
-**Prerequisites:** [Configuring Execution](configuring-execution.md)
+**Prerequisites:** A command operation in an importable package. See
+[Deploy Tool Endpoints](deploying-tool-endpoints.md) for endpoint configuration.
 
 **Key types:** `ModalComputeConfig`; CLI commands `artisan op image`,
 `artisan docker build`, `artisan modal deploy`
@@ -61,9 +62,10 @@ Ops without per-op needs use the default `artisan-worker` image.
 
 ## Build the image
 
-From the repo root:
+From the repo root, make the operation discoverable and build its image:
 
 ```bash
+export ARTISAN_LOAD_MODULES=my_package.ops
 artisan docker build process_data
 ```
 
@@ -116,7 +118,7 @@ run through the uniform artisan CLI baked into the image:
 
 ```bash
 IMAGE=$(artisan op image transform_data)
-docker run --rm "$IMAGE" artisan op run mypkg.ops:TransformData \
+docker run --rm -v /data:/data "$IMAGE" artisan op run mypkg.ops:TransformData \
     --params '{"batch_size": 16}' --inputs '{"data": "/data/input.csv"}'
 ```
 
@@ -147,6 +149,7 @@ artisan.)
 ## Verify
 
 ```bash
+export ARTISAN_LOAD_MODULES=artisan.operations.examples
 artisan docker build wait_tool          # builds docker/artisan-worker/Dockerfile
 docker run --rm "$(artisan op image wait_tool)" bash -c 'echo ok'
 ```

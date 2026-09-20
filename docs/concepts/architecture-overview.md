@@ -6,7 +6,8 @@ helps to understand the shape of the system as a whole — how the pieces fit
 together, why they are separated the way they are, and what mental model to
 carry when reading the rest of the documentation.
 
-This page gives you that mental model.
+The main boundaries are the operation's computation, worker execution, and the
+orchestrator's sequencing and persistence.
 
 ---
 
@@ -292,40 +293,30 @@ that wires operations together using a `CompositeContext`. Running a
 composite with `pipeline.run_composite()` expands it into real pipeline
 steps — each internal `ctx.run()` becomes its own step.
 
-```python
-class TransformAndScore(CompositeDefinition):
-    name = "transform_and_score"
-    # ... inputs, outputs, Params ...
-
-    def compose(self, ctx: CompositeContext) -> None:
-        transformed = ctx.run(DataTransformer, inputs={"dataset": ctx.input("dataset")})
-        scored = ctx.run(
-            MetricCalculator, inputs={"dataset": transformed.output("dataset")}
-        )
-        ctx.output("metrics", scored.output("metrics"))
-
-
-# Each internal operation becomes its own pipeline step
-pipeline.run_composite(TransformAndScore, inputs={"dataset": output("gen", "datasets")})
-```
-
-Composites share the same dispatch-execute-commit lifecycle as regular steps:
-each internal operation is an ordinary step with its own caching and
-provenance. For the full conceptual model, see
-[Composites and Composition](composites-and-composition.md).
+Each internal operation has its own persistence boundary, caching, and
+provenance. See [Composites and Composition](composites-and-composition.md) for
+how grouping and overrides work, and
+[Writing Composite Operations](../how-to-guides/writing-composite-operations.md)
+for a complete example.
 
 ---
 
 ## Synchronous and asynchronous execution
 
-`pipeline.run()` blocks until the step completes. For pipelines with
-independent steps that can execute concurrently, `pipeline.submit()` returns
-a `StepFuture` immediately. You wire subsequent steps using
-`future.output(role)`, which produces a lazy `OutputReference` that resolves
-at dispatch time.
+`pipeline.run()` waits for a terminal `StepResult`. `pipeline.submit()` returns
+a `StepFuture` after synchronous preparation, which can include waiting for
+predecessors, verifying inputs, and checking caches. It is not an immediate
+queueing operation. A future's output reference wires dependent work, and
+`result()` waits for completion.
 
-When all steps have been submitted, `pipeline.finalize()` waits for any
-in-flight futures and shuts down the executor.
+The current manager uses a single-worker step executor: separate steps execute
+serially, while a creator step can dispatch its batches to parallel workers.
+An asynchronous completion handle does not imply concurrent independent steps.
+Composite submission follows the same preparation and waiting rules.
+
+`pipeline.finalize()` waits for outstanding futures and shuts down the executor.
+See [Build a Pipeline](../how-to-guides/building-a-pipeline.md) for usage and
+[Python API](../reference/python-api.md) for method definitions.
 
 ---
 
@@ -367,16 +358,17 @@ What happens:
    `DataGenerator` to workers.
 2. **Execution** creates an isolated sandbox. `DataGenerator.execute_function()`
    produces three files. `postprocess()` wraps them as draft artifacts.
-   Lineage edges are captured. Results are staged as Parquet.
-3. **Orchestration** commits step 0 to Delta Lake. Artifacts get finalized
-   IDs. Returns `StepResult` with `OutputReference`.
+   The worker finalizes artifact IDs, captures lineage edges, and stages
+   results as Parquet.
+3. **Orchestration** completes step 0's logical commit, including its terminal
+   snapshot, then returns a `StepResult` with output references.
 4. **Orchestration** creates step 1. Resolves `output("generate", "datasets")`
    into three concrete artifact IDs. Computes cache key. No cache hit.
    Dispatches `DataTransformer` to workers.
 5. **Execution** materializes the three input artifacts to disk. Runs
    `preprocess` → `execute_function` → `postprocess`. Captures lineage edges
    A→D, B→E, C→F via filename stem matching. Stages results.
-6. **Orchestration** commits step 1 to Delta Lake. Pipeline complete.
+6. **Orchestration** completes step 1's logical commit. Pipeline complete.
 
 Every artifact has a content-addressed ID. Every derivation is tracked. Every
 execution is recorded. The pipeline can be re-run and cached steps will be

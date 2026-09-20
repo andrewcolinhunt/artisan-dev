@@ -28,8 +28,9 @@ Computational research pipelines share a pattern of failure modes:
   partial failures corrupt shared state in ways that are difficult to detect
   and impossible to recover from.
 
-Artisan exists to make these problems structurally impossible, not merely
-unlikely. Each principle below targets one or more of these failure modes.
+Artisan addresses these problems through explicit artifact identity,
+provenance capture, isolated workers, and verified persistence. Each principle
+below explains a design choice and its trade-offs.
 
 ---
 
@@ -142,9 +143,9 @@ for tool output, and a `metadata` dict for engine-provided context.
 - **Portable.** The same operation runs unchanged on a laptop with a process
   pool or on a cluster through a runner provider.
 - **Composable.** Operations can be combined freely because they have no hidden
-  dependencies on each other or on global state. The composite executor passes
-  artifacts between operations in memory without Delta Lake round-trips, which
-  is only possible because operations have no side channels.
+  dependencies on each other or on global state. A
+  [composite](composites-and-composition.md) wires ordinary pipeline steps;
+  each child persists its results before dependent work consumes them.
 
 **The exception — curator operations:** Curators are a second operation type
 that intentionally breaks this boundary. They receive an `ArtifactStore` and
@@ -156,8 +157,9 @@ creators, which make up the majority of pipeline operations.
 **The trade-off:** Operations cannot make infrastructure decisions. An
 operation that wants to "run this part on GPU and that part on CPU" cannot
 express this — resource allocation is declared statically in the operation's
-`resources` config. This keeps operations simple at the cost of dynamic
-scheduling flexibility.
+`runner_resources` and `compute_resources` configuration, with per-step
+overrides. This keeps operations simple at the cost of dynamic scheduling
+flexibility.
 
 **See:** [Operations Model](operations-model.md) for the two operation types,
 three-phase lifecycle, and spec system.
@@ -200,9 +202,8 @@ else is shared.
 
 **The trade-off:** Uniformity means the local execution path carries some
 overhead (sandbox directories, staged Parquet files) that a local-only system
-would skip. This overhead is negligible in practice because operations dominate
-runtime, but it means "run this one thing quickly" still goes through the full
-lifecycle.
+would skip. For short computations, that overhead can be a meaningful part of runtime;
+batching amortizes it across several artifacts.
 
 **See:** [Execution Flow](execution-flow.md) for the dispatch-execute-commit
 phases and [Architecture Overview](architecture-overview.md) for the
@@ -274,9 +275,10 @@ diagram and dependency table.
 ## Fail fast, fail loud
 
 The framework validates as much as possible before execution begins: input
-types, spec compatibility, parameter schemas, step wiring. When an error does
-occur at runtime, it propagates immediately with context — which operation,
-which artifact, which phase — rather than being swallowed or deferred.
+types, spec compatibility, parameter schemas, step wiring. Call-shape errors
+raise before an attempt is accepted. Runtime failures are recorded with the
+available operation, artifact, and phase context so the caller can inspect the
+outcome under the selected failure policy.
 
 **Why this matters:** In a pipeline that takes hours to run, discovering an
 error in step 8 that could have been caught at step 1 is a waste of compute

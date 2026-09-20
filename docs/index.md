@@ -33,7 +33,7 @@ Focused recipes for specific tasks. Assumes you already know the basics.
 :::{grid-item-card} Reference
 :link: reference/index.md
 
-API signatures, schema tables, parameter lists. Structured for quick lookup.
+Find public APIs, inspect their current contracts, and look up terminology.
 :::
 
 :::{grid-item-card} Contributing

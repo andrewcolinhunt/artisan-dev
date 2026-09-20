@@ -117,6 +117,7 @@ project:
         - title: Configuration
           children:
             - file: how-to-guides/configuring-execution.md
+            - file: how-to-guides/deploying-tool-endpoints.md
             - file: how-to-guides/debugging-executions.md
             - file: how-to-guides/configuring-s3.md
             - file: how-to-guides/op-container-images.md
@@ -130,6 +131,7 @@ project:
     - title: Reference
       children:
         - file: reference/index.md
+        - file: reference/python-api.md
         - file: reference/comparison-to-alternatives.md
         - file: reference/glossary.md
         - file: reference/composite-definition.md

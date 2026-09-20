@@ -1,334 +1,69 @@
 # CompositeDefinition Reference
 
-API reference for the composite system. For conceptual background, see
-[Composites and Composition](../concepts/composites-and-composition.md).
-For a step-by-step guide, see
-[Writing Composite Operations](../how-to-guides/writing-composite-operations.md).
+Public entry points for defining, submitting, and connecting composites. The
+[writing guide](../how-to-guides/writing-composite-operations.md) contains a
+complete example; [Composites and Composition](../concepts/composites-and-composition.md)
+explains the execution model and override precedence.
 
-**Source:** `src/artisan/composites/base/composite_definition.py`
-
----
-
-## CompositeDefinition
-
-`artisan.composites.CompositeDefinition`
-
-Base class for composite operations. Subclasses declare inputs, outputs,
-and a `compose()` method that wires internal operations together.
-
-### Class variables
-
-| Variable | Type | Default | Description |
-|----------|------|---------|-------------|
-| `name` | `str` | `""` | Composite name. Empty means abstract (skips validation and registration) |
-| `description` | `str` | `""` | Human-readable description |
-| `inputs` | `dict[str, InputSpec]` | `{}` | Declared input roles |
-| `outputs` | `dict[str, OutputSpec]` | `{}` | Declared output roles |
-
-### Inner classes
-
-| Class | Base | Purpose |
-|-------|------|---------|
-| `InputRole` | `StrEnum` | Enum whose values match `inputs` dict keys. Required when `inputs` is non-empty |
-| `OutputRole` | `StrEnum` | Enum whose values match `outputs` dict keys. Required when `outputs` is non-empty |
-| `Params` | `BaseModel` | Optional Pydantic model for composite-level parameters |
-
-### Methods
-
-#### `compose(ctx: CompositeContext) -> None`
-
-Wire internal operations together. Override this in every concrete
-subclass.
-
-**Args:**
-- `ctx` — `CompositeContext` providing `input()`, `run()`, and `output()`
-
-**Raises:** `NotImplementedError` if not overridden.
-
-#### `get(name: str) -> type[CompositeDefinition]` *(classmethod)*
-
-Look up a registered composite by name.
-
-**Raises:** `KeyError` if the name is not registered.
-
-#### `get_all() -> dict[str, type[CompositeDefinition]]` *(classmethod)*
-
-Return a copy of the composite registry.
-
-### Subclass validation
-
-When a concrete subclass (non-empty `name`) is defined, the framework
-validates at class definition time:
-
-- `compose()` must be overridden
-- `OutputRole` enum values must match `outputs` keys
-- `InputRole` enum values must match `inputs` keys (when inputs exist)
-
-Violations raise `TypeError` at import time.
-
-### Skeleton
-
-```python
-from __future__ import annotations
-
-from enum import StrEnum
-from typing import ClassVar
-
-from pydantic import BaseModel, Field
-
-from artisan.composites import CompositeDefinition, CompositeContext
-from artisan.schemas import InputSpec, OutputSpec
-
-
-class MyComposite(CompositeDefinition):
-    name = "my_composite"
-    description = "Short description."
-
-    class InputRole(StrEnum):
-        DATA = "data"
-
-    class OutputRole(StrEnum):
-        RESULT = "result"
-
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATA: InputSpec(artifact_type="data", required=True),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.RESULT: OutputSpec(artifact_type="metric"),
-    }
-
-    class Params(BaseModel):
-        threshold: float = Field(default=0.5, ge=0.0)
-
-    params: Params = Params()
-
-    def compose(self, ctx: CompositeContext) -> None:
-        step_a = ctx.run(OpA, inputs={"data": ctx.input("data")})
-        step_b = ctx.run(
-            OpB,
-            inputs={"data": step_a.output("result")},
-            params={"threshold": self.params.threshold},
-        )
-        ctx.output("result", step_b.output("result"))
-```
+Exact signatures, fields, and defaults live in the source and docstrings. Use
+[Python API](python-api.md) for ways to inspect the installed version.
 
 ---
 
-## Pipeline methods
+## Public entry points
 
-`artisan.orchestration.PipelineManager`
+Import the composite types from `artisan.composites` and `PipelineManager` from
+`artisan.orchestration`.
 
-Composites run through `submit_composite` (non-blocking) and
-`run_composite` (blocking). Each internal `ctx.run()` becomes a real
-pipeline step. Composite-level override kwargs act as defaults for every
-child step; a per-op `ctx.run()` value wins for the knob it sets.
+| Entry point | Purpose | Definition |
+|-------------|---------|------------|
+| `CompositeDefinition` | Declares roles, parameters, and `compose()` wiring | [Source](https://github.com/dexterity-systems/artisan/blob/main/src/artisan/composites/base/composite_definition.py) |
+| `CompositeContext` | Connects declared inputs, child operations, and exposed outputs | [Source](https://github.com/dexterity-systems/artisan/blob/main/src/artisan/composites/base/composite_context.py) |
+| `CompositeStepHandle` | References a child operation or nested composite's outputs | [Source](https://github.com/dexterity-systems/artisan/blob/main/src/artisan/composites/base/results.py) |
+| `CompositeRef` | Carries wiring references within `compose()` | [Source](https://github.com/dexterity-systems/artisan/blob/main/src/artisan/schemas/composites/composite_ref.py) |
+| `CompositeResult` | Exposes mapped outputs and waits for child completion | [Source](https://github.com/dexterity-systems/artisan/blob/main/src/artisan/composites/base/results.py) |
+| `PipelineManager.run_composite()` / `submit_composite()` | Expands a composite into ordinary pipeline steps | [Source](https://github.com/dexterity-systems/artisan/blob/main/src/artisan/orchestration/pipeline_manager.py) |
 
-#### `submit_composite(...) -> CompositeResult`
-
-```python
-def submit_composite(
-    composite: type[CompositeDefinition],
-    *,
-    inputs: dict[str, OutputReference | list[str]] | None = None,
-    params: dict[str, Any] | None = None,
-    name: str | None = None,
-    step_runner: str | RunnerBase | None = None,
-    runner_resources: dict[str, Any] | RunnerResources | None = None,
-    batch_strategy: dict[str, Any] | BatchStrategy | None = None,
-    environment: str | dict[str, Any] | Environments | None = None,
-    tool: dict[str, Any] | ToolSpec | None = None,
-    compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
-    compute_resources: dict[str, Any] | ComputeResources | None = None,
-    failure_policy: FailurePolicy | None = None,
-    compact: bool = True,
-    skip_cache: bool = False,
-) -> CompositeResult:
-    ...
-```
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `composite` | `type[CompositeDefinition]` | — | Composite class to run |
-| `inputs` | `dict[str, OutputReference \| list[str]] \| None` | `None` | Input wiring by role |
-| `params` | `dict[str, Any] \| None` | `None` | Composite parameter overrides |
-| `name` | `str \| None` | `None` | Child-step name prefix. Defaults to `composite.name` |
-| `step_runner` | `str \| RunnerBase \| None` | `None` | Default step runner for child steps |
-| `runner_resources` | `dict[str, Any] \| RunnerResources \| None` | `None` | Default runner resources for child steps |
-| `batch_strategy` | `dict[str, Any] \| BatchStrategy \| None` | `None` | Default batching/scheduling for child steps |
-| `environment` | `str \| dict[str, Any] \| Environments \| None` | `None` | Default environment for child steps |
-| `tool` | `dict[str, Any] \| ToolSpec \| None` | `None` | Default tool config for child steps |
-| `compute_provider` | `str \| dict[str, Any] \| ComputeProvider \| None` | `None` | Default compute provider for child steps |
-| `compute_resources` | `dict[str, Any] \| ComputeResources \| None` | `None` | Default compute resources for child steps |
-| `failure_policy` | `FailurePolicy \| None` | `None` | Default failure policy for child steps |
-| `compact` | `bool` | `True` | Default Delta Lake compaction for child steps |
-| `skip_cache` | `bool` | `False` | Default cache-bypass for child steps |
-
-**Returns:** `CompositeResult` (non-blocking); `.output(role)` wires
-downstream steps, `.wait()` blocks on the children.
-
-**Raises:** `TypeError` if `composite` is not a `CompositeDefinition`
-subclass, or if a `CompositeDefinition` is passed to `run`/`submit`.
-
-#### `run_composite(...) -> CompositeResult`
-
-Same signature as `submit_composite`. Blocks until every child step
-completes (via `CompositeResult.wait()`), then returns the resolved
-`CompositeResult`.
+Repository links show the published branch. Installed docstrings describe the
+version you are running.
 
 ---
 
-## CompositeContext
+## Wiring and results
 
-`artisan.composites.CompositeContext`
+Inside `compose()`, `ctx.input(role)` references a declared input.
+`ctx.run(...)` submits a child operation or nested composite, and the returned
+handle's `.output(role)` supplies wiring for another child. `ctx.output(role,
+ref)` maps an internal output onto the composite's public output contract.
 
-Build-time context passed to `CompositeDefinition.compose`. A single
-concrete class; each `run()` submits a real pipeline step.
+Outside the composite, `CompositeResult.output(role)` provides an
+`OutputReference` for ordinary pipeline wiring. Each child is independently
+persisted and inspected as a step; there is no aggregate composite cache entry
+or separate composite execution record.
 
-### Methods
+## Submission and overrides
 
-#### `input(role: str) -> CompositeRef`
+`submit_composite()` runs composition and child submission synchronously,
+including preparation and predecessor waits. The returned `CompositeResult`
+can wait for remaining children with `.wait()`. `run_composite()` also waits
+for every child before returning. Current step execution is serialized;
+parallel worker batches belong to individual creator steps.
 
-Reference a declared input of this composite.
+Composite execution overrides become child defaults. An explicit `ctx.run()`
+override wins for that setting as a whole, without merging nested dictionaries.
+This includes `cache_policy`, which inherits from the nearest composite default
+and then the pipeline. Algorithm parameters must be forwarded explicitly by
+`compose()`.
 
-**Args:**
-- `role` — input role name (must match a key in `inputs`)
-
-**Returns:** `CompositeRef` backed by the resolved input source.
-
-**Raises:** `ValueError` if role is not a declared input.
-
-#### `run(operation, inputs=None, params=None, ...) -> CompositeStepHandle`
-
-Submit an operation or nested composite as a pipeline step.
-
-```python
-def run(
-    operation: type,
-    inputs: dict[str, Any] | None = None,
-    params: dict[str, Any] | None = None,
-    runner_resources: dict[str, Any] | None = None,
-    batch_strategy: dict[str, Any] | None = None,
-    step_runner: str | RunnerBase | None = None,
-    environment: str | dict[str, Any] | None = None,
-    tool: dict[str, Any] | None = None,
-    compute_resources: dict[str, Any] | ComputeResources | None = None,
-    compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
-    skip_cache: bool | None = None,
-    failure_policy: FailurePolicy | None = None,
-    compact: bool | None = None,
-) -> CompositeStepHandle:
-    ...
-```
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `operation` | `type` | — | `OperationDefinition` or `CompositeDefinition` subclass |
-| `inputs` | `dict[str, Any] \| None` | `None` | Input wiring as `{role: CompositeRef}` |
-| `params` | `dict[str, Any] \| None` | `None` | Parameter overrides |
-| `runner_resources` | `dict[str, Any] \| None` | `None` | Runner resource overrides for this step |
-| `batch_strategy` | `dict[str, Any] \| None` | `None` | Batching/scheduling overrides for this step |
-| `step_runner` | `str \| RunnerBase \| None` | `None` | Step-runner override for this step |
-| `environment` | `str \| dict[str, Any] \| None` | `None` | Environment override for this step |
-| `tool` | `dict[str, Any] \| None` | `None` | Tool overrides for this step |
-| `compute_resources` | `dict \| ComputeResources \| None` | `None` | Compute-resource overrides for this step |
-| `compute_provider` | `str \| dict \| ComputeProvider \| None` | `None` | Compute-provider override for this step |
-| `skip_cache` | `bool \| None` | `None` | Cache-bypass override for this step |
-| `failure_policy` | `FailurePolicy \| None` | `None` | Failure-policy override for this step |
-| `compact` | `bool \| None` | `None` | Delta Lake compaction override for this step |
-
-Any override left at its default (`None`) falls back to the
-composite-level value passed to `submit_composite`/`run_composite`.
-
-**Returns:** `CompositeStepHandle` wrapping the step's `StepFuture`.
-
-#### `output(role: str, ref: CompositeRef) -> None`
-
-Map an internal result to a declared output of this composite.
-
-**Args:**
-- `role` — composite output role name (must match a key in `outputs`)
-- `ref` — `CompositeRef` from an internal `ctx.run().output()`
-
-**Raises:** `ValueError` if role is not a declared output.
-
----
-
-## CompositeStepHandle
-
-`artisan.composites.CompositeStepHandle`
-
-Handle returned by `ctx.run()`. Wraps the child step's `StepFuture`.
-
-### Methods
-
-#### `output(role: str) -> CompositeRef`
-
-Reference an output role of this internal operation.
-
-**Args:**
-- `role` — output role name of the operation that was run
-
-**Returns:** `CompositeRef` for wiring to downstream `ctx.run()` calls
-or to `ctx.output()`.
-
-**Raises:** `ValueError` if role is not a valid output of the operation.
-
----
-
-## CompositeRef
-
-`artisan.composites.CompositeRef`
-
-Frozen dataclass. A lightweight reference used as input wiring between
-internal operations.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `output_reference` | `OutputReference \| None` | Pipeline reference to the producing step's output |
-| `role` | `str` | Output role name this ref points to |
-
----
-
-## CompositeResult
-
-`artisan.composites.CompositeResult`
-
-Returned by `submit_composite`/`run_composite`. Maps composite outputs to
-their producing pipeline steps. Duck-types with `StepResult` and
-`StepFuture` for `.output(role) -> OutputReference`.
-
-### Methods
-
-#### `output(role: str) -> OutputReference`
-
-Get the `OutputReference` for a composite output role.
-
-**Args:**
-- `role` — composite output role name
-
-**Returns:** `OutputReference` pointing at the internal step that
-produces it.
-
-**Raises:** `ValueError` if role is not a declared output.
-
-#### `wait(*, timeout: float | None = None) -> CompositeResult`
-
-Block until every child step completes.
-
-**Args:**
-- `timeout` — optional total deadline in seconds. `None` waits
-  indefinitely.
-
-**Returns:** Self, with all child steps resolved.
-
-**Raises:** `TimeoutError` if the timeout expires before all children
-resolve.
+See [Composite-level overrides](../concepts/composites-and-composition.md#composite-level-overrides-are-step-defaults)
+for precedence and [Forward execution overrides](../how-to-guides/writing-composite-operations.md#forward-execution-overrides)
+for usage.
 
 ---
 
 ## See also
 
-- [Composites and Composition](../concepts/composites-and-composition.md) — conceptual overview
-- [Writing Composite Operations](../how-to-guides/writing-composite-operations.md) — step-by-step guide
+- [Composites and Composition](../concepts/composites-and-composition.md) — grouping, persistence, and placement
+- [Writing Composite Operations](../how-to-guides/writing-composite-operations.md) — implementation and validation
 - [Composable Operations Tutorial](../tutorials/02-pipeline-design/07-composites.ipynb) — interactive examples
-- [Glossary](glossary.md) — key terms
+- [Python API](python-api.md) — public modules and installed definitions
