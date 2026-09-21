@@ -709,7 +709,10 @@ class InteractiveFilter:
         from artisan.operations.curator.filter import Filter
         from artisan.schemas.execution.execution_context import ExecutionContext
         from artisan.storage.io.commit import DeltaCommitter
-        from artisan.storage.io.commit_plan import build_commit_plan
+        from artisan.storage.io.commit_plan import (
+            prepare_commit_evidence,
+            publish_commit_plan,
+        )
         from artisan.storage.io.staging import StagingManager
 
         diagnostics = self._build_diagnostics(filtered)
@@ -778,8 +781,7 @@ class InteractiveFilter:
             step_number=step_number,
             operation_name=type(operation).name,
         )
-        plan = build_commit_plan(
-            delta_root=self._delta_root,
+        staged = prepare_commit_evidence(
             staging_root=staging_root,
             fs=self._fs,
             commit_kind="step_result",
@@ -788,7 +790,9 @@ class InteractiveFilter:
             operation_name=type(operation).name,
             execution_run_ids=(execution_run_id,),
         )
-        committer.commit_logical(plan)
+        prepared = committer.prepare_logical(staged.plan, staged=staged)
+        publish_commit_plan(self._delta_root, self._fs, staged.plan)
+        committer.commit_logical(staged.plan, prepared=prepared)
         return tracker.current_state(step_run_id).to_step_result()
 
     def _build_diagnostics(self, filtered: list[str]) -> dict[str, Any]:

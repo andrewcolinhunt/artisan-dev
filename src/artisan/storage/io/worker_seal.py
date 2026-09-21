@@ -14,7 +14,11 @@ from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import get_schema
 from artisan.storage.io.publication import is_publication_temporary
-from artisan.utils.hashing import canonical_json_bytes, compute_stream_digest
+from artisan.utils.hashing import (
+    canonical_json_bytes,
+    compute_content_digest,
+    compute_stream_digest,
+)
 from artisan.utils.path import uri_join
 
 STAGING_INVENTORY_KEY = "artisan.staging_inventory"
@@ -110,15 +114,14 @@ def build_staging_inventory(staging_path: str, fs: AbstractFileSystem) -> bytes:
 
 
 def verify_worker_seal(staging_path: str, fs: AbstractFileSystem) -> pl.DataFrame:
-    """Validate a seal's closed inventory and return its single execution row.
+    """Verify the closed inventory and return its single execution row."""
+    return read_worker_files(staging_path, fs)[EXECUTION_SEAL_FILENAME][1]
 
-    This boundary is shared by normal plan construction and recovery. Existing
-    plans verify their own recorded files instead, allowing completed cleanup
-    to be retried after some payloads have already been removed.
 
-    Raises:
-        StoreIntegrityError: The seal, inventory, or a listed payload is invalid.
-    """
+def read_worker_files(
+    staging_path: str, fs: AbstractFileSystem
+) -> dict[str, tuple[bytes, pl.DataFrame]]:
+    """Capture and verify each sealed worker object once for batch planning."""
     try:
         with fs.open(uri_join(staging_path, EXECUTION_SEAL_FILENAME), "rb") as stream:
             data = stream.read()
@@ -143,8 +146,25 @@ def verify_worker_seal(staging_path: str, fs: AbstractFileSystem) -> pl.DataFram
             "Worker seal must contain exactly one execution with the registered schema"
         )
         raise StoreIntegrityError(msg)
-    actual = build_staging_inventory(staging_path, fs)
-    if actual != canonical_json_bytes(inventory.model_dump()):
+    paths = _payload_paths(staging_path, fs)
+    expected = {item.filename: item for item in inventory.files}
+    if paths.keys() != expected.keys():
         msg = f"Missing or changed worker inventory payloads in {posixpath.basename(staging_path)}"
         raise StoreIntegrityError(msg)
-    return frame
+    files = {EXECUTION_SEAL_FILENAME: (data, frame)}
+    for name, path in sorted(paths.items()):
+        with fs.open(path, "rb") as stream:
+            payload = stream.read()
+        item = expected[name]
+        if (
+            len(payload) != item.size_bytes
+            or compute_content_digest(payload) != item.digest
+        ):
+            msg = f"Missing or changed worker inventory payloads in {posixpath.basename(staging_path)}"
+            raise StoreIntegrityError(msg)
+        try:
+            files[name] = (payload, pl.read_parquet(io.BytesIO(payload)))
+        except pl.exceptions.PolarsError as exc:
+            msg = f"Unreadable worker payload {name!r}"
+            raise StoreIntegrityError(msg) from exc
+    return files

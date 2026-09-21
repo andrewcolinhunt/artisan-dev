@@ -16,7 +16,7 @@ from artisan.storage.core.table_schemas import get_physical_schema_for_path
 from artisan.utils.path import uri_join
 
 STORE_MANIFEST = {
-    "store_format": 4,
+    "store_format": 5,
     "artifact_identity": 1,
     "cache_identity": 2,
 }
@@ -28,7 +28,13 @@ def assert_store_format(
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
 ) -> None:
-    """Require the exact supported store manifest before normal access."""
+    """Validate the manifest and all coordinated schemas when opening a store."""
+    assert_store_manifest(delta_root, fs)
+    _assert_table_schemas(delta_root, fs, storage_options or {})
+
+
+def assert_store_manifest(delta_root: str, fs: AbstractFileSystem) -> None:
+    """Require the supported manifest without reopening unrelated Delta tables."""
     manifest_path = uri_join(delta_root, STORE_MANIFEST_PATH)
     if not fs.exists(manifest_path):
         detail = "missing manifest"
@@ -42,7 +48,6 @@ def assert_store_format(
     if found != STORE_MANIFEST:
         detail = f"found {found!r}"
         raise _incompatible(detail)
-    _assert_table_schemas(delta_root, fs, storage_options or {})
 
 
 def prepare_store_initialization(

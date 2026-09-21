@@ -833,7 +833,7 @@ def test_incomplete_shard_is_retained_and_late_seal_waits_for_next_pass(
     fs.rm(seal)
     from artisan.storage.io import repair
 
-    original = repair._apply_report
+    original = repair._worker_candidates
 
     def publish_after_snapshot(*args, **kwargs):
         if not fs.exists(seal):
@@ -841,7 +841,7 @@ def test_incomplete_shard_is_retained_and_late_seal_waits_for_next_pass(
                 stream.write(payload)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(repair, "_apply_report", publish_after_snapshot)
+    monkeypatch.setattr(repair, "_worker_candidates", publish_after_snapshot)
     first = _repair(repair_env, recover_staging=True, apply=True)
     assert [item.classification for item in first.items] == ["incomplete"]
     second = _repair(repair_env, recover_staging=True, apply=True)
@@ -862,7 +862,7 @@ def test_recovery_plan_before_control_and_abandonment_keep_ownership(
         step_run_id="c" * 32,
         step_number=0,
         operation_name="worker",
-        execution_run_id="e" * 32,
+        execution_run_ids=["e" * 32],
     )
     publish_commit_plan(delta_root, fs, plan)
     assert (
@@ -1000,3 +1000,340 @@ def test_recovery_verifies_external_content_using_configured_filesystem(
         delta_root, TablePath.EXECUTIONS, fs=fs, storage_options=options
     )
     assert executions.height == (1 if damage is None else 0)
+
+
+def test_recovery_batches_workers_and_hydrates_shared_artifact_once(
+    repair_env, monkeypatch
+):
+    from artisan.storage.core.artifact_store import ArtifactStore
+
+    _, fs, options, delta_root, _ = repair_env
+    _worker_candidate(repair_env, execution_id="e" * 32)
+    _worker_candidate(repair_env, execution_id="f" * 32)
+    hydrated = []
+    original = ArtifactStore._hydrate_rows
+
+    def count_hydration(self, kind, rows, locations):
+        hydrated.extend(rows["artifact_id"].to_list())
+        return original(self, kind, rows, locations)
+
+    monkeypatch.setattr(ArtifactStore, "_hydrate_rows", count_hydration)
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert [item.classification for item in report.items] == ["complete"]
+    controls = read_logical_commits(delta_root, fs=fs, storage_options=options)
+    assert controls.height == 1
+    assert controls["commit_kind"].to_list() == ["execution_recovery"]
+    assert len(hydrated) == 1
+    assert read_committed(
+        delta_root, TablePath.EXECUTIONS, fs=fs, storage_options=options
+    )["execution_run_id"].sort().to_list() == ["e" * 32, "f" * 32]
+
+
+def test_recovery_batch_rejects_reference_declared_only_by_another_worker(repair_env):
+    from artisan.schemas.artifact.data import DataArtifact
+
+    _, fs, options, delta_root, staging_root = repair_env
+    _, first, _ = _worker_candidate(repair_env, execution_id="e" * 32)
+    other = DataArtifact.draft(
+        content=b"different\n2\n", original_name="other.csv", step_number=0
+    ).finalize()
+    _worker_candidate(repair_env, execution_id="f" * 32, artifact=other)
+    path = f"{first}/execution_edges.parquet"
+    with fs.open(path, "rb") as stream:
+        edges = pl.read_parquet(stream).with_columns(
+            pl.lit(other.artifact_id).alias("artifact_id")
+        )
+    with fs.open(path, "wb") as stream:
+        edges.write_parquet(stream)
+    _reseal_inventory(fs, first)
+    before = _root_bytes(fs, staging_root)
+
+    report = _repair(repair_env, recover_staging=True, apply=True)
+
+    assert report.blocking
+    assert "Missing staged artifact references" in report.blocking_items[0].detail
+    assert read_logical_commits(delta_root, fs=fs, storage_options=options).is_empty()
+    assert _root_bytes(fs, staging_root) == before
+
+
+def test_recovery_later_workers_form_another_batch(repair_env):
+    from artisan.storage.io.commit_plan import read_commit_plan
+
+    _, fs, options, delta_root, _ = repair_env
+    _worker_candidate(repair_env, execution_id="e" * 32)
+    _repair(repair_env, recover_staging=True, apply=True)
+    _worker_candidate(repair_env, execution_id="f" * 32)
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert [item.classification for item in report.items] == ["complete", "complete"]
+    controls = read_logical_commits(delta_root, fs=fs, storage_options=options)
+    assert controls["recovery_batch_id"].n_unique() == 2
+    memberships = []
+    for row in controls.iter_rows(named=True):
+        plan = read_commit_plan(
+            delta_root,
+            fs,
+            row["step_run_id"],
+            row["commit_kind"],
+            row["recovery_batch_id"],
+        )
+        memberships.append(plan.table(TablePath.EXECUTIONS.value).row_keys)
+    assert sorted(memberships) == [(("e" * 32,),), (("f" * 32,),)]
+
+
+def test_read_only_recovery_reads_each_physical_table_once(repair_env, monkeypatch):
+    from collections import Counter
+
+    _worker_candidate(repair_env)
+    scans = Counter()
+    original = pl.scan_delta
+
+    def count_scan(source, *args, **kwargs):
+        scans[str(source)] += 1
+        return original(source, *args, **kwargs)
+
+    monkeypatch.setattr(pl, "scan_delta", count_scan)
+    report = _repair(repair_env, recover_staging=True)
+    assert [item.classification for item in report.items] == ["recoverable"]
+    assert scans
+    assert all(
+        count == 1
+        for path, count in scans.items()
+        if not path.endswith(TablePath.LOGICAL_COMMITS.value)
+    )
+
+
+def test_overlapping_published_batches_block_before_adoption(repair_env):
+    from artisan.storage.io.commit_plan import prepare_commit_plan, publish_commit_plan
+
+    _, fs, options, delta_root, staging_root = repair_env
+    for char in "ef9":
+        _worker_candidate(repair_env, execution_id=char * 32)
+    for ids in (["e" * 32, "f" * 32], ["f" * 32, "9" * 32]):
+        plan = prepare_commit_plan(
+            staging_root=staging_root,
+            fs=fs,
+            commit_kind="execution_recovery",
+            step_run_id="c" * 32,
+            step_number=0,
+            operation_name="worker",
+            execution_run_ids=ids,
+        )
+        publish_commit_plan(delta_root, fs, plan)
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert report.blocking
+    assert any("both claim" in item.detail for item in report.blocking_items)
+    assert read_logical_commits(delta_root, fs=fs, storage_options=options).is_empty()
+
+
+def test_audit_checks_owners_without_any_completed_plans(repair_env):
+    _, _, options, delta_root, _ = repair_env
+    pl.DataFrame(
+        {
+            "artifact_id": ["a" * 32],
+            "artifact_type": ["data"],
+            "origin_step_number": [0],
+            "metadata": ["{}"],
+            "logical_commit_id": ["input_registration:" + "b" * 32],
+        },
+        schema={**ARTIFACT_INDEX_SCHEMA, "logical_commit_id": pl.String},
+    ).write_delta(
+        f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}",
+        mode="append",
+        storage_options=options,
+    )
+    report = _repair(repair_env)
+    assert report.blocking
+    assert "unknown owners" in report.blocking_items[0].detail
+
+
+def test_audit_invalid_table_never_claims_completed_effects_verified(repair_env):
+    committer, _, options, delta_root, _ = repair_env
+    plan = _plan(committer)
+    committer.commit_logical(plan)
+    DeltaTable(
+        f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}", storage_options=options
+    ).update(updates={"logical_commit_id": f"'input_registration:{'b' * 32}'"})
+    report = _repair(repair_env)
+    item = next(
+        item for item in report.items if item.evidence_id == plan.logical_commit_id
+    )
+    assert report.blocking
+    assert item.classification in {"corrupt", "conflict"}
+    assert "all planned effects agree" not in item.detail
+
+
+def test_unreadable_pending_effect_returns_corrupt_report(repair_env, monkeypatch):
+    committer, _, _, _, _ = repair_env
+    plan = _plan(committer)
+    original = DeltaCommitter._read_physical
+
+    def unreadable(self, table):
+        if table == TablePath.ARTIFACT_INDEX.value:
+            msg = "Unreadable planned artifact index"
+            raise StoreIntegrityError(msg)
+        return original(self, table)
+
+    monkeypatch.setattr(DeltaCommitter, "_read_physical", unreadable)
+    report = _repair(repair_env)
+    assert report.blocking
+    assert any(
+        item.evidence_id == plan.logical_commit_id and item.classification == "corrupt"
+        for item in report.items
+    )
+
+
+def test_recovery_audit_unreadable_artifact_table_is_reported_without_reread(
+    repair_env, monkeypatch
+):
+    from collections import Counter
+
+    committer, fs, options, delta_root, staging_root = repair_env
+    _, directory, _ = _worker_candidate(repair_env)
+    plan = build_commit_plan(
+        delta_root=delta_root,
+        staging_root=staging_root,
+        fs=fs,
+        commit_kind="execution_recovery",
+        step_run_id="c" * 32,
+        step_number=0,
+        operation_name="worker",
+        execution_run_ids=["e" * 32],
+    )
+    committer._insert_planned(plan)
+    with fs.open(f"{directory}/index.parquet", "rb") as stream:
+        index = pl.read_parquet(stream)
+    committer._append(
+        index.with_columns(pl.lit(plan.logical_commit_id).alias("logical_commit_id")),
+        TablePath.ARTIFACT_INDEX.value,
+    )
+    for path in fs.find(f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}"):
+        if path.endswith(".parquet"):
+            with fs.open(path, "wb") as stream:
+                stream.write(b"corrupt parquet payload")
+    scans = Counter()
+    original = pl.scan_delta
+
+    def count_scan(source, *args, **kwargs):
+        scans[str(source)] += 1
+        return original(source, *args, **kwargs)
+
+    monkeypatch.setattr(pl, "scan_delta", count_scan)
+    report = _repair(repair_env, recover_staging=True)
+    assert report.blocking
+    assert any(
+        item.evidence_id == plan.logical_commit_id and item.classification == "corrupt"
+        for item in report.items
+    )
+    assert scans[f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}"] == 1
+    assert read_logical_commits(delta_root, fs=fs, storage_options=options)[
+        "state"
+    ].to_list() == ["planned"]
+
+
+def test_recovery_rejects_source_with_a_physical_sequence_gap(repair_env):
+    _, fs, options, delta_root, _ = repair_env
+    _worker_candidate(repair_env)
+    DeltaTable(f"{delta_root}/{TablePath.STEPS.value}", storage_options=options).update(
+        predicate="state_sequence = 1", updates={"state_sequence": "CAST(3 AS INT)"}
+    )
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert report.blocking
+    assert "sequence gap" in report.blocking_items[0].detail
+    assert read_logical_commits(delta_root, fs=fs, storage_options=options).is_empty()
+
+
+@pytest.mark.parametrize("artifact_type", [None, "unregistered-type"])
+def test_recovery_reports_invalid_artifact_type_before_publication(
+    repair_env, artifact_type
+):
+    _, fs, options, delta_root, _ = repair_env
+    _, directory, _ = _worker_candidate(repair_env)
+    path = f"{directory}/index.parquet"
+    with fs.open(path, "rb") as stream:
+        index = pl.read_parquet(stream).with_columns(
+            pl.lit(artifact_type, dtype=pl.String).alias("artifact_type")
+        )
+    with fs.open(path, "wb") as stream:
+        index.write_parquet(stream)
+    _reseal_inventory(fs, directory)
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert report.blocking
+    assert "Unknown staged artifact type" in report.blocking_items[0].detail
+    assert read_logical_commits(delta_root, fs=fs, storage_options=options).is_empty()
+
+
+def test_recovery_allows_visible_gap_backed_by_abandoned_physical_snapshot(repair_env):
+    committer, fs, options, delta_root, staging_root = repair_env
+    tracker, _, _ = _worker_candidate(repair_env)
+    step_id = "c" * 32
+    result = StepResult(
+        step_name="user-label",
+        step_number=0,
+        step_run_id=step_id,
+        status=StepStatus.SUCCEEDED,
+        disposition=StepDisposition.EXECUTED,
+        total_count=1,
+        succeeded_count=1,
+        output_roles=frozenset({"output"}),
+        output_types={"output": "data"},
+    )
+    candidate = tracker.prepare_terminal_candidate(
+        step_id,
+        StepStatus.RUNNING,
+        StepStatus.SUCCEEDED,
+        step_spec_id="d" * 32,
+        result=result,
+    )
+    committer.staging_manager.stage_orchestrator_dataframe(
+        candidate,
+        TablePath.STEPS.value,
+        commit_kind="step_result",
+        step_run_id=step_id,
+        step_number=0,
+        operation_name="worker",
+    )
+    plan = build_commit_plan(
+        delta_root=delta_root,
+        staging_root=staging_root,
+        fs=fs,
+        commit_kind="step_result",
+        step_run_id=step_id,
+        step_number=0,
+        operation_name="worker",
+    )
+    committer._insert_planned(plan)
+    committer._append(
+        candidate.with_columns(
+            pl.lit(plan.logical_commit_id).alias("logical_commit_id")
+        ),
+        TablePath.STEPS.value,
+    )
+    _repair(repair_env, abandon=plan.logical_commit_id, reason="source interrupted")
+    visible = read_committed(
+        delta_root, TablePath.STEPS, fs=fs, storage_options=options
+    )
+    assert sorted(visible["state_sequence"].to_list()) == [0, 1, 3]
+
+    report = _repair(repair_env, recover_staging=True, apply=True)
+
+    assert not report.blocking
+    assert {item.classification for item in report.items} == {"abandoned", "complete"}
+    assert tracker.current_state(step_id).status is StepStatus.FAILED
+
+
+def test_recovery_does_not_validate_unrelated_source_history(repair_env):
+    committer, _, options, delta_root, _ = repair_env
+    _worker_candidate(repair_env)
+    rows = committer._read_physical(TablePath.STEPS.value).with_columns(
+        pl.lit("9" * 32).alias("step_run_id"),
+        pl.when(pl.col("state_sequence") == 1)
+        .then(pl.lit(3, dtype=pl.Int32))
+        .otherwise(pl.col("state_sequence"))
+        .alias("state_sequence"),
+    )
+    rows.write_delta(
+        f"{delta_root}/{TablePath.STEPS.value}", mode="append", storage_options=options
+    )
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert not report.blocking
+    assert [item.classification for item in report.items] == ["complete"]

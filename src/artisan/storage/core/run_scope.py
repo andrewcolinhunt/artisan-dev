@@ -16,7 +16,7 @@ from artisan.errors import (
 )
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.committed_scan import read_committed
-from artisan.storage.core.store_format import assert_store_format
+from artisan.storage.core.store_format import assert_store_manifest
 from artisan.utils.path import uri_join
 
 _HEX_ID = re.compile(r"[0-9a-f]{32}")
@@ -74,7 +74,7 @@ def load_execution_membership(
             malformed, dangling, duplicated, or contradictory.
     """
     options = storage_options or {}
-    assert_store_format(delta_root, fs, options)
+    assert_store_manifest(delta_root, fs)
     _require_tables(
         delta_root,
         fs,
@@ -226,7 +226,7 @@ def load_run_step_outputs(
     from artisan.orchestration.engine.step_tracker import StepTracker
 
     options = storage_options or {}
-    assert_store_format(delta_root, fs, options)
+    assert_store_manifest(delta_root, fs)
     states = StepTracker(
         delta_root, fs=fs, storage_options=options
     ).load_current_states(pipeline_run_id)
@@ -274,7 +274,7 @@ def validate_cached_executions(
     Returns the sorted, deduplicated execution IDs ready for staging.
     """
     options = storage_options or {}
-    assert_store_format(delta_root, fs, options)
+    assert_store_manifest(delta_root, fs)
     _require_hex(current_step_run_id, "current_step_run_id")
     execution_ids = sorted(set(cached_execution_run_ids))
     for execution_id in execution_ids:
@@ -334,41 +334,56 @@ def validate_cached_executions(
     return execution_ids
 
 
-def validate_staged_execution(
+def validate_staged_executions(
     delta_root: str,
     frames: dict[str, pl.DataFrame],
     *,
-    execution_run_id: str,
     step_run_id: str,
     step_number: int,
     operation_name: str,
+    source_rows: pl.DataFrame,
+    per_execution_artifact_ids: dict[str, set[str]],
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
     files_root: str | None = None,
+    committed_frames: dict[str, pl.DataFrame] | None = None,
 ) -> None:
-    """Validate a sealed recovery candidate against staged and committed data."""
+    """Validate one source's recovery batch against a shared source snapshot.
+
+    Each worker may reference committed artifacts or artifacts declared in its
+    own sealed shard. Shared hydration never lets another worker's uncommitted
+    artifacts satisfy that requirement.
+    """
     from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
     from artisan.storage.core.artifact_store import ArtifactStore
     from artisan.storage.core.table_schemas import get_schema
 
     executions = frames.get(TablePath.EXECUTIONS.value)
-    if executions is None or executions.height != 1:
-        msg = "Recovery requires exactly one execution"
+    if executions is None or executions.is_empty():
+        msg = "Recovery requires at least one execution"
         raise StoreIntegrityError(msg)
-    record = executions.row(0, named=True)
-    if (
-        record["execution_run_id"] != execution_run_id
-        or record["step_run_id"] != step_run_id
-        or record["origin_step_number"] != step_number
-        or record["operation_name"] != operation_name
-        or record["success"] is not True
-        or record["replay_of_execution_run_id"] is not None
+    execution_ids = set(executions["execution_run_id"].to_list())
+    if len(execution_ids) != executions.height or execution_ids != set(
+        per_execution_artifact_ids
     ):
-        msg = "Recovery execution ownership or outcome is invalid"
+        msg = "Recovery execution membership is invalid"
         raise StoreIntegrityError(msg)
-    for field in ("execution_run_id", "execution_spec_id", "step_run_id"):
-        _require_hex(record[field], field)
-    owner = _validate_staged_replay(delta_root, record, fs, storage_options or {})
+    source_step = _recovery_source(
+        delta_root, source_rows, step_run_id, step_number, fs, storage_options
+    )
+    for record in executions.iter_rows(named=True):
+        if (
+            record["step_run_id"] != step_run_id
+            or record["origin_step_number"] != step_number
+            or record["operation_name"] != operation_name
+            or record["success"] is not True
+            or record["replay_of_execution_run_id"] is not None
+        ):
+            msg = "Recovery execution ownership or outcome is invalid"
+            raise StoreIntegrityError(msg)
+        for field in ("execution_run_id", "execution_spec_id", "step_run_id"):
+            _require_hex(record[field], field)
+        _validate_staged_replay(record, source_step)
     edges = frames.get(
         TablePath.EXECUTION_EDGES.value,
         pl.DataFrame(schema=get_schema(TablePath.EXECUTION_EDGES)),
@@ -377,30 +392,34 @@ def validate_staged_execution(
         TablePath.ARTIFACT_EDGES.value,
         pl.DataFrame(schema=get_schema(TablePath.ARTIFACT_EDGES)),
     )
-    references: set[str] = set()
+    references: dict[str, set[str]] = {key: set() for key in execution_ids}
     for row in edges.iter_rows(named=True):
         if (
-            row["execution_run_id"] != execution_run_id
+            row["execution_run_id"] not in execution_ids
             or row["direction"] not in {"input", "output"}
             or not row["role"]
         ):
             msg = "Recovery execution edges are invalid"
             raise StoreIntegrityError(msg)
         _require_hex(row["artifact_id"], "artifact_id")
-        references.add(row["artifact_id"])
+        references[row["execution_run_id"]].add(row["artifact_id"])
     for row in provenance.iter_rows(named=True):
         edge = ArtifactProvenanceEdge.model_validate(row)
-        if edge.execution_run_id != execution_run_id:
+        if edge.execution_run_id not in execution_ids:
             msg = "Recovery provenance belongs to another execution"
             raise StoreIntegrityError(msg)
-        references.update((edge.source_artifact_id, edge.target_artifact_id))
+        references[edge.execution_run_id].update(
+            (edge.source_artifact_id, edge.target_artifact_id)
+        )
     types = ArtifactStore(
-        delta_root,
-        fs=fs,
-        storage_options=storage_options,
-        files_root=files_root,
-    ).validate_staged_artifacts(frames, references)
-    output_types = json.loads(owner["output_types_json"])
+        delta_root, fs=fs, storage_options=storage_options, files_root=files_root
+    ).validate_staged_artifacts(
+        frames,
+        references,
+        per_execution_artifact_ids=per_execution_artifact_ids,
+        committed_frames=committed_frames,
+    )
+    output_types = json.loads(source_step["output_types_json"])
     for row in edges.filter(pl.col("direction") == "output").iter_rows(named=True):
         if row["role"] not in output_types or output_types[row["role"]] not in {
             None,
@@ -415,13 +434,48 @@ def validate_staged_execution(
                 raise StoreIntegrityError(msg)
 
 
-def _validate_staged_replay(
+def _recovery_source(
     delta_root: str,
-    record: dict[str, Any],
+    source_rows: pl.DataFrame,
+    step_run_id: str,
+    step_number: int,
     fs: AbstractFileSystem,
-    storage_options: dict[str, str],
+    storage_options: dict[str, str] | None,
 ) -> dict[str, Any]:
-    """Deserialize diagnostics and verify available original owner evidence."""
+    """Validate source history once and retain its original output contract."""
+    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.schemas.orchestration.step_lifecycle import StepStatus
+
+    rows = source_rows.filter(pl.col("step_run_id") == step_run_id).sort(
+        "state_sequence"
+    )
+    if rows.is_empty():
+        msg = "Recovery source attempt is missing"
+        raise StoreIntegrityError(msg)
+    current = StepTracker(
+        delta_root, fs=fs, storage_options=storage_options
+    )._validate_attempt_rows(rows)
+    if current.status not in {
+        StepStatus.RUNNING,
+        StepStatus.FAILED,
+        StepStatus.CANCELLED,
+    }:
+        msg = "Recovery source attempt is not eligible"
+        raise StoreIntegrityError(msg)
+    if current.replay_of_execution_run_id is not None:
+        msg = "Ordinary execution claims a diagnostic source"
+        raise StoreIntegrityError(msg)
+    if current.step_number != step_number:
+        msg = "Recovery source step number conflicts"
+        raise StoreIntegrityError(msg)
+    # Terminal failure/cancellation clears accepted outputs, not the declaration.
+    return rows.row(0, named=True)
+
+
+def _validate_staged_replay(
+    record: dict[str, Any], source_step: dict[str, Any]
+) -> None:
+    """Validate one execution's diagnostics without rereading its owner."""
     from artisan.schemas.execution.command_record import CommandRecording
     from artisan.schemas.execution.replay import ReplaySnapshot
 
@@ -434,22 +488,6 @@ def _validate_staged_replay(
     if snapshot.diagnostic is not None:
         msg = "Diagnostic execution cannot be recovered"
         raise StoreIntegrityError(msg)
-    owner = (
-        read_committed(
-            delta_root,
-            TablePath.STEPS,
-            fs=fs,
-            storage_options=storage_options,
-        )
-        .filter(pl.col("step_run_id") == record["step_run_id"])
-        .sort("state_sequence")
-    )
-    if owner.is_empty():
-        msg = "Recovery source attempt is missing"
-        raise StoreIntegrityError(msg)
-    # Failed/cancelled results can clear accepted-output metadata; recovery
-    # validates the operation's original declaration, retained in its first row.
-    source_step = owner.row(0, named=True)
     if snapshot.source is not None and (
         snapshot.source.step_run_id != record["step_run_id"]
         or snapshot.source.step_number != record["origin_step_number"]
@@ -465,7 +503,6 @@ def _validate_staged_replay(
         ):
             msg = "Recovery operation ownership conflicts"
             raise StoreIntegrityError(msg)
-    return source_step
 
 
 def _read_steps(

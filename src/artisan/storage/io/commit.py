@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -17,9 +18,14 @@ from artisan.schemas.orchestration.step_lifecycle import (
     TERMINAL_STEP_STATUSES,
     StepStatus,
 )
-from artisan.storage.core.committed_scan import read_committed, read_logical_commits
+from artisan.storage.core.committed_scan import (
+    read_committed,
+    read_logical_commits,
+    verify_plan_effect,
+)
 from artisan.storage.core.store_format import (
     assert_store_format,
+    assert_store_manifest,
     prepare_store_initialization,
     publish_store_manifest,
 )
@@ -34,10 +40,11 @@ from artisan.storage.core.table_schemas import (
 from artisan.storage.io.commit_plan import (
     CommitPlan,
     PlannedTable,
+    StagedPlanEvidence,
     canonical_table_plan_key,
     comparable_effect_rows,
     read_commit_plan,
-    verify_plan_files,
+    read_plan_evidence,
 )
 from artisan.storage.io.staging import StagingManager
 from artisan.utils.path import uri_join
@@ -51,6 +58,15 @@ def _normalize_table(table: str | TablePath) -> str:
 
 def _table_name(table_path: str) -> str:
     return table_path.rsplit("/", 1)[-1]
+
+
+@dataclass(frozen=True)
+class PreparedCommitEvidence:
+    """Validated staged snapshot, usable once by the writer that prepared it."""
+
+    staged: StagedPlanEvidence
+    delta_root: str
+    token: object
 
 
 class DeltaCommitter:
@@ -70,52 +86,74 @@ class DeltaCommitter:
         self._fs = fs
         self._storage_options = storage_options or {}
         self._files_root = files_root
+        self._prepared: dict[object, PreparedCommitEvidence] = {}
+
+    def prepare_logical(
+        self,
+        plan: CommitPlan,
+        *,
+        staged: StagedPlanEvidence | None = None,
+        source_rows: pl.DataFrame | None = None,
+        committed_frames: dict[str, pl.DataFrame] | None = None,
+    ) -> PreparedCommitEvidence:
+        """Validate exact staged evidence for one immediate application.
+
+        A new plan may be prepared before publication. Applying the prepared
+        evidence still requires the identical durable plan under this root.
+        """
+        assert_store_manifest(self.delta_base_path, self._fs)
+        staged = staged or read_plan_evidence(
+            plan, self.staging_manager.staging_dir, self._fs
+        )
+        if (
+            staged.plan != plan
+            or staged.staging_root != self.staging_manager.staging_dir
+        ):
+            msg = "Prepared staging evidence does not match this plan/root"
+            raise StoreIntegrityError(msg)
+        if plan.commit_kind == "execution_recovery":
+            self._validate_recovery(
+                plan, staged, source_rows=source_rows, committed_frames=committed_frames
+            )
+        else:
+            self._reject_terminal_attempt(plan, source_rows=source_rows)
+        prepared = PreparedCommitEvidence(staged, self.delta_base_path, object())
+        self._prepared[prepared.token] = prepared
+        return prepared
 
     def commit_logical(
         self,
         plan: CommitPlan,
         *,
         preserve_staging: bool = False,
+        prepared: PreparedCommitEvidence | None = None,
     ) -> dict[str, int]:
-        """Commit or exactly retry a persisted plan, publishing completion last.
+        """Apply one immutable batch, proving its effects before completion.
 
-        Args:
-            plan: Immutable plan already published under this Delta root.
-            preserve_staging: Retain planned staging files after completion.
-                Otherwise, remove them after verifying the completed effect.
-
-        Returns:
-            Newly written row counts keyed by table name. An already complete
-            plan is verified again and returns an empty mapping.
-
-        Raises:
-            StoreIntegrityError: If plan evidence conflicts or its attempt
-                cannot accept this commit.
-            CommitError: If planning, a table write, or completion fails.
+        Prepared evidence is optional and can be consumed only once by this
+        writer. Retries prepare the persisted plan again. Already completed
+        plans are verified only when retained staging needs cleanup.
         """
-        assert_store_format(self.delta_base_path, self._fs, self._storage_options)
+        assert_store_manifest(self.delta_base_path, self._fs)
         self._require_persisted_plan(plan)
+        if prepared is not None:
+            self._consume_prepared(plan, prepared)
         controls = self._controls()
         control = self._control_for(plan, controls)
         if control is not None and control["state"] == "complete":
-            self._validate_complete(plan)
-            if not preserve_staging:
+            if not preserve_staging and self._has_staging(plan):
                 self._cleanup_plan(plan)
             return {}
         if control is not None and control["state"] == "abandoned":
             msg = f"Logical commit {plan.logical_commit_id} is abandoned"
             raise StoreIntegrityError(msg)
-        self._reject_terminal_attempt(plan)
-
-        frames = verify_plan_files(
-            plan,
-            self.staging_manager.staging_dir,
-            self._fs,
-        )
-        self._validate_recovery(plan, frames)
+        if prepared is None:
+            prepared = self.prepare_logical(plan)
+            self._consume_prepared(plan, prepared)
+        frames = prepared.staged.frames
         if control is None:
             try:
-                self._insert_planned(plan)
+                controls = self._insert_planned(plan)
             except Exception as exc:
                 msg = f"Commit {plan.logical_commit_id} failed at control planning"
                 raise CommitError(
@@ -133,28 +171,25 @@ class DeltaCommitter:
         for table in plan.tables:
             try:
                 written = self._commit_table_effect(
-                    plan, table, frames[table.table_path]
+                    plan, table, frames[table.table_path], controls
                 )
                 verified.append(table.table_path)
                 if written:
                     results[_table_name(table.table_path)] = written
                 self._checkpoint("table", plan, table.table_path)
             except Exception as exc:
-                objects = [file.relative_path for file in table.files]
                 msg = f"Commit {plan.logical_commit_id} failed at {table.table_path}"
                 raise CommitError(
                     plan.logical_commit_id,
                     table.table_path,
                     table.table_plan_key,
                     verified,
-                    objects,
+                    [file.relative_path for file in table.files],
                     msg,
                 ) from exc
-
         try:
             self._complete(plan)
             self._checkpoint("complete", plan, None)
-            self._validate_complete(plan)
         except Exception as exc:
             msg = f"Commit {plan.logical_commit_id} failed at logical completion"
             raise CommitError(
@@ -166,8 +201,30 @@ class DeltaCommitter:
                 msg,
             ) from exc
         if not preserve_staging:
-            self._cleanup_plan(plan)
+            self._delete_planned_files(plan)
         return results
+
+    def _consume_prepared(
+        self, plan: CommitPlan, prepared: PreparedCommitEvidence
+    ) -> None:
+        issued = self._prepared.pop(prepared.token, None)
+        if (
+            issued is not prepared
+            or prepared.delta_root != self.delta_base_path
+            or prepared.staged.plan != plan
+            or prepared.staged.staging_root != self.staging_manager.staging_dir
+        ):
+            msg = "Prepared commit evidence is stale or belongs to another writer/plan/root"
+            raise StoreIntegrityError(msg)
+
+    def _has_staging(self, plan: CommitPlan) -> bool:
+        return any(
+            self._fs.exists(
+                uri_join(self.staging_manager.staging_dir, file.relative_path)
+            )
+            for table in plan.tables
+            for file in table.files
+        )
 
     def _require_persisted_plan(self, plan: CommitPlan) -> None:
         persisted = read_commit_plan(
@@ -175,23 +232,24 @@ class DeltaCommitter:
             self._fs,
             plan.step_run_id,
             plan.commit_kind,
-            plan.execution_run_id,
+            plan.recovery_batch_id,
         )
         if persisted != plan:
             msg = f"Persisted plan disagrees for {plan.logical_commit_id}"
             raise StoreIntegrityError(msg)
 
-    def _reject_terminal_attempt(self, plan: CommitPlan) -> None:
+    def _reject_terminal_attempt(
+        self, plan: CommitPlan, *, source_rows: pl.DataFrame | None = None
+    ) -> None:
         """Prevent an incomplete plan from reviving an already terminal attempt."""
-        if plan.commit_kind == "execution_recovery":
-            self._require_recovery_owner(plan)
-            return
-        rows = read_committed(
-            self.delta_base_path,
-            TablePath.STEPS,
-            fs=self._fs,
-            storage_options=self._storage_options,
-        ).filter(pl.col("step_run_id") == plan.step_run_id)
+        if source_rows is None:
+            source_rows = read_committed(
+                self.delta_base_path,
+                TablePath.STEPS,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
+        rows = source_rows.filter(pl.col("step_run_id") == plan.step_run_id)
         if rows.is_empty():
             return
         latest = rows.sort("state_sequence").row(-1, named=True)
@@ -213,42 +271,28 @@ class DeltaCommitter:
             )
             raise StoreIntegrityError(msg)
 
-    def _require_recovery_owner(self, plan: CommitPlan) -> None:
-        """Keep recovered executions attached to an eligible original attempt."""
-        from artisan.orchestration.engine.step_tracker import StepTracker
-
-        tracker = StepTracker(
-            self.delta_base_path, fs=self._fs, storage_options=self._storage_options
-        )
-        try:
-            owner = tracker.current_state(plan.step_run_id)
-        except ValueError as exc:
-            msg = "Recovery source attempt is missing"
-            raise StoreIntegrityError(msg) from exc
-        if (
-            owner.status
-            not in {StepStatus.RUNNING, StepStatus.FAILED, StepStatus.CANCELLED}
-            or owner.replay_of_execution_run_id is not None
-            or owner.step_number != plan.step_number
-        ):
-            msg = f"Ineligible recovery owner for {plan.logical_commit_id}"
-            raise StoreIntegrityError(msg)
-
     def _validate_recovery(
-        self, plan: CommitPlan, frames: dict[str, pl.DataFrame]
+        self,
+        plan: CommitPlan,
+        staged: StagedPlanEvidence,
+        *,
+        source_rows: pl.DataFrame | None = None,
+        committed_frames: dict[str, pl.DataFrame] | None = None,
     ) -> None:
-        """Validate staged recovery content through the ordinary typed boundary."""
-        if plan.commit_kind != "execution_recovery":
-            return
-        from artisan.storage.core.run_scope import validate_staged_execution
+        """Validate all recovered workers through one shared source/artifact view."""
+        from artisan.storage.core.run_scope import validate_staged_executions
 
-        validate_staged_execution(
+        if source_rows is None:
+            source_rows = self._read_physical(TablePath.STEPS.value)
+        validate_staged_executions(
             self.delta_base_path,
-            frames,
-            execution_run_id=plan.execution_run_id or "",
+            staged.frames,
             step_run_id=plan.step_run_id,
             step_number=plan.step_number,
             operation_name=plan.operation_name,
+            source_rows=source_rows,
+            per_execution_artifact_ids=staged.per_execution_artifact_ids,
+            committed_frames=committed_frames,
             fs=self._fs,
             storage_options=self._storage_options,
             files_root=self._files_root,
@@ -267,7 +311,7 @@ class DeltaCommitter:
             row["commit_kind"] != plan.commit_kind
             or row["step_run_id"] != plan.step_run_id
             or row["plan_digest"] != plan.plan_digest
-            or row["execution_run_id"] != plan.execution_run_id
+            or row["recovery_batch_id"] != plan.recovery_batch_id
         ):
             msg = f"Control row disagrees with plan {plan.logical_commit_id}"
             raise StoreIntegrityError(msg)
@@ -280,14 +324,14 @@ class DeltaCommitter:
             storage_options=self._storage_options,
         )
 
-    def _insert_planned(self, plan: CommitPlan) -> None:
+    def _insert_planned(self, plan: CommitPlan) -> pl.DataFrame:
         control = pl.DataFrame(
             [
                 {
                     "logical_commit_id": plan.logical_commit_id,
                     "commit_kind": plan.commit_kind,
                     "step_run_id": plan.step_run_id,
-                    "execution_run_id": plan.execution_run_id,
+                    "recovery_batch_id": plan.recovery_batch_id,
                     "state": "planned",
                     "plan_digest": plan.plan_digest,
                     "created_at": datetime.now(UTC),
@@ -298,33 +342,29 @@ class DeltaCommitter:
             schema=LOGICAL_COMMITS_SCHEMA,
         )
         self._append(control, TablePath.LOGICAL_COMMITS.value)
-        row = self._control_for(plan, self._controls())
+        controls = self._controls()
+        row = self._control_for(plan, controls)
         if row is None or row["state"] != "planned":
             msg = f"Planned control row was not durable for {plan.logical_commit_id}"
             raise StoreIntegrityError(msg)
+        return controls
 
     def _commit_table_effect(
         self,
         plan: CommitPlan,
         table: PlannedTable,
         expected: pl.DataFrame,
+        controls: pl.DataFrame,
     ) -> int:
         physical = self._read_physical(table.table_path)
-        missing = self._missing_rows(plan, table, expected, physical, self._controls())
+        missing = self._missing_rows(plan, table, expected, physical, controls)
         if not missing.is_empty():
-            rows = self._inject_owner(missing, table.table_path, plan.logical_commit_id)
-            self._append(rows, table.table_path)
-        reread = self._read_physical(table.table_path)
-        remaining = self._missing_rows(
-            plan,
-            table,
-            expected,
-            reread,
-            self._controls(),
-        )
-        if not remaining.is_empty():
-            msg = f"Append did not produce the exact {table.table_path} effect"
-            raise StoreIntegrityError(msg)
+            self._append(
+                self._inject_owner(missing, table.table_path, plan.logical_commit_id),
+                table.table_path,
+            )
+            physical = self._read_physical(table.table_path)
+        verify_plan_effect(plan, table.table_path, physical, controls)
         return missing.height
 
     def _missing_rows(
@@ -346,13 +386,36 @@ class DeltaCommitter:
             table.table_path, table.natural_key, expected, keyed
         )
         if table.table_path == TablePath.CACHE_REUSE.value:
+            owned = physical.filter(pl.col("current_step_run_id") == plan.step_run_id)
+        else:
+            owned = physical.filter(
+                pl.col("logical_commit_id") == plan.logical_commit_id
+            )
+            if keyed["logical_commit_id"].null_count():
+                msg = f"Table {table.table_path!r} contains unowned rows"
+                raise StoreIntegrityError(msg)
+        extras = owned.join(
+            expected.select(keys), on=keys, how="anti", nulls_equal=True
+        )
+        if not extras.is_empty():
+            msg = f"Commit {plan.logical_commit_id} owns unplanned {table.table_path} rows"
+            raise StoreIntegrityError(msg)
+        if (
+            "origin_step_number" in owned
+            and not owned.filter(
+                pl.col("origin_step_number").is_null()
+                | (pl.col("origin_step_number") != plan.step_number)
+            ).is_empty()
+        ):
+            msg = (
+                f"Artifact origin disagrees with owning commit {plan.logical_commit_id}"
+            )
+            raise StoreIntegrityError(msg)
+        if table.table_path == TablePath.CACHE_REUSE.value:
             satisfied = keyed
             if 0 < satisfied.height < expected.height:
                 self._raise_partial(table.table_path)
         elif is_global_artifact_table(table.table_path):
-            if physical["logical_commit_id"].null_count():
-                msg = f"Table {table.table_path!r} contains unowned rows"
-                raise StoreIntegrityError(msg)
             complete = set(
                 controls.filter(pl.col("state") == "complete")[
                     "logical_commit_id"
@@ -374,6 +437,9 @@ class DeltaCommitter:
             )
             if 0 < satisfied.height < expected.height:
                 self._raise_partial(table.table_path)
+        if not satisfied.group_by(keys).len().filter(pl.col("len") != 1).is_empty():
+            msg = f"Duplicate natural key in table {table.table_path!r}"
+            raise StoreIntegrityError(msg)
         missing = expected.join(
             satisfied.select(keys).unique(),
             on=keys,
@@ -464,21 +530,29 @@ class DeltaCommitter:
             msg = f"Completion was not durable for {plan.logical_commit_id}"
             raise StoreIntegrityError(msg)
 
-    def _validate_complete(self, plan: CommitPlan) -> None:
+    def _validate_complete(
+        self, plan: CommitPlan, *, controls: pl.DataFrame | None = None
+    ) -> None:
+        """Verify only this batch before a later retained-staging cleanup."""
+        controls = self._controls() if controls is None else controls
+        control = self._control_for(plan, controls)
+        if control is None or control["state"] != "complete":
+            msg = (
+                f"Refusing verification before completion for {plan.logical_commit_id}"
+            )
+            raise StoreIntegrityError(msg)
         for table in plan.tables:
-            read_committed(
-                self.delta_base_path,
-                table.table_path,
-                fs=self._fs,
-                storage_options=self._storage_options,
+            verify_plan_effect(
+                plan, table.table_path, self._read_physical(table.table_path), controls
             )
 
     def _cleanup_plan(self, plan: CommitPlan) -> None:
-        control = self._control_for(plan, self._controls())
-        if control is None or control["state"] != "complete":
-            msg = f"Refusing cleanup before completion for {plan.logical_commit_id}"
-            raise StoreIntegrityError(msg)
+        """Reverify a completed batch before cleaning it in a later operation."""
         self._validate_complete(plan)
+        self._delete_planned_files(plan)
+
+    def _delete_planned_files(self, plan: CommitPlan) -> None:
+        """Delete unchanged evidence immediately after local completion proof."""
         self.staging_manager.cleanup_plan(
             [file for table in plan.tables for file in table.files]
         )

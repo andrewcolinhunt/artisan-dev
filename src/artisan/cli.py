@@ -189,7 +189,7 @@ def _build_parser() -> argparse.ArgumentParser:
     store_parser = sub.add_parser("store", help="Persisted store commands")
     store_sub = store_parser.add_subparsers(dest="store_command", required=True)
     repair = store_sub.add_parser(
-        "repair", help="Report or deliberately repair logical commits"
+        "repair", help="Inspect store integrity or repair staged commits"
     )
     _add_store_args(repair)
     repair.add_argument("--staging-root", required=True, help="Worker staging root")
@@ -199,7 +199,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="JSON file containing a StorageConfig object",
     )
     repair.add_argument(
-        "--apply", action="store_true", help="Replay validated incomplete commits"
+        "--apply",
+        action="store_true",
+        help="Finish pending commits and clean verified staging without a full audit",
     )
     repair.add_argument(
         "--recover-staging",

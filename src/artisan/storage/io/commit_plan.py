@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import posixpath
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
@@ -25,7 +26,7 @@ from artisan.storage.io.publication import (
     is_publication_temporary,
     publish_immutable_bytes,
 )
-from artisan.storage.io.worker_seal import verify_worker_seal
+from artisan.storage.io.worker_seal import read_worker_files
 from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 from artisan.utils.path import shard_uri, step_dir_name, uri_join
 
@@ -33,19 +34,19 @@ CommitKind = Literal["step_result", "input_registration", "execution_recovery"]
 
 
 def logical_commit_identity(
-    commit_kind: str, step_run_id: str, execution_run_id: str | None = None
+    commit_kind: str, step_run_id: str, recovery_batch_id: str | None = None
 ) -> str:
     """Validate the kind-specific owner and return its durable commit ID."""
     if commit_kind not in {"step_result", "input_registration", "execution_recovery"}:
         msg = f"Unknown commit kind {commit_kind!r}"
         raise ValueError(msg)
-    if (commit_kind == "execution_recovery") != (execution_run_id is not None):
-        msg = "Only execution recovery requires an execution owner"
+    if (commit_kind == "execution_recovery") != (recovery_batch_id is not None):
+        msg = "Only execution recovery requires a batch owner"
         raise ValueError(msg)
-    if execution_run_id is not None and not _is_content_digest(execution_run_id):
-        msg = "Invalid recovery execution ID"
+    if recovery_batch_id is not None and not _is_content_digest(recovery_batch_id):
+        msg = "Invalid recovery batch ID"
         raise ValueError(msg)
-    return f"{commit_kind}:{execution_run_id or step_run_id}"
+    return f"{commit_kind}:{recovery_batch_id or step_run_id}"
 
 
 class PlannedFile(BaseModel):
@@ -132,7 +133,7 @@ class CommitPlan(BaseModel):
     logical_commit_id: str
     commit_kind: CommitKind
     step_run_id: str
-    execution_run_id: str | None = None
+    recovery_batch_id: str | None = None
     step_number: int
     operation_name: str
     tables: tuple[PlannedTable, ...]
@@ -143,7 +144,7 @@ class CommitPlan(BaseModel):
     @model_validator(mode="after")
     def _verify_digest(self) -> CommitPlan:
         expected_id = logical_commit_identity(
-            self.commit_kind, self.step_run_id, self.execution_run_id
+            self.commit_kind, self.step_run_id, self.recovery_batch_id
         )
         if self.logical_commit_id != expected_id:
             msg = f"Commit plan ID does not match its owner: {self.logical_commit_id}"
@@ -183,11 +184,35 @@ class CommitPlan(BaseModel):
                 terminal is not None
                 or self.table(TablePath.CACHE_REUSE.value) is not None
                 or execution is None
-                or execution.row_keys != ((self.execution_run_id,),)
-                or execution.row_count != 1
+                or execution.row_count == 0
+                or self.recovery_batch_id
+                != recovery_batch_identity(
+                    self.step_run_id, [key[0] for key in execution.row_keys]
+                )
             ):
-                msg = "Recovery requires exactly its execution and no step/reuse rows"
+                msg = (
+                    "Recovery requires its exact execution batch and no step/reuse rows"
+                )
                 raise ValueError(msg)
+            directories = {
+                shard_uri(
+                    "",
+                    key[0],
+                    step_number=self.step_number,
+                    operation_name=self.operation_name,
+                ).lstrip("/")
+                for key in execution.row_keys
+            }
+            allowed_files = _staging_table_paths()
+            for table in self.tables:
+                for file in table.files:
+                    if (
+                        posixpath.dirname(file.relative_path) not in directories
+                        or allowed_files.get(posixpath.basename(file.relative_path))
+                        != table.table_path
+                    ):
+                        msg = "Recovery file path does not match its exact execution batch"
+                        raise ValueError(msg)
         if self.plan_digest != _plan_digest(self.model_dump(exclude={"plan_digest"})):
             msg = f"Commit plan {self.logical_commit_id} has an invalid digest"
             raise ValueError(msg)
@@ -201,7 +226,39 @@ class CommitPlan(BaseModel):
         )
 
 
-def prepare_commit_plan(
+@dataclass(frozen=True)
+class StagedPlanEvidence:
+    """Captured exact files and per-worker artifact declarations for one plan."""
+
+    plan: CommitPlan
+    staging_root: str
+    frames: dict[str, pl.DataFrame]
+    per_execution_artifact_ids: dict[str, set[str]]
+
+
+def recovery_batch_identity(
+    step_run_id: str, execution_run_ids: list[str] | tuple[str, ...]
+) -> str:
+    """Identify a finite recovery snapshot independently of discovery order."""
+    if not execution_run_ids or any(
+        not _is_content_digest(value) for value in execution_run_ids
+    ):
+        msg = "Recovery requires valid execution IDs"
+        raise ValueError(msg)
+    if len(set(execution_run_ids)) != len(execution_run_ids):
+        msg = "Recovery contains duplicate execution IDs"
+        raise ValueError(msg)
+    return compute_content_digest(
+        canonical_json_bytes(
+            {
+                "step_run_id": step_run_id,
+                "execution_run_ids": sorted(execution_run_ids),
+            }
+        )
+    )
+
+
+def prepare_commit_evidence(
     *,
     staging_root: str,
     fs: AbstractFileSystem,
@@ -210,28 +267,26 @@ def prepare_commit_plan(
     step_number: int,
     operation_name: str,
     execution_run_ids: list[str] | tuple[str, ...] = (),
-    execution_run_id: str | None = None,
-) -> CommitPlan:
-    """Validate staging and construct exact evidence without changing either root."""
-    logical_commit_id = logical_commit_identity(
-        commit_kind, step_run_id, execution_run_id
-    )
-    if commit_kind == "execution_recovery":
-        if execution_run_ids and tuple(execution_run_ids) != (execution_run_id,):
-            msg = "Recovery must own exactly one execution"
-            raise StoreIntegrityError(msg)
-        assert execution_run_id is not None
-        execution_run_ids = (execution_run_id,)
+) -> StagedPlanEvidence:
+    """Read exact staging evidence once for planning and immediate application."""
     if len(set(execution_run_ids)) != len(execution_run_ids):
         msg = f"Duplicate execution IDs in commit {commit_kind}:{step_run_id}"
         raise StoreIntegrityError(msg)
+    recovery_batch_id = (
+        recovery_batch_identity(step_run_id, execution_run_ids)
+        if commit_kind == "execution_recovery"
+        else None
+    )
+    logical_commit_id = logical_commit_identity(
+        commit_kind, step_run_id, recovery_batch_id
+    )
     table_files = _inspect_staging(
         staging_root=staging_root,
         fs=fs,
         step_run_id=step_run_id,
         step_number=step_number,
         operation_name=operation_name,
-        execution_run_ids=execution_run_ids,
+        execution_run_ids=sorted(execution_run_ids),
         commit_kind=commit_kind,
     )
     tables = tuple(
@@ -241,26 +296,39 @@ def prepare_commit_plan(
     if not tables:
         msg = f"Logical commit {logical_commit_id} has no staged effects"
         raise StoreIntegrityError(msg)
-    terminal = next(
-        (table for table in tables if table.table_path == TablePath.STEPS.value),
-        None,
-    )
-    if commit_kind == "step_result" and (terminal is None or terminal.row_count != 1):
-        msg = f"Step-result commit {logical_commit_id} requires one terminal snapshot"
-        raise StoreIntegrityError(msg)
-    if commit_kind == "input_registration" and terminal is not None:
-        msg = f"Input registration {logical_commit_id} cannot contain a step snapshot"
-        raise StoreIntegrityError(msg)
     payload: dict[str, Any] = {
         "logical_commit_id": logical_commit_id,
         "commit_kind": commit_kind,
         "step_run_id": step_run_id,
-        "execution_run_id": execution_run_id,
+        "recovery_batch_id": recovery_batch_id,
         "step_number": step_number,
         "operation_name": operation_name,
         "tables": [table.model_dump(mode="json") for table in tables],
     }
-    return CommitPlan(**payload, plan_digest=_plan_digest(payload))
+    plan = CommitPlan(**payload, plan_digest=_plan_digest(payload))
+    return _staged_evidence(plan, staging_root, table_files)
+
+
+def prepare_commit_plan(
+    *,
+    staging_root: str,
+    fs: AbstractFileSystem,
+    commit_kind: CommitKind,
+    step_run_id: str,
+    step_number: int,
+    operation_name: str,
+    execution_run_ids: list[str] | tuple[str, ...] = (),
+) -> CommitPlan:
+    """Construct an immutable plan without publishing or applying it."""
+    return prepare_commit_evidence(
+        staging_root=staging_root,
+        fs=fs,
+        commit_kind=commit_kind,
+        step_run_id=step_run_id,
+        step_number=step_number,
+        operation_name=operation_name,
+        execution_run_ids=execution_run_ids,
+    ).plan
 
 
 def build_commit_plan(
@@ -273,7 +341,6 @@ def build_commit_plan(
     step_number: int,
     operation_name: str,
     execution_run_ids: list[str] | tuple[str, ...] = (),
-    execution_run_id: str | None = None,
 ) -> CommitPlan:
     """Prepare and publish one immutable plan from exact staging evidence."""
     plan = prepare_commit_plan(
@@ -284,7 +351,6 @@ def build_commit_plan(
         step_number=step_number,
         operation_name=operation_name,
         execution_run_ids=execution_run_ids,
-        execution_run_id=execution_run_id,
     )
     return publish_commit_plan(delta_root, fs, plan)
 
@@ -296,12 +362,12 @@ def publish_commit_plan(
 ) -> CommitPlan:
     """Publish exact plan bytes once, then verify the durable object."""
     final_path = commit_plan_path(
-        delta_root, plan.step_run_id, plan.commit_kind, plan.execution_run_id
+        delta_root, plan.step_run_id, plan.commit_kind, plan.recovery_batch_id
     )
     encoded = canonical_json_bytes(plan.model_dump(mode="json"))
     publish_immutable_bytes(fs, final_path, encoded)
     published = read_commit_plan(
-        delta_root, fs, plan.step_run_id, plan.commit_kind, plan.execution_run_id
+        delta_root, fs, plan.step_run_id, plan.commit_kind, plan.recovery_batch_id
     )
     if published != plan:
         msg = f"Published plan changed for {plan.logical_commit_id}"
@@ -314,10 +380,10 @@ def read_commit_plan(
     fs: AbstractFileSystem,
     step_run_id: str,
     commit_kind: CommitKind,
-    execution_run_id: str | None = None,
+    recovery_batch_id: str | None = None,
 ) -> CommitPlan:
     """Read and digest-validate one exact plan."""
-    path = commit_plan_path(delta_root, step_run_id, commit_kind, execution_run_id)
+    path = commit_plan_path(delta_root, step_run_id, commit_kind, recovery_batch_id)
     try:
         with fs.open(path, "rb") as stream:
             raw = json.load(stream)
@@ -325,7 +391,7 @@ def read_commit_plan(
         if (
             plan.step_run_id != step_run_id
             or plan.commit_kind != commit_kind
-            or plan.execution_run_id != execution_run_id
+            or plan.recovery_batch_id != recovery_batch_id
         ):
             msg = f"Commit plan path does not match {commit_kind}:{step_run_id}"
             raise StoreIntegrityError(msg)
@@ -337,15 +403,15 @@ def read_commit_plan(
         raise StoreIntegrityError(msg) from exc
 
 
-def verify_plan_files(
+def read_plan_evidence(
     plan: CommitPlan,
     staging_root: str,
     fs: AbstractFileSystem,
-) -> dict[str, pl.DataFrame]:
-    """Reread every planned object and reject changed bytes or rows."""
-    tables: dict[str, pl.DataFrame] = {}
+) -> StagedPlanEvidence:
+    """Reread exact planned files, preserving each shard's artifact membership."""
+    table_files: dict[str, list[tuple[PlannedFile, pl.DataFrame]]] = {}
     for table in plan.tables:
-        frames: list[pl.DataFrame] = []
+        files = []
         for planned_file in table.files:
             path = _resolve_relative(staging_root, planned_file.relative_path)
             data, frame = _read_parquet_bytes(path, fs)
@@ -357,28 +423,61 @@ def verify_plan_files(
             ):
                 msg = f"Staged object changed after planning: {_safe(path)}"
                 raise StoreIntegrityError(msg)
-            frames.append(frame)
-        combined = pl.concat(frames, how="vertical_relaxed", rechunk=True)
-        tables[table.table_path] = _validate_table_rows(plan, table, combined)
-    return tables
+            files.append((planned_file, frame))
+        table_files[table.table_path] = files
+    return _staged_evidence(plan, staging_root, table_files)
+
+
+def verify_plan_files(
+    plan: CommitPlan, staging_root: str, fs: AbstractFileSystem
+) -> dict[str, pl.DataFrame]:
+    """Read and verify one persisted plan's exact staged table effects."""
+    return read_plan_evidence(plan, staging_root, fs).frames
+
+
+def _staged_evidence(
+    plan: CommitPlan,
+    staging_root: str,
+    table_files: dict[str, list[tuple[PlannedFile, pl.DataFrame]]],
+) -> StagedPlanEvidence:
+    frames = {}
+    membership: dict[str, set[str]] = {}
+    for table in plan.tables:
+        files = table_files[table.table_path]
+        combined = pl.concat(
+            [frame for _, frame in files], how="vertical_relaxed", rechunk=True
+        )
+        frames[table.table_path] = _validate_table_rows(plan, table, combined)
+        if table.table_path == TablePath.ARTIFACT_INDEX.value:
+            for file, frame in files:
+                execution_id = posixpath.basename(posixpath.dirname(file.relative_path))
+                if _is_content_digest(execution_id):
+                    membership.setdefault(execution_id, set()).update(
+                        frame["artifact_id"].to_list()
+                    )
+    executions = plan.table(TablePath.EXECUTIONS.value)
+    if executions is not None:
+        for (execution_id,) in executions.row_keys:
+            membership.setdefault(execution_id, set())
+    return StagedPlanEvidence(plan, staging_root, frames, membership)
 
 
 def commit_plan_path(
     delta_root: str,
     step_run_id: str,
     commit_kind: CommitKind,
-    execution_run_id: str | None = None,
+    recovery_batch_id: str | None = None,
 ) -> str:
     """Return the durable path for one logical commit plan."""
-    logical_commit_identity(commit_kind, step_run_id, execution_run_id)
-    if execution_run_id is not None:
+    logical_commit_identity(commit_kind, step_run_id, recovery_batch_id)
+    if recovery_batch_id is not None:
         return uri_join(
             delta_root,
             "_artisan",
             "commit_plans",
             step_run_id,
             commit_kind,
-            f"{execution_run_id}.json",
+            f"{recovery_batch_id}.json",
         )
     return uri_join(
         delta_root,
@@ -456,27 +555,21 @@ def _inspect_staging(
             msg = f"Missing staging directory {_safe(directory)}"
             raise StoreIntegrityError(msg)
         if execution_id is not None:
-            verify_worker_seal(directory, fs)
-        entries = [
-            entry
-            for entry in fs.ls(directory, detail=False)
-            if not is_publication_temporary(posixpath.basename(str(entry)))
-        ]
-        names = {posixpath.basename(str(entry).rstrip("/")) for entry in entries}
-        if execution_id is not None and "executions.parquet" not in names:
-            msg = f"Missing execution seal in {_safe(directory)}"
-            raise StoreIntegrityError(msg)
-        for entry in entries:
-            path = str(entry).rstrip("/")
-            if fs.isdir(path):
-                msg = f"Unexpected staging directory {_safe(path)}"
-                raise StoreIntegrityError(msg)
-            filename = posixpath.basename(path)
-            table_path = allowed.get(filename)
-            if table_path is None:
-                msg = f"Unexpected staged object {_safe(path)}"
-                raise StoreIntegrityError(msg)
-            data, frame = _read_parquet_bytes(path, fs)
+            captured = read_worker_files(directory, fs)
+        else:
+            captured = {}
+            for entry in fs.ls(directory, detail=False):
+                path = str(entry).rstrip("/")
+                filename = posixpath.basename(path)
+                if is_publication_temporary(filename):
+                    continue
+                if fs.isdir(path) or filename not in allowed:
+                    msg = f"Unexpected staged object {_safe(path)}"
+                    raise StoreIntegrityError(msg)
+                captured[filename] = _read_parquet_bytes(path, fs)
+        for filename, (data, frame) in sorted(captured.items()):
+            path = uri_join(directory, filename)
+            table_path = allowed[filename]
             _validate_staged_schema(table_path, frame)
             _validate_ownership(
                 frame,
@@ -732,8 +825,8 @@ def _plan_digest(payload: dict[str, Any]) -> str:
     return compute_content_digest(canonical_json_bytes(payload))
 
 
-def _is_content_digest(value: str) -> bool:
-    if len(value) != 32:
+def _is_content_digest(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 32:
         return False
     try:
         bytes.fromhex(value)

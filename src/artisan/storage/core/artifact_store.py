@@ -222,19 +222,49 @@ class ArtifactStore:
     def validate_staged_artifacts(
         self,
         frames: dict[str, pl.DataFrame],
-        referenced_ids: set[str],
+        references: dict[str, set[str]],
+        *,
+        per_execution_artifact_ids: dict[str, set[str]],
+        committed_frames: dict[str, pl.DataFrame] | None = None,
     ) -> dict[str, str]:
-        """Validate candidate artifacts and references without publishing any rows."""
-        index = self._candidate_rows(TablePath.ARTIFACT_INDEX.value, frames)
-        locations = self._candidate_rows(TablePath.ARTIFACT_LOCATIONS.value, frames)
+        """Validate per-worker references, then hydrate their unique union once."""
+        committed_index = self._validation_rows(
+            TablePath.ARTIFACT_INDEX.value, committed_frames
+        )
+        committed_ids = set(committed_index["artifact_id"].to_list())
+        for execution_id, artifact_ids in references.items():
+            missing = (
+                artifact_ids - committed_ids - per_execution_artifact_ids[execution_id]
+            )
+            if missing:
+                msg = f"Missing staged artifact references for {execution_id}: {sorted(missing)!r}"
+                raise ArtifactIntegrityError(msg)
+        referenced_ids = set().union(*references.values())
+        index = self._candidate_rows(
+            TablePath.ARTIFACT_INDEX.value, frames, committed=committed_index
+        )
+        locations = self._candidate_rows(
+            TablePath.ARTIFACT_LOCATIONS.value,
+            frames,
+            committed=self._validation_rows(
+                TablePath.ARTIFACT_LOCATIONS.value, committed_frames
+            ),
+        )
         for frame in frames.values():
             if "artifact_id" in frame.columns:
                 referenced_ids.update(frame["artifact_id"].to_list())
         selected = index.filter(pl.col("artifact_id").is_in(referenced_ids))
         types: dict[str, str] = {}
+        registered_types = ArtifactTypeDef.get_all()
         for artifact_id, artifact_type in selected.select(
             "artifact_id", "artifact_type"
         ).iter_rows():
+            if (
+                not isinstance(artifact_type, str)
+                or artifact_type not in registered_types
+            ):
+                msg = f"Unknown staged artifact type {artifact_type!r}"
+                raise ArtifactIntegrityError(msg)
             if types.setdefault(artifact_id, artifact_type) != artifact_type:
                 msg = f"Conflicting staged artifact type for {artifact_id}"
                 raise ArtifactIntegrityError(msg)
@@ -245,9 +275,13 @@ class ArtifactStore:
         for artifact_type in sorted(set(types.values())):
             definition = ArtifactTypeDef.get(artifact_type)
             ids = {key for key, kind in types.items() if kind == artifact_type}
-            content = self._candidate_rows(definition.table_path, frames).filter(
-                pl.col("artifact_id").is_in(ids)
-            )
+            content = self._candidate_rows(
+                definition.table_path,
+                frames,
+                committed=self._validation_rows(
+                    definition.table_path, committed_frames
+                ),
+            ).filter(pl.col("artifact_id").is_in(ids))
             loaded = self._hydrate_rows(artifact_type, content, locations)
             if ids != loaded.keys():
                 msg = f"Missing staged content for {sorted(ids - loaded.keys())!r}"
@@ -262,13 +296,37 @@ class ArtifactStore:
                 raise ArtifactIntegrityError(msg)
         return types
 
+    def _validation_rows(
+        self, table: str, snapshot: dict[str, pl.DataFrame] | None
+    ) -> pl.DataFrame:
+        """Use an audited snapshot as authoritative, including unavailable tables."""
+        if snapshot is None:
+            return read_committed(
+                self.base_path,
+                table,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
+        if table not in snapshot:
+            msg = f"Missing audited table {table!r}: its physical data was unreadable"
+            raise ArtifactIntegrityError(msg)
+        return snapshot[table]
+
     def _candidate_rows(
-        self, table: str, frames: dict[str, pl.DataFrame]
+        self,
+        table: str,
+        frames: dict[str, pl.DataFrame],
+        *,
+        committed: pl.DataFrame | None = None,
     ) -> pl.DataFrame:
         """Overlay candidate evidence for validation without changing stored data."""
-        committed = read_committed(
-            self.base_path, table, fs=self._fs, storage_options=self._storage_options
-        )
+        if committed is None:
+            committed = read_committed(
+                self.base_path,
+                table,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
         candidate = frames.get(table)
         if candidate is None:
             return committed

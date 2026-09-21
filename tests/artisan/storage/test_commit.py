@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 
 import polars as pl
 import pytest
-from deltalake import DeltaTable
 from fixtures.execution_records import executions_df
 from fixtures.store_format import publish_test_store
 
@@ -26,7 +25,11 @@ from artisan.storage.core.table_schemas import (
     STEPS_SCHEMA,
 )
 from artisan.storage.io.commit import DeltaCommitter
-from artisan.storage.io.commit_plan import CommitPlan, build_commit_plan
+from artisan.storage.io.commit_plan import (
+    CommitPlan,
+    build_commit_plan,
+    read_plan_evidence,
+)
 from artisan.storage.io.staging import StagingManager
 from artisan.storage.io.worker_seal import (
     STAGING_INVENTORY_KEY,
@@ -118,7 +121,9 @@ def _stage_registration(
     )
 
 
-def _stage_step_result(committer: DeltaCommitter) -> CommitPlan:
+def _stage_step_result(
+    committer: DeltaCommitter, *, cached_execution_ids: list[str] | None = None
+) -> CommitPlan:
     staging = committer.staging_manager
     execution_id = "d" * 32
     directory = shard_uri(
@@ -208,7 +213,7 @@ def _stage_step_result(committer: DeltaCommitter) -> CommitPlan:
             frame.write_parquet(stream, metadata=metadata)
     staging.stage_cache_reuse(
         STEP_ID,
-        ["f" * 32],
+        cached_execution_ids or ["f" * 32],
         step_number=0,
         operation_name="full",
     )
@@ -630,15 +635,26 @@ def test_conflicting_global_artifact_stops_before_later_tables(commit_env):
 
 
 @pytest.mark.parametrize("table_path", ["artifacts/metrics", "artifacts/index"])
-def test_committed_reader_rejects_modified_artifact_origin(commit_env, table_path):
+def test_scoped_verification_rejects_modified_artifact_origin(commit_env, table_path):
     committer, fs, options, delta_root, _ = commit_env
-    committer.commit_logical(_stage_registration(committer))
-    DeltaTable(f"{delta_root}/{table_path}", storage_options=options).update(
-        updates={"origin_step_number": "7"},
-    )
+    plan = _stage_registration(committer)
+    committer.commit_logical(plan, preserve_staging=True)
+    path = f"{delta_root}/{table_path}"
+    rows = pl.read_delta(path, storage_options=options)
+    rows.with_columns(
+        pl.lit(7, dtype=pl.Int32).alias("origin_step_number")
+    ).write_delta(path, mode="overwrite", storage_options=options)
 
-    with pytest.raises(StoreIntegrityError):
-        read_committed(delta_root, table_path, fs=fs, storage_options=options)
+    # Durable completion authorizes ordinary visibility; explicit validation
+    # and retained-staging cleanup must still reject modified effects.
+    assert (
+        read_committed(delta_root, table_path, fs=fs, storage_options=options).height
+        == 1
+    )
+    with pytest.raises(StoreIntegrityError, match="origin disagrees"):
+        committer._validate_complete(plan)
+    with pytest.raises(StoreIntegrityError, match="origin disagrees"):
+        committer._cleanup_plan(plan)
 
 
 def test_control_string_encoding_supports_conditional_completion(commit_env):
@@ -662,3 +678,96 @@ def test_initialize_and_maintenance_use_exact_tables(commit_env):
         "files_removed": 0,
     }
     committer.vacuum_table("artifacts/metrics")
+
+
+def test_prepared_evidence_is_writer_bound_and_single_use(commit_env):
+    committer, fs, options, delta_root, _ = commit_env
+    plan = _stage_registration(committer)
+    staged = read_plan_evidence(plan, committer.staging_manager.staging_dir, fs)
+    prepared = committer.prepare_logical(plan, staged=staged)
+    other = DeltaCommitter(
+        delta_root, committer.staging_manager, fs=fs, storage_options=options
+    )
+    with pytest.raises(StoreIntegrityError, match="another writer/plan/root"):
+        other.commit_logical(plan, prepared=prepared)
+    committer.commit_logical(plan, prepared=prepared)
+    with pytest.raises(StoreIntegrityError, match="stale"):
+        committer.commit_logical(plan, prepared=prepared)
+
+
+def test_fresh_commit_reads_each_table_only_for_write_and_verification(
+    commit_env, monkeypatch
+):
+    committer, _fs, _options, _delta_root, _ = commit_env
+    plan = _stage_registration(committer)
+    original = committer._read_physical
+    calls = []
+
+    def read(table):
+        calls.append(table)
+        return original(table)
+
+    monkeypatch.setattr(committer, "_read_physical", read)
+    committer.commit_logical(plan)
+    assert calls == [table.table_path for table in plan.tables for _ in range(2)]
+    calls.clear()
+    committer.commit_logical(plan)
+    assert calls == []
+
+
+def test_prepared_snapshot_commits_but_changed_staging_is_retained(commit_env):
+    committer, fs, _options, _delta_root, staging_root = commit_env
+    plan = _stage_registration(committer)
+    prepared = committer.prepare_logical(plan)
+    path = f"{staging_root}/{plan.tables[0].files[0].relative_path}"
+    with fs.open(path, "wb") as stream:
+        stream.write(b"changed after preparation")
+    committer.commit_logical(plan, prepared=prepared)
+    assert fs.exists(path)
+    with fs.open(path, "rb") as stream:
+        assert stream.read() == b"changed after preparation"
+
+
+def test_completed_preservation_skips_payload_verification(commit_env, monkeypatch):
+    committer, _fs, _options, _delta_root, _ = commit_env
+    plan = _stage_registration(committer)
+    committer.commit_logical(plan, preserve_staging=True)
+    monkeypatch.setattr(
+        committer,
+        "_read_physical",
+        lambda *_: pytest.fail("completed preserved plan was reverified"),
+    )
+    assert committer.commit_logical(plan, preserve_staging=True) == {}
+
+
+@pytest.mark.parametrize("mutation", ["partial", "duplicate", "extra"])
+def test_retry_rejects_corrupt_non_global_effect_before_completion(
+    commit_env, mutation
+):
+    committer, fs, options, delta_root, staging_root = commit_env
+    plan = _stage_step_result(committer, cached_execution_ids=["e" * 32, "f" * 32])
+    committer._insert_planned(plan)
+    table_path = TablePath.CACHE_REUSE.value
+    expected = read_plan_evidence(plan, staging_root, fs).frames[table_path]
+    if mutation == "partial":
+        corrupt = expected.head(1)
+    elif mutation == "duplicate":
+        corrupt = pl.concat([expected, expected.head(1)])
+    else:
+        corrupt = pl.concat(
+            [
+                expected,
+                expected.head(1).with_columns(
+                    pl.lit("9" * 32).alias("cached_execution_run_id")
+                ),
+            ]
+        )
+    committer._append(corrupt, table_path)
+    with pytest.raises(CommitError) as caught:
+        committer.commit_logical(plan)
+    assert caught.value.table == table_path
+    assert isinstance(caught.value.__cause__, StoreIntegrityError)
+    assert read_logical_commits(delta_root, fs=fs, storage_options=options)[
+        "state"
+    ].to_list() == ["planned"]
+    assert fs.exists(f"{staging_root}/{plan.table(table_path).files[0].relative_path}")
