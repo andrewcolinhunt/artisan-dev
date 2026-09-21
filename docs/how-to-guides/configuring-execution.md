@@ -371,26 +371,33 @@ By default, startup recovers validated finished work before checking caches.
 Use `recover_staging=False` when you need to inspect the old evidence without
 startup recovery; add `preserve_staging=True` to retain files after recovery.
 
-For an explicit report that includes finished, uncommitted executions:
+For a read-only integrity audit that also includes finished, uncommitted executions:
 
 ```bash
 artisan store repair --delta-root runs/delta --staging-root runs/staging \
   --recover-staging
 ```
 
-Report mode does not change either root. Inspect affected execution and plan IDs.
-To apply recovery while keeping the staging evidence:
+Report mode checks historical commit effects without changing either root.
+Inspect affected execution and plan IDs. To apply recovery while keeping the
+staging evidence:
 
 ```bash
 artisan store repair --delta-root runs/delta --staging-root runs/staging \
   --recover-staging --preserve-staging --apply
 ```
 
+Applied recovery groups finished executions by their source step and validates
+the batches it commits or cleans. Its report describes those actions; completed
+records skipped during recovery are not a historical integrity audit. Run the
+read-only command when you need that audit.
+
 Supply `--files-root` if the store uses a separately configured managed external
 files root. Without `--recover-staging`, repair only handles recorded plans.
 Incomplete or ineligible evidence can remain in a report after successful
 recovery; the CLI reports unresolved evidence with a nonzero exit status.
-Corrupt or conflicting evidence requires diagnosis and blocks pipeline startup.
+Corrupt or conflicting recovery evidence requires diagnosis and blocks pipeline
+startup. Ordinary startup does not audit unrelated completed data.
 
 Use `--abandon ID --reason ...` only after deciding that a particular
 logical commit should never finish. This retains its evidence and excludes it

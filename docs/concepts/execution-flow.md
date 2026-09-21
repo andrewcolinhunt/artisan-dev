@@ -324,8 +324,9 @@ reports a shared filesystem; local step runners skip it entirely.
 
 The orchestrator seals an immutable plan containing staged worker evidence and
 the terminal step snapshot. It writes the planned table effects and then marks
-the logical commit complete. Supported readers expose those results only after
-completion and verification; raw Delta reads can show partial physical writes.
+the logical commit complete after verifying those effects. Supported readers
+use that completion record for visibility; raw Delta reads can show partial
+physical writes.
 The authoritative sequence is in
 [Commit ordering](storage-and-delta-lake.md#commit-ordering).
 

@@ -296,11 +296,12 @@ co-produced output parents), and the `source_role`.
 (glossary-logical-commit)=
 ## Logical commit
 
-An immutable plan that coordinates a step's effects across Delta tables,
-including its terminal result snapshot. Each physical table write is atomic;
-supported Artisan readers expose plan-owned rows only after the logical commit
-is complete and its effects verify. Raw Delta reads can include incomplete
-writes. See [Commit ordering](../concepts/storage-and-delta-lake.md#commit-ordering).
+An immutable plan that coordinates a batch of effects across Delta tables. A
+normal step commit includes its terminal result snapshot; a recovery batch
+retains the source step's existing outcome. Each physical table write is atomic.
+The writer verifies the effects before recording completion, and supported
+Artisan readers use that record for visibility. Raw Delta reads can include
+incomplete writes. See [Commit ordering](../concepts/storage-and-delta-lake.md#commit-ordering).
 
 ---
 
