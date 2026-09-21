@@ -16,7 +16,6 @@ from artisan.errors import (
     CommitError,
     IncompatibleStoreError,
     PersistenceIntegrityError,
-    StoreIntegrityError,
 )
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import TablePath
@@ -274,7 +273,7 @@ def test_membership_fails_closed_on_dangling_cached_execution(store) -> None:
         load_execution_membership(root, fs=fs, pipeline_run_id="run-a")
 
 
-def test_membership_rejects_duplicate_complete_pairs(store) -> None:
+def test_explicit_audit_rejects_duplicate_complete_pairs(store) -> None:
     root, fs, staging = store
     current = "a" * 32
     cached = "b" * 32
@@ -299,8 +298,13 @@ def test_membership_rejects_duplicate_complete_pairs(store) -> None:
         f"{root}/{TablePath.CACHE_REUSE.value}", mode="append"
     )
 
-    with pytest.raises(StoreIntegrityError, match="Duplicate natural key"):
-        load_execution_membership(root, fs=fs, pipeline_run_id="run-a")
+    from artisan.storage.io.repair import repair_store
+
+    membership = load_execution_membership(root, fs=fs, pipeline_run_id="run-a")
+    assert membership.height == 1
+    report = repair_store(delta_root=root, staging_root=str(staging), fs=fs)
+    assert report.blocking
+    assert any("Duplicate natural key" in item.detail for item in report.blocking_items)
 
 
 def test_membership_enforces_store_gate_at_entry(tmp_path) -> None:

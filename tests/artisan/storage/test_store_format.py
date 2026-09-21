@@ -92,7 +92,7 @@ def test_wrong_cache_reuse_schema_fails(tmp_path) -> None:
         None,
         "not-json",
         json.dumps({"store_format": 2, "artifact_identity": 1, "cache_identity": 2}),
-        json.dumps({"store_format": 2}),
+        json.dumps({"store_format": 4}),
     ],
 )
 def test_missing_malformed_and_unsupported_manifests_fail(tmp_path, content) -> None:
@@ -126,9 +126,9 @@ def test_previous_manifest_rejected_even_with_current_tables(tmp_path) -> None:
         StagingManager(str(tmp_path / "staging"), fs),
         fs=fs,
     ).initialize_tables()
-    previous_manifest = {**STORE_MANIFEST, "store_format": 2}
+    previous_manifest = {**STORE_MANIFEST, "store_format": 4}
     with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "w") as stream:
         json.dump(previous_manifest, stream)
 
-    with pytest.raises(IncompatibleStoreError, match="found .*store_format.*2"):
+    with pytest.raises(IncompatibleStoreError, match="found .*store_format.*4"):
         assert_store_format(root, fs)

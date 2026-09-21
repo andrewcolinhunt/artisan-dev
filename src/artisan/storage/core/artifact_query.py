@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from artisan.storage.core.store_format import assert_store_format
+from artisan.storage.core.store_format import assert_store_manifest
 
 if TYPE_CHECKING:
     from artisan.schemas.execution.storage_config import StorageConfig
@@ -81,7 +81,7 @@ def query_artifacts(
     storage = storage or StorageConfig()
     opts = storage.delta_storage_options()
     fs = storage.filesystem()
-    assert_store_format(delta_root, fs, opts)
+    assert_store_manifest(delta_root, fs)
 
     index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
     if not fs.exists(index_path):

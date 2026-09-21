@@ -371,7 +371,10 @@ def _promote_file_paths_to_store(
     )
 
     # Register verified raw inputs through their own pre-dispatch commit.
-    from artisan.storage.io.commit_plan import build_commit_plan
+    from artisan.storage.io.commit_plan import (
+        prepare_commit_evidence,
+        publish_commit_plan,
+    )
     from artisan.storage.io.staging import StagingManager
 
     fs = config.storage.filesystem()
@@ -414,8 +417,7 @@ def _promote_file_paths_to_store(
         step_number=step_number,
         operation_name=operation_name,
     )
-    plan = build_commit_plan(
-        delta_root=config.delta_root,
+    staged = prepare_commit_evidence(
         staging_root=config.staging_root,
         fs=fs,
         commit_kind="input_registration",
@@ -423,7 +425,11 @@ def _promote_file_paths_to_store(
         step_number=step_number,
         operation_name=operation_name,
     )
-    committer.commit_logical(plan, preserve_staging=config.preserve_staging)
+    prepared = committer.prepare_logical(staged.plan, staged=staged)
+    publish_commit_plan(config.delta_root, fs, staged.plan)
+    committer.commit_logical(
+        staged.plan, prepared=prepared, preserve_staging=config.preserve_staging
+    )
 
     artifact_ids: list[str] = [
         a.artifact_id for a in file_ref_artifacts if a.artifact_id is not None
@@ -2632,7 +2638,10 @@ class PipelineManager:
     ) -> StepResult:
         """Persist worker evidence and its terminal candidate as one commit."""
         from artisan.storage.io.commit import DeltaCommitter
-        from artisan.storage.io.commit_plan import build_commit_plan
+        from artisan.storage.io.commit_plan import (
+            prepare_commit_evidence,
+            publish_commit_plan,
+        )
         from artisan.storage.io.staging import StagingManager
 
         step_run_id = result.step_run_id
@@ -2678,8 +2687,7 @@ class PipelineManager:
             step_number=finalized.step_number,
             operation_name=operation_name,
         )
-        plan = build_commit_plan(
-            delta_root=self._config.delta_root,
+        staged = prepare_commit_evidence(
             staging_root=self._config.staging_root,
             fs=fs,
             commit_kind="step_result",
@@ -2688,13 +2696,17 @@ class PipelineManager:
             operation_name=operation_name,
             execution_run_ids=execution_run_ids,
         )
-        DeltaCommitter(
+        committer = DeltaCommitter(
             self._config.delta_root,
             staging,
             fs=fs,
             storage_options=options,
-        ).commit_logical(
-            plan,
+        )
+        prepared = committer.prepare_logical(staged.plan, staged=staged)
+        publish_commit_plan(self._config.delta_root, fs, staged.plan)
+        committer.commit_logical(
+            staged.plan,
+            prepared=prepared,
             preserve_staging=self._config.preserve_staging,
         )
         return self._step_tracker.current_state(step_run_id).to_step_result()

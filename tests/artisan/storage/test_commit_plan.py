@@ -334,3 +334,80 @@ def test_remote_partial_plan_object_is_never_accepted(s3_fs, tmp_path):
         read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
     with fs.open(path, "rb") as stream:
         assert stream.read() == b'{"logical_commit_id":'
+
+
+def _recovery_evidence(tmp_path, execution_ids):
+    from fixtures.execution_records import executions_df
+
+    from artisan.storage.io.commit_plan import prepare_commit_evidence
+    from artisan.storage.io.worker_seal import (
+        STAGING_INVENTORY_KEY,
+        build_staging_inventory,
+    )
+    from artisan.utils.path import shard_uri
+
+    fs = LocalFileSystem()
+    root = str(tmp_path / "staging")
+    for execution_id in execution_ids:
+        directory = shard_uri(
+            root, execution_id, step_number=3, operation_name="creator"
+        )
+        fs.makedirs(directory, exist_ok=True)
+        frame = executions_df(
+            execution_run_id=[execution_id],
+            step_run_id=["b" * 32],
+            origin_step_number=[3],
+            operation_name=["creator"],
+            success=[True],
+        )
+        frame.write_parquet(
+            f"{directory}/executions.parquet",
+            metadata={
+                STAGING_INVENTORY_KEY: build_staging_inventory(directory, fs).decode(),
+            },
+        )
+    return prepare_commit_evidence(
+        staging_root=root,
+        fs=fs,
+        commit_kind="execution_recovery",
+        step_run_id="b" * 32,
+        step_number=3,
+        operation_name="creator",
+        execution_run_ids=execution_ids,
+    )
+
+
+def test_recovery_plan_identity_and_effects_cover_sorted_exact_batch(tmp_path):
+    first = _recovery_evidence(tmp_path, ["c" * 32, "d" * 32])
+    reordered = _recovery_evidence(tmp_path, ["d" * 32, "c" * 32])
+    later = _recovery_evidence(tmp_path, ["e" * 32])
+    assert first.plan == reordered.plan
+    assert first.plan.recovery_batch_id != later.plan.recovery_batch_id
+    assert (
+        first.plan.logical_commit_id
+        == "execution_recovery:" + first.plan.recovery_batch_id
+    )
+    assert first.plan.table(TablePath.EXECUTIONS.value).row_keys == (
+        ("c" * 32,),
+        ("d" * 32,),
+    )
+    assert first.frames[TablePath.EXECUTIONS.value].height == 2
+    assert first.per_execution_artifact_ids == {"c" * 32: set(), "d" * 32: set()}
+
+
+@pytest.mark.parametrize("ids", [[], ["c" * 32, "c" * 32], ["invalid"]])
+def test_recovery_batch_rejects_empty_duplicate_or_invalid_ids(ids):
+    from artisan.storage.io.commit_plan import recovery_batch_identity
+
+    with pytest.raises(ValueError):
+        recovery_batch_identity("b" * 32, ids)
+
+
+def test_recovery_model_rejects_batch_identity_changed_independently(tmp_path):
+    evidence = _recovery_evidence(tmp_path, ["c" * 32, "d" * 32])
+    with pytest.raises(ValueError, match="exact execution batch"):
+        _changed_plan(
+            evidence.plan,
+            recovery_batch_id="f" * 32,
+            logical_commit_id="execution_recovery:" + "f" * 32,
+        )
