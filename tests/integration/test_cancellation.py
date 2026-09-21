@@ -195,61 +195,90 @@ def test_cancel_event_reaches_lifecycle_router(pipeline_env: dict[str, str]):
     assert "pipeline_name" in summary
 
 
-def test_cancelled_creator_staging_is_not_recovered_or_cached(
+@pytest.mark.parametrize("preserve_staging", [False, True])
+@pytest.mark.parametrize("recover_staging", [False, True])
+def test_cancelled_creator_retains_sealed_work_until_verified_commit(
     pipeline_env: dict[str, str],
+    monkeypatch,
+    preserve_staging,
+    recover_staging,
 ):
-    """Successful in-flight work from a cancelled step stays invisible."""
-    import time
+    """Cancel at a real worker's seal boundary, then prove optional reuse."""
     from pathlib import Path
 
     import polars as pl
+    from fsspec.implementations.local import LocalFileSystem
 
-    from artisan.operations.examples import Wait
+    from artisan.orchestration.engine import step_executor
+    from artisan.schemas.enums import TablePath
+    from artisan.schemas.orchestration.step_lifecycle import StepDisposition
+    from artisan.storage.core.committed_scan import read_committed
+    from artisan.visualization import inspect_step
 
     pipeline = PipelineManager.create(
         name="test_cancelled_staging",
-        delta_root=pipeline_env["delta_root"],
-        staging_root=pipeline_env["staging_root"],
-        working_root=pipeline_env["working_root"],
+        **pipeline_env,
+        recover_staging=False,
+        preserve_staging=preserve_staging,
     )
-    future = pipeline.submit(
-        Wait,
-        params={"duration": 1.0},
-        step_runner=Runner.LOCAL,
+    original_capture = step_executor.persist_worker_logs
+    snapshots = {}
+
+    def cancel_after_worker_sealed(*args, **kwargs):
+        original_capture(*args, **kwargs)
+        root = Path(pipeline_env["staging_root"])
+        snapshots.update({path: path.read_bytes() for path in root.rglob("*.parquet")})
+        assert any(path.name == "executions.parquet" for path in snapshots)
+        pipeline.cancel()
+
+    monkeypatch.setattr(
+        step_executor, "persist_worker_logs", cancel_after_worker_sealed
     )
-
-    working_root = Path(pipeline_env["working_root"])
-    deadline = time.monotonic() + 10
-    while not any(working_root.rglob("execute")):
-        assert time.monotonic() < deadline, "Wait worker did not start"
-        time.sleep(0.05)
-
-    pipeline.cancel()
-    cancelled = future.result(timeout=10)
+    cancelled = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
     pipeline.finalize()
+    monkeypatch.setattr(step_executor, "persist_worker_logs", original_capture)
 
-    executions_path = Path(pipeline_env["delta_root"]) / "orchestration/executions"
+    fs = LocalFileSystem()
+    root = pipeline_env["delta_root"]
     assert cancelled.status is StepStatus.CANCELLED
-    assert pl.read_delta(executions_path).is_empty()
-    assert not list(Path(pipeline_env["staging_root"]).rglob("*.parquet"))
+    assert read_committed(root, TablePath.EXECUTIONS, fs=fs).is_empty()
+    assert {path: path.read_bytes() for path in snapshots} == snapshots
+    assert inspect_step(
+        root, 0, pipeline_run_id=pipeline.config.pipeline_run_id
+    ).is_empty()
 
     rerun = PipelineManager.create(
         name="test_cancelled_staging",
-        delta_root=pipeline_env["delta_root"],
-        staging_root=pipeline_env["staging_root"],
-        working_root=pipeline_env["working_root"],
+        **pipeline_env,
+        recover_staging=recover_staging,
+        preserve_staging=preserve_staging,
     )
-    result = rerun.run(
-        Wait,
-        params={"duration": 1.0},
-        step_runner=Runner.LOCAL,
-    )
+    result = rerun.run(DataGenerator, params={"count": 2, "seed": 42})
     rerun.finalize()
 
-    executions = pl.read_delta(executions_path)
-    assert result.succeeded_count == 1
-    assert executions.height == 1
-    assert executions.item(0, "step_run_id") == rerun._step_run_ids[0]
+    expected = (
+        StepDisposition.CACHE_HIT if recover_staging else StepDisposition.EXECUTED
+    )
+    assert result.disposition is expected
+    assert (
+        inspect_step(root, 0, pipeline_run_id=rerun.config.pipeline_run_id).height == 2
+    )
+    assert inspect_step(
+        root, 0, pipeline_run_id=pipeline.config.pipeline_run_id
+    ).is_empty()
+    history = (
+        read_committed(root, TablePath.STEPS, fs=fs)
+        .filter(pl.col("step_run_id") == cancelled.step_run_id)
+        .sort("state_sequence")
+    )
+    assert history.item(-1, "status") == "cancelled"
+    executions = read_committed(root, TablePath.EXECUTIONS, fs=fs)
+    owner = cancelled.step_run_id if recover_staging else result.step_run_id
+    assert executions["step_run_id"].to_list() == [owner]
+    if not recover_staging or preserve_staging:
+        assert {path: path.read_bytes() for path in snapshots} == snapshots
+    else:
+        assert not any(path.exists() for path in snapshots)
 
 
 def test_finalize_terminalizes_running_and_queued_cancellations(

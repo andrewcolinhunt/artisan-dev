@@ -1,161 +1,110 @@
-"""Tests for backend-neutral worker-log persistence."""
+"""Provider logs remain readable without changing worker execution seals."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
-import fsspec
 import polars as pl
+import pytest
+from fsspec.implementations.local import LocalFileSystem
 
-from artisan.orchestration.engine.worker_logs import (
-    _find_staging_dir,
-    persist_worker_logs,
-)
+from artisan.orchestration.engine.worker_logs import persist_worker_logs
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.utils.log_paths import failure_log_relative_path
+from artisan.utils.log_paths import failure_log_relative_path, worker_log_path
+from artisan.visualization.inspect import inspect_worker_log
 
 
 def _result(**overrides: object) -> UnitResult:
-    defaults = {
-        "success": True,
-        "error": None,
-        "item_count": 1,
-        "execution_run_ids": [],
-    }
-    return UnitResult(**{**defaults, **overrides})
+    return UnitResult(
+        **{
+            "success": True,
+            "error": None,
+            "item_count": 1,
+            "execution_run_ids": ["a" * 32],
+            "worker_log": "worker output",
+            **overrides,
+        }
+    )
 
 
-class TestPersistWorkerLogs:
-    def test_patches_staged_execution_record(self, tmp_path: Path) -> None:
-        run_id = "abcdef123456"
-        staging_dir = tmp_path / "1_op" / "ab" / "cd" / run_id
-        staging_dir.mkdir(parents=True)
-        parquet_path = staging_dir / "executions.parquet"
-        pl.DataFrame({"execution_run_id": [run_id], "success": [True]}).write_parquet(
-            parquet_path
+@pytest.mark.parametrize("sealed", [False, True])
+def test_provider_log_does_not_require_or_mutate_staging(tmp_path, sealed):
+    fs = LocalFileSystem()
+    staging = tmp_path / "staging" / "execution"
+    staging.mkdir(parents=True)
+    seal = staging / "executions.parquet"
+    if sealed:
+        pl.DataFrame({"execution_run_id": ["a" * 32]}).write_parquet(seal)
+    before = {p.name: p.read_bytes() for p in staging.iterdir()}
+    persist_worker_logs([_result()], str(tmp_path / "delta"), None, fs=fs)
+    assert {p.name: p.read_bytes() for p in staging.iterdir()} == before
+    assert inspect_worker_log(str(tmp_path / "delta"), "a" * 32) == "worker output"
+
+
+def test_provider_log_survives_staging_cleanup_and_identical_retry(tmp_path):
+    root = str(tmp_path / "delta")
+    fs = LocalFileSystem()
+    persist_worker_logs([_result()], root, None, fs=fs)
+    persist_worker_logs([_result()], root, None, fs=fs)
+    assert inspect_worker_log(root, "a" * 32) == "worker output"
+    assert inspect_worker_log(root, "b" * 32) is None
+
+
+def test_conflicting_provider_log_warns_and_preserves_original(tmp_path, caplog):
+    root = str(tmp_path / "delta")
+    fs = LocalFileSystem()
+    persist_worker_logs([_result()], root, None, fs=fs)
+    persist_worker_logs([_result(worker_log="changed")], root, None, fs=fs)
+    assert inspect_worker_log(root, "a" * 32) == "worker output"
+    assert "Failed to persist provider log" in caplog.text
+
+
+def test_unsafe_worker_log_id_cannot_create_another_path(tmp_path, caplog):
+    root = str(tmp_path / "delta")
+    persist_worker_logs(
+        [_result(execution_run_ids=["../escape"])], root, None, fs=LocalFileSystem()
+    )
+    assert not (tmp_path / "delta" / "_artisan" / "escape.log").exists()
+    assert "Failed to persist provider log" in caplog.text
+    with pytest.raises(ValueError, match="literal path component"):
+        inspect_worker_log(root, "../escape")
+
+
+def test_provider_log_appends_to_matching_local_failure_log(tmp_path):
+    run_id = "a" * 32
+    root = tmp_path / "failures"
+    path = root / failure_log_relative_path(run_id, datetime(2026, 9, 19, tzinfo=UTC))
+    path.parent.mkdir(parents=True)
+    path.write_text("operation error")
+    persist_worker_logs(
+        [_result(success=False)],
+        str(tmp_path / "delta"),
+        str(root),
+        fs=LocalFileSystem(),
+    )
+    assert "=== Worker Log ===\nworker output" in path.read_text()
+
+
+def test_result_without_provider_log_creates_no_diagnostic(tmp_path):
+    root = str(tmp_path / "delta")
+    fs = LocalFileSystem()
+    persist_worker_logs([_result(worker_log=None)], root, None, fs=fs)
+    assert not fs.exists(worker_log_path(root, "a" * 32))
+
+
+def test_provider_log_uses_configured_s3_store(s3_fs):
+    from fixtures.store_format import publish_test_store
+
+    fs, storage, root = s3_fs
+    publish_test_store(root, fs, storage.delta_storage_options())
+    persist_worker_logs([_result()], root, None, fs=fs)
+    assert (
+        inspect_worker_log(
+            root, "a" * 32, fs=fs, storage_options=storage.delta_storage_options()
         )
-        results = [_result(execution_run_ids=[run_id], worker_log="worker output")]
-
-        fs = fsspec.filesystem("file")
-        persist_worker_logs(results, str(tmp_path), None, "op", 1, fs=fs)
-
-        frame = pl.read_parquet(parquet_path)
-        assert frame["worker_log"][0] == "worker output"
-
-    def test_patches_record_on_configured_memory_filesystem(self) -> None:
-        fs = fsspec.filesystem("memory")
-        run_id = "abcdef123456"
-        staging_root = f"memory://worker-logs-{uuid4().hex}"
-        staging_dir = f"{staging_root}/1_op/ab/cd/{run_id}"
-        parquet_path = f"{staging_dir}/executions.parquet"
-        fs.makedirs(staging_dir, exist_ok=True)
-        with fs.open(parquet_path, "wb") as file:
-            pl.DataFrame(
-                {"execution_run_id": [run_id], "success": [True]}
-            ).write_parquet(file)
-        results = [_result(execution_run_ids=[run_id], worker_log="worker output")]
-
-        persist_worker_logs(results, staging_root, None, "op", 1, fs=fs)
-
-        with fs.open(parquet_path, "rb") as file:
-            frame = pl.read_parquet(file)
-        assert frame["worker_log"][0] == "worker output"
-
-    def test_appends_opaque_worker_log_to_existing_failure_log(
-        self, tmp_path: Path
-    ) -> None:
-        run_id = "abcdef123456"
-        staging_dir = tmp_path / "staging" / "1_op" / "ab" / "cd" / run_id
-        staging_dir.mkdir(parents=True)
-        pl.DataFrame({"execution_run_id": [run_id]}).write_parquet(
-            staging_dir / "executions.parquet"
-        )
-        failure_dir = tmp_path / "failures" / "20260919"
-        failure_dir.mkdir(parents=True)
-        failure_log = (
-            tmp_path
-            / "failures"
-            / failure_log_relative_path(run_id, datetime(2026, 9, 19, tzinfo=UTC))
-        )
-        failure_log.write_text("operation error")
-        results = [
-            _result(
-                success=False,
-                error="failed",
-                execution_run_ids=[run_id],
-                worker_log="provider output without structured separators",
-            )
-        ]
-
-        persist_worker_logs(
-            results,
-            str(tmp_path / "staging"),
-            str(tmp_path / "failures"),
-            "op",
-            1,
-            fs=fsspec.filesystem("file"),
-        )
-
-        assert (
-            "=== Worker Log ===\nprovider output without structured separators"
-            in failure_log.read_text()
-        )
-
-    def test_missing_staged_record_is_ignored(self, tmp_path: Path) -> None:
-        results = [
-            _result(
-                execution_run_ids=["nonexistent"],
-                worker_log="some log",
-            )
-        ]
-
-        persist_worker_logs(
-            results,
-            str(tmp_path),
-            None,
-            "op",
-            1,
-            fs=fsspec.filesystem("file"),
-        )
-
-    def test_result_without_worker_log_is_ignored(self, tmp_path: Path) -> None:
-        persist_worker_logs(
-            [_result()],
-            str(tmp_path),
-            None,
-            "op",
-            1,
-            fs=fsspec.filesystem("file"),
-        )
-
-
-class TestFindStagingDir:
-    def test_finds_existing_sharded_directory(self, tmp_path: Path) -> None:
-        run_id = "abcdef123456"
-        staging_dir = tmp_path / "1_op" / "ab" / "cd" / run_id
-        staging_dir.mkdir(parents=True)
-
-        assert _find_staging_dir(
-            str(tmp_path),
-            run_id,
-            1,
-            "op",
-            fs=fsspec.filesystem("file"),
-        ) == str(staging_dir)
-
-    def test_returns_none_when_directory_is_missing(self, tmp_path: Path) -> None:
-        assert (
-            _find_staging_dir(
-                str(tmp_path),
-                "nonexistent",
-                1,
-                "op",
-                fs=fsspec.filesystem("file"),
-            )
-            is None
-        )
+        == "worker output"
+    )
 
 
 def test_worker_logs_do_not_cross_append_same_step_and_operation(

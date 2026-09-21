@@ -11,7 +11,11 @@ from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import is_global_artifact_table
-from artisan.storage.io.commit_plan import canonical_table_plan_key, read_commit_plan
+from artisan.storage.io.commit_plan import (
+    canonical_table_plan_key,
+    logical_commit_identity,
+    read_commit_plan,
+)
 from artisan.utils.path import uri_join
 
 _CONTROL_STATES = frozenset({"planned", "complete", "abandoned"})
@@ -109,16 +113,17 @@ def read_logical_commits(
     if not invalid.is_empty() or not duplicates.is_empty() or not malformed.is_empty():
         msg = "Logical commit control rows are inconsistent"
         raise StoreIntegrityError(msg)
-    expected_ids = (pl.col("commit_kind") + pl.lit(":") + pl.col("step_run_id")).alias(
-        "expected_id"
-    )
-    if (
-        not controls.with_columns(expected_ids)
-        .filter(pl.col("logical_commit_id") != pl.col("expected_id"))
-        .is_empty()
-    ):
-        msg = "Logical commit ID does not match its owner"
-        raise StoreIntegrityError(msg)
+    for row in controls.iter_rows(named=True):
+        try:
+            expected_id = logical_commit_identity(
+                row["commit_kind"], row["step_run_id"], row["execution_run_id"]
+            )
+        except ValueError as exc:
+            msg = "Logical commit ownership is invalid"
+            raise StoreIntegrityError(msg) from exc
+        if row["logical_commit_id"] != expected_id:
+            msg = "Logical commit ID does not match its owner"
+            raise StoreIntegrityError(msg)
     return controls
 
 
@@ -183,10 +188,12 @@ def _validate_complete_effects(
             fs,
             control["step_run_id"],
             control["commit_kind"],
+            control["execution_run_id"],
         )
         if (
             plan.logical_commit_id != control["logical_commit_id"]
             or plan.plan_digest != control["plan_digest"]
+            or plan.execution_run_id != control["execution_run_id"]
         ):
             msg = f"Completion evidence disagrees for {control['logical_commit_id']}"
             raise StoreIntegrityError(msg)

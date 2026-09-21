@@ -146,6 +146,7 @@ LOGICAL_COMMITS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "logical_commit_id": pl.String,
     "commit_kind": pl.String,
     "step_run_id": pl.String,
+    "execution_run_id": pl.String,
     "state": pl.String,
     "plan_digest": pl.String,
     "created_at": pl.Datetime("us", "UTC"),

@@ -202,6 +202,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--apply", action="store_true", help="Replay validated incomplete commits"
     )
     repair.add_argument(
+        "--recover-staging",
+        action="store_true",
+        help="Include finished worker executions without a commit plan",
+    )
+    repair.add_argument(
+        "--preserve-staging",
+        action="store_true",
+        help="Keep staged files after verified commitment",
+    )
+    repair.add_argument(
+        "--files-root", help="Root for Artisan-managed external content"
+    )
+    repair.add_argument(
         "--abandon", metavar="LOGICAL_COMMIT_ID", help="Abandon one planned commit"
     )
     repair.add_argument("--reason", help="Required explanation for --abandon")
@@ -453,6 +466,9 @@ def _store_repair(args: argparse.Namespace) -> int:
     if args.apply and args.abandon is not None:
         sys.stderr.write("--apply and --abandon are separate actions\n")
         return 2
+    if args.recover_staging and args.abandon is not None:
+        sys.stderr.write("--recover-staging and --abandon are separate actions\n")
+        return 2
     if args.abandon is not None and not args.reason:
         sys.stderr.write("--abandon requires --reason\n")
         return 2
@@ -477,6 +493,9 @@ def _store_repair(args: argparse.Namespace) -> int:
             fs=storage.filesystem(),
             storage_options=storage.delta_storage_options(),
             apply=args.apply,
+            recover_staging=args.recover_staging,
+            preserve_staging=args.preserve_staging,
+            files_root=args.files_root,
             abandon=args.abandon,
             reason=args.reason,
         )

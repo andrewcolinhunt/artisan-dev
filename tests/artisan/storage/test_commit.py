@@ -28,6 +28,10 @@ from artisan.storage.core.table_schemas import (
 from artisan.storage.io.commit import DeltaCommitter
 from artisan.storage.io.commit_plan import CommitPlan, build_commit_plan
 from artisan.storage.io.staging import StagingManager
+from artisan.storage.io.worker_seal import (
+    STAGING_INVENTORY_KEY,
+    build_staging_inventory,
+)
 from artisan.utils.path import shard_uri
 
 STEP_ID = "b" * 32
@@ -191,8 +195,17 @@ def _stage_step_result(committer: DeltaCommitter) -> CommitPlan:
         ("artifact_edges.parquet", artifact_edges),
         ("executions.parquet", execution),
     ):
+        metadata = (
+            {
+                STAGING_INVENTORY_KEY: build_staging_inventory(
+                    directory, staging._fs
+                ).decode()
+            }
+            if filename == "executions.parquet"
+            else None
+        )
         with staging._fs.open(f"{directory}/{filename}", "wb") as stream:
-            frame.write_parquet(stream)
+            frame.write_parquet(stream, metadata=metadata)
     staging.stage_cache_reuse(
         STEP_ID,
         ["f" * 32],

@@ -1,94 +1,53 @@
-"""Persist provider worker logs before staged records are committed."""
+"""Persist provider diagnostics without changing sealed execution evidence."""
 
 from __future__ import annotations
 
 import logging
 
-import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.schemas.execution.unit_result import UnitResult
-from artisan.utils.log_paths import find_failure_log
-from artisan.utils.path import shard_uri, uri_join
+from artisan.storage.io.publication import publish_immutable_bytes
+from artisan.utils.log_paths import find_failure_log, worker_log_path
 
 logger = logging.getLogger(__name__)
 
 
 def persist_worker_logs(
     results: list[UnitResult],
-    staging_root: str,
+    delta_root: str,
     failure_logs_root: str | None,
-    operation_name: str,
-    step_number: int,
     *,
     fs: AbstractFileSystem,
 ) -> None:
-    """Write provider logs into staged records and failure logs.
+    """Keep provider logs as separate immutable diagnostics and in failure logs.
 
     Args:
         results: Results that may contain provider-captured worker logs.
-        staging_root: Root staging directory.
+        delta_root: Store root containing execution-linked diagnostic objects.
         failure_logs_root: Directory containing human-readable failure logs.
-        operation_name: Operation name used in the staging path.
-        step_number: Pipeline step number used in the staging path.
-        fs: Configured filesystem containing staged records.
+        fs: Configured filesystem containing the store.
     """
     for result in results:
         if not result.worker_log:
             continue
         for run_id in result.execution_run_ids:
-            _patch_staged_record(
-                staging_root,
-                run_id,
-                operation_name,
-                step_number,
-                result.worker_log,
-                fs=fs,
-            )
+            try:
+                publish_immutable_bytes(
+                    fs,
+                    worker_log_path(delta_root, run_id),
+                    result.worker_log.encode("utf-8"),
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist provider log for %s", run_id, exc_info=True
+                )
             if not result.success and failure_logs_root:
                 _append_worker_log(
                     failure_logs_root,
                     run_id,
                     result.worker_log,
                 )
-
-
-def _patch_staged_record(
-    staging_root: str,
-    execution_run_id: str,
-    operation_name: str,
-    step_number: int,
-    worker_log: str,
-    *,
-    fs: AbstractFileSystem,
-) -> None:
-    """Patch one staged execution record, best-effort."""
-    try:
-        staging_dir = _find_staging_dir(
-            staging_root,
-            execution_run_id,
-            step_number,
-            operation_name,
-            fs=fs,
-        )
-        if staging_dir is None:
-            return
-        parquet_path = uri_join(staging_dir, "executions.parquet")
-        if not fs.exists(parquet_path):
-            return
-        with fs.open(parquet_path, "rb") as file:
-            frame = pl.read_parquet(file)
-        with fs.open(parquet_path, "wb") as file:
-            frame.with_columns(pl.lit(worker_log).alias("worker_log")).write_parquet(
-                file,
-                compression="zstd",
-            )
-    except Exception:
-        logger.debug(
-            "Failed to persist worker_log for %s",
-            execution_run_id,
-            exc_info=True,
-        )
 
 
 def _append_worker_log(
@@ -108,21 +67,3 @@ def _append_worker_log(
             execution_run_id,
             exc_info=True,
         )
-
-
-def _find_staging_dir(
-    staging_root: str,
-    execution_run_id: str,
-    step_number: int,
-    operation_name: str,
-    *,
-    fs: AbstractFileSystem,
-) -> str | None:
-    """Return the sharded staging directory when it exists."""
-    candidate = shard_uri(
-        staging_root,
-        execution_run_id,
-        step_number=step_number,
-        operation_name=operation_name,
-    )
-    return candidate if fs.isdir(candidate) else None

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import io
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import polars as pl
 from fsspec import AbstractFileSystem
@@ -28,7 +28,7 @@ from artisan.schemas.execution.command_record import CommandRecording
 from artisan.storage.core.committed_scan import read_committed, scan_committed
 from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.dicts import flatten_dict
-from artisan.utils.log_paths import failure_log_relative_path
+from artisan.utils.log_paths import failure_log_relative_path, worker_log_path
 
 if TYPE_CHECKING:
     from polars.datatypes import DataType, DataTypeClass
@@ -53,6 +53,37 @@ def _validated_fs(
         fs = LocalFileSystem()
     assert_store_format(delta_root, fs, storage_options)
     return fs
+
+
+def inspect_worker_log(
+    delta_root: str,
+    execution_run_id: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict[str, str] | None = None,
+) -> str | None:
+    """Read an exact execution's provider log, including uncommitted attempts.
+
+    Separate provider diagnostics take precedence over a committed embedded log.
+    Missing logs return None. The ID must be a literal path component.
+
+    Args:
+        delta_root: Store root containing execution records and diagnostics.
+        execution_run_id: Original execution attempt ID.
+        fs: Filesystem for the store; defaults to the local filesystem.
+        storage_options: Delta-rs options for reading embedded diagnostics.
+    """
+    path = worker_log_path(delta_root, execution_run_id)
+    fs = _validated_fs(delta_root, fs, storage_options)
+    if fs.exists(path):
+        with fs.open(path, "rb") as stream:
+            return cast(bytes, stream.read()).decode("utf-8")
+    executions = read_committed(
+        delta_root, TablePath.EXECUTIONS, fs=fs, storage_options=storage_options
+    ).filter(pl.col("execution_run_id") == execution_run_id)
+    if executions.is_empty():
+        return None
+    return cast(str | None, executions.item(0, "worker_log"))
 
 
 def inspect_commands(

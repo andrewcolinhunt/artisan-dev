@@ -4,17 +4,13 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import posixpath
-import uuid
-from contextlib import suppress
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 import polars as pl
 from fsspec import AbstractFileSystem
-from fsspec.implementations.local import LocalFileSystem
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from artisan.errors import StoreIntegrityError
@@ -25,10 +21,31 @@ from artisan.storage.core.table_schemas import (
     get_schema,
     is_global_artifact_table,
 )
+from artisan.storage.io.publication import (
+    is_publication_temporary,
+    publish_immutable_bytes,
+)
+from artisan.storage.io.worker_seal import verify_worker_seal
 from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 from artisan.utils.path import shard_uri, step_dir_name, uri_join
 
-CommitKind = Literal["step_result", "input_registration"]
+CommitKind = Literal["step_result", "input_registration", "execution_recovery"]
+
+
+def logical_commit_identity(
+    commit_kind: str, step_run_id: str, execution_run_id: str | None = None
+) -> str:
+    """Validate the kind-specific owner and return its durable commit ID."""
+    if commit_kind not in {"step_result", "input_registration", "execution_recovery"}:
+        msg = f"Unknown commit kind {commit_kind!r}"
+        raise ValueError(msg)
+    if (commit_kind == "execution_recovery") != (execution_run_id is not None):
+        msg = "Only execution recovery requires an execution owner"
+        raise ValueError(msg)
+    if execution_run_id is not None and not _is_content_digest(execution_run_id):
+        msg = "Invalid recovery execution ID"
+        raise ValueError(msg)
+    return f"{commit_kind}:{execution_run_id or step_run_id}"
 
 
 class PlannedFile(BaseModel):
@@ -110,11 +127,12 @@ class PlannedTable(BaseModel):
 
 
 class CommitPlan(BaseModel):
-    """Durable plan for one step result or input registration."""
+    """Durable plan for a step result, input registration, or recovered execution."""
 
     logical_commit_id: str
     commit_kind: CommitKind
     step_run_id: str
+    execution_run_id: str | None = None
     step_number: int
     operation_name: str
     tables: tuple[PlannedTable, ...]
@@ -124,7 +142,9 @@ class CommitPlan(BaseModel):
 
     @model_validator(mode="after")
     def _verify_digest(self) -> CommitPlan:
-        expected_id = f"{self.commit_kind}:{self.step_run_id}"
+        expected_id = logical_commit_identity(
+            self.commit_kind, self.step_run_id, self.execution_run_id
+        )
         if self.logical_commit_id != expected_id:
             msg = f"Commit plan ID does not match its owner: {self.logical_commit_id}"
             raise ValueError(msg)
@@ -157,6 +177,17 @@ class CommitPlan(BaseModel):
         if self.commit_kind == "input_registration" and terminal is not None:
             msg = f"Input registration {self.logical_commit_id} cannot contain a step snapshot"
             raise ValueError(msg)
+        if self.commit_kind == "execution_recovery":
+            execution = self.table(TablePath.EXECUTIONS.value)
+            if (
+                terminal is not None
+                or self.table(TablePath.CACHE_REUSE.value) is not None
+                or execution is None
+                or execution.row_keys != ((self.execution_run_id,),)
+                or execution.row_count != 1
+            ):
+                msg = "Recovery requires exactly its execution and no step/reuse rows"
+                raise ValueError(msg)
         if self.plan_digest != _plan_digest(self.model_dump(exclude={"plan_digest"})):
             msg = f"Commit plan {self.logical_commit_id} has an invalid digest"
             raise ValueError(msg)
@@ -170,9 +201,8 @@ class CommitPlan(BaseModel):
         )
 
 
-def build_commit_plan(
+def prepare_commit_plan(
     *,
-    delta_root: str,
     staging_root: str,
     fs: AbstractFileSystem,
     commit_kind: CommitKind,
@@ -180,12 +210,21 @@ def build_commit_plan(
     step_number: int,
     operation_name: str,
     execution_run_ids: list[str] | tuple[str, ...] = (),
+    execution_run_id: str | None = None,
 ) -> CommitPlan:
-    """Validate exact staging directories and publish one immutable plan."""
+    """Validate staging and construct exact evidence without changing either root."""
+    logical_commit_id = logical_commit_identity(
+        commit_kind, step_run_id, execution_run_id
+    )
+    if commit_kind == "execution_recovery":
+        if execution_run_ids and tuple(execution_run_ids) != (execution_run_id,):
+            msg = "Recovery must own exactly one execution"
+            raise StoreIntegrityError(msg)
+        assert execution_run_id is not None
+        execution_run_ids = (execution_run_id,)
     if len(set(execution_run_ids)) != len(execution_run_ids):
         msg = f"Duplicate execution IDs in commit {commit_kind}:{step_run_id}"
         raise StoreIntegrityError(msg)
-    logical_commit_id = f"{commit_kind}:{step_run_id}"
     table_files = _inspect_staging(
         staging_root=staging_root,
         fs=fs,
@@ -216,11 +255,37 @@ def build_commit_plan(
         "logical_commit_id": logical_commit_id,
         "commit_kind": commit_kind,
         "step_run_id": step_run_id,
+        "execution_run_id": execution_run_id,
         "step_number": step_number,
         "operation_name": operation_name,
         "tables": [table.model_dump(mode="json") for table in tables],
     }
-    plan = CommitPlan(**payload, plan_digest=_plan_digest(payload))
+    return CommitPlan(**payload, plan_digest=_plan_digest(payload))
+
+
+def build_commit_plan(
+    *,
+    delta_root: str,
+    staging_root: str,
+    fs: AbstractFileSystem,
+    commit_kind: CommitKind,
+    step_run_id: str,
+    step_number: int,
+    operation_name: str,
+    execution_run_ids: list[str] | tuple[str, ...] = (),
+    execution_run_id: str | None = None,
+) -> CommitPlan:
+    """Prepare and publish one immutable plan from exact staging evidence."""
+    plan = prepare_commit_plan(
+        staging_root=staging_root,
+        fs=fs,
+        commit_kind=commit_kind,
+        step_run_id=step_run_id,
+        step_number=step_number,
+        operation_name=operation_name,
+        execution_run_ids=execution_run_ids,
+        execution_run_id=execution_run_id,
+    )
     return publish_commit_plan(delta_root, fs, plan)
 
 
@@ -230,71 +295,18 @@ def publish_commit_plan(
     plan: CommitPlan,
 ) -> CommitPlan:
     """Publish exact plan bytes once, then verify the durable object."""
-    final_path = commit_plan_path(delta_root, plan.step_run_id, plan.commit_kind)
-    if fs.exists(final_path):
-        existing = read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
-        if existing != plan:
-            msg = f"Conflicting immutable plan for {plan.logical_commit_id}"
-            raise StoreIntegrityError(msg)
-        return existing
-
-    parent = posixpath.dirname(final_path)
-    fs.makedirs(parent, exist_ok=True)
+    final_path = commit_plan_path(
+        delta_root, plan.step_run_id, plan.commit_kind, plan.execution_run_id
+    )
     encoded = canonical_json_bytes(plan.model_dump(mode="json"))
-    try:
-        if isinstance(fs, LocalFileSystem):
-            _publish_local_plan(fs, final_path, encoded)
-        else:
-            # S3's exclusive create maps to a conditional single-object PUT.
-            # Other remote backends must provide the same create-if-absent
-            # contract or fail closed instead of overwriting immutable evidence.
-            with fs.open(final_path, "xb") as stream:
-                stream.write(encoded)
-    except Exception as exc:
-        if fs.exists(final_path):
-            existing = read_commit_plan(
-                delta_root,
-                fs,
-                plan.step_run_id,
-                plan.commit_kind,
-            )
-            if existing == plan:
-                return existing
-            msg = f"Conflicting immutable plan for {plan.logical_commit_id}"
-            raise StoreIntegrityError(msg) from exc
-        msg = f"Could not publish immutable plan for {plan.logical_commit_id}"
-        raise StoreIntegrityError(msg) from exc
-    published = read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
+    publish_immutable_bytes(fs, final_path, encoded)
+    published = read_commit_plan(
+        delta_root, fs, plan.step_run_id, plan.commit_kind, plan.execution_run_id
+    )
     if published != plan:
         msg = f"Published plan changed for {plan.logical_commit_id}"
         raise StoreIntegrityError(msg)
     return published
-
-
-def _publish_local_plan(
-    fs: LocalFileSystem,
-    final_path: str,
-    encoded: bytes,
-) -> None:
-    """Fsync plan bytes, then atomically link them without replacing a peer."""
-    local_final = str(fs._strip_protocol(final_path))
-    parent = os.path.dirname(local_final)
-    temporary = f"{local_final}.tmp-{uuid.uuid4().hex}"
-    try:
-        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.link(temporary, local_final)
-        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        with suppress(FileNotFoundError):
-            os.unlink(temporary)
 
 
 def read_commit_plan(
@@ -302,14 +314,19 @@ def read_commit_plan(
     fs: AbstractFileSystem,
     step_run_id: str,
     commit_kind: CommitKind,
+    execution_run_id: str | None = None,
 ) -> CommitPlan:
     """Read and digest-validate one exact plan."""
-    path = commit_plan_path(delta_root, step_run_id, commit_kind)
+    path = commit_plan_path(delta_root, step_run_id, commit_kind, execution_run_id)
     try:
         with fs.open(path, "rb") as stream:
             raw = json.load(stream)
         plan = CommitPlan.model_validate(raw)
-        if plan.step_run_id != step_run_id or plan.commit_kind != commit_kind:
+        if (
+            plan.step_run_id != step_run_id
+            or plan.commit_kind != commit_kind
+            or plan.execution_run_id != execution_run_id
+        ):
             msg = f"Commit plan path does not match {commit_kind}:{step_run_id}"
             raise StoreIntegrityError(msg)
         return plan
@@ -350,8 +367,19 @@ def commit_plan_path(
     delta_root: str,
     step_run_id: str,
     commit_kind: CommitKind,
+    execution_run_id: str | None = None,
 ) -> str:
     """Return the durable path for one logical commit plan."""
+    logical_commit_identity(commit_kind, step_run_id, execution_run_id)
+    if execution_run_id is not None:
+        return uri_join(
+            delta_root,
+            "_artisan",
+            "commit_plans",
+            step_run_id,
+            commit_kind,
+            f"{execution_run_id}.json",
+        )
     return uri_join(
         delta_root,
         "_artisan",
@@ -419,7 +447,7 @@ def _inspect_staging(
         step_run_id,
         commit_kind,
     )
-    if fs.exists(orchestrator):
+    if commit_kind != "execution_recovery" and fs.exists(orchestrator):
         directories.append((orchestrator, None))
 
     found: dict[str, list[tuple[PlannedFile, pl.DataFrame]]] = {}
@@ -427,7 +455,13 @@ def _inspect_staging(
         if not fs.exists(directory):
             msg = f"Missing staging directory {_safe(directory)}"
             raise StoreIntegrityError(msg)
-        entries = list(fs.ls(directory, detail=False))
+        if execution_id is not None:
+            verify_worker_seal(directory, fs)
+        entries = [
+            entry
+            for entry in fs.ls(directory, detail=False)
+            if not is_publication_temporary(posixpath.basename(str(entry)))
+        ]
         names = {posixpath.basename(str(entry).rstrip("/")) for entry in entries}
         if execution_id is not None and "executions.parquet" not in names:
             msg = f"Missing execution seal in {_safe(directory)}"
@@ -538,8 +572,21 @@ def _validate_ownership(
     commit_kind: CommitKind,
 ) -> None:
     """Validate directory-derived execution and step ownership."""
+    if commit_kind == "execution_recovery" and table_path in {
+        TablePath.STEPS.value,
+        TablePath.CACHE_REUSE.value,
+    }:
+        msg = "Recovery cannot contain step or cache-reuse rows"
+        raise StoreIntegrityError(msg)
     if execution_run_id is not None:
         if table_path == TablePath.EXECUTIONS.value:
+            if commit_kind == "execution_recovery" and (
+                frame.height != 1
+                or frame["success"][0] is not True
+                or frame["replay_of_execution_run_id"][0] is not None
+            ):
+                msg = "Recovery requires one successful ordinary execution"
+                raise StoreIntegrityError(msg)
             values = set(frame["execution_run_id"].to_list())
             if values != {execution_run_id}:
                 msg = f"Execution seal ownership mismatch for {execution_run_id}"

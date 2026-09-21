@@ -28,7 +28,7 @@ dependencies = [
     "ipython",
     "ipywidgets",
     "matplotlib",
-    "polars>=0.20.0",
+    "polars>=1.30.0",
     "pydantic>=2",
     "python-dotenv",
     "rich",
@@ -117,7 +117,7 @@ xxhash = "*"           # Fast hashing for file tracking
 
 # Delta Lake storage layer
 deltalake = ">=0.14.0"  # Delta Lake Python bindings (delta-rs, no JVM required)
-polars = ">=0.20.0"     # DataFrame operations with native Delta Lake support
+polars = ">=1.30.0"     # DataFrame operations with native Delta Lake support
 
 # Visualization
 graphviz = "*"          # Python bindings for Graphviz (provenance graph visualization)

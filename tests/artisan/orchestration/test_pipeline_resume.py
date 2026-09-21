@@ -433,3 +433,41 @@ class TestResume:
                 pipeline_run_id=p1.config.pipeline_run_id,
                 default_step_runner="external_test",
             )
+
+
+@patch(
+    "artisan.orchestration.pipeline_manager.execute_step",
+    side_effect=_mock_execute_step,
+)
+def test_resume_recovers_before_loading_accepted_results(
+    mock_exec, tmp_path, monkeypatch
+):
+    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.storage.io import repair
+
+    roots = {
+        "delta_root": str(tmp_path / "delta"),
+        "staging_root": str(tmp_path / "staging"),
+    }
+    with PipelineManager.create(name="resume_order", **roots) as original:
+        result = original.run(IngestMockOp)
+    events = []
+    real_repair = repair.repair_store
+    real_resumable = StepTracker.load_resumable_steps
+
+    def recover(**kwargs):
+        events.append("recover")
+        return real_repair(**kwargs)
+
+    def accepted(tracker, run_id):
+        assert events == ["recover"]
+        events.append("accepted")
+        return real_resumable(tracker, run_id)
+
+    monkeypatch.setattr(repair, "repair_store", recover)
+    monkeypatch.setattr(StepTracker, "load_resumable_steps", accepted)
+    with PipelineManager.resume(
+        **roots, pipeline_run_id=original.config.pipeline_run_id
+    ) as resumed:
+        assert resumed[0].step_run_id == result.step_run_id
+        assert events == ["recover", "accepted"]

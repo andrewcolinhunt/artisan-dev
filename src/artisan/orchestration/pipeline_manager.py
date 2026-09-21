@@ -25,7 +25,7 @@ from uuid import uuid4
 
 import polars as pl
 
-from artisan.errors import PersistenceIntegrityError
+from artisan.errors import PersistenceIntegrityError, StoreIntegrityError
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.commands import CommandRecorder
@@ -932,6 +932,33 @@ class PipelineManager:
             storage_options=storage_options,
         )
         committer.initialize_tables()
+        if config.recover_staging:
+            from artisan.storage.io.repair import repair_store
+
+            report = repair_store(
+                delta_root=config.delta_root,
+                staging_root=config.staging_root,
+                fs=fs,
+                storage_options=storage_options,
+                files_root=config.files_root,
+                apply=True,
+                recover_staging=True,
+                preserve_staging=config.preserve_staging,
+            )
+            for item in report.items:
+                logger.info(
+                    "Staging recovery: %s %s", item.classification, item.evidence_id
+                )
+            if report.blocking:
+                evidence = ", ".join(
+                    f"{item.evidence_id} ({item.classification})"
+                    for item in report.blocking_items
+                )
+                msg = (
+                    f"Staging recovery blocked by {evidence}. "
+                    "Inspect the evidence with artisan store repair --recover-staging."
+                )
+                raise StoreIntegrityError(msg)
         self._start_time: float = time.time()
         self._current_step: int = 0
         self._step_results: list[StepResult] = []
@@ -1515,6 +1542,7 @@ class PipelineManager:
         preserve_staging: bool = False,
         preserve_working: bool = False,
         skip_cache: bool = False,
+        recover_staging: bool = True,
     ) -> PipelineManager:
         """Factory method to create a PipelineManager.
 
@@ -1531,9 +1559,12 @@ class PipelineManager:
             default_step_runner: Default step runner for step execution. Accepts a
                 ``RunnerBase`` instance or a built-in string name (currently
                 ``"local"``). External providers are passed as instances.
-            preserve_staging: Debug flag to preserve staging files after commit.
+            preserve_staging: Keep staging after verified commitment. Uncommitted
+                staging is always retained, including on cancellation.
             preserve_working: Debug flag to preserve sandbox after execution.
             skip_cache: Bypass all cache lookups for every step.
+            recover_staging: Recover completed staged work before cache lookup.
+                Requires exclusive orchestrator/repair write access to the store.
 
         Returns:
             Configured PipelineManager instance.
@@ -1551,6 +1582,7 @@ class PipelineManager:
             cache_policy=cache_policy,
             default_step_runner=resolved.name,
             preserve_staging=preserve_staging,
+            recover_staging=recover_staging,
             preserve_working=preserve_working,
             skip_cache=skip_cache,
         )
@@ -1586,6 +1618,7 @@ class PipelineManager:
         preserve_working: bool = False,
         skip_cache: bool = False,
         storage: StorageConfig | None = None,
+        recover_staging: bool = True,
     ) -> PipelineManager:
         """Resume a pipeline from persisted step state.
 
@@ -1604,10 +1637,14 @@ class PipelineManager:
             failure_policy: Default failure handling for subsequent steps.
             cache_policy: Default whole-step cache policy for new submissions.
                 Restored steps retain their outcomes and recorded policies.
-            preserve_staging: Preserve staging files after commit.
+            preserve_staging: Keep staging after verified commitment. Uncommitted
+                staging is always retained, including on cancellation.
             preserve_working: Preserve worker sandboxes after execution.
             skip_cache: Bypass cache lookups for subsequent steps.
             storage: Filesystem and Delta storage configuration.
+            recover_staging: Recover completed staged work before restoring
+                accepted results. Requires exclusive orchestrator/repair write
+                access; unfinished source steps retain their original status.
 
         Returns:
             PipelineManager with state restored from delta.
@@ -1630,7 +1667,6 @@ class PipelineManager:
             raise ValueError(msg)
 
         run_id = pipeline_run_id or current_steps[0].pipeline_run_id
-        resumable_steps = tracker.load_resumable_steps(run_id)
 
         runtime_runner: RunnerBase | None
         requested_runner_name: str | None
@@ -1651,6 +1687,7 @@ class PipelineManager:
             "failure_policy": failure_policy,
             "cache_policy": cache_policy,
             "preserve_staging": preserve_staging,
+            "recover_staging": recover_staging,
             "preserve_working": preserve_working,
             "skip_cache": skip_cache,
             "storage": storage,
@@ -1677,6 +1714,8 @@ class PipelineManager:
 
         instance = cls(config, default_step_runner=runtime_runner)
         try:
+            current_steps = tracker.load_current_states(run_id)
+            resumable_steps = tracker.load_resumable_steps(run_id)
             with instance._log_context():
                 for step_state in resumable_steps:
                     result = step_state.to_step_result()

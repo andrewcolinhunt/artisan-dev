@@ -2403,6 +2403,7 @@ class TestConfigureLoggingCloudGuard:
             working_root=str(tmp_path / "working"),
             files_root="s3://bucket/files",
             storage=StorageConfig(protocol="s3"),
+            recover_staging=False,
         )
         # StepTracker construction reads from delta_root via fs.exists,
         # which would fail without a real S3 step_runner; mock the fs.
@@ -3142,10 +3143,15 @@ def test_manager_factory_error_closes_constructed_session(tmp_path, session_logg
         cleanups.append(wait)
         original(self, wait=wait)
 
+    def fail_after_construction(message, *args, **kwargs):
+        if message == "Pipeline '%s' initialized (run_id=%s)":
+            msg = "post-construction"
+            raise RuntimeError(msg)
+
     with (
         patch(
             "artisan.orchestration.pipeline_manager.logger.info",
-            side_effect=RuntimeError("post-construction"),
+            side_effect=fail_after_construction,
         ),
         patch.object(PipelineManager, "_shutdown_executor", shutdown),
         pytest.raises(RuntimeError, match="post-construction"),
@@ -3737,3 +3743,83 @@ class TestFilePathPromotion:
             )
 
         assert not list((tmp_path / "staging").rglob("*.parquet"))
+
+
+@pytest.mark.parametrize("preserve", [False, True])
+def test_startup_recovery_precedes_executor_creation(tmp_path, monkeypatch, preserve):
+    from artisan.orchestration import pipeline_manager as module
+    from artisan.storage.io import repair
+    from artisan.storage.io.repair import RepairReport
+
+    events = []
+    real_executor = module.ThreadPoolExecutor
+
+    def recover(**kwargs):
+        assert kwargs["apply"] is True
+        assert kwargs["recover_staging"] is True
+        assert kwargs["preserve_staging"] is preserve
+        assert kwargs["files_root"] == str(tmp_path / "files")
+        events.append("recover")
+        return RepairReport(items=())
+
+    def executor(*args, **kwargs):
+        events.append("executor")
+        return real_executor(*args, **kwargs)
+
+    monkeypatch.setattr(repair, "repair_store", recover)
+    monkeypatch.setattr(module, "ThreadPoolExecutor", executor)
+    with PipelineManager.create(
+        name="ordered",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        preserve_staging=preserve,
+    ):
+        assert events == ["recover", "executor"]
+
+
+def test_disabled_startup_recovery_does_not_inspect_old_staging(tmp_path, monkeypatch):
+    from artisan.storage.io import repair
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    evidence = staging / "unreadable.parquet"
+    evidence.write_bytes(b"uncommitted evidence")
+    recover = MagicMock(side_effect=AssertionError("recovery was disabled"))
+    monkeypatch.setattr(repair, "repair_store", recover)
+    with PipelineManager.create(
+        name="disabled",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(staging),
+        recover_staging=False,
+    ):
+        assert evidence.read_bytes() == b"uncommitted evidence"
+    recover.assert_not_called()
+
+
+def test_blocking_recovery_never_starts_executor(tmp_path, monkeypatch):
+    from artisan.errors import StoreIntegrityError
+    from artisan.orchestration import pipeline_manager as module
+    from artisan.storage.io import repair
+    from artisan.storage.io.repair import RepairItem, RepairReport
+
+    report = RepairReport(
+        items=(
+            RepairItem(
+                evidence_id="execution_recovery:broken",
+                classification="corrupt",
+                detail="Payload changed",
+            ),
+        )
+    )
+    monkeypatch.setattr(repair, "repair_store", lambda **kwargs: report)
+    executor = MagicMock(side_effect=AssertionError("executor must not start"))
+    monkeypatch.setattr(module, "ThreadPoolExecutor", executor)
+    with pytest.raises(
+        StoreIntegrityError, match="execution_recovery:broken \\(corrupt\\)"
+    ):
+        PipelineManager.create(
+            name="blocked",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        )
+    executor.assert_not_called()

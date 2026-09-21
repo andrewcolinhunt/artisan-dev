@@ -153,9 +153,7 @@ def test_commit_kinds_use_disjoint_staging_and_cleanup(tmp_path):
         step_number=0,
         operation_name="ingest",
     )
-    staging.cleanup_plan(
-        [file.relative_path for table in rebuilt.tables for file in table.files]
-    )
+    staging.cleanup_plan([file for table in rebuilt.tables for file in table.files])
 
     assert rebuilt == first
     assert step_result_path is not None
@@ -313,7 +311,7 @@ def test_remote_plan_publish_rejects_competing_different_plan(s3_fs, tmp_path):
     assert len([item for item in outcomes if isinstance(item, CommitPlan)]) == 1
     errors = [item for item in outcomes if isinstance(item, StoreIntegrityError)]
     assert len(errors) == 1
-    assert "Conflicting immutable plan" in str(errors[0])
+    assert "Conflicting immutable object" in str(errors[0])
     published = read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
     assert published in {plan, other}
 
@@ -329,7 +327,10 @@ def test_remote_partial_plan_object_is_never_accepted(s3_fs, tmp_path):
     with fs.open(path, "wb") as stream:
         stream.write(b'{"logical_commit_id":')
 
-    with pytest.raises(StoreIntegrityError, match="Unreadable commit plan"):
+    with pytest.raises(StoreIntegrityError, match="Conflicting immutable object"):
         publish_commit_plan(delta_root, fs, plan)
+
+    with pytest.raises(StoreIntegrityError, match="Unreadable commit plan"):
+        read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
     with fs.open(path, "rb") as stream:
         assert stream.read() == b'{"logical_commit_id":'

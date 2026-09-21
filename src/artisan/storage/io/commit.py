@@ -63,11 +63,13 @@ class DeltaCommitter:
         *,
         fs: AbstractFileSystem,
         storage_options: dict[str, str] | None = None,
+        files_root: str | None = None,
     ) -> None:
         self.delta_base_path = delta_base_path
         self.staging_manager = staging_manager
         self._fs = fs
         self._storage_options = storage_options or {}
+        self._files_root = files_root
 
     def commit_logical(
         self,
@@ -110,6 +112,7 @@ class DeltaCommitter:
             self.staging_manager.staging_dir,
             self._fs,
         )
+        self._validate_recovery(plan, frames)
         if control is None:
             try:
                 self._insert_planned(plan)
@@ -172,6 +175,7 @@ class DeltaCommitter:
             self._fs,
             plan.step_run_id,
             plan.commit_kind,
+            plan.execution_run_id,
         )
         if persisted != plan:
             msg = f"Persisted plan disagrees for {plan.logical_commit_id}"
@@ -179,6 +183,9 @@ class DeltaCommitter:
 
     def _reject_terminal_attempt(self, plan: CommitPlan) -> None:
         """Prevent an incomplete plan from reviving an already terminal attempt."""
+        if plan.commit_kind == "execution_recovery":
+            self._require_recovery_owner(plan)
+            return
         rows = read_committed(
             self.delta_base_path,
             TablePath.STEPS,
@@ -206,6 +213,47 @@ class DeltaCommitter:
             )
             raise StoreIntegrityError(msg)
 
+    def _require_recovery_owner(self, plan: CommitPlan) -> None:
+        """Keep recovered executions attached to an eligible original attempt."""
+        from artisan.orchestration.engine.step_tracker import StepTracker
+
+        tracker = StepTracker(
+            self.delta_base_path, fs=self._fs, storage_options=self._storage_options
+        )
+        try:
+            owner = tracker.current_state(plan.step_run_id)
+        except ValueError as exc:
+            msg = "Recovery source attempt is missing"
+            raise StoreIntegrityError(msg) from exc
+        if (
+            owner.status
+            not in {StepStatus.RUNNING, StepStatus.FAILED, StepStatus.CANCELLED}
+            or owner.replay_of_execution_run_id is not None
+            or owner.step_number != plan.step_number
+        ):
+            msg = f"Ineligible recovery owner for {plan.logical_commit_id}"
+            raise StoreIntegrityError(msg)
+
+    def _validate_recovery(
+        self, plan: CommitPlan, frames: dict[str, pl.DataFrame]
+    ) -> None:
+        """Validate staged recovery content through the ordinary typed boundary."""
+        if plan.commit_kind != "execution_recovery":
+            return
+        from artisan.storage.core.run_scope import validate_staged_execution
+
+        validate_staged_execution(
+            self.delta_base_path,
+            frames,
+            execution_run_id=plan.execution_run_id or "",
+            step_run_id=plan.step_run_id,
+            step_number=plan.step_number,
+            operation_name=plan.operation_name,
+            fs=self._fs,
+            storage_options=self._storage_options,
+            files_root=self._files_root,
+        )
+
     @staticmethod
     def _control_for(
         plan: CommitPlan,
@@ -219,6 +267,7 @@ class DeltaCommitter:
             row["commit_kind"] != plan.commit_kind
             or row["step_run_id"] != plan.step_run_id
             or row["plan_digest"] != plan.plan_digest
+            or row["execution_run_id"] != plan.execution_run_id
         ):
             msg = f"Control row disagrees with plan {plan.logical_commit_id}"
             raise StoreIntegrityError(msg)
@@ -238,6 +287,7 @@ class DeltaCommitter:
                     "logical_commit_id": plan.logical_commit_id,
                     "commit_kind": plan.commit_kind,
                     "step_run_id": plan.step_run_id,
+                    "execution_run_id": plan.execution_run_id,
                     "state": "planned",
                     "plan_digest": plan.plan_digest,
                     "created_at": datetime.now(UTC),
@@ -428,7 +478,10 @@ class DeltaCommitter:
         if control is None or control["state"] != "complete":
             msg = f"Refusing cleanup before completion for {plan.logical_commit_id}"
             raise StoreIntegrityError(msg)
-        self.staging_manager.cleanup_plan(self._plan_objects(plan))
+        self._validate_complete(plan)
+        self.staging_manager.cleanup_plan(
+            [file for table in plan.tables for file in table.files]
+        )
 
     @staticmethod
     def _plan_objects(plan: CommitPlan) -> list[str]:

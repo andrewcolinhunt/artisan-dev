@@ -23,6 +23,7 @@ from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import (
     _read_tool_output,
     error_envelope_dict,
+    execution_is_sealed,
     record_execution_failure,
     record_execution_success,
 )
@@ -329,6 +330,8 @@ def _run_creator_flow(
             error_envelope=error_envelope_dict(exc),
         )
     except Exception as exc:
+        if execution_context is not None and execution_is_sealed(execution_context):
+            raise
         error = sanitize_diagnostic(format_error(exc))
         execution_context = _try_build_execution_context(
             execution_run_id,

@@ -14,7 +14,7 @@ from artisan.execution.recording.parquet_writer import (
     _stage_artifact_edges,
     _stage_artifact_index,
     _stage_artifacts_by_type,
-    _sync_staging_to_nfs,
+    _sync_local_staging,
     _write_execution_record,
 )
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
@@ -69,26 +69,26 @@ class TestStagingResult:
         assert result.artifact_ids == []
 
 
-class TestSyncStagingToNfs:
-    """Tests for _sync_staging_to_nfs()."""
+class TestSyncLocalStaging:
+    """Tests for _sync_local_staging()."""
 
     def test_syncs_files_and_directory(self, tmp_path):
         """Verify fsync is called on files and directory without error."""
         (tmp_path / "test1.parquet").write_bytes(b"data1")
         (tmp_path / "test2.parquet").write_bytes(b"data2")
 
-        _sync_staging_to_nfs(tmp_path)
+        _sync_local_staging(tmp_path)
 
     def test_empty_directory(self, tmp_path):
         """Verify handles empty directory (just syncs directory)."""
-        _sync_staging_to_nfs(tmp_path)
+        _sync_local_staging(tmp_path)
 
     def test_skips_subdirectories(self, tmp_path):
         """Verify only syncs files, not subdirectories."""
         (tmp_path / "test.parquet").write_bytes(b"data")
         (tmp_path / "subdir").mkdir()
 
-        _sync_staging_to_nfs(tmp_path)
+        _sync_local_staging(tmp_path)
 
 
 class TestStageArtifactEdges:
@@ -370,7 +370,7 @@ class TestStageExecutionConfigArtifacts:
 class TestStageExecutionRecord:
     """Tests for _write_execution_record result_metadata parameter."""
 
-    def _make_record(self, tmp_path, result_metadata=None):
+    def _make_record(self, staging_root, result_metadata=None):
         fs = LocalFileSystem()
         kwargs = {
             "execution_run_id": "e" * 32,
@@ -382,7 +382,7 @@ class TestStageExecutionRecord:
             "timestamp_start": datetime(2025, 1, 1, tzinfo=UTC),
             "timestamp_end": datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             "worker_id": 0,
-            "staging_path": str(tmp_path),
+            "staging_path": str(staging_root),
             "fs": fs,
         }
         if result_metadata is not None:
@@ -393,26 +393,26 @@ class TestStageExecutionRecord:
             replay_of_execution_run_id=None,
             **kwargs,
         )
-        return pl.read_parquet(tmp_path / "executions.parquet")
+        return pl.read_parquet(staging_root / "executions.parquet")
 
-    def test_default_metadata_is_empty_json(self, tmp_path):
+    def test_default_metadata_is_empty_json(self, staging_root):
         """Call without result_metadata -> metadata column is '{}'."""
-        df = self._make_record(tmp_path)
+        df = self._make_record(staging_root)
         assert json.loads(df["metadata"][0]) == {}
 
-    def test_result_metadata_persisted(self, tmp_path):
+    def test_result_metadata_persisted(self, staging_root):
         """Pass diagnostics dict -> JSON-serialized in metadata column."""
         data = {"diagnostics": {"version": 1, "total_input": 24}}
-        df = self._make_record(tmp_path, result_metadata=data)
+        df = self._make_record(staging_root, result_metadata=data)
         stored = json.loads(df["metadata"][0])
         assert stored == data
 
-    def test_none_metadata_same_as_default(self, tmp_path):
+    def test_none_metadata_same_as_default(self, staging_root):
         """Explicit None -> '{}' (same as omitting)."""
-        df = self._make_record(tmp_path, result_metadata=None)
+        df = self._make_record(staging_root, result_metadata=None)
         assert json.loads(df["metadata"][0]) == {}
 
-    def test_user_overrides_with_set_values(self, tmp_path):
+    def test_user_overrides_with_set_values(self, staging_root):
         """Sets in user_overrides are serialized as sorted lists."""
         fs = LocalFileSystem()
         _write_execution_record(
@@ -428,15 +428,15 @@ class TestStageExecutionRecord:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=str(tmp_path),
+            staging_path=str(staging_root),
             fs=fs,
             user_overrides={"resource_tags": {"bn1", "atp"}},
         )
-        df = pl.read_parquet(tmp_path / "executions.parquet")
+        df = pl.read_parquet(staging_root / "executions.parquet")
         stored = json.loads(df["user_overrides"][0])
         assert stored == {"resource_tags": ["atp", "bn1"]}
 
-    def test_params_with_path_values(self, tmp_path):
+    def test_params_with_path_values(self, staging_root):
         """Path objects in params are serialized as strings."""
         from pathlib import Path
 
@@ -454,11 +454,11 @@ class TestStageExecutionRecord:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=str(tmp_path),
+            staging_path=str(staging_root),
             fs=fs,
             params={"input_path": Path("/data/outputs/test.dat")},
         )
-        df = pl.read_parquet(tmp_path / "executions.parquet")
+        df = pl.read_parquet(staging_root / "executions.parquet")
         stored = json.loads(df["params"][0])
         assert stored == {"input_path": "/data/outputs/test.dat"}
 
@@ -466,7 +466,7 @@ class TestStageExecutionRecord:
 class TestToolOutputColumns:
     """Tests for tool_output and worker_log columns in execution records."""
 
-    def test_tool_output_written_to_parquet(self, tmp_path):
+    def test_tool_output_written_to_parquet(self, staging_root):
         """tool_output value persisted in executions.parquet."""
         fs = LocalFileSystem()
         _write_execution_record(
@@ -482,14 +482,14 @@ class TestToolOutputColumns:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=str(tmp_path),
+            staging_path=str(staging_root),
             fs=fs,
             tool_output="tool stdout content",
         )
-        df = pl.read_parquet(tmp_path / "executions.parquet")
+        df = pl.read_parquet(staging_root / "executions.parquet")
         assert df["tool_output"][0] == "tool stdout content"
 
-    def test_worker_log_written_to_parquet(self, tmp_path):
+    def test_worker_log_written_to_parquet(self, staging_root):
         """worker_log value persisted in executions.parquet."""
         fs = LocalFileSystem()
         _write_execution_record(
@@ -505,14 +505,14 @@ class TestToolOutputColumns:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=str(tmp_path),
+            staging_path=str(staging_root),
             fs=fs,
             worker_log="slurm job output",
         )
-        df = pl.read_parquet(tmp_path / "executions.parquet")
+        df = pl.read_parquet(staging_root / "executions.parquet")
         assert df["worker_log"][0] == "slurm job output"
 
-    def test_null_when_not_provided(self, tmp_path):
+    def test_null_when_not_provided(self, staging_root):
         """Columns are null when not provided."""
         fs = LocalFileSystem()
         _write_execution_record(
@@ -528,10 +528,10 @@ class TestToolOutputColumns:
             timestamp_start=datetime(2025, 1, 1, tzinfo=UTC),
             timestamp_end=datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
             worker_id=0,
-            staging_path=str(tmp_path),
+            staging_path=str(staging_root),
             fs=fs,
         )
-        df = pl.read_parquet(tmp_path / "executions.parquet")
+        df = pl.read_parquet(staging_root / "executions.parquet")
         assert df["tool_output"][0] is None
         assert df["worker_log"][0] is None
 

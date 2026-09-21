@@ -18,6 +18,7 @@ from artisan.visualization.inspect import (
     inspect_metrics,
     inspect_pipeline,
     inspect_step,
+    inspect_worker_log,
 )
 from artisan.visualization.timing import PipelineTimings
 
@@ -33,6 +34,7 @@ __all__ = [
     "inspect_metrics",
     "inspect_pipeline",
     "inspect_step",
+    "inspect_worker_log",
     "render_macro_graph",
     "render_micro_graph",
     "render_micro_graph_steps",

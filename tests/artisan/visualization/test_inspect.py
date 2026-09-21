@@ -1247,6 +1247,29 @@ def test_inspect_commands_reads_exact_committed_execution(tmp_path, success):
         inspect_commands(str(delta_root), "missing")
 
 
+def test_inspect_worker_log_falls_back_to_exact_embedded_evidence(tmp_path):
+    from artisan.storage.io.publication import publish_immutable_bytes
+    from artisan.utils.log_paths import worker_log_path
+    from artisan.visualization import inspect_worker_log
+
+    root = tmp_path / "delta"
+    _write_executions(
+        root,
+        executions_df(
+            execution_run_id=["worker-one", "worker-two"],
+            origin_step_number=[0, 1],
+            success=[True, True],
+            worker_log=["embedded one", "embedded two"],
+        ),
+    )
+    assert inspect_worker_log(str(root), "worker-one") == "embedded one"
+    publish_immutable_bytes(
+        LocalFileSystem(), worker_log_path(str(root), "worker-one"), b"provider one"
+    )
+    assert inspect_worker_log(str(root), "worker-one") == "provider one"
+    assert inspect_worker_log(str(root), "worker-two") == "embedded two"
+
+
 @pytest.mark.parametrize("raw", [None, "{}", '{"status":"complete"}', "not-json"])
 def test_inspect_commands_rejects_malformed_canonical_evidence(tmp_path, raw):
     from artisan.errors import StoreIntegrityError
