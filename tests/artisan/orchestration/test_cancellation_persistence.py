@@ -19,6 +19,8 @@ from artisan.schemas.orchestration.step_lifecycle import (
     StepStatus,
 )
 from artisan.storage.core.committed_scan import read_committed
+from artisan.storage.io.repair import repair_store
+from artisan.storage.io.worker_seal import verify_worker_seal
 
 
 @pytest.mark.parametrize("request_recorded", [False, True])
@@ -112,7 +114,28 @@ def test_unknown_cancellation_persists_custom_named_attempt_and_allows_resume(
             TablePath.EXECUTIONS,
             fs=pipeline.config.storage.filesystem(),
         ).is_empty()
-        assert not list((tmp_path / "staging").rglob("*.parquet"))
+        retained = {
+            path: path.read_bytes()
+            for path in (tmp_path / "staging").rglob("*.parquet")
+        }
+        if operation is DataGenerator:
+            seals = [path for path in retained if path.name == "executions.parquet"]
+            assert len(seals) == 1
+            execution = verify_worker_seal(
+                str(seals[0].parent), pipeline.config.storage.filesystem()
+            )
+            assert execution.item(0, "success") is False
+            assert execution.item(0, "step_run_id") == result.step_run_id
+            report = repair_store(
+                **roots,
+                fs=pipeline.config.storage.filesystem(),
+                recover_staging=True,
+            )
+            assert not report.blocking
+            assert any(item.classification == "ineligible" for item in report.items)
+        else:
+            # This curator reports no execution ID and publishes no worker seal.
+            assert not retained
         status = run_status(roots["delta_root"], pipeline.config.pipeline_run_id)
         assert status.last_status is StepStatus.FAILED
         assert status.steps[0].status is StepStatus.FAILED
@@ -142,3 +165,9 @@ def test_unknown_cancellation_persists_custom_named_attempt_and_allows_resume(
     ) as resumed:
         assert resumed.current_step == 1
         assert len(resumed) == 0
+        assert read_committed(
+            roots["delta_root"],
+            TablePath.EXECUTIONS,
+            fs=resumed.config.storage.filesystem(),
+        ).is_empty()
+    assert {path: path.read_bytes() for path in retained} == retained

@@ -80,7 +80,7 @@ class RuntimeEnvironment(BaseModel):
     # Debug flags
     preserve_staging: bool = Field(
         False,
-        description="Don't cleanup staging directory after commit",
+        description="Retain staging after verified commitment; uncommitted staging is always retained",
     )
     preserve_working: bool = Field(
         False,

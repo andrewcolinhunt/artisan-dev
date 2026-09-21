@@ -72,7 +72,6 @@ from artisan.storage.io.staging_verification import await_staging_files
 from artisan.utils.hashing import effective_config_payload, serialize_params
 from artisan.utils.path import (
     cancel_sentinel_path,
-    shard_uri,
     uri_join,
     uri_parent,
 )
@@ -949,7 +948,6 @@ def _execute_curator_step(
         cancellation_outcome is not None
         and cancellation_outcome.status == CancellationStatus.UNKNOWN
     ):
-        _discard_cancelled_staging(results, runtime_env, operation.name, step_number)
         return _unknown_cancellation_result(
             operation,
             step_number,
@@ -959,12 +957,6 @@ def _execute_curator_step(
         )
 
     if cancel_event is not None and cancel_event.is_set():
-        _discard_cancelled_staging(
-            results,
-            runtime_env,
-            operation.name,
-            step_number,
-        )
         return _cancelled_result(
             operation, step_number, failure_policy, step_run_id=step_run_id
         )
@@ -1215,35 +1207,6 @@ def _record_dispatch_failure(
     )
     succeeded, failed = aggregate_results(results)
     return dispatch_error, results, succeeded, failed
-
-
-def _discard_cancelled_staging(
-    results: list[UnitResult],
-    runtime_env: RuntimeEnvironment,
-    operation_name: str,
-    step_number: int,
-) -> None:
-    """Best-effort removal of staged records produced by cancelled work."""
-    fs = runtime_env.storage.filesystem()
-    for result in results:
-        for run_id in result.execution_run_ids:
-            if not run_id:
-                continue
-            staging_path = shard_uri(
-                runtime_env.staging_root,
-                run_id,
-                step_number=step_number,
-                operation_name=operation_name,
-            )
-            try:
-                if fs.exists(staging_path):
-                    fs.rm(staging_path, recursive=True)
-            except Exception as exc:
-                logger.warning(
-                    "Failed to discard cancelled staging for execution %s: %s",
-                    run_id,
-                    exc,
-                )
 
 
 def _execute_creator_step(
@@ -1532,10 +1495,8 @@ def _execute_creator_step(
             if units_to_dispatch:
                 persist_worker_logs(
                     results,
-                    config.staging_root,
+                    config.delta_root,
                     runtime_env.failure_logs_root,
-                    operation.name,
-                    step_number,
                     fs=staging_fs,
                 )
 
@@ -1548,12 +1509,6 @@ def _execute_creator_step(
             cancellation_outcome is not None
             and cancellation_outcome.status == CancellationStatus.UNKNOWN
         ):
-            _discard_cancelled_staging(
-                results,
-                runtime_env,
-                operation.name,
-                step_number,
-            )
             return _unknown_cancellation_result(
                 operation,
                 step_number,
@@ -1569,12 +1524,6 @@ def _execute_creator_step(
                 or cancellation_outcome.status == CancellationStatus.CONFIRMED
             )
         ):
-            _discard_cancelled_staging(
-                results,
-                runtime_env,
-                operation.name,
-                step_number,
-            )
             return _cancelled_result(
                 operation, step_number, failure_policy, step_run_id=step_run_id
             )

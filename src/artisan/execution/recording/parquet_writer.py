@@ -7,6 +7,7 @@ merges these into the Delta Lake tables.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from typing import Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external import validate_persistable_uri
@@ -25,12 +27,18 @@ from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
+from artisan.storage.io.publication import publish_immutable_bytes
+from artisan.storage.io.worker_seal import (
+    STAGING_INVENTORY_KEY,
+    build_staging_inventory,
+    ensure_unsealed,
+)
 from artisan.utils.json import artisan_json_default
 from artisan.utils.path import shard_uri
 
 
-def _sync_staging_to_nfs(staging_path: str) -> None:
-    """Flush staged files and directory metadata to NFS."""
+def _sync_local_staging(staging_path: str) -> None:
+    """Make local payloads durable before publishing their execution seal."""
     for entry in os.listdir(staging_path):
         entry_path = os.path.join(staging_path, entry)
         if os.path.isfile(entry_path):
@@ -61,6 +69,7 @@ def _create_staging_path(
         step_number=step_number,
         operation_name=operation_name,
     )
+    ensure_unsealed(staging_path, fs)
     fs.makedirs(staging_path, exist_ok=True)
     return staging_path
 
@@ -130,7 +139,6 @@ def _stage_execution(
     command_recording: CommandRecording,
     replay_snapshot: ReplaySnapshot,
     replay_of_execution_run_id: str | None,
-    shared_filesystem: bool = False,
     result_metadata: dict[str, Any] | None = None,
     user_overrides: dict[str, Any] | None = None,
     tool_output: str | None = None,
@@ -138,7 +146,8 @@ def _stage_execution(
     step_run_id: str | None = None,
     error_envelope: dict[str, Any] | None = None,
 ) -> None:
-    """Stage execution record and edges, optionally flushing to NFS."""
+    """Stage edges, flush local payloads, and publish the execution seal last."""
+    ensure_unsealed(staging_path, fs)
     _stage_execution_edges(execution_edges, staging_path, fs)
     _write_execution_record(
         command_recording=command_recording,
@@ -164,8 +173,6 @@ def _stage_execution(
         step_run_id=step_run_id,
         error_envelope=error_envelope,
     )
-    if shared_filesystem:
-        _sync_staging_to_nfs(staging_path)
 
 
 def _stage_artifacts_by_type(
@@ -344,5 +351,15 @@ def _write_execution_record(
         "metadata": json.dumps(result_metadata or {}, default=artisan_json_default),
     }
     df = pl.DataFrame([row], schema=get_schema(TablePath.EXECUTIONS))
-    with fs.open(f"{staging_path}/executions.parquet", "wb") as f:
-        df.write_parquet(f, compression="zstd")
+    inventory = build_staging_inventory(staging_path, fs)
+    if isinstance(fs, LocalFileSystem):
+        _sync_local_staging(str(fs._strip_protocol(staging_path)))
+    encoded = io.BytesIO()
+    df.write_parquet(
+        encoded,
+        compression="zstd",
+        metadata={STAGING_INVENTORY_KEY: inventory.decode("utf-8")},
+    )
+    publish_immutable_bytes(
+        fs, f"{staging_path}/executions.parquet", encoded.getvalue()
+    )

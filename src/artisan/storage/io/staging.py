@@ -9,14 +9,22 @@ files from these directories; cleanup follows only completed plans.
 
 from __future__ import annotations
 
+import logging
 import posixpath
 import re
+from typing import TYPE_CHECKING
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.storage.core.table_schemas import CACHE_REUSE_SCHEMA
+from artisan.utils.hashing import compute_content_digest
 from artisan.utils.path import step_dir_name
+
+if TYPE_CHECKING:
+    from artisan.storage.io.commit_plan import PlannedFile
+
+logger = logging.getLogger(__name__)
 
 _HEX_ID = re.compile(r"[0-9a-f]{32}")
 
@@ -129,15 +137,54 @@ class StagingManager:
             df.write_parquet(stream, compression="zstd")
         return parquet_uri
 
-    def cleanup_plan(self, relative_paths: list[str]) -> None:
-        """Delete only staging directories named by a completed plan."""
-        directories = {
-            posixpath.dirname(relative_path) for relative_path in relative_paths
-        }
+    def cleanup_plan(self, files: list[PlannedFile]) -> None:
+        """Remove matching planned objects after the committer proves completion.
+
+        Changed and unlisted evidence is retained. Cleanup failure must not turn
+        an already completed Delta commit into a failed step.
+        """
+        ordered = sorted(
+            files,
+            key=lambda item: (
+                posixpath.basename(item.relative_path) == "executions.parquet",
+                item.relative_path,
+            ),
+        )
+        for evidence in ordered:
+            path = f"{self.staging_dir}/{evidence.relative_path}"
+            try:
+                if not self._fs.exists(path):
+                    continue
+                with self._fs.open(path, "rb") as stream:
+                    data = stream.read()
+                if (len(data), compute_content_digest(data)) != (
+                    evidence.size_bytes,
+                    evidence.digest,
+                ):
+                    logger.warning(
+                        "Retaining changed committed staging object %s",
+                        evidence.relative_path,
+                    )
+                    continue
+                self._fs.rm(path)
+            except Exception as exc:
+                logger.warning(
+                    "Staging cleanup failed for %s (%s)",
+                    evidence.relative_path,
+                    type(exc).__name__,
+                )
+        directories = {posixpath.dirname(item.relative_path) for item in files}
         for relative_dir in sorted(directories, reverse=True):
             directory = f"{self.staging_dir}/{relative_dir}"
-            if self._fs.exists(directory):
-                self._fs.rm(directory, recursive=True)
+            try:
+                if self._fs.exists(directory) and not self._fs.ls(directory):
+                    self._fs.rmdir(directory)
+            except Exception as exc:
+                logger.warning(
+                    "Staging directory cleanup failed for %s (%s)",
+                    relative_dir,
+                    type(exc).__name__,
+                )
 
 
 def _require_hex_id(value: str, field: str) -> None:

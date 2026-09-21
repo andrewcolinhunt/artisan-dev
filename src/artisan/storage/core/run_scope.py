@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
-from artisan.errors import ArtifactIntegrityError, PersistenceIntegrityError
+from artisan.errors import (
+    ArtifactIntegrityError,
+    PersistenceIntegrityError,
+    StoreIntegrityError,
+)
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.committed_scan import read_committed
 from artisan.storage.core.store_format import assert_store_format
@@ -327,6 +332,140 @@ def validate_cached_executions(
         files_root=files_root,
     )
     return execution_ids
+
+
+def validate_staged_execution(
+    delta_root: str,
+    frames: dict[str, pl.DataFrame],
+    *,
+    execution_run_id: str,
+    step_run_id: str,
+    step_number: int,
+    operation_name: str,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str] | None = None,
+    files_root: str | None = None,
+) -> None:
+    """Validate a sealed recovery candidate against staged and committed data."""
+    from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+    from artisan.storage.core.artifact_store import ArtifactStore
+    from artisan.storage.core.table_schemas import get_schema
+
+    executions = frames.get(TablePath.EXECUTIONS.value)
+    if executions is None or executions.height != 1:
+        msg = "Recovery requires exactly one execution"
+        raise StoreIntegrityError(msg)
+    record = executions.row(0, named=True)
+    if (
+        record["execution_run_id"] != execution_run_id
+        or record["step_run_id"] != step_run_id
+        or record["origin_step_number"] != step_number
+        or record["operation_name"] != operation_name
+        or record["success"] is not True
+        or record["replay_of_execution_run_id"] is not None
+    ):
+        msg = "Recovery execution ownership or outcome is invalid"
+        raise StoreIntegrityError(msg)
+    for field in ("execution_run_id", "execution_spec_id", "step_run_id"):
+        _require_hex(record[field], field)
+    owner = _validate_staged_replay(delta_root, record, fs, storage_options or {})
+    edges = frames.get(
+        TablePath.EXECUTION_EDGES.value,
+        pl.DataFrame(schema=get_schema(TablePath.EXECUTION_EDGES)),
+    )
+    provenance = frames.get(
+        TablePath.ARTIFACT_EDGES.value,
+        pl.DataFrame(schema=get_schema(TablePath.ARTIFACT_EDGES)),
+    )
+    references: set[str] = set()
+    for row in edges.iter_rows(named=True):
+        if (
+            row["execution_run_id"] != execution_run_id
+            or row["direction"] not in {"input", "output"}
+            or not row["role"]
+        ):
+            msg = "Recovery execution edges are invalid"
+            raise StoreIntegrityError(msg)
+        _require_hex(row["artifact_id"], "artifact_id")
+        references.add(row["artifact_id"])
+    for row in provenance.iter_rows(named=True):
+        edge = ArtifactProvenanceEdge.model_validate(row)
+        if edge.execution_run_id != execution_run_id:
+            msg = "Recovery provenance belongs to another execution"
+            raise StoreIntegrityError(msg)
+        references.update((edge.source_artifact_id, edge.target_artifact_id))
+    types = ArtifactStore(
+        delta_root,
+        fs=fs,
+        storage_options=storage_options,
+        files_root=files_root,
+    ).validate_staged_artifacts(frames, references)
+    output_types = json.loads(owner["output_types_json"])
+    for row in edges.filter(pl.col("direction") == "output").iter_rows(named=True):
+        if row["role"] not in output_types or output_types[row["role"]] not in {
+            None,
+            types[row["artifact_id"]],
+        }:
+            msg = "Recovery output edges disagree with source role declarations"
+            raise StoreIntegrityError(msg)
+    for row in provenance.iter_rows(named=True):
+        for side in ("source", "target"):
+            if types[row[f"{side}_artifact_id"]] != row[f"{side}_artifact_type"]:
+                msg = "Recovery provenance artifact types conflict"
+                raise StoreIntegrityError(msg)
+
+
+def _validate_staged_replay(
+    delta_root: str,
+    record: dict[str, Any],
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str],
+) -> dict[str, Any]:
+    """Deserialize diagnostics and verify available original owner evidence."""
+    from artisan.schemas.execution.command_record import CommandRecording
+    from artisan.schemas.execution.replay import ReplaySnapshot
+
+    try:
+        CommandRecording.model_validate_json(record["command_recording"])
+        snapshot = ReplaySnapshot.model_validate_json(record["replay_snapshot"])
+    except (ValueError, TypeError) as exc:
+        msg = "Recovery command or replay evidence is malformed"
+        raise StoreIntegrityError(msg) from exc
+    if snapshot.diagnostic is not None:
+        msg = "Diagnostic execution cannot be recovered"
+        raise StoreIntegrityError(msg)
+    owner = (
+        read_committed(
+            delta_root,
+            TablePath.STEPS,
+            fs=fs,
+            storage_options=storage_options,
+        )
+        .filter(pl.col("step_run_id") == record["step_run_id"])
+        .sort("state_sequence")
+    )
+    if owner.is_empty():
+        msg = "Recovery source attempt is missing"
+        raise StoreIntegrityError(msg)
+    # Failed/cancelled results can clear accepted-output metadata; recovery
+    # validates the operation's original declaration, retained in its first row.
+    source_step = owner.row(0, named=True)
+    if snapshot.source is not None and (
+        snapshot.source.step_run_id != record["step_run_id"]
+        or snapshot.source.step_number != record["origin_step_number"]
+        or snapshot.source.execution_spec_id != record["execution_spec_id"]
+        or snapshot.source.pipeline_run_id not in {None, source_step["pipeline_run_id"]}
+    ):
+        msg = "Recovery replay source ownership conflicts"
+        raise StoreIntegrityError(msg)
+    if snapshot.operation is not None:
+        identity = snapshot.operation.identity
+        if identity.name != record["operation_name"] or (
+            f"{identity.module}.{identity.qualname}" != source_step["operation_class"]
+        ):
+            msg = "Recovery operation ownership conflicts"
+            raise StoreIntegrityError(msg)
+    return source_step
 
 
 def _read_steps(

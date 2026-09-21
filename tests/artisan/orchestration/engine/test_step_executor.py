@@ -1769,16 +1769,18 @@ class TestDispatchFailureHandling:
         assert len(list((tmp_path / "logs" / "failures").rglob("*.log"))) == 2
 
 
-class TestCreatorCancellationCleanup:
-    """Cancelled creator work must never survive into staging recovery."""
+class TestCreatorCancellationRetention:
+    """Cancellation retains evidence while control-sentinel cleanup stays exact."""
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    def test_cancelled_pending_failure_record_is_discarded(
+    @pytest.mark.parametrize("preserve_staging", [False, True])
+    def test_cancelled_pending_failure_record_is_retained(
         self,
         mock_cache,
         tmp_path,
+        preserve_staging,
     ):
-        """A synthesized pending-future failure is removed before returning."""
+        """A synthesized failure remains available with either preservation flag."""
         import threading
 
         from artisan.orchestration.engine.step_executor import _execute_creator_step
@@ -1789,6 +1791,7 @@ class TestCreatorCancellationCleanup:
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
             working_root=str(tmp_path / "working"),
+            preserve_staging=preserve_staging,
         )
         cancel_event = threading.Event()
         mock_backend, mock_handle = _make_mock_backend()
@@ -1821,7 +1824,9 @@ class TestCreatorCancellationCleanup:
 
         assert result.status == StepStatus.CANCELLED
         assert result.cancellation_status == CancellationStatus.CONFIRMED
-        assert not list((tmp_path / "staging").rglob("*.parquet"))
+        seals = list((tmp_path / "staging").rglob("executions.parquet"))
+        assert len(seals) == 1
+        assert pl.read_parquet(seals[0]).item(0, "success") is False
 
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_cleanup_removes_only_current_cancel_sentinel(
@@ -1871,6 +1876,97 @@ class TestCreatorCancellationCleanup:
 
         assert not fs.exists(own_sentinel)
         assert fs.exists(other_sentinel)
+
+
+@pytest.mark.parametrize("kind", ["creator", "curator"])
+@pytest.mark.parametrize("preserve_staging", [False, True])
+@pytest.mark.parametrize(
+    "outcome", [CancellationStatus.CONFIRMED, CancellationStatus.UNKNOWN]
+)
+def test_cancellation_outcomes_preserve_existing_shards(
+    tmp_path,
+    monkeypatch,
+    kind,
+    preserve_staging,
+    outcome,
+):
+    from pathlib import Path
+
+    from artisan.execution.recording.parquet_writer import StagingResult
+    from artisan.orchestration.engine import step_executor
+    from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+    from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
+    from artisan.utils.path import shard_uri
+
+    config = PipelineConfig(
+        name="retention",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        working_root=str(tmp_path / "working"),
+        preserve_staging=preserve_staging,
+    )
+    event = threading.Event()
+    operation = (
+        MockNoGroupByCreatorOp() if kind == "creator" else MockNoGroupByCuratorOp()
+    )
+    run_id = "a" * 32
+    directory = Path(
+        shard_uri(
+            config.staging_root, run_id, step_number=1, operation_name=operation.name
+        )
+    )
+    directory.mkdir(parents=True)
+    (directory / "executions.parquet").write_bytes(b"worker evidence")
+    (directory / "artifact_index.parquet").write_bytes(b"artifact evidence")
+    before = {path: path.read_bytes() for path in directory.iterdir()}
+    acknowledgement = CancellationAcknowledgement(outcome, "cancellation evidence")
+    monkeypatch.setattr(
+        step_executor, "check_cache_for_batch", lambda *_args, **_kwargs: None
+    )
+
+    def finish_creator(*_args, **_kwargs):
+        event.set()
+        return [
+            UnitResult(
+                success=True,
+                error=None,
+                item_count=1,
+                execution_run_ids=[run_id],
+                cancellation_acknowledgement=acknowledgement,
+            )
+        ]
+
+    def finish_curator(*_args, **_kwargs):
+        event.set()
+        return StagingResult(
+            success=True,
+            execution_run_id=run_id,
+            artifact_ids=[_ID_S1],
+            cancellation_acknowledgement=acknowledgement,
+        )
+
+    kwargs = {
+        "operation": operation,
+        "inputs": _prepared({"data": [_ID_S1]}),
+        "config": config,
+        "step_number": 1,
+        "cancel_event": event,
+        "step_run_id": "b" * 32,
+    }
+    if kind == "creator":
+        backend, router = _make_mock_backend()
+        router.run.side_effect = finish_creator
+        result = step_executor._execute_creator_step(step_runner=backend, **kwargs)
+    else:
+        monkeypatch.setattr(step_executor, "_run_curator_in_subprocess", finish_curator)
+        result = step_executor._execute_curator_step(**kwargs)
+    assert result.cancellation_status is outcome
+    assert result.status is (
+        StepStatus.CANCELLED
+        if outcome is CancellationStatus.CONFIRMED
+        else StepStatus.FAILED
+    )
+    assert {path: path.read_bytes() for path in directory.iterdir()} == before
 
 
 class TestCommitFailureHandling:

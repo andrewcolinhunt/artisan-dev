@@ -94,3 +94,26 @@ class TestPipelineConfig:
             failure_policy="continue",
         )
         assert config.failure_policy == FailurePolicy.CONTINUE
+
+
+@pytest.mark.parametrize("preserve", [False, True])
+@pytest.mark.parametrize("recover", [False, True])
+def test_staging_controls_are_independent(preserve: bool, recover: bool) -> None:
+    config = PipelineConfig(
+        name="staging",
+        delta_root="/data/delta",
+        staging_root="/data/staging",
+        preserve_staging=preserve,
+        recover_staging=recover,
+    )
+    assert config.preserve_staging is preserve
+    assert config.recover_staging is recover
+    assert config.skip_cache is False
+
+
+def test_staging_defaults_recover_without_preserving_committed_files() -> None:
+    config = PipelineConfig(
+        name="staging", delta_root="/data/delta", staging_root="/data/staging"
+    )
+    assert config.recover_staging is True
+    assert config.preserve_staging is False

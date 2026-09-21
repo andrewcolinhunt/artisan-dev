@@ -46,7 +46,17 @@ class PipelineConfig(BaseModel):
     )
     preserve_staging: bool = Field(
         default=False,
-        description="Debug flag to preserve staging files after commit.",
+        description=(
+            "Keep staging after verified commitment. Uncommitted staging is "
+            "always retained, including on cancellation."
+        ),
+    )
+    recover_staging: bool = Field(
+        default=True,
+        description=(
+            "Recover finished staged executions before cache lookup. Requires "
+            "exclusive orchestrator/repair write access to the store."
+        ),
     )
     preserve_working: bool = Field(
         default=False,

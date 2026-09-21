@@ -18,7 +18,7 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external import sanitized_uri, validate_persistable_uri
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.committed_scan import scan_committed
+from artisan.storage.core.committed_scan import read_committed, scan_committed
 from artisan.storage.core.provenance_store import ProvenanceStore
 from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import get_schema
@@ -198,17 +198,83 @@ class ArtifactStore:
         if result.is_empty():
             return {}
 
+        return self._hydrate_rows(artifact_type, result)
+
+    def _hydrate_rows(
+        self,
+        artifact_type: str,
+        rows: pl.DataFrame,
+        locations: pl.DataFrame | None = None,
+    ) -> dict[str, Artifact]:
+        """Hydrate committed or staged rows through the same integrity boundary."""
         model_cls = ArtifactTypeDef.get_model(artifact_type)
         artifacts: dict[str, Artifact] = {}
-        for row in result.iter_rows(named=True):
+        for row in rows.iter_rows(named=True):
             artifact = cast("Artifact", model_cls.from_row(row))  # type: ignore[attr-defined]
             # Artifacts loaded from storage are always finalized (artifact_id
             # is non-None).
             assert artifact.artifact_id is not None
-            self._attach_verified_location(artifact)
+            self._attach_verified_location(artifact, locations)
             artifacts[artifact.artifact_id] = artifact
 
         return artifacts
+
+    def validate_staged_artifacts(
+        self,
+        frames: dict[str, pl.DataFrame],
+        referenced_ids: set[str],
+    ) -> dict[str, str]:
+        """Validate candidate artifacts and references without publishing any rows."""
+        index = self._candidate_rows(TablePath.ARTIFACT_INDEX.value, frames)
+        locations = self._candidate_rows(TablePath.ARTIFACT_LOCATIONS.value, frames)
+        for frame in frames.values():
+            if "artifact_id" in frame.columns:
+                referenced_ids.update(frame["artifact_id"].to_list())
+        selected = index.filter(pl.col("artifact_id").is_in(referenced_ids))
+        types: dict[str, str] = {}
+        for artifact_id, artifact_type in selected.select(
+            "artifact_id", "artifact_type"
+        ).iter_rows():
+            if types.setdefault(artifact_id, artifact_type) != artifact_type:
+                msg = f"Conflicting staged artifact type for {artifact_id}"
+                raise ArtifactIntegrityError(msg)
+        missing = referenced_ids - types.keys()
+        if missing:
+            msg = f"Missing staged artifact references: {sorted(missing)!r}"
+            raise ArtifactIntegrityError(msg)
+        for artifact_type in sorted(set(types.values())):
+            definition = ArtifactTypeDef.get(artifact_type)
+            ids = {key for key, kind in types.items() if kind == artifact_type}
+            content = self._candidate_rows(definition.table_path, frames).filter(
+                pl.col("artifact_id").is_in(ids)
+            )
+            loaded = self._hydrate_rows(artifact_type, content, locations)
+            if ids != loaded.keys():
+                msg = f"Missing staged content for {sorted(ids - loaded.keys())!r}"
+                raise ArtifactIntegrityError(msg)
+        for definition in ArtifactTypeDef.get_all().values():
+            candidate_frame = frames.get(definition.table_path)
+            if candidate_frame is not None and any(
+                types.get(value) != definition.key
+                for value in candidate_frame["artifact_id"]
+            ):
+                msg = "Staged content disagrees with its artifact index"
+                raise ArtifactIntegrityError(msg)
+        return types
+
+    def _candidate_rows(
+        self, table: str, frames: dict[str, pl.DataFrame]
+    ) -> pl.DataFrame:
+        """Overlay candidate evidence for validation without changing stored data."""
+        committed = read_committed(
+            self.base_path, table, fs=self._fs, storage_options=self._storage_options
+        )
+        candidate = frames.get(table)
+        if candidate is None:
+            return committed
+        return pl.concat(
+            [committed, candidate.select(committed.columns)], how="vertical"
+        ).unique(maintain_order=True)
 
     def artifact_exists(self, artifact_id: str) -> bool:
         """Check whether an artifact exists via the artifact_index.
@@ -280,13 +346,19 @@ class ArtifactStore:
                 raise ArtifactIntegrityError(msg)
         return type_map
 
-    def _attach_verified_location(self, artifact: Artifact) -> None:
+    def _attach_verified_location(
+        self, artifact: Artifact, candidate_locations: pl.DataFrame | None = None
+    ) -> None:
         """Select and verify a deterministic location for an external artifact."""
         if not artifact.EXTERNALLY_BACKED:
             return
         assert artifact.artifact_id is not None
         locations_path = self._table_path(TablePath.ARTIFACT_LOCATIONS)
-        if self._fs.exists(locations_path):
+        if candidate_locations is not None:
+            rows = candidate_locations.filter(
+                pl.col("artifact_id") == artifact.artifact_id
+            ).select("uri")
+        elif self._fs.exists(locations_path):
             rows = (
                 scan_committed(
                     self.base_path,

@@ -460,6 +460,7 @@ def replay_execution(
         default_step_runner=runner.name,
         skip_cache=True,
         preserve_staging=True,
+        recover_staging=False,
         preserve_working=True,
     )
     manager = PipelineManager(config, default_step_runner=runner)

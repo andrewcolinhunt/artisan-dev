@@ -17,12 +17,15 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from artisan.errors import StoreIntegrityError
 from artisan.execution.recording.commands import sanitize_diagnostic
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.replay import ReplaySnapshot
+from artisan.storage.io.worker_seal import EXECUTION_SEAL_FILENAME
+from artisan.utils.path import shard_uri, uri_join
 
 if TYPE_CHECKING:
     from artisan.schemas.execution.execution_context import ExecutionContext
@@ -32,6 +35,19 @@ from artisan.utils.log_paths import failure_log_relative_path
 logger = logging.getLogger(__name__)
 
 _MAX_TOOL_OUTPUT_CHARS = 500_000
+
+
+def execution_is_sealed(execution_context: ExecutionContext) -> bool:
+    """Check publication before an executor attempts failure fallback writes."""
+    directory = shard_uri(
+        execution_context.staging_root,
+        execution_context.execution_run_id,
+        step_number=execution_context.step_number,
+        operation_name=execution_context.operation_name,
+    )
+    return bool(
+        execution_context.fs.exists(uri_join(directory, EXECUTION_SEAL_FILENAME))
+    )
 
 
 def error_envelope_dict(exc: BaseException) -> dict[str, Any] | None:
@@ -202,7 +218,6 @@ def record_execution_success(
         worker_id=execution_context.worker_id,
         params=params,
         compute_backend=execution_context.compute_backend,
-        shared_filesystem=execution_context.shared_filesystem,
         result_metadata=result_metadata,
         user_overrides=user_overrides,
         tool_output=sanitize_diagnostic(tool_output),
@@ -300,7 +315,6 @@ def record_passthrough(
         worker_id=execution_context.worker_id,
         params=params,
         compute_backend=execution_context.compute_backend,
-        shared_filesystem=execution_context.shared_filesystem,
         result_metadata=result_metadata,
         user_overrides=user_overrides,
         step_run_id=execution_context.step_run_id,
@@ -389,8 +403,8 @@ def record_execution_failure(
 ) -> StagingResult:
     """Stage an execution record for a failed run and write a failure log.
 
-    Double-faults (errors during staging itself) are caught and folded
-    into the returned StagingResult so the caller always gets a value.
+    Double-faults during unsealed staging are folded into the returned result.
+    An existing seal cannot be rewritten and raises before staging begins.
 
     Args:
         execution_context: Immutable context for the current execution.
@@ -419,6 +433,9 @@ def record_execution_failure(
         _stage_execution,
     )
 
+    if execution_is_sealed(execution_context):
+        msg = f"Execution {execution_context.execution_run_id} is already sealed"
+        raise StoreIntegrityError(msg)
     try:
         fs = execution_context.fs
         staging_path = _create_staging_path(
@@ -451,7 +468,6 @@ def record_execution_failure(
             worker_id=execution_context.worker_id,
             params=params,
             compute_backend=execution_context.compute_backend,
-            shared_filesystem=execution_context.shared_filesystem,
             user_overrides=user_overrides,
             tool_output=sanitize_diagnostic(tool_output),
             step_run_id=execution_context.step_run_id,

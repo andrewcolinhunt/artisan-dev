@@ -1,10 +1,12 @@
-"""Canonical local failure-log names shared by writers and readers."""
+"""Canonical execution-linked diagnostic paths shared by writers and readers."""
 
 from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+
+from artisan.utils.path import uri_join
 
 
 def _validate_execution_id(execution_run_id: str) -> None:
@@ -16,6 +18,12 @@ def _validate_execution_id(execution_run_id: str) -> None:
     ):
         msg = "Execution run ID must be a nonempty literal path component"
         raise ValueError(msg)
+
+
+def worker_log_path(delta_root: str, execution_run_id: str) -> str:
+    """Return the exact execution-linked provider diagnostic object path."""
+    _validate_execution_id(execution_run_id)
+    return uri_join(delta_root, "_artisan", "worker_logs", f"{execution_run_id}.log")
 
 
 def failure_log_relative_path(execution_run_id: str, timestamp_start: datetime) -> str:

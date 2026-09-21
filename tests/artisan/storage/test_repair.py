@@ -180,7 +180,7 @@ def test_report_only_does_not_mutate_either_root(repair_env):
     report = _repair(repair_env)
 
     assert [(item.evidence_id, item.classification) for item in report.items] == [
-        (plan.logical_commit_id, "unplanned")
+        (plan.logical_commit_id, "replayable")
     ]
     assert staged_before == sorted(fs.find(staging_root))
     assert versions == {
@@ -203,21 +203,21 @@ def test_apply_replays_only_validated_planned_evidence(
     before = _repair(repair_env)
     assert {item.evidence_id: item.classification for item in before.items} == {
         replayable.logical_commit_id: "replayable",
-        unplanned.logical_commit_id: "unplanned",
+        unplanned.logical_commit_id: "replayable",
     }
 
     after = _repair(repair_env, apply=True)
 
     assert {item.evidence_id: item.classification for item in after.items} == {
         replayable.logical_commit_id: "complete",
-        unplanned.logical_commit_id: "unplanned",
+        unplanned.logical_commit_id: "complete",
     }
     assert read_committed(
         delta_root,
         TablePath.ARTIFACT_INDEX,
         fs=fs,
         storage_options=options,
-    )["artifact_id"].to_list() == ["a" * 32]
+    )["artifact_id"].sort().to_list() == ["a" * 32, "b" * 32]
 
 
 def test_failed_attempt_cannot_be_revived_by_repair(
@@ -595,3 +595,408 @@ def test_repair_action_validation(
             abandon=abandon,
             reason=reason,
         )
+
+
+def _worker_candidate(
+    repair_env,
+    *,
+    execution_id="e" * 32,
+    status="running",
+    empty=False,
+    success=True,
+    diagnostic=False,
+    owner=True,
+    artifact=None,
+):
+    """Stage one real typed payload with a closed worker seal and original owner."""
+    from datetime import UTC, datetime
+
+    from fixtures.execution_records import executions_df
+
+    from artisan.execution.recording.parquet_writer import _stage_artifacts
+    from artisan.execution.recording.recorder import build_execution_edges
+    from artisan.schemas.artifact.data import DataArtifact
+    from artisan.schemas.execution.command_record import CommandRecording
+    from artisan.schemas.execution.replay import ReplaySnapshot
+    from artisan.schemas.orchestration.step_lifecycle import (
+        CancellationAcknowledgement,
+        CancellationStatus,
+    )
+    from artisan.storage.io.worker_seal import (
+        STAGING_INVENTORY_KEY,
+        build_staging_inventory,
+    )
+    from artisan.utils.path import shard_uri
+
+    _, fs, options, delta_root, staging_root = repair_env
+    step_id = "c" * 32
+    tracker = StepTracker(delta_root, "recovery-source", fs=fs, storage_options=options)
+    if owner and not tracker.load_all_current_states():
+        tracker.create_attempt(
+            StepStartRecord(
+                step_run_id=step_id,
+                step_spec_id="d" * 32,
+                step_number=0,
+                step_name="user-label",
+                operation_class="tests.Worker",
+                params_json="{}",
+                input_refs_json="{}",
+                compute_backend="local",
+                compute_options_json="{}",
+                output_roles_json='["output"]',
+                output_types_json=json.dumps(
+                    {
+                        "output": artifact.artifact_type
+                        if artifact is not None
+                        else "data"
+                    }
+                ),
+            )
+        )
+        if status != "pending":
+            tracker.transition(step_id, StepStatus.PENDING, StepStatus.RUNNING)
+        if status == "failed":
+            tracker.transition(
+                step_id,
+                StepStatus.RUNNING,
+                StepStatus.FAILED,
+                result=StepResult(
+                    step_name="user-label",
+                    step_number=0,
+                    step_run_id=step_id,
+                    status=StepStatus.FAILED,
+                    error="source interrupted",
+                ),
+            )
+        elif status == "cancelled":
+            for ack in (CancellationStatus.REQUESTED, CancellationStatus.CONFIRMED):
+                tracker.record_cancellation(
+                    step_id, StepStatus.RUNNING, CancellationAcknowledgement(ack)
+                )
+            tracker.transition(
+                step_id,
+                StepStatus.RUNNING,
+                StepStatus.CANCELLED,
+                result=StepResult(
+                    step_name="user-label",
+                    step_number=0,
+                    step_run_id=step_id,
+                    status=StepStatus.CANCELLED,
+                    cancellation_status=CancellationStatus.CONFIRMED,
+                ),
+            )
+    directory = shard_uri(
+        staging_root, execution_id, step_number=0, operation_name="worker"
+    )
+    fs.makedirs(directory, exist_ok=True)
+    artifact = (
+        artifact
+        or DataArtifact.draft(
+            content=b"value\n1\n", original_name="result.csv", step_number=0
+        ).finalize()
+    )
+    if not empty:
+        _stage_artifacts({"output": [artifact]}, [], 0, directory, fs)
+        with fs.open(f"{directory}/execution_edges.parquet", "wb") as stream:
+            build_execution_edges(
+                execution_id, {}, {"output": [artifact.artifact_id]}
+            ).write_parquet(stream)
+    frame = executions_df(
+        execution_run_id=[execution_id],
+        execution_spec_id=["f" * 32],
+        step_run_id=[step_id],
+        origin_step_number=[0],
+        operation_name=["worker"],
+        success=[success],
+        timestamp_start=[datetime.now(UTC)],
+        timestamp_end=[datetime.now(UTC)],
+        command_recording=[CommandRecording.empty().model_dump_json()],
+        replay_snapshot=[ReplaySnapshot.unavailable("test worker").model_dump_json()],
+        replay_of_execution_run_id=["a" * 32 if diagnostic else None],
+    )
+    inventory = build_staging_inventory(directory, fs).decode()
+    with fs.open(f"{directory}/executions.parquet", "wb") as stream:
+        frame.write_parquet(stream, metadata={STAGING_INVENTORY_KEY: inventory})
+    return tracker, directory, artifact.artifact_id
+
+
+def _root_bytes(fs, root):
+    result = {}
+    if fs.exists(root):
+        for path in fs.find(root):
+            with fs.open(path, "rb") as stream:
+                result[path] = stream.read()
+    return result
+
+
+@pytest.mark.parametrize("status", ["running", "failed", "cancelled"])
+@pytest.mark.parametrize("preserve", [False, True])
+def test_recover_worker_keeps_source_history_and_is_idempotent(
+    repair_env, status, preserve
+):
+    from artisan.schemas.execution.cache_result import CacheHit
+    from artisan.storage.cache.cache_lookup import cache_lookup
+    from artisan.storage.core.run_scope import load_accepted_outputs
+
+    _, fs, options, delta_root, _staging_root = repair_env
+    tracker, directory, artifact_id = _worker_candidate(repair_env, status=status)
+    original = tracker.current_state("c" * 32)
+    if status in {"failed", "cancelled"}:
+        assert original.output_types == {}
+        source = read_committed(
+            delta_root, TablePath.STEPS, fs=fs, storage_options=options
+        ).sort("state_sequence")
+        assert json.loads(source["output_types_json"][0]) == {"output": "data"}
+    before = _root_bytes(fs, directory)
+    report = _repair(repair_env, recover_staging=True)
+    assert [item.classification for item in report.items] == ["recoverable"]
+    assert not report.blocking
+    assert report.unresolved
+    assert read_logical_commits(delta_root, fs=fs, storage_options=options).is_empty()
+    assert _root_bytes(fs, directory) == before
+    complete = _repair(
+        repair_env, recover_staging=True, apply=True, preserve_staging=preserve
+    )
+    assert [item.classification for item in complete.items] == ["complete"]
+    assert tracker.current_state("c" * 32) == original
+    assert load_accepted_outputs(
+        delta_root, fs=fs, storage_options=options, step_run_id="c" * 32
+    ).is_empty()
+    assert isinstance(cache_lookup(delta_root, "f" * 32, fs, options), CacheHit)
+    assert read_committed(
+        delta_root, TablePath.ARTIFACT_INDEX, fs=fs, storage_options=options
+    )["artifact_id"].to_list() == [artifact_id]
+    assert _root_bytes(fs, directory) == (before if preserve else {})
+    snapshot = _root_bytes(fs, delta_root)
+    _repair(repair_env, recover_staging=True, apply=True, preserve_staging=preserve)
+    assert _root_bytes(fs, delta_root) == snapshot
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_recovery_report_is_read_only_and_disabled_repair_retains_workers(
+    repair_env, empty
+):
+    _, fs, _, delta_root, staging_root = repair_env
+    _worker_candidate(repair_env, empty=empty)
+    before = (_root_bytes(fs, delta_root), _root_bytes(fs, staging_root))
+    report = _repair(repair_env, recover_staging=True)
+    assert [item.classification for item in report.items] == ["recoverable"]
+    _repair(repair_env, apply=True)
+    assert (_root_bytes(fs, delta_root), _root_bytes(fs, staging_root)) == before
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "classification"),
+    [
+        ({"success": False}, "ineligible"),
+        ({"diagnostic": True}, "ineligible"),
+        ({"owner": False}, "unknown_owner"),
+        ({"status": "pending"}, "ineligible"),
+    ],
+)
+def test_ineligible_workers_are_retained_without_blocking(
+    repair_env, kwargs, classification
+):
+    _, fs, _, _, staging_root = repair_env
+    _worker_candidate(repair_env, **kwargs)
+    before = _root_bytes(fs, staging_root)
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert [item.classification for item in report.items] == [classification]
+    assert not report.blocking
+    assert report.unresolved
+    assert _root_bytes(fs, staging_root) == before
+
+
+@pytest.mark.parametrize("remove", ["execution_edges.parquet", "all"])
+def test_missing_sealed_payloads_block_recovery_without_mutation(repair_env, remove):
+    _, fs, _, delta_root, staging_root = repair_env
+    _, directory, _ = _worker_candidate(repair_env)
+    paths = fs.find(directory) if remove == "all" else [f"{directory}/{remove}"]
+    for path in paths:
+        if not path.endswith("/executions.parquet"):
+            fs.rm(path)
+    before = (_root_bytes(fs, delta_root), _root_bytes(fs, staging_root))
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert report.blocking
+    assert {item.classification for item in report.items} == {"corrupt"}
+    assert (_root_bytes(fs, delta_root), _root_bytes(fs, staging_root)) == before
+
+
+def test_incomplete_shard_is_retained_and_late_seal_waits_for_next_pass(
+    repair_env, monkeypatch
+):
+    _, fs, _, _delta_root, _staging_root = repair_env
+    _, directory, _ = _worker_candidate(repair_env)
+    seal = f"{directory}/executions.parquet"
+    with fs.open(seal, "rb") as stream:
+        payload = stream.read()
+    fs.rm(seal)
+    from artisan.storage.io import repair
+
+    original = repair._apply_report
+
+    def publish_after_snapshot(*args, **kwargs):
+        if not fs.exists(seal):
+            with fs.open(seal, "wb") as stream:
+                stream.write(payload)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(repair, "_apply_report", publish_after_snapshot)
+    first = _repair(repair_env, recover_staging=True, apply=True)
+    assert [item.classification for item in first.items] == ["incomplete"]
+    second = _repair(repair_env, recover_staging=True, apply=True)
+    assert [item.classification for item in second.items] == ["complete"]
+
+
+def test_recovery_plan_before_control_and_abandonment_keep_ownership(
+    repair_env, monkeypatch
+):
+    from artisan.storage.io.commit_plan import prepare_commit_plan, publish_commit_plan
+
+    committer, fs, _, delta_root, staging_root = repair_env
+    tracker, directory, _ = _worker_candidate(repair_env, status="cancelled")
+    plan = prepare_commit_plan(
+        staging_root=staging_root,
+        fs=fs,
+        commit_kind="execution_recovery",
+        step_run_id="c" * 32,
+        step_number=0,
+        operation_name="worker",
+        execution_run_id="e" * 32,
+    )
+    publish_commit_plan(delta_root, fs, plan)
+    assert (
+        _repair(repair_env, recover_staging=True).items[0].classification
+        == "replayable"
+    )
+    _leave_planned(committer, plan, monkeypatch)
+    source = tracker.current_state("c" * 32)
+    _repair(repair_env, abandon=plan.logical_commit_id, reason="retain for diagnosis")
+    before = _root_bytes(fs, directory)
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert [item.classification for item in report.items] == ["abandoned"]
+    assert tracker.current_state("c" * 32) == source
+    assert _root_bytes(fs, directory) == before
+
+
+def test_completed_cleanup_retains_changed_and_unlisted_files(repair_env):
+    _, fs, _, _, _ = repair_env
+    _, directory, _ = _worker_candidate(repair_env)
+    _repair(repair_env, recover_staging=True, apply=True, preserve_staging=True)
+    changed = f"{directory}/execution_edges.parquet"
+    unknown = f"{directory}/notes.txt"
+    for path in (changed, unknown):
+        with fs.open(path, "wb") as stream:
+            stream.write(b"retained evidence")
+    _repair(repair_env, recover_staging=True, apply=True)
+    assert set(fs.find(directory)) == {
+        fs._strip_protocol(changed),
+        fs._strip_protocol(unknown),
+    }
+    for path in (changed, unknown):
+        with fs.open(path, "rb") as stream:
+            assert stream.read() == b"retained evidence"
+
+
+def _reseal_inventory(fs, directory):
+    """Seal deliberately invalid semantic evidence for validation-boundary tests."""
+    from artisan.storage.io.worker_seal import (
+        STAGING_INVENTORY_KEY,
+        build_staging_inventory,
+    )
+
+    seal = f"{directory}/executions.parquet"
+    with fs.open(seal, "rb") as stream:
+        frame = pl.read_parquet(stream)
+    metadata = {STAGING_INVENTORY_KEY: build_staging_inventory(directory, fs).decode()}
+    with fs.open(seal, "wb") as stream:
+        frame.write_parquet(stream, metadata=metadata)
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_recovery_enforces_original_output_roles_after_terminal_result(
+    repair_env, status
+):
+    _, fs, _, delta_root, staging_root = repair_env
+    _, directory, _ = _worker_candidate(repair_env, status=status)
+    path = f"{directory}/execution_edges.parquet"
+    with fs.open(path, "rb") as stream:
+        frame = pl.read_parquet(stream).with_columns(pl.lit("undeclared").alias("role"))
+    with fs.open(path, "wb") as stream:
+        frame.write_parquet(stream)
+    _reseal_inventory(fs, directory)
+    before = (_root_bytes(fs, delta_root), _root_bytes(fs, staging_root))
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert report.blocking
+    assert [item.detail for item in report.blocking_items] == [
+        "Recovery output edges disagree with source role declarations"
+    ]
+    assert (_root_bytes(fs, delta_root), _root_bytes(fs, staging_root)) == before
+
+
+@pytest.mark.parametrize(
+    "mutation", ["content_identity", "missing_reference", "diagnostics"]
+)
+def test_recovery_rejects_invalid_semantics_even_with_valid_inventory(
+    repair_env, mutation
+):
+    _, fs, _, delta_root, staging_root = repair_env
+    _, directory, _ = _worker_candidate(repair_env)
+    filename = {
+        "content_identity": "data.parquet",
+        "missing_reference": "execution_edges.parquet",
+        "diagnostics": "executions.parquet",
+    }[mutation]
+    path = f"{directory}/{filename}"
+    with fs.open(path, "rb") as stream:
+        frame = pl.read_parquet(stream)
+    if mutation == "content_identity":
+        frame = frame.with_columns(pl.lit(b"value\n2\n").alias("content"))
+    elif mutation == "missing_reference":
+        frame = frame.with_columns(pl.lit("a" * 32).alias("artifact_id"))
+    else:
+        frame = frame.with_columns(
+            pl.lit('{"secret":"must-not-appear"}').alias("command_recording")
+        )
+    with fs.open(path, "wb") as stream:
+        frame.write_parquet(stream)
+    _reseal_inventory(fs, directory)
+    before = (_root_bytes(fs, delta_root), _root_bytes(fs, staging_root))
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert report.blocking
+    assert "must-not-appear" not in report.model_dump_json()
+    assert (_root_bytes(fs, delta_root), _root_bytes(fs, staging_root)) == before
+
+
+@pytest.mark.parametrize("damage", [None, "missing", "changed"])
+def test_recovery_verifies_external_content_using_configured_filesystem(
+    repair_env, damage
+):
+    from artisan.schemas.artifact.file_ref import FileRefArtifact
+    from artisan.utils.hashing import compute_content_digest
+
+    _, fs, options, delta_root, _staging_root = repair_env
+    external = f"{delta_root}/external.txt"
+    payload = b"original external payload"
+    with fs.open(external, "wb") as stream:
+        stream.write(payload)
+    artifact = FileRefArtifact.draft(
+        path=external,
+        content_hash=compute_content_digest(payload),
+        size_bytes=len(payload),
+        step_number=0,
+    ).finalize()
+    _worker_candidate(repair_env, artifact=artifact)
+    if damage == "missing":
+        fs.rm(external)
+    elif damage == "changed":
+        with fs.open(external, "wb") as stream:
+            stream.write(b"changed external payload")
+    report = _repair(
+        repair_env, recover_staging=True, apply=True, files_root=delta_root
+    )
+    assert report.blocking is (damage is not None)
+    executions = read_committed(
+        delta_root, TablePath.EXECUTIONS, fs=fs, storage_options=options
+    )
+    assert executions.height == (1 if damage is None else 0)

@@ -545,3 +545,60 @@ class TestProvenance:
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["edges"] == []
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_store_repair_passes_independent_staging_controls(tmp_path, monkeypatch, apply):
+    from artisan.storage.io import repair
+    from artisan.storage.io.repair import RepairReport
+
+    repair_mock = MagicMock(return_value=RepairReport(items=()))
+    monkeypatch.setattr(repair, "repair_store", repair_mock)
+    arguments = [
+        "store",
+        "repair",
+        "--delta-root",
+        str(tmp_path / "delta"),
+        "--staging-root",
+        str(tmp_path / "staging"),
+        "--recover-staging",
+        "--preserve-staging",
+        "--files-root",
+        str(tmp_path / "files"),
+        "--json",
+    ]
+    if apply:
+        arguments.append("--apply")
+    assert main(arguments) == 0
+    kwargs = repair_mock.call_args.kwargs
+    assert kwargs["apply"] is apply
+    assert kwargs["recover_staging"] is True
+    assert kwargs["preserve_staging"] is True
+    assert kwargs["files_root"] == str(tmp_path / "files")
+
+
+def test_store_repair_rejects_recovery_with_abandonment(tmp_path, monkeypatch, capsys):
+    from artisan.storage.io import repair
+
+    repair_mock = MagicMock()
+    monkeypatch.setattr(repair, "repair_store", repair_mock)
+    assert (
+        main(
+            [
+                "store",
+                "repair",
+                "--delta-root",
+                str(tmp_path / "delta"),
+                "--staging-root",
+                str(tmp_path / "staging"),
+                "--recover-staging",
+                "--abandon",
+                "step_result:one",
+                "--reason",
+                "inspect first",
+            ]
+        )
+        == 2
+    )
+    assert "separate actions" in capsys.readouterr().err
+    repair_mock.assert_not_called()

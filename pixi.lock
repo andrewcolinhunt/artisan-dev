@@ -4644,8 +4644,8 @@ packages:
   requires_python: '>=2.7,!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*'
 - pypi: ./
   name: dexterity-artisan
-  version: 0.1.2a6.dev647+g98fec183f.d20260919
-  sha256: 9d649b5f576b3cd65d0aafa42c51c57df70b6a555ccd17fed17c81ef69e07638
+  version: 0.1.2a6.dev675+g2aa298bf6.d20260921
+  sha256: ca4a052a305dc45708e584795d00769cd7eb0c26e9055d33b01f98b881b973bc
   requires_dist:
   - cloudpickle>=3,<4
   - deltalake>=0.14.0
@@ -4656,7 +4656,7 @@ packages:
   - ipython
   - ipywidgets
   - matplotlib
-  - polars>=0.20.0
+  - polars>=1.30.0
   - pydantic>=2
   - python-dotenv
   - rich
