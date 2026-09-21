@@ -45,9 +45,11 @@ and uses its configured policy only for new submissions. See
 [Set cache policy](../how-to-guides/configuring-execution.md#set-cache-policy)
 for overrides and the distinction between whole-step and execution reuse.
 
-**Debugging.** Flags to bypass the cache or keep staging directories and worker
-sandboxes for inspection. Crash recovery is a separate, explicit
-[`artisan store repair` action](storage-and-delta-lake.md#crash-recovery).
+**Recovery and debugging.** Startup recovers eligible finished staging before
+cache lookup by default. Independently, you can retain committed staging and
+worker sandboxes for inspection, or bypass caches. See
+[Staging preservation and recovery](storage-and-delta-lake.md#staging-preservation)
+for the controls and the explicit repair workflow.
 
 For current fields, types, and defaults, follow the `PipelineConfig` entry in
 [Python API](../reference/python-api.md) to its source and docstrings.

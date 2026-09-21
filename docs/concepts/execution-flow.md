@@ -337,11 +337,14 @@ and cache reuse retain their own recorded membership.
 ### Worker log capture
 
 Runner providers can attach worker stdout/stderr to each `UnitResult` before
-collection completes. Artisan then patches those logs into the
-`executions.parquet` staging files before commit. Failed executions also get
-human-readable log files grouped by source execution start date under
-`logs/failures/YYYYMMDD/` (UTC). This happens on a best-effort basis -- missing
-logs never block the commit.
+collection completes. Artisan stores those diagnostics separately under
+`_artisan/worker_logs/<execution_run_id>.log` in the Delta root, keeping sealed
+staging immutable. Use
+[`inspect_worker_log()`](../how-to-guides/debugging-executions.md#inspect-provider-logs)
+to read an exact execution's log, including uncommitted attempts. Failed
+executions also get human-readable log files grouped by source execution start
+date under `logs/failures/YYYYMMDD/` (UTC). Log delivery is best effort; missing
+logs do not block commitment or decide recovery eligibility.
 
 ---
 
@@ -392,9 +395,9 @@ early as possible.
 | Commit (orchestrator) | Attempt becomes `failed` | Error plus any physical records already written |
 | Subprocess OOM (curator) | Broken pool detected | Synthetic failure record staged with diagnostics |
 
-**Double-fault protection.** If staging a failure record itself fails, the error
-is folded into the `StagingResult` so the caller always gets a value. The
-original error and the staging error are combined into a single message.
+**Recording failures.** Before an execution is sealed, failure-recording errors
+are combined with the original error in the returned diagnostic. An error after
+seal publication propagates without rewriting the immutable staging evidence.
 
 **Failure logs.** Every failed execution writes a human-readable log file
 containing the run ID, operation name, step number, step runner, timestamp, full

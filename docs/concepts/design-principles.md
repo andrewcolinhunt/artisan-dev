@@ -192,8 +192,8 @@ collected the same way in all cases.
 Each backend declares two trait objects that capture the behavioral
 differences:
 
-- **Worker traits** control I/O behavior on the worker (e.g., whether to fsync
-  staged files for NFS visibility).
+- **Worker traits** describe the worker's filesystem environment. All local
+  staging payloads are flushed before the immutable execution seal is published.
 - **Orchestrator traits** control post-dispatch behavior (e.g., whether to poll
   for staging file visibility on shared filesystems).
 
@@ -221,8 +221,11 @@ Readers expose plan-owned rows only after that marker exists.
 
 Content-addressed artifacts may reuse an existing identical row. Every other
 retry must match the immutable plan and its exact natural keys. A crash leaves
-the plan and partial physical effects available to `artisan store repair`;
-unplanned staging is never guessed into a commit.
+the plan and partial physical effects available for recovery. Startup retries
+eligible exact plans and can adopt unplanned finished executions after verifying
+their seals, ownership, and content. Only one orchestrator or repair process may
+write a store at a time; workers write isolated shards. See
+[Crash recovery](storage-and-delta-lake.md#crash-recovery).
 
 **Why this principle exists:** Pipelines run thousands of concurrent workers.
 If each worker wrote directly to shared tables, write conflicts would be

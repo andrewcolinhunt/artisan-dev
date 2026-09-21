@@ -31,7 +31,7 @@ the step is `failed` and exposes no outputs.
 Recording can itself fail. If a worker cannot stage its failure record, it
 returns the original error together with the staging error. That preserves a
 diagnostic for the orchestrator, although the execution row may be absent.
-Interrupted commits require the explicit recovery process described below.
+Interrupted commits retain evidence for the recovery process described below.
 
 ---
 
@@ -221,12 +221,17 @@ For the full composites model, see
 
 ## Crash recovery
 
-If the orchestrator process crashes mid-pipeline (power failure, `kill -9`),
-an immutable logical commit may remain planned with only some physical effects.
-Normal startup does not guess how to recover it. Run `artisan store repair`
-with the Delta and staging roots to report the evidence, then use `--apply` to
-replay a validated plan or `--abandon ID --reason ...` to explicitly abandon
-one unrecoverable plan.
+After interruption, startup retries eligible recorded commits and recovers
+validated finished execution units before cache lookup. Cancellation and failure
+retain uncommitted staging; recovery leaves the original step status unchanged.
+Incomplete evidence stays in place, while corruption or ownership conflicts
+block startup.
+
+Confirm that the old orchestrator has stopped before reopening its roots. See
+[Crash recovery](storage-and-delta-lake.md#crash-recovery) for the independent
+recovery and preservation flags, and
+[explicit repair](../how-to-guides/configuring-execution.md#recovering-from-crashes)
+for inspecting evidence or applying recovery separately.
 
 ---
 

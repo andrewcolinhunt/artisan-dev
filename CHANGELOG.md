@@ -18,13 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run-scoped through-N ingestion and an artifact-writing skill.
 - MCP setup guidance and real stdio-client checks for development and installed
   release packages.
-- Explicit offline repair of interrupted logical commits.
+- Staging recovery before cache lookup, with independent `recover_staging` and
+  `preserve_staging` controls. Finished executions from interrupted or cancelled
+  steps can be reused without changing the source step's history.
+- Explicit repair reports and recovery of interrupted logical commits and
+  unplanned finished executions, with optional staging preservation.
+- Exact execution-linked provider-log inspection through `inspect_worker_log()`.
 
 ### Changed
 
-- **Breaking: store format 3.** The release uses typed artifact identity,
+- Require Polars 1.30.0 or newer for execution-seal Parquet metadata.
+- **Breaking: store format 4.** The release uses typed artifact identity,
   independent artifact locations, current-run cache-reuse relations,
-  completion-gated logical commits, and canonical command/replay evidence.
+  completion-gated logical commits, inventoried immutable execution seals,
+  execution-scoped recovery commits, and canonical command/replay evidence.
   Existing stores must use a new Delta root; there is no migration or
   compatibility reader. Artifact identity is version 1 and cache identity is
   version 2.
@@ -69,6 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cancellation retains uncommitted staging regardless of the preservation flag.
+  Cleanup removes only verified committed files and retains changed or unlisted
+  evidence. Provider-log delivery no longer mutates sealed worker results.
 - Directed-ancestry lineage pairing no longer accepts sibling-only matches and
   fails clearly on ambiguous equal-distance candidates.
 - Cancellation and provider/bootstrap failures settle affected units without

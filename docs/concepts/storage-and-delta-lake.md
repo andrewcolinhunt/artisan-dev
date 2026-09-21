@@ -16,13 +16,15 @@ Every supported Delta root contains `_artisan/store.json` with the exact format
 contract:
 
 ```json
-{"store_format":3,"artifact_identity":1,"cache_identity":2}
+{"store_format":4,"artifact_identity":1,"cache_identity":2}
 ```
 
 Writers publish this manifest only after initializing an empty root. Readers
 validate it before opening framework state. A missing, malformed, older, newer,
 or partially matching manifest fails closed. This clean release boundary avoids
-silently reading rows under the wrong identity or cache semantics.
+silently reading rows under the wrong identity or cache semantics. Start a new
+root for this release. Keep an older root with its matching Artisan version;
+opening it does not migrate or clean it.
 
 ---
 
@@ -52,7 +54,9 @@ distinct purpose:
 ```
 delta_root/
 ├── _artisan/
-│   └── store.json          Exact store and identity format contract
+│   ├── store.json          Exact store and identity format contract
+│   ├── commit_plans/       Immutable evidence for logical commits
+│   └── worker_logs/        Provider logs keyed by execution run ID
 ├── artifacts/              Content and metadata for every artifact
 │   ├── index/              Type and origin lookup (artifact_id → type)
 │   ├── locations/          Verified artifact identity → URI mappings
@@ -190,10 +194,17 @@ both local and networked filesystems.
 
 ### The sentinel file
 
-Each staging directory contains multiple Parquet files (one per table type).
-The `executions.parquet` file is always written last. Its presence signals that
-all other files in the directory are complete and consistent. The orchestrator
-uses this as the signal that a worker's results are ready for commit.
+Each staging directory contains multiple Parquet files. The worker closes and
+flushes its payloads, then atomically publishes `executions.parquet` last. This
+file seals the execution: it contains the outcome and an inventory of the other
+files, including their sizes and content digests. The orchestrator verifies that
+inventory before accepting the result. A missing output file cannot be mistaken
+for a successful execution with no outputs.
+
+Once sealed, the shard is immutable. Provider logs that arrive later are stored
+separately under `_artisan/worker_logs/` in the Delta root; use
+[`inspect_worker_log()`](../how-to-guides/debugging-executions.md#inspect-provider-logs)
+to read them. An unsealed shard remains incomplete evidence.
 
 ### Why not write directly to Delta Lake?
 
@@ -217,20 +228,24 @@ these checks.
 ## NFS consistency
 
 Shared filesystems can delay visibility between a worker and the orchestrator.
-Shared-filesystem workers flush staged files and their directories. The
-orchestrator refreshes directory listings and polls for readable
-`executions.parquet` sentinels before committing.
+Workers flush payload files and directory metadata before publishing the seal
+on all local filesystems. On shared filesystems, the orchestrator also refreshes
+directory listings and polls for readable `executions.parquet` seals.
 
-These checks reduce the chance of treating a delayed file as missing; the
-commit plan still verifies the actual staged evidence. Local runners skip the
-shared-filesystem verification path.
+These checks reduce the chance of treating a delayed file as missing. Inventory
+and commit-plan verification still check the actual staged evidence.
 
 ---
 
 ## Commit ordering
 
-A logical commit records an immutable plan of the staged evidence and expected
-table effects. The orchestrator applies the present tables in this order:
+A commit plan is Artisan's internal checklist for a write spanning several
+Delta tables. It records the exact staged files and expected rows before writing
+begins. If a crash interrupts that write, the same checklist identifies what is
+already present and what remains to write. You do not create plans yourself.
+
+A plan alone does not prove that data was committed. The orchestrator applies
+the present tables in this order:
 
 ```text
 Artifact content tables
@@ -287,17 +302,68 @@ remain distinguishable.
 
 ---
 
+## Staging preservation
+
+Uncommitted staging is retained after cancellation, failure, or interruption.
+With the default `preserve_staging=False`, Artisan removes only files that match
+a completed commit plan after verifying all of its Delta effects. It leaves
+unlisted or changed files in place. Cancelling a step is never proof that its
+staged work was committed.
+
+Set `preserve_staging=True` to keep those files even after successful commitment,
+for example to investigate a worker result. This controls staging retention;
+`preserve_working` independently controls the worker's temporary working files.
+Preservation applies to the current action. A later recovery or repair with
+preservation off can clean files once it proves their commitment.
+
 ## Crash recovery
 
-If the orchestrator crashes during persistence, the immutable commit plan,
-control row, staged files, and any partial table effects remain as evidence.
-Rows owned by that plan stay invisible until its completion marker is written.
+By default, `PipelineManager.create()` and `resume()` recover staging before any
+cache lookup or new dispatch. Recovery first retries eligible recorded commit
+plans. It then validates sealed successful executions that never reached plan
+creation and commits each through the same verified write path. Retrying
+recovery does not duplicate executions or artifacts.
 
-Inspect the store explicitly with `artisan store repair --delta-root ...
---staging-root ...`. Report mode never mutates the roots. `--apply` replays only
-validated plans through the normal idempotent commit path; explicit
-`--abandon ID --reason ...` records a one-way operator decision without
-deleting evidence.
+For example, ninety execution units finish before a hundred-unit step is
+cancelled. A new run can recover and reuse those ninety units, then execute the
+ten missing units. The original step remains cancelled and exposes no accepted
+outputs. The new step records its reuse of the original executions and exposes
+outputs when its own result commits. Recovery does not turn a failed or
+cancelled step into a whole-step cache hit.
+
+The two controls answer separate questions:
+
+| Setting | Effect |
+| --- | --- |
+| `recover_staging=True` (default) | Recover eligible finished work before cache lookup. |
+| `recover_staging=False` | Leave earlier staging untouched during startup. |
+| `preserve_staging=True` | Retain staging after verified commitment, including recovery. |
+| `preserve_staging=False` (default) | Permit cleanup of verified committed files. |
+
+All combinations retain uncommitted evidence. Cache policy still governs
+whole-step hits. `skip_cache=True` can force new execution even when startup has
+recovered earlier results, and non-cacheable operations remain non-cacheable.
+
+Incomplete, failed, diagnostic, and unknown-owner shards stay in place and are
+reported. Corrupt or conflicting sealed evidence stops startup with an integrity
+error. Recovery does not import partial output files or guess ownership. Existing
+plans retain ownership of their files, including abandoned plans.
+
+Only one orchestrator or repair process may write a store at a time. Confirm
+that the previous driver has stopped before starting recovery; a persisted
+`running` status cannot establish this. Workers may still finish their isolated
+shards, but seals published after the startup scan wait until a later recovery
+pass. Recovery does not reconnect to active jobs or resume an unfinished
+execution.
+
+To reuse completed units after interruption, rerun the pipeline script with
+`create()` and the same roots. `resume()` restores a previous run's accepted
+state; standalone recovery does not resolve an old `pending` or `running` step,
+so normal resume checks still apply.
+
+Use [explicit store repair](../how-to-guides/configuring-execution.md#recovering-from-crashes)
+to inspect retained evidence or apply recovery separately. Reports do not mutate
+the roots. Abandonment records an operator decision without deleting evidence.
 
 ---
 
@@ -391,7 +457,7 @@ for an interactive example.
 | Content in columns, not files | Prevents filesystem bloat from millions of small files |
 | Staging before commit | Isolates worker output and preserves evidence for recovery |
 | Sharded staging directories | Prevents single-directory performance degradation |
-| Sentinel file pattern | Enables reliable completion detection over NFS |
+| Immutable execution seal | Proves which payloads belong to a finished execution |
 | Registry-driven tables | Domain layers extend storage without framework changes |
 | Exact store manifest | Prevents cross-version identity and cache misreads |
 | Separate artifact locations | Keeps external availability independent of identity |
@@ -399,7 +465,7 @@ for an interactive example.
 | Partition by origin step number | Organizes content and execution files; current readers still verify eagerly |
 | Separate provenance store | Keeps graph queries independent of artifact content |
 | Zstd compression everywhere | Good compression ratio with fast read/write performance |
-| Conditional fsync | NFS flush only on shared filesystems, avoiding local overhead |
+| Flush before seal publication | Makes the completion signal follow durable local payloads |
 
 ---
 

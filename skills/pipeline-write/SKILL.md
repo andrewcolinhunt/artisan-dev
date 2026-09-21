@@ -416,15 +416,15 @@ summary = pipeline.finalize()
 |---|---|---|---|
 | `name` | `str` | *(required)* | Pipeline name |
 | `delta_root` | `str` | *(required)* | Delta Lake storage URI |
-| `staging_root` | `str` | *(required)* | Temporary worker output URI |
+| `staging_root` | `str` | *(required)* | Worker output and recovery evidence URI |
 | `working_root` | `str \| None` | `$TMPDIR` | Sandbox for execution |
 | `files_root` | `str \| None` | Derived beside `delta_root` | Artisan-managed external files URI |
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | Default for all steps |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | Default whole-step cache policy |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Built-in local runner or external provider instance |
-| `preserve_staging` | `bool` | `False` | Keep staging dirs after commit |
+| `preserve_staging` | `bool` | `False` | Keep staging after verified commitment; uncommitted evidence is always retained |
 | `preserve_working` | `bool` | `False` | Keep working dirs after execution |
-| `recover_staging` | `bool` | `True` | Recover incomplete staging on resume |
+| `recover_staging` | `bool` | `True` | Recover eligible completed executions before startup cache lookup |
 | `skip_cache` | `bool` | `False` | Bypass cache lookups for every step |
 
 ---
@@ -444,6 +444,18 @@ summary = pipeline.finalize()
 ---
 
 ## Resume
+
+Only one orchestrator or repair process may write a store at a time. Confirm
+that the old driver has stopped before reopening its roots. Both `create()` and
+`resume()` recover eligible finished staging before any cache lookup by default.
+`recover_staging=False` leaves earlier staging untouched; `preserve_staging=True`
+retains files after commitment. These flags do not change computation hashes or
+cache policy, and cancellation never authorizes deletion of uncommitted staging.
+
+After interruption, rerun the script with `create()` to reuse recovered execution
+units in fresh attempts. The old failed/cancelled status is preserved. `resume()`
+restores accepted results and appends steps, but still refuses unresolved pending
+or running attempts. It does not reconnect to live provider jobs.
 
 Reconstruct pipeline state from Delta Lake and continue:
 

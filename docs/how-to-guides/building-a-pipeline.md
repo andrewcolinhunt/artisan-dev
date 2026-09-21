@@ -354,8 +354,12 @@ See [Configuring Execution](configuring-execution.md) for resource and batching 
 
 ### Resume a previous run
 
-Re-running a pipeline skips steps with matching inputs and parameters
-(content-addressed caching). To continue a run that failed partway through:
+Use `create()` with the same roots to rerun a pipeline script. Startup recovers
+eligible finished staging before cache lookup; matching work can then be reused.
+First confirm that the previous orchestrator has stopped: only one driver or
+repair process may write these roots at a time.
+
+Use `resume()` to restore an existing run and append steps:
 
 ```python
 pipeline = PipelineManager.resume(
@@ -367,7 +371,15 @@ pipeline = PipelineManager.resume(
 `resume()` reconstructs step results from Delta Lake and sets the step counter
 so new steps continue the sequence. Pass `pipeline_run_id="..."` to resume a
 specific run; omit it to resume the most recent. Pass `name="..."` to override
-the pipeline name.
+the pipeline name. An unresolved `pending` or `running` attempt still prevents
+resume; recovering its finished execution units does not change that history.
+Rerun with `create()` to reuse those units in new attempts.
+
+Both entry points accept `recover_staging=False` to leave old staging untouched
+and `preserve_staging=True` to retain staging after commitment. These controls
+are independent of cache policy. See
+[Staging preservation and recovery](../concepts/storage-and-delta-lake.md#staging-preservation)
+for the retention rules and interrupted-work example.
 
 If the pipeline used an external default step runner, create that provider
 again and pass the instance when resuming. Artisan persists the runner's stable

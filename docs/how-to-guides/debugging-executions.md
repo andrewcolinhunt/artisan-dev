@@ -138,8 +138,9 @@ print(result.reproducibility_notes)
 
 The CLI exits zero only when execution succeeds and requested evidence delivery
 is complete. A failed operation can still commit a new execution ID and preserve
-useful files. Cancellation follows ordinary staging-discard semantics and may
-return `execution_run_id=None`; remaining working files are best effort. Commit
+useful files. Cancellation retains uncommitted staging and may return
+`execution_run_id=None`; remaining working files are best effort. Diagnostic
+staging is excluded from ordinary startup recovery and cache reuse. Commit
 failures raise a structured persistence error with diagnostic context.
 
 Curators read the current committed store. Explicit run-scoping parameters are
@@ -149,6 +150,23 @@ artifact content and freezes framework-discovered associations; it does not
 promise identical output for external state that changed.
 
 ---
+
+## Inspect provider logs
+
+Provider logs can arrive after an execution has finished or after its staging
+has been cleaned. Read the exact execution's log independently:
+
+```python
+from artisan.visualization import inspect_worker_log
+
+print(inspect_worker_log(delta_root, execution_run_id))
+```
+
+Logs are stored under `_artisan/worker_logs/<execution_run_id>.log` in the Delta
+root and can also be read for uncommitted or failed executions. The reader falls
+back to an embedded committed worker log when available. Missing logs do not
+establish an execution outcome; use persisted lifecycle and execution records
+for that. Log delivery is best effort and does not change recovery eligibility.
 
 ## Inspect commands from an execution
 
