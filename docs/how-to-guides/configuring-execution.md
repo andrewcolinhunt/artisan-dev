@@ -359,21 +359,44 @@ pipeline = PipelineManager.create(
 ```
 
 Without an explicit working root, sandboxes use the system temporary directory.
-Use `preserve_staging=True` separately when investigating staged Parquet files.
+Use `preserve_staging=True` separately to keep staged Parquet files after they
+commit. Uncommitted staging is retained even without that flag, including after
+cancellation. See [Staging preservation](../concepts/storage-and-delta-lake.md#staging-preservation).
 
 ### Recovering from crashes
 
-Startup does not infer ownership for leftover staging. Inspect the store first:
+Confirm that no other orchestrator or repair process is writing the store.
+Then rerun your pipeline with `PipelineManager.create()` and the same roots.
+By default, startup recovers validated finished work before checking caches.
+Use `recover_staging=False` when you need to inspect the old evidence without
+startup recovery; add `preserve_staging=True` to retain files after recovery.
+
+For an explicit report that includes finished, uncommitted executions:
 
 ```bash
-artisan store repair --delta-root runs/delta --staging-root runs/staging
+artisan store repair --delta-root runs/delta --staging-root runs/staging \
+  --recover-staging
 ```
 
-Add `--apply` to replay validated incomplete plans. If one plan cannot be
-restored, abandon that logical commit explicitly with `--abandon ID --reason ...`.
-Check the repair report before resuming the pipeline. See
-[Storage and Delta Lake](../concepts/storage-and-delta-lake.md) for logical commits
-and `artisan store repair --help` for the command's current options.
+Report mode does not change either root. Inspect affected execution and plan IDs.
+To apply recovery while keeping the staging evidence:
+
+```bash
+artisan store repair --delta-root runs/delta --staging-root runs/staging \
+  --recover-staging --preserve-staging --apply
+```
+
+Supply `--files-root` if the store uses a separately configured managed external
+files root. Without `--recover-staging`, repair only handles recorded plans.
+Incomplete or ineligible evidence can remain in a report after successful
+recovery; the CLI reports unresolved evidence with a nonzero exit status.
+Corrupt or conflicting evidence requires diagnosis and blocks pipeline startup.
+
+Use `--abandon ID --reason ...` only after deciding that a particular
+logical commit should never finish. This retains its evidence and excludes it
+from recovery; abandonment and staging recovery are separate commands.
+See [Crash recovery](../concepts/storage-and-delta-lake.md#crash-recovery) for
+eligibility, history, and restart-versus-resume behavior.
 
 ## Inspect commands from an execution
 

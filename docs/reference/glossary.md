@@ -308,8 +308,10 @@ writes. See [Commit ordering](../concepts/storage-and-delta-lake.md#commit-order
 ## NFS
 
 Network File System, a distributed filesystem protocol common on HPC clusters.
-When workers run on different cluster nodes, Artisan calls `fsync()` on staged
-files to ensure NFS close-to-open consistency before the orchestrator reads them.
+Artisan flushes local staging payloads before publishing an execution seal.
+On shared filesystems, the orchestrator also refreshes directory listings and
+waits for readable seals before verification. See
+[NFS consistency](../concepts/storage-and-delta-lake.md#nfs-consistency).
 
 ---
 
