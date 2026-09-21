@@ -28,10 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Require Polars 1.30.0 or newer for execution-seal Parquet metadata.
-- **Breaking: store format 4.** The release uses typed artifact identity,
+- Ordinary reads use completion records for visibility and retain artifact checks
+  on access. Historical effect verification is an explicit read-only store repair
+  inspection; startup recovery validates only the work it must recover or clean.
+- **Breaking: store format 5.** The release uses typed artifact identity,
   independent artifact locations, current-run cache-reuse relations,
   completion-gated logical commits, inventoried immutable execution seals,
-  execution-scoped recovery commits, and canonical command/replay evidence.
+  batched recovery commits, and canonical command/replay evidence.
   Existing stores must use a new Delta root; there is no migration or
   compatibility reader. Artifact identity is version 1 and cache identity is
   version 2.
@@ -76,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recovery batches finished executions from each source step through the ordinary
+  commit writer. Completed work is skipped when no staging cleanup is needed;
+  recovery no longer repeatedly verifies historical table effects.
 - Cancellation retains uncommitted staging regardless of the preservation flag.
   Cleanup removes only verified committed files and retains changed or unlisted
   evidence. Provider-log delivery no longer mutates sealed worker results.

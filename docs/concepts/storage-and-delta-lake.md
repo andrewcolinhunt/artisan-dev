@@ -16,7 +16,7 @@ Every supported Delta root contains `_artisan/store.json` with the exact format
 contract:
 
 ```json
-{"store_format":4,"artifact_identity":1,"cache_identity":2}
+{"store_format":5,"artifact_identity":1,"cache_identity":2}
 ```
 
 Writers publish this manifest only after initializing an empty root. Readers
@@ -261,10 +261,11 @@ Terminal step snapshot
 Logical commit marked complete
 ```
 
-The final completion marker is the visibility boundary. Supported Artisan
-readers exclude rows owned by planned or abandoned commits and validate the
-expected effects of completed commits. A crash can leave some physical table
-writes behind without making them accepted pipeline results.
+The writer verifies the planned effects before recording completion. That
+completion marker is the visibility boundary: supported Artisan readers expose
+rows from completed commits and exclude planned or abandoned effects. They do
+not repeat the historical commit audit on every query. A crash can leave some
+physical table writes behind without making them accepted pipeline results.
 
 Write order does not replace a multi-table transaction. Each Delta write is
 atomic independently; Artisan's completion checks coordinate visibility across
@@ -314,21 +315,26 @@ Set `preserve_staging=True` to keep those files even after successful commitment
 for example to investigate a worker result. This controls staging retention;
 `preserve_working` independently controls the worker's temporary working files.
 Preservation applies to the current action. A later recovery or repair with
-preservation off can clean files once it proves their commitment.
+preservation off verifies the corresponding committed batch before cleaning its
+retained files. Immediate cleanup uses the verification from the commit that
+just finished.
 
 ## Crash recovery
 
 By default, `PipelineManager.create()` and `resume()` recover staging before any
 cache lookup or new dispatch. Recovery first retries eligible recorded commit
 plans. It then validates sealed successful executions that never reached plan
-creation and commits each through the same verified write path. Retrying
-recovery does not duplicate executions or artifacts.
+creation, groups them by their original step attempt, and commits each group
+through the ordinary batch writer. Retrying recovery does not duplicate
+executions or artifacts.
 
 For example, ninety execution units finish before a hundred-unit step is
 cancelled. A new run can recover and reuse those ninety units, then execute the
-ten missing units. The original step remains cancelled and exposes no accepted
-outputs. The new step records its reuse of the original executions and exposes
-outputs when its own result commits. Recovery does not turn a failed or
+ten missing units. Those ninety units form one recovery batch. If recovery
+itself stops between table writes, the next attempt finishes that same batch.
+The original step remains cancelled and exposes no accepted outputs. The new
+step records its reuse of the original executions and exposes outputs when its
+own result commits. Recovery does not turn a failed or
 cancelled step into a whole-step cache hit.
 
 The two controls answer separate questions:
@@ -347,7 +353,9 @@ recovered earlier results, and non-cacheable operations remain non-cacheable.
 Incomplete, failed, diagnostic, and unknown-owner shards stay in place and are
 reported. Corrupt or conflicting sealed evidence stops startup with an integrity
 error. Recovery does not import partial output files or guess ownership. Existing
-plans retain ownership of their files, including abandoned plans.
+plans retain ownership of their files, including abandoned plans. Completed
+batches need no further payload verification during startup unless retained
+staging needs cleanup. New worker results discovered later form a new batch.
 
 Only one orchestrator or repair process may write a store at a time. Confirm
 that the previous driver has stopped before starting recovery; a persisted
@@ -362,8 +370,11 @@ state; standalone recovery does not resolve an old `pending` or `running` step,
 so normal resume checks still apply.
 
 Use [explicit store repair](../how-to-guides/configuring-execution.md#recovering-from-crashes)
-to inspect retained evidence or apply recovery separately. Reports do not mutate
-the roots. Abandonment records an operator decision without deleting evidence.
+to audit historical effects and inspect retained evidence, or apply recovery
+separately. Read-only inspection checks the recorded plans against the stored
+tables. Applied recovery validates its affected work and reports the actions it
+performed; it does not audit unrelated completed data. Abandonment records an
+operator decision without deleting evidence.
 
 ---
 
@@ -425,20 +436,25 @@ For the full two-level caching mechanism (step-level and execution-level), see
 ## Reading pipeline results
 
 Use Artisan's inspection helpers, `ArtifactStore`, and `ProvenanceStore` to read
-accepted results. They apply logical-completion filtering and integrity checks.
-For a store shared by several runs, select the `pipeline_run_id` when inspecting
-run results. A cached artifact retains its original content row and origin step;
-the current run's execution and cache-reuse relations identify where it was used.
+accepted results. They apply logical-completion filtering and validate artifact
+content when it is loaded. For a store shared by several runs, select the
+`pipeline_run_id` when inspecting run results. A cached artifact retains its
+original content row and origin step; the current run's execution and cache-reuse
+relations identify where it was used.
 
-These readers currently load and verify a physical table eagerly. Even when an
-API returns a Polars `LazyFrame`, subsequent filters operate on that loaded
-result and do not push predicates into the original Delta scan. Partitioning
-therefore does not promise that a step-scoped read touches only that step's
-files.
+The committed scan stays lazy, so filters can be applied to the Delta scan
+before collecting rows. Some higher-level readers collect data to assemble
+results or traverse provenance. Partition pruning depends on the query; a
+run-scoped read may need artifacts originating in several steps.
+
+Ordinary queries trust recorded completion. They do not verify every historical
+plan or detect every later alteration to stored rows. Use read-only
+[store repair inspection](../how-to-guides/configuring-execution.md#recovering-from-crashes)
+when you need a historical integrity audit.
 
 Delta-compatible tools remain useful for physical inspection. Direct
 `pl.scan_delta(...)`, DuckDB, or other raw queries bypass Artisan's completion
-filter and integrity validation. Their rows are not necessarily accepted
+filter and artifact validation. Their rows are not necessarily accepted
 results, especially after an interrupted commit. Per-table version history also
 does not reconstruct a complete historical run or its external files.
 
@@ -461,8 +477,8 @@ for an interactive example.
 | Registry-driven tables | Domain layers extend storage without framework changes |
 | Exact store manifest | Prevents cross-version identity and cache misreads |
 | Separate artifact locations | Keeps external availability independent of identity |
-| Logical completion and verified reads | Keeps incomplete multi-table effects out of accepted results |
-| Partition by origin step number | Organizes content and execution files; current readers still verify eagerly |
+| Verified completion and explicit audit | Keeps incomplete effects hidden without repeating historical checks on every read |
+| Partition by origin step number | Organizes content and execution files for queries by origin |
 | Separate provenance store | Keeps graph queries independent of artifact content |
 | Zstd compression everywhere | Good compression ratio with fast read/write performance |
 | Flush before seal publication | Makes the completion signal follow durable local payloads |

@@ -223,7 +223,8 @@ Content-addressed artifacts may reuse an existing identical row. Every other
 retry must match the immutable plan and its exact natural keys. A crash leaves
 the plan and partial physical effects available for recovery. Startup retries
 eligible exact plans and can adopt unplanned finished executions after verifying
-their seals, ownership, and content. Only one orchestrator or repair process may
+their seals, ownership, and content. Recovery groups those executions by source
+step and uses the same batch writer. Only one orchestrator or repair process may
 write a store at a time; workers write isolated shards. See
 [Crash recovery](storage-and-delta-lake.md#crash-recovery).
 
