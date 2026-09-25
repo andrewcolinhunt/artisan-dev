@@ -35,9 +35,13 @@ def _require_proxy_auth_tokens() -> None:
 
 
 def test_pipeline_commits_artifacts_via_endpoint(tmp_path):
-    """A pipeline step with compute_provider='modal' commits artifacts."""
+    """Two batched inputs retain exact parents and human names locally and on Modal."""
+    import polars as pl
+
     from artisan.operations.examples import DataGenerator, WaitTool
     from artisan.orchestration import PipelineManager
+
+    from .conftest import get_execution_outputs, load_artifact_edges, read_table
 
     pipeline = PipelineManager.create(
         name="tool_endpoint_smoke",
@@ -45,20 +49,65 @@ def test_pipeline_commits_artifacts_via_endpoint(tmp_path):
         staging_root=str(tmp_path / "staging"),
         working_root=str(tmp_path / "working"),
     )
-    step0 = pipeline.run(
+    generated = pipeline.run(
         operation=DataGenerator,
         name="generate",
-        params={"count": 1, "seed": 42},
+        params={"count": 2, "seed": 42},
     )
-    pipeline.run(
-        operation=WaitTool,
-        name="wait",
-        inputs={"dataset": step0.output("datasets")},
-        params={"seconds": 1},
-        compute_provider="modal",
-    )
-    result = pipeline.finalize()
-    assert result["overall_success"]
+    for provider in ("local", "modal"):
+        pipeline.run(
+            operation=WaitTool,
+            name=f"wait_{provider}",
+            inputs={"dataset": generated.output("datasets")},
+            params={"seconds": 1},
+            batch_strategy={"artifacts_per_unit": 2},
+            compute_provider=provider,
+        )
+    assert pipeline.finalize()["overall_success"]
+    delta_root = pipeline.config.delta_root
+    data = read_table(delta_root, "artifacts/data")
+    source_ids = get_execution_outputs(delta_root, 0, "datasets")
+    sources = data.filter(pl.col("artifact_id").is_in(source_ids))
+    expected = {
+        (
+            f"{row['original_name']}_waited",
+            row["artifact_id"],
+            "dataset",
+            "output",
+            "data",
+            "data",
+            None,
+        )
+        for row in sources.iter_rows(named=True)
+    }
+    assert len(expected) == 2
+    for step_number in (1, 2):
+        output_ids = get_execution_outputs(delta_root, step_number, "output")
+        assert len(output_ids) == 2
+        outputs = data.filter(pl.col("artifact_id").is_in(output_ids))
+        names = dict(zip(outputs["artifact_id"], outputs["original_name"], strict=True))
+        execution_ids = (
+            read_table(delta_root, "orchestration/executions")
+            .filter(pl.col("origin_step_number") == step_number)["execution_run_id"]
+            .to_list()
+        )
+        edges = load_artifact_edges(delta_root, output_ids).filter(
+            pl.col("execution_run_id").is_in(execution_ids)
+        )
+        assert edges.height == 2
+        actual = {
+            (
+                names[row["target_artifact_id"]],
+                row["source_artifact_id"],
+                row["source_role"],
+                row["target_role"],
+                row["source_artifact_type"],
+                row["target_artifact_type"],
+                row["group_id"],
+            )
+            for row in edges.iter_rows(named=True)
+        }
+        assert actual == expected
 
 
 def test_endpoint_serves_non_artisan_clients():
