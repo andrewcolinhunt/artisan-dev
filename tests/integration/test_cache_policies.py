@@ -34,6 +34,7 @@ from .conftest import (
     FailingTransformer,
     count_executions_by_step,
     get_execution_outputs,
+    load_artifact_edges,
 )
 
 
@@ -69,6 +70,8 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
     p1.finalize()
 
     ids_run1 = set(get_execution_outputs(delta_root, 1, "dataset"))
+    edges_run1 = load_artifact_edges(delta_root, ids_run1)
+    assert edges_run1.height == 3
     exec_count1 = count_executions_by_step(delta_root, 1)
 
     # Run 2 — identical
@@ -104,6 +107,9 @@ def test_cache_hit_identical_artifact_ids(pipeline_env: dict[str, str]):
     # No new executions (cache hit)
     exec_count2 = count_executions_by_step(delta_root, 1)
     assert exec_count2 == exec_count1, "Cache hit should not create new executions"
+    edges_run2 = load_artifact_edges(delta_root, ids_run2)
+    columns = edges_run1.columns
+    assert set(edges_run2.select(columns).iter_rows()) == set(edges_run1.iter_rows())
 
 
 def test_all_succeeded_partial_failure_not_cached(pipeline_env: dict[str, str]):
