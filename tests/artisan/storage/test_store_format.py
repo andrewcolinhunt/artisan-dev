@@ -3,21 +3,173 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from typing import Any, ClassVar
 
 import polars as pl
 import pytest
+from deltalake import DeltaTable
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import IncompatibleStoreError
+from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.store_format import (
     STORE_MANIFEST,
     STORE_MANIFEST_PATH,
+    _delta_type,
     assert_store_format,
     prepare_store_initialization,
     publish_store_manifest,
 )
 from artisan.storage.io.commit import DeltaCommitter
 from artisan.storage.io.staging import StagingManager
+
+
+@pytest.fixture
+def list_score_type(monkeypatch: pytest.MonkeyPatch) -> type[ArtifactTypeDef]:
+    """Register a domain artifact without leaking registry entries or attributes."""
+    monkeypatch.setattr(ArtifactTypeDef, "_registry", dict(ArtifactTypeDef._registry))
+    monkeypatch.setattr(ArtifactTypes, "_registry", dict(ArtifactTypes._registry))
+    monkeypatch.setattr(ArtifactTypes, "TEST_LIST_SCORE", None, raising=False)
+
+    class ListScoreArtifact(Artifact):
+        artifact_type: str = "test_list_score"
+        score: float
+        site_values: list[float]
+        pair_values: list[list[float]]
+        POLARS_SCHEMA: ClassVar[dict[str, Any]] = {
+            "artifact_id": pl.String,
+            "origin_step_number": pl.Int32,
+            "score": pl.Float32,
+            "site_values": pl.List(pl.Float32),
+            "pair_values": pl.List(pl.List(pl.Float32)),
+            "metadata": pl.String,
+        }
+
+    class ListScoreTypeDef(ArtifactTypeDef):
+        key = "test_list_score"
+        table_path = "artifacts/test_list_scores"
+        model = ListScoreArtifact
+
+    return ListScoreTypeDef
+
+
+@pytest.mark.parametrize(
+    ("dtype", "expected"),
+    [
+        (pl.Float32, "float"),
+        (
+            pl.List(pl.Float32),
+            {"type": "array", "elementType": "float", "containsNull": True},
+        ),
+        (
+            pl.List(pl.List(pl.Float32)),
+            {
+                "type": "array",
+                "elementType": {
+                    "type": "array",
+                    "elementType": "float",
+                    "containsNull": True,
+                },
+                "containsNull": True,
+            },
+        ),
+        (
+            pl.List(pl.String),
+            {"type": "array", "elementType": "string", "containsNull": True},
+        ),
+    ],
+)
+def test_delta_type_float32_and_lists(dtype: object, expected: object) -> None:
+    assert _delta_type(dtype) == expected
+
+
+def test_delta_type_deep_lists_matches_delta_schema(tmp_path: Path) -> None:
+    dtype = pl.List(pl.List(pl.List(pl.Int64)))
+    table_path = str(tmp_path / "deep_lists")
+    pl.DataFrame(schema={"values": dtype}).write_delta(table_path)
+    schema = json.loads(DeltaTable(table_path).schema().to_json())
+
+    assert _delta_type(dtype) == schema["fields"][0]["type"]
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [pl.Struct({"value": pl.Float32}), pl.Array(pl.Float32, 2), pl.List(pl.Int16)],
+)
+def test_delta_type_rejects_unsupported_types(dtype: object) -> None:
+    with pytest.raises(TypeError, match="unsupported physical schema type"):
+        _delta_type(dtype)
+
+
+def test_registered_list_artifact_store_initializes_and_reopens(
+    tmp_path: Path, list_score_type: type[ArtifactTypeDef]
+) -> None:
+    fs = LocalFileSystem()
+    root = str(tmp_path / "delta")
+    committer = DeltaCommitter(
+        root, StagingManager(str(tmp_path / "staging"), fs), fs=fs
+    )
+    committer.initialize_tables()
+
+    assert_store_format(root, fs)
+    ArtifactStore(root, fs=fs)
+    committer.initialize_tables()
+    schema = json.loads(
+        DeltaTable(f"{root}/{list_score_type.table_path}").schema().to_json()
+    )
+    types = {field["name"]: field["type"] for field in schema["fields"]}
+    assert types["score"] == "float"
+    assert types["site_values"] == {
+        "type": "array",
+        "elementType": "float",
+        "containsNull": True,
+    }
+    assert types["pair_values"] == {
+        "type": "array",
+        "elementType": {
+            "type": "array",
+            "elementType": "float",
+            "containsNull": True,
+        },
+        "containsNull": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "wrong_type",
+    [pl.List(pl.List(pl.Float64)), pl.List(pl.Float32)],
+    ids=["wrong-element-type", "wrong-nesting-depth"],
+)
+def test_registered_list_artifact_rejects_wrong_schema(
+    tmp_path: Path, list_score_type: type[ArtifactTypeDef], wrong_type: object
+) -> None:
+    fs = LocalFileSystem()
+    root = str(tmp_path / "delta")
+    DeltaCommitter(
+        root, StagingManager(str(tmp_path / "staging"), fs), fs=fs
+    ).initialize_tables()
+    schema = {
+        **list_score_type.polars_schema(),
+        "pair_values": wrong_type,
+        "logical_commit_id": pl.String,
+    }
+    pl.DataFrame(schema=schema).write_delta(
+        f"{root}/{list_score_type.table_path}",
+        mode="overwrite",
+        delta_write_options={
+            "schema_mode": "overwrite",
+            "partition_by": ["origin_step_number"],
+        },
+    )
+
+    with pytest.raises(IncompatibleStoreError, match="test_list_scores.*has schema"):
+        assert_store_format(root, fs)
+    with pytest.raises(IncompatibleStoreError, match="test_list_scores.*has schema"):
+        ArtifactStore(root, fs=fs)
 
 
 def test_manifest_round_trip_for_initialized_store(tmp_path) -> None:
